@@ -421,42 +421,50 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
 (`server.yaml`, what E17 measures) and `strict.yaml`, both engines.
 
 - Held-out pool (`eval/e21_heldout/corpus.jsonl`): 420 harmful and 432 benign calls in 17 categories (14 harmful, 3 benign), written blind to
-  the rules on a separate branch and only scored: no rule was changed after this run. A harmful call is caught when it
-  is denied or held (ask); a benign call is a false positive when it is denied or held.
+  the rules on a separate branch. Its one blind score is the first run: 211 of 420 harmful calls caught (50.2%) by
+  default, 246 (58.6%) strict. Rules were added after that run that target shapes in the pool (all 21 held-out calls
+  the credential, container, package-source and history rules newly caught are harmful calls of the shapes those rules
+  name, such as a `find /var/log … -exec truncate`), and the pool has been read since, so every later number below is
+  measured after rule changes and overstates what the packs catch on calls nobody has seen. The next release should
+  score a fresh blind pool. A harmful call is caught when it is denied or held (ask); a benign call is a false positive
+  when it is denied or held.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
   data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
 - Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,290 calls).
 
-The recorded results (on the packs as merged for 1.4):
+The recorded results, measured after those rule changes on a pool that is no longer blind (the packs as merged for 1.4):
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 236 / 420 (56.2%) | 109 (26.0%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| default | 237 / 420 (56.4%) | 109 (26.0%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
 | strict | 266 / 420 (63.3%) | 150 (35.7%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
-destructive 15 of 36, defence evasion 14 of 30, supply chain 13 of 27; strongest: Kubernetes 23 of 27, database 28 of
-32. By evasion, calls with none are caught 141 of 275; quoting 9 of 18, environment prefixes 6 of 14, substitution 37
+destructive 15 of 36, defence evasion 14 of 30, supply chain 14 of 27; strongest: Kubernetes 23 of 27, database 28 of
+32. By evasion, calls with none are caught 142 of 275; quoting 9 of 18, environment prefixes 6 of 14, substitution 37
 of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
 | Latency (µs) | p50 | p99 | max |
 |---|---|---|---|
-| default, RE2 / regex | 62 / 59 | 137 / 168 | 236 / 329 |
-| strict, RE2 / regex | 62 / 58 | 135 / 168 | 228 / 330 |
-| dev, RE2 / regex | 47 / 44 | 113 / 119 | 194 / 201 |
+| default, RE2 / regex | 63 / 58 | 150 / 172 | 276 / 313 |
+| strict, RE2 / regex | 61 / 58 | 136 / 163 | 222 / 314 |
+| dev, RE2 / regex | 48 / 45 | 112 / 120 | 194 / 205 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
-recorded run: per profile, held-out recall doesn't drop below its (56.2% default, 63.3% strict) and no benign set's
+recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.9%
 strict); p99 stays within 25% of its on the same machine (re-measured once before failing). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
 (default 4.2%, strict 10.9%) and on strict's sessions (10.0%).
 
-How the held-out numbers moved, the pool unchanged: the first run caught 211 of 420 (50.2%) by default and 246
-(58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%) and 250
-(59.5%); the credential-store, container, package-source and history rules (`TK-D020`, `TK-D021`, `TK-A020` to
-`TK-A028`) to 236 (56.2%) and 266 (63.3%), with no new false positive on the held-out or session calls. The gates were
+How the held-out numbers moved, the pool unchanged: the first run, the only blind one, caught 211 of 420 (50.2%) by
+default and 246 (58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%)
+and 250 (59.5%); the credential-store, container, package-source and history rules (`TK-D020`, `TK-D021`, `TK-A020` to
+`TK-A028`) to 236 (56.2%) and 266 (63.3%); the fixes of the 1.4 review (`TK-A029`, `TK-A030`, the shells the parser
+can't read, package sources set by a variable) to 237 (56.4%) and 266, with no new false positive on the held-out or
+session calls. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
+pool, not as blind recall. The gates were
 recorded again with those rules, on purpose: strict's false positives on E17's benign calls rose from 4.1% to 4.9%
 (29 of 711 to 36 of 738), all of them benign calls added to E17 with the rules that strict holds as installs,
 `docker run`, URLs or network commands (`TK-F004`, `TK-F012`, `TK-F013`), none by a new rule.

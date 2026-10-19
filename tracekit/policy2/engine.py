@@ -196,12 +196,15 @@ class Engine:
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
         each line the parser normalised; an fs `path` with `..` also matches its lexically normalised form, and each
         entry of a `paths` list (every file of a Codex patch) is a path too. `target` (every class) is what the call
-        acts on rather than what it carries (Engine._targets); sql `code` is one subject per dialect reading. With
+        acts on rather than what it carries (Engine._targets); shell `effects` the files it writes or deletes
+        (_effects); sql `code` is one subject per dialect reading. With
         `split`, a list value is one subject per element (nested lists flattened)."""
         if field == "target":
             return Engine._targets(cls, args, fields, parsed)
+        if cls == "shell" and field == "effects":
+            return _effects(parsed)
         if cls == "shell" and field == "package_index":
-            return _package_indexes(parsed[0])
+            return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
             return _container_host_access(parsed[0])
         if cls == "sql" and field == "code":
@@ -240,10 +243,7 @@ class Engine:
                     if t and _BARE_TARGET.fullmatch(t)]
             targets = [" ".join(w) for w in words] + parsed[2]
             have = set(targets)
-            # Keep the tag so a target rule can distinguish output destinations from input redirects.
-            write_refs = [f"WRITE_TARGET:{_text(ref)}" for ref in parsed[3]]
-            return (targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + write_refs
-                    + _shell_action_targets(parsed[0]) + urls + bare)
+            return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
         if cls in ("http", "browser"):
@@ -276,9 +276,17 @@ def _shell(args):
     raise shell.ParseError("the command is neither a string nor a list of strings")
 
 
-def _package_indexes(commands):
-    """Return only explicitly selected non-default package sources, one subject per effective option."""
-    out = []
+# variables that set a package source: before a command (`PIP_INDEX_URL=… pip install`), or through env or export
+_SOURCE_VARIABLES = dict.fromkeys(("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "UV_INDEX_URL", "UV_INDEX",
+                                   "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_FIND_LINKS"), "pypi.org")
+_SOURCE_VARIABLES["NPM_CONFIG_REGISTRY"] = "registry.npmjs.org"
+
+
+def _package_indexes(commands, refs=()):
+    """Return only explicitly selected non-default package sources, one subject per effective option or variable."""
+    words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
+    out = [value for name, eq, value in (w.partition("=") for w in words)
+           if eq and name.upper() in _SOURCE_VARIABLES and _non_default_source(value, _SOURCE_VARIABLES[name.upper()])]
     for command in commands:
         argv = command["argv"]
         if not argv:
@@ -287,10 +295,12 @@ def _package_indexes(commands):
         args = argv[1:]
         if exe.startswith("python") and len(args) >= 2 and args[:2] == ["-m", "pip"]:
             exe, args = "pip", args[2:]
-        if exe in ("pip", "pip3"):
-            default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url"}
+        exe = "pip" if re.fullmatch(r"pip[0-9.]*", exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
+        if exe == "pip":
+            default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url", "-f", "--find-links"}
         elif exe == "uv":
-            default, options = "pypi.org", {"--index-url", "--extra-index-url", "--default-index", "--index"}
+            default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url", "--default-index", "--index",
+                                            "-f", "--find-links"}
             if args[:1] == ["pip"]:
                 args = args[1:]
         elif exe in ("npm", "pnpm", "yarn", "bun"):
@@ -309,7 +319,7 @@ def _package_indexes(commands):
                 key, eq, value = word.partition("=")
                 value = value if eq else words[i + 1] if i + 1 < len(words) else None
                 if value is not None and (
-                        (exe in ("pip", "pip3") and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url"})
+                        (exe == "pip" and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url", "find-links"})
                         or (exe in ("npm", "pnpm", "yarn", "bun") and (key == "registry" or key.endswith(":registry")))):
                     if _non_default_source(value, default):
                         out.append(value)
@@ -328,7 +338,7 @@ def _package_indexes(commands):
                     if exe == "uv" and name == "--index" and "=" in value:
                         value = value.split("=", 1)[1]
                     selected.append(value)
-            elif exe in ("pip", "pip3") and arg.startswith("-i") and arg != "-i":
+            elif exe == "pip" and arg.startswith("-i") and arg != "-i":
                 selected.append(arg[2:])
             i += 1
         for value in selected:
@@ -386,8 +396,24 @@ def _container_host_access(commands):
     return []
 
 
-def _shell_action_targets(commands):
-    """Tag destructive destinations so rules do not confuse an input file with an output target."""
+_HISTORY = (".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")
+
+
+def _log_or_history(path):
+    """Whether a path is under /var/log (macOS's /private/var/log too) or names a shell history file, in any case."""
+    p = path.replace("\\", "/").casefold()
+    return p.startswith(("/var/log", "/private/var/log")) or any(part.endswith(_HISTORY) for part in p.split("/"))
+
+
+def _effects(parsed):
+    """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
+    path casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
+    sed -i and perl -i name, and find with -delete or -exec rm."""
+    tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
+    return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
+
+
+def _command_effects(commands):
     out = []
     for command in commands:
         argv = command["argv"]
@@ -398,25 +424,17 @@ def _shell_action_targets(commands):
         if exe == "find" and ("-delete" in args or any(
                 a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args)
                 and args[i + 1].rsplit("/", 1)[-1] in ("rm", "unlink", "shred", "truncate") for i, a in enumerate(args))):
+            # its start paths, and the log and history names among its tests (`-name .bash_history`) but those
+            # `-prune` leaves out
             paths = []
             for arg in args:
                 if arg.startswith("-"):
                     break
                 paths.append(arg)
-            history_names = (".bash_history", ".zsh_history", "fish_history", "ConsoleHost_history.txt")
-            pruned = {i for i in range(len(args)) if args[i + 1:i + 2] == ["-prune"]}   # `-path X -prune` leaves X out
-            for i, arg in enumerate(args):
-                if i in pruned or i + 1 in pruned and arg in ("-path", "-wholename"):
-                    continue
-                if (arg in ("-path", "-wholename") and i + 1 < len(args)
-                        and (args[i + 1].replace("\\", "/").startswith("/var/log")
-                             or any(part.endswith(history_names) for part in args[i + 1].replace("\\", "/").split("/")))):
-                    paths.append(args[i + 1])
-                elif arg.replace("\\", "/").startswith("/var/log") or any(
-                        part.endswith(history_names) for part in arg.replace("\\", "/").split("/")):
-                    paths.append(arg)
+            pruned = {i for i in range(len(args)) if args[i + 1:i + 2] == ["-prune"]}
+            paths += [a for i, a in enumerate(args) if i not in pruned and _log_or_history(a)]
             out.extend("DELETE_TARGET:" + path for path in dict.fromkeys(paths))
-        elif exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install"):
+        elif exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
             valued = ("-s", "--size", "-r", "--reference") if exe == "truncate" else (
                 "-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix")
             operands, directory, skip = [], None, None
@@ -434,21 +452,29 @@ def _shell_action_targets(commands):
                 deleted, written = operands, []
             elif exe in ("truncate", "tee"):
                 deleted, written = [], operands
-            else:   # cp, mv, install write the last operand (or -t's directory); mv also removes its sources
-                written = [directory] if directory is not None else operands[-1:]
-                deleted = (operands if directory is not None else operands[:-1]) if exe == "mv" else []
+            else:   # cp, mv, install and ln write the last operand or -t's directory, and in a directory each source's
+                # name (`cp -t ~ x/.bash_history`, `cp x/.bash_history ~/`); mv also removes its sources
+                sources = operands if directory is not None else operands[:-1]
+                dest = directory if directory is not None else next(iter(operands[-1:]), None)
+                written = [] if dest is None else [dest] + [
+                    dest.rstrip("/") + "/" + src.rstrip("/").rsplit("/", 1)[-1] for src in sources
+                    if directory is not None or len(sources) > 1 or dest.endswith("/") or dest in ("~", ".", "..")]
+                deleted = sources if exe == "mv" else []
             out.extend(["DELETE_TARGET:" + path for path in deleted] + ["WRITE_TARGET:" + path for path in written])
         elif exe == "dd":
             out.extend("WRITE_TARGET:" + arg[3:] for arg in args if arg.startswith("of="))
         elif exe in ("sed", "perl") and any(re.match(r"-[nrsuzE]*i|--in-place" if exe == "sed" else r"-[0-9alnpw]*i", a)
                                             for a in args):
-            if exe == "sed":
+            if exe == "sed":   # the operands after the script: the first one unless -e, -f or their long forms give it
                 files, script_seen, skip = [], False, False
                 for arg in args:
                     if skip:
                         skip, script_seen = False, True
-                    elif arg in ("-e", "--expression", "-f", "--file"):
+                    elif arg in ("--expression", "--file") or re.fullmatch(r"-[A-Za-z]*[ef]", arg):
                         skip = True
+                    elif arg.startswith(("--expression=", "--file=")) or re.match(r"-[A-Za-z]*[ef].", arg) and \
+                            not arg.startswith("--"):
+                        script_seen = True
                     elif arg.startswith("-"):
                         continue
                     elif script_seen:

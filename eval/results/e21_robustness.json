@@ -908,14 +908,14 @@
         "total": 3
       },
       "TK-A027": {
-        "contained": 14,
+        "contained": 12,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 14,
+        "covered_by_rule_or_parse": 12,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 14,
+        "same_rule": 12,
         "same_rule_rate": 1.0,
-        "total": 14
+        "total": 12
       },
       "TK-A028": {
         "contained": 1,
@@ -926,6 +926,16 @@
         "same_rule": 1,
         "same_rule_rate": 1.0,
         "total": 1
+      },
+      "TK-A029": {
+        "contained": 2,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 2,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 2,
+        "same_rule_rate": 1.0,
+        "total": 2
       },
       "TK-C001": {
         "contained": 29,
@@ -1200,14 +1210,14 @@
         "total": 3
       },
       "TK-A027": {
-        "contained": 19,
+        "contained": 12,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 19,
+        "covered_by_rule_or_parse": 12,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 19,
+        "same_rule": 12,
         "same_rule_rate": 1.0,
-        "total": 19
+        "total": 12
       },
       "TK-A028": {
         "contained": 1,
@@ -1218,6 +1228,16 @@
         "same_rule": 1,
         "same_rule_rate": 1.0,
         "total": 1
+      },
+      "TK-A029": {
+        "contained": 7,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 7,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 7,
+        "same_rule_rate": 1.0,
+        "total": 7
       },
       "TK-C001": {
         "contained": 29,
@@ -1492,14 +1512,14 @@
         "total": 3
       },
       "TK-A027": {
-        "contained": 16,
+        "contained": 10,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 16,
+        "covered_by_rule_or_parse": 10,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 16,
+        "same_rule": 10,
         "same_rule_rate": 1.0,
-        "total": 16
+        "total": 10
       },
       "TK-A028": {
         "contained": 1,
@@ -1510,6 +1530,16 @@
         "same_rule": 1,
         "same_rule_rate": 1.0,
         "total": 1
+      },
+      "TK-A029": {
+        "contained": 6,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 6,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 6,
+        "same_rule_rate": 1.0,
+        "total": 6
       },
       "TK-C001": {
         "contained": 29,
@@ -1754,14 +1784,14 @@
         "total": 3
       },
       "TK-A027": {
-        "contained": 14,
+        "contained": 12,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 14,
+        "covered_by_rule_or_parse": 12,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 14,
+        "same_rule": 12,
         "same_rule_rate": 1.0,
-        "total": 14
+        "total": 12
       },
       "TK-A028": {
         "contained": 1,
@@ -1772,6 +1802,16 @@
         "same_rule": 1,
         "same_rule_rate": 1.0,
         "total": 1
+      },
+      "TK-A029": {
+        "contained": 2,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 2,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 2,
+        "same_rule_rate": 1.0,
+        "total": 2
       },
       "TK-C001": {
         "contained": 29,
@@ -2046,14 +2086,14 @@
         "total": 3
       },
       "TK-A027": {
-        "contained": 19,
+        "contained": 12,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 19,
+        "covered_by_rule_or_parse": 12,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 19,
+        "same_rule": 12,
         "same_rule_rate": 1.0,
-        "total": 19
+        "total": 12
       },
       "TK-A028": {
         "contained": 1,
@@ -2064,6 +2104,16 @@
         "same_rule": 1,
         "same_rule_rate": 1.0,
         "total": 1
+      },
+      "TK-A029": {
+        "contained": 7,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 7,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 7,
+        "same_rule_rate": 1.0,
+        "total": 7
       },
       "TK-C001": {
         "contained": 29,
@@ -2237,7 +2287,7 @@
       }
     }
   },
-  "policy_hash": "sha256:02a7cad7e69c531416be7ae0059ebff332b7c673be90e9699253a7d57e08f65a",
+  "policy_hash": "sha256:3fdc602fa95043af687c16649d57b62897ba5eba70f69afb83b7a923011f65e8",
   "regressions": [],
   "rewrite_missed": [],
   "rewritten_cases": 261,

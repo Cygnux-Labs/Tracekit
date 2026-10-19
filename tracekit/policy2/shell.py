@@ -26,7 +26,9 @@ class ParseError(ValueError):
 MAX_DEPTH = 32
 MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings included: 4 × the largest subject, so
                      # a worst-case command costs a fraction of a second of the signer (the parser holds the GIL)
-SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash"}
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "rbash", "mksh", "ksh93", "yash", "posh", "lksh", "oksh"}
+# shells whose language the parser doesn't read: the commands they get on their line or from stdin are opaque
+FOREIGN_SHELLS = {"fish", "csh", "tcsh", "pwsh", "powershell", "nu", "xonsh", "elvish"}
 # wrapper -> (options that take a value, positional arguments before the command)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"), 0), "nohup": ((), 0),
             "time": (("-f", "-o", "--format", "--output"), 0),
@@ -240,13 +242,39 @@ def _split_string(args):
     i = 0
     while i < len(args) and args[i].startswith("-") and args[i] != "--":
         a = args[i]
-        if a in ("-S", "--split-string"):
+        if a == "--split-string" or re.fullmatch(r"-[iv0]*S", a):
             return " ".join(args[i + 1:])
         if a.startswith("--split-string="):
             return " ".join([a[15:]] + args[i + 1:])
         if re.fullmatch(r"-[iv0]*S.+", a, re.S):
             return " ".join([a[a.index("S") + 1:]] + args[i + 1:])
         i += 2 if a in WRAPPERS["env"][0] else 1
+    return None
+
+
+def _foreign_runs_text(shell, args):
+    """Whether a FOREIGN_SHELLS shell runs commands from its line or stdin: -c (also in a cluster, -lc, but for
+    PowerShell, whose options are words: -ExecutionPolicy), --command or PowerShell's -Command or -EncodedCommand (any
+    prefix, any case), or no script file before them."""
+    for a in args:
+        if not a.startswith("-"):
+            return False   # a script file
+        name = a.lstrip("-").split("=", 1)[0].lower()
+        if shell not in ("pwsh", "powershell") and re.fullmatch(r"-[a-z]*c[a-z]*", a) or name and (
+                "command".startswith(name) or name == "ec" or "encodedcommand".startswith(name)):
+            return True
+    return True
+
+
+def _npm_call(args):
+    """The script of npm exec's (npx's) -c/--call, among the options before the command it runs, or None."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "--":
+        if args[i] in ("-c", "--call"):
+            return args[i + 1] if i + 1 < len(args) else ""
+        if args[i].startswith("--call="):
+            return args[i][7:]
+        i += 2 if args[i] in ("-p", "--package", "-w", "--workspace") else 1
     return None
 
 
@@ -575,6 +603,9 @@ class _Parser:
                     cmd["opaque"] = True   # it reads the commands from stdin
             elif name == "env" and _split_string(args) is not None:
                 self.nested(_split_string(args), via + ["env -S"])
+            elif (name == "npx" or name == "npm" and args[:1] in (["exec"], ["x"])) and \
+                    (script := _npm_call(args if name == "npx" else args[1:])) is not None:
+                self.nested(script, via + [name + " -c"])
             elif name in WRAPPERS or name in RUNNERS and args[:1] and args[0] in RUNNERS[name][0]:
                 if name == "runuser" and _dash_c(args) is not None:
                     self.nested(_dash_c(args), via + ["runuser -c"])
@@ -590,6 +621,8 @@ class _Parser:
                 mode, script = _shell_mode(args)
                 if mode == "c":
                     self.nested(script, via + [name + " -c"])
+            elif name in FOREIGN_SHELLS:
+                cmd["opaque"] = cmd["opaque"] or _foreign_runs_text(name, args)
             elif name in ("source", ".") and args[:1] and args[0].startswith(STREAMS):
                 cmd["opaque"] = True
             elif name == "eval":

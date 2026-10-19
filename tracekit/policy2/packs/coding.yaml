@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-20'
+version: '2026.10-v2-21'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -79,7 +79,7 @@ deny:
     # after `.env` (`.env.local`) only on a file named so: after any prefix too (`a.env.env…`), it would rescan
     pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$'
     reason: writing to a credentials file from the shell
-    remedy: Write a template with placeholders (.env.example) and read real values from the environment; a person fills in credential files.
+    remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011
     class: shell
@@ -145,7 +145,8 @@ deny:
   - id: TK-D020
     class: shell
     field: argv
-    pattern: '^security\s+dump-keychain\b|^secret-tool\s+search\b[^\n]*--all\b|^pass\s+show\s+--all\b'
+    # security's global options (-q, -v, -p prompt …) may come before its command; `pass grep` decrypts every entry
+    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* dump-keychain\b|^secret-tool\s+search\b[^\n]*?--all\b|^pass\s+grep\b'
     reason: dumping an entire operating-system credential store
     remedy: Look up only the one credential the task needs; a person exports a whole credential store themselves.
     rationale: A whole-store export exposes credentials unrelated to the task; a person must authorize it.
@@ -162,17 +163,22 @@ ask:
     class: fs
     tool: Read|Grep
     field: path
-    pattern: '(^|/)\.password-store(/.+)?$|(^|/)Library/Keychains/[^/]+$|(^|/)\.local/share/keyrings/[^/]+$|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|(^|/)Library/Application Support/(Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|^[A-Za-z]:/Users/[^/]+/AppData/Local/(Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$'
+    # in lower case: the path is also matched casefolded, and macOS and Windows ignore case
+    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(login data|cookies|web data|network/cookies)$'
     reason: reading an operating-system or browser credential store
     remedy: Wait for a person to approve the held read, or ask the person for the one credential the task needs.
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
   - id: TK-A021
     class: shell
     field: target
-    pattern: '^(security\s+(find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|pass\s+show|ssh-add\s+-L)\b|^(cat|sqlite3)\b.*(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|Library/Application Support/(?:Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|[A-Za-z]:/Users/[^/]+/AppData/Local/(?:Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies))'
-    reason: reading credentials from an operating-system or browser store
-    remedy: Wait for a person to approve the held call, or ask the person for the one credential the task needs.
-    rationale: These commands can read saved credentials or enumerate an SSH agent; a person confirms the access.
+    # security's global options may come before its command; `pass NAME` shows NAME as `pass show NAME` does, so every
+    # pass command but those that don't decrypt an entry (`unless`; grep is TK-D020's). Paths in lower case: the target
+    # is also matched casefolded
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add\s+-L)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
+    unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)'
+    reason: reading credentials from an operating-system or browser store, or listing an SSH agent's keys
+    remedy: Wait for a person to approve the held call, or ask the person for the one credential or key the task needs.
+    rationale: These commands can read saved credentials or list the keys an SSH agent holds; a person confirms the access.
   - id: TK-A022
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
@@ -207,17 +213,37 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|(^|/)var/log(/|$)'
+    # in lower case: the path is also matched casefolded (PowerShell's ConsoleHost_history.txt)
+    pattern: '(^|/)(\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|(^|/)var/log(/|$)'
     reason: modifying shell history or system logs
     remedy: Wait for a person to approve the held write, or keep notes in the project instead of history or log files.
     rationale: These files may be evidence of earlier activity; writing to them is held while reading stays allowed.
   - id: TK-A027
     class: shell
-    field: target
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):/var/log(?:/.*)?$|^history\s(?:[^\n]*\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*--vacuum-[^\s=]+(?:=|\s|$)'
+    field: effects
+    # TK-A026 for the shell: a file a command writes or deletes (a redirection, rm, mv, cp, ln, tee, truncate, dd, sed
+    # -i, perl -i, find -delete or -exec rm), each also casefolded, so the pattern is in lower case. Anchored and lazy,
+    # so the fallback engine stays linear
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*?/)?(?:\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):(?:/private)?/var/log(?:/|$)'
     reason: clearing shell history or system logs
     remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
+  - id: TK-A029
+    class: shell
+    field: target
+    # history -c (alone or in a cluster, after other options), turning the history file off, vacuuming the journal
+    pattern: '^history\s(?:[^\n]*?\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*?--vacuum-[^\s=]+(?:=|\s|$)'
+    reason: clearing shell history or system logs
+    remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
+    rationale: Clearing the history, turning it off or vacuuming the journal can hide earlier activity; a person confirms it.
+  - id: TK-A030
+    class: shell
+    field: effects
+    # TK-A024 for the shell: a file a command writes (a redirection, cp, mv, install, ln, tee, dd, sed -i …)
+    pattern: '^WRITE_TARGET:(?:[^\n]*?/)?(?:\.npmrc|pip\.conf|\.pypirc)$|^WRITE_TARGET:(?:[^\n]*?/)?etc/apt/sources\.list(?:\.d/[^/]+\.(?:list|sources))?$|^WRITE_TARGET:(?:[^\n]*?/)?etc/yum\.repos\.d/[^/]+\.repo$'
+    reason: changing a package manager's source configuration
+    remedy: Wait for a person to approve the held call, or install from the package source already configured.
+    rationale: Package source settings can redirect future installs to an untrusted index; reading configuration is allowed.
   - id: TK-A028
     class: shell
     field: argv
@@ -234,7 +260,7 @@ ask:
     # options (with a value) may come before it for pulumi and `railway`/`heroku run`, up to four for terraform, fly
     # and the npx-style launchers; a mutation needs its call parenthesis, so a URL or file named serviceDelete.json
     # doesn't.
-    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.* )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) .*\b(volume|service|environment|project|database)Delete\s*\()'
+    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.*? )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) .*?\b(volume|service|environment|project|database)Delete\s*\()'
     # each of these CLIs prints its help and exits on --help (-h is dropdb's host). Only a last `--help` after at most
     # two short lower-case words counts: the subject joins argv with spaces, so `-m ' --help'` must not read as one
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
@@ -320,7 +346,7 @@ ask:
     # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
     # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
     # held
-    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
+    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
     remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
@@ -351,7 +377,7 @@ flag:
     # template path (no space: never a whole command) is exempt
     field: target
     pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
-    unless: '^(?:WRITE_TARGET:)?([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
+    unless: '^([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
     class: mcp
@@ -360,7 +386,9 @@ flag:
   - id: TK-F007
     class: shell
     field: line
-    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]*-d|\bdaemonize\b|\bwhile\s+(true|:)'
+    # lean: tmux's -d within 200 characters of `new`, so each tmux on a long line scans a bounded stretch on the
+    # fallback engine; widen it if a real command puts more before -d
+    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]{0,200}?-d|\bdaemonize\b|\bwhile\s+(true|:)'
     label: background_spawn
   - id: TK-F014
     class: shell
@@ -386,7 +414,7 @@ flag:
   - id: TK-F011
     class: shell
     field: command
-    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s>]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|bash_profile)\b'
     label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with

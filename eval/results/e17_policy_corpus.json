@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:02a7cad7e69c531416be7ae0059ebff332b7c673be90e9699253a7d57e08f65a",
+  "policy_hash": "sha256:3fdc602fa95043af687c16649d57b62897ba5eba70f69afb83b7a923011f65e8",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -583,13 +583,13 @@
     "deny/shell:139": "ask TK-A027",
     "deny/shell:140": "ask TK-A027",
     "deny/shell:141": "ask TK-A027",
-    "deny/shell:142": "ask TK-A027",
-    "deny/shell:143": "ask TK-A027",
-    "deny/shell:144": "ask TK-A027",
-    "deny/shell:145": "ask TK-A027",
-    "deny/shell:146": "ask TK-A027",
-    "deny/shell:147": "ask TK-A027",
-    "deny/shell:148": "ask TK-A027",
+    "deny/shell:142": "ask TK-A029",
+    "deny/shell:143": "ask TK-A029",
+    "deny/shell:144": "ask TK-A029",
+    "deny/shell:145": "ask TK-A029",
+    "deny/shell:146": "ask TK-A029",
+    "deny/shell:147": "ask TK-A029",
+    "deny/shell:148": "ask TK-A029",
     "deny/shell:149": "ask TK-A025 TK-F012",
     "deny/shell:150": "ask TK-A025 TK-F012",
     "deny/shell:151": "ask TK-A023 TK-F004",
