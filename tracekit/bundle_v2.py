@@ -251,13 +251,23 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
         except (FileNotFoundError, ValueError):   # a policy this signer never ran: the verifier says so
             pass
     need, full = needs(events)
-    manifest = {"format": FORMAT, "verifier_min_version": need, "verifier_version": full,
-                "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}
+    manifest = json.dumps({"format": FORMAT, "verifier_min_version": need, "verifier_version": full,
+                           "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}, indent=1)
+    from tracekit.verify.v2 import MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL   # here: that module imports this one
+    sizes = {"manifest.json": len(manifest), **{n: len(b) for n, b in files.items()}}
+    big = max(sizes, key=sizes.get)
+    over = (f"{big} would be {sizes[big] / 2**20:.0f} MiB" if sizes[big] > MAX_ENTRY else
+            f"{len(sizes):,} files" if len(sizes) > MAX_ENTRIES else
+            f"{sum(sizes.values()) / 2**20:.0f} MiB in all" if sum(sizes.values()) > MAX_TOTAL else None)
+    if over:   # a bundle no verifier would read: UNUSABLE BUNDLE
+        raise ValueError(f"the bundle is over the format's limits ({MAX_ENTRY >> 20} MiB a file, {MAX_ENTRIES:,} files, "
+                         f"{MAX_TOTAL >> 20} MiB in all; docs/format-v2.md#9-bundle-layout): {over}, so no verifier "
+                         "could read it. Start a new run for each task or session so each stays under the limits")
     tmp = out_path + ".tmp"
     try:
         with open(tmp, "wb") as f:
             with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
-                z.writestr("manifest.json", json.dumps(manifest, indent=1))
+                z.writestr("manifest.json", manifest)
                 for n, b in files.items():
                     z.writestr(n, b)
             f.flush()

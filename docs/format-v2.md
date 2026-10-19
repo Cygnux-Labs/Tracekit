@@ -522,7 +522,8 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 - general-purpose flags 0 (so no encryption and no data descriptor); method 0 (stored, with equal sizes) or 8 (deflate);
 - each entry's data is exactly its stated size and matches its CRC-32.
 
-`tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file).
+`tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file), and refuses a bundle past the
+zip limits above, which no verifier would read.
 
 `verifier_min_version` is the newest version in the version table (`VERSIONS` in `tracekit/bundle_v2.py`) whose
 critical entries a bundled record uses, else `1.0.0`, and at least 1.4.0 when a record has an `ext` field or is of type

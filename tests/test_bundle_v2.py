@@ -318,6 +318,22 @@ class TestVerifyV2(Case):
             export(log.store, "acme", "run-a", log.note(), out)
         self.assertEqual([n for n in os.listdir(self.d) if n.startswith("failed")], [])
 
+    def test_a_bundle_over_the_format_limits_is_refused_and_not_written(self):
+        """docs/format-v2.md §9: a bundle over its limits is UNUSABLE to every verifier (a run of 40,000 tool calls
+        exported one), so export refuses it and says why."""
+        log, out = self.honest()
+        files, big = v2.read_zip(out), os.path.join(self.d, "big.tkb")
+        run = max((n for n in files if n.startswith("runs/")), key=lambda n: len(files[n]))
+        for limit, value in (("MAX_ENTRY", len(files[run]) - 1), ("MAX_ENTRIES", len(files) - 1),
+                             ("MAX_TOTAL", sum(map(len, files.values())) - 1)):
+            with self.subTest(limit), mock.patch.object(v2, limit, value), \
+                    self.assertRaisesRegex(ValueError, "over the format's limits .* so no verifier could read it"):
+                export(log.store, "acme", "run-a", log.note(), big)
+            self.assertFalse(os.path.exists(big))
+        with mock.patch.object(v2, "MAX_ENTRY", len(files[run])):   # at the limit: written
+            export(log.store, "acme", "run-a", log.note(), big)
+        self.assertEqual(self.verify(big)[1], 0)
+
     def test_run_written_after_the_checkpoint_exports_to_it(self):
         log, _ = self.honest(close=False)
         note = log.note()
