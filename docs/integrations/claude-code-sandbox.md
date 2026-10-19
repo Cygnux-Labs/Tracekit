@@ -1,5 +1,9 @@
 # Claude Code's sandbox
 
+> `TK-A003` and `TK-A014` are rules in the stable coding pack, and Claude Code's hooks are stable ([support](../support.md)).
+> Tested: `tracekit doctor` against settings read from a real Claude Code, and the rules against the Bash tool's
+> arguments as Claude Code documents them ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
+
 Claude Code's [sandboxed Bash tool](https://code.claude.com/docs/en/sandboxing) runs shell commands inside an
 operating-system sandbox, Anthropic's [sandbox-runtime](https://github.com/anthropics/sandbox-runtime) (bubblewrap and
 seccomp on Linux and WSL2, Seatbelt on macOS). It limits the files a command can write and the hosts it can reach.

@@ -1,7 +1,8 @@
 # agentsh and Tracekit
 
 > **Experimental:** `tracekit follow` works and is tested, but may change and gets less hardening than the
-> [stable core](../support.md).
+> [stable core](../support.md). Tested: audit log lines as agentsh's source and sample events write them, followed into a real
+> signer; not yet run on a real agentsh session ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
 
 [agentsh](https://github.com/canyonroad/agentsh) sits under an agent and its tools, intercepts file, network, process
 and signal activity, and decides each operation against your policy (`allow`, `deny`, `approve`, `redirect`, `audit`,

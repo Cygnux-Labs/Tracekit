@@ -1,6 +1,7 @@
 # Kubernetes agent-sandbox
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
+> Tested: end to end on a kind cluster with agent-sandbox v1.0.7 (`examples/v2/agent_sandbox/e2e.sh`); not yet with a gVisor or Kata RuntimeClass ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
 
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) runs an agent in a `Sandbox`
 (`agents.x-k8s.io/v1beta1`): one stateful pod the controller creates from the Sandbox's `podTemplate` and keeps running,

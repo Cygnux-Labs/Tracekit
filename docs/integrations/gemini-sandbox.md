@@ -1,5 +1,9 @@
 # Gemini CLI's sandbox
 
+> **Experimental:** Tracekit's Gemini CLI hooks are experimental ([support](../support.md)). Tested: `TK-A004` and
+> `tracekit doctor` against arguments and settings as Gemini CLI's source defines them; not yet against the hook payload of
+> a real permission expansion ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
+
 Gemini CLI has two sandboxes, both off by default:
 
 - **The tool sandbox** (`security.toolSandboxing`) runs each shell command inside an operating-system sandbox:
@@ -8,8 +12,8 @@ Gemini CLI has two sandboxes, both off by default:
 - **The whole-CLI sandbox** (`tools.sandbox`, `GEMINI_SANDBOX` or `-s`) re-runs all of Gemini CLI, its hooks
   included, inside a container (Docker, Podman, gVisor, LXC) or under Seatbelt on macOS.
 
-Use the tool sandbox with Tracekit; the whole-CLI one doesn't work with it (below). Tracekit's Gemini CLI hooks are
-experimental ([coding agents](../coding-agents.md)). The two do different jobs and work together:
+Use the tool sandbox with Tracekit; the whole-CLI one doesn't work with it (below). The two do different jobs and
+work together:
 
 | | Gemini CLI's tool sandbox | Tracekit |
 |---|---|---|
