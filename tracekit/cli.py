@@ -179,8 +179,8 @@ def main(argv=None):
     p = sub.add_parser("issuer", help="record-key issuer for v2 signers: `issuer serve|revoke|vkey --config issuer.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("follow", help="follow a sandbox's audit log into the v2 signer as it is written: `follow nono`",
-                       add_help=False)
+    p = sub.add_parser("follow", help="follow a sandbox's audit log into the v2 signer as it is written: "
+                       "`follow nono`, `follow agentsh --log PATH`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)

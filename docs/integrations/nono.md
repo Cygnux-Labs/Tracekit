@@ -62,7 +62,8 @@ nono run --profile nolabs-ai/claude --allow-cwd -- claude   # in another termina
 
 `--root DIR` names another audit directory, and `--quiet S` how long a session may write nothing before Tracekit stops
 following it (default 1800 seconds). At start, the follower takes the sessions still running (no `session.json`, which
-nono writes when a session finishes); after that, every new session as it appears. It prints each session's run id.
+nono writes when a session finishes, and a log written to within `--quiet` seconds); after that, every new session as
+it appears. It prints each session's run id.
 Use nono's default supervised mode (`nono run`): direct mode (`nono wrap`) and `--no-audit` write no audit log.
 
 ## What Tracekit records

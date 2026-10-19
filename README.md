@@ -128,9 +128,11 @@ Framework, Strands Agents and the TypeScript SDK. Setup:
 <br>
 
 Coding agents: `tracekit init --dev --v2` wires Claude Code's hooks to a dev signer; add `--agent codex`, `cursor` or
-`gemini` for the others (experimental). Sandboxed with nono? `tracekit follow nono` signs each decision nono logs as it
-writes it (experimental; [nono](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/nono.md)). Without
-uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why`
+`gemini` for the others (experimental). Sandboxed with nono or agentsh? `tracekit follow` signs each decision the
+sandbox logs, as it writes it (experimental;
+[nono](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/nono.md),
+[agentsh](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/agentsh.md)). Without uv:
+`pip install tracekit-ai`, then `tracekit demo --server`. `--why`
 (experimental) shows a held
 email whose cause is found by replay and cited by its signed record:
 

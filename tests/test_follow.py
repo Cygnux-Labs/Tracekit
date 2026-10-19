@@ -1,7 +1,9 @@
-"""`tracekit follow` (tracekit/follow.py) and the signer's `importers`: a sandbox's audit log followed into imported runs
-while it is written, each decision a policy.external record, each skipped sequence, unreadable line and stopped stream a
-signed gap; the follower's runs are not reconciled and are watched for its heartbeats."""
+"""`tracekit follow` (tracekit/follow.py) and the signer's `importers`: nono's and agentsh's audit logs followed into
+imported runs while they are written, each decision a policy.external record, each skipped sequence, new chain,
+unreadable line and stopped stream a signed gap; the follower's runs are not reconciled and are watched for its
+heartbeats."""
 import hashlib
+import hmac
 import json
 import os
 import time
@@ -76,6 +78,78 @@ class NonoLog:
             f.write(raw + "".join(self.line(e) for e in events))
 
 
+# agentsh events as its JSONL store writes them with audit.integrity off: json.Marshal of a types.Event
+# (internal/store/jsonl/jsonl.go:98-114, pkg/types/events.go:23-70): lines 1, 12, 29, 40 and 46 of agentsh's
+# examples/sample-events.jsonl (agentsh 0ce9939)
+CREATED = ('{"id":"evt-001","timestamp":"2025-01-15T10:30:00.000Z","type":"session_created",'
+           '"session_id":"sess-abc123","fields":{"workspace":"/home/user/project","policy":"default"}}')
+RM = ('{"id":"evt-012","timestamp":"2025-01-15T10:30:15.000Z","type":"command_policy","session_id":"sess-abc123",'
+      '"command_id":"cmd-004","operation":"command_precheck","policy":{"decision":"deny",'
+      '"effective_decision":"deny","rule":"commands.deny[0]","message":"rm -rf blocked for safety"},'
+      '"fields":{"command":"rm","args":["-rf","/"]}}')
+SHADOW = ('{"id":"evt-029","timestamp":"2025-01-15T10:30:40.002Z","type":"file_read","session_id":"sess-abc123",'
+          '"command_id":"cmd-008","pid":12355,"path":"/etc/shadow","policy":{"decision":"deny",'
+          '"effective_decision":"deny","rule":"files.deny[0]","message":"sensitive system files blocked"},'
+          '"fields":{}}')
+NPM = ('{"id":"evt-040","timestamp":"2025-01-15T10:31:00.000Z","type":"command_policy","session_id":"sess-abc123",'
+       '"command_id":"cmd-012","operation":"command_precheck","policy":{"decision":"approve",'
+       '"effective_decision":"allow","rule":"commands.approve[0]","message":"npm install requires approval",'
+       '"approval":{"required":true,"mode":"interactive","id":"apr-001"}},'
+       '"fields":{"command":"npm","args":["install"]}}')
+PYTHON = ('{"id":"evt-046","timestamp":"2025-01-15T10:31:20.001Z","type":"command_redirected",'
+          '"session_id":"sess-abc123","command_id":"cmd-013","policy":{"decision":"redirect",'
+          '"effective_decision":"allow","rule":"commands.redirect[0]","redirect":{"from_command":"python",'
+          '"to_command":"python3"}},"fields":{"from_command":"python","from_args":["script.py"],'
+          '"to_command":"python3","to_args":["script.py"]}}')
+
+
+def rotated(code, last=None):
+    """The record agentsh writes when it starts a new chain (internal/store/integrity_wrapper.go:535-567): a
+    types.Event, so `session_id` is there though empty, whose map fields Go writes with their keys sorted."""
+    prior = None if last is None else {"last_entry_hash_seen_in_log": "ab" * 32, "last_sequence_seen_in_log": last}
+    return json.dumps({"timestamp": "2026-10-19T10:00:00Z", "type": "integrity_chain_rotated", "session_id": "",
+                       "fields": gomap({"reason": "sidecar missing; starting fresh chain", "reason_code": code,
+                                        "prior_chain_summary": prior,
+                                        "new_chain": {"format_version": 2, "sequence": 0,
+                                                      "key_fingerprint": "sha256:" + "cd" * 16}})},
+                      separators=(",", ":"))
+
+
+def gomap(v):
+    """`v` with every map's keys sorted, as Go's encoding/json writes a map."""
+    if isinstance(v, dict):
+        return {k: gomap(v[k]) for k in sorted(v)}
+    return [gomap(x) for x in v] if isinstance(v, list) else v
+
+
+class AgentshLog:
+    """agentsh's `audit.output`: with audit.integrity on, each event re-marshalled as a map with `integrity`
+    {format_version, sequence, prev_hash, entry_hash}, entry_hash HMAC-SHA256(key, "2|<sequence>|<prev_hash>|<the
+    event's canonical JSON>"), prev_hash empty at a chain's start (internal/audit/integrity.go:26-32, 199-240,
+    381-411)."""
+    KEY = b"k" * 32
+
+    def __init__(self, path, integrity=True):
+        self.path, self.integrity, self.seq, self.prev = path, integrity, 0, ""
+
+    def line(self, event):
+        if not self.integrity:
+            return event + "\n"
+        data = gomap(json.loads(event))
+        if data["type"] == "integrity_chain_rotated":
+            self.seq, self.prev = 0, ""
+        canonical = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+        h = hmac.new(self.KEY, f"2|{self.seq}|{self.prev}|{canonical}".encode(), "sha256").hexdigest()
+        wrapped = gomap({**data, "integrity": None})
+        wrapped["integrity"] = {"format_version": 2, "sequence": self.seq, "prev_hash": self.prev, "entry_hash": h}
+        self.seq, self.prev = self.seq + 1, h
+        return json.dumps(wrapped, separators=(",", ":"), ensure_ascii=False) + "\n"
+
+    def write(self, *events):
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write("".join(self.line(e) for e in events))
+
+
 class InProcess:
     """The follower's signer client: the in-process service, called as the follower's identity."""
 
@@ -94,7 +168,8 @@ class InProcess:
 
 class Followed(Lifecycle):
     def open(self):
-        self.s = svc.SignerService(self.dir, grace_s=0, idle_s=3600, importers=[FOLLOWER.scheme + ":" + FOLLOWER.subject],
+        self.s = svc.SignerService(self.dir, grace_s=0, idle_s=3600,
+                                   importers=[FOLLOWER.scheme + ":" + FOLLOWER.subject],
                                    authorize={"mtls:spiffe://acme/nono-follow": GRANTS,
                                               f"uid:{ME.subject}": sorted(svc.DEFAULT_GRANTS | {"decision_import"})})
         self.closed = False
@@ -140,8 +215,9 @@ class TestNono(Followed):
         [log] = discover()
         log.step()
         [d] = self.typed("policy.external")   # before the session ends
-        self.assertEqual((d["source"], d["tier"], d["data"]["system"], d["data"]["decision"], d["data"]["tool_use_id"],
-                          d["data"]["tool"], d["data"]["reason"], d["data"]["signature"], d["data"]["identity"]["subject"]),
+        x = d["data"]
+        self.assertEqual((d["source"], d["tier"], x["system"], x["decision"], x["tool_use_id"], x["tool"], x["reason"],
+                          x["signature"], x["identity"]["subject"]),
                          ("import", "T3", "nono", "deny", "20260421-200000-11111:2", "capability_decision/capability",
                           "terminal: outside policy", "unverified", "spiffe://acme/nono-follow"))
         with open(nl.path, "rb") as f:   # the record committed to is the line exactly as nono wrote it
@@ -182,6 +258,19 @@ class TestNono(Followed):
             f"nono sequence 5 follows 5: records repeated or out of order; read {nl.path} for what they say"])
         self.assertEqual(len(self.typed("policy.external")), 3)   # what nono said is recorded all the same
 
+    def test_a_line_is_read_once_nono_has_ended_it(self):
+        nl = self.session()
+        record = nl.line(DENIED)
+        with open(nl.path, "w", encoding="utf-8") as f:   # the record, then its newline: two writes (audit.rs:571-575)
+            f.write(record[:-1])
+        log = self.log(nl)
+        log.step()
+        self.assertEqual(self.typed("policy.external"), [])
+        with open(nl.path, "a", encoding="utf-8") as f:
+            f.write("\n")
+        log.step()
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.typed("policy.external")], ["s1:0"])
+
     def test_unreadable_and_unknown_lines_are_gaps_and_the_log_goes_on(self):
         nl = self.session()
         nl.write(STARTED)
@@ -189,7 +278,8 @@ class TestNono(Followed):
         nl.write('{"type":"something_new","x":1}', command("not_a_decision"), DENIED)
         self.log(nl).step()
         bad, new, odd = self.reasons()
-        self.assertRegex(bad, r"^the line at byte \d+ of .+ is not a nono audit record \(JSONDecodeError: ")
+        self.assertRegex(bad, r"^the line is not a nono audit record \(JSONDecodeError: .+\) \(byte \d+ of .+\): "
+                              r"read it there$")
         self.assertRegex(new, r"^nono event type 'something_new' is not one Tracekit maps \(byte \d+ of .+\): read it "
                               r"there$")
         self.assertRegex(odd, r"^nono command_policy decision 'not_a_decision' is not one Tracekit maps")
@@ -311,3 +401,82 @@ class TestImporters(Followed):
         self.assertNotIn("fidelity", regs[mine["run_id"]]["data"])
         self.assertEqual([(e["run_id"], e["data"]["kind"]) for e in self.typed("capture.gap")],
                          [(mine["run_id"], "decision_mismatch")])   # only the reconciled run compares decisions
+
+
+class TestAgentsh(Followed):
+    def agentsh(self, integrity=True):
+        al = AgentshLog(os.path.join(self.dir, "audit.jsonl"), integrity)
+        al.write(CREATED, RM)   # before the follower starts: not imported
+        log = follow.Log(self.client, al.path, "agentsh", follow.agentsh, offset=os.path.getsize(al.path),
+                         rotates=True)
+        return al, log
+
+    def test_each_decision_is_signed_from_the_end_of_the_log_on(self):
+        al, log = self.agentsh()
+        al.write(CREATED, SHADOW, NPM, PYTHON)
+        log.step()
+        imported = self.typed("policy.external")
+        self.assertEqual([(e["data"]["system"], e["data"]["decision"], e["data"]["tool"], e["data"]["tool_use_id"],
+                           e["data"]["rule_ids"], e["data"]["reason"]) for e in imported],
+                         [("agentsh", "deny", "file_read", "evt-029", ["files.deny[0]"],
+                           "deny: sensitive system files blocked"),
+                          ("agentsh", "allow", "command_policy", "evt-040", ["commands.approve[0]"],
+                           "allow, policy said approve: npm install requires approval"),
+                          ("agentsh", "allow", "command_redirected", "evt-046", ["commands.redirect[0]"],
+                           "allow, policy said redirect")])
+        self.assertEqual(self.gaps(), [])
+        [reg] = self.typed("run.registered")
+        self.assertEqual((reg["source"], reg["data"]["agent"]["name"]), ("import", "agentsh"))
+        with mock.patch.object(follow, "POLL_S", 0):   # stopped (SIGTERM): the run ends with a gap
+            self.assertEqual(follow.follow(iter([[log]]).__next__, iter([False, True]).__next__), [])
+        self.assertEqual(self.reasons(), [f"the follower was stopped before the log ended; Tracekit no longer follows "
+                                          f"{al.path}"])
+        self.s.sweep(time.monotonic() + 1)
+        code, checks = self.verify(reg["run_id"])
+        self.assertEqual(code, 0)
+        self.assertEqual(checks["external decisions"]["detail"],
+                         "3 imported: agentsh 3; signatures verified 0, unverified 3; 0 disagree with the signer")
+
+    def test_a_jump_and_a_new_chain_are_signed_gaps_and_an_initial_one_is_not(self):
+        al, log = self.agentsh()
+        al.write(SHADOW)
+        al.seq = 6
+        al.write(NPM, rotated("sidecar_missing", last=7), PYTHON, rotated("initial"), SHADOW)
+        log.step()
+        self.assertEqual(self.reasons(), [
+            f"agentsh sequence 6 follows 2: 3 record(s) missing; read {al.path} for what they say",
+            "agentsh started a new integrity chain (sidecar_missing: sidecar missing; starting fresh chain); agentsh "
+            "says the last sequence of the chain before was 7; the last Tracekit read was 6"])
+        self.assertEqual(len(self.typed("policy.external")), 4)
+
+    def test_a_rotated_log_is_followed_into_the_new_one(self):
+        al, log = self.agentsh()
+        al.write(SHADOW)
+        log.step()
+        al.write(NPM)   # written before the rotation: read from the renamed file
+        os.rename(al.path, al.path + ".1")
+        log.step()   # the new log isn't made yet
+        al.write(PYTHON)
+        log.step()
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.typed("policy.external")],
+                         ["evt-029", "evt-040", "evt-046"])
+        self.assertEqual(self.gaps(), [])   # the sequence runs on across files
+        with open(al.path, "r+b") as f:   # a failed write agentsh took back: an incomplete line, then cut
+            f.seek(0, 2)
+            f.write(b'{"id":"evt-0')
+        log.step()
+        with open(al.path, "r+b") as f:
+            f.truncate(os.path.getsize(al.path) - len(b'{"id":"evt-0'))
+        al.write(SHADOW)
+        log.step()
+        self.assertEqual((len(self.typed("policy.external")), self.gaps()), (4, []))
+
+    def test_without_integrity_lines_carry_no_sequence_to_check(self):
+        al, log = self.agentsh(integrity=False)
+        al.write(SHADOW, '{"timestamp":"2025-01-15T10:31:21Z","type":"file_read","session_id":"s","policy":'
+                         '{"decision":"soft_delete","rule":"' + "r" * 80 + '"}}')
+        log.step()
+        self.assertEqual([(e["data"]["decision"], e["data"]["tool_use_id"], e["data"]["rule_ids"])
+                          for e in self.typed("policy.external")],
+                         [("deny", "evt-029", ["files.deny[0]"]), ("deny", "line-1", ["r" * 64])])
+        self.assertEqual(self.gaps(), [])
