@@ -606,7 +606,8 @@ class CodingPack(unittest.TestCase):
                        ("env -iS 'docker run --privileged alpine'", "TK-A023"),
                        ("npx -c 'docker run --privileged alpine'", "TK-A023"),
                        ("npm exec --call='docker run --privileged alpine'", "TK-A023")])
-        for command in ("pwsh -File build.ps1", "fish build.fish", "npx eslint -c eslint.config.js ."):
+        for command in ("pwsh -File build.ps1", "pwsh -executionpolicy bypass -file build.ps1", "fish build.fish",
+                        "npx eslint -c eslint.config.js ."):
             with self.subTest(command=command):
                 self.assertNotIn(self.e.decide("Bash", {"command": command})["verdict"], ("deny", "ask"))
 

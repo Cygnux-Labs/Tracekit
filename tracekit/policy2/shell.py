@@ -252,15 +252,16 @@ def _split_string(args):
     return None
 
 
-def _foreign_runs_text(args):
-    """Whether a FOREIGN_SHELLS shell runs commands from its line or stdin: -c (also in a cluster, -lc), --command or
-    PowerShell's -Command or -EncodedCommand (any prefix, any case), or no script file before them."""
+def _foreign_runs_text(shell, args):
+    """Whether a FOREIGN_SHELLS shell runs commands from its line or stdin: -c (also in a cluster, -lc, but for
+    PowerShell, whose options are words: -ExecutionPolicy), --command or PowerShell's -Command or -EncodedCommand (any
+    prefix, any case), or no script file before them."""
     for a in args:
         if not a.startswith("-"):
             return False   # a script file
         name = a.lstrip("-").split("=", 1)[0].lower()
-        if re.fullmatch(r"-[a-z]*c[a-z]*", a) or name and ("command".startswith(name) or name == "ec"
-                                                            or "encodedcommand".startswith(name)):
+        if shell not in ("pwsh", "powershell") and re.fullmatch(r"-[a-z]*c[a-z]*", a) or name and (
+                "command".startswith(name) or name == "ec" or "encodedcommand".startswith(name)):
             return True
     return True
 
@@ -621,7 +622,7 @@ class _Parser:
                 if mode == "c":
                     self.nested(script, via + [name + " -c"])
             elif name in FOREIGN_SHELLS:
-                cmd["opaque"] = cmd["opaque"] or _foreign_runs_text(args)
+                cmd["opaque"] = cmd["opaque"] or _foreign_runs_text(name, args)
             elif name in ("source", ".") and args[:1] and args[0].startswith(STREAMS):
                 cmd["opaque"] = True
             elif name == "eval":
