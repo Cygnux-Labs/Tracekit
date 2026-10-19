@@ -1,6 +1,7 @@
 """TK-X205 and the v1 text checks on the v2 view (tracekit/findings_text.py, through `tracekit analyze --v2`): Claude
 Code sessions replayed through the transcript tailer and the hook into an in-process signer with the content vault on
 (eval/e20_alignment.py's replay); E6's corpus against v1's detectors; hostile 64 KiB inputs read in linear time."""
+import json
 import os
 import random
 import shutil
@@ -12,7 +13,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval import e6_findings as e6  # noqa: E402
-from eval.e20_alignment import Signer, Transcript, replay  # noqa: E402
+from eval.e20_alignment import POOL, TUNED, Signer, Transcript, replay  # noqa: E402
 from tracekit import findings, findings_text, findings_v2  # noqa: E402
 from tracekit.why.signed import vault_content  # noqa: E402
 
@@ -312,6 +313,21 @@ class Linear(unittest.TestCase):
                                                       for r in want if r["event"]["run_seq"] in content))
         self.assertLess(time.perf_counter() - t0, 20)
         self.assertNotIn("budget", str(out["coverage"]))
+
+
+class HeldOutPool(unittest.TestCase):
+    def test_no_success_phrase_tk_x205_reads_comes_from_the_held_out_pool_alone(self):
+        """E20's held-out pool scores the checks and never tunes them: a phrase TK-X205 reads as a success claim
+        that only the pool says was taken from it."""
+        def texts(v):
+            return [f" {' '.join(findings_text.TOKEN.findall(s.lower()))} " for s in strings(v, set())]
+        with open(POOL, encoding="utf-8") as f:
+            held = texts(json.load(f))
+        tuned = texts([TUNED, e6.CLAIM_TESTS, e6.CLAIM_PUSH_DENY])
+        read = [" ".join(i) for i in findings_text.IDIOMS] + [
+            w for w in findings_text.RAN if "generic" in findings_text.read_message(f"I {w} the fix.")["claims"]]
+        self.assertEqual([p for p in read if any(f" {p} " in t for t in held)
+                          and not any(f" {p} " in t for t in tuned)], [])
 
 
 class E6Parity(unittest.TestCase):

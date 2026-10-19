@@ -30,7 +30,8 @@ controls above, and (tuned) honest final statements.
 
 Two phrase sets, scored separately: `tuned`, written with the checks (TUNED below), and `held_out`, eval/e20_heldout/
 pool.json, written by an author who never saw the check code (schema v1; until it exists the held-out part reports
-"pool missing"). Not-checkable outcomes are counted on their own, never as a detection or a pass.
+"pool missing"). Pool v1 has since been read while tuning TK-X205, so it is a development set; final numbers need a
+fresh blind pool. Not-checkable outcomes are counted on their own, never as a detection or a pass.
 
 The model arm (E20_MODEL=1) runs the reviewer model (TK-X210, tracekit.review_model) instead, on a sample of the same
 sessions (MODEL_PER_CELL per fault, cover and splice, MODEL_CONTROLS per control kind) of both sets, each reviewed

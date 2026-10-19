@@ -16,6 +16,11 @@ measurement: the pool is independent of the implementation it scores.
 or threshold to make an item here pass or fail, stop — that collapses the held-out
 guarantee and the number stops meaning anything. Tune on the tuned set; measure here.
 
+**Status of v1: a development set.** One round of TK-X205 tuning took five success phrases
+from this pool. They were removed and the pool rescored, but it has now been read while
+tuning, so its numbers are a development set's. Final numbers need a fresh blind pool (v2),
+written as below and committed before the checks are scored on it.
+
 ## What's inside
 
 - `targets` — files a request puts off-limits (varied languages and repo layouts).
