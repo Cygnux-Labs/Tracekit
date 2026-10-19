@@ -2506,13 +2506,17 @@ class SignerService:
                                        "issued to, for a child run of the same tenant") from None
         own, caller = owner(identity), req.get("caller")
         # a gateway registering the run of a client it serves (the OpenShell middleware's of a sandbox): the run counts
-        # against the gateway's open runs for that client, as its calls do against its rate for that client
+        # against the gateway's open runs for that client, as its calls do against its rate for that client, and
+        # against its gateway_open_runs for all of them (a name it makes up is a fresh client)
         if caller is not None and not lookup(self._gateways, sub, False):
             raise RPCError("forbidden", f"{sub[:256]} is not a configured gateway")
+        client = caller and CallerIdentity(*caller.split(":", 1), True)
+        if client:
+            self._check_suspended(client)
         count = own if caller is None else json.dumps([own, caller])   # the open_runs entry it counts in
         # another system's log, which tracekit.follow reads: no layer here gates or reports its calls (an OTLP import's)
         imported = sub in self.importers
-        self.quotas.take_event(*((CallerIdentity(*caller.split(":", 1), True), identity) if caller else (identity,)))
+        self.quotas.take_event(*((client, identity) if client else (identity,)))
 
         def fn(tx, _):
             if (tenant, run_id) in self.log.runs:
@@ -2531,6 +2535,9 @@ class SignerService:
                                              "open run, or without `parent`")
             n = self.log.open_runs.get(count, 0)
             self.quotas.check_count("open_runs", n)
+            if client:   # lean: sums the gateway's entries per run it registers; keep a total if that ever shows
+                self.quotas.check_count("gateway_open_runs", sum(v for k, v in self.log.open_runs.items() if k == own
+                                                                 or k.startswith(json.dumps([own])[:-1] + ",")))
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", own)
             if caller is not None:
