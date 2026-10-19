@@ -109,16 +109,21 @@ class Decider:
             pool.shutdown(wait=False, cancel_futures=True)
 
     def answer(self, req):
+        closed = False
         try:
             verdict = self.decide(req)
         except SignerUnavailable as e:
             verdict = deny(503, f"Tracekit: the signer can't be reached, so nothing is allowed: {e}")
         except RPCError as e:
-            verdict = deny(403, f"Tracekit: the signer refused the request: {e}")
+            verdict, closed = deny(403, f"Tracekit: the signer refused the request: {e}"), e.code == "run_closed"
         except (KeyError, TypeError, ValueError) as e:   # a request frame this decider can't read
-            verdict = deny(400, f"Tracekit: a request it can't read ({e!r})")
+            verdict = deny(400, f"Tracekit can't read the request ({e!r})")
         try:
             self.send({"t": "verdict", "id": req["id"], **verdict})
+            if closed:   # nothing more can be recorded: srt-proxy stops once its decider's stream ends
+                print(f"tracekit srt-decider: the signer closed run {self.run.run_id} (idle_s without a request); "
+                      "stopping srt-proxy", file=sys.stderr, flush=True)
+                self.sock.shutdown(socket.SHUT_RDWR)
         except OSError:   # srt-proxy is gone
             pass
 
@@ -126,7 +131,8 @@ class Decider:
         """The verdict for one request frame."""
         method, host, port = req["method"], req["host"], req["port"]
         scheme = "https" if "sni" in req else "http"
-        netloc = (f"[{host}]" if ":" in host else host) + ("" if port == {"https": 443, "http": 80}[scheme] else f":{port}")
+        netloc = f"[{host}]" if ":" in host else host
+        netloc += "" if port == {"https": 443, "http": 80}[scheme] else f":{port}"
         args = {"method": method,
                 "url": f"{scheme}://{netloc}{req['path']}" + (f"?{req['query']}" if "query" in req else "")}
         headers = req.get("headers", {})

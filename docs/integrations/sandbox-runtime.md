@@ -43,9 +43,11 @@ tracekit srt-decider --allow-domain api.github.com --allow-domain '*.pythonhoste
 
 `tracekit srt-decider` registers a run (agent `srt-proxy`; `--agent NAME` to change it). It then starts the command
 after `--`, adding `--decider-fd` with one end of a socket pair. srt-proxy inherits the descriptors Tracekit got from
-your shell, so its own `--ca-fd`, `--listen-fd` and `--lifeline-fd` work as they do without Tracekit. When srt-proxy exits, Tracekit closes the run and exits with
-srt-proxy's exit code. When Tracekit exits, srt-proxy refuses whatever is waiting and exits too. `--listen` binds a
-loopback address and is for development; in production, hand srt-proxy a listening socket with `--listen-fd`.
+your shell, so its own `--ca-fd`, `--listen-fd` and `--lifeline-fd` work as they do without Tracekit. When srt-proxy
+exits, Tracekit closes the run and exits with srt-proxy's exit code. When Tracekit exits, srt-proxy refuses whatever is
+waiting and exits too. The signer closes a run with no request for `idle_s` (an hour by default); Tracekit refuses
+the next request and stops srt-proxy, so run it under a supervisor that restarts it. `--listen` binds a loopback
+address and is for development; in production, hand srt-proxy a listening socket with `--listen-fd`.
 
 The `--allow-domain` hosts are the list srt-proxy holds requests to (`*.example.com` for subdomains). srt-proxy
 refuses every other host itself, with `403` and `X-Deny-Reason: host_not_allowed`, and never asks Tracekit, so

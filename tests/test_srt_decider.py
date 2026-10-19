@@ -190,6 +190,13 @@ class Deciding(unittest.TestCase):
         self.assertEqual((v["action"], v["status"]), ("deny", 503))
         self.assertIn("signer unavailable", v["reason"])
 
+    def test_a_run_the_signer_closed_stops_the_proxy(self):
+        self.run.close()   # as the signer does after idle_s without a call
+        v = self.proxy.request("GET", "api.example.com")
+        self.assertEqual((v["action"], v["status"]), ("deny", 403))
+        self.assertIn("run_closed", v["reason"])
+        self.assertEqual(self.proxy.rfile.read(1), b"")   # the decider's stream ended: srt-proxy exits
+
     def test_reason_fits_what_the_proxy_takes(self):
         self.assertEqual(srt_decider.deny(403, "a\nb\x85c" + "é" * 600)["reason"], "a b c" + "é" * 509)
 
