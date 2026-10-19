@@ -135,6 +135,27 @@ class CodingPack(unittest.TestCase):
                            ("Write", {"file_path": "/repo/docs/hooks.md"})):
             self.assertEqual(self.e.decide(tool, args)["verdict"], "allow", args)
 
+    def test_a_copy_is_held_by_its_destination_and_reading_a_place_is_not(self):
+        # TK-A011 and TK-A013 found a place anywhere after cp/install/mv/ln and only with a trailing slash: a copy into
+        # the directory itself was allowed and a copy out of it held; `systemctl --now enable` was missed and reading
+        # core.hooksPath held
+        self.verdicts([(c, "TK-A011") for c in (
+            "cp com.example.plist ~/Library/LaunchAgents", "install -m644 x.service ~/.config/systemd/user",
+            "ln -s $PWD/x.plist ~/Library/LaunchAgents", "cp -t ~/Library/LaunchAgents x.plist",
+            "cp x.service /usr/lib/systemd/system", "cp 'a b.plist' '/Library/LaunchDaemons/a b.plist'",
+            "systemctl --now enable x", "systemctl -q enable x", "systemctl --system enable x",
+            "systemctl --user --now enable x", "systemctl -M host enable x", "systemctl reenable x",
+            "systemctl preset x", "systemctl add-wants default.target x")] + [(c, "TK-A013") for c in (
+            "cp pre-commit .git/hooks", "install -m755 pre-commit .git/hooks", "ln -s ../../x .git/hooks",
+            "cp -t .git/hooks pre-commit", "cp --target-directory=.git/hooks pre-commit", "mv pre-commit .git/hooks",
+            "cp x '.git/hooks/pre commit'", "chmod -R +x .git/hooks", "git config --unset core.hooksPath",
+            "git config --global --unset-all core.hooksPath", "git config unset core.hooksPath")])
+        for command in ("cp ~/Library/LaunchAgents/x.plist /tmp/", "cp .git/hooks/pre-commit.sample /tmp/x",
+                        "git config --get core.hooksPath", "git config core.hooksPath", "ls .git/hooks",
+                        "cp x /etc/systemd/system.conf.d/", "systemctl status enable-x", "systemctl is-enabled x"):
+            ids = self.e.decide("Bash", {"command": command})["rule_ids"]
+            self.assertFalse({"TK-A011", "TK-A013"} & set(ids), command)
+
     def test_shell_targets_and_startup_paths_are_matched_in_any_case(self):
         # the agent's file system may ignore case (on macOS `cp x .ENV` writes .env): TK-A010 looked for LaunchAgents
         # in the casefolded path, and shell targets weren't casefolded at all

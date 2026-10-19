@@ -202,11 +202,13 @@ ask:
   - id: TK-A011
     class: shell
     field: target
-    # the TK-A010 locations in a command that writes, copies or links into them (cp, install, mv, ln, tee, sed -i, dd
-    # of=) or as a redirection target, and turning a startup item on; each command and target on its own, anchored
-    # and lazy, as TK-D010. Listing and reading them stay unheld (but for a read redirected with `<`), and so does
-    # managing an existing service (`systemctl restart`)
-    pattern: '^(cp|install|mv|ln|tee) [\w\W]*?(library/launch(agents|daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?(library/launch(agents|daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^dd ([\w\W]*? )?of=[^ ]*?(library/launch(agents|daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^[^ =]*?(library/launch(agents|daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^launchctl (load|bootstrap|enable)\b|^systemctl (--user )?enable\b'
+    # the TK-A010 locations as where a command writes, copies or links to (cp, install, mv or ln: the last word, or
+    # -t's directory; tee, sed -i, dd of=: any of its files) or as a redirection target, and turning a startup item on
+    # (systemctl enable, reenable, preset or add-wants after any options); each command and target on its own,
+    # anchored and lazy, as TK-D010, and casefolded (lower-case places). Listing them, copying out of them and reading
+    # them stay unheld (but for a read redirected with `<`), and so does managing an existing service (`systemctl
+    # restart`)
+    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^tee [\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^dd ([\w\W]*? )?of=[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^[^ =]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^launchctl (load|bootstrap|enable)\b|^systemctl (-[^ ]+ ([^- ][^ ]* )?)*(enable|reenable|preset|preset-all|add-wants|add-requires)( |$)'
     reason: adding something that runs at every login or boot
     remedy: Wait for a person to approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
@@ -223,9 +225,10 @@ ask:
   - id: TK-A013
     class: shell
     field: target
-    # as TK-A011: each command and redirection target on its own, anchored and lazy; `git config` after at most eight
-    # global options, as TK-A002 reads `push`
-    pattern: '^(cp|install|mv|ln|tee|chmod) [\w\W]*?\.git/hooks/|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks/|^[^ =]*?\.git/hooks/|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config [\w\W]*?\b[Cc][Oo][Rr][Ee]\.[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]\b'
+    # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
+    # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
+    # held
+    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
     remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
