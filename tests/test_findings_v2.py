@@ -659,7 +659,7 @@ class Bounded(unittest.TestCase):
         x202 = out["coverage"]["verdict"]["checks"]["TK-X202"]
         self.assertEqual((x202["found"], x202["not_checkable"]), (20, [{"reason": "budget", "n": 30}]))
         self.assertEqual(len([f for f in out["findings"] if f["verdict"]["rule"] == "TK-X202"]), 20)
-        self.assertEqual(findings_v2.incomplete(out["coverage"]["verdict"]), 30 * 4 + 50 * 10)   # and the text checks
+        self.assertEqual(findings_v2.incomplete(out["coverage"]["verdict"]), 30 * 4 + 50 * 11)   # and the text checks
 
     def test_text_past_the_size_caps_keeps_what_it_finds_and_says_what_it_could_not_check(self):
         recs, content = self.synthetic(4, "Editing the next file.")

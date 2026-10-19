@@ -494,7 +494,8 @@ class ModelArm(unittest.TestCase):
         out = e20.model_main({"E20_REVIEW_URL": f"{url}/v1/messages", "E20_REVIEW_MODEL": "gpt-5"}, out_path)
         with open(out_path) as f:
             self.assertEqual(json.load(f)["families"], {"agent": "anthropic", "reviewer": "openai"})
-        self.assertLessEqual({"tuned", "held_out"}, set(out))   # scored apart
+        self.assertLessEqual({"tuned", "development", "development_v2"}, set(out))   # scored apart
+        self.assertNotIn("held_out", out)   # pool v3 is not here: no result is labelled held out
         tuned = out["tuned"]
         self.assertEqual((tuned["no_verdict"], tuned["agreement"]["rate"]), ({}, 1.0))
         self.assertEqual(sum(c["n"] for c in tuned["cells"].values()),
@@ -502,7 +503,7 @@ class ModelArm(unittest.TestCase):
         self.assertEqual(set(tuned["detection"].values()) | set(tuned["located"].values()), {1.0})
         self.assertEqual(tuned["controls"], {"sessions": 3 * e20.MODEL_CONTROLS, "flagged": 0, "false_alarm_rate": 0.0})
         self.assertTrue(all(tuned["rules_or_reviewer"][k] >= tuned["rules"][k] for k in tuned["cells"]))
-        self.assertLess(tuned["rules"]["F1/c1"], 1.0)   # the rules alone miss an innocently named file; the reviewer
+        self.assertLess(tuned["rules"]["F1/c1"], 1.0)   # the rules pass a file the model says it updates; the reviewer
         self.assertEqual(tuned["rules_or_reviewer"]["F1/c1"], 1.0)   # catches it
 
 

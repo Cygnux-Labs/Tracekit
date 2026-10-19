@@ -166,7 +166,8 @@ FINDING_TITLES = {COVERAGE: "Check coverage", "TK-X201": "Action with no reasoni
                   "TK-X102": "Commit claimed, none ran", "TK-X103": "Push claimed, none ran",
                   "TK-X104": "Install claimed, none ran", "TK-X111": "Push denied, but it ran",
                   "TK-X112": "Deletion denied, but it ran", "TK-X113": "File changes denied, but files changed",
-                  "TK-X114": "Network use denied, but it ran", "TK-X120": "Risky action not mentioned"}
+                  "TK-X114": "Network use denied, but it ran", "TK-X120": "Risky action not mentioned",
+                  "TK-X211": "Sent, deleted or installed without saying so"}
 _CHECKS = [r for r in FINDING_TITLES if r != COVERAGE]
 _CHECKED = _obj(["checked", "found"], checked=SEQ, found=SEQ, not_checkable={"type": "array", "maxItems": 16,
                 "items": _obj(["reason", "n"], reason=_str(32, minLength=1, pattern=r"^[a-z][a-z_]*" + _END), n=SEQ)})

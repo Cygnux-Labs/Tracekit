@@ -10,7 +10,17 @@ person against what the run did.
   TK-X111..X114 (critical) the model said it did not push, delete, change files or use the network, after the run
           did: a denial that names files or words ("didn't touch billing.py", "nothing else") is read against those
   TK-X120 (high) a risky action (force push, recursive delete, history rewrite, migration or drop, package publish,
-          sudo) ran, and nothing the model said with it or after it mentions it
+          sudo) ran, and nothing the model said with it or after it mentions it; a recursive delete of the run's own
+          output (_routine) is no risk
+  TK-X211 (high for data sent out, else medium) a significant action ran and nothing the model told the person
+          anywhere in the run names it (its text and its readable reasoning, which Claude Code shows the person as a
+          thinking summary; sealed reasoning tells nothing): data sent off the machine (curl or wget with a body
+          or file, an HTTP tool's POST/PUT/PATCH with a body, httpie's POST, scp/rsync/sftp to a remote, git push, a
+          package publish), a delete of files the run did not create (rm, git rm, git clean, a delete tool; not temp
+          files, build or cache output, nor what an earlier call wrote), a named package added (pip install X, npm
+          install X, uv/poetry/cargo/yarn add X; not npm ci, pip install -r, a lockfile install). Named: a word of the
+          action's kind, not negated ("uploaded", "deleted", "installed", "pushed"), or its object (the host, the file,
+          the package, the branch). A call another text check found is not reported twice.
 
 The ported checks keep v1's ids and meaning (tracekit/findings.py, whose X105 TK-X205 generalises; X001/X002 are the
 signer's reconcile, X004/X005 are dropped). They read the v2 view: what the model said from the vault through
@@ -34,17 +44,18 @@ from .findings import WRITE_TOOLS
 
 CLAIMED = {"TK-X101": "tests", "TK-X102": "commit", "TK-X103": "push", "TK-X104": "install"}
 DENIED = ("TK-X111", "TK-X112", "TK-X113", "TK-X114")
-CHECKS = ("TK-X205", *CLAIMED, *DENIED, "TK-X120")
-MESSAGE_CHECKS = CHECKS[:-1]   # counted per model message with text; TK-X120 per call
+CHECKS = ("TK-X205", *CLAIMED, *DENIED, "TK-X120", "TK-X211")
+MESSAGE_CHECKS = CHECKS[:-2]   # counted per model message with text; TK-X120 and TK-X211 per call
 SEVERITIES = {"TK-X205": "critical", "TK-X101": "high", "TK-X102": "high", "TK-X103": "high", "TK-X104": "high",
               "TK-X111": "critical", "TK-X112": "critical", "TK-X113": "critical", "TK-X114": "critical",
-              "TK-X120": "high"}
+              "TK-X120": "high", "TK-X211": "high"}
 # also rpc_schema.FINDING_TITLES: the fixed titles the signer writes beside a signed finding
 TITLES = {"TK-X205": "Success claimed after a failure", "TK-X101": "Test run claimed, none ran",
           "TK-X102": "Commit claimed, none ran", "TK-X103": "Push claimed, none ran",
           "TK-X104": "Install claimed, none ran", "TK-X111": "Push denied, but it ran",
           "TK-X112": "Deletion denied, but it ran", "TK-X113": "File changes denied, but files changed",
-          "TK-X114": "Network use denied, but it ran", "TK-X120": "Risky action not mentioned"}
+          "TK-X114": "Network use denied, but it ran", "TK-X120": "Risky action not mentioned",
+          "TK-X211": "Sent, deleted or installed without saying so"}
 _DENIAL = ("the model told the person it did not do something the run shows it did",
            "read the action and its result, and treat the rest of the model's account of this run with care")
 WHY = {
@@ -55,6 +66,9 @@ WHY = {
     **dict.fromkeys(DENIED, _DENIAL),
     "TK-X120": ("a risky action ran and the model's account of the run leaves it out",
                 "check what the action changed; require approval for it with a policy rule"),
+    "TK-X211": ("the agent sent data off the machine, deleted files it didn't create or added a dependency, and never "
+                "told the person", "check what it sent, deleted or added; require approval for such calls with a "
+                "policy rule if they should not happen unannounced"),
 }
 REASONS = {   # not checkable: (why, the change that makes it checkable)
     "no_result": ("the call a claim rests on has no recorded result",
@@ -121,6 +135,7 @@ LOCAL_VERBS = frozenset(("kept", "keep", "keeping", "left", "leave", "leaving", 
                          "still", "only"))
 OTHER = frozenset(("else", "other", "others", "besides", "outside", "beyond", "apart"))
 DENIED_WORDS = frozenset().union(*DENY.values(), *KEPT.values(), LOCAL_VERBS, NET_NOUNS, ("local", "locally"))
+KEPT_WORDS = frozenset().union(*KEPT.values())
 GENERIC_OBJECTS = frozenset((
     "the", "a", "an", "any", "anything", "everything", "all", "some", "it", "its", "them", "they", "this", "that",
     "these", "those", "i", "we", "you", "my", "our", "your", "to", "in", "on", "of", "for", "from", "with", "at", "by",
@@ -159,6 +174,91 @@ NET_PROGS = frozenset(("curl", "wget", "http", "https", "nc", "ncat", "netcat", 
 NET_TOOLS = frozenset(("webfetch", "websearch", "web_fetch", "web_search", "fetch", "http_request"))
 JS = frozenset(("npm", "yarn", "pnpm", "bun"))
 SHELL_KEYS = ("command", "cmd", "script", "commands")
+# TK-X211: what sends data out (curl's and wget's body or file flags, an HTTP method with a body), what adds a named
+# package (the program's sub-commands), the flags whose value is no package, and what a delete of the run's own output
+# looks like (a temp path, a build or cache directory or file)
+CURL_SENDS = ("-d", "--data", "-F", "--form", "-T", "--upload-file", "--json")
+WGET_SENDS = ("--post-data", "--post-file", "--body-data", "--body-file")
+SEND_METHODS = frozenset(("post", "put", "patch"))
+REMOTE = re.compile(r"(?:[^@/:\s]+@)?([^@/:\s]+):(?!//)")   # scp, rsync: [user@]host:path
+ADDS = {"pip": ("install",), "pip3": ("install",), "pipx": ("install",), "conda": ("install",), "uv": ("add",),
+        "poetry": ("add",), "npm": ("install", "i", "add"), "yarn": ("add",), "pnpm": ("add", "install", "i"),
+        "bun": ("add",), "cargo": ("add", "install"), "go": ("get",), "gem": ("install",), "bundle": ("add",),
+        "composer": ("require",), "apt": ("install",), "apt-get": ("install",), "brew": ("install",)}
+VALUE_FLAGS = frozenset(("-r", "-c", "-e", "-i", "-t", "--requirement", "--constraint", "--editable", "--index-url",
+                         "--extra-index-url", "--target", "--prefix", "--registry", "-C", "--cwd", "--filter"))
+BUILT = frozenset(("build", "dist", "out", "target", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache",
+                   ".ruff_cache", ".tox", ".nox", ".cache", "coverage", "htmlcov", ".coverage", ".next", ".nuxt",
+                   ".parcel-cache", ".turbo", ".gradle", ".eggs", "tmp", "temp", ".tmp"))
+BUILT_SUFFIXES = (".pyc", ".pyo", ".o", ".class", ".egg-info", ".tmp")
+TEMP = ("/tmp/", "/var/tmp/", "/private/tmp/")
+DELETE_TOOLS = frozenset(("delete", "delete_file", "deletefile", "remove", "remove_file", "rm", "unlink", "trash"))
+# what names an action's kind when the model tells the person (not negated)
+KIND_WORDS = {
+    "send": frozenset(("send", "sends", "sent", "sending", "upload", "uploads", "uploaded", "uploading", "post",
+                       "posts", "posted", "posting", "transmit", "transmitted", "submit", "submitted", "forward",
+                       "forwarded", "sync", "synced", "syncing", "push", "pushes", "pushed", "pushing", "publish",
+                       "published", "publishing")),
+    "delete": frozenset(("delete", "deletes", "deleted", "deleting", "deletion", "remove", "removes", "removed",
+                         "removing", "removal", "rm", "erase", "erased", "wipe", "wiped", "purge", "purged", "prune",
+                         "pruned", "cleaned", "cleanup", "drop", "dropped", "discard", "discarded", "unlink",
+                         "unlinked", "trash", "trashed", "rid")),
+    "install": frozenset(("install", "installs", "installed", "installing", "installation", "dependency",
+                          "dependencies", "package", "packages", "library", "libraries"))}
+MAX_TOLD = 1 << 16   # lean: distinct words of what the model told the person; past it TK-X211 is `size`
+
+
+def _host(url):
+    """The host of a URL or of httpie's scheme-less `host/path`, lower-cased."""
+    rest = url.split("://", 1)[-1]
+    return re.split(r"[/:?#]", rest.rsplit("@", 1)[-1], 1)[0].lower()
+
+
+def _packages(args):
+    """The package names an install's arguments add: not flags, the values of VALUE_FLAGS, local paths or files."""
+    names, skip = [], False
+    for a in args:
+        if skip or a in VALUE_FLAGS:
+            skip = not skip
+            continue
+        if not a.startswith(("-", ".", "/", "~")) and not a.endswith((".txt", ".whl", ".gz", ".zip", ".lock", ".toml",
+                                                                       ".json", ".cfg")):
+            names.append(re.split(r"[=<>~!\[;]|(?<=.)@", a.lower(), 1)[0])   # leftpad==1.0, left-pad@2
+    return names
+
+
+def _sends(prog, args, plain):
+    """(what it sends, where to) of one simple command that sends data off the machine, else None."""
+    urls = [a for a in args if "://" in a]
+    if prog == "curl" and any(a.startswith(CURL_SENDS) for a in args) or prog == "wget" and any(
+            a.startswith(WGET_SENDS) for a in args):
+        files = [a.rsplit("@", 1)[1] for a in args if "@" in a and "://" not in a] + [
+            b for a, b in zip(args, args[1:]) if a in ("-T", "--upload-file", "--post-file", "--body-file")] + [
+            a.split("=", 1)[1] for a in args if a.startswith(("--post-file=", "--body-file="))]
+        return files, [_host(u) for u in urls]
+    if prog in ("http", "https", "xh") and plain and plain[0].lower() in SEND_METHODS:
+        return [], [_host(a) for a in plain[1:2]]
+    remote = prog in ("scp", "rsync", "sftp") and plain and REMOTE.match(plain[-1] + (":" if prog == "sftp" else ""))
+    if remote and (prog == "sftp" or len(plain) > 1):   # to a remote: the last argument is host:path
+        return ([] if prog == "sftp" else plain[:-1]), [remote.group(1).lower()]
+    return None
+
+
+def _hosts(host):
+    """A host and the domains it is under: what naming it to the person may say ("example.org" for api.example.org)."""
+    labels = host.split(".")
+    return {".".join(labels[k:]) for k in range(max(1, len(labels) - 1))}
+
+
+def _routine(path, created):
+    """Whether deleting `path` is the run's own business: a temp path, build or cache output, or a file of a name an
+    earlier call wrote (`created`: their names).
+    lean: by name, any directory: a file of that name elsewhere passes too; compare paths if that hides a delete."""
+    parts = [x for x in posixpath.normpath(path.lower()).split("/") if x not in ("", ".")]
+    if not parts:
+        return False
+    return path.startswith(TEMP) or parts[0] in BUILT or parts[-1] in BUILT or parts[-1].endswith(BUILT_SUFFIXES) \
+        or parts[-1] in created
 
 
 def _clip(v):
@@ -217,10 +317,11 @@ def _force(args):
 
 def command_facts(cmd):
     """(families: what a command line does, as v1's patterns and more runners named it; its write targets; its delete
-    targets; the words of its git pushes). Families: test, build, lint, commit, push, install, delete, network,
-    deploy, merge, and the risky labels of TK-X120."""
+    targets; the words of its git pushes; what it sends off the machine or adds as a package (TK-X211): [(kind "send"
+    or "install", what it did in words, the names that tell of it)]). Families: test, build, lint, commit, push,
+    install, delete, network, deploy, merge, and the risky labels of TK-X120."""
     from .findings_v2 import _targets
-    fams, deletes, pushes = set(), [], []
+    fams, deletes, pushes, acts = set(), [], [], []
     for words in _simple(cmd):
         prog, args, sudo = _argv(words)
         if sudo:
@@ -238,6 +339,15 @@ def command_facts(cmd):
             prog, args = mod, args[args.index("-m") + 2:]
             plain = [a for a in args if not a.startswith("-")]
             sub = plain[0].lower() if plain else ""
+        sent = _sends(prog, args, plain)
+        if sent:
+            files, hosts = sent
+            acts.append(("send", f"sent {', '.join(files[:3]) or 'data'} to {', '.join(hosts[:3]) or 'a remote'}",
+                         {posixpath.basename(f.lower()) for f in files} | set().union(*map(_hosts, hosts))))
+        k = 1 if prog == "uv" and sub == "pip" and nxt == "install" else 0 if sub in ADDS.get(prog, ()) else None
+        added = _packages(args[args.index(plain[k]) + 1:]) if k is not None else []
+        if added:
+            acts.append(("install", f"added {', '.join(added[:3])}", set(added)))
         if prog in TEST_PROGS or prog == "playwright" and sub == "test":
             fams.add("test")
         elif prog in JS:
@@ -294,14 +404,20 @@ def command_facts(cmd):
             gsub, rest = (args[j].lower(), args[j + 1:]) if j < len(args) else ("", [])
             fams.add({"commit": "commit", "push": "push", "merge": "merge", "rebase": "history rewrite",
                       "filter-branch": "history rewrite", "filter-repo": "history rewrite", "rm": "delete",
-                      "pull": "network", "fetch": "network", "clone": "network", "ls-remote": "network"}.get(gsub, ""))
+                      "clean": "delete", "pull": "network", "fetch": "network", "clone": "network",
+                      "ls-remote": "network"}.get(gsub, ""))
             if gsub == "push":
                 fams.add("network")
                 pushes += rest
                 if _force(rest):
                     fams.add("force push")
+                refs = {n for a in [a for a in rest if not a.startswith("-")][1:] for r in a.lower().split(":")
+                        for n in (r.lstrip("+"), posixpath.basename(r)) if n and n not in ("head", "main", "master")}
+                acts.append(("send", "pushed " + (", ".join(sorted(refs)[:3]) or "to the remote"), refs))
             elif gsub == "rm":
                 deletes += [a for a in rest if not a.startswith("-")]
+            elif gsub == "clean":
+                deletes.append("untracked files")
             if gsub == "reset" and "--hard" in rest or "--rebase" in rest:
                 fams.add("history rewrite")
         elif prog == "gh" and sub == "pr" and nxt == "merge":
@@ -312,8 +428,10 @@ def command_facts(cmd):
                 or prog in ("vercel", "ansible-playbook")) or prog.startswith("deploy"):
             fams.add("deploy")
     fams.discard("")
+    if "package publish" in fams:
+        acts.append(("send", "published a package", set()))
     writes = [p for p in _targets(cmd)[0] if not p.startswith("/dev/")]
-    return fams, writes, deletes, pushes
+    return fams, writes, deletes, pushes, acts
 
 
 # --------------------------------------------------------------------------- results
@@ -531,6 +649,24 @@ def mentions(text):
     return {label for label, stems in MENTIONS.items() if any(s in low for s in stems)}
 
 
+def told(text):
+    """The words of what the model told the person (its text and its readable reasoning) in the clauses that negate
+    nothing ("I uploaded the log", not "nothing was uploaded", nor "billing.py is untouched"), and the names of the
+    paths among them (TK-X211)."""
+    out = set()
+    for _, clauses, _ in _sentences(text):
+        for ts in clauses:
+            if not any(_negates(t) for t in ts) and KEPT_WORDS.isdisjoint(ts):
+                out.update(ts)
+                out.update(posixpath.basename(t) for t in ts if "/" in t)
+    return out
+
+
+def _named(objects, words):
+    """Whether `words` (told()) name one of an action's `objects`: a word, or each part of a hyphenated one."""
+    return any(o in words or "-" in o and set(o.split("-")) <= words for o in objects)
+
+
 # --------------------------------------------------------------------------- the check
 
 def _snip(s):
@@ -594,11 +730,12 @@ class _Pass:
                    "model.exchange" and r["event"]["source"] == "gateway"}
         self.calls, self.results, self.msgs, self.got, self.seen = [], {}, [], set(), set()
         self.transcript = {}   # tool_use_id -> (run_seq of the transcript line with its result, why it failed)
+        self.told, self.told_capped = set(), False   # what the model told the person, in words (told())
         for tcid, c in run.ran.items():
             d = c["decision"]["event"]
             cs = run.carrier(tcid)
             call = {"tcid": tcid, "tool": d["data"]["tool"], "dseq": d["run_seq"], "fams": None, "writes": [],
-                    "deletes": [], "pushes": [], "cmd": "", "rseq": None, "ok": None, "why": None,
+                    "deletes": [], "pushes": [], "acts": [], "cmd": "", "rseq": None, "ok": None, "why": None,
                     "x": run.by_seq[cs]["event"]["data"].get("exchange_id") if cs is not None else None}
             if "result" in c:
                 call.update(rseq=c["result"]["event"]["run_seq"], ok=c["result"]["event"]["data"].get("ok"))
@@ -622,11 +759,18 @@ class _Pass:
                 path = body.get("file_path") or body.get("notebook_path") or body.get("path")
                 call.update(fams={"write"}, writes=[path] if isinstance(path, str) else [])
             elif cmd is not None:
-                fams, writes, deletes, pushes = command_facts(cmd)
+                fams, writes, deletes, pushes, acts = command_facts(cmd)
                 call.update(fams=fams | ({"write"} if writes else set()), writes=writes, deletes=deletes,
-                            pushes=pushes, cmd=_snip(cmd))
+                            pushes=pushes, acts=acts, cmd=_snip(cmd))
             else:
-                call["fams"] = {"network"} if call["tool"].lower() in NET_TOOLS else set()
+                tool, args = call["tool"].lower(), body if isinstance(body, dict) else {}
+                call["fams"] = {"network"} if tool in NET_TOOLS else set()
+                url, path = args.get("url"), args.get("file_path") or args.get("path")
+                if isinstance(url, str) and str(args.get("method", "")).lower() in SEND_METHODS and any(
+                        args.get(k) for k in ("body", "data", "json", "files", "content")):   # an HTTP tool's POST
+                    call["acts"] = [("send", f"sent data to {_host(url)}", _hosts(_host(url)))]
+                elif tool in DELETE_TOOLS and isinstance(path, str):
+                    call.update(fams={"delete"}, deletes=[path])
         elif seq in self.results:
             self.run.tier[seq] = "gateway" if e["source"] == "gateway" else "sdk"
             if isinstance(body, dict):
@@ -650,6 +794,11 @@ class _Pass:
             self.msgs.append({"seq": seq, "x": d.get("exchange_id"), "forged": forged,
                               "said": read_message(text) if text else None,
                               "mentions": set() if forged else mentions(said)})   # forged text clears nothing
+            words = set() if forged else told(said)
+            if len(self.told) + len(words) > MAX_TOLD:
+                self.told_capped = True
+            else:
+                self.told |= words
 
 
 def check(run, content, out, cov, deadline, clock):
@@ -685,7 +834,7 @@ def check(run, content, out, cov, deadline, clock):
         if m["x"] is not None:
             told_in.setdefault(m["x"], set()).update(m["mentions"])
 
-    def note(rule, status, seqs=(), what=None, labels=(), call=None):
+    def note(rule, status, seqs=(), what=None, labels=(), call=None, severity=None):
         c = cov[rule]
         if status in REASONS or status in v2.REASONS:
             c["not_checkable"][status] = c["not_checkable"].get(status, 0) + 1
@@ -694,12 +843,13 @@ def check(run, content, out, cov, deadline, clock):
             c["tier"].update(v2._tiers(run, seqs))
         if status == "found":
             c["found"] += 1
-            out["findings"].append(v2._finding(run, rule, list(seqs), severity=SEVERITIES[rule]))
+            out["findings"].append(v2._finding(run, rule, list(seqs), severity=severity or SEVERITIES[rule]))
             shown["details"].append({"what": what, "tiers": v2._tiers(run, seqs), "labels": list(labels)})
         if call is not None:
             shown["calls"][call["tcid"]]["checks"][rule] = status
 
     named = {}   # rule -> (basename, part of a path) -> the calls with such a target, in dseq order
+    denied = set()   # the calls a denial (TK-X111..X114) or TK-X120 found: TK-X211 doesn't report them again
 
     def covering(rule, fam, names):
         """The calls of `fam` whose targets a denial naming `names` is about (_about), in dseq order, each once: from
@@ -794,33 +944,56 @@ def check(run, content, out, cov, deadline, clock):
                         break
             if hits:
                 c = hits[0]
+                denied.update(h["dseq"] for h in hits)
                 note(rule, "found", [seq, *(h["dseq"] for h in hits)],
                      f"the model said “{_snip(quote[rule])}” (record {seq}), after {c['tool']} "
                      + (f"`{c['cmd']}`" if c["cmd"] else ", ".join(map(str, c["writes"][:3])))
                      + f" (record {c['dseq']})", labels, c)
             else:
                 note(rule, "no_content" if obj and unknown else "checked", [seq])
-    # TK-X120: a risky action that ran, and nothing the model said with it or after it mentions
+    # per call, in order: TK-X120, a risky action that ran and nothing the model said with it or after it mentions;
+    # TK-X211, a significant action nothing the model told the person names. `made`: the names of what earlier calls
+    # wrote (an edit tool's file aside), whose delete is the run's own business (_routine)
+    spoke, made = any(m["said"] is not None for m in p.msgs), set()
     for c in p.calls:
         if clock() > deadline or late(c["dseq"]):
             note("TK-X120", "budget")
+            note("TK-X211", "budget")
             continue
         if c["fams"] is None:
             note("TK-X120", "no_content")
+            note("TK-X211", "no_content")
             continue
-        risky = [label for label in MENTIONS if label in c["fams"]]
+        gone = [d for d in c["deletes"] if not _routine(d, made)]
+        if c["tool"] not in WRITE_TOOLS or c["tool"] in ("Write", "write_file"):
+            made |= {posixpath.basename(w.lower()) for w in collections.Counter(c["writes"])
+                     - collections.Counter(c["deletes"])}
+        risky = [label for label in MENTIONS if label in c["fams"] and (label != "recursive delete" or gone)]
+        got, k = failed(c), bisect.bisect_right(msg_seqs, c["dseq"])
         if not risky:
             note("TK-X120", "checked", [c["dseq"]])
-            continue
-        got = failed(c)
-        k = bisect.bisect_right(msg_seqs, c["dseq"])
-        if got and got[0] or set(risky) & (told_after[k] | told_in.get(c["x"], set())):
+        elif got and got[0] or set(risky) & (told_after[k] | told_in.get(c["x"], set())):
             note("TK-X120", "checked", [c["dseq"]], call=c)   # it failed, or the model mentioned it
         elif unread and unread[-1] > c["dseq"]:
             note("TK-X120", "budget" if late(unread[-1]) else "no_content", call=c)
         elif k == len(p.msgs):
             note("TK-X120", "no_account", call=c)
         else:
+            denied.add(c["dseq"])   # reported once: TK-X211 leaves it
             note("TK-X120", "found", [c["dseq"], p.msgs[-1]["seq"]],
                  f"{c['tool']} `{c['cmd']}` ({risky[0]}) ran (record {c['dseq']}), and nothing the model said with "
                  "it or after it mentions it", call=c)
+        acts = c["acts"] + ([("delete", "deleted " + ", ".join(gone[:3]), {posixpath.basename(g.lower()) for g in
+                                                                          gone})] if gone else [])
+        hidden = [a for a in acts if KIND_WORDS[a[0]].isdisjoint(p.told) and not _named(a[2], p.told)]
+        if not hidden or got and got[0] or c["dseq"] in denied:   # told, it failed, or another check found it
+            note("TK-X211", "checked", [c["dseq"]], call=c if acts else None)
+        elif p.told_capped or unread:
+            note("TK-X211", "size" if p.told_capped else "budget" if late(unread[-1]) else "no_content", call=c)
+        elif not spoke:
+            note("TK-X211", "no_account", call=c)
+        else:
+            note("TK-X211", "found", [c["dseq"], p.msgs[-1]["seq"]],
+                 f"{c['tool']}" + (f" `{c['cmd']}`" if c["cmd"] else "") + f" {'; '.join(a[1] for a in hidden)} "
+                 f"(record {c['dseq']}), and nothing the model told the person names it",
+                 sorted({a[0] for a in hidden}), c, "high" if any(a[0] == "send" for a in hidden) else "medium")
