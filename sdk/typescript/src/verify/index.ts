@@ -41,6 +41,14 @@ const ZERO_HASH = "sha256:" + "0".repeat(64);
 const MATRIX = ["model_calls", "tool_calls", "network", "processes", "services"];
 const COVERED = ["none", "reported", "observed", "enforced"];   // weakest first
 const SEVERITIES = ["critical", "high", "medium", "low", "info"];   // a signed finding's, worst first
+// the closed fields of a signed finding's verdict (tracekit/signer/rpc_schema.py REVIEW) and the values each may take
+const FAMILIES = ["anthropic", "openai", "google", "meta", "mistral", "deepseek", "qwen", "xai"];
+const VERDICT: Record<string, J[]> = {
+  kind: ["finding", "coverage"], severity: SEVERITIES, tier: ["gateway", "harness", "transcript", "sdk"],
+  order: ["signed_before", "transcript_order", "after"], alignment: ["ok", "drift", "misaligned"],
+  reason: ["none", "unrequested_action", "unexplained_action", "contradicted_reasoning", "scope_creep", "workaround",
+    "false_success", "followed_tool_output", "injection", "other"],
+};
 
 export type Check = { check: string; status: "pass" | "warn" | "fail"; detail: string; problems: string[] };
 
@@ -702,6 +710,26 @@ function author(rs: J[]): J[] {
  * self-asserted (a warning) when it is the analysed run's identity or either run's signer_isolation is same-user; else
  * unpinned. Without its analysed run: not counted, author not checked (`reviews counted`). No cites: imported.
  */
+/** What is wrong with a signed finding's verdict `v` (VERDICT; its asserted model, families and window), or null. */
+function verdictProblem(v: J): string | null {
+  if (!isObj(v) || typeof v.rule !== "string" || !/^TK-[A-Z][0-9]{3}$/.test(v.rule)
+      || !["kind", "severity"].every((k) => VERDICT[k].includes(get(v, k))))
+    return "its verdict has no kind, rule and severity of a signed finding";
+  const a = get(v, "asserted"), f = get(v, "families"), w = get(v, "window");
+  const name = (x: J) => typeof x === "string" && /^[A-Za-z0-9._:/@+-]{1,128}$/.test(x);
+  const seconds = (x: J) => typeof x === "number" && x >= 0;
+  const checks: [string, boolean][] = [
+    ["asserted", isObj(a) && name(get(a, "model")) && name(get(a, "version"))
+      && typeof get(a, "prompt_hash") === "string" && /^sha256:[0-9a-f]{64}$/.test(str(get(a, "prompt_hash")))],
+    ["families", isObj(f) && (get(f, "reviewer") === null || FAMILIES.includes(str(get(f, "reviewer"))))
+      && Array.isArray(get(f, "agent")) && list(get(f, "agent")).every((x) => typeof x === "string" && FAMILIES.includes(x))],
+    ["window", isObj(w) && seconds(get(w, "grace_s")) && seconds(get(w, "skew_s"))],
+  ];
+  const bad = [...Object.keys(VERDICT).filter((k) => has(v, k) && !VERDICT[k].includes(v[k])),
+    ...checks.filter(([k, ok]) => has(v, k) && !ok).map(([k]) => k)];
+  return bad.length ? `its verdict's ${bad.join(", ")} is not what a signed finding holds` : null;
+}
+
 function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
   const byId = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs]));
   const labels: string[] = [], problems: string[] = [], selfs: string[] = [], uncounted: string[] = [];
@@ -712,6 +740,10 @@ function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
     total += reviews.length;
     labels.push(...Array(reviews.length - signed.length).fill("imported"));
     if (!signed.length) continue;
+    for (const e of signed) {
+      const why = verdictProblem(get(at(e, "data"), "verdict"));
+      if (why) problems.push(`seq ${e.seq}: ${why}`);
+    }
     const rid = cut(str(get(rs[0].event, "run_id")), 128), analyzes = about(rs)[0];
     if (analyzes === null) {
       problems.push(...signed.map((e) => `seq ${e.seq}: a signed finding outside a findings run`));

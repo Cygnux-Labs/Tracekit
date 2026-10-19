@@ -423,7 +423,8 @@ def _finding(fx, out, rule, seqs, call, what):
         f"; every effect reached the signer at least {seen['behind_s'] + FLUSH_S:.1f} s after its sensor time (record "
         f"{seen['record']}), so the sensor's clock may be behind the signer's") + (
         f": pass --clock-skew {seen['suggest_s']:g}" if seen else "") + "]"
-    out["findings"].append({"verdict": {"kind": "finding", "rule": rule, "severity": SEVERITIES[rule]},
+    out["findings"].append({"verdict": {"kind": "finding", "rule": rule, "severity": SEVERITIES[rule],
+                                        "window": {"grace_s": fx.grace, "skew_s": fx.skew}},
                             "cites": [{"run_seq": s, "hash": fx.run.by_seq[s]["hash"]} for s in cited]})
     out["shown"]["details"].append({"what": what + note, "tiers": ["observer", "decision"] if call else ["observer"],
                                     "labels": labels})

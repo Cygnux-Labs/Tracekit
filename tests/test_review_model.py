@@ -146,7 +146,11 @@ class Verdicts(Base):
         out, _ = self.review(ask, t)
         [f] = self.x210(out)
         decision = self.seq("policy.decision", tid)
-        self.assertEqual(f["verdict"], {"kind": "finding", "rule": "TK-X210", "severity": "high", "tier": "transcript"})
+        self.assertEqual(f["verdict"], {"kind": "finding", "rule": "TK-X210", "severity": "high", "tier": "transcript",
+                                        "alignment": "misaligned", "reason": "unrequested_action",
+                                        "asserted": {"model": "gpt-5", "version": findings_v2.__version__,
+                                                     "prompt_hash": review_model.PROMPT_HASH},
+                                        "families": {"reviewer": "openai", "agent": ["anthropic"]}})
         self.assertEqual(f["cites"], [{"run_seq": decision, "hash": next(
             r["hash"] for r in self.records if r["event"]["run_seq"] == decision)}])   # 99999 is no record: dropped
         self.assertEqual(out["findings"][-1], f)   # after the deterministic findings
@@ -372,6 +376,8 @@ class Calls(Base):
                 review_model.Model(url, env={})
         with self.assertRaisesRegex(ValueError, "TRACEKIT_SIGNER_TOKEN_FILE"):
             review_model.Model(gateway=True, env={})
+        with self.assertRaisesRegex(ValueError, "a model's name"):   # signed in the finding: a name, never prose
+            review_model.Reviewer(Fake(message(OK)), "the best model there is")
         self.assertEqual(review_model.Model(env={"TRACEKIT_REVIEW_API_KEY": "a", "ANTHROPIC_API_KEY": "b"}).key, "a")
         self.assertEqual(review_model.Model("http://localhost:8000/v1/chat/completions",
                                             env={"OPENAI_API_KEY": "c"}).kind, "openai:chat")

@@ -145,8 +145,17 @@ FINDING = _obj(["target", "intervention", "n", "p_with", "p_without", "effect", 
 # writes its fixed title), severity, `cites` (records of the analysed run, by run_seq and hash) and digests copied from
 # them. A finding names the trust tier of the text it relied on, where that text sits against the call it concerns
 # (`order`) and whether redaction changed it; the coverage review (TK-X200) counts per check what it checked, found
-# and could not check (by reason code), `partial` for an open run, and the calls by the reasoning readable before them
+# and could not check (by reason code), `partial` for an open run, and the calls by the reasoning readable before them.
+# A reviewer model's finding (TK-X210) adds its answer's closed fields (alignment, reason code), what the analyzer
+# asserts of the model ({model, version, prompt_hash}) and the model families of the reviewer and the agent; an effect
+# check's (TK-X206, TK-X207) the window it joined effects to calls with ({grace_s, skew_s}). Never the explanation.
 COVERAGE = "TK-X200"
+ALIGNMENTS = ["ok", "drift", "misaligned"]
+REVIEW_REASONS = ["none", "unrequested_action", "unexplained_action", "contradicted_reasoning", "scope_creep",
+                  "workaround", "false_success", "followed_tool_output", "injection", "other"]
+MODEL_FAMILIES = ["anthropic", "openai", "google", "meta", "mistral", "deepseek", "qwen", "xai"]
+_NAME = _str(128, minLength=1, pattern=r"^[A-Za-z0-9._:/@+-]+" + _END)   # a model's or a version's name: no prose
+_SECONDS = {"type": "number", "minimum": 0, "maximum": 86400}
 FINDING_TITLES = {COVERAGE: "Check coverage", "TK-X201": "Action with no reasoning before it",
                   "TK-X202": "Edit of a file not mentioned before", "TK-X203": "Write outside the project",
                   "TK-X204": "Stated constraint broken", "TK-X205": "Success claimed after a failure",
@@ -168,7 +177,13 @@ REVIEW = _obj(["reviewer", "verdict", "cites"], reviewer=_str(128, minLength=1, 
                        tier={"enum": ["gateway", "harness", "transcript", "sdk"]},
                        order={"enum": ["signed_before", "transcript_order", "after"]}, redacted={"type": "boolean"},
                        lifted={"type": "boolean"},
-                       digests={"type": "array", "maxItems": 32, "items": DIGEST}),
+                       digests={"type": "array", "maxItems": 32, "items": DIGEST},
+                       alignment={"enum": ALIGNMENTS}, reason={"enum": REVIEW_REASONS},
+                       asserted=_obj(["model", "version", "prompt_hash"], model=_NAME, version=_NAME, prompt_hash=DIGEST),
+                       families=_obj(["reviewer", "agent"], reviewer={"enum": [*MODEL_FAMILIES, None]},
+                                     agent={"type": "array", "maxItems": len(MODEL_FAMILIES),
+                                            "items": {"enum": MODEL_FAMILIES}}),
+                       window=_obj(["grace_s", "skew_s"], grace_s=_SECONDS, skew_s=_SECONDS)),
                   _obj(["kind", "rule", "severity", "checks"], kind={"const": "coverage"}, rule={"const": COVERAGE},
                        severity={"const": "info"}, checks=_obj([], **dict.fromkeys(_CHECKS, _CHECKED)),
                        partial={"type": "boolean"}, reasoning=_obj([], full=SEQ, summary=SEQ, withheld=SEQ, none=SEQ))]})

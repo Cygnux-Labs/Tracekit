@@ -81,7 +81,10 @@ effect and give its interval and verdict (recomputed from looks, family, min_eff
 replay run of an investigation with findings must be counted or listed `uncounted` by one; else `findings` fails.
 Replay runs of an investigation with no finding are a `replay runs` warning.
 Signed findings (`tracekit analyze --v2`, format 1.4): a `review` record with `cites`, in a findings run. Each cite
-must be a record of the analysed run, in the bundle, with that run_seq and hash, else `reviews` fails. Each finding is
+must be a record of the analysed run, in the bundle, with that run_seq and hash, and its verdict must have the shape
+a signed finding has (a kind, rule and severity, and each field review_finding gives it of the values it allows: a
+reviewer model's alignment, reason code, asserted model and families, an effect check's window; other fields pass),
+else `reviews` fails. Each finding is
 labelled by its author, the findings run's registered identity, positive-only: `independent` only when the trust
 config's `analyzers` pins it; `self-asserted` (a warning) when it is the analysed run's own identity or either run's
 signer_isolation is same-user (the agent could have written it); else `unpinned author <id>`. Without the analysed run
@@ -150,6 +153,7 @@ from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
 from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
+from tracekit.signer import rpc_schema
 from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.storage.base import ZERO_HASH
 
@@ -169,6 +173,13 @@ CLASSES = ("public", "customer", "tracekit", "operator")
 MATRIX = ("model_calls", "tool_calls", "network", "processes", "services")
 COVERED = ("none", "reported", "observed", "enforced")   # weakest first
 SEVERITIES = ("critical", "high", "medium", "low", "info")   # a signed finding's, worst first
+# the closed fields of a signed finding's verdict (rpc_schema.REVIEW) and the values each may take
+VERDICT = {"kind": ("finding", "coverage"), "severity": SEVERITIES, "tier": ("gateway", "harness", "transcript", "sdk"),
+           "order": ("signed_before", "transcript_order", "after"), "alignment": tuple(rpc_schema.ALIGNMENTS),
+           "reason": tuple(rpc_schema.REVIEW_REASONS)}
+_RULE = re.compile(r"TK-[A-Z][0-9]{3}")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_MODEL = re.compile(r"[A-Za-z0-9._:/@+-]{1,128}")
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
 _VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -1085,6 +1096,23 @@ def _author(records):
     return (f"{i['scheme']}:{i['subject']}" if i else None), d.get("signer_isolation")
 
 
+def _verdict(v):
+    """What is wrong with a signed finding's verdict `v` (VERDICT; its asserted model, families and window), or None."""
+    if not isinstance(v, dict) or not isinstance(v.get("rule"), str) or not _RULE.fullmatch(v["rule"]) or any(
+            v.get(k) not in VERDICT[k] for k in ("kind", "severity")):
+        return "its verdict has no kind, rule and severity of a signed finding"
+    a, f, w = v.get("asserted"), v.get("families"), v.get("window")
+    fams = (*rpc_schema.MODEL_FAMILIES, None)
+    bad = [k for k, allowed in VERDICT.items() if k in v and v[k] not in allowed] + [k for k, ok in (
+        ("asserted", isinstance(a, dict) and all(isinstance(a.get(x), str) and _MODEL.fullmatch(a[x]) for x in (
+            "model", "version")) and isinstance(a.get("prompt_hash"), str) and _DIGEST.fullmatch(a["prompt_hash"])),
+        ("families", isinstance(f, dict) and f.get("reviewer") in fams and isinstance(f.get("agent"), list)
+         and all(x in fams[:-1] for x in f["agent"])),
+        ("window", isinstance(w, dict) and all(type(w.get(x)) in (int, float) and w[x] >= 0
+                                               for x in ("grace_s", "skew_s")))) if k in v and not ok]
+    return f"its verdict's {', '.join(bad)} is not what a signed finding holds" if bad else None
+
+
 def _reviews(rep, runs, pinned):
     """The `reviews` line, and `reviews counted` for signed findings whose analysed run is not in the bundle (module
     docstring: Signed findings). `pinned`: the trust config's `analyzers`."""
@@ -1096,6 +1124,7 @@ def _reviews(rep, runs, pinned):
         total, labels["imported"] = total + len(reviews), labels["imported"] + len(reviews) - len(signed)
         if not signed:
             continue
+        problems += [f"seq {e['seq']}: {why}" for e in signed for why in [_verdict(e["data"]["verdict"])] if why]
         rid, analyzes = str(rs[0]["event"].get("run_id"))[:128], _about(rs)[0]
         if analyzes is None:
             problems += [f"seq {e['seq']}: a signed finding outside a findings run" for e in signed]

@@ -179,7 +179,11 @@ the analysed run, by `run_seq` and record `hash`. The verdict holds no text of t
 title, severity: info|low|medium|high|critical, tier?: gateway|harness|transcript|sdk (the text it relied on; harness:
 a prompt the hook recorded and the transcript agree on), order?: signed_before|transcript_order|after (that text
 against the call), redacted?, lifted?: true (TK-X204: a later request named what the constraint kept away, so the
-finding is downgraded), digests?: [sha256:...]}`, or once per
+finding is downgraded), digests?: [sha256:...], alignment?: ok|drift|misaligned, reason?: <a reason code> (TK-X210:
+the reviewer model's answer), asserted?: {model, version, prompt_hash} (the reviewer model and prompt the analyzer
+says it asked), families?: {reviewer, agent: [...]} (model families: anthropic, openai, google, meta, mistral,
+deepseek, qwen, xai, or a null reviewer), window?: {grace_s, skew_s} (TK-X206, TK-X207: the window effects were
+joined to calls with)}`, or once per
 pass `{kind: coverage, rule: TK-X200, title, severity: info, checks: {<rule>: {checked, found, not_checkable?:
 [{reason, n}]}}, partial?, reasoning?: {full, summary, withheld, none}}`. `title` is the rule's fixed title
 (`rpc_schema.FINDING_TITLES`), written by the signer; `digests` are copied from the cited records, never a hash of
@@ -608,8 +612,9 @@ line and verdict is in [verdicts](verdicts.md).
    the checkpoint's last record, or later records were added after the log closed.
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
    **Signed findings** (with `review` records): a `review` with `cites` must be in a findings run; when the run it
-   analyses is in the bundle, each cite must be a record of that run with that `run_seq` and `hash` (`reviews` fails
-   otherwise), and each finding is labelled by its author, the findings run's `run.registered` `identity`:
+   analyses is in the bundle, each cite must be a record of that run with that `run_seq` and `hash`, and its verdict
+   must have a signed finding's shape: a kind, a `TK-` rule and a severity, and each closed field above of the values
+   it allows (other fields pass) (`reviews` fails otherwise); each finding is labelled by its author, the findings run's `run.registered` `identity`:
    `self-asserted` (a warning) when that is the analysed run's identity or either run's `signer_isolation` is
    `same-user`; else `independent` when the trust config's `analyzers` lists it, else `unpinned author <id>`. Without
    the analysed run, the findings are `author not checked` and their cites not counted (`reviews counted`, a warning).

@@ -107,7 +107,8 @@ class EffectWithNoAction(Base):   # TK-X206
         self.assertEqual(self.statuses(out, "/usr/bin/curl"), {"exec": ("found", None, None),
                                                                "connect": ("found", None, None)})
         [(f, d)] = self.found(out, "TK-X206")
-        self.assertEqual(f["verdict"], {"kind": "finding", "rule": "TK-X206", "severity": "high"})
+        self.assertEqual(f["verdict"], {"kind": "finding", "rule": "TK-X206", "severity": "high",
+                                        "window": {"grace_s": 2.0, "skew_s": 0.5}})   # the window it joined with
         effects = [r for r in self.records if r["event"]["type"] == "effect.observed"
                    and r["event"]["data"]["binary"] == "/usr/bin/curl"]
         self.assertEqual(f["cites"], [{"run_seq": r["event"]["run_seq"], "hash": r["hash"]} for r in effects])

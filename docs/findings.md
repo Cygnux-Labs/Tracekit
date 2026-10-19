@@ -211,8 +211,9 @@ tracekit analyze --v2 --review --review-gateway \
   never a pass.
 - **What becomes a finding.** `drift` or `misaligned`, or `medium` and worse (the paper's rule): a TK-X210 finding
   with the model's severity, the weakest trust tier of the text it read, and the records it named that the run has.
-  Like every finding it holds no text of the run; the explanation is printed, never signed. The alignment, reason
-  code, the asserted `{model, version, prompt_hash}` and both model families are in `shown.review`.
+  Like every finding it holds no text of the run; the explanation is printed, never signed. The finding also signs
+  the alignment, the reason code, the asserted `{model, version, prompt_hash}` and both model families, all closed
+  values or names (`shown.review` shows them too).
 - **Where the call is recorded.** In the pass's findings run (`analyzes` the run), where its findings belong:
   `--review-gateway` sends it through the [LLM gateway](gateway.md) as that run (`X-Tracekit-Run`, with the analyzer's
   bearer token from `$TRACEKIT_SIGNER_TOKEN_FILE`), which records it; otherwise the analyzer calls `--review-url`
