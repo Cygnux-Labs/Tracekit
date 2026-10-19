@@ -55,7 +55,8 @@ Intent is only what a person typed: a prompt line of the main Claude Code transc
 summary, command output, a tool result or a sub-agent's prompt) whose text a prompt the hook recorded at
 UserPromptSubmit (input.observed, source <agent>:UserPromptSubmit: the harness's payload) matches, each hook prompt
 confirming one line (tier `harness`); in a run whose hook recorded no prompt (hooks before 1.4), the line alone (tier
-`transcript`). Also the newest user message of a model request the gateway recorded, and an input observed as trusted
+`transcript`); in a run with no transcript prompt line (Codex, Gemini CLI, Cursor), the hook's prompt alone (tier
+`harness`). Also the newest user message of a model request the gateway recorded, and an input observed as trusted
 in a run whose hook records no prompts; what else claims a person's request is the agent's claim (claimed()). A later
 request lifts a constraint only from text as trusted as the constraint's (RANK). The gateway's record of a model
 message is preferred where an agent's report of it exists too; two reports of one message
@@ -384,11 +385,14 @@ class _Run:
 
     def confirm(self):
         """Pair the prompts the hook recorded with the transcript's prompt lines, one each by their text, and read
-        each confirmed line (in a run whose hook recorded none: each line) as a request; the other lines are
-        TK-X208's. Then order what was stated and mentioned by position."""
+        each confirmed line (in a run whose hook recorded none: each line; in a run with no prompt line: each hook
+        prompt) as a request; the other lines are TK-X208's. Then order what was stated and mentioned by position."""
         hooks = collections.defaultdict(list)
-        for seq, h, _, _ in self.hook_prompts:
+        for seq, h, text, _ in self.hook_prompts:
             hooks[h].append(seq)
+            if not self.prompts:   # no transcript prompt line (Codex, Gemini CLI, Cursor): the hook's prompts are it
+                self.tier[seq] = "harness"
+                self._request(seq, text, "harness")
         for seq, h, text, cwd in self.prompts:
             if self.hooked:
                 if not hooks[h]:

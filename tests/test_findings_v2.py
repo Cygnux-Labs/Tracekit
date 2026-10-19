@@ -326,6 +326,23 @@ class AgentClaims(unittest.TestCase):   # what the agent's own process sends is 
                 self.assertEqual((f["verdict"]["severity"], d["labels"]), ("high", ["keep_away"]))
                 self.assertEqual(out["shown"]["calls"]["t2"]["checks"]["TK-X202"], "found")
 
+    def test_a_harness_without_a_transcript_tailer_its_hooks_prompt_is_the_request(self):
+        for agent in ("codex", "gemini-cli", "cursor"):
+            with self.subTest(agent):
+                recs, content = records(
+                    ("input.observed", "sdk", {"source": f"{agent}:UserPromptSubmit", "trust": "trusted"}, self.ASK),
+                    ("model.exchange", "sdk", {"phase": "response", "exchange_id": "m1", "tool_uses": [
+                        {"id": "c1", "name": "Edit", "executed_by": "client"}]},
+                     {"content": [{"type": "text", "text": "I will update billing.py as well."},
+                                  {"type": "tool_use", "id": "c1", "name": "Edit", "input": {}}],
+                      "source": f"{agent} transcript"}),
+                    ("policy.decision", "signer", {"tool_use_id": "c1", "tool": "Edit", "decision": "allow"},
+                     {"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"}))
+                out = findings_v2.analyze(recs, content)
+                f, d = finding(out, "TK-X204")
+                self.assertEqual((f["verdict"]["severity"], d["labels"]), ("high", ["keep_away"]))
+                self.assertEqual(out["shown"]["constraints"][0]["tier"], "harness")
+
     def test_a_lift_counts_only_from_text_as_trusted_as_the_constraint(self):
         def run(lifter):
             recs, content = records(

@@ -160,7 +160,8 @@ Terms, as the output uses them:
   compaction summary, command output, a tool result or a sub-agent's task prompt) that the hook's own copy of the
   prompt confirms, the newest user message of a model request the gateway recorded, an input observed as trusted in a
   run whose hook records no prompts. In a run whose hook recorded no prompt (hooks before this release), each prompt
-  line counts, as the transcript's word. A request the agent's own process reported (autotrace, a framework
+  line counts, as the transcript's word; in a run with no transcript prompt line (Codex, Gemini CLI, Cursor), each
+  prompt the hook recorded counts, at tier `harness`. A request the agent's own process reported (autotrace, a framework
   integration) and, where the hook records the prompts, any other input observed as trusted only *claim* a person's
   words: they lift and clear nothing, and the reviewer model reads them as `claimed`.
 - A **stated constraint** is what the run's own words said not to do, read by a small fixed grammar: from a request
