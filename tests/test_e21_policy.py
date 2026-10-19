@@ -40,7 +40,24 @@ class Sessions(unittest.TestCase):
     def test_developer_sessions_are_rarely_held_by_the_server_pack(self):
         _, total, _, _, fps = e21.score(engines("server.yaml"), e21.load(e21.SESSIONS))
         self.assertGreaterEqual(total["benign"], 100)
-        self.assertLessEqual(total.get("fp", 0) / total["benign"], e21.MAX_FP["default"], fps)
+        self.assertLessEqual(total.get("fp", 0) / total["benign"], e21.TARGET_FP["default"], fps)
+
+
+class Gates(unittest.TestCase):
+    def test_no_regression_against_the_first_run_and_targets_only_reported(self):
+        first = {"machine": "m", "min_heldout_recall": {"default": 0.5}, "max_fp_rate": {"default": {"heldout": 0.04}},
+                 "max_p99_us": {}}
+        gates = e21.keep({**first, "max_fp": {"default": 0.02}}, {**first, "min_heldout_recall": {"default": 0.9},
+                                                                  "max_fp_rate": {"default": {"heldout": 0.1,
+                                                                                              "e17": 0.01}}})
+        self.assertEqual(gates["max_fp_rate"], {"default": {"heldout": 0.04, "e17": 0.01}})   # a new set: this run's
+        self.assertEqual(gates["min_heldout_recall"], {"default": 0.5})
+
+        def out(recall, fp):
+            return {"gates": gates, "machine": "other", "latency": {},
+                    "profiles": {"default": {"heldout": {"recall": recall, "fp_rate": fp}, "e17": {"fp_rate": 0.01}}}}
+        self.assertEqual(e21.gate(out(0.5, 0.04), []), [])
+        self.assertEqual(len(e21.gate(out(0.49, 0.05), [])), 2)
 
 
 if __name__ == "__main__":

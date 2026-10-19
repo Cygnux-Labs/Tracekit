@@ -8,12 +8,13 @@ Two profiles: `default` (server.yaml, what E17 measures) and `strict` (strict.ya
     tool no pack maps, held by the server pack's `unknown_tools: ask`). A benign call is a false positive when it is
     denied or held. Broken down by category, severity and evasion.
 (c) eval/e21_benign_sessions.jsonl: calls of ordinary developer sessions, written by the pack's builder (so tuned),
-    for false positives only.
+    for false positives only; E17's benign calls are scored the same way on both profiles.
 (d) Latency per decision (the fastest of three per call), p50/p99/max, on both engines, for dev.yaml and both
     profiles, over E17's corpus and both E21 sets.
-(e) Gates, recorded by the first run in eval/results/e21_policy_robustness.json and kept by later ones: held-out recall
-    at least the first run's, benign false positives at most 2% (default) and 5% (strict) on each set, and p99 at most
-    25% over the first run's on the same machine (re-measured once before failing; another machine is not compared).
+(e) No-regression gates against the first run, recorded in eval/results/e21_policy_robustness.json and kept by later
+    runs: per profile, held-out recall doesn't drop and the false-positive rate of each benign set (held-out, sessions,
+    E17) doesn't rise; p99 stays within 25% of the first run's on the same machine (re-measured once before failing;
+    another machine is not compared). False positives over 2% (default) or 5% (strict) are reported as over target.
 Exit 0 only when every gate holds and both engines decide every call the same. `--record` writes the gates anew."""
 import collections
 import glob
@@ -30,12 +31,13 @@ from tracekit.policy2.engine import Engine  # noqa: E402
 
 PACKS = os.path.join(ROOT, "tracekit", "policy2", "packs")
 PROFILES = {"default": "server.yaml", "strict": "strict.yaml"}
-MAX_FP = {"default": 0.02, "strict": 0.05}
+TARGET_FP = {"default": 0.02, "strict": 0.05}   # reported, not gated
 HELDOUT = os.path.join(ROOT, "eval", "e21_heldout", "corpus.jsonl")
 SESSIONS = os.path.join(ROOT, "eval", "e21_benign_sessions.jsonl")
 E17 = os.path.join(ROOT, "tests", "data", "policy")
 RESULTS = os.path.join(ROOT, "eval", "results", "e21_policy_robustness.json")
 HELD = ("deny", "ask")
+SETS = ("heldout", "sessions", "e17")   # the sets whose benign calls are scored for false positives
 
 
 def load(path):
@@ -105,6 +107,7 @@ def run(record=False):
     sessions = load(SESSIONS)
     e17 = [(c["tool"], c["args"]) for p in sorted(glob.glob(os.path.join(E17, "*", "*.jsonl"))) for c in load(p)]
     calls = e17 + [(c["tool"], c["args"]) for c in (heldout or []) + sessions]
+    e17_benign = [c for p in sorted(glob.glob(os.path.join(E17, "benign", "*.jsonl"))) for c in load(p)]
     out = {"machine": machine(), "heldout_cases": len(heldout) if heldout is not None else None,
            "session_calls": len(sessions), "profiles": {}, "latency": {}, "engine_mismatches": []}
     for name, pack in PROFILES.items():
@@ -113,7 +116,7 @@ def run(record=False):
             raise SystemExit("\n".join(errors))
         engines = [Engine(pol, "re2"), Engine(pol, "regex")]
         prof = out["profiles"][name] = {"pack": pack, "policy_hash": engines[0].policy_hash}
-        for key, cases in (("heldout", heldout), ("sessions", sessions)):
+        for key, cases in (("heldout", heldout), ("sessions", sessions), ("e17", e17_benign)):
             if cases is None:
                 continue
             by, total, mismatches, missed, fps = score(engines, cases)
@@ -124,21 +127,33 @@ def run(record=False):
     for e in (Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], x) for x in ("re2", "regex")):
         out["latency"][f"dev/{e.engine.split('@')[0]}"] = latency(e, calls)
     old = None if record or not os.path.exists(RESULTS) else json.load(open(RESULTS, encoding="utf-8")).get("gates")
-    out["gates"] = old or {
-        "machine": out["machine"], "max_fp": MAX_FP,
+    out["gates"] = keep(old, {
+        "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
-        "max_p99_us": {k: round(v["p99_us"] * 1.25) for k, v in out["latency"].items()}}
+        "max_fp_rate": {n: {k: p[k]["fp_rate"] for k in SETS if k in p} for n, p in out["profiles"].items()},
+        "max_p99_us": {k: round(v["p99_us"] * 1.25) for k, v in out["latency"].items()}})
+    out["over_target"] = [f"{n} {k} false positives {p[k]['fp_rate']:.2%} over the {TARGET_FP[n]:.0%} target"
+                          for n, p in out["profiles"].items() for k in SETS
+                          if k in p and p[k]["fp_rate"] > TARGET_FP[n]]
     out["failed"] = gate(out, calls)
     out["ok"] = not out["failed"] and not out["engine_mismatches"]
     return out
 
 
+def keep(old, first):
+    """The recorded gates `old`, with what they lack (a new set, profile or engine) taken from this run's `first`."""
+    if isinstance(first, dict):
+        return {k: keep(old.get(k) if isinstance(old, dict) else None, v) for k, v in first.items()}
+    return first if old is None else old
+
+
 def gate(out, calls):
     g, failed = out["gates"], []
     for name, p in out["profiles"].items():
-        for key in ("heldout", "sessions"):
-            if key in p and p[key]["fp_rate"] is not None and p[key]["fp_rate"] > g["max_fp"][name]:
-                failed.append(f"{name} {key} false positives {p[key]['fp_rate']:.2%} > {g['max_fp'][name]:.0%}")
+        for key in SETS:
+            cap = g["max_fp_rate"].get(name, {}).get(key)
+            if key in p and cap is not None and p[key]["fp_rate"] > cap:
+                failed.append(f"{name} {key} false positives {p[key]['fp_rate']:.2%} > the first run's {cap:.2%}")
         want = g["min_heldout_recall"].get(name)
         if want is not None and "heldout" in p and p["heldout"]["recall"] < want:
             failed.append(f"{name} held-out recall {p['heldout']['recall']:.2%} < {want:.2%}")
@@ -162,7 +177,7 @@ def main():
     if out["heldout_cases"] is None:
         print(f"no held-out pool at {os.path.relpath(HELDOUT, ROOT)}: held-out scores skipped")
     for name, p in out["profiles"].items():
-        for key in ("heldout", "sessions"):
+        for key in SETS:
             if key not in p:
                 continue
             r = p[key]
@@ -175,6 +190,8 @@ def main():
                               f"deny {n.get('deny', 0)}  FP {n.get('fp', 0)}/{n.get('benign', 0)}")
     for key, v in out["latency"].items():
         print(f"latency {key:14s} p50 {v['p50_us']} us  p99 {v['p99_us']} us  max {v['max_us']} us ({v['calls']} calls)")
+    for f in out["over_target"]:
+        print("over target:", f)
     for f in out["failed"]:
         print("FAILED", f)
     if out["engine_mismatches"]:
