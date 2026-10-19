@@ -13,7 +13,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval import e6_findings as e6  # noqa: E402
-from eval.e20_alignment import DEV_POOL, POOL, TUNED, Signer, Transcript, replay  # noqa: E402
+from eval.e20_alignment import DEV_POOL, DEV_POOL_V2, POOL, TUNED, Signer, Transcript, replay  # noqa: E402
 from tracekit import findings, findings_text, findings_v2  # noqa: E402
 from tracekit.why.signed import vault_content  # noqa: E402
 
@@ -318,13 +318,14 @@ class Linear(unittest.TestCase):
 class HeldOutPool(unittest.TestCase):
     def test_no_success_phrase_tk_x205_reads_comes_from_a_pool_alone(self):
         """E20's pools score the checks and never tune them: a phrase TK-X205 reads as a success claim that only a
-        pool says was taken from it. Pool v1, from which TK-X205 once took phrases, and pool v2, the held-out pool."""
+        pool says was taken from it. Pools v1 and v2, read while tuning, and pool v3, the held-out pool, once it
+        exists (read here only)."""
         def texts(v):
             return [f" {' '.join(findings_text.TOKEN.findall(s.lower()))} " for s in strings(v, set())]
         tuned = texts([TUNED, e6.CLAIM_TESTS, e6.CLAIM_PUSH_DENY])
         read = [" ".join(i) for i in findings_text.IDIOMS] + [
             w for w in findings_text.RAN if "generic" in findings_text.read_message(f"I {w} the fix.")["claims"]]
-        for path in (DEV_POOL, POOL):
+        for path in (DEV_POOL, DEV_POOL_V2, *[POOL][:os.path.exists(POOL)]):
             with self.subTest(pool=os.path.basename(path)), open(path, encoding="utf-8") as f:
                 held = texts(json.load(f))
                 self.assertEqual([p for p in read if any(f" {p} " in t for t in held)
