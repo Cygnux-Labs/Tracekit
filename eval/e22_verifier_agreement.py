@@ -354,7 +354,7 @@ class Corpus:
             self.forge(base, "record deleted", lines(lambda recs: recs.pop(len(recs) // 2)))
             self.forge(base, "records swapped", lines(swapped))
             self.forge(base, "run truncated", lines(lambda recs: recs.__delitem__(slice(len(recs) // 2 + 1, None))))
-            other = os.path.join(self.dir("forger"), "other-signer.trust.json")
+            other = os.path.join(self.dir("forger"), f"{base.replace(' ', '-')}.other-signer.trust.json")
             with open(other, "w") as f:
                 json.dump({"logs": [_vkey(_origin(base, self), os.urandom(32))], "algs": ["ed25519"]}, f)
             self.forge(base, "another signer's trust config", lambda files, manifest: None, trust=other)

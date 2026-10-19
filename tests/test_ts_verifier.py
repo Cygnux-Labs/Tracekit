@@ -1013,6 +1013,26 @@ class AgreementScripts(unittest.TestCase):
         self.assertEqual(vpc.agree(None, os.path.join(golden, "zip-no-manifest.tkb"), os.path.join(golden, "trust.json"),
                                    [])[1], [])
 
+    def test_e22_forges_each_bundles_other_signer_trust_from_its_own_origin(self):
+        """E22's "another signer's trust config" forgery wrote one shared file, so every base was checked against a key
+        under the last base's origin, not its own."""
+        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
+        import e22_verifier_agreement as e22
+        bundles = {"demo run": os.path.join(ROOT, "tests", "golden", "v2", "closed.tkb"),
+                   "hook": os.path.join(TS, "src", "verify", "sample", "sample.tkb")}
+        with tempfile.TemporaryDirectory() as d:
+            corpus = e22.Corpus(d)
+            for name, bundle in bundles.items():
+                corpus.add(name, "test", bundle, None)
+            with mock.patch.object(corpus, "forge") as forge:
+                corpus.forgeries()
+            pinned = {}
+            for call in forge.call_args_list:
+                if call.args[1] == "another signer's trust config":
+                    with open(call.kwargs["trust"]) as f:
+                        pinned[call.args[0]] = json.load(f)["logs"][0].split("+")[0]
+        self.assertEqual(pinned, {name: e22._origin(name, corpus) for name in bundles})
+
 
 if __name__ == "__main__":
     unittest.main()
