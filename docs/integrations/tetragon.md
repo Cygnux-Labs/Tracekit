@@ -125,7 +125,8 @@ file once and exits; without a file, stdin.
 The first `runs` entry whose `match` fits the event's process (its pod's namespace and name, its container id, its
 uid) attributes it: the signer gives the event to the latest open run of that entry's `caller` registered by the
 event's time (Tetragon's `time`; `attribution: identity` in the record), so an event read late goes to the run it
-happened in, and one older than every open run of the caller (an export read again) to none. An event of a process no entry matches is not an agent's: the import skips
+happened in, and one older than every open run of the caller (an export read again) to none. With no older run open,
+an event up to 5 s before a run registered (the node's clock behind the signer's) goes to that run. An event of a process no entry matches is not an agent's: the import skips
 it. An event of a matched process whose caller has no open run is a signed `capture.gap{effect_outside_run}` in the
 tenant's signer run. The import covers the runs of its entries' `caller`s only (it names them in every call), so a run
 of any other identity never says its processes were observed, and the import's losses are no gaps in it.

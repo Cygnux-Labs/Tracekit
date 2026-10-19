@@ -225,6 +225,10 @@ class HookV2(unittest.TestCase):
             self.assertEqual((sent, st["sent"]), (["keep_away", "no_push", "no_network"], ["r1", 3]))
             claude_code._constrain(None, path, dict(st, constraints=[*st["constraints"], ["read_only", None]]))
             self.assertEqual(sent[3:], ["read_only"])   # only what the run has not had
+            sent.clear()
+            with self.assertRaises(RPCError):
+                claude_code.prompted(mock.Mock(call=call), "Don't touch billing.py. Never push.")
+            self.assertEqual(sent, ["keep_away", "no_push"])
 
     def test_session_end_closes_the_run_and_it_verifies(self):
         self.pre("ls")

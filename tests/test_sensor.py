@@ -262,6 +262,17 @@ class TestImport(Sensed):
         (old,) = self.gaps(self.events("tracekit/signer"), "effect_outside_run")
         self.assertIn(f"uid:{ME.subject} has no open run registered by 2026-10-05T10:00:01.615123Z", old["reason"])
 
+    def test_an_event_a_little_before_its_run_registered_is_the_runs(self):
+        """The sensor's clock a little behind the signer's: no older run is open, so the run just registered takes it."""
+        imp = self.importer()
+        imp.flush()
+        before = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=2)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f") + "000Z"
+        run = self.register()
+        imp.add(exec_line().replace(TIME, before))
+        self.assertTrue(imp.flush())
+        self.assertEqual(len(self.typed(self.events(run["run_id"]), "effect.observed")), 1)
+
     def test_an_event_the_signer_could_not_frame_is_a_loss_not_the_end_of_the_import(self):
         imp = self.importer()
         imp.flush()

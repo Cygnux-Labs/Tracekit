@@ -422,7 +422,7 @@ class View(unittest.TestCase):
         me = f"uid:{os.getuid()}"
         observe()   # the import's heartbeat: it covers the runs registered from now on
         run = self.client.run(agent="claude-code")
-        stray = {"caller": me, "kind": "exec", "ts": at(-30), "pid": 9, "binary": "/usr/bin/curl", "exec_id": "c"}
+        stray = {"caller": me, "kind": "exec", "ts": at(30), "pid": 9, "binary": "/usr/bin/curl", "exec_id": "c"}
         run.decide("c1", "Bash", {"command": "git status"})
         observe({"caller": me, "kind": "exec", "ts": at(), "pid": 10, "binary": "/bin/bash", "exec_id": "b",
                  "parent_exec_id": "harness"},

@@ -350,6 +350,7 @@ GRACE_S, IDLE_S = 5.0, 3600.0
 HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat, and an egress observer observe_effect
 TAILER_LOST_S = 3 * HEARTBEAT_S   # a tailer or observer silent this long while its run is open is lost
 OBSERVE_GRACE_S = 120.0   # an observer reports a minute's traffic once the minute ends, at its next heartbeat
+SENSOR_SKEW_S = 5.0   # how far a kernel sensor's clock may run behind the signer's for an event to find its run
 DECIDED_GAPS_MAX = 100   # decided_not_completed gaps per run, then one gap counting the rest
 GATEWAY_WAIT_S = 600.0   # the MCP gateway's upstream timeout, the longest of the shipped gateways
 FAIL_MODES = {"default": "closed"}
@@ -3796,7 +3797,8 @@ class SignerService:
         """(run key or None, attribution, why there is none) of effect `x` of an observer of `tenant` (on the writer):
         the run its run token names, unless this signer didn't issue that token for that run of `tenant`, or issued it
         to another identity than the client's (`caller`); else the latest open run of `caller` registered by the
-        effect's `ts` (a kernel sensor's: an event read late goes to the run it happened in, an old one to none)."""
+        effect's `ts` (a kernel sensor's: an event read late goes to the run it happened in, an old one to none), or
+        with none, its first registered up to SENSOR_SKEW_S after `ts`."""
         why = None
         if "run_token" in x:
             try:
@@ -3815,13 +3817,16 @@ class SignerService:
         c = CallerIdentity(*x["caller"].split(":", 1), True)
         if self._tenant_of(c) != tenant:
             return None, "identity", f"{why}{x['caller'][:256]} is of another tenant than the observer"
-        # lean: the owner's latest open run registered by the effect's time takes it; with concurrent runs of one owner,
-        # send the run token instead
-        key = next((k for k in reversed(list(self.log.live)) if k[0] == tenant
-                    and self.log.runs[k]["owner"] == owner(c) and self.log.runs[k].get("registered", "") <= x.get(
-                        "ts", "~")), None)
+        # lean: the owner's latest open run registered by the effect's time takes it, else its first registered within
+        # SENSOR_SKEW_S after (the sensor's clock behind the signer's); with concurrent runs of one owner, send the run
+        # token instead
+        runs = [k for k in self.log.live if k[0] == tenant and self.log.runs[k]["owner"] == owner(c)]
+        at = x.get("ts", "~")
+        key = next((k for k in reversed(runs) if self.log.runs[k].get("registered", "") <= at), None) or next(
+            (k for k in runs if "ts" in x and self.log.runs[k].get("registered", "") <= _iso(
+                epoch(at) + SENSOR_SKEW_S)), None)
         return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run" + (
-            f" registered by {x['ts']}" if "ts" in x else "")
+            f" registered by {at}" if "ts" in x else "")
 
     def _finding(self, identity, req, method, type_, data, cites=()):
         """Write a `type_` record of `data` in the caller's findings run (registered with `analyzes`, which only an

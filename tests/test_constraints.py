@@ -130,6 +130,9 @@ class Grammar(unittest.TestCase):
         text = "Only change src/pager.py and don't touch billing.py."
         self.assertEqual(constraints.extract(text), [("only_change", "pager.py"), ("keep_away", "billing.py")])
         self.assertEqual(claude_code._live(text), [("keep_away", "billing.py")])
+        sent = []
+        claude_code.prompted(mock.Mock(call=lambda m, **kw: sent.append(kw["constraint"])), text)
+        self.assertEqual(sent, [{"kind": "keep_away", "object": "billing.py"}])
 
     def test_a_64_kib_prompt_is_read_in_bounded_time(self):
         n = 1 << 16
