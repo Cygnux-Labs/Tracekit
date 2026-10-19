@@ -3895,22 +3895,23 @@ class SignerService:
                            lambda fn: self.log.submit(identity, "content_erase", req, fn))
 
     def _vault_replays(self, runs):
-        """{(tenant, run_id): [(tenant, replay run id)]}: of `runs` (content_runs), those whose run.registered names a
-        run in `replay_of` (tracekit why), by that run."""
+        """{(tenant, run_id): [(tenant, replay or findings run id)]}: of `runs` (content_runs), those whose
+        run.registered names a run in `replay_of` (tracekit why) or `analyzes` (a findings run, whose reviewer model
+        call keeps what it sent of that run), by that run."""
         # lean: reads the first record of every run with content in the vault per erasure or retention sweep; index runs
-        # by replay_of when vaults hold many runs
+        # by replay_of and analyzes when vaults hold many runs
         out = {}
         for log_id, tenant, run_id, _ in runs:
             first = next(iter(self.log.storage.iter_run(tenant, run_id)), None) if log_id == self.log.log_id else None
-            of = first and first["event"]["data"].get("replay_of")
+            of = first and (first["event"]["data"].get("replay_of") or first["event"]["data"].get("analyzes"))
             if of:
                 out.setdefault((tenant, of), []).append((tenant, run_id))
         return out
 
     def _erase(self, key, reason, by, submit=None, replays=None):
-        """Delete run `key`'s data key (replaced by its tombstone) and blobs, and those of its replay runs (`replays`,
-        default: every one in the vault), each then a content.erased, in one writer item: a record is signed only once
-        the key is gone. A storage failure writes no record and raises unavailable; a retry erases again (blobs a
+        """Delete run `key`'s data key (replaced by its tombstone) and blobs, and those of its replay and findings runs
+        (`replays`, default: every one in the vault), each then a content.erased, in one writer item: a record is signed
+        only once the key is gone. A storage failure writes no record and raises unavailable; a retry erases again (blobs a
         failure left behind stay inert: no key opens them)."""
         try:
             if replays is None:
@@ -3925,7 +3926,7 @@ class SignerService:
                     self.log.storage.content_erase(self.log.log_id, *k)
                 except (OSError, StorageUnavailable) as e:
                     raise RPCError("unavailable", f"the content of run {k[1]} was not erased: {e}") from None
-                why = reason if k == key else f"{reason} (a replay of run {key[1]})"[:1024]
+                why = reason if k == key else f"{reason} (a replay or findings run of run {key[1]})"[:1024]
                 seq = tx.emit(self.log.signer_run(tx, k[0]), "content.erased", {"run_id": k[1], "reason": why, "by": by},
                               source="signer")
                 out = out or {"run_seq": seq}
@@ -3934,7 +3935,7 @@ class SignerService:
 
     def expire_content(self, now=None):
         """Erase the content of every run whose data key was stored more than retention_days before `now`, with its
-        replay runs' (a replay run's content never outlives its run's)."""
+        replay and findings runs' (their content never outlives their run's)."""
         cutoff = (time.time() if now is None else now) - self.content["retention_days"] * 86400
         runs = self.log.write(lambda tx: self.log.storage.content_runs())
         replays, done = self._vault_replays(runs), set()

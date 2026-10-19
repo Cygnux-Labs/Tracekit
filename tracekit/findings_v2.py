@@ -61,7 +61,8 @@ SHELL_TOOLS = ("Bash", "bash", "shell")
 
 # the fixed titles the signer writes beside a signed finding (rpc_schema.FINDING_TITLES once review_finding is in)
 TITLES = {"TK-X200": "Check coverage", "TK-X201": "Action with no reasoning before it",
-          "TK-X202": "Edit of a file not mentioned before", "TK-X203": "Write outside the project"}
+          "TK-X202": "Edit of a file not mentioned before", "TK-X203": "Write outside the project",
+          "TK-X210": "Flagged by the reviewer model"}
 SEVERITIES = {"TK-X201": "info", "TK-X202": "medium", "TK-X203": "high"}
 WHY = {   # rule -> (why it matters, what to do)
     "TK-X201": ("nothing the model said explains this action, so there is no stated reason to check it against",
@@ -71,6 +72,9 @@ WHY = {   # rule -> (why it matters, what to do)
     "TK-X203": ("an agent working on one project changed a file elsewhere on the machine",
                 "check that file and what the change did; keep the agent's writes inside the project with a policy "
                 "rule or a sandbox"),
+    "TK-X210": ("a reviewer model read the run and found that what was asked, said and done disagree: a model's "
+                "opinion, not proof", "read its explanation against the cited records; it never blocks a call or "
+                "changes the exit code"),
 }
 REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "no_response": ("no model response was recorded for this call",
@@ -95,6 +99,12 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "relative_path": ("a relative path with no working directory for the call",
                       "Claude Code: `tracekit init --dev --v2` (the transcript tailer records each call's cwd)"),
     "budget": ("the analysis reached its time or size budget", "pass --budget SECONDS, larger than the default 60"),
+    "no_answer": ("the reviewer model gave no usable answer (an error, a timeout or a refusal)",
+                  "check --review-url, its API key and --review-model; the line above names the error"),
+    "malformed": ("the reviewer model's answer was not the JSON its schema asks for",
+                  "use a model that supports structured output (a JSON schema)"),
+    "no_findings_run": ("no findings run could be registered to record the reviewer model's call in",
+                        "run it as an identity signer.yaml `analyzers` lists, against the signer that holds the run"),
 }
 CHECKS = ("TK-X201", "TK-X202", "TK-X203")
 FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorability classes, best first
@@ -704,13 +714,14 @@ def render(out):
 # --------------------------------------------------------------------------- the command
 
 def _latest(data_dir):
-    """The run of the store's newest record, other than the signer's own and findings or replay runs."""
+    """The run of the store's newest record, other than the signer's own (its tenants' too: each content read is a
+    record there) and findings or replay runs."""
     from .signer.pipeline import SIGNER_RUN
     from .why.import_v2 import _store
     r = _store(data_dir)
     try:
         for key, run in sorted(r.runs.items(), key=lambda kv: -kv[1]["seqs"][-1]):
-            if key == SIGNER_RUN:
+            if key[1] == SIGNER_RUN[1]:
                 continue
             first = next(iter(r.iter_run(*key)), None)
             if first and not {"analyzes", "replay_of"} & set(first["event"]["data"]):
@@ -721,10 +732,12 @@ def _latest(data_dir):
 
 
 def main(argv=None):
+    from . import review_model
     ap = argparse.ArgumentParser(prog="tracekit analyze --v2", description=(
         "Check whether what a v2 run's person asked, what its model said and what its agent did agree (TK-X201 "
         "nothing said before an action, TK-X202 an unmentioned file edited, TK-X203 a write outside the project; "
-        "TK-X200 coverage and the monitorability score). Exit 0, 4 when a finding is high or worse, 2 on an error."))
+        "TK-X200 coverage and the monitorability score; with --review, TK-X210 a reviewer model's reading, warn "
+        "only). Exit 0, 4 when a finding other than TK-X210 is high or worse, 2 on an error."))
     ap.add_argument("--run", help="the run id (default: the store's latest run)")
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--store", metavar="DIR", help="a signer data dir (default: the dev signer's), read-only")
@@ -737,7 +750,28 @@ def main(argv=None):
     ap.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take")
     ap.add_argument("--dry-run", action="store_true", help="print the findings, sign nothing")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--review", action="store_true", help="also ask a reviewer model (TK-X210, warn only), which "
+                    "sends the run's text to that model (docs/privacy.md#what-leaves-the-machine)")
+    ap.add_argument("--review-model", default=review_model.reviewer.DEFAULT_MODEL, metavar="M",
+                    help="the reviewer model, best of another family than the agent's (default %(default)s)")
+    ap.add_argument("--review-url", default=review_model.URL, metavar="URL", help="its endpoint: .../v1/messages "
+                    "(Anthropic Messages; default %(default)s) or .../v1/chat/completions (OpenAI chat, as a local "
+                    "model server speaks it)")
+    ap.add_argument("--review-gateway", action="store_true", help="--review-url is Tracekit's LLM gateway, which "
+                    "records the call (default: the analyzer records it)")
     a = ap.parse_args(argv)
+    rv = None
+    if a.review:
+        if a.dry_run:
+            print("tracekit analyze: --review records the model call in a findings run and --dry-run signs nothing: "
+                  "drop one", file=sys.stderr)
+            return 2
+        try:
+            rv = review_model.Reviewer(review_model.Model(a.review_url, a.review_model, a.review_gateway),
+                                       a.review_model)
+        except ValueError as e:
+            print(f"tracekit analyze: {e}", file=sys.stderr)
+            return 2
     from .sdk.client import Client, SignerUnavailable
     from .signer.pipeline import SIGNER_RUN
     from .signer.rpc_schema import RPCError
@@ -788,7 +822,9 @@ def main(argv=None):
             else:
                 raise
     try:
-        out = analyze(records, content, a.project, a.allow, a.open, a.budget)
+        out = analyze(records, rv.tee(content) if rv else content, a.project, a.allow, a.open, a.budget)
+        if rv:
+            _review(rv, out, records, client, run_id)
     except EvidenceAlert as e:
         print(f"tracekit analyze: EVIDENCE ALERT: {e}", file=sys.stderr)
         return 4
@@ -796,14 +832,37 @@ def main(argv=None):
         client.close()
     if note:
         print(f"tracekit analyze: {note}: checks that read content are not checkable", file=sys.stderr)
+    review = out["shown"].get("review") or {}
+    if review.get("error"):
+        print(f"tracekit analyze: --review: {review['error']}", file=sys.stderr)
+    if review.get("same_family"):
+        print(f"tracekit analyze: --review: the reviewer model is of the agent's model family "
+              f"({review['families']['reviewer']}), so it may share the agent's blind spots: pass --review-model of "
+              "another family", file=sys.stderr)
     if not a.dry_run:
         # signing plugs in here (#309 phase 2): each finding and the coverage entry through review_finding, in one
         # findings run (`analyzes`) per pass; until then they are printed only
         print("tracekit analyze: findings are printed, not signed: signing them into the log comes with the "
               "review_finding RPC", file=sys.stderr)
     print(json.dumps(out, indent=2) if a.json else render(out))
-    worst = max((SEVERITY.index(f["verdict"]["severity"]) for f in out["findings"]), default=-1)
+    worst = max((SEVERITY.index(f["verdict"]["severity"]) for f in out["findings"]
+                 if f["verdict"]["rule"] != review_model.RULE), default=-1)   # a model's opinion never fails a build
     return 4 if worst >= SEVERITY.index("high") else 0
+
+
+def _review(rv, out, records, client, run_id):
+    """TK-X210, its model call in a findings run of this pass (`analyzes` the run), where it is recorded."""
+    from . import __version__
+    from .sdk.client import SignerUnavailable
+    from .signer.rpc_schema import RPCError
+    try:
+        run = client.run({"name": "tracekit-analyze", "version": __version__}, analyzes=run_id)
+    except (SignerUnavailable, RPCError) as e:
+        rv.add(out, records, why="no_findings_run")
+        out["shown"]["review"]["error"] = f"no findings run: {e}"
+        return
+    with run:
+        rv.add(out, records, run)
 
 
 if __name__ == "__main__":

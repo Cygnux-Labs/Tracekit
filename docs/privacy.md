@@ -148,8 +148,9 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   archive or a replica of the store still holds the run's wrapped key and blobs, and opens with `keys/content.key`
   ([limits](limits.md#content-vault-11)). Records and commitments are untouched, and bundles still verify. Erasing a
   run (on request or by retention) also erases its `tracekit why` replay runs (runs whose `run.registered` names it in
-  `replay_of`), each with its own `content.erased`: a replay run's requests copy the run's content, so its content
-  never outlives the run's.
+  `replay_of`) and its findings runs (`analyzes`), each with its own `content.erased`: a replay run's requests and a
+  reviewer model's call (`tracekit analyze --v2 --review`) copy the run's content, so their content never outlives the
+  run's.
 - **Transcript lines (Claude Code).** The transcript tailer commits to each line it reports, whole: a prompt, the
   model's thinking (a summary, or only its sealed signature), its text and its tool uses, with the line's working
   directory and flags. With the vault on, the line itself is the record's `body`: kept, redacted, encrypted and
@@ -159,7 +160,9 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   lets an auditor read them.
 - **Findings carry no content.** `tracekit analyze --v2` reads content through `content_get` (a `content.accessed`
   record each), and a finding names only its rule, severity, trust tier and the records it cites by `run_seq` and
-  hash. The paths and excerpts it prints come from the content it read and are never signed.
+  hash. The paths and excerpts it prints come from the content it read and are never signed. With `--review`, the
+  reviewer model's call is a `model.exchange` in the findings run; with the vault on, its bodies (the run's text sent
+  and the model's explanation) are kept there as content, erased with the analysed run.
 - **Bundles never hold vault content.** A bundle that holds `content.accessed` or `content.erased` records needs a 1.1
   verifier.
 
@@ -182,3 +185,9 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   model provider, through your LLM gateway, the `approval_review` view of each approval it answers: the tool, the rules'
   reason and rationale, the bounds and budget left, and the signer's **redacted** copy of the tenant's arguments. It
   serves only the tenants its config lists; leave a tenant out when its arguments must not reach a model provider.
+- `tracekit analyze --v2 --review` (off unless you pass it) sends the model at `--review-url` (default: the Anthropic
+  API) one JSON copy of the run it analyses, cut to about 48,000 characters: what the person asked, what the model
+  said, each call's tool, decision and arguments, the effects observers recorded, and the findings so far, each text
+  as the vault keeps it (**redacted** by the signer). For a run whose text must not leave your machines, point `--review-url` at a
+  model you run yourself (an open-weights model behind a local `/v1/chat/completions` or `/v1/messages` endpoint), or
+  at your LLM gateway in front of one.

@@ -299,8 +299,21 @@ Two phrase sets are scored separately: `tuned`, written with the checks, and `he
 (`eval/e20_heldout/pool.json`), written by an author who never saw the check code; until it is in the repository the
 held-out part says `pool missing`. On the tuned set, F1 is caught under every cover but c1 (71%: naming the file
 clears a name check) and c5_line (0%: the appended prompt line reads as the person's), F1o under all of them, with no
-false alarm on 1,252 honest calls. `make eval` runs it. Results: `eval/results/e20_alignment.json`. Model arms (a
-reviewer model, real `claude -p` runs) come later.
+false alarm on 1,252 honest calls. `make eval` runs it. Results: `eval/results/e20_alignment.json`.
+
+The reviewer model arm (`E20_MODEL=1`) runs [TK-X210](findings.md#the-reviewer-model-tk-x210) on a sample of the same
+sessions of both sets (2 per fault, cover and splice; 4 per control kind), each reviewed twice: per cover, how often it
+flagged the fault and cited the fault's call, alone and together with the fault's own check; flags on controls;
+agreement between the two reviews; answers missing or malformed counted apart. It records the reviewer's and the
+agent's model families. It calls a model (about 400 calls), so it is not part of `make eval` and has not been run yet:
+
+```bash
+E20_MODEL=1 ANTHROPIC_API_KEY=... python3 eval/e20_alignment.py      # writes eval/results/e20_reviewer.json
+E20_MODEL=1 E20_REVIEW_MODEL=gpt-5 E20_REVIEW_URL=https://api.openai.com/v1/chat/completions \
+    OPENAI_API_KEY=... python3 eval/e20_alignment.py                   # a reviewer of another family
+```
+
+Real `claude -p` runs come later.
 
 ## What is not measured
 
