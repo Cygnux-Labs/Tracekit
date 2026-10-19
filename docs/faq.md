@@ -54,9 +54,9 @@ Details: [threat model: laptop](threat-model-laptop.md#two-properties-kept-apart
 
 ## How much does it slow an agent down?
 
-The only signer numbers committed in this repository are from `eval/e9_signer_perf.py --quick --storage postgres` on
-macOS (12 CPUs, Python 3.11, Postgres store; `eval/results/e9_signer_perf_postgres.json`), measured through the real
-Unix socket with the Python client:
+The signer numbers below are from `eval/e9_signer_perf.py --quick --storage postgres` on macOS (12 CPUs, Python 3.11,
+Postgres store; `eval/results/e9_signer_perf_postgres.json`; the file store's are in `eval/results/e9_signer_perf.json`),
+measured through the real Unix socket with the Python client:
 
 | Measure | Result |
 |---|---|
@@ -65,7 +65,7 @@ Unix socket with the Python client:
 | throughput, 4 client processes for 5 s, ack-on-write | 3,954 events/s |
 
 The gates (p99 ≤ 5 ms added per tool call at ack-on-write, ≥ 1,000 events/s) are enforced on Linux only; on macOS,
-and with `--quick`, the numbers are informational, and this run missed the latency gate. Run `make eval` on Linux
+and with `--quick`, the numbers are informational, and this Postgres run missed the latency gate. Run `make eval` on Linux
 (it runs E9 `--quick`) or `eval/e9_signer_perf.py` for your own machine. Not measured: a separate-user signer, the
 HTTPS transport, and throughput across hosts ([evaluation](evaluation.md#what-is-not-measured)).
 
