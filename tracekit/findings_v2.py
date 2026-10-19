@@ -348,6 +348,7 @@ class _Run:
         # [(position, run_seq, constraints.mentions(text), "request" or "model")] of each text after
         self.stated, self.lifts, self.lift_names = [], [], 0
         self.claimed = []   # run_seqs of records that only claim a person's request (claimed())
+        self.asked = []   # [(run_seq, findings_text.told() of its text)] of each request: what TK-X211 counts as asked
         # where the analysis stopped reading: `stopped` the first run_seq whose content its time budget left unread,
         # `capped` the first position whose text its size caps left unread, `over` prompt lines they left unread
         self.stopped = self.capped = None
@@ -398,6 +399,7 @@ class _Run:
 
     def _request(self, seq, text, tier):
         self.intent.append(seq)
+        self.asked.append((seq, findings_text.told(_text(text))[0]))
         self._read(text, (seq, -1), seq, tier, "asked")
 
     def _keep(self, into, seq, text, cwd=None):

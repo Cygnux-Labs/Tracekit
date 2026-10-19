@@ -558,7 +558,7 @@ def extract(text, read=None):
     change anything else" keeps the text to the files it names (only_change each; nothing when it names none)."""
     read = _read(text) if read is None else read
     asked = {}   # what a clause asks for, not negated -> the last such clause: a file it changes (_said), a LIFT word
-    for j, (tokens, _, _) in enumerate(read):
+    for j, (tokens, _, _) in enumerate(read if any(found for _, found, _ in read) else ()):
         if tokens[:1] and tokens[0] in SEQUENCE:
             asked["then"] = j
         for i, t in enumerate(tokens):
