@@ -130,7 +130,9 @@ Framework, Strands Agents and the TypeScript SDK. Setup:
 Coding agents: `tracekit init --dev --v2` wires Claude Code's hooks to a dev signer; add `--agent codex`, `cursor` or
 `gemini` for the others (experimental). With Claude Code's sandbox on, Tracekit holds each unsandboxed retry for a
 person
-([Claude Code's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/claude-code-sandbox.md)).
+([Claude Code's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/claude-code-sandbox.md));
+with Codex's, see what Tracekit sees and the settings to use
+([Codex's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/codex-sandbox.md)).
 Without uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why`
 (experimental) shows a held
 email whose cause is found by replay and cited by its signed record:
