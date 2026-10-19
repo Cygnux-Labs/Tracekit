@@ -663,6 +663,13 @@ class Ocsf(Middleware):
                       "(the gateway's own); 1 x log records that aren't OCSF events OpenShell writes; 1 x the "
                       "middleware's own decisions (recorded as its calls)", err.getvalue())
 
+    def test_kinds_not_imported_are_counted_in_bounded_memory(self):
+        evs = [dict(ocsf_event(4007), class_name=str(i) + "X" * 1000) for i in range(100)]   # the sender names them
+        self.export(logs(*[log_record(e) for e in evs]), timeout=20)
+        self.assertEqual(len(self.mw.unmapped), openshell.MAX_UNMAPPED + 1)
+        self.assertEqual(sum(self.mw.unmapped.values()), 100)
+        self.assertLessEqual(max(map(len, self.mw.unmapped)), 80)
+
     def test_a_batch_the_signer_cannot_take_is_refused_for_openshell_to_send_again(self):
         batch = logs(log_record(connect()))
         self.signer.shutdown()

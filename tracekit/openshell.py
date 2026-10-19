@@ -135,6 +135,7 @@ OCSF_CHECK_S = 5
 OCSF_EXPORTS = 8   # Export calls at once (each waits on the signer); one more is refused and OpenShell retries it
 MAX_SEEN = 100_000   # OCSF event uids kept to drop the events of a batch OpenShell sends again
 MAX_RECORDS = 10_000   # log records per Export (OpenShell sends at most 100 and a gap record)
+MAX_UNMAPPED = 64   # kinds of event not imported, counted each; the sender names them, so past these one more count
 ITEM = REQUESTS["observe_effect"]["properties"]["effects"]["items"]
 SANDBOX = re.compile(r"[A-Za-z0-9._-]{1,100}")
 DEFAULT_PORT = {"http": 80, "ws": 80, "https": 443, "wss": 443}
@@ -262,7 +263,8 @@ def _process(p):
 def ocsf_effect(ev, ts):
     """The observe_effect effect of OCSF event `ev` (OpenShell's JSON record: openshell-ocsf/src/events), or why it
     isn't imported (a str)."""
-    cls, act, name = ev.get("class_uid"), ev.get("action_id"), ev.get("class_name") or f"class {ev.get('class_uid')}"
+    cls, act = ev.get("class_uid"), ev.get("action_id")
+    name = str(ev.get("class_name") or f"class {cls}")[:64]
     denied = {"denied": True} if act == 2 else {}
     if cls in (4001, 4002):   # Network Activity, HTTP Activity
         if (ev.get("firewall_rule") or {}).get("type") == "middleware":
@@ -643,6 +645,8 @@ class Middleware:
 
     def _unmapped(self, why):
         with self.lock:
+            if why not in self.unmapped and len(self.unmapped) >= MAX_UNMAPPED:
+                why = "events of other kinds"
             self.unmapped[why] += 1
 
     def _observe(self, effects, lost=None):

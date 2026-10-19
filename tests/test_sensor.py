@@ -262,6 +262,14 @@ class TestImport(Sensed):
         (old,) = self.gaps(self.events("tracekit/signer"), "effect_outside_run")
         self.assertIn(f"uid:{ME.subject} has no open run registered by 2026-10-05T10:00:01.615123Z", old["reason"])
 
+    def test_an_event_the_signer_could_not_frame_is_a_loss_not_the_end_of_the_import(self):
+        imp = self.importer()
+        imp.flush()
+        self.register()
+        imp.add(kprobe_line("security_file_permission", [{"file_arg": {"path": "/home/agent/x\ud800"}}, {"int_arg": 2}]))
+        self.assertEqual((len(imp.pending), dict(imp.lost)), (0, {"tetragon lines the import could not read or record": 1}))
+        self.assertTrue(imp.flush())
+
     def test_a_loss_is_a_signed_gap_and_ends_coverage(self):
         imp = self.importer()
         imp.flush()
@@ -535,6 +543,52 @@ class TestCommand(unittest.TestCase):
             except InterruptedError:
                 pass
         self.assertEqual(got, [b"a\n", b"b\n", b"c\n", b"d\n"])
+
+    def log(self, name):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        open(os.path.join(d.name, name), "w").close()
+        return os.path.join(d.name, name)
+
+    def follow(self, path, steps, stat_hook=lambda: None):
+        """_follow's lines while `steps` run, one at each of its sleeps; `stat_hook` runs before each of its stats."""
+        got, f, stat = [], open(path, "rb"), os.stat
+        self.addCleanup(f.close)
+
+        def sleep(_):
+            if not steps:
+                raise InterruptedError
+            steps.pop(0)()
+        with mock.patch.object(sensor.time, "sleep", sleep), \
+                mock.patch.object(sensor.os, "stat", lambda p: (stat_hook(), stat(p))[1]):
+            try:
+                for text in sensor._follow(f, path):
+                    got.append(text)
+            except InterruptedError:
+                pass
+        return got
+
+    def test_a_line_written_to_the_old_file_as_it_rotates_is_read(self):
+        path, armed = self.log("tetragon.log"), []
+
+        def sensor_writes():   # between the import's read at the old file's end and its check for a new one
+            if armed == [1]:
+                armed.append(2)
+                _append(path, "b\n")
+                os.rename(path, path + ".1")
+                _append(path, "c\n")
+        self.assertEqual(self.follow(path, [lambda: (_append(path, "a\n"), armed.append(1)), lambda: None, lambda: None],
+                                     sensor_writes), [b"a\n", b"b\n", b"c\n"])
+
+    def test_a_line_cut_by_truncation_is_not_glued_to_the_next(self):
+        path = self.log("falco.json")
+        _append(path, "x" * 50 + "\n")
+
+        def truncate():
+            with open(path, "w") as f:
+                f.write('{"ok": 1}\n')
+        got = self.follow(path, [lambda: _append(path, '{"cut'), truncate, lambda: None, lambda: None])
+        self.assertEqual(got, [b'{"cut', b'{"ok": 1}\n'])   # the cut one unreadable: a loss
 
 
 def _append(path, text):

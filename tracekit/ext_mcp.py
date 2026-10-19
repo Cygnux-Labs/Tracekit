@@ -42,6 +42,7 @@ APPROVAL_WAIT_S = 0      # an ask's approval is read once, never waited for
 PENDING = ": approval requested"   # how Custody.gate ends the refusal of an ask still waiting for a person
 MAX_CALLS = 10_000       # calls awaiting their result, and asks awaiting their retry, each; the least recent go first
 PASS = b"\x0a\x00"       # McpRequestResult / McpResponseResult: pass (1), an empty Pass
+MAX_MESSAGE = 64 << 20   # a call or its result, as agentgateway sends it (gRPC's default takes 4 MiB)
 
 
 def _ld(field, data):
@@ -182,7 +183,8 @@ def serve(listen="127.0.0.1:9091", client=None, max_workers=16):
     handler = grpc.method_handlers_generic_handler(SERVICE, {
         "CheckRequest": grpc.unary_unary_rpc_method_handler(p.check_request),
         "CheckResponse": grpc.unary_unary_rpc_method_handler(p.check_response)})
-    srv = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=max_workers))
+    srv = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=max_workers),
+                      options=[("grpc.max_receive_message_length", MAX_MESSAGE)])
     srv.add_generic_rpc_handlers((handler,))
     port = srv.add_insecure_port(listen)
     srv.start()

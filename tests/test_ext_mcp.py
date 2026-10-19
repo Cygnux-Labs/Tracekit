@@ -173,6 +173,11 @@ class ExtMcp(unittest.TestCase):
         for t in [("approval.request", "gateway"), ("approval.consumed", "signer"), ("tool.result", "gateway")]:
             self.assertIn(t, types)
 
+    def test_a_result_past_grpcs_default_4_mib_is_recorded(self):
+        tcid = self.call("echo", {"text": "big"}).metadata.fields[ext_mcp.CALL].string_value
+        self.assertEqual(self.respond(tcid, {"content": [{"type": "text", "text": "x" * (5 << 20)}]}), "pass")
+        self.assertEqual(self.gaps_at_run_end(), [])   # completed: no held_call_unresolved
+
     def test_a_passed_call_whose_result_never_comes_ends_its_run_with_a_gap(self):
         # agentgateway skips the response hook for a JSON-RPC error
         tcid = self.call("echo", {"text": "hi"}).metadata.fields[ext_mcp.CALL].string_value

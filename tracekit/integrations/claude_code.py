@@ -349,19 +349,6 @@ def _live(prompt):
     return [(kind, obj and obj[:256]) for kind, obj in constraints.extract(prompt) if kind != "only_change"]
 
 
-def prompted(run, prompt):
-    """Each live constraint `prompt` states (_live), as a live constraint of `run`, each on its own (module
-    docstring)."""
-    refused = []
-    for kind, obj in _live(prompt):
-        try:
-            run.call("constraint_add", constraint={"kind": kind, **({"object": obj} if obj else {})})
-        except RPCError as e:
-            refused.append(e)
-    if refused:
-        raise refused[0]
-
-
 def _unfinished(client, sid):
     """Complete the session's calls that never got their PostToolUse (declined in the harness's own permission prompt
     or by another hook, interrupted, or a payload this hook couldn't read) as errors at SessionEnd, when none can still

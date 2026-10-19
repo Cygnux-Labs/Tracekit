@@ -201,6 +201,7 @@ class Import:
                     got = {"caller": rule["caller"], **got}
                     if validate(ITEM, got):   # one the signer would refuse would hold up every event after it
                         raise ValueError(got)
+                    json.dumps(got, ensure_ascii=False).encode("utf-8")   # a lone surrogate, which a frame can't carry
                 else:
                     got, skip = None, got or NOT_RECORDED
             elif got is None:
@@ -285,16 +286,17 @@ def _follow(f, path):
             st = os.stat(path)
         except FileNotFoundError:
             st = None
-        if st and st.st_ino != os.fstat(f.fileno()).st_ino:   # rotated: what the old file still had was read above
+        if st and st.st_ino != os.fstat(f.fileno()).st_ino:   # rotated: the rest of the old file, then the new one
+            part += f.read()
             f.close()
             f = open(path, "rb")
-            if part:
-                yield part   # its last line was cut off: unreadable, a loss
-                part = b""
         elif st and st.st_size < f.tell():   # truncated in place
             f.seek(0)
         else:
             time.sleep(0.2)
+            continue
+        yield from part.splitlines(keepends=True)   # a last line with no end was cut off: unreadable, a loss
+        part = b""
 
 
 def run(imp, lines):
