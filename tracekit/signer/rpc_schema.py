@@ -286,7 +286,7 @@ REQUESTS = {
             run_token=TOKEN, caller=IDENTITY, kind={"const": "net"}, host=HOST,
             port={"type": "integer", "minimum": 1, "maximum": 65535}, bytes_out=SEQ, bytes_in=SEQ, connections=SEQ,
             first_ts=TS, last_ts=TS),
-            _obj(_OS_REQ, kind={"const": "exec"}, args_digest=DIGEST, **_OS),
+            _obj(_OS_REQ, kind={"const": "exec"}, args_digest=DIGEST, parent_exec_id=_str(256, minLength=1), **_OS),
             _obj(_OS_REQ, kind={"const": "exit"}, status=U32, signal=_str(32), **_OS),
             _obj(_OS_REQ + ["host", "port"], kind={"const": "connect"}, host=HOST,
                  port={"type": "integer", "minimum": 0, "maximum": 65535}, **_OS),

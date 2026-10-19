@@ -601,6 +601,10 @@
       color: var(--muted)
     }
 
+    .ev-EFFECT {
+      color: var(--amber)
+    }
+
     .v2 .c-tool {
       width: 118px
     }
@@ -1514,6 +1518,7 @@
         recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
         tools: new Map(), alerts: [], reasoning: [], tokIn: 0, tokOut: 0, cost: 0, costSeen: false, currency: "", spawnQ: [], withheldSeen: new Set(),
         asked: new Map(),  // v2: a call (tuid) -> the model message that asked for it {x: exchange id, seq: its record's run_seq}
+        effects: new Map(),  // v2: a kernel sensor's effect (session|run_seq) -> {rec, call: tuid or null, how, status}: the run's analysis joins it to a call
         firstTs: null, lastTs: null, gaps: 0, approved: 0,
         signer: { key: "signer", session: "", id: "signer", type: "signer", sub: false, signer: true, desc: "", status: "idle", actions: 0, tokIn: 0, tokOut: 0, cost: 0, first: 0, last: 0, current: null, errors: 0, blocked: 0, flags: 0, model: "" }
       };
@@ -1661,6 +1666,13 @@
         // a verifier report of a run with no record shown (it failed) is no agent: no lane, not counted
         const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" }, act = r.v2?.approval && S.actions.get(tuid(r));
         if (act) act.approvals.push(r);
+        // v2: an effect is the call's its process names until the run's analysis joins it (TK-X206), which may say otherwise
+        const ef = r.v2?.effect;
+        if (ef) S.effects.set(r.session_id + "|" + r.v2.run_seq, { rec: r, call: ef.by_claim ? r.session_id + "|" + ef.claim : null, how: ef.by_claim ? "claim" : null, status: null });
+        for (const [seq, j] of Object.entries(r.v2?.effects || {})) {
+          const e = S.effects.get(r.session_id + "|" + seq);
+          if (e) Object.assign(e, { call: j.call == null ? null : r.session_id + "|" + j.call, how: j.how, status: j.status });
+        }
         if (r.tape === "GAP") S.gaps++;
         if (r.v2?.approval === "approve") S.approved++;
         alert(r.severity || "med", r.title || "ALERT", r.text || "", { rec: r }, r.ts, a);
@@ -1821,7 +1833,11 @@
           const ap = lastAnswer(a);
           st = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : a.v2?.decision === "ask" ? (ap === "approve" ? ["s-ok", "APPROVED"] : ap ? ["s-deny", ap.toUpperCase()] : ["s-flag", "HELD"]) : a.post ? (a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"]) : ["s-run", "RUNNING"];
           ms = a.ms != null ? a.ms : "";
-        } else { text = rel(String(row.text || ""), row.rec?.cwd).replace(/\s+/g, " "); }
+        } else {
+          text = rel(String(row.text || ""), row.rec?.cwd).replace(/\s+/g, " ");
+          const ef = row.rec?.v2?.effect && S.effects.get(row.rec.session_id + "|" + row.rec.v2.run_seq);   // the Happened column
+          if (ef) st = ef.status === "found" ? ["s-deny", "UNEXPLAINED"] : ef.status === "explained" ? ["s-ok", "JOINED"] : ef.status ? ["s-flag", "NOT CHECKABLE"] : ["s-run", "NOT JOINED YET"];
+        }
         return `<tr class="row${esc(isNew)}${esc(sel)}" data-i="${esc(row.i)}"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc(text.slice(0, 400))}">${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
       }).join("") || `<tr><td colspan="7" class="empty">${anyFilter() ? "Nothing matches the filter." : "Waiting for events…"}</td></tr>`;
       if (V2) $("fchips").innerHTML = [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" ");
@@ -1902,6 +1918,13 @@
       const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
       $("reason").innerHTML = list.map(r => `<div class="rs ${esc(r.kind)}" data-seq="${esc(r.rec.seq)}"><div class="h"><span>${esc(fmtT(r.ts))}</span><span class="who">${esc(label(r.agent))}</span><span>${esc(sayLabel(r))}</span></div><div class="t">${esc(r.text.slice(0, 1200))}</div></div>`).join("") || `<div class="empty">No reasoning yet.</div>`;
     }
+    // how a sensor's effect is joined to its call (findings_effects): a finding when it doesn't fit the call it names, or no call explains it
+    function effectHow(e) {
+      if (e.status === "found") return e.call ? "DOESN'T FIT THIS CALL (TK-X206): its kind or its time" : "NO CALL EXPLAINS IT (TK-X206)";
+      if (e.status && e.status !== "explained") return "not checkable: " + e.status.replace(/_/g, " ");
+      return { claim: "its process names this call (the agent's claim, checked)", window: "started while this call ran", ancestry: "started by a process of this call",
+               process: "by a process of this call", path: "the file this call wrote" }[e.how] || (e.call ? "its process names this call (not checked until the run is final)" : "not joined until the run is final");
+    }
     // what an entry is: thinking (its form: the model's full reasoning, a summary of it, or withheld: sealed or absent), text it said, or committed only
     function sayLabel(r) {
       return (r.kind === "think" ? "THINKING" : r.kind === "withheld" ? "THINKING (WITHHELD)" : r.kind === "committed" ? "COMMITTED, NOT READABLE HERE" : "SAID")
@@ -1964,6 +1987,10 @@
         const asked = S.asked.get(a.id), said = asked ? S.reasoning.filter(r => r.x === asked.x && r.seq <= asked.seq && r.rec.session_id === a.pre.session_id) : [];
         right += `<div class="sec">SAID BEFORE THIS CALL · SELF-REPORTED, NOT PROOF</div>` + (said.length ? `<dl class="kv">` + said.map(r => `<dt>${esc(sayLabel(r).toLowerCase())}</dt><dd>${esc(r.text.slice(0, 1500))}<div class="dim">${r.seq < v.run_seq ? "signed before this call" : "before the call in the transcript; signed after it"}</div></dd>`).join("") + `</dl>`
           : `<div class="dim">${asked ? "nothing: the model said nothing before this call" : "no model message recorded for this call"}</div>`);
+        // what a kernel sensor saw this call cause, as the run's analysis joined it; what doesn't fit the call is marked
+        const happened = [...S.effects.values()].filter(e => e.call === a.id);
+        right += `<div class="sec">HAPPENED · WHAT THE KERNEL SENSOR SAW</div>` + (happened.length ? `<dl class="kv">` + happened.map(e => `<dt>${esc(e.rec.v2.effect.kind)}</dt><dd class="go" data-tkseq="${esc(e.rec.tk_seq)}">${esc(e.rec.v2.effect.target)}<div class="${e.status === "found" ? "s-deny" : "dim"}">${esc(effectHow(e))}</div></dd>`).join("") + `</dl>`
+          : `<div class="dim">${S.effects.size ? "nothing the sensor saw is joined to this call" : "no kernel sensor's records in this view (docs/integrations/tetragon.md)"}</div>`);
         $("detsum").textContent = `${a.tool} · seq ${lseq(a.pre)}`;
         return cols(left, right + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
       }
@@ -1974,6 +2001,8 @@
       if (v.approver) left += `<dt>APPROVER</dt><dd>${esc(v.approver)}</dd><dt>VIA</dt><dd>${esc(v.via ? v.via + " (a bridge vouches for the person)" : "the approver's own connection")}</dd><dt>SELF</dt><dd class="${v.self_approved ? "s-deny" : ""}">${esc(v.self_approved ? "self-approved" : "not self-approved")}</dd>${v.break_glass ? `<dt>BREAK-GLASS</dt><dd class="s-deny">yes: outside the approver list, with a reason</dd>` : ""}`;
       if (v.binding_digest) left += `<dt>BINDING</dt><dd class="hash" title="${esc(v.binding_digest)}">${esc(short(v.binding_digest))}</dd>`;
       if (v.kind) left += `<dt>GAP KIND</dt><dd>${esc(v.kind)}</dd>`;
+      const ef = v.effect && S.effects.get(sel.session_id + "|" + v.run_seq), call = ef?.call && S.actions.get(ef.call);
+      if (ef) left += `<dt>CALL</dt><dd class="${ef.status === "found" ? "s-deny" : ""}">${call ? `<a href="#" data-tkseq="${esc(call.pre.tk_seq)}">${esc(call.tool)} ${esc(call.pre.tool_use_id)}</a> · ` : ""}${esc(effectHow(ef))}</dd>`;
       if (v.cites) left += `<dt>CITES</dt><dd>` + v.cites.map(c => { const r = S.recs.find(r => r.session_id === sel.session_id && r.v2?.run_seq === c.run_seq);
         return r ? `<a href="#" data-tkseq="${esc(r.tk_seq)}">record ${esc(c.run_seq)}</a> <span class="${r.hash === c.hash ? "s-ok" : "s-deny"}">${r.hash === c.hash ? "hash matches" : "HASH MISMATCH"}</span>` : `record ${esc(c.run_seq)} <span class="dim">not in this view</span>`; }).join("<br>") + `</dd>`;
       if (!sel.signer) left += verdictLine(sel.session_id);

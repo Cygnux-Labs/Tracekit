@@ -369,10 +369,11 @@ class Coverage(Base):
         out = findings_v2.analyze(records, None)
         self.assertEqual(out["findings"], [])
         self.assertEqual({r: c["not_checkable"] for r, c in out["coverage"]["verdict"]["checks"].items()
-                          if r in ("TK-X201", "TK-X202", "TK-X203", "TK-X204", "TK-X208")},
+                          if r in ("TK-X201", "TK-X202", "TK-X203", "TK-X204", "TK-X208", "TK-X206", "TK-X207")},
                          {"TK-X201": [{"reason": "no_content", "n": 2}], "TK-X202": [{"reason": "no_content", "n": 1}],
                           "TK-X203": [{"reason": "no_content", "n": 2}], "TK-X204": [{"reason": "no_content", "n": 2}],
-                          "TK-X208": [{"reason": "no_content", "n": 1}]})
+                          "TK-X208": [{"reason": "no_content", "n": 1}],
+                          "TK-X206": [{"reason": "no_sensor", "n": 2}], "TK-X207": [{"reason": "no_sensor", "n": 1}]})
         text = findings_v2.render(out)
         self.assertIn("never counted as a pass", text)
         self.assertIn("content: {retain: true}", text)

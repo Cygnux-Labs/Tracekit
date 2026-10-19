@@ -4,6 +4,7 @@
     tracekit analyze --v2 --run R --store DIR      # a signer's store, read-only
     tracekit analyze --v2 --run R --bundle B --trust T
         [--project DIR] [--allow DIR ...] [--open] [--budget S] [--dry-run] [--json]
+        [--effect-grace S] [--clock-skew S] [--sensor-skip DIR ...]
 
 Each pass signs its findings and its coverage review through the signer (review_finding), in a findings run of its own
 about the run (`register_run analyzes`), as an identity signer.yaml `analyzers` lists (the dev signer lists its user, so
@@ -28,6 +29,8 @@ Checks, for each call the run allowed or ran:
           keeps away lifts it: the finding stays, downgraded, and cites the lifting record.
   TK-X205 (critical) a success claim after the last related call failed, and v1's say-vs-do checks TK-X101..X104,
           X111..X114 and X120 on the v2 view: tracekit.findings_text
+  TK-X206 (high) a kernel sensor's exec, connect or file effect no call explains, and TK-X207 (medium) a call that
+          returned ok without the effect it should have had (findings_effects)
 For each prompt line of the main transcript:
   TK-X208 (high) the run's prompt hook recorded prompts, and none of them is this line's text: a line the harness never
           submitted (an agent can append one to its own transcript). It is no request: it lifts and clears nothing.
@@ -65,7 +68,7 @@ import sys
 import tempfile
 import time
 
-from . import __version__, constraints, findings_text, parsers
+from . import __version__, constraints, findings_effects, findings_text, parsers
 from .findings import SEVERITY, WRITE_TOOLS
 from .signer.rpc_schema import FINDING_TITLES as TITLES, RPCError
 
@@ -78,7 +81,7 @@ EXCERPT = 600
 SHELL_TOOLS = ("Bash", "bash", "shell")
 
 SEVERITIES = {"TK-X201": "info", "TK-X202": "medium", "TK-X203": "high", "TK-X204": "high", "TK-X208": "high",
-              **findings_text.SEVERITIES}
+              **findings_text.SEVERITIES, **findings_effects.SEVERITIES}
 WHY = {   # rule -> (why it matters, what to do)
     "TK-X201": ("nothing the model said explains this action, so there is no stated reason to check it against",
                 "read the action and its result; if the model's reasoning was withheld, turn on thinking summaries"),
@@ -94,6 +97,7 @@ WHY = {   # rule -> (why it matters, what to do)
                 "submitted it: the agent (or something with its access) can write that file",
                 "treat the line as the agent's words, not the person's; find what wrote it"),
     **findings_text.WHY,
+    **findings_effects.WHY,
     "TK-X210": ("a reviewer model read the run and found that what was asked, said and done disagree: a model's "
                 "opinion, not proof", "read its explanation against the cited records; it never blocks a call or "
                 "changes the exit code"),
@@ -125,6 +129,7 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
                 "update the hooks: `tracekit init --dev --v2` (from 1.4 the hook records each prompt at "
                 "UserPromptSubmit)"),
     **findings_text.REASONS,
+    **findings_effects.REASONS,
     "no_answer": ("the reviewer model gave no usable answer (an error, a timeout or a refusal)",
                   "check --review-url, its API key and --review-model; the line above names the error"),
     "malformed": ("the reviewer model's answer was not the JSON its schema asks for",
@@ -132,7 +137,7 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "no_findings_run": ("no findings run could be registered to record the reviewer model's call in",
                         "run it as an identity signer.yaml `analyzers` lists, against the signer that holds the run"),
 }
-CHECKS = ("TK-X201", "TK-X202", "TK-X203", "TK-X204", "TK-X208", *findings_text.CHECKS)
+CHECKS = ("TK-X201", "TK-X202", "TK-X203", "TK-X204", "TK-X208", *findings_text.CHECKS, *findings_effects.CHECKS)
 PROMPT_HOOK = ":UserPromptSubmit"   # an input.observed source: <agent>:UserPromptSubmit, the hook's prompt
 FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorability classes, best first
 TIERS = ("operator", "observer", "gateway", "decision", "harness", "sdk", "transcript")   # trust, best first
@@ -396,7 +401,7 @@ class _Run:
                 self.args[seq] = {"paths": [path] if isinstance(path, str) else [], "cd": False, "edit": True}
             elif d["tool"] in SHELL_TOOLS and isinstance(body, dict) and isinstance(body.get("command"), str):
                 paths, cd = _targets(body["command"])
-                self.args[seq] = {"paths": paths, "cd": cd, "edit": False}
+                self.args[seq] = {"paths": paths, "cd": cd, "edit": False, "command": _text(body["command"])}
             return
         tier = "gateway" if e["source"] == "gateway" else "transcript" if _tailer(body) else "sdk"
         self.tier[seq] = tier
@@ -700,14 +705,16 @@ def _check(run, out, project, allow, deadline, clock):
     return cov, forms
 
 
-def analyze(records, content=None, project=None, allow=(), partial=False, budget_s=BUDGET_S, clock=time.monotonic):
+def analyze(records, content=None, project=None, allow=(), partial=False, budget_s=BUDGET_S, clock=time.monotonic,
+            effects=None):
     """The checks over one run's v2 records. `content(records)`: (run_seq, content, opened) of those of `records` the
     vault holds content for, in run_seq order (why.signed.vault_content), or None (no vault: little is checkable).
     -> the --json shape (docs/findings.md): {"run_id", "agent", "summary": the one line, "findings": [{verdict,
     cites}], "coverage": {verdict, cites} (TK-X200), "shown": what printing shows, plaintext, never signed
     ("details" per finding, "tiers" per check, "constraints" stated, "prompts": each prompt line confirmed or not,
-    "calls": tool_use_id -> the reasoning before it and each check's outcome)}; each {verdict, cites} is what
-    review_finding signs. EvidenceAlert (from `content`) when the vault's content does not open its record."""
+    "calls": tool_use_id -> the reasoning before it and each check's outcome, "effects": run_seq -> each kernel sensor
+    effect's call, "effect_window")}; each {verdict, cites} is what review_finding signs; `effects`:
+    findings_effects.options(). EvidenceAlert (from `content`) when the vault's content does not open its record."""
     run, deadline = _Run(records), clock() + budget_s
     out = {"run_id": run.run_id, "agent": run.agent, "findings": [],
            "shown": {"details": [], "constraints": [], "prompts": [], "calls": {}}}
@@ -727,6 +734,7 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
         run.confirm()
         cov, forms = _check(run, out, project, allow, deadline, clock)
         findings_text.check(run, content, out, cov, deadline, clock)
+        findings_effects.check(run, out, cov, effects, deadline, clock)
     except Budget:
         budget, out["findings"], out["shown"]["details"] = True, [], []
         out["shown"]["calls"] = {}
@@ -808,7 +816,7 @@ def render(out):
         lines.append("Not checkable (never counted as a pass):")
         for r, why, n in gaps:
             plain, fix = REASONS[why]
-            unit = "prompt line" if r == "TK-X208" else "call"
+            unit = "prompt line" if r == "TK-X208" else findings_effects.unit(r, why)
             lines += [f"  {r} for {n} {unit}{'s' * (n != 1)}: {plain}.", f"    To make it checkable: {fix}"]
         lines.append("")
     if out["shown"]["constraints"]:
@@ -878,9 +886,10 @@ def main(argv=None):
         "nothing said before an action, TK-X202 an unmentioned file edited, TK-X203 a write outside the project, "
         "TK-X204 a stated constraint broken, TK-X208 a prompt line the harness never submitted, TK-X205 success "
         "claimed after a failure, TK-X101..X104 claimed actions that never ran, TK-X111..X114 denied actions that "
-        "did, TK-X120 a risky action never mentioned; TK-X200 coverage and the monitorability score; with --review, "
-        "TK-X210 a reviewer model's reading, warn only), and sign the findings. Exit 0, 4 when a finding other than "
-        "TK-X210 is high or worse, 2 on an error (findings that could not be signed among them)."))
+        "did, TK-X120 a risky action never mentioned, TK-X206 a kernel sensor's effect no call explains, TK-X207 a "
+        "call with no effect; TK-X200 coverage and the monitorability score; with --review, TK-X210 a reviewer "
+        "model's reading, warn only), and sign the findings. Exit 0, 4 when a finding other than TK-X210 is high or "
+        "worse, 2 on an error (findings that could not be signed among them)."))
     ap.add_argument("--run", help="the run id (default: the store's latest run)")
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--store", metavar="DIR", help="a signer data dir (default: the dev signer's), read-only")
@@ -891,6 +900,7 @@ def main(argv=None):
                     help="a directory outside the project the agent may write (with /tmp and $TMPDIR)")
     ap.add_argument("--open", action="store_true", help="analyse a run that is still open: coverage says partial")
     ap.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take")
+    findings_effects.arguments(ap)
     ap.add_argument("--dry-run", action="store_true", help="print the findings, sign nothing")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--review", action="store_true", help="also ask a reviewer model (TK-X210, warn only), which "
@@ -966,7 +976,8 @@ def main(argv=None):
     failed = None
     try:
         try:
-            out = analyze(records, rv.tee(content) if rv else content, a.project, a.allow, a.open, a.budget)
+            out = analyze(records, rv.tee(content) if rv else content, a.project, a.allow, a.open, a.budget,
+                          effects=findings_effects.from_args(a))
             if rv:
                 _review(rv, out, records, client, run_id)
         except EvidenceAlert as e:

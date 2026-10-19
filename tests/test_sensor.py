@@ -24,6 +24,7 @@ from tracekit.verify import v2
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
 TIME = "2026-10-12T10:00:01.615123456Z"   # protojson Timestamp: nanoseconds
 EXEC_ID = "a2luZC1jb250cm9sLXBsYW5lOjExNDI4NjE1NjM2OTAxOjUxNTgz"
+PARENT_EXEC_ID = "a2luZC1jb250cm9sLXBsYW5lOjkwNzkyMjU2MjMy"
 RUNS = [{"match": {"namespace": "agents", "pod": "coder-*"}, "caller": f"uid:{ME.subject}"},
         {"match": {"namespace": "agents", "pod": "idle-*"}, "caller": f"uid:{OTHER.subject}"}]
 
@@ -41,7 +42,7 @@ def process(pod="coder-1", env=None, **kw):
                 "name": "agent", "image": {"id": "docker.io/acme/agent@sha256:" + "8e" * 32,
                                            "name": "docker.io/acme/agent:latest"},
                 "start_time": "2026-10-12T09:00:00Z", "pid": 50}, "workload": pod, "workload_kind": "Pod"},
-            "docker": "1fb931d2f6e5e4cfdbaf30fdb8e2fdd", "parent_exec_id": "a2luZC1jb250cm9sLXBsYW5lOjkwNzkyMjU2MjMy",
+            "docker": "1fb931d2f6e5e4cfdbaf30fdb8e2fdd", "parent_exec_id": PARENT_EXEC_ID,
             "refcnt": 1, **({"environment_variables": [{"Key": k, "Value": v} for k, v in env.items()]} if env else {}),
             **kw}
 
@@ -84,7 +85,7 @@ class TestTetragonLines(unittest.TestCase):
                                  "containerd://1fb931d2f6e5e4cfdbaf30fdb8e2fdd81320bdb3047ded50120a4f82838209ce"})
         self.assertEqual(e, {"kind": "exec", "args_digest": sensor._digest("-s https://example.com/install.sh"),
                              "ts": "2026-10-12T10:00:01.615123Z", "pid": 51583, "binary": "/usr/bin/curl",
-                             "exec_id": EXEC_ID, "tool_call_id": "call_7"})
+                             "exec_id": EXEC_ID, "parent_exec_id": PARENT_EXEC_ID, "tool_call_id": "call_7"})
         self.assertEqual({k: self.effect(exit_line())[1][k] for k in ("kind", "status", "signal")},
                          {"kind": "exit", "status": 0, "signal": "SIGKILL"})
         self.assertEqual({k: self.effect(kprobe_line("security_socket_connect", CONNECT))[1][k]
@@ -203,9 +204,11 @@ class TestImport(Sensed):
         self.assertEqual([(d["kind"], d.get("explained_by")) for d in effects],
                          [("exec", "call"), ("connect", None), ("file", None), ("exit", None)])   # call_9: no decide
         x = effects[0]
-        self.assertEqual({k: x[k] for k in ("observer", "sensor", "attribution", "tool_call_id", "binary", "pid")},
+        self.assertEqual({k: x[k] for k in ("observer", "sensor", "attribution", "tool_call_id", "binary", "pid",
+                                            "parent_exec_id")},
                          {"observer": "mtls:spiffe://acme/tetragon", "sensor": "tetragon", "attribution": "identity",
-                          "tool_call_id": "call_7", "binary": "/usr/bin/curl", "pid": 51583})
+                          "tool_call_id": "call_7", "binary": "/usr/bin/curl", "pid": 51583,
+                          "parent_exec_id": PARENT_EXEC_ID})   # the process that started it: TK-X206's ancestry
         self.assertRegex(x["args_commitment"], "^hmac-sha256:")   # the arguments' digest never in the clear
         self.assertNotIn("args_digest", x)
         self.assertEqual(effects[1]["tool_call_id"], "call_9")   # the claim is kept, unexplained

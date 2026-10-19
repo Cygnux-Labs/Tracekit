@@ -83,7 +83,10 @@ records of the analysed run by `run_seq` and hash; its closed schema keeps text 
 out of signed records, which can't be erased. The finding's author is the identity the signer measured when the
 findings run registered. `tracekit export --v2 --run R --with-findings` bundles a run with its findings runs; the
 verifier checks each citation and labels the author ([verdicts](verdicts.md#reviews)), and prints the findings on a
-`Findings:` line of their own: an opinion of the run, never part of its integrity.
+`Findings:` line of their own: an opinion of the run, never part of its integrity. The analyzer's effect checks
+(TK-X206, TK-X207, `tracekit/findings_effects.py`) join each kernel sensor effect to the call that explains it, by the
+call the process names, the process that started it, or the call's window on the signer's clock, and flag what none
+explains and calls that caused nothing the sensor saw ([findings](findings.md#effects-what-a-kernel-sensor-saw)).
 
 Live constraints go the other way: a limit the person's request states ("don't touch billing.py", "don't push") is
 sent by the hook as `constraint_add` and kept in the run's state (a `constraint.added` record holds the kind and a

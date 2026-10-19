@@ -4628,6 +4628,12 @@
           "maxLength": 256,
           "description": "the sensor's id of the process (Tetragon's exec_id)"
         },
+        "parent_exec_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "exec: the sensor's id of the process that started this one (Tetragon's parent_exec_id)"
+        },
         "args_commitment": {
           "$ref": "#/$defs/commitment",
           "description": "commitment to sha256 of the arguments string as the sensor reported it"

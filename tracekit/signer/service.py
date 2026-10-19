@@ -3648,7 +3648,8 @@ class SignerService:
         # lean: an effect nothing explains is not reconciled (no reconcile.unexplained_effect, no count in run.final);
         # add it once runs carry a tool call id into every process (Codex does, Claude Code doesn't)
         d = {"observer": obs, "sensor": sensor, **{k: x[k] for k in (
-            "kind", "ts", "pid", "binary", "exec_id", "status", "signal", "host", "port", "path", "tool_call_id")
+            "kind", "ts", "pid", "binary", "exec_id", "parent_exec_id", "status", "signal", "host", "port", "path",
+            "tool_call_id")
             if k in x}, "attribution": how}
         if "args_digest" in x:
             sid = secrets.token_hex(16)

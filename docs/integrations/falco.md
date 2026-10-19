@@ -111,6 +111,11 @@ Falco has no exit events in these rules, and no process id across executions (no
 aren't recorded. `proc.env[CODEX_TOOL_CALL_ID]` joins a record to the Codex tool call that started it
 ([Tetragon](tetragon.md#tool-calls) says how, and what the join is worth).
 
+`tracekit analyze --v2` checks the records against the run's calls as for
+[Tetragon](tetragon.md#checking-effects-against-calls) (TK-X206, TK-X207), with one difference: Falco names no parent
+process, so a process a call left running and what it starts after that call's window are TK-X206 findings, and a
+process's connections and writes are joined to it by `pid` and time.
+
 ## Losses
 
 Falco numbers no alerts. It reports drops between its kernel driver and itself as the alert

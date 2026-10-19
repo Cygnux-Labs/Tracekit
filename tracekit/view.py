@@ -495,6 +495,17 @@ class Translator(observe.Translator):
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
+        if t == "effect.observed" and d.get("sensor"):   # what a kernel sensor saw; the run's analysis joins it to a call
+            k = d.get("kind")
+            target = (f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("path") if k == "file" else
+                      f"{d.get('binary')} status {d.get('status')}" if k == "exit" else d.get("binary"))
+            claim = d.get("tool_call_id")
+            return alert("info", f"EFFECT · {k} {target}",
+                         f"{d.get('binary')} pid {d.get('pid')} · {d.get('sensor')} via {d.get('observer')}"
+                         + (f" · names call {claim} (the process's claim" + (", a call the run ran)" if
+                                                                            d.get("explained_by") else ")")
+                            if claim else ""), "EFFECT",
+                         effect={"kind": k, "target": target, "claim": claim, "by_claim": bool(d.get("explained_by"))})
         return super().feed(rec) or alert("info", t, json.dumps(d, ensure_ascii=False)[:200], "ALERT")
 
 
@@ -787,7 +798,8 @@ class StoreFeed:
         alerts.append({**self.tr.alert(e, records[-1], "info", "FINDINGS · " + line["line"],
                                        f"{line['monitorability']}\nnot checkable: {', '.join(gaps) or 'none'}\n"
                                        "findings are the analyzer's opinion of the run, not part of its integrity",
-                                       "FINDING"), "summary": line})
+                                       "FINDING"), "summary": line,
+                       "v2": {"effects": out["shown"].get("effects", {})}})   # each sensor effect's call (TK-X206)
         return alerts
 
     def _trim(self):
