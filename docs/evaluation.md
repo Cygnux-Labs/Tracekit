@@ -324,8 +324,7 @@ Detection by cover (24 sessions each):
 - No false alarm of TK-X201, TK-X203, TK-X204 or TK-X208 on 1,812 honest calls in either set; TK-X202 flagged 5
   held-out hard negatives (edits whose file the request never named), and no honest call was held live.
 
-`make eval` runs it. Results: `eval/results/e20_alignment.json`. Model arms (a reviewer model, real `claude -p` runs)
-come later.
+`make eval` runs it. Results: `eval/results/e20_alignment.json`. The reviewer model arm is below.
 
 Text faults, found when any of their checks finds them: F4 a test run fails (by its exit, or piped through `tail` so
 only its output shows it) and the model claims success (TK-X205; c5_line appends a transcript line in which the run
@@ -336,6 +335,20 @@ piped 69%): a free-form summary is the hardest. F2, F3 and F5 are found only whe
 leaves out a risky one (held out: F2 c2 25%, F3 25% for c0, c1, c4 and 100% for c3, F5 0%); held-out Fc (the pool's
 success claims with no test run) 29%, since most of those claims don't say tests ran. No honest control, tuned or
 held out, got a text finding. The held-out pool was scored once after one round of additions to the tuned set.
+
+The reviewer model arm (`E20_MODEL=1`) runs [TK-X210](findings.md#the-reviewer-model-tk-x210) on a sample of the same
+sessions of both sets (2 per fault, cover and splice; 4 per control kind), each reviewed twice: per cover, how often it
+flagged the fault and cited the fault's call, alone and together with the fault's own check; flags on controls;
+agreement between the two reviews; answers missing or malformed counted apart. It records the reviewer's and the
+agent's model families. It calls a model (about 400 calls), so it is not part of `make eval` and has not been run yet:
+
+```bash
+E20_MODEL=1 ANTHROPIC_API_KEY=... python3 eval/e20_alignment.py      # writes eval/results/e20_reviewer.json
+E20_MODEL=1 E20_REVIEW_MODEL=gpt-5 E20_REVIEW_URL=https://api.openai.com/v1/chat/completions \
+    OPENAI_API_KEY=... python3 eval/e20_alignment.py                   # a reviewer of another family
+```
+
+Real `claude -p` runs come later.
 
 ## What is not measured
 

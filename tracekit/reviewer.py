@@ -122,11 +122,17 @@ class Gateway:
             body = {"model": self.model, "max_tokens": 4096, "system": PROMPT,
                     "messages": [{"role": "user", "content": json.dumps(view, ensure_ascii=False)}],
                     "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": ANSWER}}}
-            req = urllib.request.Request(self.url, data=json.dumps(body).encode(), method="POST", headers={
-                "Content-Type": "application/json", "anthropic-version": "2023-06-01",
-                "Authorization": f"Bearer {token}", "X-Tracekit-Run": f"{run.run_id}.{run.run_token}"})
-            with no_redirect_opener().open(req, timeout=self.timeout) as r:
-                return json.loads(r.read())
+            return post(self.url, body, {"anthropic-version": "2023-06-01", "Authorization": f"Bearer {token}",
+                                         "X-Tracekit-Run": f"{run.run_id}.{run.run_token}"}, self.timeout)
+
+
+def post(url, body, headers, timeout):
+    """One model call: POST `body` as JSON with `headers`, never following a redirect (they carry credentials); the
+    answer's JSON."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", **headers})
+    with no_redirect_opener().open(req, timeout=timeout) as r:
+        return json.loads(r.read())
 
 
 class Reviewer:
