@@ -433,6 +433,19 @@ class TestCommand(unittest.TestCase):
         self.assertEqual([len(r["effects"]) for r in sent if r["effects"]], [1])
         self.assertIn("rate limit", next(r["lost"] for r in sent if "lost" in r))
 
+    def test_a_line_nested_too_deep_is_a_loss_and_reading_goes_on(self):
+        imp = sensor.Import(types.SimpleNamespace(observe_effect=None), "tetragon", RUNS)
+        imp.add(b"[" * 100_000 + b"]" * 100_000 + b"\n")
+        imp.add(exec_line().encode())
+        self.assertEqual((dict(imp.lost), len(imp.pending)), ({"tetragon lines the import could not read or record": 1}, 1))
+
+    def test_reading_that_fails_stops_the_import_with_exit_1(self):
+        def lines():
+            yield exec_line().encode()
+            raise RuntimeError("the reader broke")
+        imp = sensor.Import(types.SimpleNamespace(observe_effect=lambda req: None), "tetragon", RUNS)
+        self.assertEqual(sensor.run(imp, lines()), 1)
+
     def test_follow_reads_across_rotation(self):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)

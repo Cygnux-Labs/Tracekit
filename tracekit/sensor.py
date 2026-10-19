@@ -205,7 +205,7 @@ class Import:
                     got, skip = None, got or NOT_RECORDED
             elif got is None:
                 skip = NOT_RECORDED
-        except (ValueError, KeyError, TypeError, AttributeError):
+        except (ValueError, KeyError, TypeError, AttributeError, RecursionError):   # RecursionError: nested too deep
             got = f"{self.sensor} lines the import could not read or record"
         with self.lock:
             if skip:
@@ -299,14 +299,14 @@ def _follow(f, path):
 
 def run(imp, lines):
     """Feed `lines` to `imp` on a thread while this one sends; returns once they end and everything is sent (0), or
-    the signer could not take it for FINAL_TRIES seconds, or the input could not be read (1)."""
+    the signer could not take it for FINAL_TRIES seconds, or the input could not be read or the reading failed (1)."""
     done, failed = threading.Event(), []
 
     def read():
         try:
             for line in lines:
                 imp.add(line)
-        except OSError as e:
+        except Exception as e:   # an unreadable input, or a bug: either way the import stops, and says so
             failed.append(e)
         finally:
             done.set()
