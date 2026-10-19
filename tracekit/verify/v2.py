@@ -88,6 +88,12 @@ signer_isolation is same-user (the agent could have written it); else `unpinned 
 in the bundle, its cites are not counted and its author not checked (`reviews counted`, a warning). A review without
 cites (a migrated v1 judge verdict) is `imported`, never checked.
 
+Versions (format-v2.md §9): a bundle whose verifier_min_version is above this verifier's is `UNVERIFIABLE (needs
+tracekit >= x)` (exit 2), the `bundle readable` line listing the commands that verify it with the user's paths
+(`upgrade`). Format 1.4's non-critical slot: an `ext` field on any record and the `ext` record type, whose names a
+verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) and otherwise reports on a `not
+interpreted` warning each; the records are signed, chained and included like any other, and the bundle stays VERIFIED.
+
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
 cosignatures cap the assurance level by the same rule as the checkpoint's), and consistent with each other; every
@@ -129,7 +135,7 @@ import zipfile
 
 from tracekit import __version__, crypto
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, Report, _load_trusted_key
-from tracekit.bundle_v2 import FORMAT, KEY_TYPES, run_name
+from tracekit.bundle_v2 import FORMAT, KEY_TYPES, ext_names, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
@@ -162,6 +168,10 @@ _VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _IDENTITY = re.compile(r"[a-z0-9_]+:.+")   # scheme:subject, as run.registered's identity reads
 _EOCD, _CEN, _LOC = struct.Struct("<IHHHHIIH"), struct.Struct("<IHHHHHHIIIHHHHHII"), struct.Struct("<IHHHHHIIIHH")
+PAGE = "https://cygnux-labs.github.io/Tracekit/verify/"   # the browser verifier of the latest release (RELEASING.md)
+# the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
+# whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
+EXT_CHECKS = {}
 
 
 class Unusable(ValueError):
@@ -320,7 +330,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
             raise Unusable("verifier_min_version is not a version number")
         if _version(need) > _version(__version__):
             rep.integrity = f"UNVERIFIABLE (needs tracekit >= {need})"
-            rep.check("bundle readable", False, rep.integrity)
+            rep.check("bundle readable", False, rep.integrity, upgrade(need, path, trust_path))
             return rep, EXIT_BAD
     except Exception as e:
         rep.check("bundle readable", False, f"cannot read bundle: {type(e).__name__}: {e}")
@@ -332,6 +342,33 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
     if rep.failures:
         rep.integrity = "FAILED"
     return rep, EXIT_FAIL if rep.failures else EXIT_BAD if rep.integrity.startswith("UNVERIFIABLE") else EXIT_OK
+
+
+def upgrade(need, bundle, trust):
+    """Ways to verify the bundle with a verifier of version `need` or later, as commands with the user's own paths."""
+    from tracekit.cli import _quote
+    b, t = (_quote(os.fsdecode(p)) if isinstance(p, (str, bytes, os.PathLike)) else n
+            for p, n in ((bundle, "BUNDLE"), (trust, "TRUST.json")))
+    return [f'uvx --from "tracekit-ai>={need}" tracekit verify {b} --trust {t}',
+            f"npx -y @cygnuxlabs/tracekit@latest verify {b} --trust {t}",
+            f"or open {PAGE} and choose both files: the page verifies them in your browser and sends nothing"]
+
+
+def _ext(rep, events, full):
+    """A line per ext name the records carry: its EXT_CHECKS check, or a `not interpreted` warning. The records were
+    checked like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version."""
+    carry = {}   # name -> the events carrying it
+    for e in events:
+        for n in {str(x)[:64] for x in ext_names(e)}:
+            carry.setdefault(n, []).append(e)
+    later = f"; tracekit >= {full} checks it" if isinstance(full, str) and _VERSION.fullmatch(full) \
+        and _version(full) > _version(__version__) else ""
+    for n, es in sorted(carry.items()):
+        if n in EXT_CHECKS:
+            EXT_CHECKS[n](rep, es)
+        else:
+            rep.check("not interpreted", False, f"{len(es)} record(s) carry ext.{n}: their signatures, chain and "
+                      f"inclusion are checked above; what ext.{n} means is not checked{later}", warn=True)
 
 
 def _revocations(rep, trust, paths):
@@ -674,6 +711,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
+    pointed = _jsonl(files["registry/records.jsonl"]) if run_set else []   # the records a run-set's leaves name
+    _ext(rep, list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values()),
+         manifest.get("verifier_version"))
 
 
 def _approvals(rep, runs, policies):

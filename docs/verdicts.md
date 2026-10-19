@@ -29,18 +29,40 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 
 | Verdict | Means |
 |---|---|
-| `VERIFIED` | every check passed and every run in the bundle ends in its `run.final` |
+| `VERIFIED` | every check this verifier implements passed and every run in the bundle ends in its `run.final`. Records carrying an ext name it doesn't interpret verified like every other; what the name says is on a `not interpreted` warning |
 | `VERIFIED TO HEAD n (open)` | the bundle's one run has no `run.final` yet; its records up to `run_seq` n verify. Records after n may exist |
 | `VERIFIED (k run(s) open)` | a run-set bundle in which k runs have no `run.final` yet |
 | `FAILED` | at least one check failed; the failed lines say which |
 | `UNUSABLE BUNDLE` | the trust config or the zip could not be read, or the manifest is not `tracekit.bundle.v2` |
-| `UNVERIFIABLE (needs tracekit >= x)` | the bundle asks for a newer verifier (`verifier_min_version`) |
+| `UNVERIFIABLE (needs tracekit >= x)` | the bundle asks for a newer verifier (`verifier_min_version`); nothing failed. The `bundle readable` line lists the commands that verify it ([below](#a-bundle-that-needs-a-newer-verifier)) |
 | `UNVERIFIABLE (key revoked)` | records signed by a record key whose certificate a passed `--revocations` file revokes ([issuer.md](issuer.md)) |
 
 `VERIFIED` means: the records were signed by keys the log declared and had not retired; they form one unbroken run
 chain; the run's first and last records are in a tree whose checkpoint the pinned log key signed; nothing was edited,
 dropped, reordered or added after signing. It does **not** mean the run did everything the agent did (see coverage and
 tiers), that a tool result is true, or that the signer was out of the agent's reach (see isolation and assurance).
+
+## A bundle that needs a newer verifier
+
+`UNVERIFIABLE (needs tracekit >= x)` means the bundle uses something your verifier doesn't know; nothing failed.
+Verify it with a newer one. From 1.4.0 the `bundle readable` line prints these with your own paths (1.3 and earlier
+print only the verdict):
+
+```text
+[FAIL] bundle readable — UNVERIFIABLE (needs tracekit >= 1.4.0)
+        uvx --from "tracekit-ai>=1.4.0" tracekit verify run.tkb --trust trust.json
+        npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json
+        or open https://cygnux-labs.github.io/Tracekit/verify/ and choose both files: the page verifies them in your browser and sends nothing
+```
+
+`uvx` (from [uv](https://docs.astral.sh/uv/)) runs the Python verifier of that version without installing it; `npx`
+runs the TypeScript one (Node ≥ 20.12), which lists itself first. The page is the TypeScript verifier too: its Content
+Security Policy lets it load and send nothing, so the bundle never leaves your browser. For evidence, use a copy you
+checked against the release (`gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`, [releasing](RELEASING.md#verifying-a-release)).
+
+From 1.4.0, what an older verifier can leave unread is non-critical (`ext`, [format v2](format-v2.md#9-bundle-layout)):
+a 1.4.0 verifier verifies a later bundle and names each ext name it did not interpret on a `not interpreted` warning,
+with the version that checks it.
 
 ## Assurance
 
@@ -75,7 +97,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | Line | Pass means | On failure |
 |---|---|---|
 | `trust config` | — | the trust config is malformed (exit 2) |
-| `bundle readable` | — | not a zip, unsafe entries, no manifest, or too new (exit 2) |
+| `bundle readable` | — | not a zip, unsafe entries, no manifest, or too new (exit 2): then it lists the commands that verify the bundle ([above](#a-bundle-that-needs-a-newer-verifier)) |
 | `manifest` | the files are exactly those listed, with those hashes | a file was added, removed or changed after export |
 | `checkpoint` | the note is signed by the pinned log key named after its origin (and by its pinned hybrid SLH-DSA key, if any), and is of the proofs' tree size | wrong key, wrong origin, edited note, a pinned hybrid line missing or bad |
 | `witness quorum` | at least `witnesses_required` pinned cosignatures (any class) | too few |
@@ -104,6 +126,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `break-glass approvals` | an approval was answered under the break-glass role, with its approver and reason | that the approval was wrong |
 | `held calls` | the signer wrote a `held_call_unresolved` gap: a call the executor or a gateway decided and may have run got no result before its run ended (after `gateway_wait_s`) | that the call ran, or did harm |
 | `tiers` (`decided and completed by different capture paths`) | a tool call's decision and result records name different `source` or `tier`, for example a call a gateway decided (T2) completed by the agent, which a current signer refuses; each such call is listed and counted at the weaker tier | which record is false, or that the call didn't run |
+| `not interpreted` | records carry an ext name (format 1.4's non-critical slot) this verifier doesn't check, one line per name: `n record(s) carry ext.<name>`. They verified like every record (signature, chain, inclusion); what the name says is not checked. `tracekit >= x checks it` names a verifier that does (from the manifest, advisory) | that anything is wrong: a later Tracekit wrote something this verifier doesn't read |
 | `external decisions` | another policy system's imported decision (`policy.external`) disagreed with the signer's for the same call (or named another tool, or a call the signer never decided), recorded as `capture.gap{decision_mismatch}`; the line also counts imports by system and by verified signature | that either decision was wrong: the signer's decision is the one that applied |
 
 ### Informational lines (always `PASS`)

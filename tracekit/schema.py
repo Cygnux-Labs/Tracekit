@@ -1,7 +1,7 @@
 """Validate events against tracekit/schema/tracekit.event.v1.json or .v2.json (picked by `schema_version`) with a
-small, dependency-free JSON Schema subset (type, const, enum, required, properties, additionalProperties, items,
-oneOf, allOf, if/then, $ref to #/$defs, pattern, minimum, maximum, minLength, maxLength, minItems, maxItems). Any other
-keyword raises, so a typo in a schema cannot silently drop a check.
+small, dependency-free JSON Schema subset (type, const, enum, required, properties, additionalProperties,
+propertyNames, items, oneOf, allOf, if/then, $ref to #/$defs, pattern, minimum, maximum, minLength, maxLength, minItems,
+maxItems). Any other keyword raises, so a typo in a schema cannot silently drop a check.
 
 v2 patterns must match the whole value with ASCII semantics. v1 keeps its original semantics (`re.search`, Unicode
 classes) and reports values that pass only that way as warnings."""
@@ -15,9 +15,9 @@ V2 = "tracekit.event.v2"
 _SCHEMAS = {}
 
 _TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
-KEYWORDS = {"type", "const", "enum", "required", "properties", "additionalProperties", "items", "oneOf", "allOf",
-            "if", "then", "$ref", "pattern", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems",
-            "$schema", "$id", "$defs", "title", "description"}
+KEYWORDS = {"type", "const", "enum", "required", "properties", "additionalProperties", "propertyNames", "items",
+            "oneOf", "allOf", "if", "then", "$ref", "pattern", "minimum", "maximum", "minLength", "maxLength",
+            "minItems", "maxItems", "$schema", "$id", "$defs", "title", "description"}
 
 
 def schema(version=V1):
@@ -89,6 +89,8 @@ def _check(v, s, root, path, errs, warns=None, strict=False):
                 errs.append(f"{path}: unexpected field '{k}'")
             elif isinstance(ap, dict):
                 _check(val, ap, root, f"{path}.{k}", errs, warns, strict)
+            if "propertyNames" in s:
+                _check(k, s["propertyNames"], root, f"{path}.{k}", errs, warns, strict)
     if isinstance(v, list) and "items" in s:
         for i, it in enumerate(v):
             _check(it, s["items"], root, f"{path}[{i}]", errs, warns, strict)

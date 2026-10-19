@@ -19,7 +19,7 @@ from unittest import mock
 
 from factories import rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
-from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export
+from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export, needs
 from tracekit.format import checkpoint
 from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
@@ -141,6 +141,21 @@ def gaps_bundle(log, out):
                                           "approved_commitment": "hmac-sha256:" + "1" * 64,
                                           "args_commitment": "hmac-sha256:" + "2" * 64}, tool_call_id="tc-1")
     log.add("capture.gap", {"kind": "approval_expired", "reason": "approval apr-2 expired"})
+    log.final()
+    export(log.store, "acme", "run-a", log.note(), out)
+    return out
+
+
+NOTE = {"acme.note": {"seen": [1, "x"], "by": None}}
+
+
+def ext_bundle(log, out, field=NOTE, record=("acme.note", {"detail": {"k": "v"}})):
+    """Export to `out` a run whose tool call carries the ext field `field` and that holds an `ext` record (name, other
+    data): format 1.4's non-critical slot."""
+    log.epoch(KEY1)
+    log.register()
+    log.add("tool.call", {"tool_use_id": "t1", "name": "Bash", "input": {}}, ext=field)
+    log.add("ext", {"name": record[0], **record[1]})
     log.final()
     export(log.store, "acme", "run-a", log.note(), out)
     return out
@@ -943,9 +958,107 @@ class TestVersionTable(Case):
     def test_shipped_rows_are_frozen(self):
         # a row is frozen once its version's first release candidate ships: later additions go in a new row, so a
         # verifier of that version never meets a field its own version claims to know
-        shipped = {"1.1.0": "2e5a668bf93c0e4b3fca960f9824e2c5858d5539109511d636bd7635e648061e"}
+        shipped = {"1.1.0": "2e5a668bf93c0e4b3fca960f9824e2c5858d5539109511d636bd7635e648061e",
+                   "1.2.0": "c0c704e79fe3641a7784cd2c05cf943c2ea9cab4c39181f6ab3bea5f736b1eb9",
+                   "1.3.0": "1ced79b94a5a8e0cb977946b39109020beeaaea8a5c2ac5ac856dbd1c0f794d2"}
         for version, digest in shipped.items():
             self.assertEqual(hashlib.sha256(canonical(VERSIONS[version])).hexdigest(), digest, version)
+
+
+
+class TestExt(Case):
+    """Format 1.4's non-critical slot: ext fields and records are signed, chained and included like any record; a name
+    the verifier doesn't interpret is a warning, never a failure; any use of the slot needs 1.4.0."""
+
+    def test_an_ext_name_not_interpreted_verifies_with_a_warning(self):
+        out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
+        manifest = json.loads(v2.read_zip(out)["manifest.json"])
+        self.assertEqual((manifest["verifier_min_version"], manifest["verifier_version"]), ("1.4.0", "1.4.0"))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity, rep.warnings), (0, "VERIFIED", ["not interpreted"]), rep.checks)
+        self.assertEqual(rep.checks[-1]["detail"], "2 record(s) carry ext.acme.note: their signatures, chain and "
+                                                   "inclusion are checked above; what ext.acme.note means is not checked")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["verify", out, "--trust", self.trust, "--strict"]), 3)
+
+    def test_an_older_verifier_is_unverifiable_and_told_how_to_verify(self):
+        out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
+        with mock.patch.object(v2, "__version__", "1.3.0"):
+            rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
+        self.assertEqual(rep.checks, [{"check": "bundle readable", "status": "fail", "detail": rep.integrity, "problems": [
+            f'uvx --from "tracekit-ai>=1.4.0" tracekit verify {out} --trust {self.trust}',
+            f"npx -y @cygnuxlabs/tracekit@latest verify {out} --trust {self.trust}",
+            f"or open {v2.PAGE} and choose both files: the page verifies them in your browser and sends nothing"]}])
+        if os.name != "nt":   # a path the shell would split is quoted
+            self.assertIn("verify '/tmp/my run.tkb' --trust t.json", v2.upgrade("1.4.0", "/tmp/my run.tkb", "t.json")[0])
+
+    def test_a_name_a_later_version_interprets_names_that_version(self):
+        with mock.patch.dict(VERSIONS, {"9.0.0": {"types": [], "fields": {}, "values": {}, "ext": ["acme.note"]}}):
+            out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
+        manifest = json.loads(v2.read_zip(out)["manifest.json"])
+        self.assertEqual((manifest["verifier_min_version"], manifest["verifier_version"]), ("1.4.0", "9.0.0"))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"))
+        self.assertTrue(rep.checks[-1]["detail"].endswith("is not checked; tracekit >= 9.0.0 checks it"))
+
+    def test_the_slot_needs_1_4_and_the_export_says_which_records(self):
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.add("tool.call", {"tool_use_id": "t1", "name": "Bash", "input": {}}, ext={})
+        log.final()
+        info = export(log.store, "acme", "run-a", log.note(), os.path.join(self.d, "e.tkb"))
+        self.assertEqual((info["verifier_min_version"], info["raised_by"], info["verifier_version"]),
+                         ("1.4.0", ["ext: seq 2"], "1.4.0"))
+        self.assertEqual(needs([{"type": "ext", "data": {"name": "n"}}]), ("1.4.0", "1.4.0"))
+
+    def test_an_ext_is_tamper_evident(self):
+        out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
+        for name, (edit, check) in {
+                "an ext value edited": (lambda rs: rs[1]["event"]["ext"]["acme.note"].update(seen=[2]), "signatures"),
+                "an ext field removed": (lambda rs: rs[1]["event"].pop("ext"), "signatures"),
+                "an ext record edited": (lambda rs: rs[2]["event"]["data"].update(detail={}), "signatures"),
+                "an ext record dropped": (lambda rs: rs.pop(2), "run chain")}.items():
+            with self.subTest(name):
+                self.assert_fails(self.mutate(out, edit), check)
+
+    @unverified_bundles   # each is schema-invalid on purpose
+    def test_ext_names_are_schema_checked(self):
+        for name, field, record in (("upper case", {"Acme": 1}, ("acme", {})), ("too long", {"a" * 65: 1}, ("a", {})),
+                                    ("a record's name not a string", NOTE, ("x", {"name": None}))):
+            with self.subTest(name):
+                out = ext_bundle(self.log(f"s-{random.random()}"), os.path.join(self.d, f"{random.random()}.tkb"),
+                                 field, record)
+                self.assert_fails(out, "signatures")
+
+    def test_an_ext_interpretation_adds_only_its_own_lines(self):
+        """What may go in ext: every line a verifier that doesn't interpret a name prints stays true without it, so the
+        report with the name's interpretation off is the full report minus that name's own lines, with its `not
+        interpreted` line instead. Every name a VERSIONS row lists has its check in EXT_CHECKS; a stand-in shows the
+        rule with one."""
+        listed = [n for row in VERSIONS.values() for n in row.get("ext", ())]
+        self.assertEqual(sorted(v2.EXT_CHECKS), sorted(listed))
+        checks = {**v2.EXT_CHECKS, "acme.note": lambda rep, es: rep.check("acme notes", True, f"{len(es)} note(s)")}
+        for name, check in checks.items():
+            with self.subTest(name):
+                out = ext_bundle(self.log(f"s-{name}"), os.path.join(self.d, f"{name}.tkb"), {name: {}}, (name, {}))
+                own = []
+
+                def tracked(rep, events, check=check, own=own):
+                    n = len(rep.checks)
+                    check(rep, events)
+                    own.extend(rep.checks[n:])
+                with mock.patch.dict(v2.EXT_CHECKS, {name: tracked}):
+                    on = self.verify(out)
+                with mock.patch.dict(v2.EXT_CHECKS):
+                    v2.EXT_CHECKS.pop(name, None)
+                    off = self.verify(out)
+                self.assertTrue(own)
+                self.assertEqual([c for c in on[0].checks if not any(c is o for o in own)],
+                                 [c for c in off[0].checks if c["detail"].split(":")[0] != f"2 record(s) carry ext.{name}"])
+                self.assertEqual((on[1], on[0].integrity, on[0].assurance), (off[1], off[0].integrity, off[0].assurance))
 
 
 if __name__ == "__main__":

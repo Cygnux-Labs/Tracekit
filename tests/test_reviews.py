@@ -83,7 +83,7 @@ class Signed(unittest.TestCase):
                with_runs=[r["run_id"] for r in with_runs])
         with open(trust, "w") as f:
             json.dump({"logs": [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))], "algs": ["ed25519"],
-                       "analyzers": list(analyzers)}, f)
+                       **({"analyzers": list(analyzers)} if analyzers else {})}, f)   # without: 1.3's verifier reads it
         return out, trust
 
     def bundles(self):

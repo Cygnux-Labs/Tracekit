@@ -301,7 +301,12 @@ tracekit init --dev --v2                    # wire Claude Code's hooks; add --ag
 - **Self-contained.** A `.tkb` file is a zip of records, inclusion proofs, checkpoints and the policy snapshots that
   decided the calls. It holds no verification code.
 - **Old files keep verifying.** Formats only grow, each format's verifier is frozen, and an older verifier reports a
-  newer file `UNVERIFIABLE (needs tracekit >= x)`, never `FAILED`.
+  newer file `UNVERIFIABLE (needs tracekit >= x)`, never `FAILED`. Verify such a file with
+  `uvx --from "tracekit-ai>=x" tracekit verify run.tkb --trust trust.json`,
+  `npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json`, or the
+  [browser verifier](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md#a-bundle-that-needs-a-newer-verifier),
+  which checks it in your browser and sends nothing. From 1.4.0, an addition an older verifier can leave unread is non-critical: the bundle verifies, and the
+  report names what that verifier didn't interpret.
 
 Verify a v1 bundle in GitHub Actions with `uses: Cygnux-Labs/Tracekit@main` (`bundle:` and `key:` or `witness:`).
 `require-anchor` defaults to `true`, so an unanchored bundle fails the step; set `require-anchor: "false"` to only
