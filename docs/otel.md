@@ -39,7 +39,7 @@ OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20tk_..." python my_agen
 | Span | Recognised by | Ledger events |
 |---|---|---|
 | Model call | `gen_ai.operation.name` = `chat`, `text_completion`, `generate_content`; OpenLLMetry `llm.request.type`; OpenInference `LLM` | `model.exchange` request + response: model, provider, finish reason, tool calls the model asked for, error, duration; prompt and output hashed (or clear with `content_capture: full`) |
-| Tool execution | `execute_tool`; OpenLLMetry `traceloop.span.kind=tool`; OpenInference `TOOL` | `tool.call`, `policy.decision`, `tool.result` |
+| Tool execution | `execute_tool`; OpenLLMetry `traceloop.span.kind=tool`; OpenInference `TOOL`; `mcp.method.name` = `tools/call` without `agentgateway.outbound.*` (agentgateway's request span: named `mcp:<mcp.target>/<gen_ai.tool.name>`, failed when `mcp.error.code` is set) | `tool.call`, `policy.decision`, `tool.result` |
 | Root span | no parent | `run.end` (`error: ...` when the span failed) |
 | Anything else | HTTP, DB, framework internals | counted and skipped |
 

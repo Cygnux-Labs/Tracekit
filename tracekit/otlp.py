@@ -14,8 +14,8 @@ What is recorded
 * One Tracekit run per OTel trace: run_id ``otel:<service.name>:<trace_id>``.
 * Model calls (gen_ai chat / text_completion / generate_content, OpenLLMetry ``llm.request.type``,
   OpenInference ``LLM``) become ``model.exchange`` request + response events.
-* Tool executions (gen_ai ``execute_tool``, OpenLLMetry ``tool``, OpenInference ``TOOL``) become
-  ``tool.call`` + ``policy.decision`` + ``tool.result``.
+* Tool executions (gen_ai ``execute_tool``, OpenLLMetry ``tool``, OpenInference ``TOOL``, an MCP ``tools/call``
+  such as agentgateway's) become ``tool.call`` + ``policy.decision`` + ``tool.result``.
 * A trace's root span ends the run (``run.end``, with the root's error if any).
 * Other spans (HTTP, DB, framework internals) are counted and skipped: they are not agent actions.
 
@@ -120,6 +120,10 @@ def classify(sp):
         return "llm"
     if op in AGENT_OPS:
         return "agent"
+    # an MCP tools/call span without execute_tool: agentgateway's request span (its outbound and guardrail child spans,
+    # agentgateway.outbound.*, repeat the call)
+    if a.get("mcp.method.name") == "tools/call" and "agentgateway.outbound.subtype" not in a:
+        return "tool"
     # Vercel AI SDK (experimental_telemetry): provider calls are ai.*.doGenerate / doStream, tools are ai.toolCall
     if sp["name"] == "ai.toolCall" or a.get("ai.toolCall.name"):
         return "tool"
@@ -239,9 +243,10 @@ def _finish(a, out):
 
 
 def _error(sp):
-    if sp["status_code"] != 2:
-        return None
     a = sp["attrs"]
+    if sp["status_code"] != 2:   # an MCP call answered with a JSON-RPC error (agentgateway's mcp.error.*) failed too
+        return None if a.get("mcp.error.code") is None else \
+            str(a.get("mcp.error.message") or f"MCP error {a['mcp.error.code']}")[:500]
     msg = sp["status_message"] or a.get("error.type") or ""
     for e in sp["events"]:
         if e["name"] == "exception":
@@ -250,6 +255,8 @@ def _error(sp):
 
 
 def _tool_name(a, sp):
+    if a.get("mcp.target") and a.get("gen_ai.tool.name"):   # agentgateway: the name Tracekit's MCP layers decide it as
+        return f"mcp:{a['mcp.target']}/{a['gen_ai.tool.name']}"[:200]
     return str(a.get("gen_ai.tool.name") or a.get("tool.name") or a.get("ai.toolCall.name") or a.get("traceloop.entity.name") or
                (sp["name"][len("execute_tool "):] if sp["name"].startswith("execute_tool ") else sp["name"]) or "tool")[:200]
 
