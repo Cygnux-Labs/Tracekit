@@ -316,15 +316,16 @@ Stable from this release; new keys may be added:
            "calls": {"toolu_7": {"tool": "Edit", "form": "summary", "order": "signed_before", "seqs": [11],
                                  "excerpt": "…", "checks": {"TK-X201": "checked", "TK-X204": "checked",
                                                            "TK-X202": "found", "TK-X203": "checked"}}}},
- "signed": {"findings_run": "7c1e…", "records": 4}}
+ "signed": {"findings_run": "7c1e…", "records": 4, "of": 4}}
 ```
 
 `findings` and `coverage` hold no text of the run: each `{verdict, cites}` is exactly what `review_finding` signs (the
 signer adds the rule's fixed title). A finding may also carry `redacted: true` (it relied on content redaction
 changed) and `lifted: true` (TK-X204, downgraded by a later request); the coverage, `partial: true` for an open run.
 `shown.prompts` says of each prompt line whether the hook's copy confirmed it (`confirmed`, with the hook's record),
-didn't (`unconfirmed`: TK-X208) or couldn't (`unchecked`: no hook prompts). `signed` names the findings run and its
-record count; it is absent with `--dry-run`. `shown` is plaintext for whoever ran the analysis (`details`
+didn't (`unconfirmed`: TK-X208) or couldn't (`unchecked`: no hook prompts). `signed` names the findings run, how many
+records were signed and `of` how many (the coverage review first, so a pass the signer cut short still says what it
+checked); it is absent with `--dry-run`. `shown` is plaintext for whoever ran the analysis (`details`
 in the order of `findings`, per check the trust tiers relied on, the stated constraints, and per call what was said
 before it and each check's outcome: `checked`, `found` or a not-checkable reason, and with `--review`, `review`: the
 reviewer model's answer, asserted fields and model families); it is printed, never signed. With

@@ -750,17 +750,17 @@ class Command(Base):
         self.assertEqual((code, err), (0, ""))
         got = json.loads(out)
         signed = got["signed"]
-        self.assertEqual(signed["records"], len(got["findings"]) + 1)
+        self.assertEqual((signed["records"], signed["of"]), (len(got["findings"]) + 1,) * 2)
         store = self.signer.s.log.storage
         events = [r["event"] for r in store.iter_run("default", signed["findings_run"])]
         self.assertEqual(events[0]["data"]["analyzes"], run_id)
         reviews = [e["data"] for e in events if e["type"] == "review"]
         self.assertEqual([{k: v for k, v in r["verdict"].items() if k != "title"} for r in reviews],
-                         [f["verdict"] for f in got["findings"]] + [got["coverage"]["verdict"]])
-        self.assertEqual(reviews[0]["reviewer"], f"tracekit-analyze/{__version__}")
-        self.assertEqual(reviews[0]["verdict"]["title"], "Edit of a file not mentioned before")
+                         [got["coverage"]["verdict"]] + [f["verdict"] for f in got["findings"]])
+        self.assertEqual(reviews[1]["reviewer"], f"tracekit-analyze/{__version__}")
+        self.assertEqual(reviews[1]["verdict"]["title"], "Edit of a file not mentioned before")
         hashes = {r["event"]["run_seq"]: r["hash"] for r in records}
-        self.assertTrue(reviews[0]["cites"] and all(hashes[c["run_seq"]] == c["hash"] for c in reviews[0]["cites"]))
+        self.assertTrue(reviews[1]["cites"] and all(hashes[c["run_seq"]] == c["hash"] for c in reviews[1]["cites"]))
         self.assertEqual(events[-1]["type"], "run.closing")
         self.signer.s.grace_s = 0
         self.signer.s.sweep()
@@ -792,6 +792,24 @@ class Command(Base):
         self.assertEqual(code, 2)
         self.assertTrue(out.startswith("Findings for run "))
         self.assertIn("the findings are printed but NOT signed: forbidden", err)
+
+    def test_a_pass_cut_short_signed_its_coverage_first_and_says_how_much(self):
+        t = self.task()
+        t.step("Fixing.", "Edit", edit("billing.py"))
+        replay(self.signer, t.lines)
+        via, signed = Via(self.signer), []
+        real = RunHandle.review_finding
+
+        def flaky(handle, reviewer, verdict, cites):
+            if signed:
+                raise RPCError("unavailable", "the signer went away")
+            signed.append(verdict["rule"])
+            return real(handle, reviewer, verdict, cites)
+        with mock.patch.object(RunHandle, "review_finding", flaky):
+            code, out, err = self.cli(client=via)
+        self.assertEqual((code, signed), (2, ["TK-X200"]))
+        self.assertIn("Signed only 1 of 2 records (the coverage review first)", out)
+        self.assertIn("the findings are printed but NOT all signed (only 1 of 2): unavailable", err)
 
     def test_an_open_run_is_refused_unless_open_is_passed(self):
         t = self.task()

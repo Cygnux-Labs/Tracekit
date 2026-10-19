@@ -447,7 +447,7 @@ class Command(Base):
         reviews = [e["data"]["verdict"]["rule"] for e in events if e["type"] == "review"]
         self.assertEqual(len(reviews), json.loads(out)["signed"]["records"])
         self.assertIn("TK-X210", reviews)
-        self.assertEqual(reviews[-1], "TK-X200")   # the coverage, last, counts the reviewer too
+        self.assertEqual(reviews[0], "TK-X200")   # the coverage, first, counts the reviewer too
         self.assertEqual(events[-1]["type"], "run.closing")
 
     def test_review_and_dry_run_are_refused_together_and_no_findings_run_is_no_call(self):

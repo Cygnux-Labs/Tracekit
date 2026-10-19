@@ -958,9 +958,11 @@ def render(out):
         f"{r} {_pct(c['checked'], c['checked'] + sum(g['n'] for g in c['not_checkable']))}"
         f" ({c['checked']} checked, {c['found']} found)" for r, c in cov["checks"].items()))
     s = out.get("signed")
-    lines.append(f"Signed: {s['records']} record(s), the findings and the coverage review, in findings run "
-                 f"{s['findings_run']}; bundle them with `tracekit export --v2 --run {out['run_id']} --with-findings`"
-                 if s else "Not signed: printed only.")
+    lines.append("Not signed: printed only." if not s else
+                 f"Signed only {s['records']} of {s['of']} records (the coverage review first) in findings run "
+                 f"{s['findings_run']}: the rest failed (below)" if s["records"] < s["of"] else
+                 f"Signed: {s['records']} record(s), the findings and the coverage review, in findings run "
+                 f"{s['findings_run']}; bundle them with `tracekit export --v2 --run {out['run_id']} --with-findings`")
     return "\n".join(lines)
 
 
@@ -988,7 +990,8 @@ def sign(client, run_id, out, review=None, records=()):
     """Sign `out`'s findings and its coverage review into a new findings run about `run_id`, then close it. With
     `review` (review_model.Reviewer), TK-X210 is added to `out` first, the reviewer model asked as that findings run:
     a pass's model call and all its findings are in its one findings run. -> the findings run's id. A signer rate limit
-    (quota_exceeded with retry_after_ms) is waited out."""
+    (quota_exceeded with retry_after_ms) is waited out. The coverage review goes first, so a pass cut short still says
+    what it checked; `out["signed"]` counts what was signed ({findings_run, records, of}) as it goes."""
     reviewer = f"tracekit-analyze/{__version__}"
     try:
         run = client.run({"name": "tracekit-analyze", "version": __version__}, analyzes=run_id)
@@ -1000,7 +1003,9 @@ def sign(client, run_id, out, review=None, records=()):
     try:
         if review:
             review.add(out, records, run)
-        for f in [*out["findings"], out["coverage"]]:
+        todo = [out["coverage"], *out["findings"]]
+        out["signed"] = {"findings_run": run.run_id, "records": 0, "of": len(todo)}
+        for f in todo:
             while True:
                 try:
                     run.review_finding(reviewer, f["verdict"], f["cites"])
@@ -1009,6 +1014,7 @@ def sign(client, run_id, out, review=None, records=()):
                     if e.code != "quota_exceeded" or e.retry_after_ms is None:
                         raise
                     time.sleep(min(e.retry_after_ms, 5000) / 1000)
+            out["signed"]["records"] += 1
     finally:
         run.close()
     return run.run_id
@@ -1132,8 +1138,7 @@ def main(argv=None):
             print(f"tracekit analyze: {note}: checks that read content are not checkable", file=sys.stderr)
         if not a.dry_run:
             try:
-                out["signed"] = {"findings_run": sign(client, run_id, out, rv, records),
-                                 "records": len(out["findings"]) + 1}
+                sign(client, run_id, out, rv, records)
             except (SignerUnavailable, OSError, RPCError) as e:
                 failed = e
     finally:
@@ -1148,7 +1153,9 @@ def main(argv=None):
               "TRACEKIT_REVIEW_MODEL with TRACEKIT_REVIEW_URL) and it is picked", file=sys.stderr)
     print(json.dumps(out, indent=2) if a.json else render(out))
     if failed is not None:
-        print(f"tracekit analyze: the findings are printed but NOT signed: {failed}. The signer signs them for an "
+        s = out.get("signed") or {"records": 0}
+        part = f"all signed (only {s['records']} of {s['of']})" if s["records"] else "signed"
+        print(f"tracekit analyze: the findings are printed but NOT {part}: {failed}. The signer signs them for an "
               "identity its signer.yaml `analyzers` lists (the dev signer lists its user), about a run it holds; "
               "pass --dry-run to only print them", file=sys.stderr)
         return 2
