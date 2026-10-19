@@ -150,6 +150,16 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   run (on request or by retention) also erases its `tracekit why` replay runs (runs whose `run.registered` names it in
   `replay_of`), each with its own `content.erased`: a replay run's requests copy the run's content, so its content
   never outlives the run's.
+- **Transcript lines (Claude Code).** The transcript tailer commits to each line it reports, whole: a prompt, the
+  model's thinking (a summary, or only its sealed signature), its text and its tool uses, with the line's working
+  directory and flags. With the vault on, the line itself is the record's `body`: kept, redacted, encrypted and
+  erasable like any content. With it off, the text stays in Claude Code's own transcript; the record holds only the
+  commitment. The sealed forms of reasoning (a thinking block's signature, `redacted_thinking`, OpenAI's
+  `encrypted_content`) are kept byte for byte in the body, so a run recorded now can be checked if a provider later
+  lets an auditor read them.
+- **Findings carry no content.** `tracekit analyze --v2` reads content through `content_get` (a `content.accessed`
+  record each), and a finding names only its rule, severity, trust tier and the records it cites by `run_seq` and
+  hash. The paths and excerpts it prints come from the content it read and are never signed.
 - **Bundles never hold vault content.** A bundle that holds `content.accessed` or `content.erased` records needs a 1.1
   verifier.
 

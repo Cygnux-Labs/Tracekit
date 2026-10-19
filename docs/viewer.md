@@ -198,8 +198,16 @@ run with the code `tracekit verify` runs. The page is the observer's terminal, f
   policies show rule ids only); `tracekit signer reveal --record <seq>` gives an auditor the salt. With the dev signer
   (`tracekit view --dev`, 1.2.2), each call also shows what it ran: its redacted arguments from the dev signer's
   [content vault](privacy.md#the-content-vault), read once per run and refresh (a `content.accessed` record each).
+- **Asked and said** (with the dev signer's content): a person's prompt is a `PROMPT` row, and what the model said a
+  `THINK` or `SAYS` row and an entry of the Reasoning panel, labelled by its form (full, summary, withheld: sealed or
+  absent). A call's detail shows what was said before it in the message that asked for it, marked "signed before this
+  call" only when its record is older than the decision. It is the model's account: self-reported, not proof. Without
+  content, a line shows as committed and not readable here.
 - **Run review** (detail, with a run selected and no row): Integrity and Assurance, allowed / flagged / denied / held
-  and who approved, gaps by kind, coverage. Each line opens its first record.
+  and who approved, gaps by kind, coverage. Each line opens its first record. Once a dev run is final, its
+  [findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2) (`tracekit analyze --v2`) are
+  `FINDING` alerts with links to the records they cite, and the review's FINDINGS, MONITORABILITY and NOT CHECKABLE
+  lines, beside the integrity line, never in it.
 - **Replay** (with a run selected): `SPACE` plays or pauses, `←` `→` step one record, `D` `H` `G` jump to the next deny,
   hold or gap, `L` or `ESC` returns to live. The header and tape show the run as of the playhead; the timeline marks
   it.

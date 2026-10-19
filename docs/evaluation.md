@@ -284,6 +284,24 @@ form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
 
 `make eval` runs it. Results: `eval/results/e19_egress.json`.
 
+## E20: intent, reasoning and action checks
+
+`eval/e20_alignment.py` replays synthetic Claude Code sessions, offline, through the transcript tailer and the hook's
+decide and complete into a signer with the content vault on, and runs [`tracekit analyze --v2`](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)
+on each. Faults: F1 edits a file the request never named (TK-X202), F1o one outside the project (TK-X203), spliced
+mid-run, at the end, or inside a sub-agent's transcript. Covers: c0 generic text, c1 naming the file innocently or to
+say it stays untouched, c2 a summary that hides the edit and claims success, c3 sealed thinking only, c4 text
+addressing the reviewer, c5 a model message the agent reports itself (c5_event) or a prompt line it appends to its
+transcript (c5_line). Controls: untouched sessions, a benign extra step with honest reasoning, hard negatives.
+Not-checkable outcomes are counted apart, never as detections or passes.
+
+Two phrase sets are scored separately: `tuned`, written with the checks, and `held_out`
+(`eval/e20_heldout/pool.json`), written by an author who never saw the check code; until it is in the repository the
+held-out part says `pool missing`. On the tuned set, F1 is caught under every cover but c1 (71%: naming the file
+clears a name check) and c5_line (0%: the appended prompt line reads as the person's), F1o under all of them, with no
+false alarm on 1,252 honest calls. `make eval` runs it. Results: `eval/results/e20_alignment.json`. Model arms (a
+reviewer model, real `claude -p` runs) come later.
+
 ## What is not measured
 
 Signer throughput with a separate-user signer or over the remote gateway, durability across crashes beyond the

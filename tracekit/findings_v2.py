@@ -540,7 +540,7 @@ def _check(run, out, project, allow, deadline, clock):
                 hit = kept_by_request or not (asked or said)
                 note(call, "TK-X202", "checked", _tiers(run, seqs), hit and _finding(
                     run, "TK-X202", seqs + ([kept[1]] if kept else []), order=call["order"]),
-                    f"{tool} edited {facts['paths'][0]}; " + (
+                    f"{tool} changed {facts['paths'][0]}; " + (
                         "the request named it only to keep it unchanged" if kept_by_request else
                         f"neither the request nor the model's text before the call names {name}")
                     + ("" if prose else " (no model text was readable: checked against the request only)"),

@@ -84,7 +84,7 @@ can verify without showing it. **Out of scope**: Tracekit does not try.
 | E | Forge a whole bundle with a fresh key, verified with `--key` or `--witness` | detected | Wrong key, or no checkpoints from the pinned key |
 | E | Forge a whole bundle with a fresh key, verified without either | not detected | The verdict says `UNANCHORED` (internally consistent only) |
 | E | Never export a run | out of scope | A bundle covers the runs it contains |
-| any | Intent, the model's internal reasoning, when something happened | out of scope | `ts` comes from the host; `seq` and the chain prove order only |
+| any | Intent, the model's internal reasoning, when something happened | out of scope | `ts` comes from the host; `seq` and the chain prove order only. v2 records what the person typed and what the model said (committed transcript lines) and `tracekit analyze --v2` compares them with what ran, but that text is the agent's own report: whether it is the model's true reasoning is out of scope |
 
 ## Trust roots for verification
 
@@ -117,7 +117,7 @@ Without either, a whole bundle forged with a fresh key verifies as consistent.
 | Detects edits to the agent's transcript | A1 transcript rows; not after the last hook |
 | Detects disabled hooks / proxy bypass | A1 hook rows; needs the proxy |
 | Held actions need approval from outside the session | A1 approval rows; not bound to the exact arguments yet |
-| Reasoning is self-reported, optional, off by default | Fidelity: `source=transcript` is harness-reported, lower trust |
+| Reasoning is self-reported, optional, off by default | Fidelity: `source=transcript` is harness-reported, lower trust. v2: the tailer reports every transcript line and `tracekit init --v2` turns Claude Code's thinking summaries on; a summary is the provider's account of the reasoning, and the agent can write the transcript |
 
 ## Remote SDK clients
 

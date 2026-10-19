@@ -398,7 +398,7 @@ class Command(Base):
         self.assertEqual(code, 0)
         self.assertTrue(out.startswith("Findings for run "), out)
         self.assertIn("1 problem (1 medium)", out.splitlines()[0])
-        self.assertIn("What happened: Edit edited /work/proj/billing.py", out)
+        self.assertIn("What happened: Edit changed /work/proj/billing.py", out)
         self.assertIn("not signed", err)
         t = self.task()
         t.step("Fixing.", "Edit", edit("/etc/hosts"))

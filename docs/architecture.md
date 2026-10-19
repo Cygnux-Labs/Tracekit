@@ -29,7 +29,9 @@ flowchart LR
 
 Everything that reports to the signer, none of it trusted: the SDK client (`tracekit.sdk.client`) and the framework
 integrations built on it (`tracekit/integrations/`, [quickstarts](quickstart-v2.md)), the Claude Code hook and the
-transcript tailer (`tracekit.integrations.claude_code`, `tracekit.tailer`), and the out-of-process recorders: the
+transcript tailer (`tracekit.integrations.claude_code`, `tracekit.tailer`; the tailer reports every prompt and model
+line, which `tracekit analyze --v2` reads back from the content vault to compare what was asked, said and done), and
+the out-of-process recorders: the
 [LLM gateway](gateway.md) and T2 executors ([approvals](approvals.md#tiers-t1-and-t2-executors)). A client registers a run, asks the signer to `decide` each tool call
 before it runs and reports it `complete` after. Clients hold a run token, never a signing key.
 

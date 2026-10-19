@@ -50,6 +50,17 @@ would block a prompt, and the event isn't recorded.
 A session is one run, open until the session ends. To watch it, `tracekit view --dev` (each call with what it ran);
 to verify it as it stands, `tracekit last --open` (1.2.2).
 
+### What was asked and said
+
+For Claude Code, the transcript tailer records every line the model writes (thinking, text, tool use) and every prompt
+as a model exchange: a commitment to the whole line, and the line itself when the signer keeps content (the dev signer
+does). `tracekit init --v2` also sets `"showThinkingSummaries": true` in the Claude Code settings it writes the hooks
+to (unless they set it; `--no-thinking-summaries` leaves it alone): without it Claude Code keeps the model's thinking
+only sealed. For headless runs pass `claude -p --thinking-display summarized`. `tracekit analyze --v2`
+([findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)) and `tracekit view --dev` read
+them. Codex, Cursor and Gemini CLI have no transcript tailer: their runs record no model messages, so the checks that
+read them say `no_response` unless the model calls go through the [LLM gateway](gateway.md).
+
 ### Hooks name their event (1.2)
 
 `tracekit init` writes each hook command with the event it's configured for as its last argument (the Claude Code
