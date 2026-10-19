@@ -1,13 +1,14 @@
 # Coding pack (policy v2): the shell, files and harness self-protection rules of tracekit/policy/default.yaml,
 # ported to the RE2 subset and to signer-side classes. Rule ids are kept where the meaning is the same.
 #
-# Shell rules without a field match each command's argv (wrappers, paths and quoting resolved by policy2/shell.py);
-# `field: command` matches the raw command line; `field: line` matches it and each line policy2/shell.py normalised
-# (quotes and escapes resolved, redirections kept). File rules match the signer-normalised `path` (and, with `..`, the lexically
-# normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
-# protection is the signer, its storage and the witnesses.
+# Shell rules without a field match each command's argv (wrappers, paths, quoting and the program name's case resolved
+# by policy2/shell.py); `field: command` matches the raw command line; `field: line` matches it and each line
+# policy2/shell.py normalised (quotes and escapes resolved, redirections kept), as typed and again with its program
+# names in lower case. File rules match the signer-normalised `path` (and, with `..`, the lexically normalised one),
+# with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
+# is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-8'
+version: '2026.10-v2-9'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -51,8 +52,12 @@ deny:
   - id: TK-D003
     class: shell
     field: line
-    # global options may come before `push` (git -C dir push); -f may be bundled (-uf)
-    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|--mirror\b|\s\+\S)'
+    # global options may come before `push` (git -C dir push); -f may be bundled (-uf); --mirror may be abbreviated
+    # (`--m`: push's only option starting with m). `.` doesn't cross a newline in the raw line, so a heredoc after a push
+    # (`gh pr create --body "$(cat <<EOF`) isn't read as its arguments; the normalised line joins commands with ` ; `,
+    # so a later command on that line still is. Lazy: one push stays linear on the fallback engine, many in one long
+    # command don't (the pattern isn't anchored)
+    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*?(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|--m(i|ir|irr|irro|irror)?\b|\s\+\S)'
     reason: force push
     rationale: Rewrites shared history.
   - id: TK-D004
@@ -143,15 +148,17 @@ ask:
     # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. No dry-run exemption: `-o` takes the next
     # word as its value, so `git push -d origin main -o --dry-run` deletes main. Also held: a long-option prefix (`--del`,
     # `--pru`), `d` in a short-option cluster before any `o` (`-4d`, `-doci.skip`; the class leaves `d` out so a long word
-    # can't backtrack) and an all-zero source object id
-    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b.*( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)|0{40}:)'
+    # can't backtrack) and an all-zero source object id (SHA-1 or SHA-256). `[\w\W]*?` crosses a newline inside an
+    # argument (`--repo=$'x\ny'`) but never reaches another command, which is its own subject; lazy, so the fallback
+    # engine stays linear
+    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
 
 flag:
   - id: TK-F001
     class: shell
-    field: command
+    field: line
     pattern: '\b(curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp)\b'
     label: network
   - id: TK-F002
@@ -160,12 +167,12 @@ flag:
     label: network
   - id: TK-F003
     class: shell
-    field: command
+    field: line
     pattern: '\b(rm|mv|chmod|chown|dd|truncate|shred|unlink)\b'
     label: destructive
   - id: TK-F004
     class: shell
-    field: command
+    field: line
     pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
@@ -182,8 +189,14 @@ flag:
     label: external_tool
   - id: TK-F007
     class: shell
+    field: line
+    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]*-d|\bdaemonize\b|\bwhile\s+(true|:)'
+    label: background_spawn
+  - id: TK-F014
+    class: shell
     field: command
-    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|&\s*$|&\s*;|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]*-d|\bdaemonize\b|\bwhile\s+(true|:)'
+    # a trailing `&`: the raw command, where a quoted `&` (`echo 'x &'`) is still quoted
+    pattern: '&\s*$|&\s*;'
     label: background_spawn
   - id: TK-F008
     tool: Bash

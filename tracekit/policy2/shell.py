@@ -2,15 +2,17 @@
 
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
 strings, substitutions, heredocs into a shell and interpreter one-liners:
-`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename;
-`via` says how the command was reached (empty at top level); commands with the same `pipeline` are stages of one
-pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or expansion in its
-name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of a stream).
+`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename, the part after any
+`\\` in lower case (the agent's file system may ignore case: macOS runs git for `Git`); `via` says how the command was
+reached (empty at top level); commands with the same `pipeline` are stages of one pipeline, in order. `opaque`: what
+the command runs cannot be read from the line (a glob, brace or expansion in its name, a shell or interpreter reading
+its script from a pipe, a file or inherited stdin, `source` of a stream).
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
-redirections kept, for rules that match a whole command line; and the words that name something besides the commands'
-argv: redirection targets, `VAR=` assignments and the program an interpreter reads from a heredoc or herestring.
+redirections kept, and again with its program names in lower case when that differs, for rules that match a whole
+command line; and the words that name something besides the commands' argv: redirection targets, `VAR=` assignments
+and the program an interpreter reads from a heredoc or herestring.
 """
 import re
 
@@ -93,9 +95,10 @@ def analyse(command):
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [" ".join(argv)], "refs": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
-    _Parser("", ctx, []).emit(list(argv), 1, [])
-    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"]
+    ctx = {"cmds": [], "lines": [], "refs": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
+    words = list(argv)
+    lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
+    return ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"]
 
 
 def data_words(argv):
@@ -168,7 +171,7 @@ def _shell_mode(args):
         if a in ("--", "-"):
             i += 1
             break
-        if a[:1] not in "-+" or len(a) == 1:
+        if a[:1] not in ("-", "+") or len(a) == 1:   # an empty word is an operand too
             break
         if a[0] == "-" and not a.startswith("--"):
             flags += a[1:]
@@ -321,7 +324,7 @@ def _ansi_c(text):
 
 class _Parser:
     def __init__(self, src, ctx, via):
-        self.s, self.i, self.ctx, self.via, self.heredocs, self.out = src, 0, ctx, via, [], []
+        self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
         ctx["work"] += len(src)
         if ctx["work"] > MAX_WORK:
             raise ParseError("too much nested shell text")
@@ -350,9 +353,9 @@ class _Parser:
             raise ParseError(f"heredoc {self.heredocs[0]['delim']} not terminated")
 
     def flush(self):
-        while self.out[-1:] == [";"]:
+        if self.out[-1:] == [";"]:   # the separator list() put after the last pipeline; a `;` word before it stays
             self.out.pop()
-        self.ctx["lines"].append(" ".join(self.out))
+        self.ctx["lines"] += _lines(self.out, self.progs)
 
     def blank(self):
         s = self.s
@@ -420,7 +423,7 @@ class _Parser:
             self.gap()
 
     def simple(self, pid, piped=False):
-        words, globs, names, strings, docs = [], [], [], [], []
+        words, globs, names, strings, docs, idx = [], [], [], [], [], []
         consumed = loop_header = stdin_redirect = False
         while True:
             self.blank()
@@ -470,9 +473,11 @@ class _Parser:
                 self.ctx["refs"].append(text)
                 continue
             words.append(text)
+            idx.append(len(self.out) - 1)
             globs.append(g)
             names.append(g or (expanded and _name_unreadable(text)))
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
+        self.progs += [idx[k] for k in _programs(words, cmds)]
         for d in docs:
             d["cmds"] = cmds
         shell = _stdin_shell(cmds)
@@ -499,7 +504,7 @@ class _Parser:
         while argv:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
-            name, args = argv[0].rsplit("/", 1)[-1] or argv[0], argv[1:]
+            name, args = _lower_name(argv[0].rsplit("/", 1)[-1] or argv[0]), argv[1:]
             # xargs -I{} inserting its input into a script or a command name: what runs comes from stdin
             tainted = repl is not None and (repl in argv[0] or (
                 (name in SHELLS or _kind(name)) and any(repl in a for a in args)))
@@ -652,10 +657,10 @@ class _Parser:
         return "".join(buf), s[start:self.i], bool(glob), self.ctx["exp"] != exp
 
     def sub(self, label):
-        via, out, self.via, self.out = self.via, self.out, self.via + [label], []
+        via, out, progs, self.via, self.out, self.progs = self.via, self.out, self.progs, self.via + [label], [], []
         self.list(")")
         self.flush()
-        self.via, self.out = via, out
+        self.via, self.out, self.progs = via, out, progs
 
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
@@ -736,6 +741,26 @@ class _Parser:
         self.ctx["exp"] += 1
         self.nested(re.sub(r"\\([`\\$])", r"\1", m.group(1)), self.via + ["``"])
         return self.s[start:self.i]
+
+
+def _lower_name(word):
+    """`word` with the name after its last / or \\ in lower case: the directories keep their case."""
+    i = max(word.rfind("/"), word.rfind("\\")) + 1
+    return word[:i] + word[i:].lower()
+
+
+def _programs(words, cmds):
+    """Indexes in `words` of the program names of `cmds`, emit's commands for them (a wrapper's and what it runs)."""
+    return [len(words) - len(c["argv"]) for c in cmds
+            if len(c["argv"]) <= len(words) and words[len(words) - len(c["argv"]) + 1:] == c["argv"][1:]]
+
+
+def _lines(words, progs):
+    """The line `words` make, and again with the program names at indexes `progs` in lower case when that differs."""
+    low = list(words)
+    for i in progs:
+        low[i] = _lower_name(low[i])
+    return [" ".join(words)] + ([" ".join(low)] if low != words else [])
 
 
 def _stdin_shell(cmds):
