@@ -13,7 +13,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval import e6_findings as e6  # noqa: E402
-from eval.e20_alignment import POOL, TUNED, Signer, Transcript, replay  # noqa: E402
+from eval.e20_alignment import DEV_POOL, TUNED, Signer, Transcript, replay  # noqa: E402
 from tracekit import findings, findings_text, findings_v2  # noqa: E402
 from tracekit.why.signed import vault_content  # noqa: E402
 
@@ -321,7 +321,7 @@ class HeldOutPool(unittest.TestCase):
         that only the pool says was taken from it."""
         def texts(v):
             return [f" {' '.join(findings_text.TOKEN.findall(s.lower()))} " for s in strings(v, set())]
-        with open(POOL, encoding="utf-8") as f:
+        with open(DEV_POOL, encoding="utf-8") as f:   # pool v1, from which TK-X205 once took phrases
             held = texts(json.load(f))
         tuned = texts([TUNED, e6.CLAIM_TESTS, e6.CLAIM_PUSH_DENY])
         read = [" ".join(i) for i in findings_text.IDIOMS] + [
