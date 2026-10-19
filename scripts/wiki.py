@@ -72,8 +72,8 @@ Each run exports as one `.tkb` bundle that anyone can verify offline, against ke
 """
 START = [
     ("quickstart-v2.md", "a signed, verified run in a few minutes"),
-    ("coding-agents.md", "Claude Code, Codex, Cursor and Gemini CLI"),
-    ("concepts/README.md", "how it works, one concept per page"),
+    ("coding-agents.md", "Codex, Cursor and Gemini CLI; Claude Code is in the quickstart"),
+    ("concepts/README.md", "the design, one concept per page, in reading order"),
     ("integrations.md", "frameworks, sandboxes and gateways"),
     ("verdicts.md", "what each line of `tracekit verify` means"),
     ("deploy.md", "a signer the agent can't reach"),
@@ -190,7 +190,7 @@ def build(ref, root=ROOT):
         if doc in texts:
             if anchor and anchor not in marks[doc]:
                 errors.append(f"docs/{page}: ({target}): docs/{doc} has no heading #{anchor}")
-            return f"{bang}[{label}]({names[doc]}{'#' + anchor if anchor else ''})"
+            return f"{bang}[{label}]({names[doc] if path else ''}{'#' + anchor if anchor else ''})"
         if dest.startswith("../") or dest == ".." or not os.path.exists(os.path.join(root, dest)):
             errors.append(f"docs/{page}: ({target}) resolves to nothing")
             return m.group(0)
