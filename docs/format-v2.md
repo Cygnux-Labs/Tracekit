@@ -217,7 +217,7 @@ and then never heard about. All are `capture.gap` records with `source: signer`.
 | `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the closing identity wrote (or that never reached the signer) not received by then (the reason names that identity; values up to there that arrive later are recorded with no second gap). A gateway's report about a run already final goes in the tenant's run `tracekit/signer` | `missed_events`, top-level `stream`; in `tracekit/signer`, `run_id`: the run |
 | `tailer_lost` | also when a transcript tailer (an identity a run was delegated to with the `tailer_heartbeat` grant) makes no call for 90 s while its run is open, counted from the delegation | — |
 | `tailer_redelegated` | in the run, when a second tailer token is delegated for it | — |
-| `observer_lost` | in each open run an egress observer (or a kernel sensor's import, format 1.4) covers, when it makes no `observe_effect` call for 90 s, or another process of it (`instance`) takes over; and when an import reports a loss | `sensor` (format 1.4): `tetragon` or `falco`, when it is a kernel sensor's import |
+| `observer_lost` | in each open run an egress observer (or a kernel sensor's import, format 1.4) covers, when it makes no `observe_effect` call for 90 s, or another process of it (`instance`) takes over; and when an import reports a loss (OpenShell's import: in the one run a loss names, when it names one) | `sensor` (format 1.4): `tetragon`, `falco` or `openshell`, when it is a sensor's import |
 | `effect_outside_run` | in the tenant's run `tracekit/signer`: an egress observation no open run holds (after its `run.final` and `observe_grace_s`, a token the signer didn't issue for that run, an identity with no open run) | `run_id`: the run the client named or it was attributed to, when there is one |
 
 Effects (format 1.2, [egress](egress.md)): an egress observer outside the agent reports the hosts each run reached
@@ -268,11 +268,23 @@ status?, signal?, host?, port?, path?, tool_call_id?, attribution}` (`source: si
 attributed to. `args_commitment` commits to `"sha256:" + hex(SHA-256(UTF-8 bytes of the arguments string as the sensor
 reported it))` (§2). `tool_call_id` is the id the process's environment carried, the agent's claim, recorded as it
 came: the signer never takes it as explaining the effect (`tracekit analyze --v2`'s TK-X206 checks it). An event no
-open run holds is an `effect_outside_run` gap, as for the egress observer. A loss the import reports (`lost`) is an
+open run of its callers holds is an `effect_outside_run` gap, as for the egress observer. A loss the import reports (`lost`) is an
 `observer_lost` gap with `sensor` in each run it covers, or in the tenant's run `tracekit/signer` when it covers none,
 and ends that coverage; so do 90 s of silence and a restart. `run.final`'s `matrix` says `processes: observed` with the sensor as
 its layer when an import covered the run throughout; an import's coverage never makes `network` observed. A bundle
 with these records needs `verifier_min_version` 1.4.0.
+
+OpenShell's OCSF events (format 1.4, experimental, [OpenShell](integrations/openshell.md#openshells-ocsf-events)): the
+OpenShell middleware's import is such an observer with `sensor: openshell` and its own identity as its one caller (the
+signer refuses any other), so it covers only the runs it registered, attributing each event by the sandbox's run
+token. Its effects are `connect` (`denied: true` when OpenShell's policy blocked it), `exec` and `exit`. A change of
+the sandbox's policy or configuration is an `ext` record (§9) `{name: openshell.policy, observer, ts, change,
+policy_hash?, by?, detail_commitment?, salt_id?, attribution}` (`source: signer`): `change` OpenShell's name for it
+(`[a-z0-9_.-]{1,64}`), `policy_hash` and `by` OpenShell's, `detail_commitment` committing to `"sha256:" +
+hex(SHA-256(UTF-8 bytes of OpenShell's message))` (§2). A loss it reports for one run is an `observer_lost` gap (with
+`sensor`) in that run only, which ends no coverage. Its coverage never makes `processes` observed: OpenShell reports the processes
+it starts, not each one. A configured gateway may observe the runs it registered for its clients (it is not their
+agent).
 
 Non-critical fields and records (format 1.4): any record may carry `ext`, an object of names to strict JSON values,
 and a record of type `ext` holds `data: {name, ...}` with any other fields. They are signed, chained and included like
@@ -526,7 +538,7 @@ them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — | — |
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
-| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
+| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
 
 Every v2 definition but `review`'s and `error`'s data (open since format 1.0) and the `ext` record's (open by
 design) is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a newer
@@ -555,11 +567,14 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
   line (`test_an_ext_interpretation_adds_only_its_own_lines` checks each name a row lists).
 - `amended` is non-critical: without it every line stays true (a request record's commitment is to the request as
   sent either way); a verifier that reads it adds a `gateway amendments` line.
+- `openshell.policy` is non-critical: it is OpenShell's report of its own configuration, beside every record a
+  verifier reads; without it every line stays true, and a verifier that reads it adds an `openshell policy` line.
 - `review.cites` and `effect.observed.sensor` stay critical: a verifier that passed over a signed finding's citations
   would label it `imported`, a false line; and a sensor's effects are records of what the agent's own processes did,
   in its run, which a verifier must read to verify that run. So does `capture.gap.sensor`: a 1.3 verifier counts every
   `observer_lost` as an egress observer gone silent, a false line for a sensor's reported loss, so it reports such a
-  bundle `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
+  bundle `UNVERIFIABLE (needs tracekit >= 1.4.0)`. So does `effect.observed.denied`: read without it, a connection
+  OpenShell blocked would read as made.
 
 `tests/test_released_verifiers.py` runs each released Python verifier (from its git tag) on bundles of today's signer:
 those that declare its version or lower verify there with the same lines as here, the others are `UNVERIFIABLE`.
@@ -656,7 +671,11 @@ line and verdict is in [verdicts](verdicts.md).
     records that carry it, for the first 20 such names; one more `not interpreted` warning counts the others. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show
     reasoning (<pointer>: <count>, ... the first 8 in code-point order); each record commits to the request as sent`,
     a warning listing the records (the first 20) where it is anything but a non-empty list of JSON pointers of at most
-    256 characters on a `model.exchange` request record of source `gateway`.
+    256 characters on a `model.exchange` request record of source `gateway`. `openshell.policy` (1.4.0): `openshell
+    policy`, passing with `OpenShell changed the sandbox policy or configuration n time(s) (<change>: <count>, ... the
+    first 8 in code-point order), as OpenShell reported it`, a warning listing the records (the first 20) that carry it
+    other than as an `ext` record of source `signer` with a `change` of `[a-z0-9_.-]{1,64}` and a non-empty
+    `observer`.
 11. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED` (every check this verifier implements
     passed), `VERIFIED TO HEAD n (open)` for one open
     run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,

@@ -103,7 +103,9 @@ ran and verified in 27 seconds: [`examples/v2/clean-machine.sh langchain`](https
 
 <sub>Stable: Claude Code, the OpenAI Agents SDK, LangChain / LangGraph, the Claude Agent SDK and MCP. Experimental: Codex
 CLI, Cursor, Gemini CLI, CrewAI, Browser Use, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent
-Framework, Strands Agents, NVIDIA OpenShell, agentgateway, Wassette, LiteLLM's MCP gateway, Docker's MCP Gateway and the TypeScript SDK. Setup:
+Framework, Strands Agents, NVIDIA OpenShell, agentgateway, Wassette, LiteLLM's MCP gateway, Docker's MCP Gateway and the TypeScript SDK.
+In NVIDIA OpenShell sandboxes, Tracekit decides and signs each HTTP request OpenShell lets out, and signs OpenShell's
+own blocks, process events and policy changes into the same run. Setup:
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md">coding agents</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md">OpenAI Agents SDK</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/claude-agent-sdk.md">Claude Agent SDK</a> ·

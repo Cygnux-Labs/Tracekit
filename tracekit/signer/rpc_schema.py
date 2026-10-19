@@ -3,9 +3,11 @@
 Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
 `tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states),
 model_event's `amended` (the fields an LLM gateway changed in a request), its `said_only` (a response recorded without
-its calls) and register_run's `caller` (a gateway registering the run of a client it serves). Version 18 adds
-observe_effect's kernel sensor events (its `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17 (Tracekit 1.3) adds
-model_event's optional
+its calls), register_run's `caller` (a gateway registering the run of a client it serves), observe_effect's
+`callers` (the identities whose runs a kernel sensor's import covers, required with `sensor`) and its OpenShell import
+(sensor `openshell`, an effect's `denied`, and the `policy` and `lost` effects of one run). Version 18 adds
+observe_effect's kernel sensor events (its `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17
+(Tracekit 1.3) adds model_event's optional
 `tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
 Version 16 (all of Tracekit 1.2) adds register_run's optional
 `parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
@@ -92,9 +94,11 @@ _EVENT = dict(_RUN, stream=ID, client_seq=SEQ)
 _RUN_REQ = ["request_id", "run_id", "run_token"]
 _EVENT_REQ = _RUN_REQ + ["stream", "client_seq"]
 _SEQ_ONLY = _obj(["run_seq"], run_seq=SEQ)
-# a kernel sensor's event (observe_effect): process `pid` running `binary`, attributed like a net effect
-_OS = dict(run_id=ID, run_token=TOKEN, caller=IDENTITY, ts=TS, pid=U32, binary=_str(4096, minLength=1),
-           exec_id=_str(256, minLength=1), tool_call_id=ID)
+# a kernel sensor's event (observe_effect): process `pid` running `binary`, attributed like a net effect; `denied`:
+# the sensor (OpenShell) blocked it
+_ATTRIBUTED = dict(run_id=ID, run_token=TOKEN, caller=IDENTITY)
+_OS = dict(_ATTRIBUTED, ts=TS, pid=U32, binary=_str(4096, minLength=1), exec_id=_str(256, minLength=1), tool_call_id=ID,
+           denied={"const": True})
 _OS_REQ = ["kind", "ts", "pid", "binary"]
 
 # `caller`, from a `gateways` identity only: the client it authenticated, whose run token the call carries (tier T2)
@@ -319,8 +323,15 @@ REQUESTS = {
             _obj(_OS_REQ, kind={"const": "exit"}, status=U32, signal=_str(32), **_OS),
             _obj(_OS_REQ + ["host", "port"], kind={"const": "connect"}, host=HOST,
                  port={"type": "integer", "minimum": 0, "maximum": 65535}, **_OS),
-            _obj(_OS_REQ + ["path"], kind={"const": "file"}, path=_str(4096, minLength=1), **_OS)]}},
-        check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN), sensor={"enum": ["tetragon", "falco"]},
+            _obj(_OS_REQ + ["path"], kind={"const": "file"}, path=_str(4096, minLength=1), **_OS),
+            # OpenShell's (sensor openshell): a change of the sandbox's policy or configuration, as OpenShell names it,
+            # with its hash of the policy, who made it and the digest of its message; and a loss of one run's events
+            _obj(["kind", "ts", "change"], kind={"const": "policy"}, ts=TS,
+                 change=_str(64, minLength=1, pattern=r"^[a-z0-9_.-]+" + _END), policy_hash=_str(128, minLength=1),
+                 by=_str(256, minLength=1), detail_digest=DIGEST, **_ATTRIBUTED),
+            _obj(["kind", "reason"], kind={"const": "lost"}, reason=_str(1024, minLength=1), **_ATTRIBUTED)]}},
+        check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
+        sensor={"enum": ["tetragon", "falco", "openshell"]},
         callers={"type": "array", "maxItems": MAX_CALLERS, "items": IDENTITY}, lost=REASON),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,

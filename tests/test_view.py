@@ -94,6 +94,25 @@ class Translate(unittest.TestCase):
         # a decision of a policy the viewer does not have: its rule ids only
         self.assertEqual((other["target"], other["policy"]["flags"]), ("TK-S001", ["held_for_approval"]))
 
+    def test_openshells_blocks_and_policy_changes_are_rows_in_words(self):
+        seen = {"observer": "mtls:spiffe://acme.example/tracekit-openshell", "sensor": "openshell",
+                "ts": "2026-10-15T00:00:00.000000Z", "pid": 2187, "binary": "/usr/bin/curl", "attribution": "token"}
+        blocked, allowed, policy = self.feed(
+            v2rec(1, "effect.observed", {**seen, "kind": "connect", "host": "blocked.example.com", "port": 443,
+                                         "denied": True}),
+            v2rec(2, "effect.observed", {**seen, "kind": "connect", "host": "api.example.com", "port": 443}),
+            v2rec(3, "ext", {"name": "openshell.policy", "observer": seen["observer"], "ts": seen["ts"],
+                             "change": "approved", "policy_hash": "3f" * 32, "by": "user:dev@example.com",
+                             "attribution": "token"}))
+        self.assertEqual((blocked["tape"], blocked["title"]), ("BLOCK", "BLOCKED BY OPENSHELL · connect "
+                                                                        "blocked.example.com:443"))
+        self.assertTrue(blocked["text"].startswith("OpenShell's policy blocked /usr/bin/curl (pid 2187) from "
+                                                   "connecting to blocked.example.com:443"))
+        self.assertEqual((allowed["tape"], allowed["title"]), ("EFFECT", "OPENSHELL · connect api.example.com:443"))
+        self.assertNotIn("effect", allowed["v2"])   # not a kernel sensor's: never joined to a call
+        self.assertEqual((policy["tape"], policy["title"]), ("STATE", "OPENSHELL POLICY · approved"))
+        self.assertIn("by user:dev@example.com · policy 3f3f3f3f3f3f3f3f", policy["text"])
+
     def test_holds_and_approvals_are_their_own_rows_in_words(self):
         rows = self.feed(
             v2rec(1, "policy.decision", {"tool_use_id": "c6", "tool": "create_refund", "decision": "ask",

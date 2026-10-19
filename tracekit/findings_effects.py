@@ -193,8 +193,10 @@ class _Effects:
         for c in self.done:
             top = max(top, c["t1"] + self.grace + self.skew)
             self.ends.append(top)
-        self.ts = {r["event"]["run_seq"]: _t(r["event"]["data"].get("ts")) for r in run.records   # sensor times
-                   if r["event"]["type"] == "effect.observed" and r["event"]["data"].get("sensor")}
+        # sensor times; OpenShell's reports aren't a kernel sensor's: it names its entrypoint, not every process
+        self.ts = {r["event"]["run_seq"]: _t(r["event"]["data"].get("ts")) for r in run.records
+                   if r["event"]["type"] == "effect.observed" and r["event"]["data"].get("sensor") not in (None,
+                                                                                                         "openshell")}
         self.effects = [run.by_seq[s] for s, t in self.ts.items() if t and _t(run.by_seq[s]["event"].get("ts"))]
         by_kind = {}
         for r in self.effects:

@@ -584,6 +584,23 @@ class Translator(observe.Translator):
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
+        if t == "effect.observed" and d.get("sensor") == "openshell":   # what OpenShell reported of its sandbox
+            k, who, by = d.get("kind"), f"{d.get('binary')} (pid {d.get('pid')})", f" · OpenShell's report, via " \
+                                                                                  f"{d.get('observer')}"
+            target = f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("binary")
+            if d.get("denied"):
+                return alert("med", f"BLOCKED BY OPENSHELL · {k} {target}", f"OpenShell's policy blocked {who} from "
+                             + (f"connecting to {target}" if k == "connect" else "starting") + by, "BLOCK")
+            return alert("info", f"OPENSHELL · {k} {target}", (
+                f"{who} connected to {target}; OpenShell's policy allowed it" if k == "connect" else
+                f"OpenShell started {who} in the sandbox" if k == "exec" else
+                f"{who} ended" + (f" with status {d['status']}" if "status" in d else "")) + by, "EFFECT")
+        if t == "ext" and d.get("name") == "openshell.policy":   # OpenShell changed the sandbox's policy
+            return alert("med", f"OPENSHELL POLICY · {d.get('change')}",
+                         "OpenShell reported a change of the sandbox's policy or configuration"
+                         + (f" by {d['by']}" if d.get("by") else "")
+                         + (f" · policy {str(d['policy_hash'])[:16]}" if d.get("policy_hash") else "")
+                         + f" · via {d.get('observer')}; its message is committed, not shown", "STATE")
         if t == "effect.observed" and d.get("sensor"):   # what a kernel sensor saw; the run's analysis joins it to a call
             k = d.get("kind")
             target = (f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("path") if k == "file" else

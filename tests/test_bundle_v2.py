@@ -990,6 +990,9 @@ ENTRIES = {
         "attribution": "identity"}, "run-a")],
     "capture.gap.sensor": [registered(), ("capture.gap", {"kind": "observer_lost", "sensor": "falco", "reason": "r"},
                                           "run-a")],
+    "effect.observed.denied": [registered(), ("effect.observed", {
+        "observer": "uid:7", "sensor": "openshell", "kind": "connect", "ts": TS_, "pid": 7, "binary": "/usr/bin/curl",
+        "host": "blocked.example.com", "port": 443, "denied": True, "attribution": "token"}, "run-a")],
     "constraint.added": [registered(), ("constraint.added", {"kind": "no_push"}, "run-a")],
     "model.exchange.said_only": [registered(), ("model.exchange", {
         "exchange_id": "x1", "phase": "response", "streamed": False, "model": "m", "said_only": True}, "run-a")],

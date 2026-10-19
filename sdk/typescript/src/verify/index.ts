@@ -12,7 +12,8 @@
  * Monitor reports, revocations and the v1 format bridge are inputs of the reference's CLI that this one doesn't take.
  * A bundle that needs a newer verifier is UNVERIFIABLE, with the commands that verify it; one whose records carry ext
  * names this verifier doesn't interpret (format 1.4's non-critical slot) verifies, with a `not interpreted` warning
- * per name; it interprets `amended` (the fields an LLM gateway changed in a request to show reasoning).
+ * per name; it interprets `amended` (the fields an LLM gateway changed in a request to show reasoning) and
+ * `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import).
  * `verify(bundle, null)` (no trust config) checks what needs no pinned key and is never VERIFIED. web.ts is this
  * verifier as a browser page (verify.html).
  */
@@ -618,10 +619,34 @@ function checkAmended(rep: Report, events: J[]) {
 }
 
 /**
+ * ext.openshell.policy: a change of the sandbox's policy or configuration that OpenShell reported (its name for the
+ * change, its hash of the policy, who made it; its message committed), an `ext` record the signer writes from the
+ * OpenShell middleware's OCSF import, that observer's assertion; anything else carrying the name is a warning.
+ */
+function checkOpenshellPolicy(rep: Report, events: J[]) {
+  const change = (e: J): string | null => {
+    const d = get(e, "data");
+    return get(e, "type") === "ext" && get(e, "source") === "signer" && isObj(d)
+      && get(d, "name") === "openshell.policy" && typeof get(d, "change") === "string"
+      && /^[a-z0-9_.-]{1,64}$/u.test(d.change) && typeof get(d, "observer") === "string" && d.observer !== ""
+      ? d.change : null;
+  };
+  const good = events.filter((e) => change(e)), bad = events.filter((e) => !change(e));
+  const n = new Map<string, number>();
+  for (const e of good) n.set(change(e)!, (n.get(change(e)!) ?? 0) + 1);
+  const shown = [...n].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, 8).map(([c, k]) => `${c}: ${k}`);
+  rep.check("openshell policy", bad.length === 0, "OpenShell changed the sandbox policy or configuration "
+    + `${good.length} time(s)` + (shown.length ? ` (${shown.join(", ")})` : "") + ", as OpenShell reported it",
+  bad.map((e) => `seq ${str(get(e, "seq"))}: ext.openshell.policy is not an OpenShell policy change the signer `
+    + "recorded").slice(0, 20), true);
+}
+
+/**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
  */
-const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended]]);
+const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended],
+  ["openshell.policy", checkOpenshellPolicy]]);
 const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
 
 /** The ext names an event carries: its `ext` field's keys, and an `ext` record's name. */

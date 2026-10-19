@@ -21,6 +21,7 @@ from tracekit.verify import v2
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0"]   # add each release's tag
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
+OPENSHELL = CallerIdentity("mtls", "spiffe://acme/openshell", True)   # a configured gateway
 VERIFY = ("import json, sys, tracekit\nfrom tracekit.verify import v2\nrep, code = v2.verify(sys.argv[1], sys.argv[2])\n"
           "print(json.dumps({'version': tracekit.__version__, 'code': code, 'integrity': rep.integrity, "
           "'checks': rep.checks}))")
@@ -42,8 +43,10 @@ class Released(Signed):
         self.dir = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.s = svc.SignerService(os.path.join(self.dir, "data"), grace_s=0, fsck_every_s=0, observe_grace_s=0,
-                                   analyzers=[f"uid:{ANALYZER.subject}"],
-                                   authorize={f"{SENSOR.scheme}:{SENSOR.subject}": ["observe_effect"]})
+                                   analyzers=[f"uid:{ANALYZER.subject}"], gateways=[f"mtls:{OPENSHELL.subject}"],
+                                   authorize={f"{SENSOR.scheme}:{SENSOR.subject}": ["observe_effect"],
+                                              f"mtls:{OPENSHELL.subject}": sorted(svc.DEFAULT_GRANTS
+                                                                                  | {"observe_effect"})})
         self.addCleanup(self.s.close)
 
     def released_verify(self, tag, bundle, trust):
@@ -69,6 +72,21 @@ class Released(Signed):
         self.call(ME, "close_run", **run)
         return run
 
+    def openshell_run(self):
+        """A sandbox's run the OpenShell middleware registered and its OCSF import covered: a connection OpenShell
+        blocked, then a loss of the run's events OpenShell reported."""
+        def observe(*effects):
+            self.call(OPENSHELL, "observe_effect", instance="i", sensor="openshell",
+                      callers=[f"mtls:{OPENSHELL.subject}"], effects=list(effects))
+        observe()
+        run = self.register(OPENSHELL)
+        at = {**run, "ts": "2026-10-12T10:00:00.000000Z"}
+        observe(dict(at, kind="connect", pid=7, binary="/usr/bin/curl", host="blocked.example.com", port=443,
+                     denied=True))
+        observe(dict(run, kind="lost", reason="OpenShell dropped 3 records"))
+        self.call(OPENSHELL, "close_run", **run)
+        return run
+
     def test_released_verifiers_read_todays_bundles(self):
         run = self.agent_run()
         cases = {"an agent run": (self.export(run), "1.2.0")}
@@ -78,6 +96,7 @@ class Released(Signed):
         # an egress observer
         cases["a sensor covered it, then lost events"] = (self.export(self.sensor_run(effect=False)), "1.4.0")
         cases["a sensor's effect"] = (self.export(self.sensor_run(effect=True)), "1.4.0")
+        cases["OpenShell blocked a connection, then lost events"] = (self.export(self.openshell_run()), "1.4.0")
         log = Log(os.path.join(self.dir, "ext"))
         self.addCleanup(log.store.close)
         cases["an ext field and record"] = ((ext_bundle(log, os.path.join(self.dir, "ext.tkb")),

@@ -144,9 +144,12 @@ class Agreement(unittest.TestCase):
         s = svc.SignerService(os.path.join(d, "data"), policy=policy,
                               witnesses=[witness], isolation="same-user", grace_s=0, fsck_every_s=0,
                               fail_modes={"default": "closed", "read": "open"}, observe_grace_s=0,
-                              gateways=["mtls:spiffe://acme/gateway"], verify_tool_results="record",
+                              gateways=["mtls:spiffe://acme/gateway", "mtls:spiffe://acme/openshell"],
+                              verify_tool_results="record",
                               authorize={"mtls:spiffe://acme/egress": ["observe_effect"],
                                          "mtls:spiffe://acme/tetragon": ["observe_effect"],
+                                         "mtls:spiffe://acme/openshell": ["register_run", "observe_effect",
+                                                                          "close_run"],
                                          "mtls:spiffe://acme/gateway": ["model_event"]})
         try:
             runs = {"closed": cls.record_run(s, "read_file"), "approval": cls.record_run(s, "pay", approve=True),
@@ -155,7 +158,8 @@ class Agreement(unittest.TestCase):
                     "open": cls.record_run(s, "read_file", close=False),
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
                     "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s),
-                    "constraint": cls.constraint_run(s), "amended": cls.amended_run(s)}
+                    "constraint": cls.constraint_run(s), "amended": cls.amended_run(s),
+                    "openshell": cls.openshell_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -303,6 +307,23 @@ class Agreement(unittest.TestCase):
             "caller": f"uid:{ME.subject}", "stream": "gx", "client_seq": 0, "provider": "anthropic", "model": "m",
             "phase": "request", "content_digest": "sha256:" + "a" * 64, "amended": ["/thinking/display"]})
         s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
+    @staticmethod
+    def openshell_run(s):
+        """A sandbox's run the OpenShell middleware registered, with its OCSF import's reports: a connection OpenShell
+        blocked and a policy change, a format 1.4 ext.openshell.policy."""
+        mw = CallerIdentity("mtls", "spiffe://acme/openshell", True)   # a configured gateway, the import's one caller
+        r = s.call(mw, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        at = {"run_id": r["run_id"], "run_token": r["run_token"], "ts": "2026-10-15T00:00:00.000000Z"}
+        s.call(mw, "observe_effect", {
+            "request_id": uuid.uuid4().hex, "instance": "i", "sensor": "openshell",
+            "callers": ["mtls:spiffe://acme/openshell"], "effects": [
+                {**at, "kind": "connect", "pid": 7, "binary": "/usr/bin/curl", "host": "blocked.example.com",
+                 "port": 443, "denied": True},
+                {**at, "kind": "policy", "change": "approved", "policy_hash": "3f" * 32, "by": "user:dev@example.com",
+                 "detail_digest": "sha256:" + "b" * 64}]})
+        s.call(mw, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
         return r["run_id"]
 
     def agree(self, bundle, trust):
@@ -553,6 +574,23 @@ class Agreement(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertGreater(len(p.stdout), 1 << 16)
         self.assertEqual(json.loads(p.stdout)["exit_code"], p.returncode)
+
+    def test_both_verifiers_read_ext_openshell_policy_alike(self):
+        import test_bundle_v2 as b   # and one the signer would never write: a warning in both
+        log = b.Log(os.path.join(self.d, f"openshell-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        odd, trust = b.ext_bundle(log, os.path.join(self.d, "odd-openshell.tkb"), {"openshell.policy": {}},
+                                  ("openshell.policy", {})), os.path.join(self.d, "odd-openshell-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        for bundle, trust, status in ((self.bundles["openshell"], self.trusts["witnessed"], "pass"),
+                                      (odd, trust, "warn")):
+            with self.subTest(status):
+                _, rep = self.agree(bundle, trust)
+                [line] = [c for c in rep.checks if c["check"] == "openshell policy"]
+                self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "openshell policy"],
+                                 [line])
+                self.assertEqual(line["status"], status)
 
     def test_the_browser_page_reports_what_the_cli_does(self):
         """verify.html: its one script and its style allowed by hash, workers only from blob: URLs (its own script, which

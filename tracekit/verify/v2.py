@@ -100,7 +100,9 @@ tracekit >= x)` (exit 2), the `bundle readable` line listing the commands that v
 (`upgrade`). Format 1.4's non-critical slot: an `ext` field on any record and the `ext` record type, whose names a
 verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) and otherwise reports on a `not
 interpreted` warning each (MAX_UNREAD of them; one more counts the rest); the records are signed, chained and included like any other, and the bundle stays VERIFIED.
-This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`).
+This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`)
+and `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import: `openshell
+policy`).
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -209,9 +211,30 @@ def _amended(rep, events):
                for e in bad][:20], warn=True)
 
 
+_CHANGE = re.compile(r"[a-z0-9_.-]{1,64}")
+
+
+def _openshell_policy(rep, events):
+    """ext.openshell.policy: a change of the sandbox's policy or configuration that OpenShell reported (its name for the
+    change, its hash of the policy, who made it; its message committed), an `ext` record the signer writes from the
+    OpenShell middleware's OCSF import, that observer's assertion; anything else carrying the name is a warning."""
+    def change(e):
+        d = e.get("data")
+        return d["change"] if (e.get("type"), e.get("source")) == ("ext", "signer") and isinstance(d, dict) and \
+            d.get("name") == "openshell.policy" and isinstance(d.get("change"), str) and \
+            _CHANGE.fullmatch(d["change"]) and isinstance(d.get("observer"), str) and d["observer"] else None
+    good, bad = [e for e in events if change(e)], [e for e in events if not change(e)]
+    n = collections.Counter(change(e) for e in good)
+    rep.check("openshell policy", not bad, f"OpenShell changed the sandbox policy or configuration {len(good)} time(s)"
+              + (f" ({', '.join(f'{c}: {k}' for c, k in sorted(n.items())[:8])})" if n else "")
+              + ", as OpenShell reported it",
+              [f"seq {e.get('seq')}: ext.openshell.policy is not an OpenShell policy change the signer recorded"
+               for e in bad][:20], warn=True)
+
+
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
 # whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
-EXT_CHECKS = {"amended": _amended}
+EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy}
 MAX_UNREAD = 20   # `not interpreted` lines, one per ext name; the rest on one line
 
 

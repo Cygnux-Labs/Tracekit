@@ -1487,10 +1487,10 @@ class SignerService:
         for obs, at in self._covering(key).items():
             if (time.monotonic() if now is None else now) - at >= TAILER_LOST_S:
                 self._observer_lost(tx, run, obs, at, now)
-            elif self._observers.get((key[0], obs), (0, None, None))[2]:
-                sensors.add(self._observers[(key[0], obs)][2])
-            else:
+            elif self._observers.get((key[0], obs), (0, None, None))[2] is None:
                 observed = True
+            elif self._observers[(key[0], obs)][2] != "openshell":   # OpenShell reports the sandbox's entrypoint only
+                sensors.add(self._observers[(key[0], obs)][2])
         coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff,
                                     self.policy.is_structured_output)
         provider = len(reconcile.counted(run["rec"], self.gateway_mandatory, "provider")) if run.get("rec") else 0
@@ -1678,14 +1678,17 @@ class SignerService:
         sensor = self._observers.get((run["tenant"], obs), (0, None, None))[2]
         if sensor:
             name = f"the {sensor} import {obs[:256]}"
+            what, check = (("OpenShell's events of the sandbox", "Check OpenShell's OCSF export "
+                            "([openshell.gateway.otlp.ocsf]), `tracekit openshell-middleware`") if sensor == "openshell"
+                           else ("the run's processes, connections and file writes", "Its coverage says processes not "
+                                 "observed. Check `tracekit sensor import`, the sensor"))
             why = (f"{name} reported lost events: {privacy.redact_text(lost)[0]}" if lost else
                    f"{name} restarted while the run was open: events its old process had not sent are not in the run"
                    if at is None else f"no observe_effect from {name} for {t - at:.0f}s while the run was open: it "
-                   "stopped or was killed, so the run's processes, connections and file writes from then on are not "
-                   "in the run")
+                   f"stopped or was killed, so {what} from then on are not in the run")
             tx.emit(run, "capture.gap", {"kind": "observer_lost", "sensor": sensor, "reason": (
-                f"{why}; its coverage says processes not observed. Check `tracekit sensor import`, the sensor and that "
-                "the import's identity has the observe_effect grant")[:1024]}, source="signer")
+                f"{why}. {check} and that the import's identity has the observe_effect grant")[:1024]},
+                source="signer")
             return
         why = (f"egress observer {obs[:256]} restarted while the run was open: what the old process had not reported "
                "when it ended (up to a minute and a heartbeat of traffic if it was killed, none if it was stopped with "
@@ -3635,15 +3638,23 @@ class SignerService:
         A kernel sensor's import (tracekit.sensor; `sensor` and `callers` in every call) is an observer the same way, of
         processes rather than network, covering only the runs of the identities its `runs` map processes to
         (`callers`): its effects (_sensor_effect) are recorded but not reconciled, and `lost` ends its coverage of the
-        runs it covers with an observer_lost gap in each (in the signer run when it covers none)."""
+        runs it covers with an observer_lost gap in each (in the signer run when it covers none); an effect attributed
+        to a run no caller owns is an effect_outside_run gap. OpenShell's import (tracekit.openshell, sensor openshell,
+        its own identity its one caller) also sends a sandbox policy change (an `ext` record openshell.policy) and a
+        loss of one run's events (an observer_lost gap in that run only). A configured gateway may observe the runs it
+        registered for the clients it serves: it is not their agent."""
         obs, tenant, sensor = subject(identity), self._tenant_of(identity), req.get("sensor")
         callers = frozenset(req.get("callers", ()))
         if len(obs) > 256:   # each record names it in full
             raise RPCError("forbidden", f"{obs[:64]}...: an observer's identity is at most 256 characters")
-        if any((x["kind"] == "net") == bool(sensor) for x in req["effects"]) or bool(sensor) != ("callers" in req) \
-                or "lost" in req and not sensor:
+        if any((x["kind"] == "net") == bool(sensor) or x["kind"] in ("policy", "lost") and sensor != "openshell"
+               for x in req["effects"]) or bool(sensor) != ("callers" in req) or "lost" in req and not sensor:
             raise RPCError("invalid_request", "net effects go without `sensor`; a kernel sensor's events and `lost` "
-                                              "go with it, and `callers` with every call of it")
+                                              "go with it, and `callers` with every call of it; policy and lost "
+                                              "effects are OpenShell's")
+        if sensor == "openshell" and callers != {owner(identity)}:   # it observes the runs it registered, no other
+            raise RPCError("invalid_request", f"OpenShell's import observes the runs it registered: its callers are "
+                                              f"its own identity, [{owner(identity)[:256]}]")
         if "check" in req:   # before anything is charged: a made-up token must not spend the observer's events
             why = self._attributed(tenant, req["check"])[2]
             if why:
@@ -3672,6 +3683,7 @@ class SignerService:
             return {"recorded": 0}
         labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}
         explains = self.policy.policy.get("explains", ())
+        gateway = lookup(self._gateways, obs, False)
 
         def fn(tx, _):
             if "lost" in req:
@@ -3681,22 +3693,32 @@ class SignerService:
             for x in req["effects"]:
                 key, how, why = self._attributed(tenant, x)
                 run = key and self.log.runs.get(key)
-                if run and run["owner"] == owner(identity):
+                if run and run["owner"] == owner(identity) and not gateway:
                     raise RPCError("forbidden", f"{obs[:256]} owns run {key[1]}: an observer is never the agent's "
                                                 f"identity; give the {'sensor import' if sensor else 'egress proxy'} "
                                                 "its own")
+                if run and sensor and run["owner"] not in callers:   # an import covers its callers' runs alone
+                    why, run = f"run {key[1]} is {run['owner'][:256]}'s, none of the import's callers", None
                 if not run or run["final"]:
                     why = why or (f"run {key[1]} was final by then (raise observe_grace_s if the observer's reports "
                                   "often come this late)" if run else f"there is no run {key[1]}")
                     claimed = x.get("run_id") or key and key[1]
                     target = f" {x['host']}:{x['port']}" if "host" in x else f" {x['path'][:256]}" if "path" in x else ""
-                    saw = (f"{x['kind']}{target} by pid {x['pid']} ({x['binary'][:256]}) at {x['ts']}" if sensor else
+                    saw = (f"a loss: {x['reason']}" if x["kind"] == "lost" else
+                           f"a policy change ({x['change']}) at {x['ts']}" if x["kind"] == "policy" else
+                           f"{x['kind']}{target} by pid {x['pid']} ({x['binary'][:256]}) at {x['ts']}" if sensor else
                            f"{x['host']}:{x['port']} ({x['bytes_out']} bytes out, {x['bytes_in']} in, "
                            f"{x['connections']} connection(s), {x['first_ts']} to {x['last_ts']})")
                     tx.emit(self.log.signer_run(tx, tenant), "capture.gap", {
                         "kind": "effect_outside_run", **({"run_id": claimed} if claimed else {}),
                         "reason": f"{sensor or 'egress observer'} {obs[:256]} saw {saw} that no open run holds: "
                                   f"{why}"}, source="signer")
+                    continue
+                if x["kind"] == "lost":
+                    self._observer_lost(tx, run, obs, lost=x["reason"])
+                    continue
+                if x["kind"] == "policy":
+                    tx.emit(run, "ext", self._policy_change(obs, x, how), source="signer")
                     continue
                 if sensor:
                     tx.emit(run, "effect.observed", self._sensor_effect(obs, sensor, x, how), source="signer")
@@ -3730,12 +3752,22 @@ class SignerService:
         # add it once runs carry a tool call id into every process (Codex does, Claude Code doesn't)
         d = {"observer": obs, "sensor": sensor, **{k: x[k] for k in (
             "kind", "ts", "pid", "binary", "exec_id", "parent_exec_id", "status", "signal", "host", "port", "path",
-            "tool_call_id")
+            "tool_call_id", "denied")
             if k in x}, "attribution": how}
         if "args_digest" in x:
             sid = secrets.token_hex(16)
             d.update(args_commitment=self._commit(salt_label({"type": "effect.observed", "data": {"salt_id": sid}}),
                                                   x["args_digest"]), salt_id=sid)
+        return d
+
+    def _policy_change(self, obs, x, how):
+        """The `ext` record openshell.policy of OpenShell's sandbox policy change `x`: its message as a commitment."""
+        d = {"name": "openshell.policy", "observer": obs, **{k: x[k] for k in ("ts", "change", "policy_hash", "by")
+                                                             if k in x}, "attribution": how}
+        if "detail_digest" in x:
+            sid = secrets.token_hex(16)
+            d.update(detail_commitment=self._commit(salt_label({"type": "ext", "data": {"salt_id": sid}}),
+                                                    x["detail_digest"]), salt_id=sid)
         return d
 
     def _attributed(self, tenant, x):
