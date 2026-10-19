@@ -1,5 +1,7 @@
 """Format v2 records: {"v": 2, "event", "hash": sha256(JCS(event)), "alg", "kid", "sig"}."""
 import base64
+import hashlib
+import json
 
 from tracekit import crypto
 from tracekit.format.canon import event_hash
@@ -38,9 +40,10 @@ def make_record(event, secret):
     return RecordSigner(secret)(event)
 
 
-def verify_record(record, keys, algs):
+def verify_record(record, keys, algs, signature_known=False):
     """Raise RecordError unless `record` is a v2 record signed by one of `keys` (SPKI DER) with an algorithm from
-    `algs`, the verifier's pinned allow-list, that is also the key's own algorithm."""
+    `algs`, the verifier's pinned allow-list, that is also the key's own algorithm. `signature_known`: the caller saw
+    this record's signature hold before (record_digest): its hash, algorithm and key are checked, the signature is not."""
     if (not isinstance(record, dict) or set(record) != KEYS or record["v"] != 2 or not isinstance(record["event"], dict)
             or not all(isinstance(record[k], str) for k in ("hash", "alg", "kid", "sig"))):
         raise RecordError("not a v2 record")
@@ -62,5 +65,11 @@ def verify_record(record, keys, algs):
         sig = base64.b64decode(record["sig"], validate=True)
     except ValueError:  # binascii.Error, non-ASCII text
         raise RecordError("sig is not base64") from None
-    if not crypto.verify_v2(alg, key, _message(record["event"], alg, record["kid"], h), sig):
+    if not signature_known and not crypto.verify_v2(alg, key, _message(record["event"], alg, record["kid"], h), sig):
         raise RecordError("bad signature")
+
+
+def record_digest(record):
+    """What a record's signature covers, once verify_record has matched its hash to its event: the hash, algorithm, kid
+    and signature."""
+    return hashlib.sha256(json.dumps([record.get(k) for k in ("hash", "alg", "kid", "sig")]).encode()).digest()

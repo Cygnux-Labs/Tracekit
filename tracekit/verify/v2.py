@@ -148,7 +148,7 @@ from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
 from tracekit.format.canon import loads_strict
-from tracekit.format.records import RecordError, verify_record
+from tracekit.format.records import RecordError, record_digest, verify_record
 from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
 from tracekit.schema import V2, validate
@@ -347,10 +347,12 @@ def _version(v):
     return tuple(int(x) for x in re.findall(r"[0-9]+", v)[:3])
 
 
-def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), revocations=()):
+def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), revocations=(), memo=None):
     """Verify a v2 bundle against the pinned trust config at `trust_path`, with `v1_ledger` (a v1 ledger.jsonl) and
     `v1_key` (its signer.pub) the format bridge into it, with `monitor_reports` (paths) the log's monitoring and with
-    `revocations` (paths) the record-key revocations known. Never raises on a malformed bundle."""
+    `revocations` (paths) the record-key revocations known. `memo`: a set the caller keeps across calls (tracekit
+    view, as a run grows): the record_digest of each record whose signature and schema held, so the same record is not
+    checked for them again; everything else is. Never raises on a malformed bundle."""
     rep = Report()
     rep.integrity, rep.assurance = "UNUSABLE BUNDLE", "none"
     try:
@@ -374,7 +376,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
         rep.check("bundle readable", False, f"cannot read bundle: {type(e).__name__}: {e}")
         return rep, EXIT_BAD
     try:
-        _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations)
+        _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations, memo)
     except Exception as e:
         rep.check("bundle structure", False, "", [f"malformed and could not be fully checked: {type(e).__name__}: {e}"])
     if rep.failures:
@@ -445,7 +447,7 @@ def _manifest_detail(listed, hashes, bad):
     return "files differ from the manifest: " + ", ".join(how) + (f" and {len(bad) - 5} more" if len(bad) > 5 else "")
 
 
-def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations):
+def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations, memo=None):
     listed, hashes = manifest.get("files"), {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
     bad = sorted(n for n in set(listed) | set(hashes) if n not in listed or n not in hashes or listed[n] != hashes[n]) \
         if isinstance(listed, dict) else []
@@ -479,7 +481,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         """Signature, schema and log membership of one record; `keys`: the SPKIs the log allows at its position. A
         record valid only under a key retired before it is named as such."""
         try:
-            verify_record(r, keys, trust["algs"])
+            digest = memo is not None and isinstance(r, dict) and record_digest(r)
+            known = bool(digest) and digest in memo
+            verify_record(r, keys, trust["algs"], known)
         except RecordError as e:
             seq = r["event"].get("seq") if str(e) == "unknown kid" else None   # a well-formed record by then
             retired = [k["spki"] for k in timeline.values()
@@ -491,7 +495,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                 problems.append(f"seq {r.get('event', {}).get('seq')!r}: {e}")
             return
         e = r["event"]
-        errs = validate(e) if e.get("schema_version") == V2 else ["not a tracekit.event.v2 event"]
+        errs = [] if known else validate(e) if e.get("schema_version") == V2 else ["not a tracekit.event.v2 event"]
+        if digest and not errs:
+            memo.add(digest)
         problems.extend(f"seq {e.get('seq')!r}: {x}" for x in errs)
         if not errs and e.get("log_id") != log_id:
             problems.append(f"seq {e['seq']}: another log's record")

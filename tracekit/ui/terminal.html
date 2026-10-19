@@ -2022,7 +2022,7 @@
     function renderTape() {
       if (V2) put("fchips", [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" "));
       // only what changes the rows re-renders them (the live tick re-renders every second)
-      const key = [S, S.tape.length, S.recs.length, F.agent, F.tool, F.file, F.flag, F.find, F.kind, tapeMax, selected];
+      const key = [S, S.tape.length, S.recs.length, F.agent, F.tool, F.file, F.flag, F.find, F.kind, tapeMax, selected, DROPPED];
       if (key.every((x, i) => x === tapeKey[i])) return;
       tapeKey = key;
       const rows = S.tape.filter(r => !r.under && rowMatch(r)), shown = rows.slice(-tapeMax).reverse();
@@ -2041,8 +2041,9 @@
       });
       const older = rows.length - shown.length;
       if (older) html += `<tr><td colspan="7" class="more"><button type="button" data-older="1">SHOW ${esc(Math.min(TAPE_PAGE, older))} OLDER · ${esc(older)} NOT SHOWN</button></td></tr>`;
+      else if (DROPPED) html += `<tr><td colspan="7" class="more dim">${esc(DROPPED)} older rows left the live view (it keeps the newest ${esc(MAXREC)}); each run's verdict stays under RUNS, and a run's bundle has all its records</td></tr>`;
       put("tape", html || `<tr><td colspan="7" class="empty">${anyFilter() ? "Nothing matches the filter." : "Waiting for events…"}</td></tr>`);
-      $("tapesum").textContent = (anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`) + (older ? ` · newest ${shown.length} shown` : "");
+      $("tapesum").textContent = (anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`) + (older ? ` · newest ${shown.length} shown` : "") + (DROPPED ? ` · ${DROPPED} older rows left the live view` : "");
     }
     function renderAlerts() {
       const why = whyAlerts(), src = al => srcOf(al.ref?.pre || al.ref?.rec);
@@ -2421,6 +2422,7 @@
         // a reconnect starts again from the server's snapshot: stream positions are the server's own, and a viewer that
         // restarted numbers its records anew, so resuming from the old position would miss or repeat records
         if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); selected = null; reset(); }
+        DROPPED = snap.dropped || 0; MAXREC = snap.max || MAXREC;
         snap.records.forEach(accept); tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; loadWhy(); schedule();
         const want = new URLSearchParams(location.hash.slice(1)).get("run");   // a link to one run: /#run=<id>
         if (want && RUNS.has(want) && scope !== want) setScope(want);
@@ -2462,8 +2464,9 @@
     }
 
     /* ---------------- v2 runs (tracekit view): run scope and evidence replay ---------------- */
-    // ALL holds every record received; S is built from the selected run's (R: up to the playhead while replaying)
-    let V2 = false, scope = null, R = null, rpos = 0, rplay = false, rtimer = null;
+    // ALL holds the newest MAXREC records received (the server's own cap; DROPPED counts the older ones, the server's
+    // too); S is built from the selected run's (R: up to the playhead while replaying); RUNS keeps every run's verdict
+    let V2 = false, scope = null, R = null, rpos = 0, rplay = false, rtimer = null, DROPPED = 0, MAXREC = 50000;
     const ALL = [], RUNS = new Map();
     const inScope = r => !scope || r.session_id === scope;
     function accept(r) {
@@ -2471,7 +2474,15 @@
       ALL.push(r);
       if ((r.v2 || r.review) && !V2) { V2 = true; document.body.classList.add("v2"); }
       if (r.review && !r.signer) RUNS.set(r.session_id, { ...r.review, id: r.session_id, tenant: r.tenant, report: r.text });
-      if (!R && inScope(r)) ingest(r);
+      // a run that verified at one checkpoint and fails at a later one: the records it showed are taken back
+      let n = 0;
+      if (r.review?.verdict === "failed") {
+        for (const x of ALL) if (x.analysis || x.session_id !== r.session_id || x.tenant !== r.tenant) ALL[n++] = x;
+        n = ALL.length - n; ALL.length -= n;
+      }
+      if (ALL.length > MAXREC * 1.1) { const k = ALL.length - MAXREC; ALL.splice(0, k); DROPPED += k; n += k; }
+      if (n) { if (R && scope === r.session_id) stopRun(true); if (!R) rebuild(); }
+      else if (!R && inScope(r)) ingest(r);
     }
     function rebuild() {
       reset();
