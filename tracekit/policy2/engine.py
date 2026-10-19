@@ -141,7 +141,7 @@ class Engine:
                     parsed = _shell(args)
                 except shell.ParseError:
                     hits["ask"].append("TK-SHELL-PARSE")
-                    parsed = [], [], [command if isinstance(command, str) else canonical(command)]   # its own target
+                    parsed = [], [], [command if isinstance(command, str) else canonical(command)], []  # its own target
                 if any(c["opaque"] for c in parsed[0]):
                     hits["ask"].append("TK-SHELL-PARSE")
         for sec, rule, tool_re, pat, unless in self.rules:
@@ -220,7 +220,9 @@ class Engine:
             urls = [t for t in map(classes.url_target, (u for w in found for u in _URL.findall(w))) if t]
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
-            return [" ".join(w) for w in words] + parsed[2] + urls + bare
+            # Keep the tag so a target rule can distinguish output destinations from input redirects.
+            write_refs = [f"WRITE_TARGET:{_text(ref)}" for ref in parsed[3]]
+            return [" ".join(w) for w in words] + parsed[2] + write_refs + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
         if cls in ("http", "browser"):

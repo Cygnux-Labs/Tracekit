@@ -123,14 +123,14 @@ deny:
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
   - id: TK-D020
     class: shell
-    field: line
+    field: argv
     pattern: '^security\s+dump-keychain\b|^secret-tool\s+search\b[^\n]*--all\b|^pass\s+show\s+--all\b'
     reason: dumping an entire operating-system credential store
     rationale: A whole-store export exposes credentials unrelated to the task; a person must authorize it.
   - id: TK-D021
     class: shell
-    field: line
-    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*(https?://|git\+(https?|ssh)://)'
+    field: argv
+    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*https?://'
     reason: installing a package directly from a URL
     rationale: A URL bypasses the configured package source and can install unreviewed code.
 
@@ -139,13 +139,13 @@ ask:
     class: fs
     tool: Read|Grep
     field: path
-    pattern: '(^|/)(\.password-store(/.+)?|[Ll]ogin [Dd]ata|[Ll]ogins\.json|[Kk]ey4\.db|[Ww]eb [Dd]ata|[Cc]ookies)$|(^|/)Library/Keychains/[^/]+$|(^|/)\.local/share/keyrings/[^/]+$|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$'
+    pattern: '(^|/)\.password-store(/.+)?$|(^|/)Library/Keychains/[^/]+$|(^|/)\.local/share/keyrings/[^/]+$|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium)/[^/]+/(Login Data|Cookies|Web Data)$|(^|/)Library/Application Support/(Google/Chrome|Chromium)/[^/]+/(Login Data|Cookies|Web Data)$'
     reason: reading an operating-system or browser credential store
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
   - id: TK-A021
     class: shell
-    field: line
-    pattern: '^(security\s+(find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|pass\s+show|ssh-add\s+-L)\b|^(cat|sqlite3)\b[^\n]*(Login Data|logins\.json|key4\.db|Web Data|Cookies)'
+    field: target
+    pattern: '^(security\s+(find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|pass\s+show|ssh-add\s+-L)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium)/[^/ ]+/(?:Login Data|Cookies|Web Data)|Library/Application Support/(?:Google/Chrome|Chromium)/[^/ ]+/(?:Login Data|Cookies|Web Data))'
     reason: reading credentials from an operating-system or browser store
     rationale: These commands can read saved credentials or enumerate an SSH agent; a person confirms the access.
   - id: TK-A022
@@ -157,8 +157,8 @@ ask:
     rationale: The daemon configuration and socket can grant a container full host access; reading them is allowed.
   - id: TK-A023
     class: shell
-    field: line
-    pattern: '^(docker|podman)\s+run\b[^\n]*(--privileged\b|--pid(=|\s+)host\b|(-v|--volume(=|\s+))\s*(/|/proc):/|--mount[^\n]*(src|source)=(/|/proc)[, ])'
+    field: argv
+    pattern: '^(docker|podman)\s+run\b.*?(--privileged\b|--pid(=|\s+)host\b|(-v|--volume(=|\s+))\s*(/|/proc):/|--mount.*?(src|source)=(/|/proc)[, ])'
     reason: starting a container with host-level privileges or mounts
     rationale: These options expose the host disk, process space or device access to the container; a person confirms it.
   - id: TK-A024
@@ -170,8 +170,9 @@ ask:
     rationale: Package source settings can redirect future installs to an untrusted index; reading configuration is allowed.
   - id: TK-A025
     class: shell
-    field: line
-    pattern: '^(pip3?|python3?\s+-m\s+pip)\s+(install|add)\b[^\n]*(--index-url|--extra-index-url)|^(npm|pnpm|yarn|bun)\s+(install|add)\b[^\n]*--registry(=|\s+)|^(uv(\s+pip)?|poetry|cargo|gem)\s+(install|add)\b[^\n]*(--index-url|--extra-index-url|--index(=|\s+)|--default-index|--source(=|\s+)|--registry(=|\s+))|^(pip3?|python3?\s+-m\s+pip)\s+config\s+set\b[^\n]*(index-url|extra-index-url)|^(npm|pnpm|yarn|bun)\s+config\s+set\b[^\n]*registry'
+    field: argv
+    unless: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?)\s+(install|add)\b.*--(index-url|extra-index-url|default-index)\s+https?://pypi\.org(?:/|\s)|^(pip3?|python3?\s+-m\s+pip)\s+config\s+set\b.*https?://pypi\.org(?:/|\s)|^(npm|pnpm|yarn|bun)\s+(install|add)\b.*--registry(?:=|\s+)https?://registry\.npmjs\.org(?:/|\s)|^(npm|pnpm|yarn|bun)\s+config\s+set\b.*https?://registry\.npmjs\.org(?:/|\s)'
+    pattern: '^(pip3?|python3?\s+-m\s+pip)\s+(install|add)\b.*?--(extra-)?index-url\b|^(npm|pnpm|yarn|bun)\s+(install|add)\b.*?--registry(?:=|\s+)|^(uv(\s+pip)?|poetry|cargo|gem)\s+(install|add)\b.*?--(index-url|extra-index-url|index|default-index|source|registry)(?:=|\s+)|^(pip3?|python3?\s+-m\s+pip)\s+config\s+set\b.*?(index-url|extra-index-url)|^(npm|pnpm|yarn|bun)\s+config\s+set\b.*?registry'
     reason: installing packages through an explicitly selected index
     rationale: The signer cannot establish whether a custom index is trusted; a person confirms the source.
   - id: TK-A026
@@ -183,10 +184,16 @@ ask:
     rationale: These files may be evidence of earlier activity; writing to them is held while reading stays allowed.
   - id: TK-A027
     class: shell
-    field: line
-    pattern: '^history\s+-(c|d)\b|^set\s+\+o\s+history\b|^(unset\s+HISTFILE|export\s+HISTFILE=/dev/null)\b|^(HISTFILE|SAVEHIST)=/dev/null\b|^(rm|truncate|shred)\b[^\n]*(\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt|/var/log(/|\s|$))|^(tee(\s+-a)?|sed\s+(-[a-zA-Z]*\s+)*-i|dd\b[^\n]*\bof=|cp|mv|install)\b[^\n]*(\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt|/var/log(/|\s|$))|^(echo|printf|cat|:)\b[^\n]*>{1,2}\s*[^\n]*(\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt|/var/log(/|\s|$))|^find\b[^\n]*-(delete|exec\s+(rm|truncate|shred))[^\n]*(\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt|/var/log(/|\s|$))|^find\b[^\n]*(\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt|/var/log(/|\s|$))[^\n]*-(delete|exec\s+(rm|truncate|shred))|^journalctl\b[^\n]*--vacuum-(time|size)='
+    field: target
+    pattern: '^(?:(?:rm|unlink|truncate|shred|tee|cp|mv|install)\b.*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|(?:rm|unlink|truncate|shred|tee|cp|mv|install)\b.*?(?:^|\s)/var/log(?:/|\b)|sed\b.*?-[A-Za-z]*i[A-Za-z]*(?:\s|$).*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|sed\b.*?-[A-Za-z]*i[A-Za-z]*(?:\s|$).*?(?:^|\s)/var/log(?:/|\b)|perl\b.*?-[A-Za-z]*i[A-Za-z]*(?:\s|$).*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|perl\b.*?-[A-Za-z]*i[A-Za-z]*(?:\s|$).*?(?:^|\s)/var/log(?:/|\b)|dd\b.*?\bof=.*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|dd\b.*?\bof=(?:/var/log(?:/|\b))|find\b.*?-(?:delete|exec\s+(?:rm|truncate|shred)\b).*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|find\b.*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt).*?-(?:delete|exec\s+(?:rm|truncate|shred)\b)|find\b.*?-(?:delete|exec\s+(?:rm|truncate|shred)\b).*?(?:^|\s)/var/log(?:/|\b)|find\b.*?(?:^|\s)/var/log(?:/|\b).*?-(?:delete|exec\s+(?:rm|truncate|shred)\b))|^WRITE_TARGET:(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^WRITE_TARGET:/var/log(?:/.*)?$'
     reason: clearing shell history or system logs
-    rationale: Turning history off or deleting logs can hide earlier activity; a person confirms it.
+    rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
+  - id: TK-A028
+    class: shell
+    field: argv
+    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*git\+(https?|ssh)://'
+    reason: installing a package directly from a version-control source
+    rationale: Version-control installs are common but their source and revision need human review.
   - id: TK-A001
     class: shell
     # each command's argv, so `echo terraform destroy`, a grep for it or a commit message naming it don't match. The

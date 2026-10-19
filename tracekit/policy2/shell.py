@@ -8,9 +8,8 @@ pipeline, in order. `opaque`: what the command runs cannot be read from the line
 name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of a stream).
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
-`analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
-redirections kept, for rules that match a whole command line; and the words that name something besides the commands'
-argv: redirection targets, `VAR=` assignments and the program an interpreter reads from a heredoc or herestring.
+`analyse(command)` also returns normalised lines with quotes and escapes resolved, words that name other targets, and
+output redirection targets. The latter lets policy distinguish a write destination from a read source.
 """
 import re
 
@@ -86,16 +85,16 @@ def parse(command):
 
 def analyse(command):
     """(the commands, the normalised lines, the other words that name something)."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "pipes": 0, "depth": 0, "work": 0, "exp": 0}
+    ctx = {"cmds": [], "lines": [], "refs": [], "write_refs": [], "pipes": 0, "depth": 0, "work": 0, "exp": 0}
     _Parser(command, ctx, []).script()
-    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"]
+    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"], ctx["write_refs"]
 
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [" ".join(argv)], "refs": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
+    ctx = {"cmds": [], "lines": [" ".join(argv)], "refs": [], "write_refs": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
     _Parser("", ctx, []).emit(list(argv), 1, [])
-    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"]
+    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"], ctx["write_refs"]
 
 
 def data_words(argv):
@@ -452,6 +451,8 @@ class _Parser:
                     strings.append(target[0])
                 else:
                     self.ctx["refs"].append(target[0])
+                    if m.group(2) in (">>", "&>", "&>>", ">|", ">", "<>"):
+                        self.ctx["write_refs"].append(target[0])
                     stdin_redirect |= m.group(2) in ("<", "<&", "<>")
                 continue
             start = self.i

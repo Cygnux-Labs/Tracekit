@@ -102,7 +102,11 @@
 {"tool": "Bash", "args": {"command": "git push origin 0000000000000000000000000000000000000000:refs/heads/b1"}, "expect": "ask", "note": "the all-zero object id as the source deletes the ref"}
 {"tool": "Bash", "args": {"command": "security dump-keychain"}, "expect": "deny", "note": "whole credential-store dump"}
 {"tool": "Bash", "args": {"command": "pip install https://packages.example.test/private.whl"}, "expect": "deny", "note": "package URL install"}
+{"tool": "Bash", "args": {"command": "pip install git+https://example.test/org/pkg.git"}, "expect": "ask", "note": "VCS package source requires confirmation"}
 {"tool": "Bash", "args": {"command": "docker run --privileged alpine"}, "expect": "ask", "note": "privileged container"}
 {"tool": "Bash", "args": {"command": "pip install --index-url https://packages.example.test/simple demo"}, "expect": "ask", "note": "custom package index"}
 {"tool": "Bash", "args": {"command": "ssh-add -L"}, "expect": "ask", "note": "read running SSH agent keys"}
-{"tool": "Bash", "args": {"command": "history -c"}, "expect": "ask", "note": "clear shell history"}
+{"tool": "Bash", "args": {"command": "echo x > ~/.bash_history"}, "expect": "ask", "note": "shell history write target"}
+{"tool": "Bash", "args": {"command": "rm /var/log"}, "expect": "ask", "note": "system log delete target"}
+{"tool": "Bash", "args": {"command": "find /var/log -type f -delete"}, "expect": "ask", "note": "system log files deleted"}
+{"tool": "Bash", "args": {"command": "sed -i '/old/d' ~/.bash_history"}, "expect": "ask", "note": "in-place shell history edit"}

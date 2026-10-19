@@ -50,3 +50,4 @@
 {"tool": "Write", "args": {"file_path": "/repo/compose.yaml", "content": "services: {}"}, "expect": "allow", "note": "ordinary compose configuration"}
 {"tool": "Write", "args": {"file_path": "/repo/packages.list", "content": "one two"}, "expect": "allow", "note": "ordinary file with list suffix"}
 {"tool": "Read", "args": {"file_path": "/home/app/.bash_history"}, "expect": "allow", "note": "read shell history"}
+{"tool": "Read", "args": {"file_path": "/repo/Cookies"}, "expect": "allow", "note": "ordinary project file named Cookies"}

@@ -141,8 +141,23 @@
 {"tool": "Bash", "args": {"command": "git push -u origin add-delete-button"}, "expect": "allow", "note": "a branch name containing -delete"}
 {"tool": "Bash", "args": {"command": "git push -o merge_request.draft origin feature"}, "expect": "allow", "note": "a push option whose value contains d"}
 {"tool": "Bash", "args": {"command": "docker run alpine"}, "expect": "allow", "note": "ordinary container"}
+{"tool": "Bash", "args": {"command": "docker container run alpine"}, "expect": "allow", "note": "uncovered container subcommand"}
 {"tool": "Bash", "args": {"command": "pip install requests"}, "expect": "allow", "note": "configured package source"}
+{"tool": "Bash", "args": {"command": "pip install --index-url https://pypi.org/simple demo"}, "expect": "allow", "note": "explicit standard Python index"}
+{"tool": "Bash", "args": {"command": "npm install --registry=https://registry.npmjs.org demo"}, "expect": "allow", "note": "explicit standard npm registry"}
+{"tool": "Bash", "args": {"command": "pip config set global.index-url https://pypi.org/simple"}, "expect": "allow", "note": "standard Python index setting"}
+{"tool": "Bash", "args": {"command": "npm config set registry https://registry.npmjs.org/"}, "expect": "allow", "note": "standard npm registry setting"}
+{"tool": "Bash", "args": {"command": "npm i https://packages.example.test/demo.tgz"}, "expect": "allow", "note": "uncovered npm i URL form"}
+{"tool": "Bash", "args": {"command": "pip install -q https://packages.example.test/demo.whl"}, "expect": "allow", "note": "uncovered quiet pip URL form"}
+{"tool": "Bash", "args": {"command": "pip install -U https://packages.example.test/demo.whl"}, "expect": "allow", "note": "uncovered upgrade pip URL form"}
 {"tool": "Bash", "args": {"command": "history"}, "expect": "allow", "note": "read shell history"}
+{"tool": "Bash", "args": {"command": "history -c"}, "expect": "allow", "note": "no named file write target"}
+{"tool": "Bash", "args": {"command": "unset HISTFILE"}, "expect": "allow", "note": "no named file write target"}
+{"tool": "Bash", "args": {"command": "cat /var/log/app.log; echo done"}, "expect": "allow", "note": "read a log then run an unrelated command"}
+{"tool": "Bash", "args": {"command": "cat < ~/.bash_history"}, "expect": "allow", "note": "read history through input redirection"}
+{"tool": "Bash", "args": {"command": "sed -n '1,10p' /var/log/app.log"}, "expect": "allow", "note": "read a log with sed"}
+{"tool": "Bash", "args": {"command": "cat /repo/Cookies"}, "expect": "allow", "note": "ordinary project file named Cookies"}
+{"tool": "Bash", "args": {"command": "rm -rf /repo/var/log"}, "expect": "allow", "note": "project path resembling a system-log path"}
 {"tool": "Bash", "args": {"command": "echo 'security dump-keychain'"}, "expect": "allow", "note": "mention a risky command as text"}
 {"tool": "Bash", "args": {"command": "printf 'pip install https://packages.example.test/demo.whl'"}, "expect": "allow", "note": "mention a package URL as text"}
 {"tool": "Bash", "args": {"command": "echo 'docker run --privileged alpine'"}, "expect": "allow", "note": "mention a container option as text"}

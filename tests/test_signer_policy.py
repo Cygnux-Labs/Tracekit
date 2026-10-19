@@ -155,6 +155,7 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
         self.assertEqual((d["verdict"], "TK-A002" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
+    @unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
     def test_new_credential_container_package_and_track_rules(self):
         packs = os.path.join(os.path.dirname(svc.DEFAULT_POLICY), "coding.yaml")
         policy, errors = pc.build(packs)
@@ -163,9 +164,11 @@ class CodingPack(unittest.TestCase):
             ("Read", {"file_path": "/home/app/.mozilla/firefox/p1/logins.json"}, "ask", "TK-A020"),
             ("Grep", {"path": "/home/app/.password-store", "pattern": "secret"}, "ask", "TK-A020"),
             ("Bash", {"command": "security find-generic-password -s example"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/google-chrome/Default/Cookies"}, "ask", "TK-A021"),
             ("Bash", {"command": "security dump-keychain"}, "deny", "TK-D020"),
             ("Bash", {"command": "pip install https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
             ("Bash", {"command": "uv pip install --no-deps https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
+            ("Bash", {"command": "pip install git+https://example.test/org/pkg.git"}, "ask", "TK-A028"),
             ("Write", {"file_path": "/var/run/docker.sock"}, "ask", "TK-A022"),
             ("Bash", {"command": "docker run --pid=host alpine"}, "ask", "TK-A023"),
             ("Bash", {"command": "docker run --mount type=bind,source=/,target=/host alpine"}, "ask", "TK-A023"),
@@ -173,27 +176,64 @@ class CodingPack(unittest.TestCase):
             ("Write", {"file_path": "/etc/apt/sources.list.d/example.list"}, "ask", "TK-A024"),
             ("Bash", {"command": "pip install --index-url https://packages.example.test/simple demo"}, "ask", "TK-A025"),
             ("Bash", {"command": "npm config set registry https://packages.example.test/"}, "ask", "TK-A025"),
+            ("Bash", {"command": "pip install --index-url https://pypi.org/simple demo"}, "allow", ""),
+            ("Bash", {"command": "npm install --registry=https://registry.npmjs.org demo"}, "allow", ""),
+            ("Bash", {"command": "pip config set global.index-url https://pypi.org/simple"}, "allow", ""),
+            ("Bash", {"command": "npm config set registry https://registry.npmjs.org/"}, "allow", ""),
             ("Write", {"file_path": "/home/app/.zsh_history"}, "ask", "TK-A026"),
-            ("Bash", {"command": "unset HISTFILE"}, "ask", "TK-A027"),
             ("Bash", {"command": "echo x > ~/.bash_history"}, "ask", "TK-A027"),
             ("Bash", {"command": "rm /var/log"}, "ask", "TK-A027"),
             ("Bash", {"command": "find /var/log -type f -delete"}, "ask", "TK-A027"),
+            ("Bash", {"command": "sed -n '1,10p' /var/log/app.log"}, "allow", ""),
+            ("Bash", {"command": "cat /var/log/app.log; echo done"}, "allow", ""),
+            ("Bash", {"command": "cat < ~/.bash_history"}, "allow", ""),
+            ("Bash", {"command": "history -c"}, "allow", ""),
+            ("Bash", {"command": "unset HISTFILE"}, "allow", ""),
+            ("Bash", {"command": "rm /repo/Cookies"}, "allow", ""),
+            ("Bash", {"command": "rm -rf /repo/var/log"}, "allow", ""),
+            ("Bash", {"command": "cat /repo/docs/Cookies"}, "allow", ""),
         ]
+        shell_cases = [case for case in cases if case[0] == "Bash" and case[3]]
+        for tool, args, verdict, rule_id in shell_cases:
+            command = args["command"]
+            executable, _, rest = command.partition(" ")
+            absolute = "/usr/bin/" + executable.rsplit("/", 1)[-1] + (" " + rest if rest else "")
+            for prefix, rewritten in (
+                ("cd", "cd /repo && " + command), ("true", "true; " + command),
+                ("env", "env " + command), ("absolute", absolute),
+                ("assignment", "VAR=1 " + command), ("command", "command " + command),
+            ):
+                cases.append((tool, {"command": rewritten}, verdict, rule_id))
         engines = [Engine(policy, "re2"), Engine(policy, "regex")]
         for tool, args, verdict, rule_id in cases:
             with self.subTest(tool=tool, args=args):
                 decisions = [engine.decide(tool, args) for engine in engines]
-                self.assertEqual({d["verdict"] for d in decisions}, {verdict})
-                self.assertTrue(all(rule_id in d["rule_ids"] for d in decisions))
+                if verdict == "allow":
+                    self.assertTrue(all(d["verdict"] not in ("deny", "ask") for d in decisions), decisions)
+                else:
+                    self.assertEqual({d["verdict"] for d in decisions}, {verdict})
+                if rule_id:
+                    self.assertTrue(all(rule_id in d["rule_ids"] for d in decisions))
                 self.assertEqual(decisions[0]["rule_ids"], decisions[1]["rule_ids"])
 
         lookalikes = [
             ("Write", {"file_path": "/repo/compose.yaml", "content": "services: {}"}),
             ("Write", {"file_path": "/repo/packages.list", "content": "ordinary"}),
             ("Read", {"file_path": "/home/app/.bash_history"}),
+            ("Read", {"file_path": "/repo/Cookies"}),
             ("Bash", {"command": "docker run alpine"}),
             ("Bash", {"command": "docker run --mount type=bind,source=/data,target=/host alpine"}),
             ("Bash", {"command": "find /var/log -type f -print"}),
+            ("Bash", {"command": "cat /var/log/app.log; echo done"}),
+            ("Bash", {"command": "cat < ~/.bash_history"}),
+            ("Bash", {"command": "history -c"}),
+            ("Bash", {"command": "unset HISTFILE"}),
+            ("Bash", {"command": "pip install --index-url https://pypi.org/simple demo"}),
+            ("Bash", {"command": "npm install --registry=https://registry.npmjs.org demo"}),
+            ("Bash", {"command": "pip config set global.index-url https://pypi.org/simple"}),
+            ("Bash", {"command": "npm config set registry https://registry.npmjs.org/"}),
+            ("Bash", {"command": "cat /repo/docs/Cookies"}),
+            ("Bash", {"command": "rm -rf /repo/var/log"}),
             ("Bash", {"command": "pip install requests"}),
             ("Bash", {"command": "history"}),
             ("Bash", {"command": "echo 'security dump-keychain'"}),
@@ -207,7 +247,16 @@ class CodingPack(unittest.TestCase):
                 self.assertNotIn(decisions[0]["verdict"], ("deny", "ask"))
                 self.assertFalse(set(decisions[0]["rule_ids"]) & {
                     "TK-D020", "TK-D021", "TK-A020", "TK-A021", "TK-A022", "TK-A023",
-                    "TK-A024", "TK-A025", "TK-A026", "TK-A027"})
+                    "TK-A024", "TK-A025", "TK-A026", "TK-A027", "TK-A028"})
+
+    def test_history_rule_fallback_is_bounded_on_32k_commands(self):
+        cases = [("rm " + "x " * 16000 + "~/.bash_history", "ask"),
+                 ("find /repo " + "-name x " * 4000 + "-print", "allow")]
+        for command, expected in cases:
+            with self.subTest(length=len(command), expected=expected):
+                decision = self.e.decide("Bash", {"command": command})
+                self.assertEqual(decision["verdict"], expected)
+                self.assertIsNone(decision.get("nondeterministic"))
 
 
 class PackReading(unittest.TestCase):
