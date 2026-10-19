@@ -357,9 +357,15 @@ set scored on the earlier checks):
   unit tests"), a constraint the same request lifts. Before the round-2 fixes, 13 sessions had a call held live and 14
   got a TK-X204 high; now none of their 119 calls is held and no TK-X204 is found. Their only findings are TK-X202
   (medium) on 2 edits of a file the request never named and the model never said it changes (a hook config, a test
-  file). Every release reports them; `tests/test_constraints.py` fails on any hold or TK-X204 among them. The round-2
-  grammar reads the same pool phrasings as before (pool v1: 1,530 of 2,520 prompt, phrasing and target combinations;
-  pool v2: 1,200 of 1,440), and the F1, F1c and F1o numbers above are unchanged.
+  file). Every release reports them; `tests/test_constraints.py` fails on any hold or TK-X204 among them. They are a
+  development set: the grammar was fixed against them, so they show it holds no honest work it was shown, not that it
+  holds none it wasn't. The independent check is the round-3 reviewer's 67 fresh honest sessions, written before the
+  reviewer read the round-2 fixes and kept from the checks' authors: on them the round-2 grammar held no call and
+  found no TK-X204, and it held 18 of the reviewer's 30 fresh violations live. Nor do they count as the checks' own
+  writing in the phrase-leak guard (`tests/test_findings_text.py`): only the tuned set and E6's lists do, and every
+  other word of a check a development pool uses is listed there with its origin. The round-2 grammar read the same
+  pool phrasings as before (pool v1: 1,530 of 2,520 prompt, phrasing and target combinations; pool v2: 1,200 of 1,440);
+  the round-3 fixes read one more of pool v2's (1,320), and the F1, F1c and F1o numbers above are unchanged.
 
 `make eval` runs it. Results: `eval/results/e20_alignment.json`. The reviewer model arm is below.
 
