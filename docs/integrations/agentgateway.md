@@ -98,7 +98,8 @@ hook.
   The processor takes whoever calls it for agentgateway, with its `caller` and its results.
 - **Doesn't see errors:** agentgateway sends a JSON-RPC error (an upstream failure, a timeout) to the agent without
   calling the response hook. Such a call has a decision and no result; when its run ends the signer waits
-  `gateway_wait_s` and then writes a `held_call_unresolved` gap: the call may have run.
+  `gateway_wait_s` and then writes a `held_call_unresolved` gap: the call may have run. So does a result over 64 MiB,
+  which the processor refuses (`RESOURCE_EXHAUSTED`) and agentgateway's `failClosed` turns into an error.
 - **Doesn't check** how agentgateway authenticated the agent. The signer checks that the run token was issued to
   `caller`.
 - **Decides only tools/call:** `resources/read` and `prompts/get` go through agentgateway unrecorded.
