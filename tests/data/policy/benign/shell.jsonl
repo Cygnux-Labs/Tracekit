@@ -140,3 +140,6 @@
 {"tool": "Bash", "args": {"command": "git push origin main:main"}, "expect": "allow", "note": "updating a remote ref with a non-empty source"}
 {"tool": "Bash", "args": {"command": "git push -u origin add-delete-button"}, "expect": "allow", "note": "a branch name containing -delete"}
 {"tool": "Bash", "args": {"command": "git push -o merge_request.draft origin feature"}, "expect": "allow", "note": "a push option whose value contains d"}
+{"tool": "Bash", "args": {"command": "git push origin release-0000000000000000000000000000000000000000:x"}, "expect": "allow", "note": "a branch name ending in forty zeros is not the all-zero object id"}
+{"tool": "Bash", "args": {"command": "git push origin main\nrm -d build"}, "expect": "allow", "note": "a push and, on the next line, another command's -d"}
+{"tool": "Bash", "args": {"command": "git push origin main\necho :b1"}, "expect": "allow", "note": "a push and, on the next line, another command's :word"}

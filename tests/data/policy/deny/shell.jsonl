@@ -100,3 +100,9 @@
 {"tool": "Bash", "args": {"command": "git push --del origin b1"}, "expect": "ask", "note": "a unique prefix of --delete"}
 {"tool": "Bash", "args": {"command": "git push --pru origin"}, "expect": "ask", "note": "a unique prefix of --prune"}
 {"tool": "Bash", "args": {"command": "git push origin 0000000000000000000000000000000000000000:refs/heads/b1"}, "expect": "ask", "note": "the all-zero object id as the source deletes the ref"}
+{"tool": "Bash", "args": {"command": "git push --repo=$'x\\ny' origin --delete b1"}, "expect": "ask", "note": "deleting a remote Git ref after an argument with a newline in it"}
+{"tool": "Bash", "args": {"command": "git push --repo=\"x\ny\" origin :b1"}, "expect": "ask", "note": "a deletion refspec after a quoted argument with a newline in it"}
+{"tool": "Bash", "args": {"command": "git push origin 0000000000000000000000000000000000000000000000000000000000000000:refs/heads/b1"}, "expect": "ask", "note": "the all-zero SHA-256 object id as the source deletes the ref"}
+{"tool": "Bash", "args": {"command": "Git push origin --delete b1"}, "expect": "ask", "note": "macOS runs git for Git: a case-insensitive file system"}
+{"tool": "Bash", "args": {"command": "git push --mirr origin"}, "expect": "deny", "note": "a unique prefix of --mirror, which deletes remote refs absent locally"}
+{"tool": "Bash", "args": {"command": "git push --m origin"}, "expect": "deny", "note": "the shortest prefix of --mirror"}

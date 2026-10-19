@@ -1,13 +1,13 @@
 # Coding pack (policy v2): the shell, files and harness self-protection rules of tracekit/policy/default.yaml,
 # ported to the RE2 subset and to signer-side classes. Rule ids are kept where the meaning is the same.
 #
-# Shell rules without a field match each command's argv (wrappers, paths and quoting resolved by policy2/shell.py);
-# `field: command` matches the raw command line; `field: line` matches it and each line policy2/shell.py normalised
-# (quotes and escapes resolved, redirections kept). File rules match the signer-normalised `path` (and, with `..`, the lexically
-# normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
-# protection is the signer, its storage and the witnesses.
+# Shell rules without a field match each command's argv (wrappers, paths, quoting and the program name's case resolved
+# by policy2/shell.py); `field: command` matches the raw command line; `field: line` matches it and each line
+# policy2/shell.py normalised (quotes and escapes resolved, redirections kept). File rules match the signer-normalised
+# `path` (and, with `..`, the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system
+# may ignore case). Rules stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-8'
+version: '2026.10-v2-9'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -51,8 +51,11 @@ deny:
   - id: TK-D003
     class: shell
     field: line
-    # global options may come before `push` (git -C dir push); -f may be bundled (-uf)
-    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|--mirror\b|\s\+\S)'
+    # global options may come before `push` (git -C dir push); -f may be bundled (-uf); --mirror may be abbreviated
+    # (`--m`: push's only option starting with m). `.` stops at a newline: the raw line holds several commands, and a
+    # heredoc after a push (`gh pr create --body "$(cat <<EOF`) would read as its arguments. Lazy, so the fallback
+    # engine stays linear
+    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*?(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|--m(i|ir|irr|irro|irror)?\b|\s\+\S)'
     reason: force push
     rationale: Rewrites shared history.
   - id: TK-D004
@@ -143,8 +146,10 @@ ask:
     # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. No dry-run exemption: `-o` takes the next
     # word as its value, so `git push -d origin main -o --dry-run` deletes main. Also held: a long-option prefix (`--del`,
     # `--pru`), `d` in a short-option cluster before any `o` (`-4d`, `-doci.skip`; the class leaves `d` out so a long word
-    # can't backtrack) and an all-zero source object id
-    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b.*( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)|0{40}:)'
+    # can't backtrack) and an all-zero source object id (SHA-1 or SHA-256). `[\w\W]*?` crosses a newline inside an
+    # argument (`--repo=$'x\ny'`) but never reaches another command, which is its own subject; lazy, so the fallback
+    # engine stays linear
+    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
 

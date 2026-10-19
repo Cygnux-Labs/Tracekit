@@ -155,6 +155,20 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
         self.assertEqual((d["verdict"], "TK-A002" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
+    def test_remote_ref_deletion_past_a_newline_in_an_argument_but_not_in_the_next_command(self):
+        # `.` stopped at a newline inside an earlier argument; macOS runs git for `Git`; git takes any prefix of
+        # --mirror (`--m`); a long name holding forty zeros is no all-zero object id
+        self.verdicts([("git push --repo=$'x\\ny' origin --delete b1", "TK-A002"),
+                       ('git push --repo="x\ny" origin :b1', "TK-A002"), ("git push -o $'a\\nb' -d origin b1", "TK-A002"),
+                       ("git push origin " + "0" * 64 + ":refs/heads/b1", "TK-A002"),
+                       ("Git push origin --delete b1", "TK-A002"), ("/usr/bin/GIT push origin :b1", "TK-A002"),
+                       ("SUDO id", "TK-D001"), ("Terraform destroy", "TK-A001"),
+                       ("git push --m origin", "TK-D003"), ("git push --mirr origin", "TK-D003")])
+        for command in ("git push origin release-" + "0" * 40 + ":x", "git push origin main\nrm -d build",
+                        "git push origin main\necho :b1", "git push origin main; echo --delete", "git push origin m"):
+            with self.subTest(command=command):
+                self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "flag")
+
 
 class PackReading(unittest.TestCase):
     """How the shipped packs read SQL, hosts, paths and commands an agent can spell more than one way."""

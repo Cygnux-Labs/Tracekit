@@ -2,10 +2,11 @@
 
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
 strings, substitutions, heredocs into a shell and interpreter one-liners:
-`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename;
-`via` says how the command was reached (empty at top level); commands with the same `pipeline` are stages of one
-pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or expansion in its
-name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of a stream).
+`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename in lower case (the
+agent's file system may ignore case: macOS runs git for `Git`); `via` says how the command was reached (empty at top
+level); commands with the same `pipeline` are stages of one pipeline, in order. `opaque`: what the command runs cannot
+be read from the line (a glob, brace or expansion in its name, a shell or interpreter reading its script from a pipe, a
+file or inherited stdin, `source` of a stream).
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
@@ -499,7 +500,7 @@ class _Parser:
         while argv:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
-            name, args = argv[0].rsplit("/", 1)[-1] or argv[0], argv[1:]
+            name, args = (argv[0].rsplit("/", 1)[-1] or argv[0]).lower(), argv[1:]
             # xargs -I{} inserting its input into a script or a command name: what runs comes from stdin
             tainted = repl is not None and (repl in argv[0] or (
                 (name in SHELLS or _kind(name)) and any(repl in a for a in args)))
