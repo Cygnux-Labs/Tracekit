@@ -142,6 +142,9 @@ with Gemini CLI's tool sandbox, Tracekit holds each sandbox expansion for a pers
 ([Gemini CLI's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/gemini-sandbox.md)).
 Running sandbox-runtime's proxy on its own, Tracekit decides each request it forwards (experimental,
 [sandbox-runtime](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/sandbox-runtime.md)).
+Sandboxed with nono or agentsh? `tracekit follow` signs each decision the sandbox logs, as it writes it (experimental;
+[nono](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/nono.md),
+[agentsh](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/agentsh.md)).
 Without uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why`
 (experimental) shows a held
 email whose cause is found by replay and cited by its signed record:

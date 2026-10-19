@@ -37,7 +37,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
               "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
-              "openshell-middleware": "openshell"}  # subcommands with their own parsers
+              "openshell-middleware": "openshell", "follow": "follow"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
@@ -46,7 +46,7 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "issuer": "the record-key issuer", "witness": "the witness", "public-witness": "the public witness",
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
-                 "srt-decider": "the srt-proxy decider"}
+                 "srt-decider": "the srt-proxy decider", "follow": "tracekit follow"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -190,6 +190,9 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("issuer", help="record-key issuer for v2 signers: `issuer serve|revoke|vkey --config issuer.yaml`",
                        add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("follow", help="follow a sandbox's audit log into the v2 signer as it is written: "
+                       "`follow nono`, `follow agentsh --log PATH`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
