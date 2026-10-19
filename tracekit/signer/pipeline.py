@@ -55,12 +55,13 @@ def new_run(tenant, run_id):
             "tails": {}, "closed": False, "results": {},
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
             "principal": None, "people": (None, None), "harness": None, "active": time.monotonic(), "closing_at": None,
-            "rec": reconcile.new(), "digests": {}, "prov": None}
+            "rec": reconcile.new(), "digests": {}, "prov": None, "replay": False}
 
 
-# the streams: a gateway's close_run may still name one (SignerService._close_run)
+# the streams: a gateway's close_run may still name one (SignerService._close_run); `replay`: a findings or replay run,
+# which no findings or replay run may be about (SignerService._register_run)
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
-              "tails")
+              "tails", "replay")
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "nondeterministic",
              "detect_ids", "via", "caller")
@@ -484,6 +485,7 @@ class RecordLog:
                     r.setdefault("writers", {})   # a snapshot written before 1.2
                     r.setdefault("tails", {})
                     r.setdefault("results", {})   # before 1.3: results recorded since the snapshot are checked
+                    r.setdefault("replay", False)   # before 1.4: set already in a findings or replay run's state
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             agent, contain = st.get("agent", agent), st.get("contain", contain)

@@ -2520,6 +2520,9 @@ class SignerService:
             for field in ("analyzes", "replay_of"):
                 if field in req and (tenant, req[field]) not in self.log.runs:
                     raise RPCError("unknown_run", req[field])
+                if field in req and self.log.runs[(tenant, req[field])].get("replay"):
+                    raise RPCError("invalid_request", f"{req[field]} is a findings or replay run: name the run it is "
+                                                      "about")
             up = parent and self.log.runs.get((tenant, parent["run_id"]))
             if parent and not up:
                 raise RPCError("unknown_run", f"{parent['run_id']}: register the child run on its parent's signer")
