@@ -2,8 +2,8 @@
 protobuf from ext_mcp.proto's definitions (not by the processor's hand decoding); the processor decides through an
 in-process v2 signer as source gateway (tier T2)."""
 import json
+import time
 import unittest
-from unittest import mock
 
 from adapter_contract import tmpdir
 from test_executor import InProcess
@@ -83,8 +83,7 @@ class ExtMcp(unittest.TestCase):
         self.closed = False
         self.addCleanup(self.close)
         self.signer = InProcess(self.s, AGW)
-        with mock.patch.object(ext_mcp, "APPROVAL_WAIT_S", 0.2):
-            srv, port = ext_mcp.serve("127.0.0.1:0", self.signer)
+        srv, port = ext_mcp.serve("127.0.0.1:0", self.signer)
         self.addCleanup(srv.stop, None)
         channel = grpc.insecure_channel(f"127.0.0.1:{port}")
         self.addCleanup(channel.close)
@@ -156,7 +155,9 @@ class ExtMcp(unittest.TestCase):
 
     def test_an_ask_is_refused_then_an_approved_retry_with_the_same_arguments_passes(self):
         pay = {"to": "acct-42", "cents": 1500}
+        t = time.monotonic()
         out = self.call("pay", pay)
+        self.assertLess(time.monotonic() - t, 2)   # refused at once: no worker waits on a person, holding up others
         self.assertEqual(out.WhichOneof("result"), "error")
         self.assertIn("R-PAY: approval requested; make the same call again once a person approves it", out.error.reason)
         [a] = self.s.call(AGENT, "approval_list", {"run_id": self.run_id, "state": "requested"})["approvals"]

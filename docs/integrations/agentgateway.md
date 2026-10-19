@@ -78,8 +78,8 @@ binds:
   parse. The processor answers `PERMISSION_DENIED` with the reason, which agentgateway returns to the agent as a tool
   error. The MCP server never sees the call.
 - **Ask:** agentgateway gives a processor 10 seconds, so the processor can't hold a call for a person. It asks for
-  approval, waits 5 seconds, then refuses the call with `approval requested; make the same call again once a person
-  approves it`. Approve it (`tracekit approvals approve apr-…`); the same call again, with the same run, caller, tool
+  approval and refuses the call at once with `approval requested; make the same call again once a person approves
+  it`: a worker waiting on a person would hold up the other agents' calls. Approve it (`tracekit approvals approve apr-…`); the same call again, with the same run, caller, tool
   and arguments, then passes and uses up the approval. A call with other arguments asks again.
 - **Other methods** pass undecided. List only `tools/call` in `methods`.
 

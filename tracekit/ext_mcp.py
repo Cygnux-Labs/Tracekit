@@ -13,9 +13,10 @@ forwards; the call is decided as `mcp:<service>/<tool>` with its arguments, for 
 records are source gateway, tier T2, as at the MCP gateway (executor.Custody). Allowed: Pass, with the call's
 tool_call_id as metadata `tracekit_call`, and X-Tracekit-Run removed from what agentgateway forwards to the MCP server.
 Anything else is an AuthorizationError (PERMISSION_DENIED) saying why: a deny, an unanswered approval, the signer
-unreachable, no run or caller, params that don't parse (fail closed). agentgateway
-gives a processor 10 s, so an `ask` waits APPROVAL_WAIT_S and is then refused as pending; the same call again (same run,
-caller, tool and arguments) takes up that approval and passes once a person approved it.
+unreachable, no run or caller, params that don't parse (fail closed). An `ask` is refused as pending at once
+(APPROVAL_WAIT_S: a worker waiting on a person would hold up every agent's calls, and agentgateway gives a processor
+10 s); the same call again (same run, caller, tool and arguments) takes up that approval and passes once a person
+approved it.
 CheckResponse (tools/call): the result completes the call metadata `tracekit_call` names (an `isError` result as an
 error) and passes: the call ran. JSON-RPC errors skip this hook, so such a call gets no result here; the signer writes
 a held_call_unresolved gap for it when its run ends. Other methods pass undecided.
@@ -37,7 +38,7 @@ from tracekit.sdk.client import Client, result_field
 SERVICE = "agentgateway.dev.ext_mcp.ExtMcp"
 RUN_HEADER = "x-tracekit-run"
 CALL = "tracekit_call"   # the metadata key that carries a call's tool_call_id to its response
-APPROVAL_WAIT_S = 5      # agentgateway gives a processor 10 s (mcp/guardrails/client.rs), decide and consume included
+APPROVAL_WAIT_S = 0      # an ask's approval is read once, never waited for
 PENDING = ": approval requested"   # how Custody.gate ends the refusal of an ask still waiting for a person
 MAX_CALLS = 10_000       # calls awaiting their result, and asks awaiting their retry, each; the least recent go first
 PASS = b"\x0a\x00"       # McpRequestResult / McpResponseResult: pass (1), an empty Pass
