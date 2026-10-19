@@ -243,8 +243,9 @@ tracekit analyze --v2 --review --review-gateway \
 - **Where the call is recorded.** In the pass's findings run (`analyzes` the run), where its findings belong:
   `--review-gateway` sends it through the [LLM gateway](gateway.md) as that run (`X-Tracekit-Run`, with the analyzer's
   bearer token from `$TRACEKIT_SIGNER_TOKEN_FILE`), which records it; otherwise the analyzer calls `--review-url`
-  itself (`$TRACEKIT_REVIEW_API_KEY`, else `$ANTHROPIC_API_KEY` or `$OPENAI_API_KEY`) and records the exchange in that
-  run (`model_event`). With the vault on, the exchange's bodies (the input sent and the model's answer) are kept there,
+  itself (`$TRACEKIT_REVIEW_API_KEY`, else `$ANTHROPIC_API_KEY` for `api.anthropic.com` or `$OPENAI_API_KEY` for
+  `api.openai.com`; any other endpoint gets only `$TRACEKIT_REVIEW_API_KEY`) and records the exchange in that run
+  (`model_event`). With the vault on, the exchange's bodies (the input sent and the model's answer) are kept there,
   and erasing the analysed run erases them too ([privacy](privacy.md#the-content-vault)). `--review` with `--dry-run`
   is refused: there is no findings run to record the call in.
 - **Reviewer diversity.** A reviewer of the agent's own model family may share its blind spots, which the paper names

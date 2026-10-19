@@ -22,7 +22,8 @@ to MAX_ARGS) and the trace to MAX_TRACE, dropping records from its middle with a
 The call goes as the pass's findings run: with --review-gateway through Tracekit's LLM gateway (X-Tracekit-Run and the
 analyzer's bearer token, $TRACEKIT_SIGNER_TOKEN_FILE), which records it there; else straight to --review-url (default
 the Anthropic Messages API; a URL ending /v1/chat/completions speaks OpenAI chat, as local model servers do) with
-$TRACEKIT_REVIEW_API_KEY (else $ANTHROPIC_API_KEY or $OPENAI_API_KEY), and the analyzer records the exchange in the
+$TRACEKIT_REVIEW_API_KEY (else, to Anthropic's or OpenAI's own API host only, $ANTHROPIC_API_KEY or $OPENAI_API_KEY),
+and the analyzer records the exchange in the
 findings run itself (model_event). With the signer's vault on, the exchange's bodies (the trace sent, the model's
 answer) are kept there, and erased with the analysed run.
 
@@ -53,6 +54,7 @@ OPENAI_URL, OPENAI_MODEL = "https://api.openai.com/v1/chat/completions", "gpt-5"
 # the reviewers `--review` picks from without --review-model or --review-url: (model, endpoint, the API key that
 # configures it), after one TRACEKIT_REVIEW_MODEL and TRACEKIT_REVIEW_URL name (choose)
 DEFAULTS = ((reviewer.DEFAULT_MODEL, URL, "ANTHROPIC_API_KEY"), (OPENAI_MODEL, OPENAI_URL, "OPENAI_API_KEY"))
+PROVIDER_KEYS = {urllib.parse.urlsplit(u).hostname: k for _, u, k in DEFAULTS}   # API host -> the key it gets
 KINDS = {"/v1/messages": "anthropic:messages", "/v1/chat/completions": "openai:chat"}
 MAX_ITEM, MAX_ARGS, MAX_SEGS, MAX_WHAT = 1200, 400, 16, 300   # characters of one text, arguments, a finding's what
 MAX_TRACE, MAX_FINDINGS, MAX_EXPLANATION = 48_000, 40, 1000
@@ -197,8 +199,9 @@ class Model:
         if gateway and not self.token_file:
             raise ValueError("--review-gateway: the gateway authenticates the analyzer by the bearer token in "
                              "$TRACEKIT_SIGNER_TOKEN_FILE, the identity that registers its findings run")
-        self.key = env.get("TRACEKIT_REVIEW_API_KEY") or env.get(
-            "ANTHROPIC_API_KEY" if self.kind == "anthropic:messages" else "OPENAI_API_KEY")
+        # a provider's key goes to that provider's own API host only; any other endpoint takes TRACEKIT_REVIEW_API_KEY
+        own = PROVIDER_KEYS.get(urllib.parse.urlsplit(url).hostname) if url.startswith("https://") else None
+        self.key = env.get("TRACEKIT_REVIEW_API_KEY") or (env.get(own) if own else None)
 
     def body(self, trace):
         user = json.dumps(trace, ensure_ascii=False)

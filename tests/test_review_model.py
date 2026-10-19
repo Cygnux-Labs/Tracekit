@@ -311,7 +311,7 @@ class Calls(Base):
         srv, url = serve(self, lambda body: message(FLAG))
         t, _ = self.fault()
         self.run_id, self.records, content = e20.replay(self.signer, t.lines)
-        model = review_model.Model(f"{url}/v1/messages", "claude-opus-5-5", env={"ANTHROPIC_API_KEY": "sk-test"})
+        model = review_model.Model(f"{url}/v1/messages", "claude-opus-5-5", env={"TRACEKIT_REVIEW_API_KEY": "sk-test"})
         rv = review_model.Reviewer(model, model.model)
         out = findings_v2.analyze(self.records, rv.tee(content))
         with Findings(self.signer, self.run_id) as run:
@@ -401,6 +401,16 @@ class Calls(Base):
         with self.assertRaisesRegex(ValueError, "a model's name"):   # signed in the finding: a name, never prose
             review_model.Reviewer(Fake(message(OK)), "the best model there is")
         self.assertEqual(review_model.Model(env={"TRACEKIT_REVIEW_API_KEY": "a", "ANTHROPIC_API_KEY": "b"}).key, "a")
+
+    def test_a_providers_key_goes_to_that_providers_own_host_only(self):
+        keys = {"ANTHROPIC_API_KEY": "a-key", "OPENAI_API_KEY": "o-key"}
+        for url, key in ((review_model.URL, "a-key"), (review_model.OPENAI_URL, "o-key"),
+                         ("https://api.example.com/v1/chat/completions", None),
+                         ("https://api.example.com/v1/messages", None),
+                         ("http://localhost:8000/v1/chat/completions", None)):
+            with self.subTest(url=url):
+                self.assertEqual(review_model.Model(url, env=keys).key, key)
+                self.assertEqual(review_model.Model(url, env={**keys, "TRACEKIT_REVIEW_API_KEY": "r-key"}).key, "r-key")
         self.assertEqual(review_model.Model("http://localhost:8000/v1/chat/completions",
                                             env={"OPENAI_API_KEY": "c"}).kind, "openai:chat")
 
