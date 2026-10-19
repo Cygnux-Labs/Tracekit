@@ -556,18 +556,20 @@ class TestProxy(unittest.TestCase):
     def test_a_uid_holds_at_most_max_tunnels_connections_each_attributed_in_time(self):
         """In system mode every agent connects from loopback, which the transport limits to 256 connections: one
         agent's half-open handshakes must not take them all."""
-        held, ports = [], set()
-        uid = lambda client, server: 1000 if client[1] in ports else 2000   # noqa: E731
+        held, who, conns = [], [1000], self.srv.observer.conns
         with mock.patch.object(egress, "MAX_TUNNELS", 3), mock.patch.object(egress, "PRE_AUTH_S", 4), \
-                mock.patch.object(egress, "_peer_uid", uid):
+                mock.patch.object(egress, "_peer_uid", lambda client, server: who[0]):
             t = time.monotonic()
-            for _ in range(4):   # SOCKS5's version byte, then nothing
+            for i in range(4):   # SOCKS5's version byte, then nothing
                 s = socket.create_connection(self.srv.server_address[:2], 10)
-                ports.add(s.getsockname()[1])
                 s.sendall(b"\x05")
                 held.append(s)
+                deadline = time.monotonic() + 2
+                while i < 3 and conns.get(1000, 0) <= i and time.monotonic() < deadline:   # counted, in this order
+                    time.sleep(0.01)
             self.assertEqual(self.read(held[3]), b"")   # uid 1000's fourth: closed at once
             self.assertLess(time.monotonic() - t, 3)
+            who[0] = 2000
             other = socket.create_connection(self.srv.server_address[:2], 5)   # another agent's
             other.sendall(b"\x05\x01\x00")
             self.assertEqual(other.recv(2), b"\x05\x00")   # attributed by its uid

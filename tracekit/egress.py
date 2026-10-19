@@ -102,6 +102,7 @@ class Observer:
     def __init__(self, client, allow=()):
         self.client, self.allow = client, set(allow)
         self.totals, self.lock = {}, threading.Lock()
+        self.conns = {}   # a loopback client's uid -> its connections open (_Handler.handle), under lock
         # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute); spool
         # them to disk if outages outlast the observer's memory
         self.queue = []   # [(request_id, effects)] not yet acknowledged, oldest first
@@ -429,13 +430,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def handle(self):
         """SOCKS5 when the connection's first byte says so, else HTTP; a loopback client's uid holds at most
         MAX_TUNNELS connections."""
-        srv = self.server
+        srv, obs = self.server, self.server.observer
         self.uid = _peer_uid(self.client_address, self.connection.getsockname()) if ipaddress.ip_address(
             self.client_address[0]).is_loopback else None
-        with srv.observer.lock:
-            n = srv.conns.get(self.uid, 0)
+        with obs.lock:
+            n = obs.conns.get(self.uid, 0)
             if self.uid is not None and n < MAX_TUNNELS:
-                srv.conns[self.uid] = n + 1
+                obs.conns[self.uid] = n + 1
         if self.uid is not None and n >= MAX_TUNNELS:
             return print(f"tracekit egress: closed a connection of uid {self.uid} at once: it has {MAX_TUNNELS} open",
                          file=sys.stderr)
@@ -450,11 +451,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.rfile = _Unread(first, self.rfile)
             super().handle()
         finally:
-            with srv.observer.lock:
+            with obs.lock:
                 if self.uid is not None:
-                    srv.conns[self.uid] -= 1
-                    if not srv.conns[self.uid]:
-                        del srv.conns[self.uid]
+                    obs.conns[self.uid] -= 1
+                    if not obs.conns[self.uid]:
+                        del obs.conns[self.uid]
 
     def _socks5(self):
         """A SOCKS5 CONNECT (RFC 1928), its version byte read, as microsandbox's and E2B's outbound proxies send it: a
@@ -654,7 +655,7 @@ def serve(cfg, client=None):
         address, auths, tls = (host, int(port)), [], None
     srv = transport.HttpServer(address, auths, tls, None, handler=_Handler)
     srv.observer = Observer(client or Client(cfg["signer"]), cfg.get("allow", ()))
-    srv.tunnels, srv.conns = {}, {}   # attribution -> tunnels open (_tunnel); a loopback client's uid -> connections
+    srv.tunnels = {}   # attribution -> tunnels open (_tunnel)
     return srv
 
 
