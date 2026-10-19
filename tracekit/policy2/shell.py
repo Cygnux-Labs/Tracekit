@@ -171,7 +171,7 @@ def _shell_mode(args):
         if a in ("--", "-"):
             i += 1
             break
-        if a[:1] not in "-+" or len(a) == 1:
+        if a[:1] not in ("-", "+") or len(a) == 1:   # an empty word is an operand too
             break
         if a[0] == "-" and not a.startswith("--"):
             flags += a[1:]
@@ -353,7 +353,7 @@ class _Parser:
             raise ParseError(f"heredoc {self.heredocs[0]['delim']} not terminated")
 
     def flush(self):
-        while self.out[-1:] == [";"]:
+        if self.out[-1:] == [";"]:   # the separator list() put after the last pipeline; a `;` word before it stays
             self.out.pop()
         self.ctx["lines"] += _lines(self.out, self.progs)
 

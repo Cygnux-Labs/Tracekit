@@ -115,12 +115,20 @@ class Engine:
         return any(u == cls if u in CLASSES else fnmatch.fnmatchcase(tool, u) for u in self.policy.get("untrusted", ()))
 
     def decide(self, tool, args, cls=None, untrusted=None):
-        """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
+        """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize][, error]} for one tool call
         (`oversize`: the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the class the
         policy maps the tool to. `untrusted(subject, field)`: the hits of the subject's values that only
         untrusted content brought into the run (`field`: the rule's); a `from: untrusted` rule matches a subject only
         when there is one (never without `untrusted`), and matches each element of a list field (payees, recipients)
-        on its own."""
+        on its own. An error of the engine itself on these arguments is a deny, TK-ENGINE-ERROR (`error`: the
+        exception's type), never an exception: a call the signer can't decide must not run undecided and unrecorded."""
+        try:
+            return self._decide(tool, args, cls, untrusted)
+        except Exception as e:
+            return {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": self.policy_hash,
+                    "engine": self.engine, "error": type(e).__name__}
+
+    def _decide(self, tool, args, cls, untrusted):
         args = args if isinstance(args, dict) else {"value": args}
         cls = cls or self.tool_class(tool)
         fields = classes.extract(cls, tool, args)
