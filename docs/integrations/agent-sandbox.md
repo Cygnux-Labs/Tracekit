@@ -88,8 +88,9 @@ the cluster ([witnesses](../witnesses.md)) so a rolled-back log is detected too.
 
 - **Shows:** the run's `run.registered` with identity `k8s_sa` / `system:serviceaccount:agents:support-agent`
   (`attested: true`) and isolation `remote`, each decision with its rules (`c2` denied by `TK-S001`, the cloud metadata
-  address, and `TK-N001`, an internal address; `TK-F002` and `TK-F012` are labels), each completed call, and the signed chain up to the last record the pod caused. Records commit to the
-  arguments rather than store them ([privacy](../privacy.md)).
+  address, and `TK-N001`, an internal address; `TK-F002` and `TK-F012` are labels), each completed call, and the
+  signed chain up to the last record the pod caused. Records commit to the arguments rather than store them
+  ([privacy](../privacy.md)).
 - **Doesn't show which pod:** the run records the service account, not the Sandbox or pod name. Give each Sandbox its
   own ServiceAccount when runs must be told apart by Sandbox.
 - **Doesn't show the isolation:** the Sandbox's spec and RuntimeClass are not recorded. `isolation: remote` says the
