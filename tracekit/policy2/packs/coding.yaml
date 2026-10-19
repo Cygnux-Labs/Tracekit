@@ -3,10 +3,10 @@
 #
 # Shell rules without a field match each command's argv (wrappers, paths, quoting and the program name's case resolved
 # by policy2/shell.py); `field: command` matches the raw command line; `field: line` matches it and each line
-# policy2/shell.py normalised (quotes and escapes resolved, program names in lower case, redirections kept). File rules
-# match the signer-normalised `path` (and, with `..`, the lexically normalised one), with `\` as `/` and also casefolded
-# (the agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
-# witnesses.
+# policy2/shell.py normalised (quotes and escapes resolved, redirections kept), as typed and again with its program
+# names in lower case. File rules match the signer-normalised `path` (and, with `..`, the lexically normalised one),
+# with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
+# is the signer, its storage and the witnesses.
 
 version: '2026.10-v2-10'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)

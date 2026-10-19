@@ -2549,6 +2549,9 @@ class SignerService:
         # rule_ids say only TK-OVERSIZE: name the subjects it stands for
         big = {"reasons": [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
                             + ", ".join(ruled[0]["oversize"]))[:4096]]} if ruled and ruled[0].get("oversize") else {}
+        if ruled and ruled[0].get("error"):   # the record and the response say why, as for TK-OVERSIZE
+            big = {"reasons": [f"TK-ENGINE-ERROR: the policy engine failed on these arguments ({ruled[0]['error']}), "
+                               "so the call is denied"]}
         written = []   # (run_seq, commitment) of each decision record this call (not a retry the cache answers) wrote
 
         def fn(tx, run):
