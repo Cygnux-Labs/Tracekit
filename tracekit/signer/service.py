@@ -269,6 +269,7 @@ import hmac
 import itertools
 import json
 import logging
+import traceback
 import math
 import os
 import pathlib
@@ -1832,7 +1833,10 @@ class SignerService:
         except RecursionError:
             raise
         except Exception as e:
-            logging.getLogger(__name__).exception("tracekit policy: the engine failed on a %s call", tool[:256])
+            # the type and frames only: an exception message can carry argument text, which the signer otherwise
+            # keeps committed or encrypted; %r keeps an agent-supplied tool name on one log line
+            logging.getLogger(__name__).error("tracekit policy: the engine failed (%s) on a %r call\n%s", type(e).__name__,
+                                              tool[:256], "".join(traceback.format_tb(e.__traceback__)))
             d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": self.policy.policy_hash,
                  "engine": self.policy.engine, "error": type(e).__name__}
             return d, False, d["rule_ids"]
