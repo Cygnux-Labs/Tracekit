@@ -251,6 +251,23 @@ class CodingPack(unittest.TestCase):
         # an argument keeps its case
         self.assertEqual(self.e.decide("Bash", {"command": "grep -rn 'Git push --force' docs"})["verdict"], "allow")
 
+    def test_exec_wrappers_runners_and_exe_names_reach_the_anchored_rules(self):
+        # the rules anchored on a command's name lost what an unknown wrapper or runner runs, and git.exe or cp.exe
+        # (Windows runs them for git and cp): 1.3's unanchored rules denied these
+        for wrapper in ("caffeinate -i", "arch -arm64", "uv run --with x", "poetry run", "pipenv run", "pdm run", "npx",
+                        "direnv exec .", "mise exec node@20 --", "op run --env-file=a --", "doppler run -c dev --",
+                        "npm exec --", "dotenv -e a --", "torsocks", "proxychains4 -q", "firejail --quiet",
+                        "gtimeout 5", "ssh-agent", "sandbox-exec -n x", "systemd-run --user -p A=1", "valgrind",
+                        "ltrace -o f", "chpst -u bob", "s6-setuidgid bob", "with-contenv", "dumb-init", "tini --",
+                        "gosu bob", "su-exec bob"):
+            self.verdicts([(f"{wrapper} git push --force origin main", "TK-D003"), (f"{wrapper} cp x .env", "TK-D010"),
+                           (f"{wrapper} git push -d origin x", "TK-A002")])
+        self.verdicts([("nix-shell -p git --run 'git push -f'", "TK-D003"), ("git.exe push --force", "TK-D003"),
+                       ("Git.EXE push -d origin x", "TK-A002"), ("cp.exe x .env", "TK-D010"), ("sudo.exe id", "TK-D001"),
+                       ("rm.exe -rf /", "TK-D004")])
+        for command in ("uv pip install cp", "npm install git", "mise use node@20", "poetry add sudo", "direnv allow ."):
+            self.assertIn(self.e.decide("Bash", {"command": command})["verdict"], ("allow", "flag"), command)
+
     def test_a_windows_path_keeps_its_directories_case_and_the_line_its_original_case(self):
         # lower-casing a whole program word without a / hid AppData\Local\tracekit from TK-D007; the lower-cased line
         # is matched beside the original one, so a rule keyed on an upper-case program name still matches
