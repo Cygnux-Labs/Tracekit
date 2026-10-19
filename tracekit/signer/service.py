@@ -3822,6 +3822,7 @@ class SignerService:
         is a record of the analysed run with that hash (a verifier fails a bundle on one that isn't, so a made-up cite
         would turn an intact run's bundle FAILED)."""
         key = self._authorize(identity, req)
+        self.quotas.take_event(identity)   # before the reads: a refused call costs them too
         try:
             first = next(iter(self.log.storage.iter_run(*key)))["event"]
             if "analyzes" not in first["data"]:
@@ -3832,7 +3833,6 @@ class SignerService:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         if bad:
             raise RPCError("invalid_request", f"cites {bad}: cite records of the analysed run, with their hashes")
-        self.quotas.take_event(identity)
 
         def fn(tx, run):
             return {"run_seq": tx.emit(run, type_, data, request_id=req["request_id"])}

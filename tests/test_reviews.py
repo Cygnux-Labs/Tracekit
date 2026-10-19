@@ -18,6 +18,7 @@ from tracekit.format import checkpoint
 from tracekit.format.checkpoint import ED25519
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import service as svc
+from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import FINDING_TITLES, RPCError
 from tracekit.verify import v2
 
@@ -190,6 +191,15 @@ class TestReviewFinding(Signed):
         self.assertEqual([r["event"]["type"] for r in self.s.log.storage.iter_run("default", f["run_id"])],
                          ["run.registered"])   # none written
         self.review(ANALYZER, f, FINDING, cited)
+
+    def test_a_refused_cite_spends_the_rate_its_reads_cost(self):
+        run = self.agent_run()
+        f = self.register(ANALYZER, analyzes=run["run_id"])
+        self.s.quotas.limits = Limits(events_per_s=1, burst=1)
+        for code in ("invalid_request", "quota_exceeded"):
+            with self.assertRaises(RPCError) as e:
+                self.review(ANALYZER, f, FINDING, [dict(self.cites(run)[0], run_seq=99)])
+            self.assertEqual(e.exception.code, code)
 
     def test_the_closed_verdict_takes_no_text_of_the_run(self):
         run = self.agent_run()
