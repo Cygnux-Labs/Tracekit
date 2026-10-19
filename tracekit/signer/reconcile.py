@@ -8,7 +8,8 @@ of the run, just before run.final, and returns the coverage that run.final state
 
 For each L3 tool use the client runs: no decide with its id → hook_missing (written at once when a gateway request sends
 its result back, so a detector sees it mid-run); raw arguments that failed strict parsing → args_unparseable; another
-tool name, or (neither side coerced, both digests known) other arguments → args_mismatch. Tool uses the provider ran
+tool name, or (neither side coerced, both digests known) other arguments → args_mismatch. A decide's `coerced` is the
+agent's word: against a tool use the gateway recorded it excuses nothing, and the mismatch says the decide claimed it. Tool uses the provider ran
 itself (executed_by provider) are counted for run.final's `provider_executed`, never matched against a decide. Each
 decide with neither an L3 tool use nor a provider one → fabricated; each id in tool_results_sent with neither a decide
 nor an L3 tool use → result_without_call. A run with no L3 record gets none of these: its coverage says L3 is absent.
@@ -257,8 +258,9 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
         if u["name"] not in model_names(d["name"]):
             out.append(("args_mismatch", tcid, ["L2", "L3"], f"decided {d['name'][:200]}, the model asked for "
                                                              f"{u['name'][:200]}"))
-        elif not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
-            out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for"))
+        elif not (u["unparseable"] or d["coerced"] and not u["gw"] or u["coerced"]) and a and b and a != b:
+            out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for" + (
+                " (the decide says a framework coerced them)" if d["coerced"] else "")))
     for tcid, d in rec["l2"].items():
         if tcid not in l3 and tcid not in provider and tcid not in pairs.values() and not structured(d["name"]):
             out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"

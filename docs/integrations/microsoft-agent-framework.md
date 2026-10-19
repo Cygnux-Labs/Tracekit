@@ -98,9 +98,10 @@ The message itself is kept only when the signer's content vault is on; without i
 
 - The signer decides the validated arguments, not the model's JSON text: function middleware never sees it. A value the
   model sent that the function doesn't take is not in the record; one Agent Framework converted (`"5"` for an `int`)
-  is recorded converted, and the decision says so (`args_source: coerced`), so the gateway's or autotrace's record of
-  the model's own arguments is not held against them. A `SecretStr` argument is decided as `**********`: the policy
-  never sees its value.
+  is recorded converted, and the decision says so (`args_source: coerced`), so autotrace's record of the model's own
+  arguments is not held against them. The LLM gateway's record is: the label is the agent's word, so a converted or
+  dropped value reads as `reconcile.args_mismatch` "(the decide says a framework coerced them)". A `SecretStr`
+  argument is decided as `**********`: the policy never sees its value.
 - Agent Framework's own approvals are not the signer's: they are not in the bundle, and a call its approver rejects
   leaves no record. Use the policy's `ask` for approvals the bundle should hold.
 - A refusal reads to the model as the call's result, not as Agent Framework's error result: middleware that doesn't

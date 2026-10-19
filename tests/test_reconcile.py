@@ -76,6 +76,22 @@ class Wording(unittest.TestCase):
         self.assertNotIn("never asked", detail)
 
 
+    def test_a_coerced_decide_does_not_hide_other_arguments_than_the_gateway_saw(self):
+        put = lambda d, k, v: d.__setitem__(k, v)
+        for source, gateway, mandatory in (("gateway", True, True), ("gateway", True, False), ("sdk", False, False)):
+            with self.subTest(l3=source, mandatory=mandatory):
+                run = {"rec": reconcile.new(), "digests": {}}
+                reconcile.observe(put, run, {"type": "model.exchange", "source": source, "data": {"tool_uses": [
+                    use("tc-1", "Bash")]}}, digests={"tc-1": event_hash({"tool": "Bash", "args": {"command": "x"}})})
+                reconcile.observe(put, run, {"type": "policy.decision", "tool_call_id": "tc-1", "args_source": "coerced",
+                                             "source": "sdk", "data": {"tool": "Bash", "decision": "allow",
+                                                                       "rule_ids": []}},
+                                  digests={"tc-1": event_hash({"tool": "Bash", "args": {"command": "ls"}})})
+                found = [(k, detail) for k, _, _, detail in reconcile._found(run, mandatory)]
+                self.assertEqual(found, [("args_mismatch", "decided other arguments than the model asked for (the "
+                                          "decide says a framework coerced them)")] if gateway else [])
+
+
 class TestReconcile(Reconcile):
     def handoff_run(self):
         run = self.register()
