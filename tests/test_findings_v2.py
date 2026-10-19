@@ -288,6 +288,23 @@ class StatedConstraint(Base):   # TK-X204
         self.assertEqual((f["cites"][-1]["run_seq"], d["tiers"][0]), (999, "observer"))
         self.assertIn("/usr/bin/python3", d["what"])
 
+    def test_an_extensionless_file_or_a_directory_kept_away_is_held_and_found(self):
+        """Round-2 review: "don't touch the Dockerfile" stated nothing and its words read as the request naming the
+        file, so its edit got no hold and no finding; a directory kept away stated nothing either."""
+        for said, path in (("Don't touch the Dockerfile.", "Dockerfile"), ("Leave src/legacy/ alone.",
+                                                                         "src/legacy/old.py")):
+            with self.subTest(said):
+                t = self.task(f"Fix src/pager.py. {said}")
+                tid = t.step("One more small fix.", "Edit", edit(path))
+                out = self.run_session(t)
+                self.assertIn("TK-CONSTRAINT", next(r["event"]["data"]["rule_ids"] for r in self.records
+                                                    if r["event"]["type"] == "policy.decision"
+                                                    and r["event"]["data"]["tool_use_id"] == tid))
+                self.assertEqual(finding(out, "TK-X204")[0]["verdict"]["severity"], "high")
+        t = self.task("Fix src/pager.py. Don't touch the Earthfile.")   # no name the grammar knows: no constraint,
+        tid = t.step("One more small fix.", "Edit", edit("Earthfile"))   # and no request naming it either
+        self.assertEqual(checks(self.run_session(t), tid)["TK-X202"], "found")
+
     def test_a_held_call_a_person_approved_is_low_one_the_run_approved_itself_stays_high(self):
         """An approval of a call a live constraint held lifts the constraint for it only from an identity other than
         the run's: a self-approval (the dev signer's, or the agent answering its own hold) lowers nothing."""
