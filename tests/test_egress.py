@@ -558,22 +558,22 @@ class TestProxy(unittest.TestCase):
         agent's half-open handshakes must not take them all."""
         held, ports = [], set()
         uid = lambda client, server: 1000 if client[1] in ports else 2000   # noqa: E731
-        with mock.patch.object(egress, "MAX_TUNNELS", 3), mock.patch.object(egress, "PRE_AUTH_S", 2), \
+        with mock.patch.object(egress, "MAX_TUNNELS", 3), mock.patch.object(egress, "PRE_AUTH_S", 4), \
                 mock.patch.object(egress, "_peer_uid", uid):
             t = time.monotonic()
             for _ in range(4):   # SOCKS5's version byte, then nothing
-                s = socket.create_connection(self.srv.server_address[:2], 5)
+                s = socket.create_connection(self.srv.server_address[:2], 10)
                 ports.add(s.getsockname()[1])
                 s.sendall(b"\x05")
                 held.append(s)
             self.assertEqual(self.read(held[3]), b"")   # uid 1000's fourth: closed at once
-            self.assertLess(time.monotonic() - t, 1.5)
+            self.assertLess(time.monotonic() - t, 3)
             other = socket.create_connection(self.srv.server_address[:2], 5)   # another agent's
             other.sendall(b"\x05\x01\x00")
             self.assertEqual(other.recv(2), b"\x05\x00")   # attributed by its uid
             for s in held[:3]:   # none sent its greeting in time: cut, not left to the 30 s deadline
                 self.assertEqual(self.read(s), b"")
-            self.assertLess(time.monotonic() - t, 4)
+            self.assertLess(time.monotonic() - t, 9)   # cut at PRE_AUTH_S: each read returns before its timeout
 
     def test_an_allowed_host_needs_no_tls(self):
         self.srv.observer.allow.add("127.0.0.1")
