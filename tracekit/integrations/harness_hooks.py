@@ -15,7 +15,7 @@ a missing session or tool call id blocks the call. Only the reply differs: each 
 What the model said (docs/reasoning.md) is recorded before each event is handled, as model_event responses on the
 session's stream (tracekit.integrations.said): Codex's reasoning items, messages and tool calls from its rollout and
 Gemini CLI's thoughts and text from its chat recording (the transcript the payload names; each hook reads the lines
-written since the session's last one), and the text of Cursor's afterAgentThought and afterAgentResponse events. Each
+written since the session's last one, a resumed session's first from where it ended at SessionStart), and the text of Cursor's afterAgentThought and afterAgentResponse events. Each
 Codex tool call in the rollout is a tool use under its call_id, named as its PreToolUse hook is decided (agent_hooks.tool)
 with its arguments `coerced` (Codex rewrites them for the hook), so the model's reasoning before it is linked to the
 decision and reconciliation pairs the two; Gemini CLI and Cursor give a call no id, so theirs is not linked, and their
@@ -97,8 +97,10 @@ def said_since(harness, p, stderr):
                 said_items = [([said.thought(text)] if ev == "afterAgentThought" else said.text(text), model, "unknown",
                                "cursor hook")]
             else:
-                if st.get("path") != path:   # the session's first transcript, or a new one: from its start
-                    st = {"path": path, "offset": 0, "seen": []}
+                resumed = ev == "SessionStart" and p.get("source") in claude_code.RESUMED
+                if st.get("path") != path or resumed:   # the session's first transcript, or a new one: from its
+                    # start; a resumed (or forked) session's holds its earlier history, which earlier runs recorded
+                    st = {"path": path, "offset": claude_code._end(path) if resumed else 0, "seen": []}
                 lines = _read(path, st)
                 said_items = ([(items, model) for items in _responses(lines)] if harness == "codex" else
                               [(items, m.get("model"), "google", "gemini chat") for m, items in _gemini(lines, st["seen"])])
