@@ -485,6 +485,36 @@ def sendable(out):
         return False
 
 
+class VaultBody:
+    """`vault(content, size=None)`: {"body": content} for a model_event when the signer keeps content (`status()`, its
+    status answer, names the vault's max_record_bytes), the content's `size` in bytes (default: its canonical JSON)
+    fits that and half a frame, and `content` is strict JSON (no integer past 2^53, non-finite number or lone
+    surrogate, which a frame cannot carry); else {}: the record keeps the digest and the vault notes the content as
+    not retained. The LLM gateway's and the transcript tailer's."""
+
+    def __init__(self, status):
+        self.status, self.limit = status, None   # the largest body the signer's vault takes; 0: it keeps none
+
+    def __call__(self, content, size=None):
+        if self.limit is None:
+            # lean: asked once per process, until the signer answers; restart it after turning the signer's vault on
+            # or off
+            try:
+                self.limit = min((self.status().get("content") or {}).get("max_record_bytes", 0), MAX_LINE // 2)
+            except SignerUnavailable:
+                return {}
+            except RPCError:   # not granted `status`: no body
+                self.limit = 0
+        if not self.limit or (size or 0) > self.limit:
+            return {}
+        try:
+            c = canonical(content)
+            loads_strict(c)
+        except ValueError:   # CanonicalizationError, StrictJSONError
+            return {}
+        return {"body": content} if size is not None or len(c) <= self.limit else {}
+
+
 def named_rules(rule_ids):
     """The rule ids a refusal names to the model: TK-UNKNOWN-TOOL only flags a tool the policy doesn't name, it never
     refuses one."""

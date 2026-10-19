@@ -303,6 +303,12 @@ class GatewayBody(unittest.TestCase):
         gw, _ = self.gw({"content": {"max_record_bytes": 1 << 30}})
         self.assertEqual(gw.body({}, gateway.MAX_LINE // 2 + 1), {})   # or over half a frame
 
+    def test_without_a_size_the_canonical_json_is_measured(self):   # the transcript tailer's lines
+        vault = gateway.VaultBody(lambda: {"content": {"max_record_bytes": 10}})
+        self.assertEqual(vault({"a": 1}), {"body": {"a": 1}})
+        self.assertEqual(vault({"a": "x" * 10}), {})
+        self.assertEqual(vault({"a": 2 ** 60}), {})   # not strict JSON
+
     def test_an_unreachable_signer_is_asked_again(self):
         gw, client = self.gw(gateway.SignerUnavailable("down"))
         self.assertEqual(gw.body({}, 1), {})

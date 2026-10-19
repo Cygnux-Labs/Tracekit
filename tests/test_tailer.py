@@ -29,6 +29,11 @@ RESULT = {"type": "user", "uuid": "u-2", "message": {"content": [
 PROMPT = {"type": "user", "uuid": "u-3", "message": {"role": "user", "content": "deploy the build to staging-7731"}}
 NEXT = {"type": "assistant", "uuid": "u-4", "message": {"id": "msg_2", "model": "claude-x", "content": [
     {"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {"file_path": "a.txt"}}]}}
+# the lines Claude Code writes before a tool_use line of the same message: one per content block
+THINKING = {"type": "assistant", "uuid": "u-5", "cwd": "/work/proj", "message": {"id": "msg_1", "model": "claude-x",
+            "content": [{"type": "thinking", "thinking": "list the files first", "signature": "EqQBsealed"}]}}
+SAID = {"type": "assistant", "uuid": "u-6", "cwd": "/work/proj", "message": {"id": "msg_1", "model": "claude-x",
+        "content": [{"type": "text", "text": "Listing the files."}]}}
 
 
 def line(e):
@@ -46,7 +51,7 @@ class Run:
         req = {"run_id": self.run_id, "run_token": self.run_token, **fields}
         if "request_id" in REQUESTS[method]["properties"]:
             req["request_id"] = uuid.uuid4().hex
-        if "client_seq" in REQUESTS[method]["properties"]:
+        if "client_seq" in REQUESTS[method]["properties"] and "client_seq" not in fields:
             req.update(stream="tailer", client_seq=self.seq)
             self.seq += 1
         return self.signer.call(self.identity, method, req)
@@ -68,14 +73,14 @@ class Tailer(unittest.TestCase):
         with open(self.path, mode) as f:
             f.write(b"".join(e if isinstance(e, bytes) else line(e) for e in entries))
 
-    def tail(self, *steps, uid=None, run=None):
+    def tail(self, *steps, uid=None, run=None, status=None):
         """Tail until every step has run, one per wake."""
         until, steps = os.path.join(self.d, "until"), list(steps)
         open(until, "w").close()
 
         def wait():
             steps.pop(0)() if steps else os.remove(until)
-        tailer.tail(run or self.run, self.path, os.getuid() if uid is None else uid, until, wait)
+        tailer.tail(run or self.run, self.path, os.getuid() if uid is None else uid, until, wait, status)
 
     def events(self):
         return Run(self.signer, self.out).call("read", limit=1000)["events"]
@@ -150,6 +155,58 @@ class Tailer(unittest.TestCase):
         self.assertTrue(ex[0]["content_digest"].startswith("hmac-sha256:"))
         with open(os.path.join(self.d, "data", "store", "records.jsonl")) as f:
             self.assertNotIn("staging-7731", f.read())
+
+    def test_thinking_and_text_lines_are_model_events_committed_only_without_the_vault(self):
+        self.write(PROMPT, THINKING, SAID, TOOL_USE)
+        self.tail()
+        ex = [e["data"] for e in self.events() if e["type"] == "model.exchange"]
+        self.assertEqual([(x["exchange_id"], x["phase"], "tool_uses" in x) for x in ex],
+                         [("u-3", "request", False), ("msg_1", "response", False), ("msg_1", "response", False),
+                          ("msg_1", "response", True)])
+        self.assertTrue(all(x["content_digest"].startswith("hmac-sha256:") for x in ex))
+        self.assertEqual([x.get("tool_results_sent") for x in ex[1:]], [None, None, []])   # on the tool_use line only
+        with open(os.path.join(self.d, "data", "store", "records.jsonl")) as f:
+            stored = f.read()
+        for text in ("list the files first", "Listing the files", "EqQBsealed", "/work/proj"):
+            self.assertNotIn(text, stored)
+        label = "model.exchange:" + ex[1]["salt_id"]   # the commitment is to the line as read
+        self.assertEqual(ex[1]["content_digest"], self.signer._commit(label, event_hash({"transcript": "main",
+                                                                                         "entry": THINKING})))
+        self.assertEqual(self.lost(), [])
+
+    def test_with_the_vault_each_line_is_kept_whole_and_opens_its_commitment(self):
+        signer = svc.SignerService(os.path.join(self.d, "vault"), grace_s=600, fsck_every_s=0,
+                                   content={"retain": True},
+                                   authorize={f"uid:{ME.subject}": sorted(svc.DEFAULT_GRANTS | {svc.CONTENT_READ})})
+        self.addCleanup(signer.close)
+        out = signer.register_run({"request_id": "r", "agent": {"name": "claude-code"}})
+        prompt = {**PROMPT, "cwd": "/work/proj", "isMeta": False}
+        self.write(prompt, THINKING, TOOL_USE)
+        sub = {**SAID, "isSidechain": True, "message": {**SAID["message"], "id": "msg_s"}}
+        self.tail(lambda: self.sub(sub), run=Run(signer, out),
+                  status=lambda: signer.call(ME, "status", {}))
+        recs = [e for e in Run(signer, out).call("read", limit=100)["events"] if e["type"] == "model.exchange"]
+        got = signer.call(ME, "content_get", {"run_id": out["run_id"], "seqs": [e["run_seq"] for e in recs],
+                                              "purpose": "test"})["items"]
+        self.assertEqual([x["content"] for x in got], [
+            {"transcript": "main", "entry": prompt}, {"transcript": "main", "entry": THINKING},
+            {"transcript": "main", "entry": TOOL_USE}, {"transcript": "agent-a1.jsonl", "entry": sub}])
+        self.assertTrue(all("salt" in x for x in got))   # each opens its record's commitment
+
+    def test_a_burst_of_lines_past_the_rate_limit_is_sent_whole(self):
+        signer = svc.SignerService(os.path.join(self.d, "burst"), grace_s=600, fsck_every_s=0,
+                                   limits=svc.Limits(events_per_s=2000, burst=50))
+        self.addCleanup(signer.close)
+        out = signer.register_run({"request_id": "r", "agent": {"name": "claude-code"}})
+        self.write(*({**SAID, "uuid": f"u-{i}"} for i in range(1000)))
+        self.tail(run=Run(signer, out))
+        events = [e for e in Run(signer, out).call("read", limit=1000, from_seq=0)["events"]]
+        n = sum(e["type"] == "model.exchange" for e in events)
+        if n < 1000:   # read pages
+            n += sum(e["type"] == "model.exchange" for e in Run(signer, out).call(
+                "read", limit=1000, from_seq=events[-1]["run_seq"] + 1)["events"])
+        self.assertEqual(n, 1000)
+        self.assertFalse([e for e in events if e["type"] == "capture.gap"])
 
     def test_symlink_at_open_is_lost(self):
         other = os.path.join(self.d, "other.jsonl")

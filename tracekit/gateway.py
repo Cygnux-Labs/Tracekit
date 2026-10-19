@@ -65,7 +65,7 @@ from tracekit.client import remote_url_error
 from tracekit.format.canon import canonical, loads_strict
 from tracekit.identity.base import bearer
 from tracekit.proxy import HOP, MAX_SSE_LINE
-from tracekit.sdk.client import Client, SignerUnavailable, fail_open
+from tracekit.sdk.client import Client, SignerUnavailable, VaultBody, fail_open
 from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import MAX_RESULTS_SENT, RPCError
 from tracekit.transport import http as transport
@@ -103,7 +103,7 @@ class Gateway:
         self.provider_tools = provider_tools or {}
         self.auth = (api_key_header, "Bearer " + api_key if api_key_header == "authorization" else api_key)
         self.runs, self.lock = collections.OrderedDict(), threading.Lock()
-        self._vault = None   # the largest body the signer's content vault takes; 0: it keeps none
+        self.body = VaultBody(lambda: self.client.status({}))   # body(content, size): what a model_event carries
         self.check_results = True   # the signer's last word on whether it checks tool results (verify_tool_results)
 
     def _run(self, key):
@@ -210,27 +210,6 @@ class Gateway:
                 out.append({"id": tcid, "forms": f})
         run.forms = forms
         return out[::-1]
-
-    def body(self, content, size):
-        """{"body": content} when the signer keeps content, `size` (its bytes) fits and `content` is strict JSON (no
-        integer past 2^53, non-finite number or lone surrogate, which a frame cannot carry), else {}: the record keeps
-        the raw bytes' digest and the vault notes the content as not retained."""
-        if self._vault is None:
-            # lean: asked once per gateway process, until the signer answers; restart the gateway after turning the
-            # signer's vault on or off
-            try:
-                self._vault = min((self.client.status({}).get("content") or {}).get("max_record_bytes", 0), MAX_LINE // 2)
-            except SignerUnavailable:
-                return {}
-            except RPCError:   # not granted `status`: no body
-                self._vault = 0
-        if size > self._vault:
-            return {}
-        try:
-            loads_strict(canonical(content))
-        except ValueError:   # CanonicalizationError, StrictJSONError
-            return {}
-        return {"body": content}
 
 
 EMPTY = (None, "", [])   # no content, as providers and frameworks send a result with none

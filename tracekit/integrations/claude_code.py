@@ -20,7 +20,8 @@ permission prompt, interrupted, or an unreadable payload) is completed as an err
 completed is the signer's decided_not_completed gap.
 
 Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript SessionStart names: it records the
-model's tool uses and the user's prompts (as commitments) from the transcript, which no hook payload carries.
+model's tool uses, thinking and text, and the user's prompts (as commitments, with their content when the signer keeps
+content) from the transcript, which no hook payload carries.
 
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer

@@ -14,10 +14,14 @@ config names the agent; dev mode: our own uid); the fd is kept. On every wake (i
 Linux, else a poll) its size may not go backwards, the path must still be that same file, of that uid, the bytes
 already read may not have changed (rehashed whenever the file's ctime moves), and each new complete line must be a JSON
 object. Otherwise the tailer sends `tailer_lost` (the signer writes the signed gap, the
-tailer never writes one) and exits. An assistant line with tool_use blocks becomes a model_event response (exchange id:
-the message id; each tool use with the digest of its arguments; the tool results sent since the last one); a user
-prompt becomes a model_event request carrying only the prompt's digest, which the signer publishes as a salted
-commitment. It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
+tailer never writes one) and exits. Every assistant line (Claude Code writes one per content block: thinking, text,
+tool use) becomes a model_event response (exchange id: the message id; a tool_use line's tool uses with the digest of
+their arguments, and the tool results sent since the last one); a user prompt becomes a model_event request. Each
+carries the digest of the line as read, {"transcript": "main" or the subagent file's name, "entry": the whole line,
+its cwd, isMeta, isSidechain and isCompactSummary included}, which the signer publishes as a salted commitment, and
+that as its `body` when the signer keeps content (the content vault, docs/privacy.md); without the vault the text
+stays in the transcript. A rate limit (quota_exceeded with retry_after_ms) sends the line again once it has passed.
+It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
 appears or cannot be reached, and a tailer that stops after IDLE_TAILER_S without a new line, are a tailer_lost too.
 Every HEARTBEAT_S it sends `tailer_heartbeat` (another refusal, e.g. a quota, is tried again at the next); a tailer that
 is killed stops them, and the signer writes the tailer_lost gap itself (a signer that does not know the call, or a token
@@ -34,11 +38,12 @@ import select
 import stat
 import sys
 import time
+import uuid
 
 from tracekit.client import system_config
 from tracekit.format.canon import event_hash
 from tracekit.hook import transcript_entries
-from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
+from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, VaultBody
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import HEARTBEAT_S, IDLE_S
 
@@ -114,33 +119,65 @@ def _waiter(path):
     return wait
 
 
-def _report(run, e, sent):
-    """The model_event of one transcript entry, if it has one; `sent` collects tool result ids between responses."""
+class _Sender:
+    """The tailer's model_events, on an event stream of its own: a line the signer rate-limits (quota_exceeded with
+    retry_after_ms) is sent again with the same client_seq once that has passed, which leaves no client_counter_gap.
+    `body(read)`: the line's body when the signer keeps content (`status()`: its status answer; VaultBody)."""
+
+    def __init__(self, run, status=None):
+        self.run, self.vault, self.stream, self.seq = run, VaultBody(status) if status else None, uuid.uuid4().hex, 0
+
+    def body(self, read):
+        return self.vault(read) if self.vault else {}
+
+    def __call__(self, **fields):
+        while True:
+            try:
+                out = self.run.call("model_event", stream=self.stream, client_seq=self.seq, **fields)
+            except RPCError as x:
+                if x.code == "quota_exceeded" and x.retry_after_ms is not None:
+                    time.sleep(min(x.retry_after_ms, 5000) / 1000)
+                    continue
+                self.seq += 1
+                raise
+            except SignerUnavailable:   # the signer may have it: the next event takes the next value
+                self.seq += 1
+                raise
+            self.seq += 1
+            return out
+
+
+def _report(send, e, sent, name="main"):
+    """The model_event of one transcript entry, if it has one (`send`, a _Sender); `sent` collects tool result ids
+    between responses; `name`: the transcript it came from."""
     msg = e.get("message") if isinstance(e.get("message"), dict) else {}
     content = msg.get("content")
     blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
-    if e.get("type") == "assistant":
+    read = {"transcript": name, "entry": e}
+    if e.get("type") == "assistant" and blocks:
         uses = [b for b in blocks if b.get("type") == "tool_use"]
+        mid = msg.get("id")
+        send(provider="anthropic", model=str(msg.get("model") or "unknown")[:128], phase="response",
+             **({"exchange_id": mid} if uses or isinstance(mid, str) else {}), content_digest=event_hash(read),
+             **send.body(read), **({"tool_uses": [{"id": b.get("id"), "name": b.get("name"), "executed_by": "client",
+                                                   "args_source": "parsed",
+                                                   "args_digest": event_hash({"tool": b.get("name"),
+                                                                              "args": b.get("input")})}
+                                                  for b in uses], "tool_results_sent": list(sent)} if uses else {}))
         if uses:
-            run.call("model_event", provider="anthropic", model=str(msg.get("model") or "unknown")[:128],
-                     phase="response", exchange_id=msg.get("id"),
-                     tool_uses=[{"id": b.get("id"), "name": b.get("name"), "executed_by": "client",
-                                 "args_source": "parsed",
-                                 "args_digest": event_hash({"tool": b.get("name"), "args": b.get("input")})}
-                                for b in uses], tool_results_sent=list(sent))
             sent.clear()
     elif e.get("type") == "user":
         if isinstance(content, str) or any(b.get("type") == "text" for b in blocks):
-            run.call("model_event", provider="anthropic", model="unknown", phase="request",
-                     exchange_id=e.get("uuid"), content_digest=event_hash(content))
+            send(provider="anthropic", model="unknown", phase="request", exchange_id=e.get("uuid"),
+                 content_digest=event_hash(read), **send.body(read))
         sent += [b.get("tool_use_id") for b in blocks if b.get("type") == "tool_result"]
 
 
 class _Transcript:
     """One transcript being followed: its kept file, how far it was read, and the digest of the bytes before that."""
 
-    def __init__(self, path):
-        self.path, self.f, self.off, self.sent = path, None, 0, []
+    def __init__(self, path, name="main"):
+        self.path, self.name, self.f, self.off, self.sent = path, name, None, 0, []
         self.read, self.checked = hashlib.sha256(), None   # the bytes before `off`; the ctime they were last checked at
 
 
@@ -160,8 +197,8 @@ def _subagents(path):
     return [os.path.join(d, n) for n in sorted(names) if n.startswith("agent-") and n.endswith(".jsonl")]
 
 
-def _follow(run, t, uid):
-    """Report transcript t's new complete lines. -> whether it grew."""
+def _follow(send, t, uid):
+    """Report transcript t's new complete lines (`send`, a _Sender). -> whether it grew."""
     if t.f is None:
         t.f = _open(t.path, uid)
         if t.f is None:
@@ -182,7 +219,7 @@ def _follow(run, t, uid):
             if e is None:
                 raise Lost(f"the line at offset {t.off} is not a JSON object")
             try:
-                _report(run, e, t.sent)
+                _report(send, e, t.sent, t.name)
             except SignerUnavailable:
                 raise
             except RPCError as x:
@@ -213,10 +250,11 @@ def _heartbeat(run):
     return time.monotonic()
 
 
-def tail(run, path, uid, until=None, wait=None):
+def tail(run, path, uid, until=None, wait=None, status=None):
     """Follow `path`, and its subagents' transcripts, for `run` until the run ends, `until` is gone, or a transcript is
-    lost (reported)."""
+    lost (reported). `status()`: the signer's status answer, which says whether it keeps content (VaultBody)."""
     wait, grew, beat = wait or _waiter(path), time.monotonic(), -HEARTBEAT_S
+    send = _Sender(run, status)
     # lean: keeps one file open per subagent transcript; close quiet ones and reopen them by (dev, inode) if sessions
     # run more subagents than the tailer's file limit
     main = cur = _Transcript(path)
@@ -226,9 +264,9 @@ def tail(run, path, uid, until=None, wait=None):
             gone, idle = until is not None and not os.path.exists(until), time.monotonic() - grew > IDLE_TAILER_S
             cur = main
             for p in _subagents(path) if main.f is not None else ():
-                ts.setdefault(p, _Transcript(p))
+                ts.setdefault(p, _Transcript(p, os.path.basename(p)))
             for cur in ts.values():
-                if _follow(run, cur, uid):
+                if _follow(send, cur, uid):
                     grew = time.monotonic()
             cur = main
             if main.f is None and (gone or idle):
@@ -259,7 +297,7 @@ def main():
     uid = pwd.getpwnam(sc["hooks"]["user"]).pw_uid if sc.get("signer") else os.getuid()
     client = Client()
     try:
-        tail(RunHandle(client, h), h["path"], uid, h.get("until"))
+        tail(RunHandle(client, h), h["path"], uid, h.get("until"), status=lambda: client.status({}))
     except RPCError as e:   # the run ended while the loss was being reported
         if e.code not in ENDED:
             raise
