@@ -150,6 +150,8 @@ class Decider:
     def decide(self, req, body=None):
         """The verdict for one request frame, or None once its body is asked for."""
         method, host, port = req["method"], req["host"], req["port"]
+        if not req["path"].startswith("/"):   # absolute-form or `*`: glued to the host, it would name another
+            return deny(400, f"Tracekit decides an origin-form request target (/path) only, not {req['path'][:200]!r}")
         scheme = "https" if "sni" in req else "http"
         netloc = f"[{host}]" if ":" in host else host
         netloc += "" if port == {"https": 443, "http": 80}[scheme] else f":{port}"

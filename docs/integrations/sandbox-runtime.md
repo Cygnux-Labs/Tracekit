@@ -87,7 +87,8 @@ Each request is decided as the tool `srt:request`, class `http`, with these argu
 ```
 
 - `url` is `https://` when the request came through a decrypted tunnel with a TLS server name, else `http://`.
-  srt-proxy's request has no scheme field. The path and query are as the client spelled them.
+  srt-proxy's request has no scheme field. The path and query are as the client spelled them; a request target that
+  isn't a path (absolute-form `https://host/path`, or `*`) is refused (`400`).
 - `body` is the SHA-256 of the request body. It is there for a request other than GET, HEAD or OPTIONS whose headers
   announce a body. Tracekit asks srt-proxy for the body (up to 32 MiB) and refuses a longer one (`413`).
 - The policy's `http` rules apply. The dev pack allows every request and flags it (`TK-F002`, `TK-F012`). The
