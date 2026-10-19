@@ -89,6 +89,14 @@ class Compile(unittest.TestCase):
                        "rule C: duplicate id", "rule C: pattern: "):
             self.assertIn(needle, text)
 
+    def test_lint_refuses_an_id_the_engine_or_the_signer_gives_a_decision(self):
+        # a flag rule named TK-CONSTRAINT kept a broken live constraint from holding the call (the signer saw the id)
+        for rid in sorted(pc.RESERVED_IDS) + ["TK-APPROVAL-EXPIRED"]:
+            with self.subTest(rid=rid):
+                self.assertIn(f"flag rule {rid}: the engine or the signer gives a decision this id itself",
+                              "\n".join(self.errors(f"flag:\n  - {{id: {rid}, pattern: x}}\n")))
+        self.assertEqual(self.errors("flag:\n  - {id: TK-CONSTRAINTS, pattern: x}\n"), [])
+
     def test_a_remedy_is_one_short_present_tense_sentence_on_a_deny_or_ask_rule(self):
         rule = "  - {id: %s, class: shell, pattern: x, remedy: '%s'}\n"
         ok = "Push without --force; a person approves the held call."

@@ -2656,8 +2656,8 @@ class SignerService:
                 elif verdict != "ask" and digest in run["denied"]:
                     gaps.append(("decision_flip", f"{verdict} after a deny for the same arguments in this run"))
             held = facts and verdict != "deny" and self._constrained(run, facts)   # tighten only: never lowered
-            if held and "TK-CONSTRAINT" not in rule_ids:
-                verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"]
+            if held:
+                verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"] * ("TK-CONSTRAINT" not in rule_ids)
             if unreadable and verdict in ("allow", "flag"):
                 verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
             if sums:

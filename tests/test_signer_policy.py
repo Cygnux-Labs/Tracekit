@@ -611,6 +611,15 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual([(r["decision"], r["rule_ids"]) for r in rec], [("deny", ["TK-ENGINE-ERROR"])])
         self.assertIn("IndexError", rec[0]["reasons"][0])
 
+    def test_a_rule_named_tk_constraint_does_not_keep_a_live_constraint_from_holding(self):
+        # the guard against naming TK-CONSTRAINT twice read the policy's rule ids: a flag rule with that id (lint refuses
+        # it; a policy given as an Engine skips lint) left a call that breaks a live constraint unheld
+        self.open(Engine({"tools": {"Bash": "shell"}, "flag": [{"id": "TK-CONSTRAINT", "class": "shell", "pattern": "git"}]}))
+        self.s.constraint_add({"request_id": "c1", "run_id": self.run["run_id"], "run_token": self.run["run_token"],
+                               "constraint": {"kind": "no_push"}})
+        d = self.decide("Bash", {"command": "git push origin main"})
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
+
     def test_a_long_digit_run_is_decided_and_an_engine_error_on_a_url_is_signed(self):
         # int() refuses over 4,300 digits: a URL host of 5,000 digits raised again where decide read the host outside
         # the engine's guard (the connection dropped, nothing signed), and a shell word of them was TK-ENGINE-ERROR

@@ -40,6 +40,9 @@ Rule ids the signer adds itself:
 | `TK-SQL-PARSE` | ask | no SQL dialect can read the statement (an unclosed literal or comment), or it is not text |
 | `TK-UNKNOWN-TOOL` | `unknown_tools` | the tool maps to no class and `unknown_tools` is `flag`, `ask` or `deny` (map an application's own tools to `app`) |
 
+These, and the ids of holds, quarantines, live constraints and approvals (`TK-HOLD`, `TK-QUARANTINE`,
+`TK-CONSTRAINT`, `TK-LIMIT-SUM`, `TK-APPROVED`, `TK-APPROVAL-*`), are the signer's own: lint refuses a rule with one.
+
 Each `decide` gets a new `decision_id`, consumed once by `complete` with the same arguments; `complete` with other
 arguments is refused. Only deny and ask are remembered per `(tool_call_id, attempt)`. An allow after a deny for the
 same arguments in a run is a signed `capture.gap{decision_flip}`; a class hint that disagrees with the policy is a
