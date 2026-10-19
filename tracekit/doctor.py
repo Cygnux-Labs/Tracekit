@@ -73,19 +73,22 @@ def collect(config=None, issuer_key=None):
         h = (sc or {}).get("hooks") or {}
         unit = (os.path.join(install.LAUNCHD_DIR, install.V2_LABEL + ".plist") if sys.platform == "darwin"
                 else os.path.join(install.SYSTEMD_DIR, install.V2_UNIT + ".service"))
-        # lean: the hook checks read Claude Code's settings only; a Codex, Cursor or Gemini config goes unchecked
-        # (reported as no hooks recorded) until doctor learns their formats
-        settings = h.get("settings") if h.get("agent", "claude") == "claude" else None
+        # lean: the hook checks read Claude Code's settings only; a Codex, Cursor or Gemini config gets the reasoning
+        # checks alone (its hooks are reported as no hooks recorded) until doctor learns their formats
+        agent_name = h.get("agent", "claude")
+        settings = h.get("settings") if agent_name == "claude" else None
         agent = _user(h.get("user"))
         plugin = agent and install.plugin_enabled([os.path.join(agent.pw_dir, ".claude", "settings.json")])
         return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
                                signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
-                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin)
+                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
+                               harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
+                               else None)
     if sc:
         return out
     from .signer.service import dev_content, dev_data_dir
     return v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
-                     settings=_dev_settings(), plugin=install.plugin_enabled())
+                     settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=_dev_harnesses())
 
 
 def _dev_settings():
@@ -98,6 +101,61 @@ def _dev_settings():
         except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a settings file: not this one
             pass
     return install.user_settings()
+
+
+def _dev_harnesses():
+    """{harness: its hook config} for each coding agent (agent_hooks) with a v2 hook in its user or project config."""
+    from . import agent_hooks
+    out = {}
+    for harness in agent_hooks.HARNESSES:
+        for path in (agent_hooks.config_path(harness), agent_hooks.config_path(harness, os.getcwd())):
+            try:
+                hooks = (read_json(path) or {}).get("hooks") or {}
+                cmds = [h.get("command") for lst in hooks.values() for g in lst
+                        for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
+            except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
+                continue
+            if any(agent_hooks._version(c) == "v2" for c in cmds):
+                out.setdefault(harness, path)
+    return out
+
+
+def _includes_thoughts_off(v):
+    """Whether a Gemini CLI settings value sets `includeThoughts: false` anywhere in it."""
+    if isinstance(v, dict):
+        return v.get("includeThoughts") is False or any(_includes_thoughts_off(x) for x in v.values())
+    return isinstance(v, list) and any(_includes_thoughts_off(x) for x in v)
+
+
+def _reasoning_checks(add, harnesses, vault, fix):
+    """Per coding agent with v2 hooks (`harnesses`: {harness: its hook config}): whether the content vault can keep
+    readable reasoning from it (D-CODEX-REASONING, D-GEMINI-THOUGHTS; Cursor's thinking text needs no setting)."""
+    from . import agent_hooks
+    for harness, path in sorted((harnesses or {}).items()):
+        if harness == "codex":
+            toml = os.path.join(os.path.dirname(path), "config.toml")
+            try:
+                with open(toml, encoding="utf-8") as f:
+                    value = agent_hooks.codex_summary(f.read())
+            except (OSError, ValueError):
+                value = None
+            on, key = value not in (None, "none"), agent_hooks.CODEX_SUMMARY
+            add("D-CODEX-REASONING", on or not vault, f'Codex\'s reasoning summaries are on ({key} = "{value}" in {toml})'
+                if on else "the content vault is off: no reasoning is kept to check" if not vault else
+                f"the content vault keeps each Codex response, but its reasoning summaries are off ({key} is "
+                f"{'unset' if value is None else 'none'} in {toml}; Codex's current models default to none): the "
+                "model's reasoning is kept sealed or not at all, so `tracekit analyze --v2` can't read it",
+                f'add the line {key} = "auto" at the top of {toml} ({fix} --agent codex does)', bad=WARN)
+        elif harness == "gemini":
+            try:
+                off = _includes_thoughts_off((read_json(path) or {}).get("modelConfigs"))
+            except (OSError, ValueError, AttributeError):
+                off = False
+            add("D-GEMINI-THOUGHTS", not off or not vault, f"Gemini CLI records its thought summaries ({path} leaves "
+                "includeThoughts on)" if not off else "the content vault is off: no reasoning is kept to check"
+                if not vault else f"{path} sets includeThoughts: false in modelConfigs: Gemini CLI records no thoughts, "
+                "so `tracekit analyze --v2` has no reasoning to read", f"remove includeThoughts: false from "
+                f"modelConfigs in {path} (Gemini CLI's default includes thoughts)", bad=WARN)
 
 
 def _setting(path, key):
@@ -208,12 +266,14 @@ def _vault_off(cfg, keys):
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
-              client_json=None, now=None, issuer_key=None, plugin=None):
+              client_json=None, now=None, issuer_key=None, plugin=None, harnesses=None):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
     issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with; plugin: the
-    settings file that enables the Tracekit Claude Code plugin (install.plugin_enabled), whose hooks are init's."""
+    settings file that enables the Tracekit Claude Code plugin (install.plugin_enabled), whose hooks are init's;
+    harnesses: {coding agent: its hook config} of the other agents with v2 hooks (agent_hooks), whose reasoning
+    settings are checked."""
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
     from .signer import service
@@ -423,6 +483,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",
                     f"remove env.TRACEKIT_SIGNER from {settings} (the hook refuses it and blocks every call)")
+
+    _reasoning_checks(add, harnesses, isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True,
+                      REINIT if prod else "tracekit init --dev --v2")
 
     if prod:
         bad = trusted_file(policy)

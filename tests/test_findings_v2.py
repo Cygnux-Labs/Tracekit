@@ -316,6 +316,27 @@ class Coverage(Base):
         out = findings_v2.analyze(records, content)
         self.assertEqual(out["shown"]["calls"]["call_1"]["form"], "full")
 
+    def test_a_coding_agents_transcript_text_is_the_transcript_tier(self):
+        """A body with a `source` (a Codex rollout, Gemini CLI's chat recording, a Cursor hook) is text the agent can
+        write, as a Claude Code transcript line is."""
+        t = Transcript(CWD)
+        t.prompt("Fix src/pager.py.")
+        lines = list(t.lines)
+        body = {"output": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "List the files first."}]},
+                           {"type": "function_call", "call_id": "call_1", "name": "exec_command",
+                            "arguments": json.dumps({"cmd": "ls"})}], "source": "codex rollout"}
+        lines.append(("inject", {"provider": "openai", "model": "m", "phase": "response",
+                                 "content_digest": event_hash(body), "body": body, "tool_uses": [
+                                     {"id": "call_1", "name": "Bash", "executed_by": "client", "args_source": "coerced",
+                                      "args_digest": event_hash({"tool": "Bash", "args": {"command": "ls"}})}]}))
+        lines.append(("decide", {"type": "assistant", "uuid": "u-x", "message": {"id": "msg_x", "content": [
+            {"type": "tool_use", "id": "call_1", "name": "Bash", "input": {"command": "ls"}}]}}))
+        _, records, content = replay(self.signer, lines)
+        out = findings_v2.analyze(records, content)
+        self.assertEqual((checks(out, "call_1")["TK-X201"], out["shown"]["calls"]["call_1"]["form"]),
+                         ("checked", "summary"))
+        self.assertEqual(out["shown"]["tiers"]["TK-X201"], ["transcript"])
+
 
 class Bounded(unittest.TestCase):
     """Huge runs and hostile text: the analysis stays within its time and memory budget."""

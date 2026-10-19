@@ -98,9 +98,9 @@ def main(argv=None):
                                                          "firewall rule; undone by uninstall; docs/egress.md)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
-    p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2 and Claude Code: leave its "
-                   "showThinkingSummaries setting alone (init turns it on so `tracekit analyze --v2` can read the "
-                   "model's reasoning)")
+    p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2: leave Claude Code's "
+                   "showThinkingSummaries and Codex's model_reasoning_summary alone (init turns them on so `tracekit "
+                   "analyze --v2` can read the model's reasoning)")
     p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable; default: the last init's, else a local clone)")
     p.add_argument("--checkpoint-every", type=int, help="records between checkpoints (default: the last init's, else 50)")
     p.add_argument("--user", help="system mode: the user whose agents are traced (default: $SUDO_USER)")
@@ -428,10 +428,13 @@ def _run(a):
                 return 2
             try:
                 path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
+                summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"v2 {a.agent} hooks:", path or "not installed")
+            if summary:
+                print(agent_hooks.reasoning_line(*summary))
             return 0
         if a.dev and a.agent != "claude":
             from . import agent_hooks
