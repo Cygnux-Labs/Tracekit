@@ -399,6 +399,25 @@ class Command(Base):
         self.assertEqual((code, json.loads(out)["coverage"]["verdict"]["checks"]["TK-X210"]["not_checkable"]),
                          (0, [{"reason": "no_answer", "n": 1}]))
 
+    def test_one_findings_run_holds_the_reviewer_call_and_every_finding_of_the_pass(self):
+        _, url = serve(self, lambda body: message(FLAG))
+        e20.replay(self.signer, self.fault()[0].lines)
+        runs = []
+
+        def register(agent, analyzes):
+            runs.append(Findings(self.signer, analyzes))
+            return runs[-1]
+        model = review_model.Model(f"{url}/v1/messages", "gpt-5", env={"ANTHROPIC_API_KEY": "test-key"})
+        code, out, _ = self.cli("--review", "--json", model=model, run=register)
+        self.assertEqual((code, len(runs)), (4, 1))   # TK-X204 high: exit 4; one findings run
+        events = runs[0].records()
+        self.assertEqual([e["data"]["phase"] for e in events if e["type"] == "model.exchange"], ["request", "response"])
+        reviews = [e["data"]["verdict"]["rule"] for e in events if e["type"] == "review"]
+        self.assertEqual(len(reviews), json.loads(out)["signed"]["records"])
+        self.assertIn("TK-X210", reviews)
+        self.assertEqual(reviews[-1], "TK-X200")   # the coverage, last, counts the reviewer too
+        self.assertEqual(events[-1]["type"], "run.closing")
+
     def test_review_and_dry_run_are_refused_together_and_no_findings_run_is_no_call(self):
         e20.replay(self.signer, self.fault()[0].lines)
         code, _, err = self.cli("--review", "--dry-run")

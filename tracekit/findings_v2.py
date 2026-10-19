@@ -880,11 +880,22 @@ def _latest(data_dir):
     return None
 
 
-def sign(client, run_id, out):
-    """Sign `out`'s findings and its coverage review into a new findings run about `run_id`, then close it. -> the
-    findings run's id. A signer rate limit (quota_exceeded with retry_after_ms) is waited out."""
-    reviewer, run = f"tracekit-analyze/{__version__}", client.run("tracekit-analyze", analyzes=run_id)
+def sign(client, run_id, out, review=None, records=()):
+    """Sign `out`'s findings and its coverage review into a new findings run about `run_id`, then close it. With
+    `review` (review_model.Reviewer), TK-X210 is added to `out` first, the reviewer model asked as that findings run:
+    a pass's model call and all its findings are in its one findings run. -> the findings run's id. A signer rate limit
+    (quota_exceeded with retry_after_ms) is waited out."""
+    reviewer = f"tracekit-analyze/{__version__}"
     try:
+        run = client.run({"name": "tracekit-analyze", "version": __version__}, analyzes=run_id)
+    except Exception as e:
+        if review:
+            review.add(out, records, why="no_findings_run")
+            out["shown"]["review"]["error"] = f"no findings run: {e}"
+        raise
+    try:
+        if review:
+            review.add(out, records, run)
         for f in [*out["findings"], out["coverage"]]:
             while True:
                 try:
@@ -998,8 +1009,6 @@ def main(argv=None):
         try:
             out = analyze(records, rv.tee(content) if rv else content, a.project, a.allow, a.open, a.budget,
                           effects=findings_effects.from_args(a))
-            if rv:
-                _review(rv, out, records, client, run_id)
         except EvidenceAlert as e:
             print(f"tracekit analyze: EVIDENCE ALERT: {e}", file=sys.stderr)
             return 4
@@ -1007,7 +1016,8 @@ def main(argv=None):
             print(f"tracekit analyze: {note}: checks that read content are not checkable", file=sys.stderr)
         if not a.dry_run:
             try:
-                out["signed"] = {"findings_run": sign(client, run_id, out), "records": len(out["findings"]) + 1}
+                out["signed"] = {"findings_run": sign(client, run_id, out, rv, records),
+                                 "records": len(out["findings"]) + 1}
             except (SignerUnavailable, OSError, RPCError) as e:
                 failed = e
     finally:
@@ -1028,21 +1038,6 @@ def main(argv=None):
     worst = max((SEVERITY.index(f["verdict"]["severity"]) for f in out["findings"]
                  if f["verdict"]["rule"] != review_model.RULE), default=-1)   # a model's opinion never fails a build
     return 4 if worst >= SEVERITY.index("high") else 0
-
-
-def _review(rv, out, records, client, run_id):
-    """TK-X210, its model call in a findings run of this pass (`analyzes` the run), where it is recorded."""
-    from . import __version__
-    from .sdk.client import SignerUnavailable
-    from .signer.rpc_schema import RPCError
-    try:
-        run = client.run({"name": "tracekit-analyze", "version": __version__}, analyzes=run_id)
-    except (SignerUnavailable, RPCError) as e:
-        rv.add(out, records, why="no_findings_run")
-        out["shown"]["review"]["error"] = f"no findings run: {e}"
-        return
-    with run:
-        rv.add(out, records, run)
 
 
 if __name__ == "__main__":
