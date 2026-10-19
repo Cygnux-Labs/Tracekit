@@ -21,6 +21,7 @@ whatever the run's fail mode; any other failure: refused.
 """
 import argparse
 import base64
+import collections
 import concurrent.futures
 import hashlib
 import json
@@ -31,6 +32,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 import uuid
 
 from tracekit.format.canon import canonical
@@ -61,7 +63,9 @@ class Decider:
     def __init__(self, sock, run, allowed):
         self.sock, self.run, self.allowed = sock, run, list(dict.fromkeys(allowed))
         self.rfile, self.wlock, self.lock = sock.makefile("rb"), threading.Lock(), threading.Lock()
-        self.bodies = {}   # request id -> the Future its body frame resolves
+        # request id -> (its request frame, when its body stops being waited for), oldest first: no worker waits for a
+        # body, so slow uploads never hold the requests after them
+        self.bodies = collections.OrderedDict()
         # lean: asks waiting for a person live in this process's memory, so a restarted decider asks again; keep them
         # in the signer (approval_list by run) if deciders restart while people decide
         self.held = {}     # canonical args -> (tool_call_id, approval_id)
@@ -96,22 +100,38 @@ class Decider:
         pool = concurrent.futures.ThreadPoolExecutor(WORKERS, thread_name_prefix="tracekit-srt")
         try:
             while (msg := self.read()) is not None:
+                self.expire()
                 if msg.get("t") == "req":
                     pool.submit(self.answer, msg)
                 elif msg.get("t") != "body":
                     raise ValueError(f"a {msg.get('t')!r} frame")
-                else:   # a body no one waits for any more (BODY_WAIT_S) is dropped
+                else:   # its request is decided now; a body no one waits for any more (BODY_WAIT_S) is dropped
                     with self.lock:
                         waiting = self.bodies.pop(msg.get("id"), None)
                     if waiting:
-                        waiting.set_result(msg)
+                        pool.submit(self.answer, waiting[0], msg)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-    def answer(self, req):
+    def expire(self):
+        """Refuse each request whose body didn't come within BODY_WAIT_S."""
+        now, late = time.monotonic(), []
+        with self.lock:
+            while self.bodies and next(iter(self.bodies.values()))[1] < now:
+                late.append(self.bodies.popitem(last=False)[0])
+        for rid in late:
+            try:
+                self.send({"t": "verdict", "id": rid, **deny(408, "Tracekit: the request's body did not arrive")})
+            except OSError:
+                pass
+
+    def answer(self, req, body=None):
+        """Send the verdict for request frame `req` (with `body`, its body frame), unless its body is asked for."""
         closed = False
         try:
-            verdict = self.decide(req)
+            verdict = self.decide(req, body)
+            if verdict is None:   # answered once its body comes (serve)
+                return
         except SignerUnavailable as e:
             verdict = deny(503, f"Tracekit: the signer can't be reached, so nothing is allowed: {e}")
         except RPCError as e:
@@ -127,8 +147,8 @@ class Decider:
         except OSError:   # srt-proxy is gone
             pass
 
-    def decide(self, req):
-        """The verdict for one request frame."""
+    def decide(self, req, body=None):
+        """The verdict for one request frame, or None once its body is asked for."""
         method, host, port = req["method"], req["host"], req["port"]
         scheme = "https" if "sni" in req else "http"
         netloc = f"[{host}]" if ":" in host else host
@@ -137,9 +157,11 @@ class Decider:
                 "url": f"{scheme}://{netloc}{req['path']}" + (f"?{req['query']}" if "query" in req else "")}
         headers = req.get("headers", {})
         if method not in BODYLESS and ("transfer-encoding" in headers or headers.get("content-length", ["0"]) != ["0"]):
-            body = self.body(req["id"])
             if body is None:
-                return deny(408, "Tracekit: the request's body did not arrive")
+                with self.lock:
+                    self.bodies[req["id"]] = req, time.monotonic() + BODY_WAIT_S
+                self.send({"t": "verdict", "id": req["id"], "action": "need_body", "max": MAX_BODY})
+                return None
             if body.get("cut"):
                 return deny(413, f"Tracekit: a body over {MAX_BODY} bytes can't be bound to a decision")
             args["body"] = "sha256:" + hashlib.sha256(base64.b64decode(body["data"], validate=True)).hexdigest()
@@ -176,18 +198,6 @@ class Decider:
         self.run.complete(tcid, "ok", result=RESULT)
         return {"action": "allow"}
 
-    def body(self, rid):
-        """Request `rid`'s body frame, asked of srt-proxy; None when it doesn't come within BODY_WAIT_S."""
-        waiting = concurrent.futures.Future()
-        with self.lock:
-            self.bodies[rid] = waiting
-        self.send({"t": "verdict", "id": rid, "action": "need_body", "max": MAX_BODY})
-        try:
-            return waiting.result(BODY_WAIT_S)
-        except concurrent.futures.TimeoutError:
-            with self.lock:
-                self.bodies.pop(rid, None)
-            return None
 
 
 def main(argv=None):

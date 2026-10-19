@@ -197,6 +197,37 @@ class Deciding(unittest.TestCase):
         self.assertIn("run_closed", v["reason"])
         self.assertEqual(self.proxy.rfile.read(1), b"")   # the decider's stream ended: srt-proxy exits
 
+    def upload(self, path="/upload"):
+        """Send a PUT with a body, as srt-proxy does before it reads the body: its id."""
+        p = self.proxy
+        p.last += 1
+        p.sock.sendall(frame({"t": "req", "id": p.last, "method": "PUT", "host": "api.example.com", "port": 443,
+                              "sni": "api.example.com", "path": path, "headers": {"content-length": ["1"]}}))
+        return p.last
+
+    def test_bodies_still_coming_hold_no_worker(self):
+        uploads = [self.upload() for _ in range(srt_decider.WORKERS + 1)]   # bodies srt-proxy reads from slow clients
+        self.assertEqual(sorted(checked(self.proxy.recv())["id"] for _ in uploads), uploads)   # need_body, each
+        t = time.monotonic()
+        self.assertEqual(self.proxy.request("GET", "api.example.com")["action"], "allow")
+        self.assertLess(time.monotonic() - t, 2)   # within srt-proxy's 5 s wait for a verdict
+        self.proxy.sock.sendall(frame({"t": "body", "id": uploads[0], "data": base64.b64encode(b"x").decode()}))
+        v = checked(self.proxy.recv())
+        self.assertEqual(v["id"], uploads[0])
+        self.assertIn("held for a person's approval", v["reason"])   # decided once its body came
+
+    def test_a_body_that_never_comes_is_refused_at_the_next_frame(self):
+        with mock.patch.object(srt_decider, "BODY_WAIT_S", 0):
+            rid = self.upload()
+            self.assertEqual(checked(self.proxy.recv())["action"], "need_body")
+            self.proxy.sock.sendall(frame({"t": "req", "id": rid + 1, "method": "GET", "host": "api.example.com",
+                                           "port": 443, "sni": "api.example.com", "path": "/"}))
+            self.proxy.last += 1
+            late, get = checked(self.proxy.recv()), checked(self.proxy.recv())
+        self.assertEqual((late["id"], late["status"], late["reason"]),
+                         (rid, 408, "Tracekit: the request's body did not arrive"))
+        self.assertEqual((get["id"], get["action"]), (rid + 1, "allow"))
+
     def test_reason_fits_what_the_proxy_takes(self):
         self.assertEqual(srt_decider.deny(403, "a\nb\x85c" + "é" * 600)["reason"], "a b c" + "é" * 509)
 
