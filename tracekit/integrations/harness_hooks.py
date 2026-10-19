@@ -33,7 +33,6 @@ from tracekit.format.canon import event_hash
 from tracekit.deploy import files
 from tracekit.integrations import claude_code, said
 from tracekit.locking import lock_file
-from tracekit.sdk.client import Client
 
 MAX_READ = 1 << 22   # lean: bytes of a transcript one hook reads; the next hook of the session reads on from there
 SEEN = 4096   # Gemini CLI message ids remembered per session: it writes a message again as its tool calls complete
@@ -104,7 +103,7 @@ def said_since(harness, p, stderr):
                 said_items = ([(items, model) for items in _responses(lines)] if harness == "codex" else
                               [(items, m.get("model"), "google", "gemini chat") for m, items in _gemini(lines, st["seen"])])
             if said_items:
-                client = Client()
+                client = claude_code.HookClient()
                 try:
                     # a SessionEnd records into the run it ends, never into a new one
                     s = said.Said(lambda **f: claude_code._run(client, sid, register=ev != "SessionEnd",

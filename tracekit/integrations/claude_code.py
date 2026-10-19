@@ -14,8 +14,9 @@ Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr); only a PreToo
 hook fails exits 1, an error the harness shows without blocking. An approval with a T2 executor runs the arguments the
 consume returns: the hook prints them as `updatedInput` (Claude Code only; the other harnesses run the arguments the
 signer consumed, which it checked against the approved ones). The signer unreachable: the run's fail mode for the
-tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
-its approval, or any other error: blocked. A call allowed here that gets no PostToolUse (declined in the harness's own
+tool's class, from register_run (closed before a run is registered). A rate limit (quota_exceeded with retry_after_ms)
+is waited out within the client's timeout (HookClient). A signer refusal, a failure while a call waits for its
+approval, or any other error: blocked. A call allowed here that gets no PostToolUse (declined in the harness's own
 permission prompt, interrupted, or an unreadable payload) is completed as an error at SessionEnd; one that is never
 completed is the signer's decided_not_completed gap.
 
@@ -63,6 +64,23 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 NO_POST = ("no PostToolUse came by the end of the session: declined (the harness's permission prompt, another hook), "
            "interrupted, or its payload was unreadable")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
+
+
+class HookClient(Client):
+    """The hooks' client: a call the signer rate-limits (quota_exceeded with retry_after_ms) is sent again once that has
+    passed, within the client's timeout, as the tailer's lines are. In dev mode the hooks and the tailer share the
+    agent's uid, and so its event rate: a tailer reading a long transcript must not have the hook's decide refused."""
+
+    def call(self, method, req=None, **fields):
+        end = time.monotonic() + self.timeout
+        while True:
+            try:
+                return super().call(method, req, **fields)
+            except RPCError as e:
+                wait = (e.retry_after_ms or 0) / 1000
+                if e.code != "quota_exceeded" or e.retry_after_ms is None or time.monotonic() + wait > end:
+                    raise
+                time.sleep(wait)
 
 
 def _state(*ids):
@@ -353,7 +371,7 @@ def handle(p):
         return 2 if pre else 0
     failed, code = ("blocking", 2) if pre else ("event not recorded", 1)
     try:
-        client = Client()
+        client = HookClient()
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
         print(f"[tracekit] {e}; {failed}", file=sys.stderr)
         return code

@@ -205,6 +205,18 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
         self.assertEqual((types.count("policy.decision"), types.count("tool.result")), (n, n))
         self.assertFalse([t for t in types if "gap" in t], types)
 
+    def test_a_rate_limited_hook_waits_its_turn(self):
+        # dev mode: the tailer reading a long transcript spends the agent uid's event rate, which the hooks share
+        self.service.quotas.limits = service.Limits(events_per_s=20, burst=1)
+        self.assertEqual(self.d.hook("UserPromptSubmit", None, None, None, prompt="Fix the pager.")[0], 0)
+        for i in range(3):
+            self.assertEqual(self.pre(tcid=f"t{i}"), (0, ""))
+            self.assertEqual(self.d.hook("PostToolUse", f"t{i}", "echo", {"text": "x"}, tool_response="x"), (0, ""))
+        types = [e["type"] for e in self.events(self.d.run())]
+        self.assertEqual((types.count("input.observed"), types.count("policy.decision"), types.count("tool.result")),
+                         (1, 3, 3))
+        self.assertFalse([t for t in types if "gap" in t], types)
+
     def test_signer_unreachable_follows_the_runs_fail_mode(self):
         self.set_fail_modes({"default": "closed"})
         with failing("decide", SignerUnavailable("gone")):
