@@ -282,7 +282,8 @@ class Input(Base):
         self.assertEqual(a, b)
         self.assertLessEqual(len(json.dumps(a, ensure_ascii=False)), review_model.MAX_TRACE)
         [cut] = [r for r in a["records"] if "omitted" in r]
-        self.assertGreater(cut["omitted"], 0)
+        self.assertEqual(cut["omitted"] + len(a["records"]) - 1, 6001)   # the prompt, 3000 messages and decisions
+        self.assertLess(len(rv.items), 300)   # tee keeps the start and the end, not every record (6001 before)
         self.assertEqual((a["records"][0]["run_seq"], a["records"][-1]["run_seq"]), (1, recs[-2]["event"]["run_seq"]))
         self.assertTrue(all(len(s["text"]) < review_model.MAX_ITEM + 50 for r in a["records"]
                             for s in r.get("said", ())))

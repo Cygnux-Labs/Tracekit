@@ -34,6 +34,7 @@ alignment and reason code, the asserted {model, version, prompt_hash} and the mo
 (rpc_schema.REVIEW), all closed values or names. The explanation is printed, never signed. An error, a refusal or a
 malformed answer: no verdict, TK-X210 not checkable (`no_answer`, `malformed`).
 """
+import collections
 import hashlib
 import json
 import os
@@ -252,6 +253,10 @@ class Reviewer:
         if rpc_schema.validate(rpc_schema._NAME, model):   # it is signed in the finding: a name, never prose
             raise ValueError(f"--review-model {model[:64]!r}: a model's name, at most 128 letters, digits and ._:/@+-")
         self.ask, self.model, self.items = ask, model, {}
+        # what tee keeps: the first items up to MAX_TRACE characters (`head`), the last ones up to MAX_TRACE more
+        # (`tail`: [(run_seq, size)]); the run_seqs from the first to the last item it let go (`gone`), which the
+        # trace omits: it keeps the start and the end of a run, never the middle
+        self.head, self.tail, self.tail_size, self.gone = 0, collections.deque(), 0, None
         self.asserted = {"model": model, "version": __version__, "prompt_hash": PROMPT_HASH}
 
     def tee(self, content):
@@ -266,9 +271,25 @@ class Reviewer:
             for seq, body, opened in content(recs):
                 item = _item(by[seq], body, opened, hooked)
                 if item:
-                    self.items[seq] = item
+                    self._keep(seq, item)
                 yield seq, body, opened
         return read
+
+    def _keep(self, seq, item):
+        if seq in self.items or self.gone and seq <= self.gone[1] or self.tail and seq < self.tail[-1][0]:
+            return   # read before (the text checks read the messages again), or behind what the tail holds
+        self.items[seq] = item
+        size = len(json.dumps(item, ensure_ascii=False))
+        if self.head < MAX_TRACE:
+            self.head += size
+            return
+        self.tail.append((seq, size))
+        self.tail_size += size
+        while self.tail_size - self.tail[0][1] >= MAX_TRACE:
+            gone, n = self.tail.popleft()
+            self.tail_size -= n
+            del self.items[gone]
+            self.gone = (self.gone[0] if self.gone else gone, gone)
 
     def trace(self, out, records):
         """(the JSON the model reads, the trust tiers of what it holds, the {omitted, from_run_seq, to_run_seq} cut
@@ -281,10 +302,13 @@ class Reviewer:
                 streams.setdefault(d["exchange_id"], set()).add(e.get("stream") or e["source"])
             elif e["type"] == "tool.result":
                 ok[d.get("tool_use_id")] = d.get("ok")
-        entries, tiers = [], set()
+        entries, tiers, skipped = [], set(), 0
         prompts = {p["run_seq"]: p["status"] for p in out["shown"]["prompts"]}
         for r in rs:
             e, d, seq = r["event"], r["event"]["data"], r["event"]["run_seq"]
+            if self.gone and self.gone[0] <= seq <= self.gone[1]:   # what tee let go: inside the cut below
+                skipped += 1
+                continue
             item = self.items.get(seq) or {}
             if prompts.get(seq) == "confirmed":   # the hook's record of the prompt holds the same text
                 continue
@@ -316,7 +340,8 @@ class Reviewer:
             j = len(entries)
             while j > i and used + sizes[j - 1] <= budget:
                 used, j = used + sizes[j - 1], j - 1
-            cut = {"omitted": j - i, "from_run_seq": entries[i]["run_seq"], "to_run_seq": entries[j - 1]["run_seq"]}
+            cut = {"omitted": j - i + skipped, "from_run_seq": entries[i]["run_seq"],
+                   "to_run_seq": entries[j - 1]["run_seq"]}
             entries = entries[:i] + [cut] + entries[j:]
         return {**head, "records": entries}, [t for t in findings_v2.TIERS if t in tiers], cut
 
