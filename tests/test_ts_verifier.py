@@ -640,6 +640,8 @@ class Agreement(unittest.TestCase):
                       f"{h(re.search(r'<style>(.*?)</style>', page, re.S)[1])}; worker-src blob:; connect-src 'none'\"", page)
         self.assertEqual(page.count("<script"), 1)
         self.assertNotRegex(script, r"fetch|XMLHttpRequest|WebSocket|sendBeacon|EventSource|import\(")
+        # a log origin or a hash is one long word: it wraps, or a phone's screen scrolls sideways
+        self.assertIn("main { overflow-wrap: anywhere; }", re.search(r"<style>(.*?)</style>", page, re.S)[1])
         for name in ("closed", "sensor", "run-set", "gap"):
             with self.subTest(name):
                 code, text = ts_cli(self.bundles[name], self.trusts["witnessed"])
