@@ -76,9 +76,15 @@ spec:
       - index: 1
         operator: Mask
         values: ["2"]                 # MAY_WRITE
+      matchActions:
+      - action: Post
+        rateLimit: 1m                 # one event a minute per process and file: every write() call would flood
+        rateLimitScope: process       # the export, and a repeat names no file the first didn't
 ```
 
-Three filters on one selector need a 5.3 or later kernel. Put your own workspace path in `NotPrefix`.
+Three filters on one selector need a 5.3 or later kernel. Put your own workspace path in `NotPrefix`. The rate limit
+drops a process's repeat writes to one file within the minute, so `tracekit analyze --v2` may find a second write call
+to that file in the minute with no effect (TK-X207): read it against the first.
 
 **3. The signer.** Give each node's import its own identity and the `observe_effect` grant, never a default, and keep
 them out of every agent's hands:

@@ -47,7 +47,7 @@ fields their output names, so each rule's output names all of them:
 
 - rule: Tracekit agent exec
   desc: A program an agent started
-  condition: evt.type in (execve, execveat) and evt.dir = < and tracekit_agent
+  condition: evt.type in (execve, execveat) and evt.dir = < and evt.arg.res = 0 and tracekit_agent
   output: >
     agent exec type=%evt.type pid=%proc.pid exe=%proc.exepath cmdline=%proc.cmdline uid=%user.uid
     container=%container.id ns=%k8s.ns.name pod=%k8s.pod.name call=%proc.env[CODEX_TOOL_CALL_ID]
@@ -56,7 +56,9 @@ fields their output names, so each rule's output names all of them:
 
 - rule: Tracekit agent connect
   desc: An agent opened a network connection
-  condition: evt.type = connect and evt.dir = < and fd.type in (ipv4, ipv6) and tracekit_agent
+  condition: >
+    evt.type = connect and evt.dir = < and fd.type in (ipv4, ipv6) and (evt.rawres >= 0 or evt.res = EINPROGRESS)
+    and tracekit_agent
   output: >
     agent connect type=%evt.type pid=%proc.pid exe=%proc.exepath to=%fd.sip port=%fd.sport uid=%user.uid
     container=%container.id ns=%k8s.ns.name pod=%k8s.pod.name call=%proc.env[CODEX_TOOL_CALL_ID]
@@ -66,7 +68,7 @@ fields their output names, so each rule's output names all of them:
 - rule: Tracekit agent write outside the workspace
   desc: An agent opened a file outside its workspace for writing
   condition: >
-    evt.type in (open, openat, openat2) and evt.dir = < and evt.is_open_write = true and fd.type = file
+    evt.type in (open, openat, openat2) and evt.dir = < and evt.is_open_write = true and fd.num >= 0 and fd.type = file
     and not fd.name startswith /workspace/ and not fd.name startswith /tmp/ and tracekit_agent
   output: >
     agent write type=%evt.type pid=%proc.pid exe=%proc.exepath file=%fd.name uid=%user.uid
@@ -75,7 +77,8 @@ fields their output names, so each rule's output names all of them:
   tags: [tracekit]
 ```
 
-Put your own workspace path in the third rule.
+Put your own workspace path in the third rule. Each rule matches a call that succeeded (an exec that ran, a connect
+under way, an open that returned a descriptor), so an attempt the kernel refused isn't recorded as an effect.
 
 **3. The signer** gives each node's import its own identity and the `observe_effect` grant, as for
 [Tetragon](tetragon.md#setup): one identity is one process.
