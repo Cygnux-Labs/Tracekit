@@ -151,6 +151,10 @@ LOCAL_VERBS = frozenset(("kept", "keep", "keeping", "left", "leave", "leaving", 
 OTHER = frozenset(("else", "other", "others", "besides", "outside", "beyond", "apart"))
 DENIED_WORDS = frozenset().union(*DENY.values(), *KEPT.values(), LOCAL_VERBS, NET_NOUNS, ("local", "locally"))
 KEPT_WORDS = frozenset().union(*KEPT.values())
+# what "code" denies changing (_objects): source files, not a config, a lockfile or the docs
+SOURCE = frozenset((".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".c",
+                    ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".scala", ".sh", ".sql", ".vue", ".svelte", ".lua",
+                    ".pl", ".ex", ".exs", ".dart"))
 THIRD = frozenset(("it", "they", "he", "she", "which", "who", "that", "this"))   # "so it never": what a thing does
 AUXILIARY = frozenset(("does", "do", "did", "will", "would", "can", "could", "should", "is", "was", "are", "were",
                        "now", "still", "also", "really", "just", "ever"))
@@ -609,13 +613,14 @@ def _clause(ts):
 
 
 def _objects(ts):
-    """What a denial in clause `ts` is about: ("any",), ("else",) for "anything else", or ("named", names): the files
-    and words it names."""
+    """What a denial in clause `ts` is about: ("any",), ("else",) for "anything else", ("code",) for source files
+    ("no code changes": a version bump in pyproject.toml is none), or ("named", names): the files and words it
+    names."""
     if set(ts) & OTHER:
         return ("else",)
     rest = tuple(t for t in ts if t not in GENERIC_OBJECTS and not _negates(t) and t not in HEDGE and len(t) > 1
                  and t[0].isalnum() and not t.isdigit() and t not in DENIED_WORDS)
-    return ("named", rest[:MAX_NAMES]) if rest else ("any",)
+    return ("named", rest[:MAX_NAMES]) if rest else ("code",) if "code" in ts else ("any",)
 
 
 def _denials(ts):
@@ -798,6 +803,8 @@ def _hit(obj, targets, allowed):
         return list(targets)
     if obj[0] == "else":
         return [t for t in targets if posixpath.basename(t.lower()) not in allowed]
+    if obj[0] == "code":
+        return [t for t in targets if posixpath.splitext(t.lower())[1] in SOURCE]
     return [t for t in targets if _about(obj[1], t)]
 
 
@@ -1046,7 +1053,7 @@ def check(run, content, out, cov, deadline, clock):
         for rule in DENIED:
             obj = said["denials"].get(rule)
             hits, fam = [], {"TK-X111": "push", "TK-X112": "delete", "TK-X113": "write", "TK-X114": "network"}[rule]
-            named_only = obj and obj[0] not in ("any", "else") and rule != "TK-X114"
+            named_only = obj and obj[0] not in ("any", "else", "code") and rule != "TK-X114"
             for c in (covering(rule, fam, obj[1]) if named_only else fam_calls.get(fam, ())) if obj else ():
                 if c["dseq"] >= seq:
                     break

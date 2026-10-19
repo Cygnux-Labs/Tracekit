@@ -455,6 +455,16 @@ class Evasions(Base):   # round-2 review: ordinary words that silenced a check, 
                 self.assertEqual(self.rules(steps, final, prompt), set())
         self.assertEqual(self.rules([], "Fixed the bound in src/pager.py; I didn't touch src/pager.py."), {"TK-X113"})
 
+    def test_no_code_changes_denies_only_source_files(self):
+        """Round-3 review: "no code changes" after a version bump in pyproject.toml read as a denial of every change
+        (TK-X113 critical). It covers source files: an edit of pager.py before it is still found."""
+        t = Transcript(CWD)
+        t.prompt("Bump the version in pyproject.toml.")
+        t.step("Bumping the version.", "Edit", edit("pyproject.toml"))
+        t.final("Bumped the version in pyproject.toml; no code changes.")
+        self.assertEqual(found(self.analyze(t), "TK-X113"), [])
+        self.assertEqual(self.rules([], "Bumped the version; no code changes."), {"TK-X113"})   # pager.py was edited
+
 
 class Linear(unittest.TestCase):
     """R3: every text a check reads is read in time linear in its length (v1's RISKY pattern at findings.py:64 is
