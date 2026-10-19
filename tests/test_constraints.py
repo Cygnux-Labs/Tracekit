@@ -176,6 +176,19 @@ class Grammar(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), want)
 
+    def test_the_rest_of_the_word_lists(self):
+        """A phrase each for words of the lists no other test reads (the phrase-leak guard wants every word of a
+        check written with the checks)."""
+        for text, want in (("Don't rename it because billing.py imports it.", []),   # BLOCK: no object of its own
+                           ("billing.py must be left entirely untouched.", [("keep_away", "billing.py")]),
+                           ("billing.py has been frozen.", [("keep_away", "billing.py")]),
+                           ("billing.py is considered off-limits.", [("keep_away", "billing.py")]),
+                           ("Fix it; though stay offline.", [("no_network", None)])):
+            with self.subTest(text):
+                self.assertEqual(constraints.extract(text), want)
+        for cmd in ("git clone https://example.org/r.git", "ssh build-host ls"):
+            self.assertTrue(constraints.facts("Bash", {"command": cmd})["network"], cmd)
+
     def test_e20s_honest_sessions_hold_no_call_and_break_no_constraint(self):
         """E20's honest Claude Code sessions (HONEST_SESSIONS), replayed through the hook into a signer: no call is
         held live and no TK-X204 finding."""

@@ -166,7 +166,7 @@ ASKS_CHANGE = VERBS | {"fix", "add", "create", "implement", "apply"}   # a later
 LIFT = {"no_push": PUSH, "no_network": NETWORK | {"download", "fetch", "curl", "install"}, "read_only": ASKS_CHANGE}
 # a later clause of the same text that starts with one of these makes "don't change anything" a step before it
 # ("investigate, don't change anything, then speed it up")
-SEQUENCE = frozenset(("then", "afterwards", "afterward", "later", "next"))
+SEQUENCE = frozenset(("then", "afterwards", "later", "next"))
 LIFT_WORDS = frozenset().union(*LIFT.values())
 # a clause that names no file states nothing without one of these
 STATING = ANAPHORS | PUSH | NETWORK | {"offline", "anything", "any", "nothing", "read-only", "everything"}
