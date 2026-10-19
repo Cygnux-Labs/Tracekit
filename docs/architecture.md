@@ -80,7 +80,10 @@ tenant. Nothing is written into the analysed run. `review_finding` signs each fi
 records of the analysed run by `run_seq` and hash; its closed schema keeps text of the run (excerpts, paths, reasons)
 out of signed records, which can't be erased. The finding's author is the identity the signer measured when the
 findings run registered. `tracekit export --v2 --run R --with-findings` bundles a run with its findings runs; the
-verifier checks each citation and labels the author ([verdicts](verdicts.md#reviews)).
+verifier checks each citation and labels the author ([verdicts](verdicts.md#reviews)). Its effect checks (TK-X206, TK-X207,
+`tracekit/findings_effects.py`) join each kernel sensor effect to the call that explains it, by the call the process
+names, the process that started it, or the call's window on the signer's clock, and flag what none explains and calls
+that caused nothing the sensor saw ([findings](findings.md#effects-what-a-kernel-sensor-saw)).
 
 ## Bundles and the verifier
 

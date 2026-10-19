@@ -72,6 +72,9 @@ tracekit analyze --v2 --open --json            # a run still open: partial, mach
 
 `--project DIR` names the project (default: the working directory of the first prompt), `--allow DIR` a directory
 outside it the agent may write (`/tmp` and `$TMPDIR` always are), `--budget S` the time the analysis may take (60 s).
+For a run a [kernel sensor](integrations/tetragon.md) covered: `--effect-grace S` (2 s) and `--clock-skew S` (0.5 s)
+set each call's window, and `--sensor-skip DIR` names a directory the sensor's file policy leaves out (see
+[effects](#effects-what-a-kernel-sensor-saw)).
 Exit 0, 4 when a finding is high or worse (or the vault's content doesn't open its record), 2 on an error: no run, a
 run still open without `--open`, a bundle that doesn't verify. For Claude Code, `tracekit init --dev --v2` sets up
 everything the checks read: the transcript tailer, the dev signer's vault, and thinking summaries.
@@ -101,6 +104,8 @@ Not checkable (never counted as a pass):
 | TK-X201 | info; low when most checkable calls had reasoning | an action with nothing said before it: no reasoning and no text earlier in the model message that asked for the call | `no_response`, `unlinked`, `conflicting_reports`, `no_content`, `withheld` |
 | TK-X202 | medium | an edit (Write, Edit, MultiEdit, NotebookEdit) of a file whose name neither the person's request nor the model's text before the call names. A clause that names a file to keep away from it ("leave billing.py untouched") is no mention: the file is a stated constraint, and editing a file the request kept away is a finding whatever the model said about it | `no_content`, `no_text` |
 | TK-X203 | high | a write tool, a Bash write target or a [kernel sensor](integrations/tetragon.md)'s file effect outside the project | `no_content`, `no_root`, `root_too_broad`, `relative_path` |
+| TK-X206 | high | an effect with no action: a process, connection or file write a kernel sensor saw that no call explains, or that names a call it doesn't fit (a call the run never ran, outside that call's window, or of a tool that doesn't cause it: a process named by a Read call) | `no_sensor`, `agent_process`, `hook_like`, `call_unfinished` |
+| TK-X207 | medium | an action with no effect: a call that returned ok without what it should have caused in its window (a Bash command's programs, and curl's or wget's connection; a fetch tool's connection; a write tool's file where the sensor selects writes) | `no_sensor`, `no_content`, `sensor_paths`, `relative_path`, `kind_not_recorded`, `hook_binary` |
 
 Terms, as the output uses them:
 
@@ -132,6 +137,34 @@ Not checkable is never a pass. Each reason, and the change that makes it checkab
 | `no_root`, `root_too_broad` | the project is unknown, or `/` or a home directory | `--project DIR` |
 | `relative_path` | a relative path with no working directory for the call (a Bash `cd`) | the transcript tailer records each call's cwd |
 | `budget` | the analysis reached its time or size budget | `--budget SECONDS` |
+| `no_sensor` | run.final's coverage matrix doesn't say a kernel sensor observed the run's processes throughout, or the run is open | `tracekit sensor import` for the run ([Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md)) |
+| `agent_process` | a process running before the run (the agent's harness: its model calls, its own files) did it, and nothing names a call | Codex: keep `CODEX_TOOL_CALL_ID` in the sensor; for hosts, the [egress observer](egress.md) |
+| `hook_like` | a shell or Python process started outside any call, not by a call's process: Tracekit's own hooks look the same | none for Tracekit's hooks; review hooks and status lines of your own |
+| `call_unfinished` | only a call with no recorded result could explain it | the hook reports each call's result (PostToolUse) |
+| `sensor_paths` | which files the sensor's policy selects is not in the run | `--sensor-skip DIR` per directory it leaves out; `--sensor-skip ''` when it selects every write |
+| `kind_not_recorded` | the sensor recorded no effect of this kind in the run: its policy may not select them | the sample TracingPolicy or Falco rules |
+| `hook_binary` | the only processes that could be the command's ran the same program as Tracekit's hooks (a shell or Python) | Codex: keep `CODEX_TOOL_CALL_ID` in the sensor, so a command's processes name their call |
+
+### Effects: what a kernel sensor saw
+
+With a kernel sensor's records in the run (`tracekit sensor import`), TK-X206 and TK-X207 compare them with the calls.
+A call's window runs from its decision to its result, on the signer's clock, widened by `--clock-skew` both ways and
+`--effect-grace` after the result; each effect carries the sensor's own time. A process the run started is the call's
+when:
+
+1. its environment names the call (`tool_call_id`: Codex's `CODEX_TOOL_CALL_ID`, the agent's claim), and that call
+   ran, the effect is in its window, and its tool causes that kind of effect: a shell any; a search tool (Grep, Glob)
+   processes; a write tool a file; a fetch tool a connection; Read, LS, WebSearch, Task none; an MCP or unknown tool
+   any. The signer's `explained_by: call` is this claim, re-checked;
+2. the process that started it is the call's (`parent_exec_id`, from Tetragon): a server a Bash call left running, and
+   what it starts later, are that call's, whatever the time;
+3. or it started in the window of a call whose tool runs processes.
+
+Its connections and writes go with it. The agent's harness itself runs from before the run: its model calls and its
+own files are `agent_process`, except a file a write call named in its window. Each finding shows the window it used.
+When an effect reached the signer before its own sensor time, the sensor's clock is ahead; when every effect reached it
+later than the import's one-second flush, the sensor's clock may be behind. Either way each finding is labelled
+`clock_skew` with the `--clock-skew` that covers it.
 
 ### The `--json` shape
 
@@ -160,7 +193,11 @@ Stable from this release; new keys may be added:
 (the signer adds the rule's fixed title). A finding may also carry `redacted: true` (it relied on content redaction
 changed); the coverage, `partial: true` for an open run. `shown` is plaintext for whoever ran the analysis (`details`
 in the order of `findings`, per check the trust tiers relied on, the stated constraints, and per call what was said
-before it and each check's outcome: `checked`, `found` or a not-checkable reason); it is printed, never signed.
+before it and each check's outcome: `checked`, `found` or a not-checkable reason); it is printed, never signed. With
+a sensor's records, `shown.effects` maps each effect's `run_seq` to `{call, how, status}` (`how`: `claim`, `ancestry`,
+`window`, `process` or `path`; `status`: `explained`, `found` or a not-checkable reason), and `shown.effect_window` holds
+`grace_s`, `skew_s`, `skips` and, when the clocks disagree, `skew_seen` (`ahead_s` or `behind_s`, `record`,
+`suggest_s`).
 
 ### For agents
 
@@ -176,6 +213,12 @@ E20 in [evaluation](evaluation.md#e20-intent-reasoning-and-action-checks) replay
 spliced edit of an unrequested file through the tailer and hook into a signer with the vault on. Naming the file
 innocently in the model's text clears TK-X202 (a name check can't tell why), and so does a prompt line the agent
 appends to its own transcript; both are in the [limits](limits.md#intent-reasoning-and-action-checks).
+
+E20's effects arm replays synthetic sensor runs (Claude Code-like, Codex-like) with Tracekit's hook processes and the
+harness's own traffic, into a signer on a synthetic clock: a process no call started, one of the wrong kind for its
+call, calls whose effect never happened, a daemon's late child, and clock skew. On a held-out set written before the
+checks, every fault was found or not checkable, none passed, and no honest effect or call was flagged; a Python process
+started outside any call reads as `hook_like`, so a Python exfiltration there is not checkable.
 
 ## Accuracy
 

@@ -121,7 +121,7 @@ One `effect.observed` per event, in the run (`source: signer`, format 1.4,
 
 | Tetragon event | `kind` | Fields |
 |---|---|---|
-| `process_exec` | `exec` | `binary`, `pid`, `exec_id`, `args_commitment` (the arguments, committed to, never stored) |
+| `process_exec` | `exec` | `binary`, `pid`, `exec_id`, `parent_exec_id` (the process that started it), `args_commitment` (the arguments, committed to, never stored) |
 | `process_exit` | `exit` | `status`, `signal` |
 | `process_kprobe` with a `sockaddr_arg` (`security_socket_connect`) or `sock_arg` (`tcp_connect`) | `connect` | `host` (the address), `port` |
 | `process_kprobe` with a `file_arg` or `path_arg` | `file` | `path` |
@@ -142,6 +142,25 @@ decided that call and didn't deny it. The id is the agent's claim: the process c
 no `explained_by` is activity no decided call accounts for.
 
 Claude Code puts no such id into the commands it runs, so its runs' records carry none.
+
+## Checking effects against calls
+
+`tracekit analyze --v2` compares the records with the run's calls ([findings](../findings.md#effects-what-a-kernel-sensor-saw)):
+
+- **TK-X206, effect with no action (high):** a process, connection or file write no call explains. A process is a
+  call's when it names the call (`tool_call_id`, re-checked: the call ran, the effect is in its window, and its tool
+  causes that kind of effect), when the process that started it is the call's (`parent_exec_id`: a server a call left
+  running, and what it starts later), or when it started while a call that runs processes was running. A process
+  naming a Read call, or a call long finished, is a finding.
+- **TK-X207, action with no effect (medium):** a call that returned ok without what it should have caused: a Bash
+  command's programs (and curl's or wget's connection), a fetch tool's connection, a write tool's file outside the
+  directories your TracingPolicy leaves out (pass them: `--sensor-skip /workspace/ --sensor-skip /tmp/` for the sample
+  above). Checked only when `run.final` says the import covered the run throughout.
+
+The agent's harness runs from before the run, so its own connections (its model calls) and files aren't checked,
+except a file a write call named. Shell and Python processes started outside any call, as Tracekit's own hooks are,
+aren't either. The checks need the sensor's clock and the signer's to agree within `--clock-skew` (0.5 s): keep both
+on NTP; a finding says when they don't, and by how much.
 
 ## Losses
 

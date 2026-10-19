@@ -31,7 +31,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/integrations/` | v2 framework integrations (OpenAI Agents, LangChain/LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent Framework, Strands Agents, Claude Code and harness hooks) | [HIGH CONFIDENCE] |
 | `tracekit/gateway.py`, `tracekit/executor.py`, `tracekit/mcp_gateway.py`, `tracekit/egress.py` | LLM gateway, T2 tool executor, MCP gateway, egress observer | [HIGH CONFIDENCE] |
 | `tracekit/why/` | `tracekit why`: causal investigation and replay | [HIGH CONFIDENCE] |
-| `tracekit/findings_v2.py`, `tracekit/parsers.py` | `tracekit analyze --v2`: intent, reasoning and action checks (TK-X200..X203) over a v2 run and its content vault; `parsers.said()` reads what a model said before each tool use | [HIGH CONFIDENCE] |
+| `tracekit/findings_v2.py`, `tracekit/findings_effects.py`, `tracekit/parsers.py` | `tracekit analyze --v2`: intent, reasoning and action checks (TK-X200..X203) over a v2 run and its content vault, and the effect checks (TK-X206, TK-X207: kernel sensor effects joined to calls); `parsers.said()` reads what a model said before each tool use | [HIGH CONFIDENCE] |
 | `tracekit/storage/`, `tracekit/identity/`, `tracekit/transport/` | v2 storage (file, Postgres), caller identities (uid, token, mTLS, k8s service account, OIDC, WebAuthn), RPC transports | [HIGH CONFIDENCE] |
 | `tracekit/daemon.py` | v1 signer daemon (tracekitd): socket, peer identity, run state, approvals, checkpoints | [HIGH CONFIDENCE] |
 | `tracekit/ledger.py` | v1 append-only JSONL ledger, file key, v1 record envelope | [HIGH CONFIDENCE] |

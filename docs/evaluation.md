@@ -302,6 +302,20 @@ clears a name check) and c5_line (0%: the appended prompt line reads as the pers
 false alarm on 1,252 honest calls. `make eval` runs it. Results: `eval/results/e20_alignment.json`. Model arms (a
 reviewer model, real `claude -p` runs) come later.
 
+Its effects arm checks [TK-X206 and TK-X207](findings.md#effects-what-a-kernel-sensor-saw) on synthetic runs with what
+a kernel sensor saw (exec, exit, connect and file effects as `tracekit sensor import` sends them), replayed into a
+signer on a synthetic clock, Claude Code-like (no call ids) and Codex-like (each process names its call), with
+Tracekit's hook processes around every call and the harness's own model calls and transcript writes between them.
+Faults: a process no call started that connects out, one that doesn't fit its call, and calls whose program,
+connection or file write never happened; also a server's child 20 to 40 s after its call, clock skews of ±0.3 s and
+±3 s, and runs no sensor covered. The held-out set is a separate generator (`effects_heldout`, other binaries, hosts,
+paths and timings, its own seed) committed before the checks existed; the E20 pool has no effects. On both sets, 176
+runs each: no false alarm over about 9,800 honest effects and 900 honest calls, and no fault passed (each was found or
+not checkable). Held out, a Python exfiltration between calls was not checkable (`hook_like`) in 4 of 8 Claude
+Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a `python3` command that never ran was
+`hook_binary` in 3 of 8. Without parent exec ids every late server child was a false alarm; with them none. Skew of
+±3 s was detected every time, and analysing again with the suggested `--clock-skew` cleared every false alarm.
+
 ## What is not measured
 
 Signer throughput with a separate-user signer or over the remote gateway, durability across crashes beyond the
