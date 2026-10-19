@@ -145,7 +145,8 @@ deny:
   - id: TK-D020
     class: shell
     field: argv
-    pattern: '^security\s+dump-keychain\b|^secret-tool\s+search\b[^\n]*--all\b|^pass\s+show\s+--all\b'
+    # security's global options (-q, -v, -p prompt …) may come before its command; `pass grep` decrypts every entry
+    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* dump-keychain\b|^secret-tool\s+search\b[^\n]*?--all\b|^pass\s+grep\b'
     reason: dumping an entire operating-system credential store
     remedy: Look up only the one credential the task needs; a person exports a whole credential store themselves.
     rationale: A whole-store export exposes credentials unrelated to the task; a person must authorize it.
@@ -170,10 +171,14 @@ ask:
   - id: TK-A021
     class: shell
     field: target
-    pattern: '^(security\s+(find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|pass\s+show|ssh-add\s+-L)\b|^(cat|sqlite3)\b.*(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|Library/Application Support/(?:Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|[A-Za-z]:/Users/[^/]+/AppData/Local/(?:Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies))'
-    reason: reading credentials from an operating-system or browser store
-    remedy: Wait for a person to approve the held call, or ask the person for the one credential the task needs.
-    rationale: These commands can read saved credentials or enumerate an SSH agent; a person confirms the access.
+    # security's global options may come before its command; `pass NAME` shows NAME as `pass show NAME` does, so every
+    # pass command but those that don't decrypt an entry (`unless`; grep is TK-D020's). Paths in lower case: the target
+    # is also matched casefolded
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add\s+-L)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
+    unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)'
+    reason: reading credentials from an operating-system or browser store, or listing an SSH agent's keys
+    remedy: Wait for a person to approve the held call, or ask the person for the one credential or key the task needs.
+    rationale: These commands can read saved credentials or list the keys an SSH agent holds; a person confirms the access.
   - id: TK-A022
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
