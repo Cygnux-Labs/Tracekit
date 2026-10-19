@@ -1,7 +1,7 @@
 # Falco
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
-> Linux only.
+> Linux only. Tested: alert lines shaped as Falco's source writes them, imported into a real signer; not yet run on a live Falco ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
 
 [Falco](https://github.com/falcosecurity/falco) watches system calls from the kernel and raises an alert when one
 matches a rule. `tracekit sensor import` reads Falco's JSON alerts of the rules below and sends each one of an agent's

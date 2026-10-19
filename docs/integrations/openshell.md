@@ -1,6 +1,7 @@
 # NVIDIA OpenShell
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
+> Tested: a gRPC client plays OpenShell's gateway and supervisor against the middleware and a real signer, with messages built from OpenShell's protocol file; not yet run against a released OpenShell ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
 
 [OpenShell](https://github.com/NVIDIA/OpenShell) runs agents in sandboxes. Each sandbox's supervisor allows or blocks
 the agent's connections by network policy, injects provider credentials at the endpoints the policy approves, and calls
@@ -52,14 +53,20 @@ tool, allowed and flagged.
 **2. The middleware.** `openshell-middleware.yaml` (relative paths are from the file):
 
 ```yaml
-listen: 0.0.0.0:50051                      # reached by the OpenShell gateway and every sandbox supervisor
-tls: {cert: tls/mw.pem, key: tls/mw.key}
+listen: 10.0.0.12:50051                    # internal: only the OpenShell gateway and the sandbox supervisors reach it
+tls: {cert: tls/mw.pem, key: tls/mw.key}   # required: OpenShell sends its caller token only over TLS
 gateway_jwt:                               # who may call it: see below
   gateway_id: openshell                    # the gateway's [openshell.gateway.gateway_jwt] gateway_id
   public_key: jwt/public.pem               # a copy of its public_key_path
   audience: "urn:openshell:extension:middleware:tracekit"   # the registration's audience (its default for "tracekit")
 signer: https://signer.internal:8443       # its identity: $TRACEKIT_SIGNER_CERT/_KEY or _TOKEN_FILE
 ```
+
+Bind `listen` to an address only the OpenShell gateway and the sandbox supervisors reach, and never allow that address
+in a sandbox's network policy: the middleware decides and records each request it gets in the run of the sandbox the
+request names. Keep TLS on, and configure OpenShell's `gateway_jwt` so each call carries a token OpenShell mints for
+the middleware's audience, which the middleware's `gateway_jwt` checks; OpenShell doesn't support client certificates
+for middleware.
 
 ```bash
 tracekit openshell-middleware serve --config openshell-middleware.yaml
@@ -80,10 +87,10 @@ timeout = "10s"
 
 The middleware makes four signer calls for a sandbox's first request (register, delegate, decide, consume) and two
 for each later one. `timeout` bounds each call OpenShell makes to the middleware, and OpenShell's default of 500 ms
-leaves little room for a remote signer. For local development, use an `http://` endpoint with
-`allow_insecure_transport = true`, and leave `tls` and `gateway_jwt` out of `openshell-middleware.yaml`: the
-middleware then listens on a loopback address only (`listen: 127.0.0.1:50051`), unless you set
-`allow_unauthenticated: true`.
+leaves little room for a remote signer. For local development only, on a machine and network no one else
+reaches, use an `http://` endpoint with `allow_insecure_transport = true`, and leave `tls` and `gateway_jwt` out of
+`openshell-middleware.yaml`: OpenShell then sends no caller token, and the middleware listens on a loopback address
+only (`listen: 127.0.0.1:50051`), unless you set `allow_unauthenticated: true`.
 
 ### Who may call it
 
@@ -110,7 +117,8 @@ network_middlewares:
       include: ["api.github.com", "*.api.example.com"]
 ```
 
-Leave `config` out: the middleware takes none, and refuses a policy that sets one. Keep `on_error: fail_closed` (the
+Never list the middleware's own address in a sandbox's network policy: without `gateway_jwt`, a sandbox that reaches
+it can send requests in any sandbox's name. Leave `config` out: the middleware takes none, and refuses a policy that sets one. Keep `on_error: fail_closed` (the
 default): with `fail_open`, OpenShell skips the middleware when it fails, and that traffic goes unrecorded.
 
 ## What the agent sees

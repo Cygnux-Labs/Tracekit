@@ -1,5 +1,8 @@
 # Codex's sandbox
 
+> **Experimental:** Tracekit's Codex hooks are experimental: checked against recorded hook payloads, not a live Codex
+> ([support](../support.md)).
+
 Codex CLI runs each shell command inside an operating-system sandbox: Seatbelt on macOS, bubblewrap and seccomp on
 Linux, a restricted token on Windows. Its `sandbox_mode` decides what a command can write (`read-only`,
 `workspace-write`, or `danger-full-access`, which is no sandbox), and the network is off unless you turn it on.
@@ -67,6 +70,6 @@ effect, and a process without one as unexplained.
   rule let run outside it. What the sandbox blocked shows only in the command's output. In current Codex, input typed
   into a running command (`write_stdin`) runs no `PreToolUse` hook; it belongs to the command Tracekit already decided.
 - **Doesn't record:** Codex's sandbox and approval settings. They aren't signed into the run, and `tracekit doctor`
-  doesn't read Codex's config.
+  doesn't read them (it reads only Codex's reasoning summaries setting).
 
 [Limits](../limits.md) lists these with what to do.

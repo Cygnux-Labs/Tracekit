@@ -4,13 +4,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { deflateRawSync } from "node:zlib";
 import {
   MAX_ENTRY, StrictJSONError, Unusable, canonicalize, readZip, strictParse, strictParseBytes, verify, verifyRecord,
 } from "../dist/verify/index.js";
-import { MEANING, asJson, asText, nextSteps, summarize, verdict } from "../dist/verify/explain.js";
+import { MEANING, asJson, asText, cliExit, nextSteps, summarize, verdict } from "../dist/verify/explain.js";
 import {
   COSIGNATURE, ED25519, b64decode, bytes, ed25519Verify, hex, keyId, leafHash, openNote, parseVkey, registryOrigin,
   runHash, sha256, spkiOf, unhex,
@@ -223,6 +226,30 @@ test("zip reader: stored and deflated entries, and every refusal within the bund
   await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(100), method: 8, usize: 10 }])), /Bad CRC-32 for file 'a'/);
 });
 
+test("a bundle of tiny lines is refused before one is parsed, with no trust config too", () => {
+  // 1M lines no signed record could be (records are 256 bytes or more): parsed, they'd need gigabytes
+  const run = Buffer.from('{"event":{"seq":1}}\n'.repeat(262_144));
+  const files = {
+    "checkpoints/10.note": `o.example/x\n10\n${Buffer.alloc(32).toString("base64")}\n\n— o.example/x `
+      + `${Buffer.alloc(69, 1).toString("base64")}\n`,
+    "proofs/records.json": JSON.stringify({ checkpoint: "checkpoints/10.note", tree_size: 10, inclusion: {} }),
+    "keys/records.jsonl": "", "registry/run-set.json": "{}",
+    ...Object.fromEntries([0, 1, 2, 3].map((i) => [`runs/r${i}.jsonl`, run])),
+  };
+  const hashes = Object.fromEntries(Object.entries(files).map(([n, d]) => [n, createHash("sha256").update(d).digest("hex")]));
+  const bomb = join(mkdtempSync(join(tmpdir(), "tk-bomb-")), "bomb.tkb");
+  writeFileSync(bomb, zip([{ name: "manifest.json", data: JSON.stringify({ format: "tracekit.bundle.v2",
+    verifier_min_version: "1.0", files: hashes }) }, ...Object.entries(files).map(([name, data]) => ({ name, data, method: 8 }))]));
+  const r = spawnSync(process.execPath, ["--max-old-space-size=256", "--input-type=module", "-e", `
+    import { readFileSync } from "node:fs";
+    import { verify } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../dist/verify/index.js")).href)};
+    const { report, code } = await verify(readFileSync(${JSON.stringify(bomb)}), null);
+    console.log(JSON.stringify([code, report.checks.at(-1).problems]));`], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(r.status, 0, r.stderr.slice(0, 300));
+  assert.deepEqual(JSON.parse(r.stdout), [1, ["malformed and could not be fully checked: ValueError: line shorter than a "
+    + "signed record"]]);
+});
+
 const sample = (n) => new Uint8Array(readFileSync(join(ROOT, "sdk/typescript/src/verify/sample", n)));
 const file = (p) => new Uint8Array(readFileSync(join(ROOT, p)));
 
@@ -266,9 +293,18 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.deepEqual([alone.v.word, alone.v.means], ["UNVERIFIABLE",
     "Signatures are intact, but you haven't said whose signer you trust."]);
   assert.match(alone.steps[0].text, /^Ask for the sender's trust file/);
+  // the exit line: the CLIs refuse without a trust file, and check a v1 bundle, or what this verifier lacks, themselves
+  assert.equal(cliExit(alone.report), " The command-line verifiers need the trust file: without one they exit 2.");
+  assert.equal(cliExit((await words(sample("sample-tampered.tkb"), null, { ...names, trust: null })).report),
+    " The command-line verifiers need the trust file: without one they exit 2.");
+  assert.equal(cliExit(ok.report), " The command-line verifiers exit with the same code.");
+  const rekor = await words(file("tests/golden/v2/closed.tkb"), file("tests/golden/v2/trust-rekor.json"));
+  assert.deepEqual([rekor.code, cliExit(rekor.report)], [2, " The TypeScript command-line verifier exits with the same "
+    + "code; the Python one checks what this page doesn't."]);
   const v1 = await words(file("tests/golden/v1/demo-run.tkb"), trust, { bundle: "demo-run.tkb", trust: "t.json" });
   assert.deepEqual([v1.code, v1.v.word], [2, "UNVERIFIABLE"]);
   assert.match(v1.v.means, /format v1 bundle/);
+  assert.equal(cliExit(v1.report), "");
   assert.deepEqual(v1.steps.map((s) => s.command), ["uvx --from tracekit-ai tracekit verify demo-run.tkb --key signer.pub"]);
   const newer = await words(file("tests/golden/negative/manifest-newer-verifier.tkb"), file("tests/golden/negative/trust.json"));
   assert.match(newer.v.means, /needs a newer verifier/);
@@ -285,12 +321,15 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   for (const [, name] of src.matchAll(/(?:check|unsupport)\("([^"]+)"/g)) assert.ok(MEANING[name], name);
   assert.deepEqual(Object.keys(asJson(ok.report, ok.code)),
     ["exit_code", "checks", "failures", "warnings", "integrity", "assurance", "notes"]);
+  // the Findings line, when a bundle has one, as the CLIs' --json carry it
+  assert.equal(asJson(Object.assign(new ok.report.constructor(), ok.report, { findings: "1 signed" }), 0).findings,
+    "1 signed");
   assert.ok(asText(ok.report, ok.code).endsWith("\nIntegrity: VERIFIED.\n" + `Assurance: ${ok.report.assurance}.\n`
     + "\nExit code 0.\n"));
   const facts = Object.fromEntries(summarize(await readZip(sample("sample.tkb")), ok.report));
   assert.match(facts.Records, /^12 signed record\(s\) in 1 run\(s\), 2026-/);
   assert.deepEqual([facts["Tool calls"], facts["Held for approval"], facts.Gaps, facts.Agents],
-    ["3 decided: 2 allow, 0 deny, 1 ask", "pay: approved by alice", "none recorded", "support-bot (uid:1000)"]);
+    ["3 decided: 2 allow, 0 deny, 1 ask", '"pay": approved by alice', "none recorded", '"support-bot" (uid:1000)']);
 });
 
 test("agreement with the reference verifier (tests/test_ts_verifier.py)", { skip: NO_SIGNER }, () => {

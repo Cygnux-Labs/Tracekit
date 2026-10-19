@@ -1,5 +1,9 @@
 # Claude Code's sandbox
 
+> `TK-A003` and `TK-A014` are rules in the stable coding pack, and Claude Code's hooks are stable ([support](../support.md)).
+> Tested: `tracekit doctor` against settings read from a real Claude Code, and the rules against the Bash tool's
+> arguments as Claude Code documents them ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
+
 Claude Code's [sandboxed Bash tool](https://code.claude.com/docs/en/sandboxing) runs shell commands inside an
 operating-system sandbox, Anthropic's [sandbox-runtime](https://github.com/anthropics/sandbox-runtime) (bubblewrap and
 seccomp on Linux and WSL2, Seatbelt on macOS). It limits the files a command can write and the hosts it can reach.
@@ -61,6 +65,17 @@ The approval is bound to the exact command, used once, and recorded with who app
 retries and who approved each; the command itself is committed to, not stored in the bundle
 ([format v2](../format-v2.md#2-hashes-over-agent-content)). To allow retries without asking, override `TK-A003` in your
 own policy ([policy](../policy-v2.md)).
+
+## Per-command allowed domains (TK-A014)
+
+In auto mode with the sandbox on (Claude Code 2.1.271 and later), a Bash, PowerShell or Monitor call can carry an
+`allowed_domains` list: the hosts it names are opened for that one command, still inside the sandbox. Claude is told
+to re-run a command with a denied host listed there, and auto mode's classifier, not you, approves the re-run.
+
+The coding pack's `TK-A014` (an `ask` rule, next to `TK-A003`) holds every call whose `allowed_domains` names a host
+until a person approves it, the same way: bound to the exact command and list, used once, signed with who approved it.
+An empty list opens nothing and isn't held, and neither is `blocked_domains`, which only narrows. To allow a host for
+good, add it to the sandbox's own `network.allowedDomains` in your settings rather than approving each command.
 
 ## What Tracekit sees and doesn't
 

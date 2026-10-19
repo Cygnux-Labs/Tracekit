@@ -1,6 +1,6 @@
-"""Browser checks of `tracekit view`: each bug of the viewer QA pass (B01..B39) as a named check that FAILs while the bug
-is there, plus a screenshot of each main state with --shots. Run it through run.py, which builds the scratch runs and
-starts the viewers it reads (ports below); B40 (a viewer restart under an open page) is in run.py.
+"""Browser checks of `tracekit view`: each bug of the viewer QA pass (B01..B39, B41, B42) as a named check that FAILs
+while the bug is there, plus a screenshot of each main state with --shots. Run it through run.py, which builds the
+scratch runs and starts the viewers it reads (ports below); B40 (a viewer restart under an open page) is in run.py.
 
     python scripts/viewer_qa/qa_viewer.py [--only B07,B12] [--shots DIR]     # with the viewers of run.py running
 
@@ -422,6 +422,35 @@ def _():
     runs.locator("#agent").fill("claude"); runs.locator("#agent").press("Enter"); runs.wait_for_timeout(600)
     n1 = runs.evaluate("document.querySelectorAll('#list tr').length")
     return n1 != n0, f"{n0} rows before and after Enter"
+
+
+live = page(DEV)
+FAIL_ROW = """id => { const r = RUNS.get(id); accept({ event: "tk_alert", session_id: id, tenant: r.tenant, analysis: true,
+  severity: "high", tape: "VERIFY", ts: Date.now() / 1000, title: `RUN ${id} · Integrity FAILED`,
+  text: "[FAIL] signatures — seq 1: hash does not match the event\\n\\nIntegrity: FAILED.",
+  review: { verdict: "failed", integrity: "FAILED", assurance: "none", label: r.label } }); schedule(); }"""
+
+
+@check("B41", "a run that fails at a later checkpoint: the page takes back every record it showed of it")
+def _():
+    rid = live.evaluate("[...RUNS.values()].find(r => r.agent === 'support-agent').id")
+    mine = f"ALL.filter(x => x.session_id === {json.dumps(rid)} && !x.analysis).length"
+    before = live.evaluate(mine)
+    live.evaluate(f"({FAIL_ROW})({json.dumps(rid)})")
+    live.locator(f".run[data-run='{rid}']").first.click(); live.wait_for_timeout(600)
+    rows = [r for r in tape_rows(live) if r[:1].isdigit()]
+    after, verdict = live.evaluate(mine), live.evaluate(f"RUNS.get({json.dumps(rid)}).verdict")
+    return before > 0 and after == 0 and verdict == "failed" and all("ANALYSIS" in r for r in rows), \
+        f"{before} -> {after} records, verdict {verdict}, tape {rows[:3]}"
+
+
+@check("B42", "past the live cap the page drops its oldest rows and says how many left")
+def _():
+    live.locator("[data-run='']").first.click(); live.wait_for_timeout(300)
+    live.evaluate("MAXREC = 20; accept({ ...ALL[ALL.length - 1] }); schedule();"); live.wait_for_timeout(600)
+    n, dropped = live.evaluate("ALL.length"), live.evaluate("DROPPED")
+    said = live.locator("#tapesum").inner_text()
+    return n <= 20 and dropped > 0 and f"{dropped} older rows left the live view" in said, f"{n} rows, {dropped}: {said}"
 
 
 print("\nconsole errors:", console[:10])

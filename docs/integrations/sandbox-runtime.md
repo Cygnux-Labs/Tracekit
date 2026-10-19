@@ -1,6 +1,8 @@
 # sandbox-runtime's proxy on its own
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
+> Tested: the decider against a stand-in that speaks srt-proxy's protocol as its source does; not yet against a released
+> srt ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
 
 Anthropic's [sandbox-runtime](https://github.com/anthropics/sandbox-runtime) (`srt`) can run its HTTP proxy on its
 own, with no sandboxed command: `srt-proxy`, also `srt proxy`. A host that runs the workload elsewhere (a VM, a
@@ -74,8 +76,7 @@ To run the workload in srt's sandbox as well, set `network.httpProxyPort` in `~/
 srt then starts no HTTP proxy of its own and points the command's `HTTP_PROXY` and `HTTPS_PROXY` at that port. Its
 `allowedDomains` don't apply to that traffic: srt's settings schema says "the external proxy must handle domain
 filtering". Here srt-proxy's list and Tracekit's policy do that. The command still has to trust the CA
-(`srt -- env SSL_CERT_FILE=$PWD/ca.crt curl https://api.github.com`). We have tested the decider against a stand-in that
-speaks srt-proxy's protocol as its source does, not yet against a released srt.
+(`srt -- env SSL_CERT_FILE=$PWD/ca.crt curl https://api.github.com`).
 
 ## What is decided
 

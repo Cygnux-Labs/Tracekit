@@ -55,7 +55,8 @@ to verify it as it stands, `tracekit last --open` (1.2.2).
 For Claude Code, the transcript tailer records every line the model writes (thinking, text, tool use) and every prompt
 as a model exchange: a commitment to the whole line, and the line itself when the signer keeps content (the dev signer
 does). `tracekit init --v2` also sets `"showThinkingSummaries": true` in the Claude Code settings it writes the hooks
-to (unless they set it; `--no-thinking-summaries` leaves it alone): without it Claude Code keeps the model's thinking
+to, or with the plugin enabled in the user's settings (unless they set it; `--no-thinking-summaries` leaves it alone;
+`tracekit uninstall` removes it again while it's still `true`): without it Claude Code keeps the model's thinking
 only sealed. For headless runs pass `claude -p --thinking-display summarized`. `tracekit analyze --v2`
 ([findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)) and `tracekit view --dev` read
 them. **Codex, Gemini CLI and Cursor:** each v2 hook first records what the model said since the session's last hook:
@@ -63,8 +64,9 @@ Codex's reasoning summaries (and the sealed `encrypted_content`), messages and t
 to the calls by `call_id`; Gemini CLI's thought summaries and text from its chat recording; Cursor's thinking and
 response text from its `afterAgentThought` and `afterAgentResponse` hooks (init installs them). Gemini CLI and Cursor
 give a call no id, so their text is not linked to a call, and Gemini CLI writes its thoughts after the calls ran.
-`tracekit init --v2 --agent codex` also sets `model_reasoning_summary = "auto"` in Codex's `config.toml` (unless it
-sets one; `--no-thinking-summaries` leaves it alone): Codex's current models default to `none`, which keeps the
+`tracekit init --v2 --agent codex` also sets `model_reasoning_summary = "auto"` as the first line of Codex's
+`config.toml` (unless it sets one; `--no-thinking-summaries` leaves it alone; `tracekit uninstall --agent codex` removes
+the line while it's unchanged): Codex's current models default to `none`, which keeps the
 reasoning sealed. Per agent, what is readable and how to turn it on: [reasoning](reasoning.md). A session's later run
 (after the signer closed an idle one, or a resumed session) records from where the earlier run left off, not from the
 transcript's start: the hook notes how far the transcript was written while that run was open
@@ -78,8 +80,8 @@ Hooks before this release record no prompt, and TK-X208 says `no_hook`.
 
 The hook also sends what the prompt says not to do ("don't touch billing.py", "read-only", "don't push", "no network",
 "only change src/pager.py") to the signer as [live constraints](policy-v2.md#live-constraints): a later call that
-breaks one waits for your approval, and the agent reads why on stderr: `waiting for approval apr-… (TK-CONSTRAINT): the
-person's request in this run said not to modify billing.py; ask the person`. Answer it from another terminal as any
+breaks one waits for your approval, and the agent reads why on stderr: `[tracekit] waiting for approval apr-…
+(TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the person (TK-CONSTRAINT)`. Answer it from another terminal as any
 held call: `tracekit approvals list`, then `tracekit approvals approve <id>` (or `reject`). `tracekit view --dev` lists
 the run's constraints at the top of its review.
 

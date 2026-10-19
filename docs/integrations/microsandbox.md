@@ -1,6 +1,7 @@
 # microsandbox
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
+> Tested: SOCKS5 connections made as microsandbox's source sends them, into a real signer; not yet run against a released microsandbox ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
 
 [microsandbox](https://github.com/superradcompany/microsandbox) runs each sandbox as a microVM (libkrun: KVM on Linux,
 Hypervisor.framework on macOS). The sandbox's network stack runs in the `msb` process on the host, and its
@@ -37,14 +38,22 @@ CONNECT (403); SOCKS4 isn't taken.
    reads the password from a host environment variable when the sandbox starts, so set it just before `create`:
 
    ```python
+   import asyncio
    import os
+
    from microsandbox import OutboundProxy, Sandbox, SecretSource
    from tracekit.sdk.client import Client
 
-   with Client().run(agent="my-agent") as run:
-       os.environ["TRACEKIT_RUN_TOKEN"] = run.run_token
-       sb = await Sandbox.create("agent-1", image="python", proxy=OutboundProxy.socks5("127.0.0.1:3128").credentials(
-           run.run_id, SecretSource.env("TRACEKIT_RUN_TOKEN")))
+
+   async def main():
+       with Client().run(agent="my-agent") as run:
+           os.environ["TRACEKIT_RUN_TOKEN"] = run.run_token
+           proxy = OutboundProxy.socks5("127.0.0.1:3128").credentials(run.run_id, SecretSource.env("TRACEKIT_RUN_TOKEN"))
+           async with await Sandbox.create("agent-1", image="python", proxy=proxy) as sb:
+               await sb.shell("pip install --quiet requests")   # the sandbox's work, while the run is open
+
+
+   asyncio.run(main())
    ```
 
    With the CLI: `msb run python --proxy socks5://127.0.0.1:3128 --socks5-username <run id>

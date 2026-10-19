@@ -8,7 +8,7 @@
  * The verification runs in a worker started from this same script (a blob: URL, which inherits the page's policy), so a
  * large bundle doesn't freeze the page; in the page itself where the browser refuses the worker.
  */
-import { MEANING, asJson, asText, nextSteps, summarize, verdict } from "./explain.js";
+import { MEANING, asJson, asText, cliExit, nextSteps, summarize, verdict } from "./explain.js";
 import { type Report, VERSION, clean, readZip, verify } from "./index.js";
 
 /** The page's samples (src/verify/sample/), base64: a clean bundle, a tampered copy and their trust config. */
@@ -111,22 +111,23 @@ function page() {
     $("summary-box").hidden = !summary.length;
     $("summary-title").textContent = code === 0 ? "What the bundle holds"
       : "What the bundle says it holds (not verified: see above)";
-    $("summary").replaceChildren(...summary.flatMap(([k, val]) => [el("dt", k), el("dd", clean(val))]));
+    $("summary").replaceChildren(...summary.flatMap(([k, val]) => [el("dt", k), el("dd", val)]));
     $("checks").replaceChildren(...report.checks.map((c) => {
       const d = el("details") as HTMLDetailsElement, s = el("summary"), line = el("span", "", "line");
       const tone = { pass: "ok", warn: "warn", fail: "bad" }[c.status];
       line.append(el("span", `[${c.status.toUpperCase()}]`, `status ${tone}`),
         ` ${c.check}` + (c.detail ? ` — ${clean(c.detail)}` : ""));
       s.append(line);
-      d.append(s, ...c.problems.map((p) => el("span", clean(p), "problem")),
-        el("p", `What this means: ${MEANING[c.check] ?? "see docs/verdicts.md."}`, "means"));
+      d.append(s);
+      for (const p of c.problems) d.append(el("span", clean(p), "problem"));   // one by one: a spread overflows the stack
+      d.append(el("p", `What this means: ${MEANING[c.check] ?? "see docs/verdicts.md."}`, "means"));
       d.open = c.status !== "pass" && c.problems.length > 0;
       return d;
     }));
     $("integrity").textContent = `Integrity: ${clean(report.integrity)}.`;
     $("assurance").textContent = `Assurance: ${clean(report.assurance)}.`;
     last = { text: asText(report, code), json: JSON.stringify(asJson(report, code), null, 2) + "\n", name: bundle.name };
-    $("exit").textContent = last.text.trim().split("\n").at(-1) + " The command-line verifiers exit with the same code.";
+    $("exit").textContent = last.text.trim().split("\n").at(-1) + cliExit(report);
     $("report").textContent = last.text;
     $("copied").textContent = "";
     $("result").hidden = false;

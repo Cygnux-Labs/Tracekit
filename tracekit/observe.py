@@ -18,6 +18,7 @@ import collections
 import datetime as _dt
 import hashlib
 import hmac
+import itertools
 import json
 import os
 import re
@@ -364,6 +365,7 @@ WILDCARD_HOSTS = {"0.0.0.0", "::", ""}
 COOKIE = "tracekit_observe"
 LOGIN_COOKIE = "tracekit_login"
 ALL = object()   # a session's scope: every tenant
+RETRACTED = {}   # a feed's row taken back (view.StoreFeed: a run that failed verification): kept for its position only
 CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
@@ -382,7 +384,9 @@ def _session(token):
 
 
 def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, approvals=None, runs=None, why=None):
-    """`feed`: records, base, lock and verify() -> (records, problems, head), as Feed has. `secure`: served over HTTPS,
+    """`feed`: records, base, lock and verify() -> (records, problems, head), as Feed has, and optionally `kept` (rows
+    that left records but stay in each snapshot, before them; view.StoreFeed: each run's latest verdict); a row that is
+    RETRACTED is never sent. `secure`: served over HTTPS,
     so the session cookie is Secure. `login`: a view.OidcLogin; its sessions see the records of their tenant only
     (`feed.verify(tenant)` and each record's `tenant`). `approvals`: a view.ApprovalDesk; an approver's session gets
     /approvals, its GET API and, with the session's CSRF token in X-CSRF-Token, its JSON POSTs (the only requests that
@@ -518,7 +522,9 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
             if u.path == "/api/snapshot":
                 with feed.lock:   # copied under the lock, written after it: a client that stops reading holds nothing
                     body = {"next": feed.base + len(feed.records), "dropped": feed.base,
-                            "records": [r for r in feed.records if scope is ALL or r.get("tenant") == scope],
+                            "max": getattr(feed, "max_records", None),
+                            "records": [r for r in itertools.chain(getattr(feed, "kept", {}).values(), feed.records)
+                                        if r is not RETRACTED and (scope is ALL or r.get("tenant") == scope)],
                             **({"source": feed.source} if getattr(feed, "source", None) else {})}
                 return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/verify":
@@ -677,7 +683,7 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                         if i >= feed.base + len(feed.records):
                             feed.lock.wait(timeout=1.0)
                         batch = feed.records[i - feed.base:]
-                    for r in batch if scope is ALL else [r for r in batch if r.get("tenant") == scope]:
+                    for r in [r for r in batch if r is not RETRACTED and (scope is ALL or r.get("tenant") == scope)]:
                         self.wfile.write(b"data: " + json.dumps(r, ensure_ascii=False).encode("utf-8") + b"\n\n")
                     i += len(batch)
                     if batch:

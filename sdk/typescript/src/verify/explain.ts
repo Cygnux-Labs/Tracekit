@@ -3,7 +3,7 @@
  * mean, what to do next, a line per check on what it means (docs/verdicts.md, shortened), and a summary of the bundle's
  * runs. The report itself is the CLI's, unchanged: this module only reads it. No DOM, so Node tests it.
  */
-import { EXIT_FAIL, EXIT_OK, type Report, VERSION, formatReport } from "./index.js";
+import { EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatReport } from "./index.js";
 
 type J = any;
 export type Names = { bundle: string; trust: string | null };
@@ -16,9 +16,10 @@ const sh = (s: string) => /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `
 const TRUST_FILE = "the sender's trust file: a small .json that names their signer's log key (tracekit last writes it next "
   + "to the bundle, as <name>.trust.json)";
 
-/** The report as `tracekit verify --json` prints it. */
+/** The report as `tracekit verify --json` prints it (cli.ts prints this). */
 export const asJson = (rep: Report, code: number) => ({ exit_code: code, checks: rep.checks, failures: rep.failures,
-  warnings: rep.warnings, integrity: rep.integrity, assurance: rep.assurance, notes: rep.notes });
+  warnings: rep.warnings, integrity: rep.integrity, assurance: rep.assurance, notes: rep.notes,
+  ...rep.findings ? { findings: rep.findings } : {} });
 
 /** The report as `tracekit verify` prints it, then its exit code. */
 export const asText = (rep: Report, code: number) => formatReport(rep) + `\nExit code ${code}`
@@ -26,6 +27,17 @@ export const asText = (rep: Report, code: number) => formatReport(rep) + `\nExit
 
 const failed = (rep: Report, name: string) => rep.checks.find((c) => c.check === name && c.status === "fail");
 const anchored = (rep: Report) => !rep.checks.some((c) => c.check === "trust config" && c.status === "warn");
+const v1 = (rep: Report) => rep.checks.some((c) => c.check === "bundle readable"
+  && c.problems.some((p) => p.startsWith("a format v1 bundle")));
+
+/** What the command-line verifiers exit with for the same files, where that is known: they refuse a v2 bundle without a
+ * trust file, and the Python one checks what this verifier doesn't (and v1 bundles, against signer.pub). */
+export function cliExit(rep: Report): string {
+  if (v1(rep)) return "";
+  if (!anchored(rep)) return " The command-line verifiers need the trust file: without one they exit 2.";
+  return rep.unsupported.length ? " The TypeScript command-line verifier exits with the same code; the Python one checks "
+    + "what this page doesn't." : " The command-line verifiers exit with the same code.";
+}
 
 export function verdict(rep: Report, code: number): Verdict {
   const behaved = "It doesn't mean the agent behaved well, or that the record holds everything it did: the summary, "
@@ -50,7 +62,7 @@ export function verdict(rep: Report, code: number): Verdict {
   const nothing = "Nothing failed: it doesn't mean the bundle is bad.";
   if (failed(rep, "trust config"))
     return { word: "UNVERIFIABLE", means: "The trust file couldn't be used, so nothing was checked.", notMeans: nothing };
-  if (readable?.problems.some((p) => p.startsWith("a format v1 bundle")))
+  if (v1(rep))
     return { word: "UNVERIFIABLE", means: "This is a format v1 bundle (from Tracekit's laptop signer); this page checks "
       + "format v2 bundles, so nothing was checked.", notMeans: nothing };
   if (rep.integrity.startsWith("UNVERIFIABLE (needs"))
@@ -158,7 +170,8 @@ export const MEANING: Record<string, string> = {
 
 const day = (ts: string) => ts.slice(0, 19).replace("T", " ") + " UTC";
 
-/** A few plain facts about the bundle's runs, from their records ({name: bytes}, the runs/*.jsonl files). */
+/** A few plain facts about the bundle's runs, from their records ({name: bytes}, the runs/*.jsonl files), cleaned as the
+ * report is; names an agent chose are quoted, so they can't read as the signer's words around them. */
 export function summarize(files: Map<string, Uint8Array>, rep: Report): [string, string][] {
   const text = new TextDecoder();
   const runs = [...files].filter(([n]) => n.startsWith("runs/")).map(([, b]) => text.decode(b).split("\n")
@@ -180,7 +193,7 @@ export function summarize(files: Map<string, Uint8Array>, rep: Report): [string,
         : level]);
   const agents = runs.map((rs) => rs[0]).filter((e) => e?.type === "run.registered").map((e) => {
     const id = e.data?.identity;
-    return `${e.data?.agent?.name ?? "agent"}` + (id ? ` (${id.scheme}:${id.subject})` : "");
+    return `${JSON.stringify(String(e.data?.agent?.name ?? "agent"))}` + (id ? ` (${id.scheme}:${id.subject})` : "");
   });
   const named = [...new Set(agents)];
   if (named.length) out.push(["Agents", named.slice(0, 5).join(", ") + (named.length > 5 ? ", ..." : "")]);
@@ -193,7 +206,8 @@ export function summarize(files: Map<string, Uint8Array>, rep: Report): [string,
     const who = a ? `${a.decision === "approve" ? "approved" : a.decision === "reject" ? "rejected" : a.decision} by `
       + `${a.person ?? a.approver}` + (a.approver_kind === "agent" ? " (an agent)" : "")
       + (a.self_approved ? " (self-approved)" : "") + (a.break_glass ? " (break-glass)" : "") : "no answer recorded";
-    return `${e.data?.binding?.tool ?? e.tool_call_id ?? "a call"}: ${who}`;
+    const tool = e.data?.binding?.tool ?? e.tool_call_id;
+    return `${tool == null ? "a call" : JSON.stringify(String(tool))}: ${who}`;
   });
   out.push(["Held for approval", held.length ? held.slice(0, 10).join("; ") + (held.length > 10 ? "; ..." : "") : "none"]);
   const gaps = new Map<string, number>();
@@ -201,5 +215,5 @@ export function summarize(files: Map<string, Uint8Array>, rep: Report): [string,
   out.push(["Gaps", gaps.size ? [...gaps].map(([k, n]) => `${k} ${n}`).join(", ") : "none recorded"]);
   const findings = ["reviews", "incidents"].map((n) => rep.checks.find((c) => c.check === n)?.detail).filter(Boolean);
   out.push(["Findings", findings.length ? findings.join("; ") : "none recorded"]);
-  return out;
+  return out.map(([k, v]) => [k, clean(v)]);
 }

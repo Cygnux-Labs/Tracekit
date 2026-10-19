@@ -389,6 +389,44 @@ class InitV2(unittest.TestCase):
         self.assertIn(f"/plugin disable {install.PLUGIN}", self.out)
         self.assertTrue(os.path.isdir(service.dev_data_dir()))   # the plugin's hook now blocks calls it can't record
 
+    def test_init_turns_thinking_summaries_on_for_the_plugins_users_and_uninstall_off(self):
+        """With the plugin, init returned before it set showThinkingSummaries, though doctor's fix said init does."""
+        settings = os.path.join(self.home, ".claude", "settings.json")
+        os.makedirs(os.path.dirname(settings))
+        with open(settings, "w") as f:
+            json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+        with mock.patch("os.getcwd", return_value=self.home):
+            self.assertEqual(self.init("--dev", "--v2")[0], 0)
+        with open(settings) as f:
+            s = json.load(f)
+        self.assertEqual((s[install.THINKING], "hooks" in s), (True, False))
+        self.assertIn("thinking summaries: on", self.out)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(settings, uninstall=True)
+        with open(settings) as f:
+            self.assertEqual(json.load(f), {"enabledPlugins": {install.PLUGIN: True}})
+
+    def test_uninstall_leaves_a_persons_own_thinking_setting(self):
+        settings = os.path.join(self.home, "settings.json")
+        for before in ({}, {install.THINKING: True}, {install.THINKING: False}):
+            with open(settings, "w") as f:
+                json.dump(before, f)
+            with contextlib.redirect_stdout(io.StringIO()):
+                install.install_hooks(settings, module=install.V2_HOOK, thinking=True)
+                install.install_hooks(settings, uninstall=True)
+            with open(settings) as f:
+                self.assertEqual(json.load(f), before)
+        with contextlib.redirect_stdout(io.StringIO()):   # turned off after init: the person's now
+            install.install_hooks(settings, module=install.V2_HOOK, thinking=True)
+        with open(settings) as f:
+            s = json.load(f)
+        with open(settings, "w") as f:
+            json.dump(dict(s, **{install.THINKING: False}), f)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(settings, uninstall=True)
+        with open(settings) as f:
+            self.assertEqual(json.load(f), {install.THINKING: False})
+
     def test_a_project_can_turn_the_plugin_off_and_managed_settings_on(self):
         user, project = os.path.join(self.home, "user.json"), os.path.join(self.home, "project")
         local, managed = os.path.join(project, ".claude", "settings.local.json"), os.path.join(self.home, "managed.json")

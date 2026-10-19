@@ -1,7 +1,7 @@
 # Tetragon
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
-> Linux only.
+> Linux only. Tested: event lines shaped as Tetragon's source writes them, imported into a real signer; not yet run on a live Tetragon ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
 
 [Tetragon](https://github.com/cilium/tetragon) is an eBPF sensor: it sees, in the kernel, the processes a workload
 starts, the connections it opens and the files it writes, and exports them as JSON lines. `tracekit sensor import`

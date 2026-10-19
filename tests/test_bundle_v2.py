@@ -436,6 +436,35 @@ class TestVerifyV2(Case):
         with self.subTest("record alg not pinned by the verifier"):
             self.assert_fails(out, "signatures", self.write_trust(algs=("ed448",), name="t2.json"))
 
+    def test_a_memo_skips_only_the_checks_the_same_record_passed(self):
+        """tracekit view checked a growing run in full at each checkpoint (0.5 ms a record each time): with verify's
+        memo a record that passed is not checked again for its signature and schema, the report is the same, and an
+        edited record, a changed algorithm or another record's signature still fail against a memo of every honest
+        record."""
+        _, out = self.honest()
+        memo = set()
+        rep, code = v2.verify(out, self.trust, memo=memo)
+        self.assertEqual(code, 0, rep.checks)
+        with mock.patch.object(crypto, "verify_v2", wraps=crypto.verify_v2) as signatures, \
+                mock.patch.object(v2, "validate", side_effect=AssertionError("schema checked again")):
+            again, code = v2.verify(out, self.trust, memo=memo)
+        self.assertEqual((again.checks, again.integrity, code), (rep.checks, rep.integrity, 0))
+        self.assertEqual(signatures.call_count, 2)   # the checkpoint and its cosignature, every time; no record
+
+        def edit(rs):
+            rs[2]["event"]["data"]["name"] = "Write"
+
+        def alg(rs):
+            rs[1]["alg"] = "ed25519ph"
+
+        def swap(rs):
+            rs[1]["sig"] = rs[2]["sig"]
+        for fn in (edit, alg, swap):
+            with self.subTest(fn.__name__):
+                rep, code = v2.verify(self.mutate(out, fn), self.trust, memo=memo)
+                self.assertEqual((code, rep.integrity), (1, "FAILED"))
+                self.assertIn("signatures", rep.failures)
+
     def test_rebuilt_chain_with_the_real_key_fails(self):
         _, out = self.honest()
         forged = self.log("forged")  # same record key, a different history
@@ -509,6 +538,23 @@ class TestVerifyV2(Case):
             ts = tv.ts_verify(bad, self.trust)
             self.assertEqual((ts["exit_code"], ts["integrity"]), (code, rep.integrity))
             self.assertIn("more lines than the bundle limits", json.dumps(ts["checks"]))
+
+    def test_lines_shorter_than_a_record_are_refused_before_they_are_parsed(self):
+        """No signed record is shorter than 256 bytes, so neither verifier parses a shorter line: a bundle that unzips to
+        millions of tiny lines (which crashed the browser page without a trust file) is refused at its first one."""
+        _, out = self.honest()
+
+        def tiny(files, manifest):
+            name = next(n for n in files if n.startswith("runs/"))
+            files[name] = b'{"event":{"seq":1}}\n' * 1000
+        bad = self.mutate(out, edit=tiny)
+        rep, code = self.verify(bad)
+        self.assertEqual(code, 1)
+        self.assertIn("line shorter than a signed record", str(rep.checks))
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            ts = tv.ts_verify(bad, self.trust)
+            self.assertEqual((ts["exit_code"], ts["checks"]), (code, rep.checks))
 
     def test_a_seq_written_as_a_float_fails_the_same_checks_in_both_verifiers(self):
         _, out = self.honest()

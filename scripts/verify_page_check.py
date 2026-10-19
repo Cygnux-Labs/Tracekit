@@ -4,8 +4,8 @@
 
 Run it with a Python that has Playwright (and its Chromium, or Google Chrome installed); it skips cleanly without.
 TRACEKIT_PYTHON (default: this Python) runs Tracekit: it exports a fresh corpus from a real signer (clean, tampered,
-wrong trust key, findings, sensor effects, an unknown ext name, a too-new bundle and a large run) and runs
-`tracekit verify --json` on it. The page is opened over file:// and over a local HTTP server; for every bundle of that
+wrong trust key, findings, sensor effects, an unknown ext name, a too-new bundle, a large run and a zip of tiny
+lines) and runs `tracekit verify --json` on it. The page is opened over file:// and over a local HTTP server; for every bundle of that
 corpus, tests/golden/ (v2 and negative) and docs/sample/ it must give the TypeScript CLI's report and exit code, line
 for line, and the Python CLI's (except where that CLI hands a non-v2 file to the v1 verifier, and the order of the
 upgrade commands: npx first in TypeScript). It also checks that a worker the page starts can't fetch either, that the
@@ -15,7 +15,9 @@ Not run by CI: `make test-ts` runs the page's logic under Node.
 `--samples` writes the page's two embedded samples (sdk/typescript/src/verify/sample/).
 """
 import argparse
+import base64
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -26,6 +28,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TS = os.path.join(ROOT, "sdk", "typescript")
@@ -133,7 +136,7 @@ def samples(out=SAMPLES):
     return out
 
 
-def corpus(d, large=5000):
+def corpus(d, large=20000):
     """Export the fresh bundles to `d`; returns [(name, bundle, trust or None, what)]."""
     sys.path.insert(0, os.path.join(ROOT, "tests"))
     import test_bundle_v2 as b
@@ -235,6 +238,19 @@ def corpus(d, large=5000):
               ("wrong trust key", "clean.tkb", wrong, "another signer's trust config"),
               ("no trust file", "clean.tkb", None, "no trust config chosen"),
               ("tampered, no trust file", "edited.tkb", None, "a changed record, no trust config")]
+    # 1.3 MB that unzips to 508 MB of 20-byte lines (no signed record is that short): refused before a line is parsed,
+    # where it closed the tab without a trust file
+    tiny = {"checkpoints/10.note": f"o.example/x\n10\n{base64.b64encode(bytes(32)).decode()}\n\n— o.example/x "
+                                   f"{base64.b64encode(bytes([1]) * 69).decode()}\n".encode(),
+            "proofs/records.json": b'{"checkpoint":"checkpoints/10.note","tree_size":10,"inclusion":{}}',
+            "keys/records.jsonl": b"", "registry/run-set.json": b"{}",
+            **{f"runs/r{i:03d}.jsonl": b'{"event":{"seq":1}}\n' * 262144 for i in range(97)}}
+    with zipfile.ZipFile(os.path.join(d, "tiny-lines.tkb"), "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json", json.dumps({"format": "tracekit.bundle.v2", "verifier_min_version": "1.0", "files": {
+            n: hashlib.sha256(data).hexdigest() for n, data in tiny.items()}}))
+        for n, data in tiny.items():
+            z.writestr(n, data)
+    cases.append(("tiny lines, no trust file", "tiny-lines.tkb", None, "a zip of millions of lines no record could be"))
     log = b.Log(os.path.join(d, "ext-store"))
     try:
         b.ext_bundle(log, os.path.join(d, "ext.tkb"))
@@ -292,7 +308,7 @@ def page_report(page, bundle, trust):
     return rep, flat, page.text_content("#verdict-word"), secs, page.evaluate("window.__long || 0")
 
 
-def compare(shots=None, large=5000):
+def compare(shots=None, large=20000):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -466,7 +482,7 @@ def main():
     ap.add_argument("--corpus", help=argparse.SUPPRESS)
     ap.add_argument("--samples", action="store_true", help="write the page's embedded samples and exit")
     ap.add_argument("--shots", help="also screenshot the page's main states into this directory")
-    ap.add_argument("--large", type=int, default=5000, help="tool calls in the large run (two records each)")
+    ap.add_argument("--large", type=int, default=20000, help="tool calls in the large run (two records each)")
     a = ap.parse_args()
     if a.samples:
         print(samples())

@@ -280,40 +280,64 @@ def codex_summary(text):
     return None
 
 
-def codex_reasoning(hooks_path):
-    """Turn Codex's reasoning summaries on: `model_reasoning_summary = "auto"` at the top level of the config.toml beside
-    `hooks_path` (one line, before its first table; the file created if missing), unless the file sets one, whatever
-    its value. Unset, Codex uses its model catalog's default, `none` for its current models. -> [config path, the value
-    set now, whether init set it]."""
-    from .install import SettingsError, _backup
-    path = os.path.join(os.path.dirname(os.path.abspath(hooks_path)), "config.toml")
+CODEX_LINE = f'{CODEX_SUMMARY} = "auto"   # set by tracekit init; tracekit uninstall removes this line\n'
+
+
+def _check_toml(text, path):
+    """SettingsError unless `text`, config.toml with CODEX_LINE added, parses and sets it at the top level."""
+    # lean: Python 3.9 and 3.10 have no TOML parser, so there codex_summary's line scan alone decides; a top-level key
+    # after a multi-line array line that looks like a table header gets a second one; require 3.11 to close it
     try:
-        with open(path, "rb") as f:
-            raw = f.read()
-        txt = raw.decode("utf-8")
-    except FileNotFoundError:
-        raw, txt = None, ""
+        import tomllib
+    except ImportError:
+        return
+    try:
+        ok = tomllib.loads(text).get(CODEX_SUMMARY) == "auto"
+    except tomllib.TOMLDecodeError:
+        ok = False
+    if not ok:
+        from .install import SettingsError
+        raise SettingsError(f"{path} is TOML Tracekit can't add {CODEX_SUMMARY} to safely; Tracekit did not change "
+                            f"it. Set {CODEX_SUMMARY} = \"auto\" at its top level yourself, or run init again with "
+                            "--no-thinking-summaries.")
+
+
+def codex_reasoning(hooks_path, uninstall=False):
+    """Turn Codex's reasoning summaries on: CODEX_LINE as the first line of the config.toml beside `hooks_path` (a
+    top-level key wherever the file's tables and arrays are; the file created if missing), unless the file sets one,
+    whatever its value. Unset, Codex uses its model catalog's default, `none` for its current models. uninstall: remove
+    CODEX_LINE again, if it is still there unchanged. -> [config path, the value set now, whether init changed it]."""
+    from .deploy import files
+    from .install import SettingsError
+    path = os.path.join(os.path.dirname(os.path.abspath(hooks_path)), "config.toml")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        d = files.open_dir(os.path.dirname(path))
+        try:
+            raw = files.read(d, "config.toml")
+            txt = "" if raw is None else raw.decode("utf-8")
+            value, lines = codex_summary(txt), txt.splitlines(keepends=True)
+            if uninstall:
+                if CODEX_LINE not in lines:
+                    return [path, value, False]
+                lines.remove(CODEX_LINE)
+            elif value is not None:
+                return [path, value, False]
+            else:
+                lines.insert(0, CODEX_LINE)
+                _check_toml("".join(lines), path)
+            mode = os.stat(path).st_mode & 0o777 if raw is not None else 0o600
+            if raw is not None:
+                files.backup(d, "config.toml", raw)
+            files.write(d, "config.toml", "".join(lines).encode("utf-8"), mode)
+        finally:
+            files.close(d)
+    except files.UnsafePath as e:
+        raise SettingsError(f"{path}: {e}. Set {CODEX_SUMMARY} = \"auto\" at the top of the config.toml Codex reads, "
+                            "or run init again with --no-thinking-summaries.") from e
     except (OSError, UnicodeDecodeError) as e:
         raise SettingsError(f"{path} can't be read ({e}); Tracekit did not change it.") from e
-    value = codex_summary(txt)
-    if value is not None:
-        return [path, value, False]
-    lines = txt.splitlines(keepends=True)
-    at = next((i for i, line in enumerate(lines) if _TOML_TABLE.match(line)), len(lines))
-    if at == len(lines) and lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    lines.insert(at, f'{CODEX_SUMMARY} = "auto"\n')
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if raw is not None:
-        _backup(path, raw)
-    from .deploy import files
-    d = files.open_dir(os.path.dirname(path))
-    try:
-        files.write(d, "config.toml", "".join(lines).encode("utf-8"),
-                    os.stat(path).st_mode & 0o777 if raw is not None else 0o600)
-    finally:
-        files.close(d)
-    return [path, "auto", True]
+    return [path, None if uninstall else "auto", True]
 
 
 def reasoning_line(path, value, changed):
@@ -402,6 +426,11 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     if not hooks:
         s.pop("hooks", None)
     _atomic_write_json(path, s)
+    if uninstall and harness == "codex":   # init's reasoning summaries line goes with its hooks
+        try:
+            codex_reasoning(path, uninstall=True)
+        except SettingsError:   # a config.toml init can't have written to
+            pass
     old = " and ".join(sorted(removed if uninstall else removed - {new}))
     if old:
         print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")

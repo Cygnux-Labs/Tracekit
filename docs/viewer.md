@@ -35,17 +35,24 @@ runs, and the sample v1 bundle.
 
 Panel 1 lists each run with its verdict: `VERIFIED` means `tracekit verify`'s checks passed on the run's bundle against
 the pinned log key (here the store's own key: `dev` assurance); `FAILED` means they did not, and the run shows only its
-failure report; `PENDING` means no checkpoint covers the run's records yet. A run still being written is shown up to
-the newest checkpoint and grows with each one. Under each run: calls, **blocked** (red: the policy denied them), held
-for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied call (red), `TOOL` an
-allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded under it and its final
-state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `WAITING`) in STATUS, `SESS` the run's start and end. A row marked
-`ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `FINDING`s of its
-analysis have no seq and no hash, and replay skips them; a row marked `WHY` comes from a why log. The tape renders the
-newest 600 rows; **SHOW OLDER** at its end renders more. Times are your browser's local time; the clock names the
-zone. The header's `CHAIN ✓ N SIGNED RECORDS` and `RECORDS` count the records shown from runs that verified. Click a
-run to scope the whole page to it; **All runs** goes back. A red bar under the header says when the page lost its
-viewer: it reconnects on its own and reloads the records.
+failure report (a run that verified at an earlier checkpoint and fails at a later one has the records it showed taken
+back); `PENDING` means no checkpoint covers the run's records yet. A run still being written is shown up to the newest
+checkpoint and grows with each one; a long run is checked again no sooner than four times its last check's time. A run
+that stopped growing is checked again five minutes after its last check, one run at a time, so a later edit of its
+records turns it `FAILED`. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live view and the tape
+says how many; every run's latest verdict stays in the run list. Under each run: calls, **blocked** (red: the policy
+denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
+call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded
+under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `WAITING`) in STATUS, `SESS` the run's start and
+end. A row marked `ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `FINDING`s
+of its analysis have no seq and no hash, and replay skips them; a row marked `WHY` comes from a why log. A findings
+run's signed findings (`tracekit analyze --v2`) are `FINDING` rows of that run: each says who wrote it (the identity the
+signer measured for the findings run) and the reviewer the analyzer names (its own claim); `tracekit verify` says
+whether that author is independent of the analysed run or self-asserted. The tape renders the newest 600 rows; **SHOW
+OLDER** at its end renders more. Times are your browser's local time; the clock names the zone. The header's `CHAIN ✓ N
+SIGNED RECORDS` and `RECORDS` count the records shown from runs that verified. Click a run to scope the whole page to
+it; **All runs** goes back. A red bar under the header says when the page lost its viewer: it reconnects on its own and
+reloads the records.
 
 ### A run's review
 

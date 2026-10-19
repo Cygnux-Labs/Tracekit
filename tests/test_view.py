@@ -13,6 +13,8 @@ import socket
 import ssl
 import subprocess
 import threading
+import time
+import types
 import unittest
 import urllib.request
 from unittest import mock
@@ -160,7 +162,8 @@ class Translate(unittest.TestCase):
         raw record JSON."""
         signer = view.SIGNER_RUN[1]
         start, finding, coverage, seen, read = self.feed(
-            v2rec(1, "run.registered", {"agent": {"name": "tracekit-analyze"}, "analyzes": "r1"}, run="f1"),
+            v2rec(1, "run.registered", {"agent": {"name": "tracekit-analyze"}, "analyzes": "r1",
+                                        "identity": {"scheme": "uid", "subject": "501", "attested": True}}, run="f1"),
             v2rec(2, "review", {"reviewer": "tracekit-analyze/1.4.0", "cites": [{"run_seq": 5, "hash": "sha256:5"}],
                                 "verdict": {"kind": "finding", "rule": "TK-X208", "severity": "high"}}, run="f1"),
             v2rec(3, "review", {"reviewer": "tracekit-analyze/1.4.0", "cites": [], "verdict": {
@@ -174,6 +177,9 @@ class Translate(unittest.TestCase):
         self.assertEqual((finding["tape"], finding["severity"], finding["title"], finding["v2"]["about"]),
                          ("FINDING", "high", "FINDING TK-X208 · " + findings_v2.TITLES["TK-X208"], "r1"))
         self.assertEqual(finding["v2"]["cites"], [{"run_seq": 5, "hash": "sha256:5"}])
+        # the reviewer is the analyzer's own claim; who wrote the findings is the identity the signer measured
+        self.assertIn("Written by uid:501 (attested), reviewer tracekit-analyze/1.4.0 (its own claim), about run r1",
+                      finding["text"])
         self.assertEqual(coverage["title"], "FINDINGS COVERAGE · 2 checks ran")
         self.assertIn("TK-X201: not checkable for 1: " + findings_v2.REASONS["withheld"][0], coverage["text"])
         self.assertEqual((seen["event"], seen["tape"], seen["title"]),
@@ -355,7 +361,8 @@ class View(unittest.TestCase):
                                   r["event"]["run_seq"]: bodies[r["event"]["run_seq"]] for r in recs
                                   if r["event"]["run_seq"] in bodies},
                               analyze=lambda records: findings_v2.analyze(records, vault))
-        [rep] = self.report(feed, run.run_id)
+        [rep] = self.report(feed, run.run_id)   # the verdict first, then the analysis and the review with its findings
+        self.assertTrue(wait_for(lambda: (self.rows(feed, run.run_id)[-1].get("review") or {}).get("findings"), 15))
         rows = self.rows(feed, run.run_id)
         self.assertEqual([r["prompt"] for r in rows if r["event"] == "UserPromptSubmit"], ["Fix pager.py."])
         turns = [r for r in rows if r["event"] == "model_turn"]
@@ -372,8 +379,8 @@ class View(unittest.TestCase):
         self.assertIn("billing.py", found[0]["text"])
         self.assertEqual(found[0]["v2"]["finding"]["rule"], "TK-X202")
         self.assertEqual(rep["title"], f"RUN {run.run_id} · Integrity VERIFIED · Assurance dev")
-        self.assertEqual(rep["review"]["findings"]["line"], "1 problem (1 medium) · reasoning readable before 1 of 1 "
-                                                            "actions (100%)")
+        self.assertEqual(rows[-1]["review"]["findings"]["line"], "1 problem (1 medium) · reasoning readable before 1 "
+                                                                 "of 1 actions (100%)")
 
     def test_what_a_sensor_saw_shows_joined_to_its_call_and_what_no_call_explains_is_a_finding(self):
         """#309 TK-X206: each kernel sensor effect is an EFFECT row; once the run is final its analysis joins each to
@@ -482,10 +489,11 @@ class View(unittest.TestCase):
                 feed._verify(fake, "note", ("default", rid), 2)
         with feed.lock:
             own = [r for r in feed.records if r.get("tape") in ("VERIFY", "FINDING")]
-            reviews = {r["session_id"]: r["review"] for r in feed.records if r.get("tape") == "VERIFY"}
+            reviews = {r["session_id"]: r["review"] for r in feed.records if r.get("review")}   # each run's latest
         self.assertEqual(analysed, ["r1"])
         self.assertEqual(reviews["f1"]["analyzes"], "r1")
-        self.assertEqual([(r["session_id"], r["tape"]) for r in own], [("r1", "FINDING"), ("r1", "VERIFY"),
+        # a final run's verdict shows before its analysis, which reads its content (80 s for a 25k-call run)
+        self.assertEqual([(r["session_id"], r["tape"]) for r in own], [("r1", "VERIFY"), ("r1", "FINDING"),
                                                                        ("f1", "VERIFY")])
         self.assertEqual({(r["hash"], r["tk_seq"], r["analysis"]) for r in own}, {(None, None, True)})
         self.assertEqual(reviews["r1"]["findings"]["line"], "nothing found in what could be checked · reasoning "
@@ -569,6 +577,24 @@ class View(unittest.TestCase):
         self.assertIn(view.OPERATOR_SIDE, rep["text"])
         self.assertEqual(self.rows(feed, run_id), [rep])   # none of its events
         self.assertEqual(feed.verify()[1], [f"run {run_id} of tenant default: FAILED"])
+
+    @pytest.mark.unverified_bundles
+    def test_an_edit_of_a_run_already_shown_takes_its_records_back_at_its_next_check(self):
+        """A run was checked only when it grew: an edit of records the page already showed stayed VERIFIED until the
+        viewer restarted."""
+        run_id = self.finished_run()
+        feed = view.StoreFeed({"data_dir": self.d})
+        self.report(feed, run_id)
+        self.service.close()
+        path = os.path.join(self.d, "store", "records.jsonl")
+        with open(path, encoding="utf-8") as f:
+            data = f.read()
+        with mock.patch.object(view, "RECHECK_S", 0):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(data.replace('"tool":"Bash"', '"tool":"Bosh"'))
+            self.assertTrue(wait_for(lambda: feed.verify()[1] == [f"run {run_id} of tenant default: FAILED"], 15))
+        with feed.lock:
+            self.assertEqual([r for r in feed.records if r.get("session_id") == run_id and not r.get("analysis")], [])
 
     def serve(self, feed, token="t0k", tls=None):
         srv = view.server(feed, "127.0.0.1", 0, token, tls)
@@ -1171,6 +1197,168 @@ class Pages(unittest.TestCase):
         self.assertTrue(r.getheader("Set-Cookie").startswith("tracekit_observe="))
 
 
+VERIFIED = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")
+FAILED = (mock.Mock(integrity="FAILED", assurance="none"), 1, "[FAIL] signatures — seq 1: bad signature\n\nFAILED.")
+
+
+class LiveRuns(unittest.TestCase):
+    """What a viewer left running shows as runs grow, fail at a later checkpoint and leave the live view, and what that
+    costs; the store is a fake and each check's verdict is given."""
+
+    def setUp(self):
+        self.d = ts.tmpdir(self)
+        self.recs = {"r1": [v2rec(0, "run.registered", {"agent": {"name": "a"}}, "r1"),
+                            v2rec(1, "policy.decision", {"tool": "Bash", "decision": "allow"}, "r1")]}
+        self.fake = mock.Mock(tree=mock.Mock(size=10 ** 6))
+        self.fake.iter_run.side_effect = lambda tenant, rid: iter(list(self.recs[rid]))
+        self.fake.checkpoint_latest.return_value = (10 ** 6, "note")
+        self.now, self.cfg = [1000.0], {"data_dir": self.d}
+        real = view.reader   # another test's feed, still watching its own store, reads that store
+        clock = types.SimpleNamespace(time=lambda: self.now[0], thread_time=lambda: self.now[0], sleep=time.sleep)
+        for p in (mock.patch.object(view, "reader", side_effect=lambda cfg: self.fake if cfg is self.cfg else real(cfg)),
+                  mock.patch.object(view, "time", clock)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def feed(self, verdicts, **kw):
+        """A StoreFeed the test refreshes itself (no watch thread); `verdicts(run_id)`: each check's answer."""
+        self.checks, real = [], view.check
+
+        def check(reader, tenant, run_id, note, trust, out, memo):
+            if reader is not self.fake:
+                return real(reader, tenant, run_id, note, trust, out, memo)
+            self.checks.append(run_id)
+            self.now[0] += 2   # each check takes 2 s
+            return verdicts(run_id)
+        p = mock.patch.object(view, "check", side_effect=check)
+        p.start()
+        self.addCleanup(p.stop)
+        with mock.patch.object(view, "read_vkeys", return_value=[]), \
+                mock.patch.object(view.StoreFeed, "_watch", lambda feed: None):
+            return view.StoreFeed(self.cfg, **kw)
+
+    def refresh(self, feed, **grow):
+        for run_id, n in grow.items():
+            self.recs.setdefault(run_id, [v2rec(0, "run.registered", {"agent": {"name": run_id}}, run_id)])
+            self.recs[run_id] += [v2rec(len(self.recs[run_id]), "policy.decision", {"tool": "Bash", "decision": "allow"},
+                                        run_id) for _ in range(n)]
+        self.fake.runs = {("default", k): {"seqs": [r["event"]["seq"] for r in v]} for k, v in self.recs.items()}
+        feed.refresh()
+
+    def served(self, feed):
+        """(snapshot, the rows a stream from position 0 sends) over HTTP, as the page reads them."""
+        srv = view.server(feed, "127.0.0.1", 0, "t0k")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        auth = {"Authorization": "Bearer t0k"}
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+        c.request("GET", "/api/snapshot", headers=auth)
+        snap = json.loads(c.getresponse().read())
+        c.request("GET", "/api/stream?from=0", headers=auth)
+        stream, rows = c.getresponse(), []
+        while len(rows) < len(snap["records"]) - len(getattr(feed, "kept", {})):
+            line = stream.fp.readline()
+            if line.startswith(b"data: "):
+                rows.append(json.loads(line[6:]))
+        c.close()
+        return snap, rows
+
+    def test_a_run_that_fails_at_a_later_checkpoint_takes_back_every_record_it_showed(self):
+        """A run that verified at one checkpoint and failed at the next kept its earlier rows on the tape as SIGNED,
+        next to a review saying none of its records are shown. They are taken back from the snapshot and the stream;
+        the page drops them on the failed review; if the run verifies again it is shown again from its start."""
+        verdicts = [VERIFIED, FAILED, VERIFIED]
+        feed = self.feed(lambda run_id: verdicts.pop(0))
+        self.refresh(feed)
+        self.now[0] += 60
+        self.refresh(feed, r1=1)
+        snap, streamed = self.served(feed)
+        for rows in (snap["records"], streamed):
+            self.assertEqual([(r["event"], r.get("analysis"), (r.get("review") or {}).get("verdict")) for r in rows],
+                             [("tk_alert", True, "verified"), ("tk_alert", True, "failed")])
+        self.assertEqual(feed.verify()[1], ["run r1 of tenant default: FAILED"])
+        self.now[0] += 60
+        self.refresh(feed, r1=1)
+        snap, _ = self.served(feed)
+        self.assertEqual([r["v2"]["run_seq"] for r in snap["records"] if not r.get("analysis")], [0, 1, 2, 3])
+        self.assertIn('if (r.review?.verdict === "failed")', observe.read_text(observe.UI))   # B41 runs it
+
+    def test_a_flood_of_rows_never_pushes_a_failed_runs_verdict_out_of_the_run_list(self):
+        """Past the live cap the oldest rows went, reviews included, and the page never said so: an agent writing
+        records pushed a FAILED run out of the run list. Each run's latest review stays in the snapshot."""
+        self.recs = {"a": [v2rec(0, "run.registered", {"agent": {"name": "a"}}, "a")]}
+        feed = self.feed(lambda run_id: FAILED if run_id == "a" else VERIFIED)
+        feed.max_records = 10
+        self.refresh(feed)
+        self.refresh(feed, b=20)
+        snap, _ = self.served(feed)
+        self.assertEqual((snap["dropped"], snap["max"]), (13, 10))
+        reviews = {r["session_id"]: r["review"]["verdict"] for r in snap["records"] if r.get("review")}
+        self.assertEqual(reviews, {"a": "failed", "b": "verified"})
+        self.assertEqual(snap["records"][0]["session_id"], "a")   # kept rows come first: they are older
+        with mock.patch.object(view, "KEPT_MAX", 1):   # past KEPT_MAX runs, a failed run's verdict goes last
+            self.refresh(feed, c=20)
+        self.assertEqual(list(feed.kept), [("default", "a")])
+
+    def test_a_growing_run_is_checked_again_no_sooner_than_backoff_times_its_last_check(self):
+        """One watch thread checked every run in full at each checkpoint (5.4 s for 10k records, 27 s for 50k, every
+        10 s): a run being written pinned the CPU and the page fell minutes behind. A run is checked again no sooner
+        than BACKOFF times its last check's time, and a run put off is checked once it is due with no store change."""
+        feed = self.feed(lambda run_id: VERIFIED)
+        self.refresh(feed)
+        self.assertEqual((self.checks, feed.due), (["r1"], 1000 + view.RECHECK_S))
+        self.refresh(feed, r1=1)
+        self.assertEqual((self.checks, feed.due), (["r1"], 1002 + view.BACKOFF * 2))
+        self.now[0] = feed.due
+        self.refresh(feed)
+        self.assertEqual(self.checks, ["r1", "r1"])
+        with feed.lock:
+            self.assertEqual(feed.records[-1]["review"]["records"], 3)
+
+    def test_a_growing_runs_graph_is_imported_again_no_sooner_than_backoff_times_its_last_import(self):
+        """A run's graph is imported whole each time it grows (4.7 s for 20k records, on a thread holding the CPU the
+        checks need): it is imported again no sooner than BACKOFF times its last import's time, and a run that failed
+        loses its graph at once."""
+        imported, key = [], ("default", "r1")
+
+        def on_run(tenant, run_id, records, reasons):
+            self.now[0] += 2   # each import takes 2 s
+            imported.append(records)
+        feed = self.feed(lambda run_id: VERIFIED, on_run=on_run)
+
+        def mirror(records, advance=0):
+            with feed._mlock:
+                self.now[0] += advance
+                feed._mirror[key] = records
+                feed._mlock.notify()
+        mirror([1])
+        self.assertTrue(wait_for(lambda: imported == [[1]], 5))
+        mirror([2])
+        self.assertFalse(wait_for(lambda: len(imported) > 1, 0.3))
+        mirror(None)
+        self.assertTrue(wait_for(lambda: imported == [[1], None], 5))
+        mirror([3], advance=view.BACKOFF * 2)
+        self.assertTrue(wait_for(lambda: imported == [[1], None, [3]], 5))
+
+    def test_a_run_that_did_not_grow_is_checked_again_and_adds_no_rows_while_unchanged(self):
+        """A run was checked only when it grew, so an edit of records already shown stayed VERIFIED until a restart."""
+        verdicts = [VERIFIED, VERIFIED, FAILED]
+        feed = self.feed(lambda run_id: verdicts.pop(0))
+        self.refresh(feed)
+        rows = len(feed.records)
+        self.refresh(feed)
+        self.assertEqual(self.checks, ["r1"])   # not due yet
+        self.now[0] += view.RECHECK_S
+        self.refresh(feed)
+        self.assertEqual((self.checks, len(feed.records)), (["r1", "r1"], rows))   # unchanged: nothing new
+        self.now[0] += view.RECHECK_S
+        self.refresh(feed)
+        with feed.lock:
+            self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
+            self.assertEqual([r for r in feed.records if not r.get("analysis")], [observe.RETRACTED] * 2)
+
+
 class BoundedState(unittest.TestCase):
     """What a long-running viewer keeps per run, approval or session stays bounded however many it sees."""
 
@@ -1194,8 +1382,7 @@ class BoundedState(unittest.TestCase):
             self.assertLessEqual(len(getattr(t2, name)), cap, name)
 
     def test_the_store_feed_keeps_its_newest_records(self):
-        import types
-        feed = types.SimpleNamespace(records=[], base=0, max_records=100)
+        feed = types.SimpleNamespace(records=[], base=0, max_records=100, latest={}, kept=collections.OrderedDict())
         for i in range(1000):
             feed.records.append({"seq": i})
             view.StoreFeed._trim(feed)

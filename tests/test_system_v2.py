@@ -293,7 +293,7 @@ class InstallAndUninstall(unittest.TestCase):
             sock, settings = install.init_system_v2("agent", agent="codex")
             self.assertEqual(settings, agent_hooks.config_path("codex", home))
             with open(os.path.join(home, ".codex", "config.toml")) as f:   # its reasoning summaries, on
-                self.assertEqual(f.read(), 'model_reasoning_summary = "auto"\n')
+                self.assertEqual(f.read(), agent_hooks.CODEX_LINE)
             with open(settings) as f:
                 self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.integrations.harness_hooks codex PreToolUse; s=$?", f.read())
             sc = sys_cfg.call_args.args[0]

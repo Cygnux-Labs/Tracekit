@@ -360,12 +360,14 @@ def _init_remote_v2(a, url):
     hooks = None if a.no_hooks or a.agent != "claude" else (
         os.path.join(os.getcwd(), ".claude", "settings.json") if a.project else install.user_settings())
     try:
-        if hooks:
-            install.install_hooks(hooks, module=install.V2_HOOK, signer=env)
+        on = hooks and install.install_hooks(hooks, module=install.V2_HOOK, signer=env,
+                                             thinking=not a.no_thinking_summaries)
     except install.SettingsError as e:
         print(f"tracekit: {e}", file=sys.stderr)
         return 1
     print(f"remote v2 signer configured: {url}; v2 hooks: {hooks or 'not installed'}")
+    if hooks and not a.no_thinking_summaries:
+        print(install.thinking_line(hooks, on))
     print("for SDK clients, set:\n" + "\n".join(f"  export {k}={v}" for k, v in env.items()))
     return 0
 
@@ -479,6 +481,12 @@ def _run(a):
                     print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {plugin}, runs them "
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
                           f"/plugin disable {install.PLUGIN}, then run init again")
+                    if not a.no_thinking_summaries:
+                        try:
+                            print(install.thinking_line(hooks, install.thinking_on(hooks)))
+                        except install.SettingsError as e:
+                            print(f"tracekit: {e}", file=sys.stderr)
+                            return 1
                     return 0
                 try:
                     on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,

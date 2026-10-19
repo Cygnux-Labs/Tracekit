@@ -5,6 +5,7 @@ both, which must agree on integrity, assurance, exit code and every check's name
 (`make test-ts` builds it; the TypeScript suite runs this file too)."""
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -106,13 +107,28 @@ process.stdout.write(el.report.textContent);
 """
 
 
-def page_verify(bundle, trust=None):
+def page_verify(bundle, trust=None, *flags):
     """The report verify.html shows for `bundle` and `trust` (None: none chosen), both chosen in its file dialog (its
-    script run in Node, the page's DOM stood in for)."""
+    script run in Node, with Node's `flags`, the page's DOM stood in for)."""
     _build()
     with tempfile.TemporaryDirectory() as d:
-        return subprocess.run(["node", "--input-type=module", "-e", PAGE_RUN, "--", PAGE, os.path.join(d, "page.mjs"),
-                               bundle, *([trust] if trust else [])], capture_output=True, text=True, check=True).stdout
+        return subprocess.run(["node", *flags, "--input-type=module", "-e", PAGE_RUN, "--", PAGE,
+                               os.path.join(d, "page.mjs"), bundle, *([trust] if trust else [])],
+                              capture_output=True, text=True, check=True).stdout
+
+
+def page_words(bundle, trust):
+    """What verify.html makes of `bundle` and `trust`: {"json": the JSON report it downloads (explain.ts's asJson),
+    "summary": its summary of the runs}."""
+    _build()
+    url = lambda p: "file://" + os.path.join(TS, "dist", "verify", p).replace(os.sep, "/")   # noqa: E731
+    return json.loads(subprocess.run(
+        ["node", "--input-type=module", "-e", f"import {{ readFileSync }} from 'node:fs'; import {{ readZip, verify }} "
+         f"from '{url('index.js')}'; import {{ asJson, summarize }} from '{url('explain.js')}'; "
+         "const [b, t] = process.argv.slice(1); const { report, code } = await verify(readFileSync(b), readFileSync(t)); "
+         "console.log(JSON.stringify({ json: asJson(report, code), "
+         "summary: summarize(await readZip(readFileSync(b)), report) }));", "--", bundle, trust],
+        capture_output=True, text=True, check=True).stdout)
 
 
 @unittest.skipIf(SKIP, SKIP)
@@ -496,6 +512,64 @@ class Agreement(unittest.TestCase):
         self.assertTrue(edited.endswith("\nIntegrity: FAILED.\nAssurance: none: no trust config pins a log key or "
                                         "witness.\n\nExit code 1.\n"))
 
+    def test_a_run_of_many_records_under_a_small_stack(self):
+        """No record-sized array is spread into a call's arguments, which puts each element on the stack: the CLI and
+        the page verify 25,000 records under a 100 KiB stack (`Math.max(...seqs)` made the page say FAILED for a valid
+        bundle of 60,000 records)."""
+        import test_bundle_v2 as b
+        log = b.Log(os.path.join(self.d, f"big-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        log.epoch(b.KEY1)
+        log.register()
+        batch = []
+        for i in range(25_000):   # Log.call, batched
+            run_seq, run_prev = log.runs["run-a"]
+            r = make_record({"schema_version": "tracekit.event.v2", "id": f"{log.store.tree.size + i:032x}",
+                             "seq": log.store.tree.size + i, "prev_hash": log.prev, "ts": "2026-10-09T12:00:00.000000Z",
+                             "run_id": "run-a", "agent_id": "main", "parent_id": None, "source": "signer",
+                             "type": "tool.call", "data": {"tool_use_id": f"t{i}", "name": "Bash", "input": {}},
+                             "tenant": "acme", "log_id": "0" * 32, "run_seq": run_seq, "run_prev_hash": run_prev}, b.KEY1)
+            batch.append(r)
+            log.prev, log.runs["run-a"] = r["hash"], (run_seq + 1, r["hash"])
+        log.store.append_batch(batch)
+        log.final()
+        bundle, trust = os.path.join(self.d, "big.tkb"), os.path.join(self.d, "big-trust.json")
+        export(log.store, "acme", "run-a", log.note(), bundle)
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        _build()
+        p = subprocess.run(["node", "--stack-size=100", CLI, "verify", bundle, "--trust", trust], capture_output=True,
+                           text=True)
+        self.assertIn("\nIntegrity: VERIFIED.\n", p.stdout, p.stdout[-400:])
+        self.assertIn("\nIntegrity: VERIFIED.\n", page_verify(bundle, trust, "--stack-size=100"))
+
+    def test_bidirectional_and_zero_width_characters_reach_no_report(self):
+        """Agent-written strings with a right-to-left override or zero-width characters can't reorder the signer's words
+        around them: both reports drop those characters alike, and the page's summary drops them and quotes the names
+        an agent chose."""
+        import test_bundle_v2 as b
+        marks = "\u061c\u200b\u200f\u202a\u202e\u2066\u2069\ufeff"
+        log = b.Log(os.path.join(self.d, f"bidi-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        log.epoch(b.KEY1)
+        log.add("run.registered", {"agent": {"name": f"bot{marks}ecila yb devorppa"},
+                                   "identity": {"scheme": "uid", "subject": "1", "attested": True}})
+        log.add("capture.gap", {"kind": "client_counter_gap", "missed_events": 1, "reason": f"{marks}skipped by bob"})
+        log.final()
+        bundle, trust = os.path.join(self.d, "bidi.tkb"), os.path.join(self.d, "bidi-trust.json")
+        export(log.store, "acme", "run-a", log.note(), bundle)
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        rep, code = v2.verify(bundle, trust)
+        out = io.StringIO()
+        v2.print_report(rep, code, out)
+        self.assertEqual(ts_cli(bundle, trust), (code, out.getvalue()))
+        self.assertIn(": client_counter_gap: skipped by bob\n", out.getvalue())
+        summary = page_words(bundle, trust)["summary"]
+        self.assertIn(["Agents", '"botecila yb devorppa" (uid:1)'], summary)
+        for text in (out.getvalue(), json.dumps(summary, ensure_ascii=False)):
+            self.assertFalse(set(marks) & set(text))
+
     def test_tiers_of_calls_whose_records_disagree(self):
         import test_bundle_v2 as b   # a synthetic log: a T2 decision completed by the client, which the signer refuses
         log = b.Log(os.path.join(self.d, f"tiers-{uuid.uuid4().hex}"))
@@ -673,6 +747,7 @@ class Reviews(test_reviews.Signed):
                 ts = ts_verify(bundle, trust)
                 self.assertEqual(pick(ts["checks"]), pick(rep.checks))
                 self.assertEqual(ts.get("findings"), rep.findings)   # the Findings line, apart from Integrity
+                self.assertEqual(page_words(bundle, trust)["json"], ts)   # the page's download is the CLI's --json
                 self.assertTrue(rep.findings.endswith("(an opinion of the run, not its integrity)"))
 
 
