@@ -42,6 +42,7 @@ import uuid
 from . import client, parsers, privacy
 from . import usage as _usage
 from .core import jsonable
+from .format.canon import event_hash
 from .parsers import _get
 from .sdk.client import AsyncRunHandle, Refused, RunHandle, SignerUnavailable, current_run, fail_open
 from .signer.rpc_schema import MAX_RESULTS_SENT
@@ -66,6 +67,18 @@ def _dump(obj):
             except Exception:
                 pass
     return jsonable(obj)
+
+
+def _json(obj):
+    """An SDK response as JSON: the SDK's own dump (bytes as base64, so sealed reasoning stays byte-exact), else
+    what _dump makes of it."""
+    f = getattr(obj, "model_dump", None)
+    if callable(f):
+        try:
+            return f(mode="json")
+        except Exception:
+            pass
+    return _dump(obj)
 
 
 def _request_content(kwargs):
@@ -187,7 +200,7 @@ class _RunExchange:
         self.kind, self.model = f"{provider}:{operation}", _model_kw(kwargs)
         self.id = "ex_" + uuid.uuid4().hex[:20]
         self.stream = parsers.Stream(self.kind) if streamed else None
-        self.parsed, self.chunks, self.done, self.lock = None, 0, False, threading.Lock()
+        self.parsed, self.raw, self.chunks, self.done, self.lock = None, None, 0, False, threading.Lock()
 
     def _fail_closed(self):
         """The run's fail mode for model calls: `model` in register_run's fail_modes, else `default`."""
@@ -225,6 +238,7 @@ class _RunExchange:
 
     def response(self, resp):
         self.parsed = parsers.parse(self.kind, resp, self.kwargs)
+        self.raw = resp
 
     def item(self, item):
         self.stream.add(item)
@@ -255,6 +269,15 @@ class _RunExchange:
             fields = {"stop_reason": out["finish"] and str(out["finish"])[:100], "usage": out["usage"],
                       "tool_uses": out["tool_uses"][:128],   # lean: the RPC's cap; v1 caps the same way
                       "error": error and str(error)[:1024]}
+            # what the model said, as a commitment, and with the signer's content vault on as the body it keeps
+            # (tracekit analyze --v2 reads it): the SDK's message, else the stream as accumulated
+            content = _json(self.raw) if self.parsed is not None else \
+                self.stream.content() if self.stream is not None and self.stream.seen else None
+            if content is not None:
+                try:
+                    fields.update(content_digest=event_hash(content), **self.run.client.vault(content))
+                except ValueError:   # not canonical JSON (an integer past 2^53): neither
+                    pass
             self.unsent = (out["model"] or self.model, out, {k: v for k, v in fields.items() if v})
             self.resend()
         except Exception:
@@ -265,7 +288,7 @@ class _RunExchange:
         try:
             self._send("response", self.unsent[0], self.unsent[1], **self.unsent[2])
         except SignerUnavailable:
-            self.kwargs = self.parsed = self.stream = None   # the request, its response and chunks: not resent
+            self.kwargs = self.parsed = self.raw = self.stream = None   # the request, its response, chunks: not resent
             _UNSENT.append(self)
             _note_failure("the signer can't be reached: the response is sent again at the next model call or exit, "
                           "after a signed gap for the try that failed")

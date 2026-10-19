@@ -147,8 +147,9 @@ def replay(signer, lines, decide_after=(), final=True):
         for b in blocks:
             if b.get("type") == "tool_result" and b.get("tool_use_id") in calls:
                 use, d = calls.pop(b["tool_use_id"])
-                run.call("complete", tool_call_id=use["id"], decision_id=d["decision_id"], status="ok",
-                         result=b.get("content"), args_digest=event_hash({"tool": use["name"], "args": use["input"]}))
+                run.call("complete", tool_call_id=use["id"], decision_id=d["decision_id"],
+                         status="error" if b.get("is_error") else "ok", result=b.get("content"),
+                         args_digest=event_hash({"tool": use["name"], "args": use["input"]}))
     if final:
         run.call("close_run")
         grace, signer.s.grace_s = signer.s.grace_s, 0
@@ -177,9 +178,10 @@ class Transcript:
     def prompt(self, text, name="main"):
         self.line("user", text, name)
 
-    def step(self, reasoning, tool, args, result="ok", name="main", text=None, sealed=False):
+    def step(self, reasoning, tool, args, result="ok", name="main", text=None, sealed=False, error=False):
         """One model message: its thinking (a summary, or only the signature when `sealed` or display is omitted),
-        optional text, then the tool use; the result comes back in the next user line. -> the tool_use id."""
+        optional text, then the tool use; the result comes back in the next user line (`error`: as a failed call's,
+        which the hook completes with status error). -> the tool_use id."""
         mid, tid = self._id("msg_"), self._id("toolu_")
 
         def say(block):
@@ -191,12 +193,17 @@ class Transcript:
         if text:
             say({"type": "text", "text": text})
         say({"type": "tool_use", "id": tid, "name": tool, "input": args})
-        self.line("user", [{"type": "tool_result", "tool_use_id": tid, "content": result}], name)
+        self.line("user", [{"type": "tool_result", "tool_use_id": tid, "content": result,
+                            **({"is_error": True} if error else {})}], name)
         return tid
 
-    def final(self, text):
-        e = self.line("assistant", [{"type": "text", "text": text}])
-        e["message"].update(id=self._id("msg_"), model="claude-opus-5-5")
+    def final(self, text, name="main", reasoning=None):
+        """A model message with no tool use: what the model tells the person (after its thinking, if any)."""
+        mid = self._id("msg_")
+        for block in ([{"type": "thinking", "thinking": reasoning, "signature": SIG}] if reasoning is not None
+                      else []) + [{"type": "text", "text": text}]:
+            e = self.line("assistant", [block], name)
+            e["message"].update(id=mid, model="claude-opus-5-5")
 
 
 # --------------------------------------------------------------------------- sessions
