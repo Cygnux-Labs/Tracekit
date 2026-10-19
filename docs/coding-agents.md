@@ -68,8 +68,8 @@ sets one; `--no-thinking-summaries` leaves it alone): Codex's current models def
 reasoning sealed. Per agent, what is readable and how to turn it on: [reasoning](reasoning.md).
 
 At each prompt (`UserPromptSubmit`; Cursor's `beforeSubmitPrompt`, Gemini CLI's `BeforeAgent`) the hook also records
-the prompt as the harness handed it over (`input.observed`, source `claude-code:UserPromptSubmit`; its text in the
-content vault). `tracekit analyze --v2` takes a prompt line of the transcript as the person's only when the hook
+the prompt as the harness handed it over (`input.observed`, source `<agent>:UserPromptSubmit`: `claude-code`, `codex`,
+`cursor` or `gemini-cli`; its text in the content vault). `tracekit analyze --v2` takes a prompt line of the transcript as the person's only when the hook
 recorded the same text: a line the agent appended to its own transcript is flagged (TK-X208) and clears nothing.
 Hooks before this release record no prompt, and TK-X208 says `no_hook`.
 

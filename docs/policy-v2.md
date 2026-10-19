@@ -425,7 +425,7 @@ the person (TK-CONSTRAINT)` (the hook prints it; the decide response carries it 
 the call's own arguments. The log never holds it: `constraint.added` records the kind and, for a file, a salted
 commitment to its lower-cased base name ([format v2](format-v2.md#3-events)), and the signer matches a call by
 committing each file it writes under that record's salt. The prompt itself is recorded beside it (`input.observed`,
-source `claude-code:UserPromptSubmit`), its text in the content vault when the signer keeps content.
+source `<agent>:UserPromptSubmit`, `<agent>` the harness), its text in the content vault when the signer keeps content.
 
 A run takes at most 32 constraints. After a signer restart the constraints come back from the run's records.
 `tracekit analyze --v2` checks the same constraints after the run, with the model's own statements too
