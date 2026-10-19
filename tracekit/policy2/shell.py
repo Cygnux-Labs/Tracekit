@@ -793,9 +793,16 @@ def _lower_name(word):
 
 
 def _programs(words, cmds):
-    """Indexes in `words` of the program names of `cmds`, emit's commands for them (a wrapper's and what it runs)."""
-    return [len(words) - len(c["argv"]) for c in cmds
-            if len(c["argv"]) <= len(words) and words[len(words) - len(c["argv"]) + 1:] == c["argv"][1:]]
+    """Indexes in `words` of the program names of `cmds`, emit's commands for them (a wrapper's and what it runs), and
+    of what a find among them runs (the word after each -exec, -execdir, -ok or -okdir)."""
+    out = []
+    for c in cmds:
+        k = len(words) - len(c["argv"])
+        if k >= 0 and words[k + 1:] == c["argv"][1:]:
+            out.append(k)
+            if c["argv"][0] == "find":
+                out += [k + j + 1 for j, a in enumerate(c["argv"][:-1]) if a in ("-exec", "-execdir", "-ok", "-okdir")]
+    return out
 
 
 def _lines(words, progs):

@@ -307,6 +307,13 @@ class CodingPack(unittest.TestCase):
         for command in ("uv pip install cp", "npm install git", "mise use node@20", "poetry add sudo", "direnv allow ."):
             self.assertIn(self.e.decide("Bash", {"command": command})["verdict"], ("allow", "flag"), command)
 
+    def test_a_program_find_runs_is_read_in_lower_case_on_the_line(self):
+        # the lower-cased line kept a program under find -exec as typed: `-exec Rm` evaded TK-D008, `-exec Pkill` TK-D007
+        self.verdicts([("find ~/.claude/projects -name x -exec Rm {} +", "TK-D008"),
+                       ("find ~/.codex/sessions -exec Truncate -s0 {} +", "TK-D008"),
+                       ("find . -name x -execdir Shred {} + -exec Pkill tracekit \\;", "TK-D007")])
+        self.assertIn("find . -exec rm -f {} ; -ok shred {} +", shell.analyse("find . -exec RM -f {} \\; -ok Shred {} +")[1])
+
     def test_a_windows_path_keeps_its_directories_case_and_the_line_its_original_case(self):
         # lower-casing a whole program word without a / hid AppData\Local\tracekit from TK-D007; the lower-cased line
         # is matched beside the original one, so a rule keyed on an upper-case program name still matches
