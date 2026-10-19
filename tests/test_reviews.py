@@ -98,7 +98,8 @@ class Signed(unittest.TestCase):
         independent, self_ = self.findings(ANALYZER, run), self.findings(AGENT, run)
         same_user = self.findings(ANALYZER, mine)
         cited = self.cites(run)
-        bad = self.findings(ANALYZER, run, [dict(cited[0], hash="sha256:" + "0" * 64), dict(cited[1], run_seq=99)])
+        with mock.patch.object(svc.SignerService, "_bad_cite", return_value=None):   # a signer that let them through
+            bad = self.findings(ANALYZER, run, [dict(cited[0], hash="sha256:" + "0" * 64), dict(cited[1], run_seq=99)])
         out = {"independent": self.export(run, independent, analyzers=[f"uid:{ANALYZER.subject}"]),
                "unpinned": self.export(run, independent),
                "self-asserted": self.export(run, self_, analyzers=[f"uid:{AGENT.subject}"]),
@@ -170,6 +171,25 @@ class TestReviewFinding(Signed):
                         "verdict": {**FINDING, "title": FINDING_TITLES["TK-X202"]}}),
             ("review", {"reviewer": "tracekit-analyze/1.4.0", "cites": [],
                         "verdict": {**COVERAGE, "title": "Check coverage"}})])
+
+    def test_refused_unless_each_cite_is_a_record_of_the_analysed_run_with_its_hash(self):
+        run = self.agent_run()
+        f = self.register(ANALYZER, analyzes=run["run_id"])
+        cited = self.cites(run)
+        for name, cites, why in (
+                ("another hash", [cited[0], dict(cited[1], hash="sha256:" + "0" * 64)],
+                 f"cites run_seq 1 of run {run['run_id']}, whose hash differs"),
+                ("no such record", [dict(cited[0], run_seq=99)], f"cites run_seq 99, which run {run['run_id']} does "
+                                                                 "not have"),
+                ("one record, two hashes", [cited[0], dict(cited[0], hash="sha256:" + "0" * 64)],
+                 f"cites run_seq 0 of run {run['run_id']}, whose hash differs")):
+            with self.subTest(name), self.assertRaises(RPCError) as e:
+                self.review(ANALYZER, f, FINDING, cites)
+            self.assertEqual(e.exception.code, "invalid_request")
+            self.assertTrue(e.exception.message.startswith(why), e.exception.message)
+        self.assertEqual([r["event"]["type"] for r in self.s.log.storage.iter_run("default", f["run_id"])],
+                         ["run.registered"])   # none written
+        self.review(ANALYZER, f, FINDING, cited)
 
     def test_the_closed_verdict_takes_no_text_of_the_run(self):
         run = self.agent_run()

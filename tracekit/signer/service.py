@@ -3748,17 +3748,22 @@ class SignerService:
                     and self.log.runs[k]["owner"] == owner(c)), None)
         return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run"
 
-    def _finding(self, identity, req, method, type_, data):
+    def _finding(self, identity, req, method, type_, data, cites=()):
         """Write a `type_` record of `data` in the caller's findings run (registered with `analyzes`, which only an
-        identity signer.yaml `analyzers` lists may do); refused in any other run."""
+        identity signer.yaml `analyzers` lists may do); refused in any other run, and refused unless each of `cites`
+        is a record of the analysed run with that hash (a verifier fails a bundle on one that isn't, so a made-up cite
+        would turn an intact run's bundle FAILED)."""
         key = self._authorize(identity, req)
         try:
             first = next(iter(self.log.storage.iter_run(*key)))["event"]
+            if "analyzes" not in first["data"]:
+                raise RPCError("forbidden", f"a {type_} goes in a findings run: register_run with `analyzes` "
+                                            "(signer.yaml `analyzers` lists who may)")
+            bad = self._bad_cite(key[0], first["data"]["analyzes"], cites)
         except (OSError, StorageUnavailable) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
-        if "analyzes" not in first["data"]:
-            raise RPCError("forbidden", f"a {type_} goes in a findings run: register_run with `analyzes` (signer.yaml "
-                                        "`analyzers` lists who may)")
+        if bad:
+            raise RPCError("invalid_request", f"cites {bad}: cite records of the analysed run, with their hashes")
         self.quotas.take_event(identity)
 
         def fn(tx, run):
@@ -3810,7 +3815,24 @@ class SignerService:
         """A review record: the signed finding, with its rule's fixed title (format-v2.md §3: no text of the run)."""
         v = req["review"]["verdict"]
         return self._finding(identity, req, "review_finding", "review",
-                             {**req["review"], "verdict": {**v, "title": rpc_schema.FINDING_TITLES[v["rule"]]}})
+                             {**req["review"], "verdict": {**v, "title": rpc_schema.FINDING_TITLES[v["rule"]]}},
+                             req["review"]["cites"])
+
+    def _bad_cite(self, tenant, run_id, cites):
+        """The first of `cites` that is no record of run `run_id` with that hash, in words, or None."""
+        want = {}
+        for c in cites:
+            want.setdefault(c["run_seq"], set()).add(c["hash"])
+        last = max(want, default=-1)
+        # lean: reads the analysed run up to its last cited record on each call; read by run_seq if findings about
+        # long runs come often
+        for r in self.log.storage.iter_run(tenant, run_id) if want else ():
+            seq = r["event"]["run_seq"]
+            if seq > last:
+                break
+            if want.pop(seq, {r["hash"]}) != {r["hash"]}:
+                return f"run_seq {seq} of run {run_id[:128]}, whose hash differs"
+        return f"run_seq {min(want)}, which run {run_id[:128]} does not have" if want else None
 
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},

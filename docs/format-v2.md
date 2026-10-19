@@ -175,7 +175,8 @@ are absent is not counted (`findings counted`, a warning). A bundle with either 
 Signed findings (format 1.4, [findings](findings.md)): `tracekit analyze --v2`, run by an operator identity signer.yaml
 `analyzers` lists, writes each finding through the `review_finding` RPC in a findings run (`run.registered`
 `analyzes`; refused in any other run) as `review{reviewer, verdict, cites: [{run_seq, hash}]}`. `cites` are records of
-the analysed run, by `run_seq` and record `hash`. The verdict holds no text of the run, only `{kind: finding, rule,
+the analysed run, by `run_seq` and record `hash`: the signer refuses a finding (`invalid_request`) unless each is.
+The verdict holds no text of the run, only `{kind: finding, rule,
 title, severity: info|low|medium|high|critical, tier?: gateway|harness|transcript|sdk (the text it relied on; harness:
 a prompt the hook recorded and the transcript agree on), order?: signed_before|transcript_order|after (that text
 against the call), redacted?, lifted?: true (TK-X204: a later request named what the constraint kept away, so the
