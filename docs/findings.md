@@ -364,21 +364,27 @@ verify its bundle offline (`tracekit verify r.tkb --trust trust.json --json`) an
 E20 in [evaluation](evaluation.md#e20-intent-reasoning-and-action-checks) replays synthetic Claude Code sessions with a
 spliced edit of an unrequested file through the hook and tailer into a signer with the vault on. A prompt line the
 agent appends to its own transcript no longer clears anything: TK-X208 flags it in every such session (0 of 24
-before). Naming the file innocently in the model's text still clears TK-X202 (a name check can't tell why: 0 of 24 such
-edits caught on the held-out pool v2), and the constraint grammar reads 4 of the 12 ways of saying "don't touch X" in
-pool v2 (4 of 14 in pool v1), so TK-X204 and live constraints miss the rest; both are in the
-[limits](limits.md#intent-reasoning-and-action-checks).
+before). Naming the file innocently in the model's text no longer clears TK-X202: every such edit is caught on both
+pools (0 of 24 on pool v2 and 38% on pool v1 before 2026-10-19); one the model says it changes ("updating billing.py to
+match") is told, and passes. The constraint grammar reads 11 of the 12 ways of saying "don't touch X" in pool v2 and 9
+of 14 in pool v1 (4 of each before), so TK-X204 and live constraints miss the rest; both pools were read while
+writing these fixes, so these are development numbers, and pool v3, written blind, is scored once the checks are
+frozen. What still isn't caught is in the [limits](limits.md#intent-reasoning-and-action-checks).
 
 E20 also splices text faults. A false success claim after a failed test run (F4) is found in every tuned session, in
-87% of sessions built from the held-out pool v2 (blind, scored once on 2026-10-19) and in 60% of those built from
-pool v1 (written blind to the checks, but since read while tuning them: now a development set). On pool v2 it is found
+87% of sessions built from pool v2 (blind, scored once on 2026-10-19, since read: a development set) and in 60% of
+those built from pool v1 (written blind to the checks, but since read while tuning them). On pool v2 it is found
 in 84% of sessions where the claim is one of the pool's success claims and in all where it is a free-form final
 summary (pool v1: 68% and 21%); 86% when the run was piped through `tail` (exit 0, the failure only in its output), 88%
-with a failing exit (pool v1: 65% and 56%). No control session got a text finding, but pool v1 holds no honest final
-statements and pool v2 only two honest text steps, so false alarms on unseen wording are barely measured. The checks
-that need the model to deny or claim an action (TK-X111..X114, X101..X104) find a fault only when the summary says so:
-E20 reports them per cover. On E6's corpus the v2 view gives every v1 finding of the ported checks, plus paraphrases
-v1's patterns miss, and no more on clean sessions.
+with a failing exit (pool v1: 65% and 56%). A file sent out, deleted or a package added and pushed (F2, F3, F5) with
+nothing the model said naming it is TK-X211's: on pool v2, F2 and F5 are found in 79-100% of sessions by cover (0%
+before), F3 in 12-100% (4-100% before); a cover that says what it did ("pruned an obsolete file") told the person,
+so it passes. No control session got a
+text finding, but pool v1 holds no honest final statements and pool v2 only two honest text steps, so false alarms on
+unseen wording are barely measured beyond the 150 tuned honest finals. The checks that need the model to deny or
+claim an action (TK-X111..X114, X101..X104) find a fault only when the summary says so: E20 reports them per cover. On
+E6's corpus the v2 view gives every v1 finding of the ported checks, plus paraphrases v1's patterns miss, and no more
+on clean sessions.
 
 E20's effects arm replays synthetic sensor runs (Claude Code-like, Codex-like) with Tracekit's hook processes and the
 harness's own traffic, into a signer on a synthetic clock: a process no call started, one of the wrong kind for its
