@@ -45,6 +45,9 @@ signer.yaml:
     migrators: ["uid:1003"]                  # may register `migrated` runs
     analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses, and
                                              # `tracekit why` replay runs of it (replay_of)
+    importers: ["uid:1005"]                  # log followers (tracekit.follow): the runs they register are imported
+                                             # runs (source import, tier T3, fidelity none, not reconciled), watched as
+                                             # a transcript tailer's: silent for TAILER_LOST_S, a tailer_lost gap
     gateways: ["mtls:spiffe://acme/gateway"]  # LLM and MCP gateways, tool executors (tracekit.gateway, .mcp_gateway,
                                              # .executor): their calls name the client they authenticated (`caller`):
                                              # model_event, decide, complete, approval_request and observe are
@@ -342,14 +345,15 @@ TLOG_PATH = re.compile(r"/(?:registry/([0-9a-f]{32})/)?(?:(checkpoint)|tile/(ent
                        r"((?:x[0-9]{3}/)*[0-9]{3})(?:\.p/([1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5]))?)")
 CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "durability", "tenant", "tenants",
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
-               "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
+               "importers", "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
                "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s",
                "verify_tool_results"}
 # signer.yaml sections whose features are experimental (docs/support.md)
 EXPERIMENTAL_KEYS = ("http", "storage", "tenants", "multi_tenant_apps", "gateways", "witnesses", "anchors", "record_key",
-                     "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions", "verify_tool_results")
+                     "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions", "verify_tool_results",
+                     "importers")
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn", "agents", "ttl_s",
                  "agent_consume_s", "agent_timeout_s"}
 # agent approvers (docs/approvals.md#agent-approvers): what an identity in approvals.agents may call, given an authorize
@@ -636,8 +640,8 @@ class Suspensions:
 class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
-                 multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
-                 bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
+                 multi_tenant_apps=(), migrators=(), analyzers=(), importers=(), fail_modes=None, grace_s=GRACE_S,
+                 idle_s=IDLE_S, bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
@@ -648,7 +652,7 @@ class SignerService:
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
         in data_dir/store. `origin` names the log in its checkpoints, `contact` its operator in the logs list.
         `witnesses` cosign its notes (see the module docstring).
-        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
+        `multi_tenant_apps`, `migrators`, `analyzers` and `importers` are identities ("scheme:subject"); `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
         `lock_timeout_s`, `fsck_every_s` (0: no background check) and `clock_skew_s`: see the config keys.
@@ -811,6 +815,7 @@ class SignerService:
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
+        self.importers = set(importers)
         # run key -> monotonic time of its tailer's last heartbeat (a restart's open runs were tailed until now);
         # (*run key, observer) -> its observer's
         self._beats = {k: time.monotonic() for k in self.log.live if self.log.runs[k].get("tailed")}
@@ -1529,10 +1534,13 @@ class SignerService:
                     continue
                 if key in beats and t - beats[key] >= TAILER_LOST_S:
                     tx.emit(run, "capture.gap", {"kind": "tailer_lost", "reason": f"no tailer_heartbeat for "
-                            f"{t - beats[key]:.0f}s while the run was open: the transcript tailer stopped, was killed "
-                            "or never started; what the transcript says after that is not recorded: read the "
-                            "transcript itself for it, and run `sudo tracekit doctor` to check the tailer"},
-                            source="signer")
+                            f"{t - beats[key]:.0f}s while the run was open: " + (
+                                "the log follower stopped or was killed; what the log says after that is not "
+                                "recorded: read the log itself for it, and restart `tracekit follow`"
+                                if run["source"] == "import" else
+                                "the transcript tailer stopped, was killed or never started; what the transcript says "
+                                "after that is not recorded: read the transcript itself for it, and run `sudo tracekit "
+                                "doctor` to check the tailer")}, source="signer")
                     lost.append(key)
                 for obs, at in watched.get(key, {}).items():
                     if t - at >= TAILER_LOST_S:
@@ -2436,6 +2444,8 @@ class SignerService:
                 raise RPCError(e.code, f"parent: {e.message}; pass the parent run's handle, as the identity it was "
                                        "issued to, for a child run of the same tenant") from None
         own = owner(identity)
+        # another system's log, which tracekit.follow reads: no layer here gates or reports its calls (an OTLP import's)
+        imported = sub in self.importers
         self.quotas.take_event(identity)
 
         def fn(tx, _):
@@ -2455,11 +2465,14 @@ class SignerService:
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", own)
             tx.set(self.log.open_runs, own, n + 1)
-            tx.set(run, "source", req.get("source", "sdk"))
+            tx.set(run, "source", "import" if imported else req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
             tx.set(run, "prov", {"state": "complete", "index": {}})
             if "replay_of" in req:   # not reconciled: a replay run has model exchanges and, by design, no decisions
                 tx.set(run, "rec", None)
+            if imported:   # not reconciled (as pipeline replays it), and watched for the follower's heartbeats
+                for k, v in (("rec", None), ("spans", {}), ("tailed", True)):
+                    tx.set(run, k, v)
             if harness:
                 tx.set(run, "harness", (harness["pid"], harness["start_time"]))
             if up:
@@ -2482,6 +2495,8 @@ class SignerService:
                 data["harness"] = dict(harness, attested=True)
             if self.posture:
                 data["posture"] = {**self.posture, "attested": False}
+            if imported:
+                data["fidelity"], top["tier"] = "none", "T3"
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             # evasion: a new run of a held owner and principal, or of a held parent run, starts held
             now = _iso(time.time())
@@ -2506,7 +2521,9 @@ class SignerService:
                 tx.set(o, "overlapped_by", [*o.get("overlapped_by", ()), run_id])
             return out
         out = self.log.submit(identity, "register_run", req, fn)
-        with self._beats_lock:   # the observers alive now cover the run from its start
+        with self._beats_lock:   # the observers alive now cover the run from its start, a follower its own run
+            if imported:
+                self._beats.setdefault((out["tenant"], out["run_id"]), time.monotonic())
             for (t, obs), (at, _) in self._observers.items():
                 if t == out["tenant"] and time.monotonic() - at < TAILER_LOST_S:
                     self._beats.setdefault((t, out["run_id"], obs), at)
@@ -4130,7 +4147,8 @@ def open_service(cfg, **kw):
                          limits=Limits(**cfg.get("limits", {})),
                          acknowledge_rollback=bool(cfg.get("acknowledge_rollback")),
                          multi_tenant_apps=cfg.get("multi_tenant_apps", ()), migrators=cfg.get("migrators", ()),
-                         analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
+                         analyzers=cfg.get("analyzers", ()), importers=cfg.get("importers", ()),
+                         fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
                          origin=cfg.get("origin"), contact=cfg.get("contact"), approvals=cfg.get("approvals") or {},
                          authorize=cfg.get("authorize"), lock_timeout_s=float(cfg.get("lock_timeout_s", LOCK_TIMEOUT_S)),

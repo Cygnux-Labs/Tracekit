@@ -273,6 +273,17 @@ What Tracekit guarantees and doesn't, per deployment, on one page: [guarantees](
 | Linux system mode's firewall rule lets the agent's uid reach every loopback address, so a loopback service can send on for it unobserved: a local DNS stub (systemd-resolved's `127.0.0.53`) resolves any name the agent asks, and the lookups themselves can carry data. | The rule allows loopback for the observer and the agent's own local services; it can't tell the DNS stub from them. | Reject the agent uid's DNS to loopback (port 53) in your firewall if all its clients use the proxy, which resolves names itself; otherwise read the resolver's query log. | [egress](egress.md#linux-system-mode) |
 | Plain HTTP requests through the proxy need a `Content-Length` (no chunked request bodies); HTTPS goes through CONNECT and is unaffected. | The proxy forwards one request per connection. | Use HTTPS, or send a length; the proxy answers 411 saying so. | [egress](egress.md#what-is-refused) |
 
+## Followed sandbox logs (`tracekit follow`)
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| A followed record is the sandbox's word, signed when it arrived (`policy.external`, source `import`, tier T3). Tracekit doesn't check that the sandbox logged everything, or the sandbox's own hash chain. | The follower reads the log the sandbox writes; only the sandbox sees its decisions. | Check the sandbox's log with its own tools as well (`nono audit verify`); each gap's reason says where to look. | [nono](integrations/nono.md#what-tracekit-sees-and-doesnt) |
+| nono's `network` events are signed when the session ends, not as they happen, and not at all if nono is stopped first. | nono writes proxied connections to its log when it finishes the session. | Also route the agent's traffic through the [egress observer](egress.md), which records connections as they happen. | [nono](integrations/nono.md#what-tracekit-sees-and-doesnt) |
+| A nono session that writes nothing for `--quiet` seconds (default 1800) is no longer followed: a gap says so, and what nono writes to it later isn't imported. | With no `session_ended`, the follower can't tell an idle session from a stopped nono. | Set `--quiet` above your sessions' longest idle stretch, and below the signer's `idle_s`. | [nono](integrations/nono.md#setup) |
+| A follower restarted while a session runs reads that session again from its first line, into a new run: its earlier decisions are then in two runs, the first ended by a gap. | The follower keeps no state on disk. | Read the newer run for the whole session; restart the follower between sessions. | [nono](integrations/nono.md#setup) |
+| The follower's identity is trusted to import a sandbox's decisions: an agent that can present it can import made-up ones. | `importers` and `decision_import` are grants to an identity; the signer can't check a sandbox's log. | Give the follower an identity of its own, such as a signer token in a file the sandbox profile doesn't grant. | [nono](integrations/nono.md#setup) |
+| The signer watches a follower's runs for heartbeats from memory: a run open across a signer restart with no snapshot since isn't watched, so a follower killed then leaves no gap. | The watch is the transcript tailer's, which keeps no state in the log. | Restart the signer between sessions, or read a run that spans a restart with this in mind. | [nono](integrations/nono.md#what-tracekit-records) |
+
 ## Witnesses and monitor
 
 | Limit | Why it is so | What to do | Details |
