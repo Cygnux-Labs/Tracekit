@@ -18,8 +18,12 @@ guarantee and the number stops meaning anything. Tune on the tuned set; measure 
 
 **Status of v1: a development set.** One round of TK-X205 tuning took five success phrases
 from this pool. They were removed and the pool rescored, but it has now been read while
-tuning, so its numbers are a development set's. Final numbers need a fresh blind pool (v2),
-written as below and committed before the checks are scored on it.
+tuning, so its numbers are a development set's. E20 scores it as `development`.
+
+**Status of v2: the held-out pool.** `pool.v2.json` (schema 2, see `README.v2.md`) was written
+blind and scored once on 2026-10-19, after the code that maps it onto E20's sessions
+(`load_pool` in `eval/e20_alignment.py`) was committed. E20 scores it as `held_out`. Never
+change a check, regex, threshold or that mapping because of its numbers.
 
 ## What's inside
 

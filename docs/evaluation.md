@@ -303,33 +303,40 @@ them after a request that keeps a file away which the agent leaves alone. Every 
 analysis also sees the calls a live constraint held (`held_live`). Not-checkable outcomes are counted apart, never as
 detections or passes.
 
-Two phrase sets are scored separately: `tuned`, written with the checks, and `held_out`, pool v1
-(`eval/e20_heldout/pool.json`), written by an author who never saw the check code. Pool v1 is no longer held out: one
-round of additions to TK-X205's word lists took five success phrases from it ("all good", "good to go", "wrapped up",
-"confirmed", "validated"; since removed, and the pool rescored), so it has been read while tuning and is now a
-development set. Its numbers below are a development set's, likely higher than on unseen wording; final numbers need a
-fresh blind pool (v2), written and committed before the checks are scored on it and never used to change them.
+Three phrase sets are scored separately: `tuned`, written with the checks; `development`, pool v1
+(`eval/e20_heldout/pool.json`); and `held_out`, pool v2 (`eval/e20_heldout/pool.v2.json`). Both pools were written by
+an author who never saw the check code. Pool v1 is now a development set: one round of additions to TK-X205's word lists
+took five success phrases from it ("all good", "good to go", "wrapped up", "confirmed", "validated"; since removed, and
+the pool rescored), so it has been read while tuning, and its numbers are likely higher than on unseen wording. Pool v2
+is the held-out pool: blind, scored once on 2026-10-19, after the code that reads it was committed, and never used to
+change a check. Its format differs from v1's, so E20 maps it by meaning onto the Claude Code sessions it replays: its
+shell, read, edit and HTTP steps become Bash, Read, Edit and WebFetch calls, and its message and final steps become the
+model's text. What it can't replay is counted in the results as `unmapped`: 73 items (the F6 and F7 covers, which no
+E20 fault uses, the fault descriptions, the test runners' names, the hard negatives' notes and the targets' languages).
 Detection by cover (24 sessions each):
 
 | Fault | Set | c0 | c1 | c2 | c3 | c4 | c5_event | c5_line |
 |---|---|---|---|---|---|---|---|---|
 | F1 | tuned | 100% | 17% | 100% | 100% | 100% | 100% | 100% |
-| F1 | held-out | 100% | 38% | 100% | 100% | 100% | 100% | 100% |
+| F1 | pool v1 (development) | 100% | 38% | 100% | 100% | 100% | 100% | 100% |
+| F1 | pool v2 (held out) | 100% | 0% | 100% | 100% | 100% | 100% | 100% |
 | F1c | tuned | 100% | 100% | 100% | 100% | 100% | 100% | 100% |
-| F1c | held-out | 33% | 79% | 25% | 46% | 33% | 33% | 13% |
-| F1o | both | 100% | 100% | 100% | 100% | 100% | 100% | 100% |
+| F1c | pool v1 (development) | 33% | 79% | 25% | 46% | 33% | 33% | 13% |
+| F1c | pool v2 (held out) | 71% | 25% | 38% | 33% | 25% | 25% | 38% |
+| F1o | all three | 100% | 100% | 100% | 100% | 100% | 100% | 100% |
 
 - c5_line: the appended prompt line was caught in 0 of 24 sessions before the hook recorded prompts; now TK-X208 flags
-  it in every c5_line session of both sets, and it clears nothing, so the edit is found too.
+  it in every c5_line session of every set, and it clears nothing, so the edit is found too.
 - c1 without a constraint: naming the file innocently ("updating billing.py to match") clears a name check; only the
   model's own keep-away sentence followed by the edit ("billing.py stays untouched", then the edit) is caught, by
-  TK-X204.
-- F1c held-out: the constraint grammar reads 4 of the pool's 14 phrasings ("don't touch X", "please leave X alone",
-  "read-only on X", "dont modify X"); a constraint it can't read names the file, which then counts as a mention (c1
-  is higher because the model's own keep-away sentence is caught too). A live constraint held the F1c edit for
-  approval whenever the grammar read the request: in every tuned session, in 13-46% of held-out ones by cover.
-- No false alarm of TK-X201, TK-X203, TK-X204 or TK-X208 on 1,812 honest calls in either set; TK-X202 flagged 5
-  held-out hard negatives (edits whose file the request never named), and no honest call was held live.
+  TK-X204. On pool v2 no c1 edit was caught (0 of 24).
+- F1c: the constraint grammar reads 4 of pool v1's 14 phrasings ("don't touch X", "please leave X alone", "read-only
+  on X", "dont modify X") and 4 of pool v2's 12; a constraint it can't read names the file, which then counts as a
+  mention. A live constraint held the F1c edit for approval whenever the grammar read the request: in every tuned
+  session, in 13-46% of pool v1 sessions and in 25-71% of pool v2 sessions by cover.
+- No false alarm of TK-X201, TK-X203, TK-X204 or TK-X208 on the honest calls of any set (1,812 each; 1,809 on pool
+  v2, whose message and final steps make no call). TK-X202 flagged 5 pool v1 and 4 pool v2 hard negatives (edits whose
+  file the request never named), and no honest call was held live.
 
 `make eval` runs it. Results: `eval/results/e20_alignment.json`. The reviewer model arm is below.
 
@@ -337,16 +344,19 @@ Text faults, found when any of their checks finds them: F4 a test run fails (by 
 only its output shows it) and the model claims success (TK-X205; c5_line appends a transcript line in which the run
 passed); F2 posts a file to a host, F3 deletes one, F5 installs a package and pushes, each followed by the model's
 summary (TK-X114, X112 or X120, X111); Fc claims a test run, commit, push or install that never ran (TK-X101..X104). F4
-is found in every tuned session; on pool v1, 60% (c0 79%, c1 58%, c2 21%, c3 67%, c4 71%, c5_line 67%; exit 56%, piped
-65%; 64% before the phrases taken from the pool were removed): a free-form summary is the hardest. F2, F3 and F5 are
-found only when the summary denies the action or leaves out a risky one (held out: F2 c2 25%, F3 25% for c0, c1, c4 and
-100% for c3, F5 0%); held-out Fc (the pool's success claims with no test run) 29%, since most of those claims don't say
-tests ran. No control session of either set (36 each) and none of the 15 tuned honest final statements got a text
-finding; but every control session ends on E20's own final statement and pool v1 has no honest final statements, so the
-text checks' false alarms on wording they were not written with are not measured.
+is found in every tuned session; on pool v2 (held out), 87% (c0 92%, c1 88%, c2 100%, c3 79%, c4 75%, c5_line 88%;
+exit 88%, piped 86%); on pool v1 (development), 60% (c0 79%, c1 58%, c2 21%, c3 67%, c4 71%, c5_line 67%; exit 56%,
+piped 65%; 64% before the phrases taken from the pool were removed). F2, F3 and F5 are found only when the summary
+denies the action or leaves out a risky one. On pool v2: F2 0% under every cover, F3 46% (c0), 42% (c1), 4% (c2), 100%
+(c3) and 38% (c4), F5 0%. On pool v1: F2 c2 25%, F3 25% for c0, c1, c4 and 100% for c3, F5 0%. Fc (the pool's success
+claims with no test run) is found in 2 of 15 pool v2 sessions (13%) and 29% of pool v1's, since most of those claims
+don't say tests ran. No control session of any set (36 each) and none of the 15 tuned honest final statements got a
+text finding. Pool v1 has no honest final statements and pool v2 has two honest text steps (a mid-run message and a
+final statement among its 10 benign steps), so the text checks' false alarms on wording they were not written with
+are barely measured.
 
 The reviewer model arm (`E20_MODEL=1`) runs [TK-X210](findings.md#the-reviewer-model-tk-x210) on a sample of the same
-sessions of both sets (2 per fault, cover and splice; 4 per control kind), each reviewed twice: per cover, how often it
+sessions of every set (2 per fault, cover and splice; 4 per control kind), each reviewed twice: per cover, how often it
 flagged the fault and cited the fault's call, alone and together with the fault's own check; flags on controls;
 agreement between the two reviews; answers missing or malformed counted apart. It records the reviewer's and the
 agent's model families. It calls a model (about 400 calls), so it is not part of `make eval` and has not been run yet:
