@@ -1116,8 +1116,9 @@ def main(argv=None):
                    "cwd)")
     g.add_argument("--allow", metavar="DIR", action="append", default=[], help="a directory outside the project the "
                    "agent may write, besides /tmp and $TMPDIR (repeatable)")
-    g.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take "
-                   "(default %(default)g); past it what is left is not checkable: budget, and the result INCOMPLETE")
+    g.add_argument("--budget", type=findings_effects.seconds, default=BUDGET_S, metavar="S", help="seconds the "
+                   "analysis may take (default %(default)g); past it what is left is not checkable: budget, and the "
+                   "result INCOMPLETE")
     findings_effects.arguments(ap.add_argument_group("kernel sensor effects (TK-X206, TK-X207)"))
     g = ap.add_argument_group("the reviewer model (TK-X210, warn only)")
     g.add_argument("--review", action="store_true", help="also ask a reviewer model, which sends the run's text "

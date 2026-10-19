@@ -848,6 +848,17 @@ class Docs(unittest.TestCase):
             with self.subTest(rule):
                 self.assertRegex(doc, rf"\n\| {rule} \| {re.escape(title)} \| [a-z][^|\n]+ \|\n")
 
+    def test_seconds_are_a_finite_number_not_below_zero(self):
+        """Round-2 review: --budget nan never stopped; a negative or infinite --effect-grace or --clock-skew made
+        signing fail. Each is refused with the usage (exit 2)."""
+        for flag in ("--budget", "--effect-grace", "--clock-skew"):
+            for v in ("nan", "inf", "-1"):
+                with self.subTest(flag=flag, v=v), contextlib.redirect_stderr(io.StringIO()) as err, \
+                        self.assertRaises(SystemExit) as e:
+                    findings_v2.main(["--dry-run", flag, v])
+                self.assertEqual(e.exception.code, 2)
+                self.assertIn("is no number of seconds", err.getvalue())
+
     def test_the_help_explains_every_flag(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
