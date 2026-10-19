@@ -142,6 +142,46 @@ process.stdout.write(JSON.stringify({ own: (await source) === script, busy: el.b
 """
 
 
+# the same stand-in, driven through `steps`: "#id" clicks that button, else a comma list of files is chosen in the
+# bundle dialog; prints each state the page entered with whether the last result was hidden then, and the page's lines
+PAGE_STEPS = r"""
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [page, tmp, ...steps] = process.argv.slice(1);
+const file = (p) => ({ name: p.split(/[\\/]/).pop(), arrayBuffer: async () => {
+  const b = readFileSync(p);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+} });
+const node = () => ({ dataset: {}, classList: { add() {}, remove() {} }, on: {}, textContent: "", append() {},
+  replaceChildren() {}, setAttribute() {}, addEventListener(t, f) { this.on[t] = f; } });
+const el = {}, seen = [];
+let state;
+const body = { ...node(), dataset: { get state() { return state; },
+  set state(v) { state = v; seen.push([v, el.result?.hidden ?? null]); } } };
+globalThis.document = { getElementById: (id) => el[id] ??= node(), createElement: node, body, addEventListener() {} };
+writeFileSync(tmp, readFileSync(page, "utf8").match(/<script id="verifier" type="module">([\s\S]*)<\/script>/)[1]);
+await import(pathToFileURL(tmp));
+for (const s of steps) {
+  if (s.startsWith("#")) await el[s.slice(1)].on.click();
+  else {
+    el.bundle.files = s.split(",").map(file);
+    await el.bundle.on.change();
+  }
+}
+process.stdout.write(JSON.stringify({ seen, trust: el["trust-name"].textContent, report: el.report.textContent,
+  busy: el.busy.textContent }));
+"""
+
+
+def page_steps(*steps):
+    """What verify.html did through `steps` (PAGE_STEPS)."""
+    _build()
+    with tempfile.TemporaryDirectory() as d:
+        return json.loads(subprocess.run(["node", "--input-type=module", "-e", PAGE_STEPS, "--", PAGE,
+                                          os.path.join(d, "page.mjs"), *steps],
+                                         capture_output=True, text=True, check=True).stdout)
+
+
 def page_verify(bundle, trust=None, *flags):
     """The report verify.html shows for `bundle` and `trust` (None: none chosen), both chosen in its file dialog (its
     script run in Node, with Node's `flags`, the page's DOM stood in for)."""
@@ -675,6 +715,14 @@ class Agreement(unittest.TestCase):
         self.assertTrue(error["own"])
         self.assertTrue(error["busy"].startswith("Couldn't check this file: boom. "), error["busy"])
         self.assertEqual(error["report"], "")
+
+    def test_a_new_choice_never_shows_under_the_last_bundles_verdict(self):
+        """Choosing another bundle wrote its name under the last one's VERIFIED banner, every check [PASS], for as long
+        as it took to verify (some 6 s for a tampered 30k-record bundle): the last result is hidden from the start."""
+        tampered = self.mutate(lambda rs: rs[1]["event"]["data"].update(tool="other"))
+        out = page_steps(f"{self.bundles['closed']},{self.trusts['witnessed']}", tampered)
+        self.assertEqual(out["seen"], [["verifying", True], ["done", False], ["verifying", True], ["done", False]])
+        self.assertIn("\nIntegrity: FAILED.\n", out["report"])
 
     def test_a_run_of_many_records_under_a_small_stack(self):
         """No record-sized array is spread into a call's arguments, which puts each element on the stack: the CLI and

@@ -102,6 +102,7 @@ function page() {
     $("clear-trust").hidden = !trust;
     if (!bundle) return;
     const mine = ++turn, names = { bundle: bundle.name, trust: trust?.name ?? null };
+    $("result").hidden = true;   // the last bundle's verdict never stands under this one's name
     document.body.dataset.state = "verifying";
     $("busy").textContent = "Verifying...";
     $("busy").hidden = false;
