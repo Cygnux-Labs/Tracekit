@@ -78,7 +78,7 @@ The store (`tracekit/storage/`: files with fsync, or Postgres) holds the records
 signer.yaml `analyzers` lists, read a finished run (its records and, with the `content_read` grant, the content vault,
 each read a signed `content.accessed`), and write what they found into a **findings run** of their own:
 `register_run` with `analyzes: <run id>`, which the signer allows only an `analyzers` identity, for a run of its
-tenant. Nothing is written into the analysed run. `review_finding` signs each finding as a `review` record that cites
+tenant that is not itself a findings or replay run. Nothing is written into the analysed run. `review_finding` signs each finding as a `review` record that cites
 records of the analysed run by `run_seq` and hash; its closed schema keeps text of the run (excerpts, paths, reasons)
 out of signed records, which can't be erased. The finding's author is the identity the signer measured when the
 findings run registered. `tracekit export --v2 --run R --with-findings` bundles a run with its findings runs; the

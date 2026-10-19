@@ -2514,13 +2514,17 @@ class SignerService:
                                        "issued to, for a child run of the same tenant") from None
         own, caller = owner(identity), req.get("caller")
         # a gateway registering the run of a client it serves (the OpenShell middleware's of a sandbox): the run counts
-        # against the gateway's open runs for that client, as its calls do against its rate for that client
+        # against the gateway's open runs for that client, as its calls do against its rate for that client, and
+        # against its gateway_open_runs for all of them (a name it makes up is a fresh client)
         if caller is not None and not lookup(self._gateways, sub, False):
             raise RPCError("forbidden", f"{sub[:256]} is not a configured gateway")
+        client = caller and CallerIdentity(*caller.split(":", 1), True)
+        if client:
+            self._check_suspended(client)
         count = own if caller is None else json.dumps([own, caller])   # the open_runs entry it counts in
         # another system's log, which tracekit.follow reads: no layer here gates or reports its calls (an OTLP import's)
         imported = sub in self.importers
-        self.quotas.take_event(*((CallerIdentity(*caller.split(":", 1), True), identity) if caller else (identity,)))
+        self.quotas.take_event(*((client, identity) if client else (identity,)))
 
         def fn(tx, _):
             if (tenant, run_id) in self.log.runs:
@@ -2528,6 +2532,9 @@ class SignerService:
             for field in ("analyzes", "replay_of"):
                 if field in req and (tenant, req[field]) not in self.log.runs:
                     raise RPCError("unknown_run", req[field])
+                if field in req and self.log.runs[(tenant, req[field])].get("replay"):
+                    raise RPCError("invalid_request", f"{req[field]} is a findings or replay run: name the run it is "
+                                                      "about")
             up = parent and self.log.runs.get((tenant, parent["run_id"]))
             if parent and not up:
                 raise RPCError("unknown_run", f"{parent['run_id']}: register the child run on its parent's signer")
@@ -2536,6 +2543,9 @@ class SignerService:
                                              "open run, or without `parent`")
             n = self.log.open_runs.get(count, 0)
             self.quotas.check_count("open_runs", n)
+            if client:   # lean: sums the gateway's entries per run it registers; keep a total if that ever shows
+                self.quotas.check_count("gateway_open_runs", sum(v for k, v in self.log.open_runs.items() if k == own
+                                                                 or k.startswith(json.dumps([own])[:-1] + ",")))
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", own)
             if caller is not None:
@@ -3673,6 +3683,11 @@ class SignerService:
         if sensor == "openshell" and callers != {owner(identity)}:   # it observes the runs it registered, no other
             raise RPCError("invalid_request", f"OpenShell's import observes the runs it registered: its callers are "
                                               f"its own identity, [{owner(identity)[:256]}]")
+        was = self._observers.get((tenant, obs))
+        if was and was[2] != sensor:   # run.final classes its coverage by its kind (_finish_run)
+            kind = f"the {was[2]} import" if was[2] else "an egress observer"
+            raise RPCError("invalid_request", f"{obs[:256]} observes as {kind}: one identity is one observer; give "
+                                              "each its own")
         if "check" in req:   # before anything is charged: a made-up token must not spend the observer's events
             why = self._attributed(tenant, req["check"])[2]
             if why:
@@ -3693,7 +3708,10 @@ class SignerService:
             restarted = covered if before and before[1] != req["instance"] else []
             lost = covered if "lost" in req and not restarted else []
             for k in [] if restarted else covered:   # after a loss it stays watched: its silence is a gap still
-                self._beats[k] = now
+                if sensor and self.log.runs[k[:2]]["owner"] not in callers:   # its runs map no longer names the owner
+                    self._beats.pop(k)
+                else:
+                    self._beats[k] = now
         if restarted:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])
@@ -3729,7 +3747,7 @@ class SignerService:
                                   "often come this late)" if run else f"there is no run {key[1]}")
                     claimed = x.get("run_id") or key and key[1]
                     target = f" {x['host']}:{x['port']}" if "host" in x else f" {x['path'][:256]}" if "path" in x else ""
-                    saw = (f"a loss: {x['reason']}" if x["kind"] == "lost" else
+                    saw = (f"a loss: {privacy.redact_text(x['reason'])[0]}" if x["kind"] == "lost" else
                            f"a policy change ({x['change']}) at {x['ts']}" if x["kind"] == "policy" else
                            f"{x['kind']}{target} by pid {x['pid']} ({x['binary'][:256]}) at {x['ts']}" if sensor else
                            f"{x['host']}:{x['port']} ({x['bytes_out']} bytes out, {x['bytes_in']} in, "
@@ -3839,6 +3857,7 @@ class SignerService:
         is a record of the analysed run with that hash (a verifier fails a bundle on one that isn't, so a made-up cite
         would turn an intact run's bundle FAILED)."""
         key = self._authorize(identity, req)
+        self.quotas.take_event(identity)   # before the reads: a refused call costs them too
         try:
             first = next(iter(self.log.storage.iter_run(*key)))["event"]
             if "analyzes" not in first["data"]:
@@ -3849,7 +3868,6 @@ class SignerService:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         if bad:
             raise RPCError("invalid_request", f"cites {bad}: cite records of the analysed run, with their hashes")
-        self.quotas.take_event(identity)
 
         def fn(tx, run):
             return {"run_seq": tx.emit(run, type_, data, request_id=req["request_id"])}

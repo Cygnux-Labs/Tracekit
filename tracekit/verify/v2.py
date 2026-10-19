@@ -28,9 +28,10 @@ position only). A record after a run's run.final breaks the run chain.
 A run in parts (format 1.4, runs/<id>.part-0001.jsonl, ...: bundle_v2.run_files) is checked as the one file its parts
 read in order make. A `run parts` line says what is wrong with them: a part missing from part-0001 to the last, a name
 outside that numbering, a part with no records, a part whose first record does not follow the last of the part before
-it (parts out of order, an extra or repeated part), or the run in one file and in parts. A missing last part shows on
-the `inclusion` line: the record now last is not one the proofs include. A part over the format's per-file limit, as
-any file, is an UNUSABLE BUNDLE.
+it (parts out of order, an extra or repeated part), or the run in one file and in parts. A run with its last part
+missing reads open, and fails `inclusion` while the proofs don't include the record now last: a cut-back run reads open
+(VERIFIED TO HEAD n), never VERIFIED; only run.final or a run-set proves a run complete. A part over the format's
+per-file limit, as any file, is an UNUSABLE BUNDLE.
 The assurance line names the algorithms each conclusion rests on (records; the checkpoint: "Ed25519 only" or
 "Ed25519 + SLH-DSA-SHA2-128s"; cosignatures; anchors) and the earliest independent anchor time (a cosignature or a
 TSA time of a witness or anchor not classed operator).
@@ -143,6 +144,7 @@ import collections
 import contextlib
 import datetime
 import hashlib
+import json
 import os
 import re
 import struct
@@ -517,8 +519,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         seq = record["event"]["seq"]
         seq = int(seq) if isinstance(seq, float) and seq.is_integer() else seq   # as JSON reads it, and the TS verifier
         path = proofs["inclusion"].get(str(seq))
-        return path is not None and verify_inclusion(seq, size, leaf_hash(bytes.fromhex(record["hash"][7:])),
-                                                     [base64.b64decode(p, validate=True) for p in path], root)
+        return isinstance(path, list) and verify_inclusion(seq, size, leaf_hash(bytes.fromhex(record["hash"][7:])),
+                                                           [base64.b64decode(p, validate=True) for p in path], root)
 
     def check_record(r, keys, problems):
         """Signature, schema and log membership of one record; `keys`: the SPKIs the log allows at its position. A
@@ -605,7 +607,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     # the runs: one, or with a run-set any number; each in one file or in parts
     names = run_files(files)
     run_set = "registry/run-set.json" in files
-    runs, problems, chain, outside, layout = {}, [], [], [], []
+    runs, problems, chain, outside, layout, seen = {}, [], [], [], [], set()
     for name, parts in names.items():
         pieces = [_jsonl(files[n]) for n in parts]
         records = runs[name] = [r for p in pieces for r in p]
@@ -613,6 +615,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         if not records:
             raise ValueError("a run has no records")
         head = records[0]["event"]
+        key = (head.get("tenant"), head.get("run_id"))
+        if all(isinstance(k, str) for k in key):   # a second file of one run would count its records twice
+            if key in seen:
+                chain.append(f"run {key[1][:200]!r} of tenant {key[0][:64]!r} again in {name}")
+            seen.add(key)
         for i, r in enumerate(records):
             check_record(r, keys_at(r["event"]["seq"]), problems)
             e = r["event"]
@@ -688,7 +695,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("held calls", False, f"{len(unresolved)} tool call(s) a gateway or executor decided have no result",
                   unresolved[:20], warn=True)
     alarms = [r["event"] for r in every if r["event"].get("type") in ("approval.binding_mismatch", "trace.tamper") or (
-        r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") not in INFO_GAPS | OWN_LINE)]
+        r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") not in (*INFO_GAPS, *OWN_LINE))]
     if alarms:
         kind = lambda e: str(e["data"].get("kind"))[:64] if e["type"] == "capture.gap" else e["type"]
         rep.check("gaps", False, f"{len(alarms)} signed gap, tamper or mismatch record(s): "
@@ -756,25 +763,26 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         e = r["event"]
         if e.get("tool_call_id") is None:
             continue
-        k, decided = (e.get("run_id"), e["tool_call_id"]), e.get("type") in ("policy.decision", "tool.result")
+        # a JSON key: a schema-invalid record's id may be a list or an object, which the TS verifier counts too
+        k, decided = json.dumps([e.get("run_id"), e["tool_call_id"]]), e.get("type") in ("policy.decision", "tool.result")
         tier, tiers[k] = e.get("tier") if e.get("tier") in order else None, None
         if tier is not None or decided:
             claims[k] = min(claims.get(k, tier), tier, key=order.index)
         if decided:
             paths.setdefault(k, set()).add((str(e.get("source"))[:64], tier))
     tiers.update(claims)
-    split = [f"{str(k[0])[:200]} {str(k[1])[:200]}: " + ", ".join(sorted(f"{s} {t or 'untiered'}" for s, t in p))
-             for k, p in paths.items() if len(p) > 1]
+    split = [f"{str(run)[:200]} {str(tcid)[:200]}: " + ", ".join(sorted(f"{s} {t or 'untiered'}" for s, t in p))
+             for (run, tcid), p in ((json.loads(k), p) for k, p in paths.items()) if len(p) > 1]
     if tiers:
         n = collections.Counter(tiers.values())
         rep.check("tiers", not split, f"{len(tiers)} tool call(s): "
                   + ", ".join(f"{t} {n[t]}" for t in ("T1", "T2", "T3")) + (f", untiered {n[None]}" if n[None] else "")
                   + (f"; {len(split)} decided and completed by different capture paths" if split else ""),
                   split[:20], warn=True)
-    sources = collections.Counter(r["event"]["args_source"] for r in every if "args_source" in r["event"])
+    sources = [r["event"]["args_source"] for r in every if "args_source" in r["event"]]   # schema-invalid: any value
     if sources:
-        rep.check("args source", True, f"{sum(sources.values())} record(s): "
-                  + ", ".join(f"{s} {sources[s]}" for s in ("raw", "parsed", "coerced")))
+        rep.check("args source", True, f"{len(sources)} record(s): "
+                  + ", ".join(f"{s} {sources.count(s)}" for s in ("raw", "parsed", "coerced")))
     registered = [rs[0]["event"]["data"] if rs[0]["event"].get("type") == "run.registered" else {} for rs in runs.values()]
     isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64] for d in registered)
     rep.check("isolation", True, "signer-reported: " + ", ".join(f"{k} {n} run(s)" for k, n in sorted(isolation.items())))

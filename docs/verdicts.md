@@ -1,7 +1,7 @@
 # Reading a v2 verify report
 
 `tracekit verify bundle.tkb --trust trust.json` prints one line per check, then two summary lines, and a third when
-the bundle holds signed findings:
+the bundle holds `review` records (signed findings, or reviews imported with no citations):
 
 ```text
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
@@ -136,8 +136,8 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `keys` | the key records are in the checkpointed tree, in order, and every declared key matches its SPKI | a key record is missing from the tree, out of order, or retires an unknown key; a `key.retire` the registry has is withheld |
 | `signatures` | every record verifies under a key valid at its position | names the record; "after its key.retire" when signed by a retired key |
 | `run parts` | only for a run in parts (format 1.4, a run past 64 MiB of records): `n run(s) in k parts, each part continuing the one before it`, read in order as the run's one file ([format v2](format-v2.md#9-bundle-layout)) | names the part: `runs/<id>.part-0002.jsonl is missing` (a gap in the numbers; `, and n more part(s)`), `<part>: not a part's name (part-0001, part-0002, ...)`, `<part> holds no records`, `<part> does not continue <the part before it>` (parts out of order, an extra or repeated part), `runs/<id>.jsonl and runs/<id>.part-0001.jsonl: one run in one file and in parts`. A part over 64 MiB is `UNUSABLE BUNDLE`, as any file |
-| `run chain` | each run is contiguous from `run_seq` 0, one tenant and run, increasing seq, nothing after `run.final` | a record deleted, swapped, spliced from another run, or appended after `run.final` |
-| `inclusion` | each run's first and last record is in the checkpointed tree | the run was rebuilt or the proofs are for another tree. For a run in parts, `run '<id>': the last record of <part> is not in the checkpointed tree, so a later part may be missing`: its last part, or records at its end, are gone |
+| `run chain` | each run is contiguous from `run_seq` 0, one tenant and run, increasing seq, nothing after `run.final`, and each run in one file (or one set of parts) | a record deleted, swapped, spliced from another run, or appended after `run.final`; `run '<id>' of tenant '<t>' again in <file>`: a run's records copied under a second name, which would count them twice |
+| `inclusion` | each run's first and last record is in the checkpointed tree | the run was rebuilt or the proofs are for another tree. For a run in parts, `run '<id>': the last record of <part> is not in the checkpointed tree, so a later part may be missing`: its last part, or records at its end, are gone. A run cut back with a proof of its new last record passes this line and reads open (`VERIFIED TO HEAD n`), never `VERIFIED`: only `run.final` or a run-set proves a run complete |
 | `policy snapshot` | the snapshot file is named by its own SHA-256 | the snapshot was edited |
 | `run-set` | `COMPLETE, registry a..b of tenant 't' (r runs registered, f final, o open)` | `INCOMPLETE`: a registry note without `witnesses_required` pinned cosignatures, a leaf is missing or points elsewhere, a final run's records are missing, a second `run.final`, an unrelated run or a run of another tenant, or records after `log.closed` |
 | `format bridge` | the v1 ledger verifies up to the bridge and ends in its key retirement (only with `--v1-ledger`) | a v1 record after the bridge, wrong key, broken v1 chain |
@@ -202,7 +202,7 @@ both verifiers add:
 
 | Line | Pass means | Warning / failure |
 |---|---|---|
-| `reviews` | `n review(s): 2 independent, 1 imported`: the reviews counted by label (below), and each citation of a signed finding is a record of the analysed run, in the bundle, with that `run_seq` and hash, and its verdict has a signed finding's shape | **warn** when a finding is `self-asserted`, naming its findings run and why. **fail** when a citation names a record the analysed run doesn't have, or one with another hash (the records are intact; the finding misstates them), a signed finding is outside a findings run, or its verdict holds a value no signer of its format signs (an alignment, reason code, model family or window outside what `review_finding` allows) |
+| `reviews` | `n review(s): 1 imported, 2 independent`, labels in alphabetical order: the reviews counted by label (below), and each citation of a signed finding is a record of the analysed run, in the bundle, with that `run_seq` and hash, and its verdict has a signed finding's shape | **warn** when a finding is `self-asserted`, naming its findings run and why. **fail** when a citation names a record the analysed run doesn't have, or one with another hash (the records are intact; the finding misstates them), a signed finding is outside a findings run, or its verdict holds a value no signer of its format signs (an alignment, reason code, model family or window outside what `review_finding` allows) |
 | `reviews counted` | — | **warn**: a findings run is in the bundle without the run it analyses, so its citations are not counted. Export the analysed run with `tracekit export --v2 --run <run> --with-findings` |
 
 The label says who wrote a finding: its author, the identity the signer measured when the findings run registered.

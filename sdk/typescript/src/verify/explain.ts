@@ -129,7 +129,8 @@ export const MEANING: Record<string, string> = {
   "checkpoint": "The log's checkpoint (the signed root of every record) is signed by the log key your trust file pins.",
   "witness quorum": "Enough witnesses your trust file pins cosigned the checkpoint: they vouch it was not rolled back.",
   "keys": "The record keys were declared by records the checkpoint includes, in order, and retired keys stop signing.",
-  "run parts": "A long run comes in numbered parts: none is missing, extra or out of order, so they read as one run.",
+  "run parts": "A long run comes in numbered parts: none is missing between the first and the last, extra or out of "
+    + "order, so they read as one run. Parts cut off its end leave it open, never VERIFIED.",
   "signatures": "Every record's signature verifies under a key valid at its position: no record was edited after signing.",
   "run chain": "Each run's records follow one another without a gap from the first: none deleted, swapped or added.",
   "inclusion": "Each run's first and last records are in the checkpointed tree: the run wasn't rebuilt.",

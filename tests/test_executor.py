@@ -657,6 +657,24 @@ class Executor(unittest.TestCase):
             InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:http"})
         self.assertEqual((e.exception.code, e.exception.message), ("quota_exceeded", "open_runs limit 1"))
 
+    def test_a_gateways_runs_for_all_its_clients_are_capped_and_a_suspended_client_gets_none(self):
+        """A client name is the gateway's word: each made-up one would be a fresh open_runs entry, so the runs a
+        gateway registers for all of them count against gateway_open_runs too, and a suspended client gets none."""
+        self.s.quotas.limits = Limits(open_runs=1, gateway_open_runs=2)
+        self.s.authorize[f"mtls:{EX.subject}"] += ["register_run"]
+        for caller in ("token:a", "token:b"):
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": caller})
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:c"})
+        self.assertEqual((e.exception.code, e.exception.message), ("quota_exceeded", "gateway_open_runs limit 2"))
+        self.s.authorize["token:op"] = ["suspend"]
+        self.s.call(CallerIdentity("token", "op", True), "suspend", {"request_id": "s1", "identity": "token:d"})
+        self.s.quotas.limits = Limits()
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:d"})
+        self.assertEqual(e.exception.code, "forbidden")
+        self.assertIn("token:d is suspended", e.exception.message)
+
     def test_a_gateways_run_for_a_client_closes_from_its_entry_after_a_restart(self):
         self.s.authorize[f"mtls:{EX.subject}"] = grants = ["register_run", "close_run"]
         run = InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:http"})

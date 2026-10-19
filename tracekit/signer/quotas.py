@@ -23,6 +23,7 @@ class Limits:
     events_per_s: float = 200.0
     burst: int = 400
     open_runs: int = 100             # per owner (a gateway's registered for a caller: per caller)
+    gateway_open_runs: int = 10000   # a gateway's own and those it registered for its callers, together
     pending_approvals: int = 100
     concurrent_waits: int = 8        # approval_wait calls one identity (a gateway: per caller) may have blocked at once
     streams_per_run: int = 64
@@ -58,7 +59,8 @@ class Quotas:
                            retry_after_ms=math.ceil((1 - tokens) / lim.events_per_s * 1000))
 
     def check_count(self, name, current):
-        """`name` is open_runs, pending_approvals or streams_per_run; `current` is the count before the new one."""
+        """`name` is open_runs, gateway_open_runs, pending_approvals or streams_per_run; `current` is the count before
+        the new one."""
         if current >= getattr(self.limits, name):
             raise RPCError("quota_exceeded", f"{name} limit {getattr(self.limits, name)}", retry_after_ms=COUNT_RETRY_MS)
 

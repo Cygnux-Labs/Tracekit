@@ -13,6 +13,7 @@ from unittest import mock
 from test_rpc_contract import Harness
 from tracekit import schema
 from tracekit.format.canon import canonical, event_hash, loads_strict
+from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.pipeline import Tx
@@ -119,6 +120,20 @@ class SignerPrivacy(Harness, unittest.TestCase):
         self.register()
         self.call("model_event", self.ev(provider="p", model="m", phase="response", error=f"bad key {SECRET}"))
         self.signer.close()
+        self.assertNotIn(SECRET.encode(), self.stored())
+
+    def test_a_loss_no_open_run_holds_is_redacted(self):
+        """An OpenShell loss naming no open run is an effect_outside_run gap in the signer run, its reason redacted
+        as an observer_lost gap's is."""
+        self.signer.close()
+        gw = CallerIdentity("uid", "999030", True)
+        s = svc.SignerService(self.dir, gateways=[f"uid:{gw.subject}"], authorize={f"uid:{gw.subject}": ["observe_effect"]})
+        self.addCleanup(s.close)
+        s.call(gw, "observe_effect", {"request_id": "r1", "instance": "i", "sensor": "openshell",
+                                      "callers": [f"uid:{gw.subject}"],
+                                      "effects": [{"kind": "lost", "reason": f"dropped: {SECRET}", "run_id": "gone"}]})
+        s.close()
+        self.assertIn(b"effect_outside_run", self.stored())
         self.assertNotIn(SECRET.encode(), self.stored())
 
     def test_policy_decides_on_the_unredacted_arguments(self):

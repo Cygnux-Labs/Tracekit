@@ -328,8 +328,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const included = async (r: J) => {
     const seq = at(at(r, "event"), "seq");
     const path = get(at(proofs, "inclusion"), str(seq));
-    return path !== null && verifyInclusion(num(seq), size, await leafHash(unhex(text(at(r, "hash")).slice(7))),
-      list(path).map(b64decode), root);
+    return Array.isArray(path) && verifyInclusion(num(seq), size, await leafHash(unhex(text(at(r, "hash")).slice(7))),
+      path.map(b64decode), root);
   };
 
   // keys: declared and retired by records the checkpointed tree includes, so the log key vouches for them
@@ -394,13 +394,18 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const names = runFiles(files.keys());
   const runSet = files.has("registry/run-set.json");
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
-  const layout: string[] = [];
+  const layout: string[] = [], seen = new Set<string>();
   for (const [name, parts] of names) {
     const pieces = parts.map(jsonl), records = pieces.flat(), whole = parts.length === 1 && parts[0] === name;
     runs.set(name, records);
     extend(layout, parted(name, parts, pieces));
     if (!records.length) throw new ValueError("a run has no records");
-    const head = at(records[0], "event");
+    const head = at(records[0], "event"), tenant = get(head, "tenant"), runId = get(head, "run_id");
+    if (typeof tenant === "string" && typeof runId === "string") {   // a second file of one run would count it twice
+      const key = JSON.stringify([tenant, runId]);
+      if (seen.has(key)) chain.push(`run ${repr(cut(runId, 200))} of tenant ${repr(cut(tenant, 64))} again in ${name}`);
+      seen.add(key);
+    }
     for (const [i, r] of records.entries()) {
       await checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), problems);
       const e = r.event, prev = i ? records[i - 1] : null;
