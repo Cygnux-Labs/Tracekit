@@ -21,7 +21,8 @@ import pytest
 import test_signer_service as ts
 from factories import wait_for
 from test_observe_render import XSS, script_of, unescaped
-from tracekit import cli, observe, view
+from tracekit import cli, findings_v2, observe, view
+from tracekit.format.canon import event_hash as canon_hash
 from tracekit.observe import _session
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
@@ -236,6 +237,58 @@ class View(unittest.TestCase):
         self.assertEqual([(r["tool_input"], r["target"]) for r in rows],
                          [({"command": f"at {r['v2']['run_seq']}"}, None) for r in rows])
         self.assertEqual(asked, [(run_id, [r["v2"]["run_seq"] for r in rows])])
+
+    def test_asked_and_said_show_beside_the_call_and_findings_beside_the_integrity(self):
+        """#309: a transcript's prompt and thinking (their retained content) show as what was asked and said, the
+        thinking labelled by its form; the run's findings are FINDING alerts and review lines, never in the integrity
+        line; a line whose content the viewer can't read shows as committed."""
+        run, bodies, args = self.client.run(agent="claude-code"), {}, {"file_path": "/w/billing.py"}
+
+        def line(phase, entry, **kw):
+            body = {"transcript": "main", "entry": entry}
+            out = run.call("model_event", provider="anthropic", model="m", phase=phase,
+                           content_digest=canon_hash(body), **kw)
+            bodies[out["run_seq"]] = body
+        line("request", {"type": "user", "cwd": "/w", "message": {"content": "Fix pager.py."}}, exchange_id="u1")
+        line("response", {"type": "assistant", "message": {"id": "msg_1", "content": [
+            {"type": "thinking", "thinking": "One more small fix.", "signature": "s"}]}}, exchange_id="msg_1")
+        line("response", {"type": "assistant", "message": {"id": "msg_1", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Edit", "input": args}]}}, exchange_id="msg_1", tool_uses=[
+            {"id": "t1", "name": "Edit", "executed_by": "client", "args_source": "parsed",
+             "args_digest": canon_hash({"tool": "Edit", "args": args})}])
+        bodies[run.decide("t1", "Edit", args)["run_seq"]] = args
+        run.complete("t1")
+        unread = run.call("model_event", provider="anthropic", model="m", phase="response", exchange_id="msg_2",
+                          content_digest=canon_hash({"x": 1}))["run_seq"]
+        run.close()
+        storage = self.service.log.storage
+        self.assertTrue(wait_for(lambda: list(storage.iter_run("default", run.run_id))[-1]["event"]["type"] ==
+                                 "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+
+        def vault(want):
+            return ((r["event"]["run_seq"], bodies[r["event"]["run_seq"]], True) for r in want
+                    if r["event"]["run_seq"] in bodies)
+        feed = view.StoreFeed({"data_dir": self.d}, content=lambda rid, seqs: {s: bodies[s] for s in seqs if s in bodies},
+                              analyze=lambda records: findings_v2.analyze(records, vault))
+        [rep] = self.report(feed, run.run_id)
+        rows = self.rows(feed, run.run_id)
+        self.assertEqual([r["prompt"] for r in rows if r["event"] == "UserPromptSubmit"], ["Fix pager.py."])
+        turns = [r for r in rows if r["event"] == "model_turn"]
+        self.assertEqual([(t["blocks"], t["v2"]["exchange_id"]) for t in turns], [
+            ([{"kind": "thinking", "text": "One more small fix.", "form": "summary"}], "msg_1"),
+            ([{"kind": "committed", "text": "said something here; it is committed, and this viewer reads no content"}],
+             "msg_2")])
+        self.assertEqual(turns[1]["v2"]["run_seq"], unread)
+        self.assertEqual([r["v2"]["tool_ids"] for r in rows if r["event"] == "tk_model"], [["t1"]])
+        found = [r for r in rows if r.get("tape") == "FINDING"]
+        self.assertEqual([r["title"] for r in found], ["FINDING TK-X202 · Edit of a file not mentioned before",
+                                                       "FINDINGS · 1 problem (1 medium) · reasoning readable before "
+                                                       "1 of 1 actions (100%)"])
+        self.assertIn("billing.py", found[0]["text"])
+        self.assertEqual(found[0]["v2"]["finding"]["rule"], "TK-X202")
+        self.assertEqual(rep["title"], f"RUN {run.run_id} · Integrity VERIFIED · Assurance dev")
+        self.assertEqual(rep["review"]["findings"]["line"], "1 problem (1 medium) · reasoning readable before 1 of 1 "
+                                                            "actions (100%)")
 
     def test_dev_run_is_listed_with_its_counts_and_verified_while_the_signer_holds_the_lock(self):
         run_id = self.finished_run()

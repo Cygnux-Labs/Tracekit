@@ -907,7 +907,8 @@
       color: var(--magenta)
     }
 
-    .rs.withheld .t {
+    .rs.withheld .t,
+    .rs.committed .t {
       color: var(--faint);
       font-style: italic
     }
@@ -1512,6 +1513,7 @@
       S = {
         recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
         tools: new Map(), alerts: [], reasoning: [], tokIn: 0, tokOut: 0, cost: 0, costSeen: false, currency: "", spawnQ: [], withheldSeen: new Set(),
+        asked: new Map(),  // v2: a call (tuid) -> the model message that asked for it {x: exchange id, seq: its record's run_seq}
         firstTs: null, lastTs: null, gaps: 0, approved: 0,
         signer: { key: "signer", session: "", id: "signer", type: "signer", sub: false, signer: true, desc: "", status: "idle", actions: 0, tokIn: 0, tokOut: 0, cost: 0, first: 0, last: 0, current: null, errors: 0, blocked: 0, flags: 0, model: "" }
       };
@@ -1568,14 +1570,18 @@
         const mid = r.message_id || r.transcript_uuid;
         if (!S.withheldSeen.has("u" + mid)) { a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; S.withheldSeen.add("u" + mid); }
         if (r.model) a.model = r.model;
+        // v2: each entry keeps its form, its model message (x) and its record's run_seq, for the call it led to
+        const at = { x: r.v2?.exchange_id, seq: r.v2?.run_seq };
         for (const b of r.blocks || []) {
           if ((b.kind === "thinking" || b.kind === "text") && b.text && b.text.trim()) {
             const kind = b.kind === "thinking" ? "think" : "says";
-            S.reasoning.push({ ts: r.ts, agent: a, kind, text: b.text, rec: r });
+            S.reasoning.push({ ts: r.ts, agent: a, kind, text: b.text, rec: r, form: b.form, x: at.x, seq: at.seq });
             pushTape({ ts: r.ts, agent: a, ev: kind === "think" ? "THINK" : "SAYS", text: b.text, rec: r });
           } else if (b.kind === "thinking_redacted" && !S.withheldSeen.has(mid)) {
             S.withheldSeen.add(mid);
-            S.reasoning.push({ ts: r.ts, agent: a, kind: "withheld", text: "Thinking happened; the provider withheld its text.", rec: r });
+            S.reasoning.push({ ts: r.ts, agent: a, kind: "withheld", text: "Thinking happened; the provider withheld its text" + (b.form === "encrypted" ? " (kept sealed in the record: encrypted)." : "."), rec: r, form: b.form, x: at.x, seq: at.seq });
+          } else if (b.kind === "committed") {
+            S.reasoning.push({ ts: r.ts, agent: a, kind: "committed", text: b.text, rec: r, x: at.x, seq: at.seq });
           }
         }
         return;
@@ -1662,6 +1668,7 @@
       }
       if (ev === "tk_model") {
         const a = agentOf(r); const u = r.usage;
+        for (const id of r.v2?.tool_ids || []) S.asked.set(r.session_id + "|" + id, { x: r.v2.exchange_id, seq: r.v2.run_seq });
         if (u) { const tin = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), tout = u.output_tokens || 0;
                  a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; }
         if (typeof r.cost === "number") { a.cost += r.cost; S.cost += r.cost; S.costSeen = true; S.currency = r.currency || S.currency; }
@@ -1893,7 +1900,12 @@
     }
     function renderReason() {
       const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
-      $("reason").innerHTML = list.map(r => `<div class="rs ${esc(r.kind)}" data-seq="${esc(r.rec.seq)}"><div class="h"><span>${esc(fmtT(r.ts))}</span><span class="who">${esc(label(r.agent))}</span><span>${r.kind === "think" ? "THINKING" : r.kind === "withheld" ? "THINKING (WITHHELD)" : "SAID"}</span></div><div class="t">${esc(r.text.slice(0, 1200))}</div></div>`).join("") || `<div class="empty">No reasoning yet.</div>`;
+      $("reason").innerHTML = list.map(r => `<div class="rs ${esc(r.kind)}" data-seq="${esc(r.rec.seq)}"><div class="h"><span>${esc(fmtT(r.ts))}</span><span class="who">${esc(label(r.agent))}</span><span>${esc(sayLabel(r))}</span></div><div class="t">${esc(r.text.slice(0, 1200))}</div></div>`).join("") || `<div class="empty">No reasoning yet.</div>`;
+    }
+    // what an entry is: thinking (its form: the model's full reasoning, a summary of it, or withheld: sealed or absent), text it said, or committed only
+    function sayLabel(r) {
+      return (r.kind === "think" ? "THINKING" : r.kind === "withheld" ? "THINKING (WITHHELD)" : r.kind === "committed" ? "COMMITTED, NOT READABLE HERE" : "SAID")
+        + (r.kind === "think" && r.form ? " · " + r.form.toUpperCase() : "");
     }
     function renderFiles() {
       const list = [...S.files.values()].filter(f => !F.file || f.path.toLowerCase().includes(F.file.toLowerCase())).sort((a, b) => (b.w - a.w) || (b.r - a.r));
@@ -1948,6 +1960,10 @@
       <div class="sec">ARGUMENTS</div><dl class="kv"><dt>commitment</dt><dd class="hash" title="${esc(v.args_commitment)}">${esc(short(v.args_commitment))}</dd><dt></dt><dd class="dim">arguments are a salted commitment; <code>tracekit signer reveal --record ${esc(lseq(a.pre))}</code> gives an auditor the salt</dd><dt>policy</dt><dd class="dim" title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</dd></dl>` + argsFrom(a);
         let right = a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "";
         if (a.post) right += `<div class="sec">RESULT</div><dl class="kv"><dt>status</dt><dd>${esc(a.error ? "failed" : "ok")}</dd><dt>output</dt><dd>${esc(j(a.post.tool_response?.output))}</dd></dl>`;
+        // what the model said before this call in the message that asked for it: "signed before this call" only when its record's run_seq is lower than the decision's
+        const asked = S.asked.get(a.id), said = asked ? S.reasoning.filter(r => r.x === asked.x && r.seq <= asked.seq && r.rec.session_id === a.pre.session_id) : [];
+        right += `<div class="sec">SAID BEFORE THIS CALL · SELF-REPORTED, NOT PROOF</div>` + (said.length ? `<dl class="kv">` + said.map(r => `<dt>${esc(sayLabel(r).toLowerCase())}</dt><dd>${esc(r.text.slice(0, 1500))}<div class="dim">${r.seq < v.run_seq ? "signed before this call" : "before the call in the transcript; signed after it"}</div></dd>`).join("") + `</dl>`
+          : `<div class="dim">${asked ? "nothing: the model said nothing before this call" : "no model message recorded for this call"}</div>`);
         $("detsum").textContent = `${a.tool} · seq ${lseq(a.pre)}`;
         return cols(left, right + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
       }
@@ -1958,6 +1974,8 @@
       if (v.approver) left += `<dt>APPROVER</dt><dd>${esc(v.approver)}</dd><dt>VIA</dt><dd>${esc(v.via ? v.via + " (a bridge vouches for the person)" : "the approver's own connection")}</dd><dt>SELF</dt><dd class="${v.self_approved ? "s-deny" : ""}">${esc(v.self_approved ? "self-approved" : "not self-approved")}</dd>${v.break_glass ? `<dt>BREAK-GLASS</dt><dd class="s-deny">yes: outside the approver list, with a reason</dd>` : ""}`;
       if (v.binding_digest) left += `<dt>BINDING</dt><dd class="hash" title="${esc(v.binding_digest)}">${esc(short(v.binding_digest))}</dd>`;
       if (v.kind) left += `<dt>GAP KIND</dt><dd>${esc(v.kind)}</dd>`;
+      if (v.cites) left += `<dt>CITES</dt><dd>` + v.cites.map(c => { const r = S.recs.find(r => r.session_id === sel.session_id && r.v2?.run_seq === c.run_seq);
+        return r ? `<a href="#" data-tkseq="${esc(r.tk_seq)}">record ${esc(c.run_seq)}</a> <span class="${r.hash === c.hash ? "s-ok" : "s-deny"}">${r.hash === c.hash ? "hash matches" : "HASH MISMATCH"}</span>` : `record ${esc(c.run_seq)} <span class="dim">not in this view</span>`; }).join("<br>") + `</dd>`;
       if (!sel.signer) left += verdictLine(sel.session_id);
       const right = sel.review ? `<div class="sec">VERIFIER REPORT</div><pre>${esc(sel.text)}</pre>`
         : `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash", "prev"].includes(k) && !(k === "seq" && sel.tk_seq !== undefined)))).slice(0, 8000))}</pre>`;
@@ -1976,7 +1994,10 @@
       if (r.decisions) {
         const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, c = r.coverage, gaps = Object.entries(r.gaps || {});
         left += line(null, "RECORDS", `${r.records} · ${fmtT(t0)} → ${fmtT(t1)} (${fmtDur(t1 - t0)}) · ${r.state}`)
-          + line(null, "COVERAGE", c ? `${c.layers.join("+") || "no layers"} · reconciled ${c.reconciled}` + Object.entries(c.unreconciled).map(([k, n]) => ` · unreconciled ${k} ${n}`).join("") + (c.provider_executed ? ` · provider-run tools ${c.provider_executed}` : "") : "not final yet: run.final records it");
+          + line(null, "COVERAGE", c ? `${c.layers.join("+") || "no layers"} · reconciled ${c.reconciled}` + Object.entries(c.unreconciled).map(([k, n]) => ` · unreconciled ${k} ${n}`).join("") + (c.provider_executed ? ` · provider-run tools ${c.provider_executed}` : "") : "not final yet: run.final records it")
+          // the analyzer's opinion of the run (tracekit analyze --v2), beside its integrity, never in it
+          + (r.findings ? line(null, "FINDINGS", r.findings.line) + (r.findings.monitorability ? line(null, "MONITORABILITY", r.findings.monitorability + " (the share of actions whose reasoning can be read)") : "")
+            + (r.findings.not_checkable?.length ? line(null, "NOT CHECKABLE", r.findings.not_checkable.join(", ") + " · never counted as a pass: tracekit analyze --v2 says what makes each checkable", "s-flag") : "") : "");
         right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", d.ask || 0, d.ask ? "s-flag" : "");
         for (const a of r.approvals) right += line(a.seq, a.decision === "approve" ? "→ APPROVED" : "→ " + String(a.decision).toUpperCase(), `${a.tool_use_id} by ${a.approver}` + (a.via ? ` vouched for by ${a.via}` : "") + (a.self_approved ? " · SELF-APPROVED" : " · not self-approved") + (a.break_glass ? " · BREAK-GLASS" : ""), a.self_approved || a.break_glass || a.decision !== "approve" ? "s-deny" : "s-ok");
         for (const i of r.incidents || []) right += line(i.seq, "INCIDENT", `${i.trigger} ${i.rule_ids.join(" ")} · ${i.incident_id} · ${i.mode} · ${i.actions.join("+") || "no action"} · run ${i.state}`, i.actions.length ? "s-deny" : "s-flag");
