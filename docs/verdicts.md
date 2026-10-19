@@ -38,6 +38,7 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 | `UNUSABLE BUNDLE` | the trust config or the zip could not be read, or the manifest is not `tracekit.bundle.v2` |
 | `UNVERIFIABLE (needs tracekit >= x)` | the bundle asks for a newer verifier (`verifier_min_version`); nothing failed. The `bundle readable` line lists the commands that verify it ([below](#a-bundle-that-needs-a-newer-verifier)) |
 | `UNVERIFIABLE (key revoked)` | records signed by a record key whose certificate a passed `--revocations` file revokes ([issuer.md](issuer.md)) |
+| `UNVERIFIABLE (no trust config: ...)` | the [browser page](#verify-in-your-browser) without a trust file: nothing failed, but no pinned key checked the checkpoint |
 
 `VERIFIED` means: the records were signed by keys the log declared and had not retired; they form one unbroken run
 chain; the run's first and last records are in a tree whose checkpoint the pinned log key signed; nothing was edited,
@@ -61,6 +62,34 @@ print only the verdict):
 runs the TypeScript one (Node ≥ 20.12), which lists itself first. The page is the TypeScript verifier too: its Content
 Security Policy lets it load and send nothing, so the bundle never leaves your browser. For evidence, use a copy you
 checked against the release (`gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`, [releasing](RELEASING.md#verifying-a-release)).
+
+## Verify in your browser
+
+`verify.html`, a release asset (also at https://cygnux-labs.github.io/Tracekit/verify/), is the TypeScript verifier as
+one page: nothing to install. Drop the `.tkb` on it, with the trust file the sender gave you. Its Content Security
+Policy lets it load and send nothing, so the files never leave your browser; it verifies in a worker started from its
+own script, which inherits that policy.
+
+It shows, in this order:
+
+- the verdict, **VERIFIED** (exit 0), **FAILED** (exit 1) or **UNVERIFIABLE** (exit 2), with what it means and what it
+  doesn't: VERIFIED means the record is intact and signed by the signer your trust file names, not that the agent
+  behaved well;
+- what to do next, with the commands to run, for every result that isn't plainly VERIFIED;
+- when nothing failed, a summary: records and time span, signer, assurance, agents, tool calls, calls held for
+  approval and who answered them, gaps, and findings with their author labels;
+- every line exactly as `tracekit verify` prints it, each with what it means, then Copy report and Download report
+  (JSON), the JSON of `tracekit verify --json`.
+
+Without a trust file it checks everything that needs no pinned key: a changed, missing or reordered record still
+FAILS, but an intact bundle is `UNVERIFIABLE (no trust config: ...)`, after a `trust config` warning line. Anyone can
+sign a bundle and its checkpoint with keys of their own; the trust file says whose you accept, so get it from the
+sender directly, not with the bundle. A v1 bundle isn't checked in the page: it says so and prints
+`uvx --from tracekit-ai tracekit verify run.tkb --key signer.pub`. **Try a sample** loads a small bundle of a dev
+signer, and a copy whose approval was edited after signing.
+
+`scripts/verify_page_check.py` (with Playwright) opens the page in a real browser and checks that it reports what both
+command-line verifiers do.
 
 From 1.4.0, what an older verifier can leave unread is non-critical (`ext`, [format v2](format-v2.md#9-bundle-layout)):
 a 1.4.0 verifier verifies a later bundle and names each ext name it did not interpret on a `not interpreted` warning,
@@ -98,7 +127,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 
 | Line | Pass means | On failure |
 |---|---|---|
-| `trust config` | — | the trust config is malformed (exit 2) |
+| `trust config` | — | the trust config is malformed (exit 2). In the browser page without one: a warning, and the bundle is never VERIFIED |
 | `bundle readable` | — | not a zip, unsafe entries, no manifest, or too new (exit 2): then it lists the commands that verify the bundle ([above](#a-bundle-that-needs-a-newer-verifier)) |
 | `manifest` | the files are exactly those listed, with those hashes | a file was added, removed or changed after export |
 | `checkpoint` | the note is signed by the pinned log key named after its origin (and by its pinned hybrid SLH-DSA key, if any), and is of the proofs' tree size | wrong key, wrong origin, edited note, a pinned hybrid line missing or bad |

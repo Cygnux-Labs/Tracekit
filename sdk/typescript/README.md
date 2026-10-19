@@ -91,9 +91,13 @@ It does not check SLH-DSA checkpoint lines, Rekor anchors or certified record ke
 `UNVERIFIABLE (not checked by this verifier: ...)`, never `VERIFIED`. Monitor reports, revocations and the v1 format
 bridge need the Python verifier.
 
+`verify(bundle, null)`, with no trust config, runs every check that needs no pinned key and is never `VERIFIED`: a
+changed record still fails, an intact bundle is `UNVERIFIABLE (no trust config: ...)`.
+
 In a browser: `dist/verify.html` in this package (and a release asset) is this verifier as one self-contained page.
-Choose a bundle and a trust config; its Content Security Policy lets it load and send nothing, so neither file leaves
-the browser. `make verify-page` builds it from a checkout.
+Drop in a bundle and its trust config; its Content Security Policy lets it load and send nothing, so neither file
+leaves the browser ([verify in your browser](../../docs/verdicts.md#verify-in-your-browser)). `make verify-page` builds
+it from a checkout.
 
 ## v2 framework adapters
 

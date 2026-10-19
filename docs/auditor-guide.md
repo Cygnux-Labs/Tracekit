@@ -77,8 +77,9 @@ anchor, a certified record key) it says `UNVERIFIABLE` and names it; use the Pyt
 
 **In a browser.** The release's `verify.html` is the TypeScript verifier as one page whose Content Security Policy lets
 it load and send nothing, so a bundle checked there never leaves your machine. Check your copy against the release
-first, `gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`, then open it and choose the bundle and your
-trust config.
+first, `gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`, then open it and drop in the bundle and your
+trust config. Without the trust config it still finds changed records, but never says VERIFIED
+([verdicts](verdicts.md#verify-in-your-browser)).
 
 A verifier older than the bundle says `UNVERIFIABLE (needs tracekit >= x)` and, from 1.4.0, the commands that verify
 it ([verdicts](verdicts.md#a-bundle-that-needs-a-newer-verifier)). A `not interpreted` warning means the records carry
