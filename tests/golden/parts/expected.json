@@ -1,0 +1,87 @@
+{
+  "files": {
+    "parts/parts-duplicate.tkb": "bdf94b77750c156a05e106b02a9336e4a5bd39e95930a50e7d5fd967008fd549",
+    "parts/parts-extra.tkb": "a801177fab8dad9bfb298d7168bf49510712def864747494368c317f65906866",
+    "parts/parts-gap.tkb": "88beb2e0aeb28d13e049fc0b59d482929c524e72d7a958e3fbf16d8f7184bbe6",
+    "parts/parts-last-missing.tkb": "5570fc66e0be4177b3994d12215e50e05d7d18302a9d786d8e952f580e3b02b4",
+    "parts/parts-out-of-order.tkb": "336d2745d0c070605de7444a7dcf4c8e8e24a90a75638aa7b6f326954c4f9cc0",
+    "parts/parts-oversized.tkb": "0660b8a83668941219a692167019450101aa467bfa36491f67f40046929af5c0",
+    "parts/parts-two-layouts.tkb": "ed57fc7b0e88b68cf132f3abd229376d0f4253d3f2506a948c25424c9901b30b",
+    "parts/parts.tkb": "653c4e9783ddb934be04db691ce381a6cb9298a1f8656605ca4b95472010a1e4",
+    "parts/trust.json": "b0c81d58854284eaca0e2cec37846b53fd0beecb37f541ef2176566a7f1302de"
+  },
+  "cases": [
+    {
+      "name": "a closed run in three parts",
+      "bundle": "parts.tkb",
+      "expected": {
+        "exit_code": 0,
+        "integrity": "VERIFIED",
+        "first_failure": null
+      }
+    },
+    {
+      "name": "the last part missing",
+      "bundle": "parts-last-missing.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "inclusion"
+      }
+    },
+    {
+      "name": "a part missing between two",
+      "bundle": "parts-gap.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run parts"
+      }
+    },
+    {
+      "name": "two parts' records swapped",
+      "bundle": "parts-out-of-order.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run parts"
+      }
+    },
+    {
+      "name": "an extra part after the last",
+      "bundle": "parts-extra.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run parts"
+      }
+    },
+    {
+      "name": "a part twice, under a second spelling of its number",
+      "bundle": "parts-duplicate.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run parts"
+      }
+    },
+    {
+      "name": "the run in one file and in parts",
+      "bundle": "parts-two-layouts.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run parts"
+      }
+    },
+    {
+      "name": "a part over the 64 MiB limit",
+      "bundle": "parts-oversized.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    }
+  ]
+}

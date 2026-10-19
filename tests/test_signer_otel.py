@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 import test_signer_service as ts
 from factories import wait_for
@@ -18,6 +19,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.signer import otel as signer_otel
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
+from tracekit.verify import v2
 
 APP = CallerIdentity("token", "http", True)
 JSON = "application/json"
@@ -265,8 +267,17 @@ class TestExport(Signer):
         out = os.path.join(self.dir, "run.tkb")
         self.assertEqual(cli.main(["export", "--v2", "--config", cfg, "--run", f"otel:{TRACE}", "--otel", "-o", out]), 0)
         with open(os.path.join(self.dir, "run.otel.json")) as f:
-            spans = json.load(f)["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            doc = json.load(f)
+        spans = doc["resourceSpans"][0]["scopeSpans"][0]["spans"]
         self.assertEqual([x["name"] for x in spans], ["invoke_agent research-bot", "execute_tool Bash"])
+        # a run in parts (the per-file limit lowered to split it): the same spans, its parts read as one run
+        run = max(len(b) for n, b in v2.read_zip(out).items() if n.startswith("runs/"))
+        with mock.patch.object(v2, "MAX_ENTRY", run - 1):
+            self.assertEqual(cli.main(["export", "--v2", "--config", cfg, "--run", f"otel:{TRACE}", "--otel", "-o",
+                                       os.path.join(self.dir, "parts.tkb")]), 0)
+        self.assertTrue([n for n in v2.read_zip(os.path.join(self.dir, "parts.tkb")) if ".part-" in n])
+        with open(os.path.join(self.dir, "parts.otel.json")) as f:
+            self.assertEqual(json.load(f), doc)
 
     def test_otel_out_sends_final_runs_off_the_writer_and_counts_drops(self):
         got = []

@@ -67,15 +67,15 @@ def store_records(data_dir: str, run: Optional[str] = None) -> Dict[str, List[Di
 
 def bundle_records(path: str, trust: str):
     """(run_id -> records, report, exit code) of a v2 bundle; no records unless it verifies against `trust`."""
+    from ..bundle_v2 import run_files
     from ..verify import v2
     rep, code = v2.verify(path, trust)
     if code:
         return {}, rep, code
-    out = {}
-    for name, data in v2.read_zip(path).items():
-        if name.startswith("runs/"):
-            recs = [json.loads(line) for line in data.splitlines() if line.strip()]
-            out[recs[0]["event"]["run_id"]] = recs
+    out, files = {}, v2.read_zip(path)
+    for parts in run_files(files).values():
+        recs = [json.loads(line) for n in parts for line in files[n].splitlines() if line.strip()]
+        out[recs[0]["event"]["run_id"]] = recs
     return out, rep, code
 
 

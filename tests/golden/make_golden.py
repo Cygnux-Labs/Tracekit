@@ -2,6 +2,8 @@
 
     python3 tests/golden/make_golden.py            v1/, v01/ and expected.json
     python3 tests/golden/make_golden.py v2         v2/ and negative/, each with its own expected.json
+    python3 tests/golden/make_golden.py parts      parts/ and its expected.json: a run in parts, and copies with one
+                                                   defect of its parts each (format 1.4)
 
 The v1 section copies the shipped samples, builds three extra v1 bundles with fixed keys, and records what the current
 verifier says about every case. The v2 section records bundles of an in-process dev signer and a negative corpus of
@@ -493,6 +495,60 @@ def negative(out):
     return cases
 
 
+def parts(out):
+    """A closed run in parts, from a fixed-key log (tests/test_bundle_v2.Log) exported with the per-file limit lowered
+    to 2 KiB so the bundle is small, and copies with one defect of its parts each; [(case name, bundle file)], every
+    case against parts/trust.json (tests/test_bundle_v2.trust_config: one cosignature required)."""
+    from unittest import mock
+
+    import test_bundle_v2 as tb
+    from factories import rewrite_bundle
+    from tracekit.bundle_v2 import export, run_name
+    from tracekit.verify import v2
+    d = tempfile.mkdtemp()
+    try:
+        lg = tb.Log(os.path.join(d, "store"))
+        lg.epoch(tb.KEY1)
+        lg.register()
+        for _ in range(4):
+            lg.call()
+        lg.final()
+        good = os.path.join(out, "parts.tkb")
+        with mock.patch.object(v2, "MAX_ENTRY", 2048):
+            export(lg.store, "acme", "run-a", lg.note(), good)
+        lg.store.close()
+        with zipfile.ZipFile(good) as z:
+            entries = [(i.filename, z.read(i)) for i in z.infolist()]
+        p = [n for n, _ in entries if n.startswith("runs/")]
+        one = run_name("acme", "run-a")
+        stem = one[:-len(".jsonl")]
+        cases = [("a closed run in three parts", "parts.tkb")]
+
+        def mutated(name, file, edit):
+            rewrite_bundle(good, os.path.join(out, file), edit)
+            cases.append((name, file))
+
+        def add(name, data):
+            return lambda f, m: (f.update({name: data(f)}), m["files"].update({name: ""}))
+        mutated("the last part missing", "parts-last-missing.tkb", lambda f, m: f.pop(p[-1]))
+        mutated("a part missing between two", "parts-gap.tkb", lambda f, m: f.pop(p[1]))
+        mutated("two parts' records swapped", "parts-out-of-order.tkb",
+                lambda f, m: f.update({p[0]: f[p[1]], p[1]: f[p[0]]}))
+        mutated("an extra part after the last", "parts-extra.tkb", add(f"{stem}.part-{len(p) + 1:04d}.jsonl",
+                                                                       lambda f: f[p[0]]))
+        mutated("a part twice, under a second spelling of its number", "parts-duplicate.tkb",
+                add(f"{stem}.part-002.jsonl", lambda f: f[p[1]]))
+        mutated("the run in one file and in parts", "parts-two-layouts.tkb", add(one, lambda f: b"".join(f[n] for n in p)))
+        with zipfile.ZipFile(os.path.join(out, "parts-oversized.tkb"), "w", zipfile.ZIP_DEFLATED) as z:
+            for n, data in entries:
+                z.writestr(n, bytes((64 << 20) + 1) if n == p[1] else data)
+        cases.append(("a part over the 64 MiB limit", "parts-oversized.tkb"))
+        write(os.path.join(out, "trust.json"), json.dumps(tb.trust_config(), indent=1).encode())
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return cases
+
+
 def negative_verdict(path, trust):
     """Exit code, integrity and the first failing check (None when none fails) of the v2 verifier, in process."""
     from tracekit.verify import v2
@@ -542,5 +598,14 @@ def main():
         f.write("\n")
 
 
+def main_parts():
+    d = os.path.join(GOLDEN, "parts")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    trust = os.path.join(d, "trust.json")
+    write_expected("parts", [{"name": name, "bundle": file, "expected": negative_verdict(os.path.join(d, file), trust)}
+                             for name, file in parts(d)])
+
+
 if __name__ == "__main__":
-    main_v2() if sys.argv[1:] == ["v2"] else main()
+    main_v2() if sys.argv[1:] == ["v2"] else main_parts() if sys.argv[1:] == ["parts"] else main()

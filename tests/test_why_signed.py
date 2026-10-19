@@ -18,6 +18,7 @@ from tracekit.demo_server import Witness, _serve, export_final, tamper
 from tracekit.deploy import files
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer.service import DEFAULT_POLICY, SignerService, load_policy, reveal
+from tracekit.verify import v2
 from tracekit.why import import_v2
 from tracekit.why.analysis import alerts
 from tracekit.why.cli import main
@@ -399,6 +400,11 @@ class SignedRuntime(unittest.TestCase):
         files.write_json(trust, {"logs": [self.service.vkey], "algs": ["ed25519"],
                                  "witnesses": [{"vkey": self.witness.vkey, "class": "customer"}]}, 0o644)
         self.assertEqual(list(import_v2.bundle_records(out, trust)[0]), [self.tk_run])
+        parts = os.path.join(self.dir, "parts.tkb")   # the run in parts: the same records, its parts read as one
+        with mock.patch.object(v2, "MAX_ENTRY", max(len(b) for n, b in v2.read_zip(out).items()
+                                                    if n.startswith("runs/")) - 1):
+            export_final(os.path.join(self.dir, "data", "store"), self.tk_run, self.witness, parts)
+        self.assertEqual(import_v2.bundle_records(parts, trust)[0], import_v2.bundle_records(out, trust)[0])
         tamper(out, bad)
         self.assertEqual(import_v2.bundle_records(bad, trust)[0], {})
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:

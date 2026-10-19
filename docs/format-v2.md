@@ -483,6 +483,8 @@ bundle may hold nothing else.
 manifest.json             {"format": "tracekit.bundle.v2", "verifier_min_version": "1.2.0", "verifier_version": "1.2.0",
                            "files": {name: sha256 hex}}
 runs/<id>.jsonl           one run's records in run_seq order; id = first 32 hex of SHA-256("<tenant>/<run_id>")
+runs/<id>.part-0001.jsonl from 1.4.0, a run whose records pass the 64 MiB a file limit: its records in parts
+runs/<id>.part-0002.jsonl numbered from 0001 with four digits, each split at a record and at most 64 MiB (below)
 keys/records.jsonl        every signer.epoch and key.retire record the checkpoint covers
 proofs/records.json       {"checkpoint": "checkpoints/<size>.note", "tree_size": n,
                            "inclusion": {"<seq>": [base64 hash, ...]}}: inclusion of each run's first and last record,
@@ -525,6 +527,20 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 `tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file), and refuses a bundle past the
 zip limits above, which no verifier would read.
 
+**A run in parts** (from 1.4.0). A run whose records fit 64 MiB is one file, `runs/<id>.jsonl`, as before. A longer
+one is written as `runs/<id>.part-0001.jsonl`, `runs/<id>.part-0002.jsonl`, ...: the run's file cut between records,
+each part as full as the limit allows, so its parts, read in order, are that file, and a verifier checks them as it
+(chain, signatures, inclusion of the run's first and last records). The proofs carry no inclusion of a part's own
+first or last record: a bundle cut back to a part boundary must still fail `inclusion`, as one cut anywhere does. A
+run can then hold up to the bundle's 512 MiB (about 190,000 tool calls of the server pack). Anything else about the
+parts fails the `run parts` line ([verdicts](verdicts.md)): a part missing between part-0001 and the last (a gap in
+the numbers), a name outside that numbering (`part-0000`, `part-02`, five digits), a part with no records, a part
+whose first record's `run_prev_hash` is not the hash of the last record of the part before it (parts out of order, an
+extra or repeated part), or the run both in one file and in parts. Its last part missing shows on `inclusion`: the
+record now last is not one the proofs include. A part over 64 MiB is, as any file, `UNUSABLE BUNDLE`. A bundle with a
+run in parts declares `run parts` (below), so a 1.3 or older verifier, which would read each part as a run of its own,
+reports it `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
+
 `verifier_min_version` is the newest version in the version table (`VERSIONS` in `tracekit/bundle_v2.py`) whose
 critical entries a bundled record uses, else `1.0.0`, and at least 1.4.0 when a record has an `ext` field or is of type
 `ext`. `verifier_version` (from 1.4.0; advisory, like the whole manifest) is the newest version whose entries, ext names
@@ -532,7 +548,8 @@ among them, the records use: the version that checks everything in the bundle. `
 which records raised `verifier_min_version` (`raised_by`). A row is frozen once its version's first release candidate
 ships (`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists what it added:
 record types, data fields per record type, and enum values per (record type, field), gap and tamper `kind`s among
-them, all critical; and from 1.4.0 the ext names it interprets, which are not:
+them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layout`; `raised_by` names them); and from
+1.4.0 the ext names it interprets, which are not:
 
 | Version | Record types | Data fields | Enum values | Ext names (non-critical) |
 |---|---|---|---|---|
@@ -540,6 +557,8 @@ them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
+
+Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
 Every v2 definition but `review`'s and `error`'s data (open since format 1.0) and the `ext` record's (open by
 design) is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a newer
@@ -625,11 +644,12 @@ line and verdict is in [verdicts](verdicts.md).
    under the keys valid at its seq; a `key.retire` must name a declared key and sets its `last_seq`. All records must
    share the first key record's `log_id`. A key with `cert` is declared only if its certificate verifies under a
    pinned issuer, for that key and `log_id`, in the issuer's cosigned issuance log ([issuer.md](issuer.md)).
-6. **Runs.** A bundle holds exactly one `runs/` file, or any number with a run-set. For each run, every record must:
-   verify under the keys valid at its seq (§4); be a schema-valid `tracekit.event.v2` event of this `log_id`; have
-   `run_seq` = its index, `run_prev_hash` = the previous record's `hash` (zeros first), the first record's tenant and
-   run_id, a seq above the previous record's; and follow no `run.final`. The run's first and last records must be
-   included in the checkpointed tree.
+6. **Runs.** A bundle holds exactly one run, or any number with a run-set; a run is its `runs/<id>.jsonl` file or
+   its parts read in order (§9), whose layout the `run parts` line checks when there are parts. For each run, every
+   record must: verify under the keys valid at its seq (§4); be a schema-valid `tracekit.event.v2` event of this
+   `log_id`; have `run_seq` = its index, `run_prev_hash` = the previous record's `hash` (zeros first), the first
+   record's tenant and run_id, a seq above the previous record's; and follow no `run.final`. The run's first and last
+   records must be included in the checkpointed tree.
 7. **Run-set** (with `registry/run-set.json`). Open the registry notes at `a` and `b` with the pinned log key renamed
    to the registry origin of §7 and the pinned witnesses; each needs `witnesses_required` cosignatures, and caps the
    assurance level by the same rule as the checkpoint; check consistency `a → b`; require `b > 0` and exactly `b − a`

@@ -907,11 +907,12 @@ def _otel_v2(a, bundle):
     --otel-endpoint sent there; returns the file's path."""
     import zipfile
 
+    from .bundle_v2 import run_files
     from .otel import parse_headers, push
     from .signer.otel import payload
     with zipfile.ZipFile(bundle) as z:
-        doc = {"resourceSpans": [rs for n in sorted(z.namelist()) if n.startswith("runs/") for rs in payload(
-            [json.loads(line) for line in z.read(n).splitlines()])["resourceSpans"]]}
+        doc = {"resourceSpans": [rs for parts in run_files(z.namelist()).values() for rs in payload(
+            [json.loads(line) for n in parts for line in z.read(n).splitlines()])["resourceSpans"]]}
     path = os.path.splitext(bundle)[0] + ".otel.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f)

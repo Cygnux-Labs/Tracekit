@@ -5,6 +5,8 @@
                                 every other file
     runs/<id>.jsonl             a run's v2 records in run_seq order, no stubs (id: sha256 of "<tenant>/<run_id>",
                                 32 hex, so names never carry caller text)
+    runs/<id>.part-0001.jsonl   from format 1.4, a run whose records don't fit one file: its records in parts, each
+    runs/<id>.part-0002.jsonl   split at a record and at most the format's per-file limit (run_files reads them as one)
     keys/records.jsonl          the signer.epoch and key.retire records the checkpoint covers
     proofs/records.json         {"checkpoint", "tree_size", "inclusion": {seq: [base64 hash, ...]}}: RFC 6962
                                 inclusion of each run's first and last records, every key record and every record a
@@ -39,6 +41,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import zipfile
 
 from tracekit.format import checkpoint, registry
@@ -47,8 +50,9 @@ from tracekit.storage.base import registry_tree
 FORMAT = "tracekit.bundle.v2"
 VERIFIER_MIN_VERSION = "1.0.0"
 # what each verifier version added to format 1.0, oldest first: record types, data fields per type and enum values per
-# (type, field) (gap kinds: capture.gap and trace.tamper `kind`), and from 1.4.0 the ext names it interprets; a bundle
-# needs the newest version whose entries its records use (`needs`)
+# (type, field) (gap kinds: capture.gap and trace.tamper `kind`), and from 1.4.0 the ext names it interprets and the
+# bundle layouts it reads (`layout`: "run parts", a run's records in several files); a bundle needs the newest version
+# whose entries its records and layout use (`needs`)
 VERSIONS = {
     "1.1.0": {"types": ["input.observed", "content.accessed", "content.erased", "why.finding"],
               "fields": {"policy.decision": ["provenance", "provenance_state"], "run.registered": ["replay_of"]},
@@ -73,13 +77,15 @@ VERSIONS = {
               "values": {"capture.gap": {"kind": ["result_unchecked"]}}},
     "1.4.0": {"types": ["constraint.added"], "fields": {"effect.observed": ["sensor", "denied"], "review": ["cites"],
                                                         "model.exchange": ["said_only"], "capture.gap": ["sensor"]},
-              "values": {"capture.gap": {"kind": ["constraint_refused"]}}, "ext": ["amended", "openshell.policy"]},
+              "values": {"capture.gap": {"kind": ["constraint_refused"]}}, "ext": ["amended", "openshell.policy"],
+              "layout": ["run parts"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
 # uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain
 # and inclusion whatever the ext holds, and interprets the names its rows list (format-v2.md §9)
 EXT = "1.4.0"
 KEY_TYPES = ("signer.epoch", "key.retire")
+PART = re.compile(r"(runs/.+)\.part-([0-9]+)\.jsonl")   # a run's part: the run's file name, the part's number
 
 
 def _jsonl(records):
@@ -92,6 +98,27 @@ def _b64(hashes):
 
 def run_name(tenant, run_id):
     return f"runs/{hashlib.sha256(f'{tenant}/{run_id}'.encode('utf-8')).hexdigest()[:32]}.jsonl"
+
+
+def run_files(names):
+    """{run file: its entries in order} of a bundle's `names`: the run's file, runs/<id>.jsonl, or its parts,
+    runs/<id>.part-0001.jsonl, ..., whose records read in that order are the run's (format-v2.md §9)."""
+    out = {}
+    for n in sorted(x for x in names if x.startswith("runs/")):
+        m = PART.fullmatch(n)
+        out.setdefault(f"{m[1]}.jsonl" if m else n, []).append(n)
+    return out
+
+
+def _parts(name, data, cap):
+    """{name: data} of a run's file, or, past `cap` bytes, its parts: whole lines in order, each part at most `cap`."""
+    if len(data) <= cap:
+        return {name: data}
+    out, at = {}, 0
+    while at < len(data):   # a line longer than `cap` goes in a part of its own, which export then refuses
+        end = data.rfind(b"\n", at, at + cap) + 1 or data.index(b"\n", at) + 1
+        out[f"{name[:-len('.jsonl')]}.part-{len(out) + 1:04d}.jsonl"], at = data[at:end], end
+    return out
 
 
 def ext_names(event):
@@ -109,15 +136,15 @@ def _entries(event, added):
         + [f"ext.{n}" for n in ext_names(event) if n in added.get("ext", ())]
 
 
-def needs(events):
-    """(critical, full) verifier versions of a bundle of `events`. critical, its verifier_min_version: the newest whose
-    VERSIONS entries other than ext names one of them uses, EXT at least when one uses the ext slot. full, its
-    verifier_version: the newest whose entries, ext names among them, they use. A verifier between the two verifies the
-    bundle and says which ext names it did not interpret."""
+def needs(events, layout=()):
+    """(critical, full) verifier versions of a bundle of `events` in `layout` (VERSIONS rows' "layout" names). critical,
+    its verifier_min_version: the newest whose VERSIONS entries other than ext names one of them or the layout uses, EXT
+    at least when one uses the ext slot. full, its verifier_version: the newest whose entries, ext names among them,
+    they use. A verifier between the two verifies the bundle and says which ext names it did not interpret."""
     order = [VERIFIER_MIN_VERSION, *VERSIONS]
     critical = full = VERIFIER_MIN_VERSION
     for version, added in VERSIONS.items():
-        used = [x for e in events for x in _entries(e, added)]
+        used = [x for e in events for x in _entries(e, added)] + [x for x in layout if x in added.get("layout", ())]
         if any(not x.startswith("ext.") for x in used):
             critical = version
         if used:
@@ -127,9 +154,10 @@ def needs(events):
     return critical, max(critical, full, key=order.index)
 
 
-def raised_by(events, version):
-    """What makes a bundle of `events` need `version`: each entry of its VERSIONS row they use other than ext names, and
-    `ext` (the slot) for EXT, with the seqs of the records that use it (the first five)."""
+def raised_by(events, version, layout=()):
+    """What makes a bundle of `events` in `layout` need `version`: each entry of its VERSIONS row they use other than
+    ext names, and `ext` (the slot) for EXT, with the seqs of the records that use it (the first five); and the layout
+    names of the row the bundle uses."""
     seqs = {}
     for e in events:
         used = _entries(e, VERSIONS[version]) if version in VERSIONS else []
@@ -137,7 +165,7 @@ def raised_by(events, version):
                 ["ext"] if version == EXT and ("ext" in e or e["type"] == "ext") else []):
             seqs.setdefault(x, []).append(e["seq"])
     return [f"{x}: seq {', '.join(map(str, s[:5]))}" + (f" and {len(s) - 5} more" if len(s) > 5 else "")
-            for x, s in sorted(seqs.items())]
+            for x, s in sorted(seqs.items())] + [x for x in layout if x in VERSIONS.get(version, {}).get("layout", ())]
 
 
 def _run_set(storage, tenant, tsalt, origin, size, lo, hi):
@@ -230,8 +258,9 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
     keys = [r for r in storage.iter_range(0, size) if r["event"]["type"] in KEY_TYPES]
     seqs = {r["event"]["seq"] for rs in runs.values() for r in (rs[0], rs[-1])} | {
         r["event"]["seq"] for r in keys + pointed}
+    from tracekit.verify.v2 import MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL   # here: that module imports this one
     files.update({
-        **{n: _jsonl(rs) for n, rs in runs.items()},
+        **{p: b for n, rs in runs.items() for p, b in _parts(n, _jsonl(rs), MAX_ENTRY).items()},
         "keys/records.jsonl": _jsonl(keys),
         f"checkpoints/{size}.note": note.encode("utf-8"),
         "proofs/records.json": json.dumps({
@@ -250,19 +279,20 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
                 files[f"policies/{h.removeprefix('sha256:')}.json"] = f.read()
         except (FileNotFoundError, ValueError):   # a policy this signer never ran: the verifier says so
             pass
-    need, full = needs(events)
+    layout = ["run parts"] if any(PART.fullmatch(n) for n in files) else []
+    need, full = needs(events, layout)
     manifest = json.dumps({"format": FORMAT, "verifier_min_version": need, "verifier_version": full,
                            "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}, indent=1)
-    from tracekit.verify.v2 import MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL   # here: that module imports this one
     sizes = {"manifest.json": len(manifest), **{n: len(b) for n, b in files.items()}}
     big = max(sizes, key=sizes.get)
     over = (f"{big} would be {sizes[big] / 2**20:.0f} MiB" if sizes[big] > MAX_ENTRY else
             f"{len(sizes):,} files" if len(sizes) > MAX_ENTRIES else
             f"{sum(sizes.values()) / 2**20:.0f} MiB in all" if sum(sizes.values()) > MAX_TOTAL else None)
     if over:   # a bundle no verifier would read: UNUSABLE BUNDLE
-        raise ValueError(f"the bundle is over the format's limits ({MAX_ENTRY >> 20} MiB a file, {MAX_ENTRIES:,} files, "
-                         f"{MAX_TOTAL >> 20} MiB in all; docs/format-v2.md#9-bundle-layout): {over}, so no verifier "
-                         "could read it. Start a new run for each task or session so each stays under the limits")
+        raise ValueError(f"the bundle is over the format's limits ({MAX_ENTRY >> 20} MiB a file, a run's records split "
+                         f"into parts that fit; {MAX_ENTRIES:,} files; {MAX_TOTAL >> 20} MiB in all; "
+                         f"docs/format-v2.md#9-bundle-layout): {over}, so no verifier could read it. Start a new run for "
+                         "each task or session so each stays under the limits")
     tmp = out_path + ".tmp"
     try:
         with open(tmp, "wb") as f:
@@ -279,4 +309,4 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
         raise
     return {"bundle": out_path, "records": sum(map(len, runs.values())), "tree_size": size,
             **({"runs": len(runs), "registry_leaves": run_set[1] - run_set[0]} if run_set else {}),
-            "verifier_min_version": need, "raised_by": raised_by(events, need), "verifier_version": full}
+            "verifier_min_version": need, "raised_by": raised_by(events, need, layout), "verifier_version": full}

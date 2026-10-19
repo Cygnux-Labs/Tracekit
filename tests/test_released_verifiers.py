@@ -1,7 +1,7 @@
 """Bundles of today's signer, checked by the released verifiers: the Python verifier of each tag in RELEASED, from the
 tag itself (`git archive`), in a child process. A bundle that declares a verifier_min_version up to the release's must
-verify there with the same check lines (names and statuses) as here; one that needs more is `UNVERIFIABLE (needs
-tracekit >= x)`, exit 2, never FAILED. Skipped when the clone lacks a tag (CI fetches the release tags)."""
+verify there with the same check lines (names and statuses) as here; one that needs more (a run in parts among them) is
+`UNVERIFIABLE (needs tracekit >= x)`, exit 2, never FAILED. Skipped when the clone lacks a tag (CI fetches the release tags)."""
 import io
 import json
 import os
@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 from test_bundle_v2 import Log, ext_bundle, trust_config
 from test_reviews import ANALYZER, ME, Signed
@@ -90,6 +91,10 @@ class Released(Signed):
     def test_released_verifiers_read_todays_bundles(self):
         run = self.agent_run()
         cases = {"an agent run": (self.export(run), "1.2.0")}
+        # a run past the per-file limit, here lowered so it fills two parts: no released verifier reads parts
+        files = v2.read_zip(cases["an agent run"][0][0])
+        with mock.patch.object(v2, "MAX_ENTRY", max(len(b) for n, b in files.items() if n.startswith("runs/")) - 1):
+            cases["a run in parts"] = (self.export(run), "1.4.0")
         self.findings(ANALYZER, run)
         cases["the run, with a findings run not exported"] = (self.export(run), "1.2.0")
         # a sensor's loss names its sensor: an older verifier says it can't verify it rather than print a line about

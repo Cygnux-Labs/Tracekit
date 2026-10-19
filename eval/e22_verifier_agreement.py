@@ -15,8 +15,8 @@ of scripts/verify_page_check.py; an honest bundle must verify, a forgery must no
              OCSF import and an agentsh follower run (bundles of the tests that drive them against a real signer)
   open       a run exported while open, and again once closed
   large      `--calls` tool calls of a scripted client through `tracekit signer serve` (the server pack): the run
-             exported open at each tenth, the largest bundle export accepts verified, and once closed (export refuses
-             a run past the bundle limits: the refusals are noted)
+             exported open at each tenth, the largest bundle export accepts verified, and once closed (a run past
+             64 MiB of records goes in parts; export refuses a bundle past the format's limits: a refusal is noted)
   released   a run of the released 1.2.3 and 1.3.0 signers (their tags, by `git archive`); docs/sample/demo-run.tkb (v1)
   forgeries  of several of the above, the manifest refreshed as a careful forger would: a record edited (and re-hashed),
              deleted, two records swapped, the run truncated, an older checkpoint swapped in, another signer's trust

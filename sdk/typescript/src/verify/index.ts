@@ -391,12 +391,14 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   // the runs: one, or with a run-set any number, or one with its findings runs (and replay runs)
   // lean: tracekit why findings (verify/v2.py's _findings) are not checked here: a bundle with a why.finding or a replay
   // run is UNVERIFIABLE; port it when TS users verify tracekit why bundles
-  const names = [...files.keys()].filter((n) => n.startsWith("runs/")).sort();
+  const names = runFiles(files.keys());
   const runSet = files.has("registry/run-set.json");
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
-  for (const name of names) {
-    const records = jsonl(name);
+  const layout: string[] = [];
+  for (const [name, parts] of names) {
+    const pieces = parts.map(jsonl), records = pieces.flat(), whole = parts.length === 1 && parts[0] === name;
     runs.set(name, records);
+    extend(layout, parted(name, parts, pieces));
     if (!records.length) throw new ValueError("a run has no records");
     const head = at(records[0], "event");
     for (const [i, r] of records.entries()) {
@@ -408,11 +410,13 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
         chain.push(`run ${repr(cut(str(get(head, "run_id")), 200))} run_seq ${i} (seq ${repr(get(e, "seq"))}) does not `
           + "continue the run");
     }
-    if (!(await included(records[0]) && await included(records.at(-1)))) outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}`);
+    if (!(await included(records[0]) && await included(records.at(-1))))
+      outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}` + (!whole && await included(records[0])
+        ? `: the last record of ${parts.at(-1)} is not in the checkpointed tree, so a later part may be missing` : ""));
   }
   const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding") || about(rs)[1] !== null);
   if (why) rep.unsupport("tracekit why findings");
-  else if (names.length !== 1 && !runSet && !aboutOne(runs))
+  else if (runs.size !== 1 && !runSet && !aboutOne(runs))
     throw new ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
   let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
   if (runSet) {
@@ -436,6 +440,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (bridge && truthy(bridge.data.bridge))
     rep.notes.push(`this log continues the v1 ledger of key ${str(at(bridge.data.bridge, "v1_kid"))}; pass the v1 ledger and `
       + "its signer.pub to the reference verifier to check the format bridge");
+  const inParts = [...names].filter(([n, ps]) => !(ps.length === 1 && ps[0] === n)).map(([, ps]) => ps.length);
+  if (inParts.length)
+    rep.check("run parts", !layout.length, `${inParts.length} run(s) in ${inParts.reduce((a, b) => a + b, 0)} parts, `
+      + "each part continuing the one before it", layout);
   rep.check("signatures", !problems.length, `${every.length} record(s), keys valid at their position`, problems);
   const only = runs.size === 1 ? [...runs.values()][0][0].event : null;
   rep.check("run chain", !chain.length, only ? `run ${repr(cut(str(get(only, "run_id")), 200))} of tenant `
@@ -1149,6 +1157,41 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   rep.check("log tail", truthy(closed), truthy(closed) ? `none: log.closed at seq ${str(closed.seq)} is the last record`
     : `records after tree size ${size} are unproven (no log.closed in the range)`, [], true);
   return [retired, lo === 0 ? top : -1, regCosigs];
+}
+
+/** A run's part: the run's file name, the part's number (tracekit/bundle_v2.py PART). */
+const PART = /^(runs\/.+)\.part-([0-9]+)\.jsonl$/;
+
+/** {run file: its entries in order} of a bundle's `names`: the run's file, runs/<id>.jsonl, or its parts,
+ * runs/<id>.part-0001.jsonl, ..., whose records read in that order are the run's (format-v2.md §9). */
+export function runFiles(names: Iterable<string>): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const n of [...names].filter((x) => x.startsWith("runs/")).sort()) {
+    const m = PART.exec(n), run = m ? `${m[1]}.jsonl` : n;
+    out.set(run, [...out.get(run) ?? [], n]);
+  }
+  return out;
+}
+
+/** What is wrong with the parts of `run` (runFiles): `names`, its files in order, and `pieces`, their records. A run in
+ * one file has none; one in parts has part-0001 to part-n and no other file, each holding records, each one's first
+ * record the successor of the last of the part before it. */
+function parted(run: string, names: string[], pieces: J[][]): string[] {
+  if (names.length === 1 && names[0] === run) return [];
+  const stem = run.slice(0, -".jsonl".length), digits = names.filter((n) => n !== run).map((n) => [n, PART.exec(n)![2]]);
+  const numbered = new Set(digits.filter(([, d]) => d.length === 4 && d !== "0000").map(([, d]) => Number(d)));
+  const gaps: number[] = [];
+  for (let i = 1; i < Math.max(0, ...numbered); i++) if (!numbered.has(i)) gaps.push(i);
+  const held = names.map((n, i) => [n, pieces[i]] as const).filter(([, p]) => p.length);
+  return [
+    ...names.includes(run) ? [`${run} and ${names[1]}: one run in one file and in parts`] : [],
+    ...digits.filter(([, d]) => d.length !== 4 || d === "0000").map(([n]) => `${n}: not a part's name (part-0001, part-0002, ...)`),
+    ...gaps.length ? [`${stem}.part-${String(gaps[0]).padStart(4, "0")}.jsonl is missing`
+      + (gaps.length > 1 ? `, and ${gaps.length - 1} more part(s)` : "")] : [],
+    ...names.filter((_, i) => !pieces[i].length).map((n) => `${n} holds no records`),
+    ...held.slice(1).flatMap(([b, y], i) => same(get(at(y[0], "event"), "run_prev_hash"), at(held[i][1].at(-1), "hash"))
+      ? [] : [`${b} does not continue ${held[i][0]}`]),
+  ];
 }
 
 const runName = async (tenant: J, runId: J) => `runs/${(await sha256hex(bytes(`${str(tenant)}/${str(runId)}`))).slice(0, 32)}.jsonl`;
