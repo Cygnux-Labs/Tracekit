@@ -78,14 +78,14 @@ It shows, in this order:
 - what to do next, with the commands to run, for every result that isn't plainly VERIFIED;
 - when nothing failed, a summary: records and time span, signer, assurance, agents, tool calls, calls held for
   approval and who answered them, gaps, and findings with their author labels;
-- every line exactly as `tracekit verify` prints it, each with what it means, then Copy report and Download report
-  (JSON), the JSON of `tracekit verify --json`.
+- every line exactly as `tracekit verify` prints it, each with what it means, then **copy report** and **download
+  JSON**, the JSON of `tracekit verify --json`.
 
 Without a trust file it checks everything that needs no pinned key: a changed, missing or reordered record still
 FAILS, but an intact bundle is `UNVERIFIABLE (no trust config: ...)`, after a `trust config` warning line. Anyone can
 sign a bundle and its checkpoint with keys of their own; the trust file says whose you accept, so get it from the
 sender directly, not with the bundle. A v1 bundle isn't checked in the page: it says so and prints
-`uvx --from tracekit-ai tracekit verify run.tkb --key signer.pub`. **Try a sample** loads a small bundle of a dev
+`uvx --from tracekit-ai tracekit verify run.tkb --key signer.pub`. The **samples** buttons load a small bundle of a dev
 signer, and a copy whose approval was edited after signing.
 
 `scripts/verify_page_check.py` (with Playwright) opens the page in a real browser and checks that it reports what both
