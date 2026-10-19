@@ -174,18 +174,20 @@ ask:
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
-    # in bypassPermissions mode or under a matching allow rule nobody is asked (docs/integrations/claude-code-sandbox.md)
+    # in bypassPermissions mode or under a matching allow rule nobody is asked
+    # (docs/integrations/claude-code-sandbox.md); true in any case, as JSON or as a string, as TK-F008 reads it
     field: dangerouslyDisableSandbox
-    pattern: '^true$'
+    pattern: '^[Tt][Rr][Uu][Ee]$'
     reason: running a command outside Claude Code's sandbox
     remedy: Wait for a person to approve the held call, or run the command inside the sandbox, without dangerouslyDisableSandbox.
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that leaves it.
   - id: TK-A004
     # Gemini CLI's sandbox expansion: with security.toolSandboxing on, a run_shell_command call's additional_permissions
     # gives the command network access or more paths to read or write, and in YOLO mode Gemini asks nobody
-    # (docs/integrations/gemini-sandbox.md). Matched as canonical JSON; a request that turns nothing on isn't held.
+    # (docs/integrations/gemini-sandbox.md). Matched as canonical JSON, or as the JSON text a string holds (spaces
+    # allowed); a request that turns nothing on isn't held.
     field: additional_permissions
-    pattern: '"network":true|"(read|write)":\["'
+    pattern: '"network":\s*true|"(read|write)":\s*\[\s*"'
     reason: running a command with more than Gemini CLI's sandbox allows
     remedy: Wait for a person to approve the held call, or run the command with the sandbox's own permissions, without additional_permissions.
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that asks for more.
@@ -279,7 +281,7 @@ flag:
   - id: TK-F008
     tool: Bash
     field: run_in_background
-    pattern: '^(true|True|TRUE)$'
+    pattern: '^[Tt][Rr][Uu][Ee]$'
     label: background_spawn
   - id: TK-F009
     tool: Bash|Write|Edit|MultiEdit

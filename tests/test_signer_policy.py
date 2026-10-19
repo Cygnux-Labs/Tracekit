@@ -108,7 +108,8 @@ class CodingPack(unittest.TestCase):
 
     def test_a_command_run_outside_claude_codes_sandbox_asks(self):
         self.verdicts([({"command": "npm install", "dangerouslyDisableSandbox": True}, "TK-A003"),
-                       ({"command": "npm install", "dangerouslyDisableSandbox": "true"}, "TK-A003")])
+                       ({"command": "npm install", "dangerouslyDisableSandbox": "true"}, "TK-A003"),
+                       ({"command": "npm install", "dangerouslyDisableSandbox": "True"}, "TK-A003")])
         for args in ({"command": "npm install", "dangerouslyDisableSandbox": False}, {"command": "npm install"}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
 
@@ -116,7 +117,9 @@ class CodingPack(unittest.TestCase):
         self.verdicts([({"command": "npm install", "additional_permissions": {"network": True}}, "TK-A004"),
                        ({"command": "cp a ~/b", "additional_permissions": {"fileSystem": {"write": ["/home/a"]}}}, "TK-A004"),
                        ({"command": "cat ~/n", "additional_permissions": {"fileSystem": {"read": ["/home/a/n"],
-                                                                                         "write": []}}}, "TK-A004")])
+                                                                                         "write": []}}}, "TK-A004"),
+                       ({"command": "ls", "additional_permissions": '{"network": true}'}, "TK-A004"),
+                       ({"command": "ls", "additional_permissions": '{"read": [ "/etc" ]}'}, "TK-A004")])
         for args in ({"command": "npm test", "additional_permissions": {"network": False, "fileSystem": {"read": []}}},
                      {"command": "npm test", "additional_permissions": {}}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
