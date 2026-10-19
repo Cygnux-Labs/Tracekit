@@ -46,3 +46,5 @@
 {"tool": "Write", "args": {"file_path": "/repo/docs/aws.md", "content": "Configure ~/.aws/credentials with `aws configure`."}, "expect": "allow", "note": "content mentions a credentials path"}
 {"tool": "Write", "args": {"file_path": "C:\\proj\\src\\app.py", "content": "print(1)"}, "expect": "allow", "note": "Windows path"}
 {"tool": "Write", "args": {"file_path": "/Users/u/proj/.env.EXAMPLE", "content": "A="}, "expect": "allow", "note": "env template in upper case"}
+{"tool": "Read", "args": {"file_path": "/etc/systemd/system/nginx.service"}, "expect": "allow", "note": "reading a service definition"}
+{"tool": "Write", "args": {"file_path": "/repo/docs/hooks.md", "content": "# Hooks"}, "expect": "allow", "note": "a document about hooks"}

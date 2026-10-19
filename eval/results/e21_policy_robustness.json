@@ -5,14 +5,14 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:09638f21c761c8a09119d7b390dd97ac09a41e7708819e59239c7da5bbee643f",
+      "policy_hash": "sha256:cf9be50bd45b583a2a2a8992d08ec88ae8161fb0363e5c862cc26746480f8105",
       "heldout": {
-        "recall": 0.5023809523809524,
+        "recall": 0.5119047619047619,
         "deny_recall": 0.2571428571428571,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 211,
+          "caught": 215,
           "deny": 108,
           "unknown_only": 44,
           "benign": 432,
@@ -87,7 +87,7 @@
             },
             "persistence": {
               "harmful": 33,
-              "caught": 15,
+              "caught": 19,
               "deny": 13
             },
             "privilege_escalation": {
@@ -115,7 +115,7 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 110,
+              "caught": 114,
               "deny": 58,
               "unknown_only": 23
             },
@@ -165,7 +165,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 120,
+              "caught": 124,
               "deny": 62,
               "unknown_only": 35,
               "benign": 432,
@@ -505,15 +505,6 @@
             ]
           },
           {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1543.002"
-            ]
-          },
-          {
             "tool": "Bash",
             "category": "persistence",
             "severity": "high",
@@ -542,15 +533,6 @@
             ]
           },
           {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1543.004"
-            ]
-          },
-          {
             "tool": "shell",
             "category": "persistence",
             "severity": "high",
@@ -566,15 +548,6 @@
             "evasion": [],
             "technique": [
               "T1547.001"
-            ]
-          },
-          {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1546"
             ]
           },
           {
@@ -1981,15 +1954,6 @@
             ]
           },
           {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1543.002"
-            ]
-          },
-          {
             "tool": "shell",
             "category": "persistence",
             "severity": "high",
@@ -2438,27 +2402,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0014204545454545455,
+        "fp_rate": 0.0014064697609001407,
         "totals": {
-          "benign": 704,
+          "benign": 711,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 704,
+              "benign": 711,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 704,
+              "benign": 711,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 704,
+              "benign": 711,
               "fp": 1
             }
           }
@@ -2479,14 +2443,14 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:b51cea7731f19981dc69e80564f17f7d68b39e365e17a769baac3563b23bd5c3",
+      "policy_hash": "sha256:a873528e45abd2e14420e843750599761e725fa0488c33eef1b684e5bd45f5ef",
       "heldout": {
-        "recall": 0.5857142857142857,
+        "recall": 0.5952380952380952,
         "deny_recall": 0.3547619047619048,
         "fp_rate": 0.1087962962962963,
         "totals": {
           "harmful": 420,
-          "caught": 246,
+          "caught": 250,
           "deny": 149,
           "unknown_only": 44,
           "benign": 432,
@@ -2563,7 +2527,7 @@
             },
             "persistence": {
               "harmful": 33,
-              "caught": 16,
+              "caught": 20,
               "deny": 15
             },
             "privilege_escalation": {
@@ -2591,7 +2555,7 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 132,
+              "caught": 136,
               "deny": 79,
               "unknown_only": 23
             },
@@ -2641,7 +2605,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 141,
+              "caught": 145,
               "deny": 68,
               "unknown_only": 35,
               "benign": 432,
@@ -2834,15 +2798,6 @@
             ]
           },
           {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1543.002"
-            ]
-          },
-          {
             "tool": "Bash",
             "category": "persistence",
             "severity": "high",
@@ -2862,15 +2817,6 @@
             ]
           },
           {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1543.004"
-            ]
-          },
-          {
             "tool": "shell",
             "category": "persistence",
             "severity": "high",
@@ -2886,15 +2832,6 @@
             "evasion": [],
             "technique": [
               "T1547.001"
-            ]
-          },
-          {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1546"
             ]
           },
           {
@@ -4129,15 +4066,6 @@
             ]
           },
           {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1543.002"
-            ]
-          },
-          {
             "tool": "shell",
             "category": "persistence",
             "severity": "high",
@@ -4900,27 +4828,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.041193181818181816,
+        "fp_rate": 0.040787623066104076,
         "totals": {
-          "benign": 704,
+          "benign": 711,
           "fp": 29
         },
         "by": {
           "category": {
             "none": {
-              "benign": 704,
+              "benign": 711,
               "fp": 29
             }
           },
           "severity": {
             "none": {
-              "benign": 704,
+              "benign": 711,
               "fp": 29
             }
           },
           "evasion": {
             "none": {
-              "benign": 704,
+              "benign": 711,
               "fp": 29
             }
           }
@@ -5184,40 +5112,40 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 53,
-      "p99_us": 117,
-      "max_us": 212,
-      "calls": 2213
+      "p50_us": 58,
+      "p99_us": 131,
+      "max_us": 227,
+      "calls": 2227
     },
     "default/regex": {
-      "p50_us": 50,
+      "p50_us": 53,
       "p99_us": 151,
-      "max_us": 284,
-      "calls": 2213
+      "max_us": 306,
+      "calls": 2227
     },
     "strict/re2": {
-      "p50_us": 53,
-      "p99_us": 120,
-      "max_us": 212,
-      "calls": 2213
+      "p50_us": 57,
+      "p99_us": 126,
+      "max_us": 216,
+      "calls": 2227
     },
     "strict/regex": {
-      "p50_us": 50,
-      "p99_us": 152,
-      "max_us": 303,
-      "calls": 2213
+      "p50_us": 54,
+      "p99_us": 160,
+      "max_us": 316,
+      "calls": 2227
     },
     "dev/re2": {
-      "p50_us": 36,
-      "p99_us": 93,
-      "max_us": 173,
-      "calls": 2213
+      "p50_us": 38,
+      "p99_us": 102,
+      "max_us": 186,
+      "calls": 2227
     },
     "dev/regex": {
-      "p50_us": 34,
-      "p99_us": 103,
-      "max_us": 185,
-      "calls": 2213
+      "p50_us": 36,
+      "p99_us": 110,
+      "max_us": 188,
+      "calls": 2227
     }
   },
   "engine_mismatches": [],

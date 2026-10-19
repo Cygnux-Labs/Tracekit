@@ -120,6 +120,20 @@ class CodingPack(unittest.TestCase):
                      {"command": "npm test", "additional_permissions": {}}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
 
+    def test_writes_to_autostart_locations_and_git_hooks_ask(self):
+        self.verdicts([({"file_path": "/Users/dev/Library/LaunchAgents/com.example.helper.plist"}, "TK-A010"),
+                       ({"file_path": "/home/dev/.config/systemd/user/example.service"}, "TK-A010"),
+                       ({"file_path": "/repo/.git/hooks/pre-commit"}, "TK-A012")], tool="Write")
+        self.verdicts([("cp example.service /etc/systemd/system/", "TK-A011"),
+                       ("systemctl --user enable example.service", "TK-A011"),
+                       ("chmod +x .git/hooks/pre-push", "TK-A013"), ("git config core.hooksPath .githooks", "TK-A013")])
+        for tool, args in (("Bash", {"command": "launchctl list"}), ("Bash", {"command": "systemctl status nginx"}),
+                           ("Bash", {"command": "ls ~/Library/LaunchAgents"}), ("Bash", {"command": "ls .git/hooks"}),
+                           ("Bash", {"command": "git config user.name dev"}),
+                           ("Read", {"file_path": "/etc/systemd/system/nginx.service"}),
+                           ("Write", {"file_path": "/repo/docs/hooks.md"})):
+            self.assertEqual(self.e.decide(tool, args)["verdict"], "allow", args)
+
     def test_argv_lists_and_command_fields(self):
         self.verdicts([({"command": ["sudo", "id"]}, "TK-D001"), ({"command": ["bash", "-lc", "sudo id"]}, "TK-D001"),
                        ({"commands": ["ls", "sudo id"]}, "TK-D001"), ({"command": 42}, "TK-SHELL-PARSE"),

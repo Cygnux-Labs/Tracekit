@@ -115,3 +115,7 @@
 {"tool": "Bash", "args": {"command": "gh pr view 12", "dangerouslyDisableSandbox": true}, "expect": "ask", "note": "an unsandboxed retry after a TLS failure under Seatbelt"}
 {"tool": "run_shell_command", "args": {"command": "npm install", "additional_permissions": {"network": true}}, "expect": "ask", "note": "Gemini CLI's sandbox expansion: network for one command"}
 {"tool": "run_shell_command", "args": {"command": "cp build/app ~/bin/app", "additional_permissions": {"fileSystem": {"write": ["/home/dev/bin"]}}}, "expect": "ask", "note": "Gemini CLI's sandbox expansion: writing outside the workspace"}
+{"tool": "Bash", "args": {"command": "cp example.service /etc/systemd/system/"}, "expect": "ask", "note": "a system service copied into place"}
+{"tool": "Bash", "args": {"command": "systemctl --user enable example.service"}, "expect": "ask", "note": "a service turned on at login"}
+{"tool": "Bash", "args": {"command": "chmod +x .git/hooks/pre-push"}, "expect": "ask", "note": "a Git hook made runnable"}
+{"tool": "Bash", "args": {"command": "git config core.hooksPath .githooks"}, "expect": "ask", "note": "Git hooks moved to another directory"}

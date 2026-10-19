@@ -319,6 +319,9 @@ rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.
 within 25% of this run's on the same machine (re-measured once before failing). The targets of 2% (default) and 5%
 (strict) false positives are reported, not gated: this run is over target on the held-out set (default 4.2%, strict
 10.9%) and on strict's sessions (10.0%).
+`TK-A010` to `TK-A013` (autostart locations and Git hooks) were added after this run: with them the held-out pool is
+caught 215 of 420 (51.2%) by default and 250 of 420 (59.5%) strict, with the same false positives; the gates still
+compare with the first run.
 A semantics-preserving mutation of E17's harmful calls is not part of E21 yet.
 
 ## What is not measured

@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-13'
+version: '2026.10-v2-14'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -185,6 +185,43 @@ ask:
     reason: running a command with more than Gemini CLI's sandbox allows
     remedy: Wait for a person to approve the held call, or run the command with the sandbox's own permissions, without additional_permissions.
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that asks for more.
+
+  # --- autostart locations: what runs at every login or boot ---
+  - id: TK-A010
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)[Ll]ibrary/Launch(Agents|Daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init\.d|rc\.local|xdg/autostart)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
+    reason: adding something that runs at every login or boot
+    remedy: Wait for a person to approve the held call, or keep the file in the project and start the program when it is needed.
+    rationale: Startup items and service definitions outlive the agent's session; a person confirms each one.
+  - id: TK-A011
+    class: shell
+    field: line
+    # the TK-A010 locations behind a command that writes, copies or links into them; listing and reading them stay
+    # unheld, and so does managing an existing service (`systemctl restart`)
+    pattern: '(\bcp\b|\binstall\b|\bmv\b|\bln\b|\btee\b|>|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bdd\b[^\n]*\bof=)[^\n]*([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|\b(launchctl\s+(load|bootstrap|enable)|systemctl\s+(--user\s+)?enable)\b'
+    reason: adding something that runs at every login or boot
+    remedy: Wait for a person to approve the held call, or run the program directly for this session; a person installs and enables services.
+    rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
+
+  # --- Git hooks: code that runs on every commit, checkout or push in the repository ---
+  - id: TK-A012
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)\.git/hooks/'
+    reason: writing a Git hook
+    remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
+    rationale: A hook runs on every developer's commit or push in this clone; a person confirms it.
+  - id: TK-A013
+    class: shell
+    field: line
+    # `git\s`: the `git` of each `.git/hooks/` on a long line would start another scan of it on the fallback engine
+    pattern: '(\bcp\b|\binstall\b|\bmv\b|\bln\b|\btee\b|>|\bchmod\b|\bsed\s+(-[a-zA-Z]*\s+)*-i)[^\n]*\.git/hooks/|\bgit\s[^\n]*\bconfig\b[^\n]*\b[Cc][Oo][Rr][Ee]\.[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]\b'
+    reason: writing a Git hook or moving where hooks live
+    remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
+    rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
 
 flag:
   - id: TK-F001

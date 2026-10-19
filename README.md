@@ -15,7 +15,7 @@ and gives you one `.tkb` file per run that anyone can verify offline.**
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>527 of 527</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 704 (E17)</sub></td>
+<td align="center" width="25%"><h3>534 of 534</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 711 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -207,7 +207,7 @@ is tested, but may change between releases ([what's stable](https://github.com/C
 | Core | What it does | Measured |
 |---|---|---|
 | **Record** | Every tool call, decision and result in one signed hash chain per run. A lost event becomes a signed gap, never silence | 6 of 8 tamper attacks caught by the log alone (E1) |
-| **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 527 of 527 harmful calls stopped, 1 false alarm in 704 (E17) |
+| **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 527 of 527 harmful calls stopped, 1 false alarm in 711 (E17) |
 | **Approve** | A held call runs only after a yes from the command line, bound to its exact arguments and used once ([approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md)) | Edited arguments, a replayed snapshot or another run's approval: refused, in the contract tests every stable framework integration runs |
 | **Prove** | `tracekit verify` checks a run's file offline against keys you pinned | 8 of 8 insider attacks caught (E8) |
 | **Watch** | `tracekit view`: every run verified, blocked and held calls, approvals, gaps, replay and a run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)) | Not measured |
@@ -234,7 +234,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 |---|---|---|
 | **E1** tamper detection | 120-record signed logs, 8 attacks, 60 trials each, re-run on 1.2 | 6 of 8 caught by the log alone, **8 of 8 with a witness** |
 | **E8** insider attacks | Real unprivileged users against a Linux system-mode signer: a decoy signer, a stopped signer, a swapped policy, fabricated runs | **8 of 8 caught**, a merge gate on every pull request |
-| **E17** policy packs | 527 harmful and 704 benign tool calls in 11 classes, decided by both regex engines | **527 of 527 stopped**; 1 false alarm, a draft email held for a person |
+| **E17** policy packs | 534 harmful and 711 benign tool calls in 11 classes, decided by both regex engines | **534 of 534 stopped**; 1 false alarm, a draft email held for a person |
 | **E21** policy robustness | 420 harmful and 432 benign calls written blind to the rules, scored once; 130 developer-session calls | server pack: 211 of 420 stopped or held, 18 of 432 false alarms, 2 of 130 in sessions; p99 125 µs |
 | **E10** reconciliation | 30 runs, 12 with a seeded discrepancy: a missing hook, a fabricated call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **E9** overhead | Signer round trip over a Unix socket, file storage, macOS quick run | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |

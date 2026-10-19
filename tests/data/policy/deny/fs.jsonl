@@ -26,3 +26,6 @@
 {"tool": "Write", "args": {"file_path": "/Users/u/proj/.ENV", "content": "k"}, "expect": "deny", "note": "case-insensitive file system"}
 {"tool": "Edit", "args": {"file_path": "/ETC/tracekit/policy.yaml", "old_string": "a", "new_string": "b"}, "expect": "deny", "note": "case-insensitive file system"}
 {"tool": "Write", "args": {"file_path": "/Users/u/.Claude/projects/x.jsonl", "content": "k"}, "expect": "deny", "note": "case-insensitive file system"}
+{"tool": "Write", "args": {"file_path": "/Users/dev/Library/LaunchAgents/com.example.helper.plist", "content": "<plist/>"}, "expect": "ask", "note": "a login item"}
+{"tool": "Write", "args": {"file_path": "/home/dev/.config/systemd/user/example.service", "content": "[Service]\nExecStart=/usr/bin/true"}, "expect": "ask", "note": "a user service"}
+{"tool": "Write", "args": {"file_path": "/repo/.git/hooks/pre-commit", "content": "#!/bin/sh\nexit 0"}, "expect": "ask", "note": "a Git hook"}
