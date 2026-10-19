@@ -95,8 +95,14 @@ class Custody:
                 hint = {"approval_id_hint": self.client.approval_request({**base, "tool_call_id": tcid})["approval_id"]}
                 state, end = "requested", time.monotonic() + self.wait_s
                 while state == "requested" and end > time.monotonic():
-                    state = self.client.approval_wait({**base, "approval_id": hint["approval_id_hint"], "timeout_ms":
-                                                       int(min(end - time.monotonic(), 300) * 1000)})["state"]
+                    try:
+                        state = self.client.approval_wait({
+                            **base, "approval_id": hint["approval_id_hint"],
+                            "timeout_ms": int(min(end - time.monotonic(), 300) * 1000)})["state"]
+                    except RPCError as e:   # this client's other waits hold every slot: still requested, ask again
+                        if e.code != "quota_exceeded":
+                            raise
+                        time.sleep(max(0, min((e.retry_after_ms or 1000) / 1000, end - time.monotonic())))
                 if state != "approved":
                     return (403, f"{', '.join(d['rule_ids'])}: approval {state}"), None, None
             c = self.client.approval_consume({**call, **hint})

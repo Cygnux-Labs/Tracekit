@@ -72,18 +72,25 @@ LISTS = {"tools/list": ("list_tools", "tools"), "prompts/list": ("list_prompts",
 
 class Upstreams:
     """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, *a)` runs one
-    of the mcp Client's methods on it from any thread."""
+    of the mcp Client's methods on it from any thread. A session that ended (a stdio upstream that exited, a remote
+    one that went away) is opened again on the next call."""
 
     def __init__(self, targets):
         """`targets`: upstream name -> what mcp.Client connects to (StdioServerParameters, a transport, a server)."""
-        from mcp import Client
-        self.loop, self.clients = asyncio.new_event_loop(), {}
+        self.loop, self.clients, self.targets = asyncio.new_event_loop(), {}, targets
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self._stop = asyncio.Event()
+        self._held, self._locks = {}, {name: threading.Lock() for name in targets}
+        for name in targets:
+            self._open(name)
 
-        async def hold(name, target, ready):
+    def _open(self, name):
+        """Open upstream `name`'s session and hold it until close()."""
+        from mcp import Client
+
+        async def hold(ready):
             try:
-                async with Client(target) as c:
+                async with Client(self.targets[name]) as c:
                     self.clients[name] = c
                     ready.set_result(None)
                     await self._stop.wait()
@@ -91,11 +98,9 @@ class Upstreams:
                 if not ready.done():
                     ready.set_exception(e)
                 raise
-        self._held = []
-        for name, target in targets.items():
-            ready = concurrent.futures.Future()
-            self._held.append(asyncio.run_coroutine_threadsafe(hold(name, target, ready), self.loop))
-            ready.result(UPSTREAM_TIMEOUT_S)
+        ready = concurrent.futures.Future()
+        self._held[name] = asyncio.run_coroutine_threadsafe(hold(ready), self.loop)
+        ready.result(UPSTREAM_TIMEOUT_S)
 
     def _run(self, coro, timeout=UPSTREAM_TIMEOUT_S):
         fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
@@ -106,16 +111,33 @@ class Upstreams:
             raise
 
     def call(self, name, method, *a):
+        with self._locks[name]:
+            if not self._stop.is_set() and (self._held[name].done() or _closed(self.clients[name])):
+                self._held[name].cancel()   # its session ended (the upstream exited or went away): a new one
+                self._open(name)
         return self._run(getattr(self.clients[name], method)(*a))
 
     def close(self):
         self.loop.call_soon_threadsafe(self._stop.set)
-        for h in self._held:
+        for h in self._held.values():
             try:
                 h.result(10)
             except Exception:   # an upstream that failed or went away: nothing left to close
                 pass
         self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+def _closed(client):
+    """Whether mcp Client `client`'s connection has closed: its upstream exited or went away."""
+    # lean: mcp's Client says so only through its dispatcher's _closed (mcp 2.3); without it a session that ended is
+    # found when its hold task does. Use a public flag once mcp has one
+    try:
+        dispatcher = client.session._dispatcher
+    except RuntimeError:   # the client has left its session
+        return True
+    except AttributeError:
+        return False
+    return getattr(dispatcher, "_closed", False) is True
 
 
 def _dump(x):
@@ -234,7 +256,7 @@ class _Error(Exception):
 def _upstream_error(e, ran=False):
     return (f"upstream error: {type(e).__name__}: {e}" + ("; the call may have run: check before making it again"
                                                           if ran else "")
-            + "; if the upstream went away, restart the MCP gateway (it doesn't reconnect)")
+            + "; the gateway connects to an upstream that went away again on the next call")
 
 
 def _remember(gw, uri, up=None):

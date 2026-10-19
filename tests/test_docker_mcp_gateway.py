@@ -3,8 +3,10 @@ a stand-in for `docker mcp gateway run --servers=duckduckgo` (an MCP server on s
 each tool call is decided, held for a person, run and completed through an in-process v2 signer, tier T2."""
 import json
 import os
+import signal
 import sys
 import threading
+import time
 import unittest
 
 import test_mcp_gateway as base
@@ -33,6 +35,8 @@ def search(query: str) -> str:
     return "results for " + query
 
 
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pid"), "w") as f:
+    f.write(str(os.getpid()))
 s.run()
 '''
 POLICY = Engine({"deny": [{"id": "R-INTERNAL", "tool": "^mcp:duckduckgo/search$", "pattern": "internal-only"}],
@@ -84,6 +88,15 @@ class DockerUpstream(unittest.TestCase):
         self.assertEqual([(e["type"], e["source"], e["tier"], e["data"].get("tool")) for e in evs],
                          [("policy.decision", "gateway", "T2", "mcp:duckduckgo/search"),
                           ("tool.result", "gateway", "T2", None)])
+
+    def test_docker_exits_and_the_next_call_starts_it_again(self):
+        self.assertFalse(self.agent(lambda c: c.call_tool("duckduckgo__search", {"query": "one"})).is_error)
+        with open(os.path.join(self.dir, "pid")) as f:
+            os.kill(int(f.read()), signal.SIGTERM)   # Docker Desktop restarting, an OOM kill
+        time.sleep(1)
+        out = self.agent(lambda c: c.call_tool("duckduckgo__search", {"query": "two"}))
+        self.assertEqual((out.is_error, out.content[0].text), (False, "results for two"))
+        self.assertEqual([r["query"] for r in self.ran()], ["one", "two"])
 
     def test_a_denied_call_never_reaches_docker(self):
         out = self.agent(lambda c: c.call_tool("duckduckgo__search", {"query": "internal-only roadmap"}))

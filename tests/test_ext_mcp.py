@@ -134,6 +134,7 @@ class ExtMcp(unittest.TestCase):
     def test_an_allowed_call_passes_and_its_result_completes_it_t2(self):
         out = self.call("echo", {"text": "hi"})
         self.assertEqual(out.WhichOneof("result"), "pass")
+        self.assertEqual(list(out.header_mutation.remove), ["x-tracekit-run"])   # the run token stays at agentgateway
         tcid = out.metadata.fields[ext_mcp.CALL].string_value
         self.assertEqual(self.respond(tcid, {"content": [{"type": "text", "text": "hi"}]}), "pass")
         failed = self.call("echo", {"text": "again"}).metadata.fields[ext_mcp.CALL].string_value
@@ -175,6 +176,17 @@ class ExtMcp(unittest.TestCase):
         # agentgateway skips the response hook for a JSON-RPC error
         tcid = self.call("echo", {"text": "hi"}).metadata.fields[ext_mcp.CALL].string_value
         self.assertEqual(self.gaps_at_run_end(), [("held_call_unresolved", tcid)])
+
+    def test_a_result_nested_deeper_than_json_reads_completes_the_call_as_an_error(self):
+        tcid = self.call("echo", {"text": "hi"}).metadata.fields[ext_mcp.CALL].string_value
+        res = self.pb["McpResponse"](service_names=["up"], method="tools/call",
+                                     mcp_response=b"[" * 200_000 + b"]" * 200_000)
+        res.metadata_context.fields[ext_mcp.CALL].string_value = tcid
+        out = self.pb["McpResponseResult"].FromString(self.rpc["CheckResponse"](res.SerializeToString(), timeout=10))
+        self.assertEqual(out.WhichOneof("result"), "pass")
+        self.assertEqual(self.gaps_at_run_end(), [])
+        [done] = [e for e in self.events() if e["type"] == "tool.result"]
+        self.assertEqual((done["tool_call_id"], done["data"]["ok"]), (tcid, False))
 
     def test_the_signer_unreachable_fails_closed(self):
         self.signer.down = True

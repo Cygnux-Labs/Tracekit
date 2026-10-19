@@ -11,8 +11,9 @@ with metadata `caller` (the identity agentgateway authenticated, as the signer n
 CheckRequest (tools/call): the run is the agent's `X-Tracekit-Run: <run_id>.<run token>` header, which agentgateway
 forwards; the call is decided as `mcp:<service>/<tool>` with its arguments, for `caller`, under that run token, so the
 records are source gateway, tier T2, as at the MCP gateway (executor.Custody). Allowed: Pass, with the call's
-tool_call_id as metadata `tracekit_call`. Anything else is an AuthorizationError (PERMISSION_DENIED) saying why: a deny,
-an unanswered approval, the signer unreachable, no run or caller, params that don't parse (fail closed). agentgateway
+tool_call_id as metadata `tracekit_call`, and X-Tracekit-Run removed from what agentgateway forwards to the MCP server.
+Anything else is an AuthorizationError (PERMISSION_DENIED) saying why: a deny, an unanswered approval, the signer
+unreachable, no run or caller, params that don't parse (fail closed). agentgateway
 gives a processor 10 s, so an `ask` waits APPROVAL_WAIT_S and is then refused as pending; the same call again (same run,
 caller, tool and arguments) takes up that approval and passes once a person approved it.
 CheckResponse (tools/call): the result completes the call metadata `tracekit_call` names (an `isError` result as an
@@ -52,8 +53,11 @@ def _refused(why):
 
 
 def _passed(tcid):
-    """McpRequestResult: pass, metadata (5) Struct {fields (1): {key (1): CALL, value (2): Value {string_value (3)}}}."""
-    return PASS + _ld(5, _ld(1, _ld(1, CALL.encode()) + _ld(2, _ld(3, tcid.encode()))))
+    """McpRequestResult: pass; header_mutation (4) {remove (2): RUN_HEADER}, so the agent's run token never reaches the
+    MCP server (agentgateway applies it on a pass: mcp/guardrails/client.rs apply_request_side); metadata (5) Struct
+    {fields (1): {key (1): CALL, value (2): Value {string_value (3)}}}."""
+    return (PASS + _ld(4, _ld(2, RUN_HEADER.encode()))
+            + _ld(5, _ld(1, _ld(1, CALL.encode()) + _ld(2, _ld(3, tcid.encode())))))
 
 
 def _strings(buf):
@@ -157,6 +161,10 @@ class ExtMcp:
             out = json.loads(m["body"] or b"null")
         except ValueError:
             out = (m["body"] or b"").decode("utf-8", "replace")
+        except RecursionError:   # nested deeper than the parser goes: what ran is recorded, not what it answered
+            self.custody.complete(key, tcid, d, tool, args, "error", error="the call ran; its result nests deeper than "
+                                  "Tracekit reads JSON, so it was not recorded")
+            return PASS
         self.custody.complete(key, tcid, d, tool, args, "error" if isinstance(out, dict) and out.get("isError") else "ok",
                               result=result_field(True, out))
         return PASS

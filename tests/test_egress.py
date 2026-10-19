@@ -522,6 +522,37 @@ class TestProxy(unittest.TestCase):
         self.srv.observer.flush(math.inf)
         self.assertEqual([e for r in self.sent for e in r["effects"]], [])
 
+    def test_a_client_hello_trickled_past_the_deadline_closes_the_tunnel(self):
+        self.srv.deadline = 1   # the connection's deadline (netserver.DEADLINE_S), from its CONNECT
+        s, status = self.connect(f"localhost:{self.up.port}")
+        self.assertEqual(status, "HTTP/1.1 200 Connection established")
+        hello = client_hello("localhost")
+        try:
+            for i in range(4):   # each byte within the read timeout, the whole after the deadline
+                s.sendall(hello[i:i + 1])
+                time.sleep(0.5)
+            s.sendall(hello[4:])
+        except OSError:   # already cut
+            pass
+        self.assertEqual(self.read(s), b"")
+        self.assertEqual(self.up.got, [])
+
+    def test_one_attribution_holds_at_most_max_tunnels(self):
+        with mock.patch.object(egress, "MAX_TUNNELS", 2):
+            held = [self.connect(f"localhost:{self.up.port}")[0] for _ in range(2)]   # ClientHellos still to come
+            s, status = self.connect(f"localhost:{self.up.port}")
+            self.assertEqual(status, "HTTP/1.1 200 Connection established")
+            self.assertEqual(self.read(s), b"")   # a third of run-1's: closed at once
+            other = "Basic " + base64.b64encode(b"run-2:tok.mac").decode()
+            s, _ = self.connect(f"localhost:{self.up.port}", other)
+            s.sendall(client_hello("localhost"))
+            self.assertEqual(self.read(s), b"pong")   # another run's tunnel opens
+            held[0].sendall(client_hello("localhost"))
+            self.assertEqual(self.read(held[0]), b"pong")
+            s, _ = self.connect(f"localhost:{self.up.port}")   # one of run-1's closed: room for another
+            s.sendall(client_hello("localhost"))
+            self.assertEqual(self.read(s), b"pong")
+
     def test_an_allowed_host_needs_no_tls(self):
         self.srv.observer.allow.add("127.0.0.1")
         s, status = self.connect(f"127.0.0.1:{self.up.port}")

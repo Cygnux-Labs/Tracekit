@@ -62,8 +62,10 @@ binds:
   build it from a header the agent sets.
 - The agent registers its run with the signer and sends `X-Tracekit-Run: <run_id>.<run_token>` on every MCP request
   to agentgateway, as it would to Tracekit's [MCP gateway](../mcp-gateway.md#connecting). agentgateway forwards the
-  request's headers to the processor (unless `requestHeaders` filters them out), and to HTTP MCP servers too. A run
-  token is bound to the agent's identity, so it is no use to a server without the agent's credentials.
+  request's headers to the processor (unless `requestHeaders` filters them out), and to HTTP MCP servers too, except
+  on a `tools/call` the processor passes: its answer has agentgateway remove `X-Tracekit-Run` first. Other methods
+  (`tools/list`, resources) don't reach the processor and still carry it. A run token is bound to the agent's
+  identity, so it is no use to a server without the agent's credentials.
 
 ### What happens to a tools/call
 

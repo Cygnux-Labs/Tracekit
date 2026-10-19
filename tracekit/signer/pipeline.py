@@ -362,11 +362,12 @@ class Tx:
     def closing(self, run, reason, **top):
         reason = "quarantine" if run.get("quarantined") else reason
         self.set(run, "closed", True)
-        n = self.log.open_runs[run["owner"]] - 1
+        count = run.get("quota", run["owner"])   # a gateway's run for a client counts in their entry (_register_run)
+        n = self.log.open_runs[count] - 1
         if n:
-            self.set(self.log.open_runs, run["owner"], n)
+            self.set(self.log.open_runs, count, n)
         else:
-            self.pop(self.log.open_runs, run["owner"])
+            self.pop(self.log.open_runs, count)
         self.set(run, "closing_at", time.monotonic())
         return self.emit(run, "run.closing", {"reason": reason}, **top)
 
@@ -539,7 +540,7 @@ class RecordLog:
                     run["rec"] = None
             elif e["type"] == "run.closing":
                 run["closed"], run["closing_at"] = True, run["active"]
-                open_runs[run["owner"]] -= 1
+                open_runs[run.get("quota", run["owner"])] -= 1
             elif e["type"] == "run.final":
                 run["final"] = True
                 key = (e["tenant"], e["run_id"])
