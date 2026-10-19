@@ -88,7 +88,8 @@ The signer signs a `capture.gap` (`tailer_lost`) in the run, each reason saying 
 - agentsh starts a new integrity chain for any reason other than `initial` (its `integrity_chain_rotated` record:
   `sidecar_missing`, `sidecar_corrupt`, `key_rotated`, `legacy_archived`, `manual_reset`, `post_tamper_recovery`); the
   gap carries agentsh's reason, the last sequence agentsh says the old chain had, and the last one Tracekit read;
-- a line isn't a record of agentsh's log format, or carries a decision this follower doesn't map;
+- a line isn't a record of agentsh's log format, carries a decision this follower doesn't map, or one the signer
+  would refuse (an empty event type, a rule that isn't a string, a record over 64 KiB): the follower goes on;
 - the log is truncated under the follower, or the follower is stopped (SIGTERM, Ctrl-C): either ends the following;
 - the follower is killed: its heartbeats stop, and the signer writes the gap itself after 90 seconds.
 

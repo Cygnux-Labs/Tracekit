@@ -11,8 +11,9 @@ only as a commitment; its tool_call_id is the event's `id` (else `line-<n>`, the
 
 Gaps, each a capture.gap tailer_lost that the signer writes: an `integrity.sequence` (when agentsh's audit.integrity is
 on) other than the one after the last (records skipped or repeated); agentsh starting a new integrity chain for any
-reason but `initial` (its `integrity_chain_rotated` record); a line that is not a record of agentsh's format, or a
-decision this module doesn't map; the log truncated under the follower; the follower stopped (SIGTERM, Ctrl-C) first.
+reason but `initial` (its `integrity_chain_rotated` record); a line that is not a record of agentsh's format, a
+decision this module doesn't map, or one the signer would refuse (checked against its RPC schema first); the log
+truncated under the follower; the follower stopped (SIGTERM, Ctrl-C) first.
 The last two end the following. A log renamed away (agentsh's rotation) is followed into the new one at its path. A
 follower that is killed sends no more heartbeats, and the signer writes the gap itself. While the signer can't be
 reached the follower waits and goes on from the line it was at: the log on disk is the queue, and a line's request ids
@@ -28,10 +29,11 @@ import sys
 import time
 
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
-from tracekit.signer.rpc_schema import MAX_EXTERNAL_RECORD, RPCError
+from tracekit.signer.rpc_schema import MAX_EXTERNAL_RECORD, REQUESTS, RPCError, validate
 from tracekit.signer.service import HEARTBEAT_S
 
 POLL_S = 1.0
+DECISION = REQUESTS["decision_import"]["properties"]
 ENDED = ("run_closed", "unknown_run")
 # agentsh's Decision values (pkg/types/decision.go) as allow, deny or ask: `audit` allows with more logging, `redirect`
 # and `soft_delete` carry out something other than what was asked (another command or path, the trash)
@@ -128,12 +130,17 @@ class Log:
                 + f"; read {self.path} for what they say", at)
         if "unknown" in got:
             self.gap(f"{got['unknown']} (byte {at} of {self.path}): read it there", at, 1)
-        if "decision" in got and len(text) > MAX_EXTERNAL_RECORD:
+        fields = "decision" in got and {"system": "agentsh", "record": text, "tool_call_id": f"line-{self.n}",
+                                        **got["decision"]}
+        refused = fields and [e.replace("$", k, 1) for k, v in fields.items() for e in validate(DECISION[k], v)]
+        if fields and len(text) > MAX_EXTERNAL_RECORD:
             self.gap(f"the record at byte {at} of {self.path} has {len(text)} characters, more than the signer "
                      f"takes ({MAX_EXTERNAL_RECORD}): its decision is in that log only", at, 1)
-        elif "decision" in got:
-            self.call("decision_import", 2, system="agentsh", record=text,
-                      **{"tool_call_id": f"line-{self.n}", **got["decision"]})
+        elif refused:   # one the signer would refuse would stop the following
+            self.gap(f"the record at byte {at} of {self.path} holds a decision the signer would refuse "
+                     f"({'; '.join(refused)[:200]}): it is in that log only", at, 1)
+        elif fields:
+            self.call("decision_import", 2, **fields)
         self.want = self.want if seq is None else seq + 1
         self.n += 1
 

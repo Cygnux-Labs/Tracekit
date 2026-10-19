@@ -230,6 +230,15 @@ class TestAgentsh(Followed):
                               r".+\): read it there$")
         self.assertEqual([e["data"]["tool_use_id"] for e in self.typed("policy.external")], ["evt-029"])
 
+    def test_a_decision_the_signer_would_refuse_is_a_gap_and_the_log_goes_on(self):
+        al, log = self.agentsh()
+        al.write('{"id":"evt-9","type":"","policy":{"decision":"deny","rule":["a"]}}', SHADOW)   # no tool, a list rule
+        log.step()
+        [refused] = self.reasons()
+        self.assertRegex(refused, r"^the record at byte \d+ of .+ holds a decision the signer would refuse \(tool: "
+                                  r"shorter than 1; rule_ids\[0\]: expected string, got list\): it is in that log only$")
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.typed("policy.external")], ["evt-029"])
+
     def test_the_signer_unreachable_holds_the_line_and_records_it_once(self):
         al, log = self.agentsh()
         al.write(SHADOW)
