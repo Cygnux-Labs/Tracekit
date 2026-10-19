@@ -10,8 +10,10 @@ Trust comes only from the verifier's own pinned config (JSON):
      "rekor": {"trusted_root": {...}, "publishing_key": "<base64 SPKI>", "class": "public"},   optional: a Sigstore
                                                           trusted_root and the signer's P-256 Rekor publishing key
      "monitors": [{"vkey": "<monitor vkey>", "class": "...", "max_age_s": 3600}],   optional: `tracekit monitor` keys
-     "issuers": [{"vkey": "<CA vkey>", "issuance_log_vkey": "<log vkey>"}]}   optional: record-key issuers
+     "issuers": [{"vkey": "<CA vkey>", "issuance_log_vkey": "<log vkey>"}],   optional: record-key issuers
                                                           (tracekit.issuer, `tracekit issuer vkey`)
+     "analyzers": ["<scheme:subject>", ...]}              optional: the identities whose signed findings read
+                                                          independent (the operator's `tracekit analyze --v2`)
 
 Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its origin, and by the origin's pinned
 hybrid SLH-DSA key when there is one (registry notes too), and cosigned by the required number of pinned witnesses;
@@ -78,6 +80,13 @@ target each outcome must agree with the tool uses those records name; the outcom
 effect and give its interval and verdict (recomputed from looks, family, min_effect, applied and stopped); and every
 replay run of an investigation with findings must be counted or listed `uncounted` by one; else `findings` fails.
 Replay runs of an investigation with no finding are a `replay runs` warning.
+Signed findings (`tracekit analyze --v2`, format 1.4): a `review` record with `cites`, in a findings run. Each cite
+must be a record of the analysed run, in the bundle, with that run_seq and hash, else `reviews` fails. Each finding is
+labelled by its author, the findings run's registered identity, positive-only: `independent` only when the trust
+config's `analyzers` pins it; `self-asserted` (a warning) when it is the analysed run's own identity or either run's
+signer_isolation is same-user (the agent could have written it); else `unpinned author <id>`. Without the analysed run
+in the bundle, its cites are not counted and its author not checked (`reviews counted`, a warning). A review without
+cites (a migrated v1 judge verdict) is `imported`, never checked.
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -151,6 +160,7 @@ COVERED = ("none", "reported", "observed", "enforced")   # weakest first
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
 _VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_IDENTITY = re.compile(r"[a-z0-9_]+:.+")   # scheme:subject, as run.registered's identity reads
 _EOCD, _CEN, _LOC = struct.Struct("<IHHHHIIH"), struct.Struct("<IHHHHHHIIIHHHHHII"), struct.Struct("<IHHHHHIIIHH")
 
 
@@ -246,7 +256,7 @@ def load_trust(path):
         t = loads_strict(f.read(MAX_LINE))
     r = t.get("rekor", {}) if isinstance(t, dict) else None
     ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor", "monitors",
-                                             "issuers"}
+                                             "issuers", "analyzers"}
           and isinstance(r, dict) and (not r or set(r) == {"trusted_root", "publishing_key", "class"}
                                        and isinstance(r["trusted_root"], dict) and isinstance(r["publishing_key"], str)
                                        and r["class"] in CLASSES)
@@ -262,14 +272,16 @@ def load_trust(path):
                   for m in t.get("monitors", []))
           and isinstance(t.get("issuers", []), list)
           and all(isinstance(i, dict) and set(i) == {"vkey", "issuance_log_vkey"}
-                  and all(isinstance(v, str) for v in i.values()) for i in t.get("issuers", [])))
+                  and all(isinstance(v, str) for v in i.values()) for i in t.get("issuers", []))
+          and isinstance(t.get("analyzers", []), list)
+          and all(isinstance(a, str) and _IDENTITY.fullmatch(a) for a in t.get("analyzers", [])))
     if not ok:
         raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, "
-                         "issuers)")
+                         "issuers, analyzers)")
     for k in (t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]
               + [v for i in t.get("issuers", []) for v in i.values()]):
         checkpoint.parse_vkey(k)
-    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], **t}
+    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], "analyzers": [], **t}
 
 
 def _jsonl(data):
@@ -595,6 +607,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("observers", False, f"{len(lost)} observer gap(s): an observer went silent, restarted or lost events "
                                       "while its run was open", lost[:20], warn=True)
     _findings(rep, runs)
+    _reviews(rep, runs, trust["analyzers"])
     _incidents(rep, runs, policies)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
@@ -994,6 +1007,56 @@ def _findings(rep, runs):
     if orphans:
         rep.check("replay runs", False, f"{len(orphans)} replay run(s) of investigations with no finding in the bundle",
                   [rid[:128] for rid in orphans[:20]], warn=True)
+
+
+def _author(records):
+    """('scheme:subject', signer_isolation) of a run's run.registered (Nones when it is not one)."""
+    e = records[0]["event"]
+    d = e.get("data") if e.get("type") == "run.registered" else {}
+    i = d.get("identity")
+    return (f"{i['scheme']}:{i['subject']}" if i else None), d.get("signer_isolation")
+
+
+def _reviews(rep, runs, pinned):
+    """The `reviews` line, and `reviews counted` for signed findings whose analysed run is not in the bundle (module
+    docstring: Signed findings). `pinned`: the trust config's `analyzers`."""
+    by_id = {rs[0]["event"].get("run_id"): rs for rs in runs.values()}
+    total, labels, problems, selfs, uncounted = 0, collections.Counter(), [], [], []
+    for rs in runs.values():
+        reviews = [r["event"] for r in rs if r["event"].get("type") == "review"]
+        signed = [e for e in reviews if "cites" in e["data"]]
+        total, labels["imported"] = total + len(reviews), labels["imported"] + len(reviews) - len(signed)
+        if not signed:
+            continue
+        rid, analyzes = str(rs[0]["event"].get("run_id"))[:128], _about(rs)[0]
+        if analyzes is None:
+            problems += [f"seq {e['seq']}: a signed finding outside a findings run" for e in signed]
+            continue
+        target = by_id.get(analyzes)
+        if target is None:
+            labels["author not checked"] += len(signed)
+            uncounted.append(f"findings run {rid}: run {str(analyzes)[:128]} is not in the bundle")
+            continue
+        hashes = {r["event"].get("run_seq"): r["hash"] for r in target}
+        problems += [f"seq {e['seq']}: cites run_seq {c['run_seq']} of run {str(analyzes)[:128]}, "
+                     + ("which it does not have" if c["run_seq"] not in hashes else "whose hash differs")
+                     for e in signed for c in e["data"]["cites"] if hashes.get(c["run_seq"]) != c["hash"]]
+        (author, isolation), (theirs, their_isolation) = _author(rs), _author(target)
+        if author == theirs or "same-user" in (isolation, their_isolation):
+            label = "self-asserted"
+            selfs.append(f"findings run {rid}: " + (
+                f"its author {str(author)[:256]} is the analysed run's identity" if author == theirs else
+                "the signer runs as the same user as a client (signer_isolation same-user)"))
+        else:
+            label = "independent" if author in pinned else f"unpinned author {str(author)[:256]}"
+        labels[label] += len(signed)
+    if total:
+        rep.check("reviews", not problems and not selfs, f"{total} review(s): " + ", ".join(
+            f"{n} {k}" for k, n in sorted(labels.items()) if n), (problems or selfs)[:20], warn=not problems)
+    if uncounted:
+        rep.check("reviews counted", False, f"{labels['author not checked']} signed finding(s) not counted: export the "
+                  "analysed run with `tracekit export --v2 --run <run> --with-findings` to check their citations",
+                  uncounted[:20], warn=True)
 
 
 def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):

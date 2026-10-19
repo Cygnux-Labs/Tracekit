@@ -21,6 +21,7 @@ from tracekit.signer import service
 from tracekit.signer.rpc_schema import RPC_MIN, RPC_VERSION, RPCError
 from tracekit.storage.file import FileReader
 from tracekit.transport import tcp_dev, read_frame, write_frame
+from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -146,6 +147,30 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", out)
         self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust))
         self.assertTrue(self.held())   # the signer kept running throughout
+
+    def test_the_dev_user_signs_findings_about_its_runs_and_they_read_self_asserted(self):
+        """The dev signer lists its user in analyzers (#309): a findings run about the user's own run signs a finding,
+        which the verifier labels self-asserted, the dev user being the agent too."""
+        c = Client()
+        self.addCleanup(c.close)
+        with c.run("e2e") as run:
+            run.decide("c1", "Bash", {"command": "ls"})
+        store = os.path.join(service.dev_data_dir(), "store")
+        cites = [{"run_seq": r["event"]["run_seq"], "hash": r["hash"]} for r in FileReader(store).iter_run(
+            "default", run.run_id)]
+        with c.run("tracekit-analyze", analyzes=run.run_id) as findings:
+            findings.review_finding("tracekit-analyze/1.4.0", {"kind": "finding", "rule": "TK-X201", "severity": "low"},
+                                    cites)
+        for rid in (run.run_id, findings.run_id):
+            self.assertTrue(wait_for(lambda: list(FileReader(store).iter_run("default", rid))[-1]["event"]["type"]
+                                     == "run.final", 20), "no run.final after the grace window")
+        trust, out = os.path.join(self.dir, "trust.json"), os.path.join(self.dir, "run.tkb")
+        self.cli("signer", "trust", "--dev", "-o", trust)
+        self.cli("export", "--v2", "--run", run.run_id, "--dev", "--with-findings", "-o", out)
+        rep, code = v2.verify(out, trust)
+        self.assertEqual(code, 0, rep.checks)
+        self.assertEqual(next((x["status"], x["detail"]) for x in rep.checks if x["check"] == "reviews"),
+                         ("warn", "1 review(s): 1 self-asserted"))
 
     def test_idle_exit(self):
         os.environ["TRACEKIT_DEV_IDLE"] = "1"

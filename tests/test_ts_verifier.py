@@ -472,5 +472,25 @@ if test_why_signed_replay is not None:
                 self.assertEqual(json.loads(a.read()), json.loads(b.read()))
 
 
+import test_reviews  # noqa: E402
+
+
+@unittest.skipIf(SKIP, SKIP)
+class Reviews(test_reviews.Signed):
+    """Signed findings (`tracekit analyze --v2`): both verifiers check their citations and label their authors alike,
+    on a signer that measures each client's isolation."""
+
+    @unverified_bundles   # one cites what its analysed run does not hold, on purpose
+    def test_both_verifiers_check_signed_findings_alike(self):
+        _build()
+        pick = lambda checks: [c for c in checks if c["check"].startswith("reviews")]   # noqa: E731
+        for name, (bundle, trust) in self.bundles().items():
+            with self.subTest(name):
+                code, rep = Agreement.agree(self, bundle, trust)
+                self.assertEqual(code, 1 if name == "mismatch" else 0)
+                self.assertTrue(pick(rep.checks))
+                self.assertEqual(pick(ts_verify(bundle, trust)["checks"]), pick(rep.checks))
+
+
 if __name__ == "__main__":
     unittest.main()

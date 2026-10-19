@@ -116,7 +116,7 @@ const fmt = (ts: bigint | number) => {
 };
 
 type Trust = { logs: string[]; witnesses: { vkey: string; class: string }[]; algs: string[]; witnesses_required: number;
-  rekor?: Record<string, J>; issuers: J[] };
+  rekor?: Record<string, J>; issuers: J[]; analyzers: string[] };
 
 async function loadTrust(data: Uint8Array): Promise<Trust> {
   const floats: Floats = new WeakMap();
@@ -128,7 +128,7 @@ async function loadTrust(data: Uint8Array): Promise<Trust> {
   const opt = (o: Record<string, J>, k: string) => Object.hasOwn(o, k) ? o[k] : [];
   const r = isObj(t) ? get(t, "rekor", {}) : null;
   const ok = isObj(t) && Object.keys(t).every((k) => ["logs", "witnesses", "algs", "witnesses_required", "rekor",
-    "monitors", "issuers"].includes(k))
+    "monitors", "issuers", "analyzers"].includes(k))
     && isObj(r) && (!Object.keys(r).length || exactly(r, ["trusted_root", "publishing_key", "class"])
       && isObj(r.trusted_root) && typeof r.publishing_key === "string" && CLASSES.includes(r.class))
     && strings(t.logs)
@@ -138,13 +138,16 @@ async function loadTrust(data: Uint8Array): Promise<Trust> {
     && Array.isArray(opt(t, "monitors")) && opt(t, "monitors").every((m: J) => exactly(m, ["vkey", "class", "max_age_s"])
       && typeof m.vkey === "string" && CLASSES.includes(m.class) && int(m, "max_age_s", 0) > 0)
     && Array.isArray(opt(t, "issuers")) && opt(t, "issuers").every((i: J) => exactly(i, ["vkey", "issuance_log_vkey"])
-      && Object.values(i).every((v) => typeof v === "string"));
-  if (!ok) throw new Error("not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers)");
+      && Object.values(i).every((v) => typeof v === "string"))
+    && Array.isArray(opt(t, "analyzers"))
+    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:.+$/.test(a));
+  if (!ok) throw new Error("not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers, analyzers)");
   for (const k of [...t.logs, ...opt(t, "witnesses").map((w: J) => w.vkey), ...opt(t, "monitors").map((m: J) => m.vkey),
     ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) await parseVkey(k);
   t.witnesses ??= [];
   t.witnesses_required ??= 0;
   t.issuers ??= [];
+  t.analyzers ??= [];
   return t as Trust;
 }
 
@@ -308,9 +311,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     for (const [kid, k] of declared) timeline.set(kid, k);
   }
 
-  // the runs: one, or with a run-set any number, or one with its tracekit why findings and replay runs
-  // lean: findings (verify/v2.py's _findings) are not checked here: a bundle with them is UNVERIFIABLE; port it when
-  // TS users verify findings bundles
+  // the runs: one, or with a run-set any number, or one with its findings runs (and replay runs)
+  // lean: tracekit why findings (verify/v2.py's _findings) are not checked here: a bundle with a why.finding or a replay
+  // run is UNVERIFIABLE; port it when TS users verify tracekit why bundles
   const names = [...files.keys()].filter((n) => n.startsWith("runs/")).sort();
   const runSet = files.has("registry/run-set.json");
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
@@ -330,10 +333,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     }
     if (!(await included(records[0]) && await included(records.at(-1)))) outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}`);
   }
-  const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding")
-    || get(rs[0].event, "type") === "run.registered" && ["analyzes", "replay_of"].some((k) => has(get(rs[0].event, "data"), k)));
+  const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding") || about(rs)[1] !== null);
   if (why) rep.unsupport("tracekit why findings");
-  else if (names.length !== 1 && !runSet) throw new Error("a v2 bundle holds exactly one run, or a run-set");
+  else if (names.length !== 1 && !runSet && !aboutOne(runs))
+    throw new Error("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
   let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
   if (runSet) {
     [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
@@ -438,6 +441,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const lost = gaps("observer_lost");
   if (lost.length)
     rep.check("observers", false, `${lost.length} observer gap(s): an observer went silent, restarted or lost events while its run was open`, lost.slice(0, 20), true);
+  checkReviews(rep, runs, trust.analyzers);
   checkIncidents(rep, runs, policies, floats);
   const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
   if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -583,6 +587,82 @@ const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.qua
 const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary",
   "reconcile.unexplained_effect"];
 const RECOMPUTED = ["sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch"];
+
+/** [analyzes, replay_of, investigation] of a run's run.registered (nulls when it is not one). */
+function about(rs: J[]): J[] {
+  const e = at(rs[0], "event"), d = get(e, "type") === "run.registered" ? get(e, "data") : null;
+  return ["analyzes", "replay_of", "investigation"].map((k) => truthy(d) ? get(d, k) : null);
+}
+
+/** Whether every run but one of the same tenant is a findings or replay run of that one. */
+function aboutOne(runs: Map<string, J[]>): boolean {
+  const all = [...runs.values()], main = all.filter((rs) => about(rs)[0] === null && about(rs)[1] === null);
+  if (main.length !== 1) return false;
+  const head = main[0][0].event;
+  return all.every((rs) => rs === main[0] || same(get(rs[0].event, "tenant"), get(head, "tenant"))
+    && about(rs).slice(0, 2).some((x) => same(x, get(head, "run_id"))));
+}
+
+/** ["scheme:subject", signer_isolation] of a run's run.registered (nulls when it is not one). */
+function author(rs: J[]): J[] {
+  const e = at(rs[0], "event"), d = get(e, "type") === "run.registered" ? get(e, "data") : {};
+  const i = get(d, "identity");
+  return [truthy(i) ? `${str(at(i, "scheme"))}:${str(at(i, "subject"))}` : null, get(d, "signer_isolation")];
+}
+
+/**
+ * Signed findings (format 1.4, docs/format-v2.md §11): each `review` with `cites`, in a findings run, cites records of
+ * the analysed run that are in the bundle with those hashes (else `reviews` fails), and is labelled by its author (the
+ * findings run's registered identity), positive-only: independent only when the trust config's `analyzers` pins it;
+ * self-asserted (a warning) when it is the analysed run's identity or either run's signer_isolation is same-user; else
+ * unpinned. Without its analysed run: not counted, author not checked (`reviews counted`). No cites: imported.
+ */
+function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
+  const byId = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs]));
+  const labels: string[] = [], problems: string[] = [], selfs: string[] = [], uncounted: string[] = [];
+  let total = 0;
+  for (const rs of runs.values()) {
+    const reviews = rs.map((r) => r.event).filter((e) => get(e, "type") === "review");
+    const signed = reviews.filter((e) => has(at(e, "data"), "cites"));
+    total += reviews.length;
+    labels.push(...Array(reviews.length - signed.length).fill("imported"));
+    if (!signed.length) continue;
+    const rid = cut(str(get(rs[0].event, "run_id")), 128), analyzes = about(rs)[0];
+    if (analyzes === null) {
+      problems.push(...signed.map((e) => `seq ${e.seq}: a signed finding outside a findings run`));
+      continue;
+    }
+    const target = byId.get(analyzes);
+    if (!target) {
+      labels.push(...Array(signed.length).fill("author not checked"));
+      uncounted.push(`findings run ${rid}: run ${cut(str(analyzes), 128)} is not in the bundle`);
+      continue;
+    }
+    const hashes = new Map<J, J>(target.map((r) => [get(r.event, "run_seq"), r.hash]));
+    for (const e of signed)
+      for (const c of list(at(e.data, "cites")))
+        if (hashes.get(at(c, "run_seq")) !== at(c, "hash"))
+          problems.push(`seq ${e.seq}: cites run_seq ${c.run_seq} of run ${cut(str(analyzes), 128)}, `
+            + (hashes.has(c.run_seq) ? "whose hash differs" : "which it does not have"));
+    const [mine, isolation] = author(rs), [theirs, theirIsolation] = author(target);
+    let label;
+    if (mine === theirs || [isolation, theirIsolation].includes("same-user")) {
+      label = "self-asserted";
+      selfs.push(`findings run ${rid}: ` + (mine === theirs
+        ? `its author ${cut(str(mine), 256)} is the analysed run's identity`
+        : "the signer runs as the same user as a client (signer_isolation same-user)"));
+    } else label = pinned.includes(mine) ? "independent" : `unpinned author ${cut(str(mine), 256)}`;
+    labels.push(...Array(signed.length).fill(label));
+  }
+  if (total)
+    rep.check("reviews", !problems.length && !selfs.length, `${total} review(s): `
+      + count(labels).map(([k, n]) => `${n} ${k}`).join(", "), (problems.length ? problems : selfs).slice(0, 20),
+    !problems.length);
+  if (uncounted.length)
+    rep.check("reviews counted", false, `${labels.filter((l) => l === "author not checked").length} signed finding(s) not `
+      + "counted: export the analysed run with `tracekit export --v2 --run <run> --with-findings` to check their citations",
+    uncounted.slice(0, 20), true);
+}
 
 /** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
  * bundled compiled policy (`policies`, by policy_hash), responses honoured. */
