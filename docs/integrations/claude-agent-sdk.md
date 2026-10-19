@@ -45,6 +45,23 @@ the signer's coding packs apply to them as they do to the Claude Code hook.
 | after each `SessionStore.append` | `state_write` | the transcript's digest and the digest it started from (`prev_digest`) |
 | SessionEnd | `close_run` | the CLI's reason |
 
+## What the model said
+
+No hook carries the model's messages: hand each message of `query()` (or `ClaudeSDKClient.receive_response()`)
+to `tracekit_said`. It records each `AssistantMessage`'s thinking (a summary, with its signature), text and tool uses,
+under the `tool_use_id`s the PreToolUse hook decides them by (a tool executor's calls are the executor's).
+
+```python
+from tracekit.integrations.claude_agent_sdk import tracekit_said
+
+said = tracekit_said(signer, run)
+async for message in query(prompt="close ACC-9", options=options):
+    await said(message)
+```
+
+Opus 4.7 and later return only the thinking's signature unless asked: `ClaudeAgentOptions(thinking={"type":
+"adaptive", "display": "summarized"})`. The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Decisions
 
 - **allow**: the tool runs.

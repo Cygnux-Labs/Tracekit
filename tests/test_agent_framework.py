@@ -11,12 +11,13 @@ import warnings
 from unittest import mock
 
 import adapter_contract as ac
+import test_said as ts
 
 HAVE = importlib.util.find_spec("agent_framework") is not None
 if HAVE:
-    from agent_framework import (Agent, AgentSession, BaseChatClient, ChatResponse, ChatResponseUpdate, Content,
-                                 FunctionInvocationLayer, FunctionMiddleware, Message, MiddlewareTermination,
-                                 ResponseStream, WorkflowBuilder, tool)
+    from agent_framework import (Agent, AgentSession, BaseChatClient, ChatMiddlewareLayer, ChatResponse,
+                                 ChatResponseUpdate, Content, FunctionInvocationLayer, FunctionMiddleware, Message,
+                                 MiddlewareTermination, ResponseStream, WorkflowBuilder, tool)
     from pydantic import BaseModel
 
     from tracekit import autowire
@@ -41,6 +42,17 @@ if HAVE:
                 return ChatResponse(messages=[Message(role="assistant", contents=contents)])
             return response()
 
+    class Layered(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClient):
+        """Scripted, with the chat middleware layer inside the function loop, as a real client has it
+        (OpenAIChatCompletionClient: FunctionInvocationLayer, ChatMiddlewareLayer, ChatTelemetryLayer, the raw
+        client)."""
+
+        def __init__(self, script, **kw):
+            super().__init__(**kw)
+            self.script = script
+
+        _inner_get_response = Scripted._inner_get_response
+
 from tracekit.format.canon import event_hash
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import AsyncRunHandle, Client
@@ -57,7 +69,7 @@ def run(decision="allow", rule_ids=(), consume=True, state="approved", **more):
     r.call.side_effect = lambda m, **f: {"approval_request": {"approval_id": "apr-1"},
                                          "approval_wait": {"state": state}, "approval_abandon": {}}[m]
     r.approval_consume.return_value = {"ok": consume, "rule_ids": list(rule_ids)}
-    return r
+    return ts.vault(r, on=False)
 
 
 def model(*calls):
@@ -307,7 +319,7 @@ class Hook(unittest.TestCase):
             if method == "approval_wait":
                 answered.wait(5)   # a person approves after the agent run was cancelled
                 return {"state": "approved"}
-            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}}[method]
+            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}, "model_event": {}}[method]
         r.call.side_effect = call
 
         async def cancel():
@@ -443,6 +455,58 @@ class Paths(unittest.TestCase):
                 if runs:
                     self.assertIn("README.md", out)
             gate.assert_not_called()   # decided by the middleware, not again by the wired session
+
+
+@unittest.skipUnless(HAVE, "agent_framework not installed")
+class Said(unittest.TestCase):
+    """`tk.chat` records each response: reasoning (protected_data sealed), text and function calls under the call ids
+    the function middleware decides them by, streamed or not; the response itself only with the vault; a failure to
+    record changes nothing for the agent."""
+
+    def answer(self, r, stream=False):
+        def script(messages):
+            if not any(c.type == "function_result" for m in messages for c in m.contents):
+                return [Content.from_text_reasoning(text="the user wants ACC-9 closed", protected_data="PD"),
+                        Content.from_text("Closing ACC-9."),
+                        Content.from_function_call("call-1", "close_account", arguments={"account": "ACC-9"})]
+            return [Content.from_text("done")]
+
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return f"closed {account}"
+        tk = Tracekit(r)
+        a = Agent(client=Layered(script=script), tools=[close_account], middleware=[tk, tk.chat])
+        if not stream:
+            return go(a).messages[-1].text
+
+        async def streamed():
+            s = a.run("close it", stream=True)
+            async for _ in s:
+                pass
+            return await s.get_final_response()
+        return asyncio.run(streamed()).messages[-1].text
+
+    def test_the_reasoning_before_a_call_is_linked_to_it(self):
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                r = ts.vault(run())
+                self.assertEqual(self.answer(r, stream), "done")
+                first = ts.recorded(r)[0]
+                self.assertEqual([t["id"] for t in first["tool_uses"]], ["call-1"])
+                self.assertEqual(r.decide.call_args.args[0], "call-1")
+                self.assertEqual(ts.segments(first), [("reasoning", "summary", "the user wants ACC-9 closed", []),
+                                                      ("text", "full", "Closing ACC-9.", ["call-1"])])
+                self.assertEqual(first["body"]["output"][0]["encrypted_content"], "PD")
+
+    def test_without_the_vault_only_the_commitment(self):
+        r = run()
+        self.answer(r)
+        self.assertTrue(ts.recorded(r) and all("body" not in f and f["content_digest"] for f in ts.recorded(r)))
+
+    def test_a_failure_to_record_changes_nothing_for_the_agent(self):
+        r = ts.failing(run())
+        with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
+            self.assertEqual(self.answer(r), "done")
 
 
 @unittest.skipUnless(HAVE, "agent_framework not installed")

@@ -77,6 +77,11 @@ scripted model, no API key): [`examples/v2/strands`](../../examples/v2/strands/R
   model's name (refused, it ends the run with Strands' `StructuredOutputException`, as the model never gave the
   output); and background tools (`background_tasks`), decided before they are admitted and recorded when they ran.
 
+## What the model said
+
+The hook provider records each model message at `AfterModelCallEvent`: its `reasoningContent` (a summary, with its
+signature or redacted content), text and tool uses under their `toolUseId`s. The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - An `ask` blocks the tool call while it waits, and each wait holds a thread of asyncio's default executor: many asks

@@ -10,6 +10,7 @@ from unittest import mock
 
 import adapter_contract as ac
 import test_gateway
+import test_said as ts
 
 HAVE = importlib.util.find_spec("pydantic_ai") is not None
 OPENAI = HAVE and importlib.util.find_spec("openai") is not None
@@ -19,7 +20,8 @@ if HAVE:
                              ToolReturn)
     from pydantic_ai.capabilities import AbstractCapability
     from pydantic_ai.exceptions import ApprovalRequired, UnexpectedModelBehavior
-    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart, RetryPromptPart
+    from pydantic_ai.messages import (ModelResponse, RetryPromptPart, TextPart, ThinkingPart, ToolCallPart,
+                                      ToolReturnPart)
     from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
     from tracekit import autowire
@@ -41,7 +43,7 @@ def run(decision="allow", rule_ids=(), consume=True, state="approved", **more):
     r.call.side_effect = lambda m, **f: {"approval_request": {"approval_id": "apr-1"},
                                          "approval_wait": {"state": state}, "approval_abandon": {}}[m]
     r.approval_consume.return_value = {"ok": consume, "rule_ids": list(rule_ids)}
-    return r
+    return ts.vault(r, on=False)
 
 
 def agent(r, tool, args=None):
@@ -110,7 +112,8 @@ class Hook(unittest.TestCase):
     def test_an_unanswered_approval_is_withdrawn(self):
         r = run("ask", ["A1"], state="requested")
         self.assertIn("not approved: requested", agent(r, self.tool()).run_sync("close it").output)
-        self.assertEqual([c.args[0] for c in r.call.call_args_list][-1], "approval_abandon")
+        self.assertEqual([c.args[0] for c in r.call.call_args_list if c.args[0] != "model_event"][-1],
+                         "approval_abandon")
 
     def test_the_refusal_names_the_rules_but_not_the_unknown_tool_flag(self):
         out = agent(run("deny", ["TK-D001", "TK-UNKNOWN-TOOL"]), self.tool()).run_sync("close it").output
@@ -245,7 +248,7 @@ class Hook(unittest.TestCase):
             if method == "approval_wait":
                 answered.wait(5)   # a person approves after the agent run was cancelled
                 return {"state": "approved"}
-            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}}[method]
+            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}, "model_event": {}}[method]
         r.call.side_effect = call
 
         async def go():
@@ -344,6 +347,46 @@ class Setup(unittest.TestCase):
             gate.assert_not_called()
             asyncio.run(ClientSession.call_tool(session, "read_file", {"path": "x"}))
             gate.assert_called_once()   # outside the capability, the wired session decides as before
+
+
+@unittest.skipUnless(HAVE, "pydantic_ai not installed")
+class Said(unittest.TestCase):
+    """Each model response is recorded: its thinking, text and the calls of the agent's function tools, under the ids
+    they are decided by; the response itself only with the vault; a failure to record changes nothing for the agent."""
+
+    def agent(self, r, output_type=str):
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return f"closed {account}"
+
+        def model(messages, info):
+            if not any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
+                return ModelResponse(parts=[ThinkingPart("the user asked to close it", signature="sig-1"),
+                                            TextPart("Closing ACC-9."),
+                                            ToolCallPart("close_account", {"account": "ACC-9"}, "call-1")])
+            return ModelResponse(parts=[TextPart("done")])
+        return Agent(FunctionModel(model), tools=[close_account], capabilities=[Tracekit(r)])
+
+    def test_the_reasoning_before_a_call_is_linked_to_it(self):
+        r = ts.vault(run())
+        self.assertEqual(self.agent(r).run_sync("close it").output, "done")
+        first, last = ts.recorded(r)
+        self.assertEqual([t["id"] for t in first["tool_uses"]], ["call-1"])   # the id the call was decided under
+        self.assertEqual(r.decide.call_args.args[0], "call-1")
+        self.assertEqual(ts.segments(first), [("reasoning", "summary", "the user asked to close it", []),
+                                              ("text", "full", "Closing ACC-9.", ["call-1"])])
+        self.assertEqual(first["body"]["output"][0]["encrypted_content"], "sig-1")
+        self.assertEqual(ts.segments(last), [("text", "full", "done", [])])
+
+    def test_without_the_vault_only_the_commitment(self):
+        r = run()
+        self.agent(r).run_sync("close it")
+        self.assertTrue(all("body" not in f and f["content_digest"] for f in ts.recorded(r)))
+
+    def test_a_failure_to_record_changes_nothing_for_the_agent(self):
+        r = ts.failing(run())
+        with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
+            self.assertEqual(self.agent(r).run_sync("close it").output, "done")
 
 
 @unittest.skipUnless(HAVE, "pydantic_ai not installed")

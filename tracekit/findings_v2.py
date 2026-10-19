@@ -39,8 +39,9 @@ For each prompt line of the main transcript:
           which the share of actions each check could check follows.
 
 A finding is what review_finding signs (#309 phase 2), with no text of the run: {verdict: {kind, rule, severity,
-tier: the weakest trust tier of the text it relied on (transcript: a Claude Code transcript line, which the agent can
-write; sdk: what an in-process adapter reported; gateway: the LLM gateway's record), order: where the call's reasoning
+tier: the weakest trust tier of the text it relied on (transcript: a Claude Code transcript line, or what a coding
+agent's transcript or hook payload said (a body with a `source`), which the agent can write; sdk: what an in-process
+adapter reported; gateway: the LLM gateway's record), order: where the call's reasoning
 sits against its decision, redacted: content redaction changed}, cites: [{run_seq, hash}] of the records it relied on};
 the signer adds the rule's fixed title. What happened (the file, the root), the labels (kept_away, reasoning_absent)
 and the tiers of everything a check relied on (also decision: the arguments the signer decided on; observer: a kernel
@@ -168,6 +169,13 @@ def _blocks_text(content):
 
 def _tailer(body):
     return isinstance(body, dict) and set(body) == {"transcript", "entry"} and isinstance(body["entry"], dict)
+
+
+def text_tier(e, body):
+    """The trust tier of record e's text (`body`): the LLM gateway's, an agent-writable transcript's or hook payload's (a
+    tailer body, or one with a `source`), else an in-process adapter's."""
+    return ("gateway" if e["source"] == "gateway" else
+            "transcript" if _tailer(body) or isinstance(body, dict) and "source" in body else "sdk")
 
 
 def _prompt(body):
@@ -403,8 +411,7 @@ class _Run:
                 paths, cd = _targets(body["command"])
                 self.args[seq] = {"paths": paths, "cd": cd, "edit": False, "command": _text(body["command"])}
             return
-        tier = "gateway" if e["source"] == "gateway" else "transcript" if _tailer(body) else "sdk"
-        self.tier[seq] = tier
+        tier = self.tier[seq] = text_tier(e, body)
         if _tailer(body) and isinstance(body["entry"].get("cwd"), str):
             self.cwd[seq] = body["entry"]["cwd"]
         if e["type"] == "input.observed":

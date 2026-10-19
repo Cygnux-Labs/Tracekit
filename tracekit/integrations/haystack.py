@@ -10,6 +10,8 @@ and with the arguments the model sent. A refused call never runs: as with a call
 the model reads an error tool result in its place, Tracekit's reason, and the run goes on. At `after_tool` the result
 of each call that ran is recorded as the model reads it; an error result (the tool raised) as `error`. A call id the
 model uses again, in the same step or a later one, is decided as that call's next attempt and recorded on its own.
+At `before_tool` the message itself is recorded first (tracekit.integrations.said): its reasoning, text and tool calls,
+under the ids they are decided by. A message that can't be recorded only warns.
 """
 import asyncio
 import collections
@@ -23,6 +25,7 @@ from haystack.components.agents.state import replace_values
 from haystack.dataclasses import ChatMessage
 
 from tracekit.format.canon import event_hash, loads_strict
+from tracekit.integrations import said
 from tracekit.integrations.gate import gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -33,6 +36,7 @@ class Tracekit:
 
     def __init__(self, run):
         self.handle = run_handle(run, instrument=True)
+        self.said = said.Said(lambda **f: self.handle.call("model_event", **f), lambda: self.handle.client.status({}))
         # lean: one entry per call id for the hook's life; prune them at run end if agents run for days
         self._attempts = {}   # tool call id -> the attempt its next decision is
         self._ran = {}   # tool call id -> [(decision, attempt, ToolCall)] of the calls let run, in call order, until
@@ -49,6 +53,7 @@ class Tracekit:
         if messages and messages[-1].tool_calls:   # before_tool: the calls the model asked for, still to run
             msg = messages[-1]
             calls = [c if c.id else replace(c, id=f"haystack-{uuid.uuid4().hex}") for c in msg.tool_calls]
+            await asyncio.to_thread(self.said, _said(msg, calls), msg.meta.get("model"))
             turns = collections.defaultdict(asyncio.Lock)   # the signer takes one call per id at a time: calls a
             # model gave one id are decided one after the other, in call order
 
@@ -101,6 +106,17 @@ class Tracekit:
         except Exception as e:   # the tool already ran: its result reaches the model unchanged
             warnings.warn(f"tracekit: the outcome of {result.origin.id} was not recorded: {type(e).__name__}: {e}",
                           stacklevel=2)
+
+
+def _said(msg, calls):
+    """What the model said in `msg`, its calls under the ids they are decided by. OpenAI Responses' sealed reasoning
+    is in `extra` (haystack/components/generators/chat/openai_responses.py, the reasoning item as a dict)."""
+    for r in msg.reasonings:
+        yield said.thought(r.reasoning_text, r.extra.get("encrypted_content"))
+    for t in msg.texts:
+        yield said.text(t)
+    for c in calls:
+        yield said.call(c.id, c.tool_name, c.arguments or {})
 
 
 def _assistant(msg, calls):

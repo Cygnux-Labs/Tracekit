@@ -44,6 +44,12 @@ register_after_tool_call_hook(after)
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) before the call; then it is
   blocked with the approval's state.
 
+## What the model said
+
+Not recorded by the integration: CrewAI's after-LLM hook sees a text answer only, never a response that asks for a
+tool, and no reasoning; its tool hooks carry no call id. Record the model calls with `tracekit.instrument()` or the
+[LLM gateway](../gateway.md); they pair with the calls by arguments only. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - CrewAI's hooks carry no tool-call id, so each call gets one of its own (`crewai-<hex>`). Under autotrace or the LLM

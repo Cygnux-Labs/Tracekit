@@ -5,6 +5,9 @@
     run = signer.register_run({"request_id": "r1", "agent": {"name": "my-agent"}})
     options = ClaudeAgentOptions(hooks=tracekit_hooks(signer, run),
                                  session_store=TracekitSessionStore(my_store, signer, run))   # the store is optional
+    said = tracekit_said(signer, run)   # optional: what the model said before each call
+    async for message in query(prompt="...", options=options):
+        await said(message)
 
 The gate is the PreToolUse hook, not `can_use_tool`: the CLI skips `can_use_tool` for every call its permission mode or
 allow rules approve, while PreToolUse runs for every call. `deny` blocks the call with the reason, which the model
@@ -18,6 +21,10 @@ the tool executor's server (executor_tools.claude_agent_sdk, named `tracekit-exe
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open`, else it is blocked. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
 timeout: register a new run for a long-idle agent) blocks the call. A failure to record the outcome only warns.
+
+No hook carries the model's messages: `tracekit_said` records each AssistantMessage the app's message loop hands it
+(tracekit.integrations.said): its thinking (with its signature), text and tool uses, under the tool_use ids the
+PreToolUse hook decides them by. A message that can't be recorded only warns.
 """
 import itertools
 import threading
@@ -27,9 +34,10 @@ import warnings
 
 import anyio
 import rfc8785
-from claude_agent_sdk import HookMatcher
+from claude_agent_sdk import AssistantMessage, HookMatcher, TextBlock, ThinkingBlock, ToolUseBlock
 
 from tracekit.format.canon import event_hash
+from tracekit.integrations import said
 from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
 from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules, result_field
@@ -61,15 +69,17 @@ class _Run:
     async def send(self, method, req):
         """Sends `req`. Sent again, it keeps its request_id and client_seq: the signer answers as it did the first time,
         or refuses it as a reused client_seq if it never recorded it."""
-        def call():
-            if "client_seq" not in rpc_schema.REQUESTS[method]["properties"]:   # approval_wait: holds up no event
-                return getattr(self.signer, method)(req)
-            # lean: one event call at a time per run, so client_seq arrives in order; pipeline if it gets slow
-            with self._lock:
-                if "client_seq" not in req:
-                    req.update(stream=self.stream, client_seq=next(self._seq))
-                return getattr(self.signer, method)(req)
-        return await anyio.to_thread.run_sync(call)
+        return await anyio.to_thread.run_sync(self.sync, method, req)
+
+    def sync(self, method, req):
+        """`send`, blocking."""
+        if "client_seq" not in rpc_schema.REQUESTS[method]["properties"]:   # approval_wait: holds up no event
+            return getattr(self.signer, method)(req)
+        # lean: one event call at a time per run, so client_seq arrives in order; pipeline if it gets slow
+        with self._lock:
+            if "client_seq" not in req:
+                req.update(stream=self.stream, client_seq=next(self._seq))
+            return getattr(self.signer, method)(req)
 
 
 def _deny(why):
@@ -149,6 +159,29 @@ def tracekit_hooks(signer, run):
     return {"PreToolUse": [HookMatcher(hooks=[pre], timeout=HOOK_TIMEOUT_S)],
             "PostToolUse": [HookMatcher(hooks=[post])], "PostToolUseFailure": [HookMatcher(hooks=[post])],
             "SessionEnd": [HookMatcher(hooks=[end])]}
+
+
+def tracekit_said(signer, run):
+    """An async callable to hand each message of `query()` or ClaudeSDKClient's `receive_response()`: it records an
+    AssistantMessage's thinking, text and tool uses (a tool executor's are the executor's to record); other messages
+    are left alone. `signer`, `run`: as for tracekit_hooks."""
+    rpc = _Run(signer, run)
+    record = said.Said(lambda **f: rpc.sync("model_event", rpc.request("model_event", **f)), lambda: signer.status({}))
+
+    async def said_(message):
+        if isinstance(message, AssistantMessage):
+            await anyio.to_thread.run_sync(record, _said(message.content), message.model, "anthropic")
+    return said_
+
+
+def _said(content):
+    for b in content:
+        if isinstance(b, ThinkingBlock):
+            yield said.thought(b.thinking, b.signature)
+        elif isinstance(b, TextBlock):
+            yield said.text(b.text)
+        elif isinstance(b, ToolUseBlock) and not b.name.startswith(f"mcp__{SERVER}__"):
+            yield said.call(b.id, b.name, b.input)
 
 
 def _chain(entries, digest=event_hash([])):

@@ -113,8 +113,8 @@ def _item(r, body, opened):
     if e["type"] == "policy.decision":
         return {**out, "args": _cut(json.dumps(body, ensure_ascii=False), MAX_ARGS)}
     tail = findings_v2._tailer(body)
-    tier = "gateway" if e["source"] == "gateway" else "transcript" if tail else "harness" if str(
-        d.get("source")).endswith(findings_v2.PROMPT_HOOK) else "sdk"
+    tier = "harness" if e["type"] == "input.observed" and str(d.get("source")).endswith(
+        findings_v2.PROMPT_HOOK) else findings_v2.text_tier(e, body)
     if e["type"] == "input.observed":
         text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
     elif d.get("phase") == "request":

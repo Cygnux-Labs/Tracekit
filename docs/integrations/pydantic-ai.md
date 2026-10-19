@@ -70,6 +70,13 @@ without `Tracekit(run)` runs its tools ungated. To gate one run of an agent you 
   it is resumed with `DeferredToolResults` under the same call id it is decided again as the call's next `attempt`.
   The first attempt then shows as `decided_not_completed` on `run.final`.
 
+## What the model said
+
+The capability records each model response (`after_model_request`): its `ThinkingPart`s (a summary, with the
+provider's signature), its text, and the calls of the agent's function tools under the `tool_call_id`s they are decided
+by. An output function's call and an approval-required tool's are left out of it ([limits](../limits.md#intent-reasoning-and-action-checks)).
+The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - An `ask` blocks the tool call while it waits. It does not use Pydantic AI's own deferred tools

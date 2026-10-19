@@ -35,6 +35,7 @@ from .locking import lock_file, unlock_file
 HARNESSES = ("codex", "cursor", "gemini")
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli"}
 V2_MODULE = "tracekit.integrations.harness_hooks"
+CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
 GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_files": "Read", "write_file": "Write", "replace": "Edit",
                 "glob": "Glob", "search_file_content": "Grep", "list_directory": "LS", "web_fetch": "WebFetch",
@@ -261,6 +262,70 @@ def config_path(harness, project=None):
             "gemini": os.path.join(base, ".gemini", "settings.json")}[harness]
 
 
+CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
+_TOML_KEY = re.compile(r"^\s*model_reasoning_summary\s*=\s*([^#]*)")
+_TOML_TABLE = re.compile(r"^\[\[?[^\]]+\]\]?\s*(#.*)?$")
+
+
+def codex_summary(text):
+    """The top-level model_reasoning_summary a Codex config.toml's text sets (its value, unquoted), else None."""
+    # lean: a line scan, not a TOML parser (Python 3.9 has none): a profile's own setting and a key inside a
+    # multi-line string are not read; parse the file if configs that tangled show up
+    for line in text.splitlines():
+        if _TOML_TABLE.match(line):
+            return None
+        m = _TOML_KEY.match(line)
+        if m:
+            return m.group(1).strip().strip("'\"")
+    return None
+
+
+def codex_reasoning(hooks_path):
+    """Turn Codex's reasoning summaries on: `model_reasoning_summary = "auto"` at the top level of the config.toml beside
+    `hooks_path` (one line, before its first table; the file created if missing), unless the file sets one, whatever
+    its value. Unset, Codex uses its model catalog's default, `none` for its current models. -> [config path, the value
+    set now, whether init set it]."""
+    from .install import SettingsError, _backup
+    path = os.path.join(os.path.dirname(os.path.abspath(hooks_path)), "config.toml")
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        txt = raw.decode("utf-8")
+    except FileNotFoundError:
+        raw, txt = None, ""
+    except (OSError, UnicodeDecodeError) as e:
+        raise SettingsError(f"{path} can't be read ({e}); Tracekit did not change it.") from e
+    value = codex_summary(txt)
+    if value is not None:
+        return [path, value, False]
+    lines = txt.splitlines(keepends=True)
+    at = next((i for i, line in enumerate(lines) if _TOML_TABLE.match(line)), len(lines))
+    if at == len(lines) and lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    lines.insert(at, f'{CODEX_SUMMARY} = "auto"\n')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if raw is not None:
+        _backup(path, raw)
+    from .deploy import files
+    d = files.open_dir(os.path.dirname(path))
+    try:
+        files.write(d, "config.toml", "".join(lines).encode("utf-8"),
+                    os.stat(path).st_mode & 0o777 if raw is not None else 0o600)
+    finally:
+        files.close(d)
+    return [path, "auto", True]
+
+
+def reasoning_line(path, value, changed):
+    """What init says about Codex's reasoning summaries (codex_reasoning's answer)."""
+    if value != "none":
+        return (f"Codex reasoning summaries: on ({CODEX_SUMMARY} = \"{value}\" in {path}"
+                + (", set by init" if changed else "") + "), so `tracekit analyze --v2` can read the model's reasoning; "
+                "init --no-thinking-summaries leaves the setting alone")
+    return (f"Codex reasoning summaries: off ({path} sets {CODEX_SUMMARY} to \"none\"): `tracekit analyze --v2` can't read "
+            "the model's reasoning; set it to \"auto\" to check it")
+
+
 def _version(cmd):
     """"v2" for the v2 hook's command, "v1" for the v1 hook's, else None."""
     cmd = cmd if isinstance(cmd, str) else ""
@@ -307,10 +372,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         s.setdefault("version", 1)
         closed = v2 or H.fail_closed()   # v2: a hook that cannot run blocks, as the v2 hook does
         events = {"preToolUse": 600, "postToolUse": 30, "postToolUseFailure": 30, "beforeSubmitPrompt": 30, "sessionStart": 30,
-                  "sessionEnd": 30}
+                  "sessionEnd": 30, **dict.fromkeys(CURSOR_SAID, 30)}
         for ev, timeout in events.items():
             lst = [h for h in entries(ev) if not (isinstance(h, dict) and ours([h.get("command")]))]
-            if not uninstall:
+            if not uninstall and (v2 or ev not in CURSOR_SAID):   # the v1 hook records no model text
                 lst.append({"command": cmd(ev), "type": "command", "timeout": timeout, "failClosed": closed})
             if lst:
                 hooks[ev] = lst

@@ -166,6 +166,12 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   integration to the response's output items. With the vault on, that is the record's `body` too, so the model's
   reasoning and text before each tool call can be read by `tracekit analyze --v2`; with it off, the record holds only
   the commitment.
+- **Model messages from integrations and coding agents.** A framework integration records each model message it sees,
+  and a Codex, Gemini CLI or Cursor hook what the model said since the last hook (from Codex's rollout, Gemini CLI's
+  chat recording, Cursor's `afterAgentThought` and `afterAgentResponse`): a commitment always, and the message (its
+  reasoning, sealed forms byte for byte, text and calls) as the record's `body` only when the signer says the vault is
+  on. Without the vault the text stays where it came from: the framework's memory, the agent's own files
+  ([reasoning](reasoning.md)).
 - **Findings carry no content.** `tracekit analyze --v2` reads content through `content_get` (a `content.accessed`
   record each), and a finding names only its rule, severity, trust tier and the records it cites by `run_seq` and
   hash. The paths and excerpts it prints come from the content it read and are never signed. With `--review`, the

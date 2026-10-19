@@ -81,6 +81,19 @@ key): [`examples/v2/agent_framework`](../../examples/v2/agent_framework/README.m
   to Agent Framework, decided under its name there; the `ClientSession` that `instrument()` wires doesn't decide it
   again. Agent Framework 1.22's MCP tools need `mcp` 1.x.
 
+## What the model said
+
+Function middleware sees no model response. Add `tk.chat`, a chat middleware, beside the function middleware: it
+records each response's reasoning (`text_reasoning`, with its `protected_data` sealed), text and function calls under
+the call ids the function middleware decides them by; a streamed response once the stream ends.
+
+```python
+tk = Tracekit(run)
+agent = Agent(client=OpenAIChatClient(), tools=[close_account], middleware=[tk, tk.chat])
+```
+
+The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - The signer decides the validated arguments, not the model's JSON text: function middleware never sees it. A value the

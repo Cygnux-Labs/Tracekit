@@ -12,10 +12,13 @@ import uuid
 from unittest import mock
 
 import adapter_contract as ac
+import test_said as ts
 from tracekit.sdk.client import Client, SignerUnavailable
+from tracekit.testing import FakeSigner
 
 try:
-    from claude_agent_sdk import ClaudeAgentOptions, InMemorySessionStore, query
+    from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, InMemorySessionStore, ResultMessage, TextBlock,
+                                  ThinkingBlock, ToolUseBlock, query)
     from claude_agent_sdk._internal.transport import Transport
 
     from tracekit.integrations import claude_agent_sdk as cas
@@ -275,6 +278,52 @@ class ApprovalBudget(unittest.TestCase):
             out = asyncio.run(pre({"tool_use_id": "t1", "tool_name": "pay", "tool_input": {}}, "t1", None))
         self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertLessEqual(now[0], cas.APPROVAL_WAIT_S)
+
+
+@unittest.skipUnless(HAVE_SDK, "claude-agent-sdk not installed")
+class Said(unittest.TestCase):
+    """tracekit_said records each AssistantMessage: thinking (with its signature), text and tool uses, linked to the
+    PreToolUse hook's decisions by the tool_use id; the message itself only with the vault; a failure only warns."""
+
+    MESSAGE = AssistantMessage([ThinkingBlock("the user asked for an echo", "sig-1"), TextBlock("Echoing."),
+                                ToolUseBlock("toolu_1", "echo", {"text": "hi"}),
+                                ToolUseBlock("toolu_2", f"mcp__{cas.SERVER}__run", {"cmd": "ls"})], "claude-x")
+
+    def setUp(self):
+        self.signer = FakeSigner()
+        self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+        self.sent = []
+        model_event = self.signer.model_event
+        self.signer.model_event = lambda req: self.sent.append(req) or model_event(req)
+
+    def said(self, *messages):
+        said = cas.tracekit_said(self.signer, self.run)
+        for m in messages:
+            asyncio.run(said(m))
+
+    def test_the_reasoning_before_a_call_is_linked_to_its_decision(self):
+        status = self.signer.status
+        self.signer.status = lambda req: {**status(req), **ts.VAULT}
+        [pre] = cas.tracekit_hooks(self.signer, self.run)["PreToolUse"][0].hooks
+        self.said(self.MESSAGE, ResultMessage("success", 0, 0, False, 1, "s1"))
+        asyncio.run(pre({"tool_use_id": "toolu_1", "tool_name": "echo", "tool_input": {"text": "hi"}}, "toolu_1", None))
+        (f,) = self.sent
+        self.assertEqual([t["id"] for t in f["tool_uses"]], ["toolu_1"])   # the executor's call is the executor's
+        run = {"run_id": self.run["run_id"], "run_token": self.run["run_token"], "limit": 100}
+        self.assertEqual([e["data"]["tool_call_id"] for e in self.signer.read(run)["events"]
+                          if e["type"] == "policy.decision"], ["toolu_1"])
+        self.assertEqual(ts.segments(f), [("reasoning", "summary", "the user asked for an echo", []),
+                                          ("text", "full", "Echoing.", ["toolu_1"])])
+        self.assertEqual((f["model"], f["body"]["output"][0]["encrypted_content"]), ("claude-x", "sig-1"))
+
+    def test_without_the_vault_only_the_commitment(self):
+        self.said(self.MESSAGE)
+        self.assertEqual([("body" in f, f["content_digest"].startswith("sha256:")) for f in self.sent], [(False, True)])
+
+    def test_a_failure_to_record_only_warns(self):
+        self.signer.model_event = mock.Mock(side_effect=SignerUnavailable("down"))
+        with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
+            self.said(self.MESSAGE)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import Any
 from unittest import mock
 
 import adapter_contract as ac
+import test_said as ts
 
 HAVE = importlib.util.find_spec("google") is not None and importlib.util.find_spec("google.adk") is not None
 if HAVE:
@@ -53,7 +54,7 @@ def run(decision="allow", rule_ids=(), consume=True, state="approved", **more):
     r.call.side_effect = lambda m, **f: {"approval_request": {"approval_id": "apr-1"},
                                          "approval_wait": {"state": state}, "approval_abandon": {}}[m]
     r.approval_consume.return_value = {"ok": consume, "rule_ids": list(rule_ids)}
-    return r
+    return ts.vault(r, on=False)
 
 
 def calls(*fcs):
@@ -151,7 +152,8 @@ class Hook(unittest.TestCase):
     def test_an_unanswered_approval_is_withdrawn(self):
         r = run("ask", ["A1"], state="requested")
         self.assertIn("not approved: requested", answer([Tracekit(r)], [self.tool()])[0]["error"])
-        self.assertEqual([c.args[0] for c in r.call.call_args_list][-1], "approval_abandon")
+        self.assertEqual([c.args[0] for c in r.call.call_args_list if c.args[0] != "model_event"][-1],
+                         "approval_abandon")
 
     def test_the_refusal_is_the_tools_error_result_and_names_the_rules_but_not_the_unknown_tool_flag(self):
         out = answer([Tracekit(run("deny", ["TK-D001", "TK-UNKNOWN-TOOL"]))], [self.tool()])
@@ -265,7 +267,7 @@ class Hook(unittest.TestCase):
             if method == "approval_wait":
                 answered.wait(5)   # a person approves after the agent run was cancelled
                 return {"state": "approved"}
-            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}}[method]
+            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}, "model_event": {}}[method]
         r.call.side_effect = call
 
         async def go():
@@ -276,6 +278,52 @@ class Hook(unittest.TestCase):
         self.assertIn("approval_abandon", [c.args[0] for c in r.call.call_args_list])
         r.approval_consume.assert_not_called()
         self.assertEqual(self.ran, [])
+
+
+@unittest.skipUnless(HAVE, "google-adk not installed")
+class Said(unittest.TestCase):
+    """Each model response event is recorded: thought summaries, signatures (sealed), text and function calls, under
+    the ids ADK gives the calls and the plugin decides them by; the response itself only with the vault; a failure to
+    record changes nothing for the agent."""
+
+    @staticmethod
+    def script(contents):
+        if back(contents):
+            return types.Content(role="model", parts=[types.Part(text="done")])
+        return types.Content(role="model", parts=[
+            types.Part(text="the user wants ACC-9 closed", thought=True),
+            types.Part(text="Closing ACC-9."),
+            types.Part(function_call=types.FunctionCall(name="close_account", args={"account": "ACC-9"}),
+                       thought_signature=b"sig-1")])   # no id: ADK gives it one
+
+    def answer(self, r):
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return f"closed {account}"
+        events = asyncio.run(turn(runner([Tracekit(r)], [close_account], self.script)))
+        return events[-1].content.parts[0].text
+
+    def test_the_reasoning_before_a_call_is_linked_to_it(self):
+        r = ts.vault(run())
+        self.assertEqual(self.answer(r), "done")
+        first, last = ts.recorded(r)
+        decided = r.decide.call_args.args[0]
+        self.assertTrue(decided.startswith("adk-"))
+        self.assertEqual([t["id"] for t in first["tool_uses"]], [decided])
+        self.assertEqual(ts.segments(first), [("reasoning", "summary", "the user wants ACC-9 closed", []),
+                                              ("text", "full", "Closing ACC-9.", []),
+                                              ("reasoning", "encrypted", "", [decided])])
+        self.assertEqual(ts.segments(last), [("text", "full", "done", [])])
+
+    def test_without_the_vault_only_the_commitment(self):
+        r = run()
+        self.answer(r)
+        self.assertTrue(all("body" not in f and f["content_digest"] for f in ts.recorded(r)))
+
+    def test_a_failure_to_record_changes_nothing_for_the_agent(self):
+        r = ts.failing(run())
+        with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
+            self.assertEqual(self.answer(r), "done")
 
 
 @unittest.skipUnless(HAVE, "google-adk not installed")

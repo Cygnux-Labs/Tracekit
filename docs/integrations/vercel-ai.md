@@ -72,6 +72,11 @@ MCP tools (`@ai-sdk/mcp`): `tk.tools(await client.tools(), { mcp: "filesystem" }
 allows (a call you deny is recorded as refused; one you answer `user-approval` and then deny in your own UI stays
 decided and not completed); `tk.toolApproval` alone replaces yours.
 
+## What the model said
+
+`tk.middleware` commits to each response's content, its reasoning parts included, but doesn't send the content: the
+reasoning isn't readable from this record. Use the [LLM gateway](../gateway.md) for readable reasoning. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - Tools without `execute` and provider-executed tools are not gated; they appear in the recorded model responses.

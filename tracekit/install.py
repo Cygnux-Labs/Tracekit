@@ -1256,7 +1256,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
     which the harness helper attests. public_witness (`--public-witness`): the public witness cosigns the signer's logs.
     egress (`--egress`, Linux): the agent's outside traffic only through a local egress observer (docs/egress.md).
-    thinking: turn Claude Code's thinking summaries on in AGENT's settings unless they set them (install_hooks).
+    thinking: turn Claude Code's thinking summaries (install_hooks), or Codex's reasoning summaries
+    (agent_hooks.codex_reasoning), on for AGENT unless its settings set them.
     Returns (socket, settings path or None)."""
     if public_witness:
         from . import public_witness as pw
@@ -1359,6 +1360,9 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
             print(thinking_line(settings, on))
     elif settings:
         files.as_user(owner, agent_hooks.install, agent, None, False, True, OPT_PYTHON, settings, errors=(SettingsError,))
+        if agent == "codex" and thinking:
+            print(agent_hooks.reasoning_line(*files.as_user(owner, agent_hooks.codex_reasoning, settings,
+                                                            errors=(SettingsError,))))
     if proxy and agent != "claude":
         print(f"egress: start {target_user}'s agent with HTTPS_PROXY=http://{EGRESS_LISTEN}: anything else it sends "
               "outside is refused by the firewall")

@@ -22,6 +22,10 @@ Its `ask` pauses whatever the node's `handle_tool_errors`, and through `.with_fa
 the error handling or the fallbacks. Any other wrapper that catches the interrupt (GraphInterrupt) swallows the pause:
 the call does not run and its approval expires.
 `TracekitCheckpointer(saver, signer, run)` commits every checkpoint the saver writes to the signer (L1).
+Each model response under `create_agent` is recorded too (tracekit.integrations.said): its reasoning blocks (with the
+provider's signature or encrypted content), an open model's `reasoning_content`, text and the calls of the agent's
+tools, under the ids they are decided by. A response that can't be recorded only warns. A `tracekit_tool_node` graph
+has no model hook: its model calls are recorded by `tracekit.instrument()` or the LLM gateway.
 """
 import asyncio
 import copy
@@ -33,7 +37,8 @@ import warnings
 from typing import Union
 
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import BaseTool
 from langchain_core.runnables.fallbacks import RunnableWithFallbacks
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -44,6 +49,7 @@ from langgraph.prebuilt.tool_node import _handle_tool_error, _infer_handled_type
 from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
+from tracekit.integrations import said
 from tracekit.integrations.claude_code import _tool_class
 from tracekit.integrations.executor_tools import EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules, result_field
@@ -61,14 +67,27 @@ class TracekitMiddleware(AgentMiddleware):
         self.stream, self._seq, self._lock = "langchain-" + uuid.uuid4().hex, itertools.count(), threading.Lock()
         # lean: one entry per executed tool call for the middleware's life; prune at run end if agents run for days
         self._attempts = {}   # tool_call_id -> the attempt its next execution is (a retry runs the same call again)
+        self.said = said.Said(lambda **f: self._send("model_event", **f), lambda: signer.status({}))
 
-    def _event(self, method, call, **kw):
+    def _send(self, method, **kw):
         # lean: one event call at a time per middleware (ToolNode runs sync tools in threads), so client_seq arrives in
         # order; pipeline if it gets slow
         with self._lock:
             return getattr(self.signer, method)({
-                "request_id": uuid.uuid4().hex, **self.run, "stream": self.stream, "client_seq": next(self._seq),
-                "tool_call_id": call["id"], "attempt": self._attempts.get(call["id"], 0), **kw})
+                "request_id": uuid.uuid4().hex, **self.run, "stream": self.stream, "client_seq": next(self._seq), **kw})
+
+    def _event(self, method, call, **kw):
+        return self._send(method, tool_call_id=call["id"], attempt=self._attempts.get(call["id"], 0), **kw)
+
+    def wrap_model_call(self, request, handler):
+        out = handler(request)
+        self.said(*_said(request, out))
+        return out
+
+    async def awrap_model_call(self, request, handler):
+        out = await handler(request)
+        await asyncio.to_thread(self.said, *_said(request, out))
+        return out
 
     def _gate(self, request):
         """(the error ToolMessage that replaces a refused call or None when it may run, the decision or None)"""
@@ -167,6 +186,34 @@ class TracekitMiddleware(AgentMiddleware):
             raise
         self._complete(request.tool_call, d, out)
         return out
+
+
+def _said(request, out):
+    """(the items of what the model said, its model, its provider) in a model call's response: the calls of the
+    agent's tools, which the gate decides (not a structured-output tool's, nor a tool executor's)."""
+    msgs = [m for m in getattr(out, "result", [out]) if isinstance(m, AIMessage)]
+    meta = msgs[0].response_metadata if msgs else {}
+    tools = {t.name for t in request.tools if isinstance(t, BaseTool) and not (t.metadata or {}).get(EXECUTOR)}
+
+    def items():
+        for m in msgs:
+            if isinstance(m.additional_kwargs.get("reasoning_content"), str):   # an open model's own reasoning
+                yield said.thought(m.additional_kwargs["reasoning_content"], full=True)
+            for b in m.content_blocks:   # LangChain's standard blocks; a provider's it can't map are non_standard
+                v = (b.get("value") or {}) if b["type"] == "non_standard" else b
+                if b["type"] == "reasoning":
+                    yield said.thought(b.get("reasoning"), b.get("encrypted_content")
+                                       or (b.get("extras") or {}).get("signature"))
+                elif v.get("type") == "thinking":   # an Anthropic block of a message no provider is named for
+                    yield said.thought(v.get("thinking"), v.get("signature"))
+                elif v.get("type") == "redacted_thinking":
+                    yield said.thought(sealed=v.get("data"))
+                elif b["type"] == "text":
+                    yield said.text(b.get("text"))
+            for c in m.tool_calls:   # the calls ToolNode runs (content_blocks shows them only for some providers)
+                if c["name"] in tools:
+                    yield said.call(c.get("id"), c["name"], c.get("args") or {})
+    return items(), meta.get("model_name"), meta.get("model_provider")
 
 
 def _executor(request):

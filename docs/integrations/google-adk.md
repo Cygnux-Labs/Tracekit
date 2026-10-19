@@ -69,6 +69,13 @@ scripted model, no API key): [`examples/v2/google_adk`](../../examples/v2/google
   confirmation, which ADK answers without running the tool, is recorded as `status: error`, "rejected in ADK's tool
   confirmation"; a tool that asks for confirmation itself and runs on a rejection is recorded with its result.
 
+## What the model said
+
+The plugin records each model response event (`on_event_callback`), once ADK has given its function calls their
+ids: thought parts (summaries, with `include_thoughts=True` in the agent's `ThinkingConfig`), each `thought_signature`
+(sealed), text, and the function calls under the ids the plugin decides them by (not ADK's own `adk_request_*` calls).
+The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - Handing a task to a task-mode sub-agent (`LlmAgent(mode="task")` in a chat agent's `sub_agents`) is not decided: ADK
