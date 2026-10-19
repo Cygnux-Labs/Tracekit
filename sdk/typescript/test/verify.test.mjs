@@ -4,8 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { deflateRawSync } from "node:zlib";
 import {
   MAX_ENTRY, StrictJSONError, Unusable, canonicalize, readZip, strictParse, strictParseBytes, verify, verifyRecord,
@@ -221,6 +224,30 @@ test("zip reader: stored and deflated entries, and every refusal within the bund
     /Bad CRC-32 for file 'a'/);
   // a size that lies low stops the inflate there; the CRC then catches it
   await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(100), method: 8, usize: 10 }])), /Bad CRC-32 for file 'a'/);
+});
+
+test("a bundle of tiny lines is refused before one is parsed, with no trust config too", () => {
+  // 1M lines no signed record could be (records are 256 bytes or more): parsed, they'd need gigabytes
+  const run = Buffer.from('{"event":{"seq":1}}\n'.repeat(262_144));
+  const files = {
+    "checkpoints/10.note": `o.example/x\n10\n${Buffer.alloc(32).toString("base64")}\n\n— o.example/x `
+      + `${Buffer.alloc(69, 1).toString("base64")}\n`,
+    "proofs/records.json": JSON.stringify({ checkpoint: "checkpoints/10.note", tree_size: 10, inclusion: {} }),
+    "keys/records.jsonl": "", "registry/run-set.json": "{}",
+    ...Object.fromEntries([0, 1, 2, 3].map((i) => [`runs/r${i}.jsonl`, run])),
+  };
+  const hashes = Object.fromEntries(Object.entries(files).map(([n, d]) => [n, createHash("sha256").update(d).digest("hex")]));
+  const bomb = join(mkdtempSync(join(tmpdir(), "tk-bomb-")), "bomb.tkb");
+  writeFileSync(bomb, zip([{ name: "manifest.json", data: JSON.stringify({ format: "tracekit.bundle.v2",
+    verifier_min_version: "1.0", files: hashes }) }, ...Object.entries(files).map(([name, data]) => ({ name, data, method: 8 }))]));
+  const r = spawnSync(process.execPath, ["--max-old-space-size=256", "--input-type=module", "-e", `
+    import { readFileSync } from "node:fs";
+    import { verify } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../dist/verify/index.js")).href)};
+    const { report, code } = await verify(readFileSync(${JSON.stringify(bomb)}), null);
+    console.log(JSON.stringify([code, report.checks.at(-1).problems]));`], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(r.status, 0, r.stderr.slice(0, 300));
+  assert.deepEqual(JSON.parse(r.stdout), [1, ["malformed and could not be fully checked: ValueError: line shorter than a "
+    + "signed record"]]);
 });
 
 const sample = (n) => new Uint8Array(readFileSync(join(ROOT, "sdk/typescript/src/verify/sample", n)));

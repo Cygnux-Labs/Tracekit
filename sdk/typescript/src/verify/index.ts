@@ -35,7 +35,8 @@ const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
 const FORMAT = "tracekit.bundle.v2";
 const MAX_LINE = 1 << 20;
-const MAX_LINES = MAX_ENTRY / 256;   // per JSON lines file: no signed record is shorter than 256 bytes
+const MIN_RECORD = 256;   // no signed record's line is shorter: its hash, signature, ids and timestamp alone are longer
+const MAX_LINES = MAX_ENTRY / MIN_RECORD;   // per JSON lines file
 const CLASSES = ["public", "customer", "tracekit", "operator"];
 const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
@@ -268,6 +269,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     return f;
   };
   const json = (name: string) => strictParseBytes(file(name), floats);
+  /** A JSON lines file's texts, each line at least MIN_RECORD bytes: checked before any is parsed, so a bundle's lines
+   * can't outnumber MAX_TOTAL / MIN_RECORD, whatever it unzips to. */
   const jsonl = (name: string) => {
     const data = file(name);
     if (data.length && data.at(-1) !== 0x0a) throw new ValueError("a JSON lines file must end in a newline");
@@ -278,6 +281,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       lines.push(data.subarray(i, j));
     }
     if (lines.some((l) => l.length > MAX_LINE)) throw new ValueError("line longer than the bundle limits");
+    if (lines.some((l) => l.length < MIN_RECORD)) throw new ValueError("line shorter than a signed record");
     return lines.map((l) => strictParseBytes(l, floats) as J);
   };
 

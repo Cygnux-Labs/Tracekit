@@ -168,7 +168,8 @@ MAX_ENTRIES = 10_000
 MAX_ENTRY = 64 << 20
 MAX_TOTAL = 512 << 20
 MAX_LINE = 1 << 20
-MAX_LINES = MAX_ENTRY // 256   # per JSON lines file: no signed record is shorter than 256 bytes
+MIN_RECORD = 256   # no signed record's line is shorter: its hash, signature, ids and timestamp alone are longer
+MAX_LINES = MAX_ENTRY // MIN_RECORD   # per JSON lines file
 CLASSES = ("public", "customer", "tracekit", "operator")
 MATRIX = ("model_calls", "tool_calls", "network", "processes", "services")
 COVERED = ("none", "reported", "observed", "enforced")   # weakest first
@@ -333,7 +334,9 @@ def load_trust(path):
     return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], "analyzers": [], **t}
 
 
-def _jsonl(data):
+def _jsonl(data, shortest=MIN_RECORD):
+    """The JSON texts of a JSON lines file, each line at least `shortest` bytes: checked before any is parsed, so a
+    bundle's lines can't outnumber MAX_TOTAL / MIN_RECORD, whatever it unzips to."""
     if data and not data.endswith(b"\n"):
         raise ValueError("a JSON lines file must end in a newline")
     if data.count(b"\n") > MAX_LINES:   # counted before any is parsed: a run of tiny lines costs no memory
@@ -341,6 +344,8 @@ def _jsonl(data):
     lines = data.split(b"\n")[:-1]
     if any(len(line) > MAX_LINE for line in lines):
         raise ValueError("line longer than the bundle limits")
+    if any(len(line) < shortest for line in lines):
+        raise ValueError("line shorter than a signed record")
     return [loads_strict(line) for line in lines]
 
 
@@ -418,7 +423,7 @@ def _revocations(rep, trust, paths):
     for path in paths:
         try:
             with open(path, "rb") as f:
-                docs = _jsonl(f.read(MAX_ENTRY))
+                docs = _jsonl(f.read(MAX_ENTRY), 0)   # revocation documents, not records
         except (OSError, ValueError) as e:
             rep.check("revocations", False, f"{path}: {type(e).__name__}: {e}")
             continue

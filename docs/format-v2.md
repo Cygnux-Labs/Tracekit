@@ -487,7 +487,7 @@ checkpoints/registry-<n>.note   the registry notes at a (none when a = 0) and b
 runs/                     every run whose run.final is in the range, and the selected run, if any
 ```
 
-JSON lines files end in a newline, one strict JSON text (§1) per line, each line at most 1 MiB. Hashes and keys in
+JSON lines files end in a newline, one strict JSON text (§1) per line, each line at most 1 MiB and at least 256 bytes (no signed record is shorter: its hash, signature, ids and timestamp alone are longer), so a bundle's lines are counted and measured before any is parsed and can't outnumber 512 MiB / 256. Hashes and keys in
 bundle files are standard base64 with padding (checkpoint notes and vkeys: canonical base64, §6). Zip limits: at most
 10,000 entries, 64 MiB per entry, 512 MiB in total; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*`
 with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries no code and no trust configuration.

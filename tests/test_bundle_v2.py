@@ -539,6 +539,23 @@ class TestVerifyV2(Case):
             self.assertEqual((ts["exit_code"], ts["integrity"]), (code, rep.integrity))
             self.assertIn("more lines than the bundle limits", json.dumps(ts["checks"]))
 
+    def test_lines_shorter_than_a_record_are_refused_before_they_are_parsed(self):
+        """No signed record is shorter than 256 bytes, so neither verifier parses a shorter line: a bundle that unzips to
+        millions of tiny lines (which crashed the browser page without a trust file) is refused at its first one."""
+        _, out = self.honest()
+
+        def tiny(files, manifest):
+            name = next(n for n in files if n.startswith("runs/"))
+            files[name] = b'{"event":{"seq":1}}\n' * 1000
+        bad = self.mutate(out, edit=tiny)
+        rep, code = self.verify(bad)
+        self.assertEqual(code, 1)
+        self.assertIn("line shorter than a signed record", str(rep.checks))
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            ts = tv.ts_verify(bad, self.trust)
+            self.assertEqual((ts["exit_code"], ts["checks"]), (code, rep.checks))
+
     def test_a_seq_written_as_a_float_fails_the_same_checks_in_both_verifiers(self):
         _, out = self.honest()
         bad = self.mutate(out, edit_run=lambda rs: rs[0]["event"].update(seq=float(rs[0]["event"]["seq"])))
