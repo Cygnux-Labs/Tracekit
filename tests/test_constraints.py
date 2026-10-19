@@ -199,7 +199,7 @@ class Grammar(unittest.TestCase):
         self.assertEqual(constraints.extract(text), [("only_change", "pager.py"), ("keep_away", "billing.py")])
         self.assertEqual(claude_code._live(text), [("keep_away", "billing.py")])
         sent = []
-        claude_code.prompted(mock.Mock(call=lambda m, **kw: sent.append(kw["constraint"])), text)
+        claude_code.prompted(mock.Mock(call=lambda m, **kw: sent.append(kw["constraint"]) or {"run_seq": 1}), text)
         self.assertEqual(sent, [{"kind": "keep_away", "object": "billing.py"}])
 
     def test_a_64_kib_prompt_is_read_in_bounded_time(self):
@@ -447,16 +447,35 @@ class Live(Signed):
         self.assertEqual((held["decision"], held["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
         self.assertEqual([e["type"] for e in self.records(run)].count("constraint.added"), 3)
 
-    def test_past_the_cap_a_constraint_is_a_signed_gap(self):
+    def test_past_the_cap_a_file_constraint_is_a_signed_gap_and_every_write_is_held(self):
+        """Any client of the run may add a constraint, so the agent can add made-up ones first: they never leave the
+        person's later one unheld. A kind that names no file is always added; past MAX_CONSTRAINTS file constraints a
+        further one is a signed gap the hook is told of (`refused`), and every write is held from then on, also after
+        a restart."""
         run = self.run_()
         for i in range(svc.MAX_CONSTRAINTS):
             self.add(run, "keep_away", f"f{i}.py")
-        seq = self.add(run, "no_push")["run_seq"]
-        gap = next(e for e in self.records(run) if e["run_seq"] == seq)
+        self.assertNotIn("refused", self.add(run, "no_push"))
+        push = self.decide(run, "Bash", {"command": "git push origin main"})
+        self.assertEqual((push["decision"], push["rule_ids"][-1]), ("ask", "TK-CONSTRAINT"))
+        other = {"file_path": "/w/other.py", "old_string": "a", "new_string": "b"}
+        self.assertEqual(self.decide(run, "Edit", other)["decision"], "allow")
+        out = self.add(run, "keep_away", "billing.py")
+        self.assertTrue(out["refused"])
+        gap = next(e for e in self.records(run) if e["run_seq"] == out["run_seq"])
         self.assertEqual((gap["type"], gap["source"], gap["data"]["kind"]), ("capture.gap", "signer",
                                                                               "constraint_refused"))
-        self.assertIn("a further no_push constraint was not added", gap["data"]["reason"])
+        self.assertIn("a further keep_away constraint was not added", gap["data"]["reason"])
+        for args in ({"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"}, other):
+            held = self.decide(run, "Edit", args)
+            self.assertEqual((held["decision"], held["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
+            self.assertIn("so every write is held", held["reason"])
+        self.assertEqual(self.decide(run, "Read", {"file_path": "/w/billing.py"})["decision"], "allow")
         self.assertEqual(self.add(run, "keep_away", "f3.py")["run_seq"], 4)   # an equal one is still the one it has
+        self.s.close()
+        self.s = svc.SignerService(os.path.join(self.dir, "data"), grace_s=0, fsck_every_s=0)
+        self.addCleanup(self.s.close)
+        self.assertEqual(self.decide(run, "Write", {"file_path": "/w/x.py", "content": "x"})["decision"], "ask")
         self.call(ME, "close_run", **run)
         rep, code = v2.verify(*self.export(run))
         self.assertEqual(code, 0, rep.checks)

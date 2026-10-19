@@ -1,9 +1,9 @@
 """The signer RPC contract, version 19: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
-`tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states),
-model_event's `amended` (the fields an LLM gateway changed in a request), its `said_only` (a response recorded without
-its calls), register_run's `caller` (a gateway registering the run of a client it serves), observe_effect's
+`tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states; its
+response's `refused` past the run's cap), model_event's `amended` (the fields an LLM gateway changed in a request),
+its `said_only` (a response recorded without its calls), register_run's `caller` (a gateway registering the run of a client it serves), observe_effect's
 `callers` (the identities whose runs a kernel sensor's import covers, required with `sensor`) and its OpenShell import
 (sensor `openshell`, an effect's `denied`, and the `policy` and `lost` effects of one run). Version 18 adds
 observe_effect's kernel sensor events (its `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17
@@ -475,7 +475,9 @@ RESPONSES = {
     "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
     "why_finding": _SEQ_ONLY,
     "review_finding": _SEQ_ONLY,
-    "constraint_add": _SEQ_ONLY,
+    # refused: past the run's file constraint cap the constraint was not added (a constraint_refused gap, run_seq):
+    # every write of the run is held from then on
+    "constraint_add": _obj(["run_seq"], run_seq=SEQ, refused={"const": True}),
     "incident_list": _obj(["incidents", "next_cursor"], incidents={"type": "array", "maxItems": 1000, "items": _INCIDENT},
                           next_cursor={"oneOf": [ID, {"type": "null"}]}),
     "incident_show": _INCIDENT,

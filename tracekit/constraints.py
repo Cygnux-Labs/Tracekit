@@ -706,7 +706,8 @@ def breaks(kind, f, is_object):
 
 def held(kind, name):
     """What the agent is told when a live constraint holds its call (`name`: from breaks(), out of its own
-    arguments; for "many", the most files of one call the signer checks)."""
+    arguments; for "many", the most files of one call the signer checks; for "full", the most file constraints a run
+    takes)."""
     return {"keep_away": f"the person's request in this run said not to modify {name}",
             "only_change": f"the person's request in this run said to change only certain files, and {name} is not "
                            "one of them",
@@ -714,5 +715,7 @@ def held(kind, name):
             "no_push": "the person's request in this run said not to push",
             "no_network": "the person's request in this run said not to use the network",
             "many": f"the call writes more than {name} files, more than are checked against what the person's request "
-                    "in this run said not to change"}[kind] + \
+                    "in this run said not to change",
+            "full": f"the run has the most file constraints the signer takes ({name}), and a further one was not "
+                    "added, so every write is held"}[kind] + \
         "; ask the person"

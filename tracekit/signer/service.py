@@ -401,7 +401,7 @@ DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its vi
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
-MAX_CONSTRAINTS = 32   # live constraints a run takes (constraint_add)
+MAX_CONSTRAINTS = 32   # live file constraints a run takes (constraint_add); past it every write is held
 MAX_NAMES = 256   # distinct files of one call checked against a run's file constraints; past it, the call is held
 COOLDOWN_S = 3600   # respond.cooldown_s default: how long new runs of a held owner and principal inherit the hold
 MAX_UNMATCHED = 1 << 16   # (decision, result digest) pairs remembered as not matching; forgotten all at once past it
@@ -3827,8 +3827,10 @@ class SignerService:
         """A live constraint of the caller's run (module docstring): constraint.added, with the commitment of its file
         name under the record's own salt, never the name; tighten-only, so any client of the run may add one. One
         equal to a live constraint of the run (the same kind, and for a file the same name: its commitment opens) is
-        that one: its run_seq, nothing written. Past MAX_CONSTRAINTS a new one is a signed capture.gap
-        constraint_refused (its run_seq), never dropped unrecorded."""
+        that one: its run_seq, nothing written. Past MAX_CONSTRAINTS file constraints (keep_away, only_change; a kind
+        that names no file has at most one each and is always added) a new file constraint is a signed capture.gap
+        constraint_refused (its run_seq, and `refused` for the hook to warn), never dropped unrecorded, and the run
+        fails closed: every later write is held (_constrained), so made-up constraints only make the agent wait."""
         key, c = self._authorize(identity, req), req["constraint"]
         if (c["kind"] in constraints.OBJECT_KINDS) != ("object" in c) or "object" in c and not constraints.norm(
                 c["object"]):
@@ -3846,11 +3848,12 @@ class SignerService:
                 not name or self._opens(commitment, label, name))), None)
             if same is not None:
                 return {"run_seq": same}
-            if len(have) >= MAX_CONSTRAINTS:
+            if name and sum(kind in constraints.OBJECT_KINDS for kind, *_ in have) >= MAX_CONSTRAINTS:
+                tx.set(run, "constraints_full", True)
                 return {"run_seq": tx.emit(run, "capture.gap", {"kind": "constraint_refused", "reason": (
-                    f"the run has {MAX_CONSTRAINTS} live constraints, the most it takes: a further {c['kind']} "
-                    "constraint was not added, so calls that break it are not held")},
-                    source="signer")}
+                    f"the run has {MAX_CONSTRAINTS} live file constraints, the most it takes: a further {c['kind']} "
+                    "constraint was not added, so every write of the run is held for a person's approval")},
+                    source="signer"), "refused": True}
             seq = tx.emit(run, "constraint.added", data, request_id=req["request_id"])
             tx.set(run, "constraints", [*have, constraint_state({"type": "constraint.added", "data": data,
                                                                  "run_seq": seq})])
@@ -3883,7 +3886,8 @@ class SignerService:
     def _constrained(self, run, facts):
         """What the agent is told when a call (its _facts) breaks one of `run`'s live constraints, or None: a file it
         writes breaks a file constraint whose commitment its name opens (keep_away) or opens none of (only_change);
-        a call writing more than MAX_NAMES files is held whenever the run has a file constraint."""
+        a call writing more than MAX_NAMES files is held whenever the run has a file constraint, and any write once a
+        file constraint was refused (constraints_full: past MAX_CONSTRAINTS)."""
         live = run.get("constraints") or ()
         if facts["many"] and any(kind in constraints.OBJECT_KINDS for kind, *_ in live):
             return constraints.held("many", MAX_NAMES)
@@ -3897,7 +3901,7 @@ class SignerService:
                                       if kind == "only_change" else opens.get(label, ()).__contains__)
             if name is not None:
                 return constraints.held(kind, name)
-        return None
+        return constraints.held("full", MAX_CONSTRAINTS) if run.get("constraints_full") and facts["write"] else None
 
     def _review_finding(self, identity, req):
         """A review record: the signed finding, with its rule's fixed title (format-v2.md §3: no text of the run)."""

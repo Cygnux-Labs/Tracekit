@@ -564,6 +564,8 @@ class RecordLog:
                 run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
             elif e["type"] == "constraint.added":
                 run["constraints"] = [*(run.get("constraints") or ()), constraint_state(e)]
+            elif e["type"] == "capture.gap" and e["data"].get("kind") == "constraint_refused":
+                run["constraints_full"] = True   # SignerService._constraint_add: every write is held
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
                 d, out = e["data"], e["data"].get("output") or {}
                 if out.get("hash") and e.get("tool_call_id"):
