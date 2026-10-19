@@ -1384,8 +1384,9 @@ class LiveRuns(unittest.TestCase):
 
     def test_a_run_that_fails_at_a_later_checkpoint_takes_back_every_record_it_showed(self):
         """A run that verified at one checkpoint and failed at the next kept its earlier rows on the tape as SIGNED,
-        next to a review saying none of its records are shown. They are taken back from the snapshot and the stream;
-        the page drops them on the failed review; if the run verifies again it is shown again from its start."""
+        next to a review saying none of its records are shown, and its VERIFIED report and FINDING alerts (counted in
+        HIGH ALERTS). They are taken back from the snapshot and the stream; the page drops them on the failed review;
+        if the run verifies again it is shown again from its start."""
         verdicts = [VERIFIED, FAILED, VERIFIED]
         feed = self.feed(lambda run_id: verdicts.pop(0))
         self.refresh(feed)
@@ -1394,13 +1395,25 @@ class LiveRuns(unittest.TestCase):
         snap, streamed = self.served(feed)
         for rows in (snap["records"], streamed):
             self.assertEqual([(r["event"], r.get("analysis"), (r.get("review") or {}).get("verdict")) for r in rows],
-                             [("tk_alert", True, "verified"), ("tk_alert", True, "failed")])
+                             [("tk_alert", True, "failed")])
         self.assertEqual(feed.verify()[1], ["run r1 of tenant default: FAILED"])
         self.now[0] += 60
         self.refresh(feed, r1=1)
         snap, _ = self.served(feed)
         self.assertEqual([r["v2"]["run_seq"] for r in snap["records"] if not r.get("analysis")], [0, 1, 2, 3])
-        self.assertIn('if (r.review?.verdict === "failed")', observe.read_text(observe.UI))   # B41 runs it
+        if shutil.which("node"):   # the page drops them too, its own report and findings included
+            rows = [{"session_id": "r1", "tenant": "default", "analysis": True, "review": {"verdict": "verified"}},
+                    {"session_id": "r1", "tenant": "default", "analysis": True, "tape": "FINDING"},
+                    {"session_id": "r1", "tenant": "default", "v2": {"run_seq": 0}},
+                    {"session_id": "r2", "tenant": "default", "analysis": True, "tape": "FINDING"}]
+            self.assertEqual(json.loads(page_js(["accept"], f"""
+                let V2 = true, R = null, scope = null, DROPPED = 0, MAXREC = 50000;
+                const ALL = [], RUNS = new Map(), document = {{ body: {{ classList: {{ add() {{}} }} }} }};
+                const inScope = () => true, ingest = () => {{}}, rebuild = () => {{}}, stopRun = () => {{}};
+                for (const r of {json.dumps(rows)}) accept(r);
+                accept({{ session_id: "r1", tenant: "default", analysis: true, review: {{ verdict: "failed" }} }});
+                process.stdout.write(JSON.stringify(ALL.map(r => [r.session_id, r.review?.verdict ?? r.tape])));""")),
+                [["r2", "FINDING"], ["r1", "failed"]])
 
     def test_a_flood_of_rows_never_pushes_a_failed_runs_verdict_out_of_the_run_list(self):
         """Past the live cap the oldest rows went, reviews included, and the page never said so: an agent writing
@@ -1474,7 +1487,7 @@ class LiveRuns(unittest.TestCase):
         self.refresh(feed)
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
-            self.assertEqual([r for r in feed.records if not r.get("analysis")], [observe.RETRACTED] * 2)
+            self.assertEqual([r for r in feed.records if not r.get("analysis")], [observe.RETRACTED] * 3)
 
     def test_a_run_whose_check_raises_says_not_checked_and_every_other_run_is_still_checked(self):
         """An error checking one run escaped the watch thread and ended it: no run was checked again. That run gets a

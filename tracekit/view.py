@@ -916,8 +916,8 @@ class StoreFeed:
                 pass
             new = [self._own(e, "high", f"RUN {run_id} · Integrity {rep.integrity}", f"{OPERATOR_SIDE}\n\n{text}",
                              "VERIFY")]
-            # its records shown when it verified leave the tape (shown again from the start if it verifies again)
-            state = dict(state, count=count, shown=0, failed=rep.integrity)
+            # its rows of when it verified leave the tape (shown again from the start, findings too, if it verifies again)
+            state = dict(state, count=count, shown=0, failed=rep.integrity, analyzed=False)
             records = None   # a mirror of it, from when it verified, goes
         else:
             records = list(itertools.islice(reader.iter_run(tenant, run_id), count))   # what the checkpoint covers
@@ -954,10 +954,9 @@ class StoreFeed:
             new[-1].update(signer=True, agent="signer")
         with self.lock:
             self.runs[key] = state
-            if code:
+            if code:   # its records, and the reports and findings of when it verified
                 for i, x in enumerate(self.records):
-                    if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key \
-                            and not x.get("analysis"):
+                    if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key:
                         self.records[i] = observe.RETRACTED
             self._append([dict(x, tenant=tenant) for x in new], key)
         if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape

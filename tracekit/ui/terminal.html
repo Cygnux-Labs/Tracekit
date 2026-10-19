@@ -2477,10 +2477,11 @@
       ALL.push(r);
       if ((r.v2 || r.review) && !V2) { V2 = true; document.body.classList.add("v2"); }
       if (r.review && !r.signer) RUNS.set(r.session_id, { ...r.review, id: r.session_id, tenant: r.tenant, report: r.text });
-      // a run that verified at one checkpoint and fails at a later one: the records it showed are taken back
+      // a run that verified at one checkpoint and fails at a later one: the records it showed are taken back, and the
+      // reports and findings of when it verified
       let n = 0;
       if (r.review?.verdict === "failed") {
-        for (const x of ALL) if (x.analysis || x.session_id !== r.session_id || x.tenant !== r.tenant) ALL[n++] = x;
+        for (const x of ALL) if (x === r || x.session_id !== r.session_id || x.tenant !== r.tenant) ALL[n++] = x;
         n = ALL.length - n; ALL.length -= n;
       }
       if (ALL.length > MAXREC * 1.1) { const k = ALL.length - MAXREC; ALL.splice(0, k); DROPPED += k; n += k; }
