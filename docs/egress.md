@@ -91,6 +91,9 @@ with every heartbeat.
   anything reaches the host, and the proxy says so on stderr. So is a tunnel whose ClientHello doesn't arrive within
   30 seconds of its request, and one more tunnel of an attribution (its connection's identity, else its run) that
   has 64 open already.
+- a connection that doesn't send what attributes it (an HTTP request's head; SOCKS5's greeting and credentials)
+  within 5 seconds, and on Linux one more connection from a loopback client whose uid has 64 open already, counted
+  from accept: closed, so one agent's half-open connections can't take the 256 its shared address gets.
 - a raw IP address, in any form the resolver reads as one (`8.8.8.8`, `134744072`, `0x08080808`, `8.8.2056`, `::1`),
   and the public DNS-over-HTTPS endpoints (`dns.google`, `cloudflare-dns.com`, ...): 403, with what to do. List one in
   `allow` to let agents reach it; an allowed host needs no SNI, so any protocol passes.

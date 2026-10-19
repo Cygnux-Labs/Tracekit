@@ -32,8 +32,11 @@ CONNECT host:port: the TLS ClientHello's SNI must be the host, else the tunnel i
 a raw IP address, a DNS-over-HTTPS endpoint or a name that resolves to a loopback, private or link-local address is
 refused (403) unless `allow` lists it (the proxy connects to the address it checked), and an allowed host needs no
 SNI (any protocol). A host name observe_effect would not take (HOST) is refused (400). Plain HTTP requests in absolute form (GET http://host/path) are forwarded with Connection: close.
-The ClientHello comes within the connection's deadline (netserver.DEADLINE_S from its request), else the tunnel is
-closed; an attribution (its connection's identity, else its run) has at most MAX_TUNNELS tunnels open at once.
+A client sends what attributes it (an HTTP request's head; SOCKS5's greeting and credentials) within PRE_AUTH_S, and
+the ClientHello within the connection's deadline (netserver.DEADLINE_S) from then, else the connection is closed. A
+loopback client's uid has at most MAX_TUNNELS connections open, counted from accept, and an attribution (its
+connection's identity, else its run) at most MAX_TUNNELS tunnels: in system mode every agent connects from loopback,
+which shares the transport's per-address limit, so no agent can hold every connection it gives.
 Per (attribution, host, port, minute): bytes each way, connections opened, first and last activity. Each minute's
 totals go to the signer (observe_effect) at the first heartbeat (every HEARTBEAT_S) after the minute ends, and a
 heartbeat goes out with nothing to report too, so the signer knows the observer is alive. Totals the signer can't take
@@ -84,6 +87,7 @@ CHUNK = 64 * 1024
 # tunnels open at once per attribution (its connection's identity, else its run), below the transport's per-address
 # limit (256): in system mode every agent reaches the proxy from loopback, so one agent can't hold all of them
 MAX_TUNNELS = 64
+PRE_AUTH_S = 5   # from a connection's accept (or its request's first byte) to what attributes it
 MAX_EFFECTS = 256   # per observe_effect call
 MAX_REFUSED = 10_000   # totals the signer refused, kept to send again; past it the oldest are dropped (and counted)
 
@@ -340,7 +344,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         super().setup()
 
     def handle_one_request(self):
-        self.server.restart_deadline()
+        self.server.restart_deadline(PRE_AUTH_S)   # to its head; _who gives the rest the whole deadline
         super().handle_one_request()
 
     def log_message(self, *a):
@@ -376,14 +380,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         """The connection's identity: what the authenticators accept, else on Linux the uid owning a loopback client's
         socket; None."""
         caller = self._identity(auth)
-        if caller is None and ipaddress.ip_address(self.client_address[0]).is_loopback:
-            uid = _peer_uid(self.client_address, self.connection.getsockname())
-            caller = None if uid is None else f"uid:{uid}"
+        if caller is None and self.uid is not None:
+            caller = f"uid:{self.uid}"
         return caller if caller and len(caller) <= 256 else None
 
     def _who(self):
         """The attribution of this request, or None once it is refused (407, or 503 when the signer can't check its
         run token): ("token", run_id, token, the connection's identity or None) or ("identity", identity)."""
+        self.server.restart_deadline()   # its head is in: checking it and what follows have the whole deadline
         auth = self.headers.get("Proxy-Authorization", "")
         scheme, _, cred = auth.partition(" ")
         caller = self._caller(auth if scheme.lower() == "bearer" else "")
@@ -423,15 +427,34 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return why
 
     def handle(self):
-        """SOCKS5 when the connection's first byte says so, else HTTP."""
+        """SOCKS5 when the connection's first byte says so, else HTTP; a loopback client's uid holds at most
+        MAX_TUNNELS connections."""
+        srv = self.server
+        self.uid = _peer_uid(self.client_address, self.connection.getsockname()) if ipaddress.ip_address(
+            self.client_address[0]).is_loopback else None
+        with srv.observer.lock:
+            n = srv.conns.get(self.uid, 0)
+            if self.uid is not None and n < MAX_TUNNELS:
+                srv.conns[self.uid] = n + 1
+        if self.uid is not None and n >= MAX_TUNNELS:
+            return print(f"tracekit egress: closed a connection of uid {self.uid} at once: it has {MAX_TUNNELS} open",
+                         file=sys.stderr)
         try:
-            first = self.connection.recv(1)
-        except OSError:
-            return
-        if first == b"\x05":
-            return self._socks5()
-        self.rfile = _Unread(first, self.rfile)
-        super().handle()
+            srv.restart_deadline(PRE_AUTH_S)
+            try:
+                first = self.connection.recv(1)
+            except OSError:
+                return
+            if first == b"\x05":
+                return self._socks5()
+            self.rfile = _Unread(first, self.rfile)
+            super().handle()
+        finally:
+            with srv.observer.lock:
+                if self.uid is not None:
+                    srv.conns[self.uid] -= 1
+                    if not srv.conns[self.uid]:
+                        del srv.conns[self.uid]
 
     def _socks5(self):
         """A SOCKS5 CONNECT (RFC 1928), its version byte read, as microsandbox's and E2B's outbound proxies send it: a
@@ -448,12 +471,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 c.sendall(b"\x05\x02")
                 run_id = _recv_exact(c, _recv_exact(c, 2)[1]).decode("latin-1")
                 token = _recv_exact(c, _recv_exact(c, 1)[0]).decode("latin-1")
+                self.server.restart_deadline()   # its credentials are in: checking them and its request have the rest
                 why = self._checked(run_id, token) if RUN_ID.fullmatch(run_id) and TOKEN.fullmatch(token) else (
                     407, "the SOCKS5 username and password are no run id and run token a run could have")
                 c.sendall(b"\x01\x00" if why is None else b"\x01\x01")
                 who = "token", run_id, token, caller
             elif caller:
                 c.sendall(b"\x05\x00")
+                self.server.restart_deadline()
                 who, why = ("identity", caller), None
             else:
                 c.sendall(b"\x05\xff")
@@ -629,7 +654,7 @@ def serve(cfg, client=None):
         address, auths, tls = (host, int(port)), [], None
     srv = transport.HttpServer(address, auths, tls, None, handler=_Handler)
     srv.observer = Observer(client or Client(cfg["signer"]), cfg.get("allow", ()))
-    srv.tunnels = {}   # attribution -> tunnels open (_tunnel)
+    srv.tunnels, srv.conns = {}, {}   # attribution -> tunnels open (_tunnel); a loopback client's uid -> connections
     return srv
 
 
