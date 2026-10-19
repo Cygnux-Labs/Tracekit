@@ -137,8 +137,11 @@ authorize: {"mtls:spiffe://acme/collector": [otlp_import]}
   run for what was allowed; the import is what the framework said it did.
 - **Retries write nothing twice.** A (span id, record type) is written once per run, and the set is part of the run's
   state, so it survives restarts and snapshots: a re-sent batch writes nothing, and no second `run.registered` appears.
-- **Lifecycle.** An imported run closes like any other: after `idle_s` without spans, `run.closing{idle_timeout}`, then
-  `run.final`. Spans for a final run are rejected (`partialSuccess`).
+- **Lifecycle.** An imported run closes when its trace's root span (one with no parent) arrives, since an exporter
+  sends a span once it ends and the root ends last: `run.closing{close_run}`, then `run.final` after `grace_s`. A
+  trace whose root never comes (its root is in another process, or not sampled) closes after `idle_s` without spans,
+  `run.closing{idle_timeout}`. Spans for a final run are rejected (`partialSuccess`): a span that ends after its
+  root and comes more than `grace_s` behind it is not recorded.
 - **Refusals.** No accepted credential: `401`; no `otlp_import`: `403`; a malformed body (nested too deep, a protobuf array or
   attribute list over 512 entries, or any decoding error): `400`, with nothing written. A request is written whole or
   not at all. The identity's event rate and open-run quotas apply (`503` with `Retry-After`, so exporters retry).

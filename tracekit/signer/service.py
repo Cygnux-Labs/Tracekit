@@ -4220,11 +4220,12 @@ class SignerService:
 
     def _import(self, identity, spans):
         """Write decoded spans as the records of their imported runs, all in one writer item (nothing on a refusal):
-        a dict of counts for otlp.handle_traces."""
+        a dict of counts for otlp.handle_traces. A trace's root span closes its run: its spans are all ended."""
         res = {"accepted": 0, "duplicate": 0, "skipped": 0, "rejected": 0, "errors": [], "retryable": False}
         if len(spans) > self.otlp_max_spans:
             return dict(res, rejected=len(spans), errors=[f"more than {self.otlp_max_spans} spans in one request"])
         traces, agents = {}, {}   # trace id -> [[(type, data, span id)] per span]; trace id -> agent name
+        ended = {sp["trace_id"] for sp in spans if sp["parent_span_id"] is None}
         for sp in sorted(spans, key=lambda x: (x["start_ns"], x["end_ns"])):
             kind = otlp.classify(sp)
             if kind not in ("tool", "llm"):
@@ -4276,6 +4277,10 @@ class SignerService:
                     for typ, data, sid in new:
                         tx.emit(run, typ, data, tier=signer_otel.TIER, span_id=sid)
                         tx.set(run["spans"], f"{sid}:{typ}", True)
+            for tid in ended:   # one open run per trace would spend the importer's open_runs (agentgateway: per call)
+                run = self.log.runs.get((tenant, signer_otel.run_id(tid)))
+                if run and run["source"] == "import" and run["owner"] == own and not run["closed"]:
+                    tx.closing(run, "close_run")
             return out
         try:
             # lean: one event-rate token per request (at most max_spans spans); a token per span if imports need a

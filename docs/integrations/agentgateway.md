@@ -128,7 +128,9 @@ frontendPolicies:
   named `mcp:<mcp.target>/<gen_ai.tool.name>` like the processor's records. It failed when the span's status is an
   error or it carries `mcp.error.code`. The outbound and guardrail spans under it (`agentgateway.outbound.*`) and
   other methods are skipped, so each call is recorded once.
-- **One run per trace.** Unless the agent sends `traceparent`, each request is its own trace, so its own run.
+- **One run per trace.** Unless the agent sends `traceparent`, each request is its own trace, so its own run,
+  closed as its span arrives. With `traceparent` the request span has a parent agentgateway doesn't export, so the
+  run stays open until `idle_s` and counts against agentgateway's `open_runs` (100 by default) meanwhile.
 - **No arguments or results:** agentgateway's spans carry the tool's name and outcome. Its tracing `attributes` can add
   CEL values (`mcp.tool.arguments`, `mcp.tool.result`) as `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`,
   which the import reads.

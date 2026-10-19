@@ -126,7 +126,9 @@ class TestImport(Signer):
 
     def test_an_idle_import_run_closes_and_goes_final(self):
         s = self.open(idle_s=0, grace_s=0)
-        self.post(s, json.dumps(agent_trace()).encode())
+        rootless = agent_trace()
+        rootless["resourceSpans"][0]["scopeSpans"][0]["spans"].pop()   # its root span not sent (yet)
+        self.post(s, json.dumps(rootless).encode())
         s.sweep(now=time.monotonic() + 1)
         s.sweep(now=time.monotonic() + 2)
         run = [e for e in self.events() if e["run_id"] == f"otel:{TRACE}"]
@@ -135,6 +137,20 @@ class TestImport(Signer):
         self.assertEqual(run[-2]["data"]["reason"], "idle_timeout")
         self.assertNotIn("coverage", run[-1]["data"])   # an import is not reconciled
         self.assertEqual(self.post(s, json.dumps(agent_trace()).encode())[1]["partialSuccess"]["rejectedSpans"], "2")
+
+    def test_a_traces_root_span_closes_its_run(self):
+        """agentgateway sends each MCP request as a trace of its own: a run open per trace until idle_s would spend
+        its open_runs (100) in 100 calls, and every batch after be refused."""
+        s = self.open(grace_s=0)
+        call = {"mcp.method.name": "tools/call", "mcp.target": "everything", "gen_ai.tool.name": "echo",
+                "http.method": "POST", "http.path": "/mcp"}
+        for i in range(150):
+            sp = span(f"{i + 1:016x}", "tools/call", call, parent=None, trace=f"{i + 1:032x}")
+            self.assertEqual(self.post(s, json.dumps(payload(sp, service="agentgateway")).encode()), (200, {}), i)
+        self.assertEqual(len(self.events("run.closing")), 150)
+        self.assertEqual({e["data"]["reason"] for e in self.events("run.closing")}, {"close_run"})
+        s.sweep(now=time.monotonic() + 1)
+        self.assertEqual(len(self.events("run.final")), 150)
 
     def test_deep_json_is_a_400_and_writes_nothing(self):
         s = self.open()
