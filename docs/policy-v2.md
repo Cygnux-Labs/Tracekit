@@ -403,16 +403,18 @@ A policy is written ahead of time; a person's request often adds a limit for one
 rest of the run. It is experimental, new after 1.3.0.
 
 The Claude Code hook (and the Codex, Cursor and Gemini hooks, which share it) reads the person's prompt at
-`UserPromptSubmit`, as the harness hands it over, and sends each constraint it states with `constraint_add` (RPC 19).
-A small fixed grammar reads them ([tracekit/constraints.py](../tracekit/constraints.py)):
+`UserPromptSubmit`, as the harness hands it over, and sends each constraint it states with `constraint_add` (RPC 19),
+each on its own and before it records the prompt. The session's state keeps them: after the signer closes an idle
+run, the session's next run gets every constraint its earlier prompts stated. A small fixed grammar reads them
+([tracekit/constraints.py](../tracekit/constraints.py)):
 
 | Kind | Read from | Holds |
 |---|---|---|
-| `keep_away` | "don't touch / modify / edit / change / delete X", "leave X alone", "X stays untouched", "X is read-only", for a file name X | a call that writes X: a write tool's path, a shell redirection, `rm`, `touch`, `tee`, `sed -i`, the destination of `cp` or `mv` |
-| `only_change` | "only change / edit / modify / touch X" | a call that writes any other file |
+| `keep_away` | "don't touch / modify / edit / change / delete X", "leave X alone", "X stays untouched", "X is read-only", for a file name X | a call that writes X: a write tool's path or paths (every file of a Codex patch), a shell redirection, `rm`, `touch`, `tee`, `sed -i`, the destination of `cp` or `mv`; shell commands read as the policy engine reads them, through `bash -c`, `eval`, wrappers, argv lists and OpenAI's `commands` |
+| `only_change` | "only change / edit / modify / touch X", "don't change anything except / but / other than X", "read-only except X"; "don't change anything else": each file the request names | a call that writes any other file |
 | `read_only` | "read-only" naming no file, "don't change anything" | any call that writes, commits or installs |
 | `no_push` | "don't push", "never push", "no pushing" | a `git push` |
-| `no_network` | "no network", "no internet", "work offline" | an http or browser call, `WebFetch`, `curl`, `wget`, `ssh`, `git pull`/`fetch`/`clone`/`push`, a package install |
+| `no_network` | "no network (access)", "no internet", "don't use the web", "don't go online", "work / stay offline" | an http or browser call, `WebFetch`, `curl`, `wget`, `ssh`, `git pull`/`fetch`/`clone`/`push`, a package install |
 
 After the policy engine has decided, the signer checks each call of the run against the run's constraints. A call
 that breaks one is raised to `ask` with the rule `TK-CONSTRAINT` added; a person answers it like any other ask (an
@@ -428,7 +430,11 @@ commitment to its lower-cased base name ([format v2](format-v2.md#3-events)), an
 committing each file it writes under that record's salt. The prompt itself is recorded beside it (`input.observed`,
 source `<agent>:UserPromptSubmit`, `<agent>` the harness), its text in the content vault when the signer keeps content.
 
-A run takes at most 32 constraints. After a signer restart the constraints come back from the run's records.
+A constraint equal to one the run has (the same kind; for a file, the same name) is that one, so a request repeated
+in every prompt never fills the run. A run takes 32; past them a new one is a signed `capture.gap{constraint_refused}`
+(a `gaps` warning in `tracekit verify`) and holds nothing. A call that writes more than 256 distinct files is held in
+a run with a file constraint (`keep_away`, `only_change`): the signer checks at most 256 names per call. After a
+signer restart the constraints come back from the run's records.
 `tracekit analyze --v2` checks the same constraints after the run, with the model's own statements too
 ([TK-X204](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)); `tracekit verify` checks that
 each `TK-CONSTRAINT` hold comes after a constraint ([verdicts](verdicts.md#live-constraints)). What the grammar misses
