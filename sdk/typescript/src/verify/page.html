@@ -6,100 +6,34 @@
 <meta http-equiv="Content-Security-Policy" content="%CSP%">
 <title>tracekit verify</title>
 <style>
-:root { color-scheme: light dark; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700; }
-@media (prefers-color-scheme: dark) { :root { --ok: #3fb950; --bad: #ff7b72; --warn: #d29922; } }
-body { margin: 0; background: Canvas; color: CanvasText;
-  font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-main { max-width: 88ch; padding: 1.5rem 2ch 3rem; overflow-wrap: anywhere; }
-h1, h2 { font-size: 1em; margin: 1.6em 0 0.4em; }
-h1 { margin-top: 0; }
-h2::before { content: "## "; color: GrayText; }
-p { margin: 0.35em 0; }
-.muted, .privacy { color: GrayText; }
-code, pre { font: inherit; }
-button, .button { font: inherit; color: LinkText; background: none; border: 0; padding: 0; cursor: pointer;
-  text-decoration: underline; }
-button::before, .button::before { content: "["; display: inline-block; }
-button::after, .button::after { content: "]"; display: inline-block; }
-:focus-visible, .drop:focus-within, .button:focus-within { outline: 2px solid LinkText; outline-offset: 2px; }
-.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.drop { display: block; margin: 1em 0; padding: 1em 2ch; border: 1px dashed GrayText; cursor: pointer; }
-.drop.over { border-style: solid; border-color: LinkText; }
-.row { display: flex; flex-wrap: wrap; gap: 0 1ch; align-items: baseline; margin: 0.25em 0; }
-.chosen { font-weight: bold; }
-.banner { margin: 1.5em 0 1em; }
-.banner .word { font-weight: bold; }
-.banner p { margin: 0.2em 0 0; }
-.ok { color: var(--ok); }
-.bad { color: var(--bad); }
-.warn { color: var(--warn); }
-.banner .not { color: CanvasText; }
-.steps { padding-left: 3ch; }
-.steps li { margin: 0.4em 0; }
-.cmd { display: flex; gap: 1ch; align-items: baseline; }
-.cmd code { flex: 1; white-space: pre-wrap; }
-.cmd code::before { content: "$ "; color: GrayText; }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 0 2ch; margin: 0; }
-dt { color: GrayText; }
-dd { margin: 0; overflow-wrap: anywhere; }
-#checks summary { cursor: pointer; }
-#checks .status { font-weight: bold; }
-.problem { display: block; margin-left: 4ch; white-space: pre-wrap; }
-.means { margin: 0.2em 0 0.4em 4ch; color: GrayText; }
-pre { white-space: pre-wrap; margin: 0.5em 0; padding-left: 2ch; border-left: 1px solid GrayText; }
-.final { margin-top: 1em; }
-@media (max-width: 30rem) {
-  dl { grid-template-columns: 1fr; }
-  dd { margin-bottom: 0.4em; }
-}
+pre { white-space: pre-wrap; }
 </style>
 </head>
 <body>
-<main>
+<main id="drop">
 <h1>tracekit verify</h1>
-<p>Checks that an AI agent's evidence bundle (<code>.tkb</code>) is intact and signed by the signer you trust. Runs in
-this page: nothing to install.</p>
-<p class="privacy">Your file never leaves this page (the browser blocks all network access for it).</p>
-
-<label class="drop" id="drop" for="bundle">
-  <strong>drop a .tkb bundle here</strong> <span class="muted">or click to choose one (drop trust.json with it)</span>
-  <input class="sr" type="file" id="bundle" accept=".tkb,.zip,.json" multiple>
-</label>
-<p class="row"><span class="muted">bundle:</span> <span class="chosen" id="bundle-name">none chosen</span></p>
-<div class="row">
-  <span class="muted">trust (optional):</span> <span class="chosen" id="trust-name">none</span>
-  <label class="button" for="trust">choose trust file<input class="sr" type="file" id="trust" accept=".json"></label>
-  <button type="button" id="clear-trust" hidden>remove</button>
-</div>
-<p class="muted">The trust file (<code>trust.json</code>, from the sender) names the signer key and witnesses you trust.
-Without it the page still finds changed or missing records, but can't tell whose signer made the bundle.</p>
-<div class="row"><span class="muted">try a sample:</span>
-  <button type="button" id="sample-clean">clean bundle</button>
-  <button type="button" id="sample-tampered">tampered copy</button></div>
-
+<p>bundle (.tkb): <input type="file" id="bundle" accept=".tkb,.zip,.json" multiple> <b id="bundle-name">none chosen</b><br>
+trust.json (optional): <input type="file" id="trust" accept=".json"> <b id="trust-name">none</b>
+<button type="button" id="clear-trust" hidden>remove</button><br>
+samples: <button type="button" id="sample-clean">clean</button> <button type="button" id="sample-tampered">tampered</button></p>
+<hr>
 <section id="result" hidden aria-live="polite">
-  <div class="banner" id="banner"><div class="word" id="verdict-word"></div><p id="verdict-means"></p>
-    <p class="not" id="verdict-not"></p></div>
-  <div id="next" hidden><h2>what to do next</h2><ol class="steps" id="steps"></ol></div>
-  <div id="summary-box" hidden><h2 id="summary-title"></h2><dl id="summary"></dl></div>
-  <h2>every check</h2>
-  <p class="muted">Exactly as <code>tracekit verify</code> prints them. Open a line for what it means.</p>
-  <div id="checks"></div>
-  <p class="final" id="integrity"></p>
-  <p id="assurance"></p>
-  <p class="muted" id="exit"></p>
-  <div class="row"><button type="button" id="copy">copy report</button>
-    <button type="button" id="download">download report (JSON)</button><span class="muted" id="copied"></span></div>
-  <details><summary>the report as text</summary><pre id="report"></pre></details>
+<div id="banner"><h2 id="verdict-word"></h2><p id="verdict-means"></p><p id="verdict-not"></p></div>
+<div id="next" hidden><h3>what to do next</h3><ol id="steps"></ol></div>
+<div id="summary-box" hidden><h3 id="summary-title"></h3><dl id="summary"></dl></div>
+<h3>checks</h3>
+<div id="checks"></div>
+<p id="integrity"></p>
+<p id="assurance"></p>
+<p id="exit"></p>
+<p><button type="button" id="copy">copy report</button> <button type="button" id="download">download JSON</button>
+<span id="copied"></span></p>
+<details><summary>report as text</summary><pre id="report"></pre></details>
+<hr>
 </section>
-<p class="muted" id="busy" hidden>Verifying...</p>
-
-<h2>about this page</h2>
-<p class="muted">The TypeScript verifier of Tracekit <span id="version"></span>, the same checks as
-<code>npx @cygnuxlabs/tracekit verify</code> and <code>tracekit verify</code>. Its Content Security Policy lets it load
-and send nothing. A bundle relying on a check this page lacks (SLH-DSA checkpoint signatures, Rekor anchors, record-key
-certificates, tracekit why findings) is UNVERIFIABLE, never VERIFIED. What every line means: docs/verdicts.md in the
-Tracekit repository.</p>
+<p id="busy" hidden>Verifying...</p>
+<p><small>tracekit <span id="version"></span> · same checks as <code>tracekit verify</code> · files never leave this
+page</small></p>
 </main>
 <script id="verifier" type="module">%SCRIPT%</script>
 </body>
