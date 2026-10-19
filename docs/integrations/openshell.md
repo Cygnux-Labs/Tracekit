@@ -244,7 +244,7 @@ openshell` and `observer` the middleware's identity, written by the signer, Open
 | Network Activity (4001) or HTTP Activity (4002) that OpenShell's policy allowed or denied | `effect.observed{kind: connect, host, port, pid, binary}` (the program OpenShell names), with `denied: true` when OpenShell blocked it |
 | Process Activity (1007): a launch | `kind: exec`, the process OpenShell started (the sandbox's entrypoint) |
 | Process Activity (1007): a termination | `kind: exit`, with its exit code |
-| Device Config State Change (5019): a policy or configuration change | an `ext` record `openshell.policy`: OpenShell's name for the change (`approved`, `merged`, `loaded`, `failed`, ...), its `policy_hash`, who made it (`by`, its `actor`), and a commitment to its message, never the message itself |
+| Device Config State Change (5019): a policy or configuration change | an `ext` record `openshell.policy`: OpenShell's name for the change (`approved`, `merged`, `loaded`, `failed`, ...), its `policy_hash`, who made it (`by`, its `actor` as OpenShell writes it, which may be a person's email: a signed record can't be edited later), and a commitment to its message, never the message itself |
 | OpenShell's gap record (`openshell.ocsf.gap`: records it dropped before export) | a `capture.gap{observer_lost}` in that sandbox's run, or in every run the import covers when OpenShell's gateway dropped them (they may be of any sandbox) |
 
 OpenShell's own records of the middleware's decisions are skipped: those requests are the run's calls already. An
