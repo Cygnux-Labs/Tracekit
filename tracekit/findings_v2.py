@@ -78,6 +78,7 @@ import hashlib
 import json
 import os
 import posixpath
+import re
 import sys
 import tempfile
 import time
@@ -165,6 +166,7 @@ FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorabilit
 TIERS = ("operator", "observer", "gateway", "decision", "harness", "sdk", "transcript")   # trust, best first
 TEXT_TIERS = ("transcript", "sdk", "harness", "gateway")   # weakest first: a finding names the weakest text it relied on
 RANK = {"transcript": 0, "sdk": 0, "harness": 1, "gateway": 2}   # the agent can write both transcript and sdk text
+PLACEHOLDER = re.compile(r"\[(?:Pasted text|Image) #\d+[^\]\n]{0,40}\]")   # what a transcript line holds for a paste
 # lines Claude Code itself writes as a user line: command and bash-mode input and output, a person's Esc
 COMMAND_OUTPUT = ("<command-", "<local-command-", "<bash-input", "<bash-stdout", "<bash-stderr",
                   "[Request interrupted by user")
@@ -269,6 +271,22 @@ def _targets(cmd):
     changes directory."""
     s = constraints.shell(cmd)
     return s["paths"], s["cd"]
+
+
+def _pasted(line, hook):
+    """Whether transcript prompt line `line` is hook prompt `hook` with a placeholder Claude Code shows in place of a
+    paste or an image ("[Pasted text #1 +40 lines]", "[Image #1]"): it has one, and its other text is the hook's, in
+    order, whitespace aside."""
+    parts = [" ".join(p.split()) for p in PLACEHOLDER.split(line)]
+    if len(parts) < 2:
+        return False
+    hook, at = " ".join(hook.split()), 0
+    for part in parts:
+        at = hook.find(part, at)
+        if at < 0:
+            return False
+        at += len(part)
+    return True
 
 
 def _same_text(text):
@@ -412,7 +430,10 @@ class _Run:
     def confirm(self):
         """Pair the prompts the hook recorded with the transcript's prompt lines, one each by their text, and read
         each confirmed line (in a run whose hook recorded none: each line; in a run with no prompt line: each hook
-        prompt) as a request; the other lines are TK-X208's. Then order what was stated and mentioned by position."""
+        prompt) as a request; the other lines are TK-X208's. A line left with a placeholder Claude Code writes for a
+        paste or an image pairs with the hook prompt left before it whose text has the line's other text (_pasted),
+        which is read; a hook prompt left after that (a line the tailer missed) is a request of its own (harness).
+        Then order what was stated and mentioned by position."""
         hooks = collections.defaultdict(list)
         for seq, h, text, _ in self.hook_prompts:
             hooks[h].append(seq)
@@ -429,6 +450,21 @@ class _Run:
             if cwd and self.root is None:
                 self.root = (cwd, seq)
             self._request(seq, text, self.tier[seq])
+        left = sorted(s for seqs in hooks.values() for s in seqs) if self.prompts else []
+        if left:
+            hook_text, line_text = {s: t for s, _, t, _ in self.hook_prompts}, {s: t for s, _, t, _ in self.prompts}
+            unconfirmed, self.unconfirmed = self.unconfirmed, []
+            for seq in unconfirmed:
+                k = bisect.bisect_left(left, seq) - 1
+                if k < 0 or not _pasted(line_text[seq], hook_text[left[k]]):
+                    self.unconfirmed.append(seq)
+                    continue
+                self.confirmed[seq] = hook = left.pop(k)
+                self.tier[seq] = self.tier[hook] = "harness"
+                self._request(seq, hook_text[hook], "harness")
+        for hook in left:
+            self.tier[hook] = "harness"
+            self._request(hook, hook_text[hook], "harness")
         self.prompts = [(seq, None, None, None) for seq, *_ in self.prompts]   # the text is read
         self.hook_prompts = []
         self.intent.sort()

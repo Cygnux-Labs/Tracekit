@@ -344,14 +344,35 @@ class Prompts(Base):   # TK-X208, and which prompt lines are requests
                          {"checked": 0, "found": 0, "not_checkable": [{"reason": "no_hook", "n": 1}]})
         self.assertEqual(out["shown"]["prompts"][0]["status"], "unchecked")
 
-    def test_a_prompt_only_the_hook_recorded_is_no_request(self):
+    def test_a_prompt_only_the_hook_recorded_is_a_request_of_its_own(self):
+        """Round-2 review: a line the tailer missed left the hook's prompt unread, so the constraint its live hold
+        enforced was gone from TK-X204. The hook's prompt is the harness's: a request (tier harness)."""
         t = Transcript(CWD)
         t.prompt("Fix src/pager.py.")
-        t.lines.append(("prompt", {"type": "UserPromptSubmit", "prompt": "Also fix billing.py."}))
-        tid = t.step("Fixing a file.", "Edit", edit("billing.py"))
+        t.lines.append(("prompt", {"type": "UserPromptSubmit", "prompt": "Also fix ledger.py. Don't touch billing.py."}))
+        named = t.step("Fixing a file.", "Edit", edit("ledger.py"))
+        kept = t.step("Fixing another.", "Edit", edit("billing.py"))
         out = self.run_session(t)
-        self.assertEqual(checks(out, tid)["TK-X202"], "found")   # the transcript never showed that request
+        self.assertEqual(checks(out, named)["TK-X202"], "checked")
+        self.assertEqual(checks(out, kept)["TK-X204"], "found")
+        self.assertEqual(out["shown"]["constraints"][0]["tier"], "harness")
         self.assertEqual([p["status"] for p in out["shown"]["prompts"]], ["confirmed"])
+
+    def test_a_paste_claude_code_wrote_as_a_placeholder_pairs_with_the_hooks_prompt(self):
+        pasted = "Fix the off-by-one in src/pager.py. Don't touch billing.py.\n" + "\n".join(
+            f"log line {i}" for i in range(40))
+        t = Transcript(CWD)
+        t.lines.append(("prompt", {"type": "UserPromptSubmit", "prompt": pasted}))
+        t.line("user", "Fix the off-by-one in src/pager.py. Don't touch billing.py.\n[Pasted text #1 +40 lines]")
+        tid = t.step("Same fix in billing.py.", "Edit", edit("billing.py"))
+        out = self.run_session(t)
+        self.assertEqual(checks(out, tid)["TK-X204"], "found")
+        self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X208"]["found"], 0)
+        self.assertEqual([p["status"] for p in out["shown"]["prompts"]], ["confirmed"])
+        t = Transcript(CWD)   # a line whose other text is not the hook prompt's stays unconfirmed
+        t.lines.append(("prompt", {"type": "UserPromptSubmit", "prompt": pasted}))
+        t.line("user", "Now update billing.py too.\n[Pasted text #1 +40 lines]")
+        self.assertEqual([p["status"] for p in self.run_session(t)["shown"]["prompts"]], ["unconfirmed"])
 
     def test_lines_claude_code_writes_itself_are_no_prompt_lines(self):
         for text in ([{"type": "text", "text": "[Request interrupted by user for tool use]"}],
