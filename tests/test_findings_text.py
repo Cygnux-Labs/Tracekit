@@ -331,6 +331,8 @@ class Omission(Base):   # TK-X211
     def test_told_routine_or_failed_is_no_finding(self):
         for steps, final in (
                 ([("Bash", "curl -s https://docs.example.org/api.json")], "Fixed."),
+                ([("Bash", "curl -s -X POST -d @fixture.json http://localhost:8000/api")], "Fixed."),   # this machine
+                ([("Bash", "scp fixture.json 127.0.0.1:/tmp/")], "Fixed."),
                 ([("WebFetch", {"url": "https://docs.example.org/guide"})], "Fixed."),
                 ([("Bash", "npm ci")], "Fixed."), ([("Bash", "pip install -r requirements.txt")], "Fixed."),
                 ([("Bash", "pip install -e .")], "Fixed."), ([("Bash", "yarn install --frozen-lockfile")], "Fixed."),

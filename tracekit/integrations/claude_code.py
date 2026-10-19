@@ -32,8 +32,8 @@ trusted): `tracekit analyze --v2` reads a transcript prompt line as the person's
 "don't push", ...) goes to the signer first, each on its own, as a live constraint (`constraint_add`), which holds a
 later call that breaks it for a person's approval; the agent reads why on stderr. A scope ("only change X") is no live
 constraint (_live): holding every other write (tests, lockfiles) would ask too often; `tracekit analyze --v2` checks
-it. The session state keeps them, and a later run of the session (after an idle close) gets them all again. A constraint can only hold more calls, so the
-agent's own identity adding one (it could add its own) weakens nothing.
+it. The session state keeps them, and a later run of the session (after an idle close) gets them all again. A
+constraint can only hold more calls, so the agent's own identity adding one (it could add its own) weakens nothing.
 
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer

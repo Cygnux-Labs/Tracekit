@@ -14,8 +14,9 @@ Kinds (rpc_schema.CONSTRAINT_KINDS):
                  said to stay as it is ("leave / keep X alone / as is / out of this", "X must stay unchanged", "X must
                  not be modified", "X is off-limits / read-only / frozen / out of scope / not part of this /
                  maintained elsewhere", "X belongs to another team", "nothing in X should change"), "hands off X",
-                 "stay away from X", "read-only on X"; "make no changes there" or "don't change it" for the files of
-                 the clause before ("X is generated; make no changes there"): a call that writes X breaks it
+                 "stay away from X", "read-only on X"; "make no changes there" or "don't change it" for the file
+                 named last before ("X is generated; make no changes there"), "them" for each: a call that writes X
+                 breaks it
   only_change X  "only change / edit / touch X", "only X should change", "X is the only file to edit", "limit / restrict
                  / confine the change to X", "touch nothing but X", "don't change anything (any file) except / but /
                  other than X", "everything outside X is off-limits", "read-only except X", and each file the text
@@ -314,9 +315,10 @@ def _only(tokens, i, end, later):
 
 def _clause(tokens, prev=()):
     """[(kind, object or None)] of one clause's tokens and the names of the files it keeps away; ("else", None): "don't
-    change anything else", which extract() reads with the text's other files. `prev`: the tokens of the clause before
-    it, whose files "it" or "there" stands for in a clause that names none ("X is generated; make no changes there")
-    unless that clause asks for a change of them or sets a condition ("fix X; don't rewrite it")."""
+    change anything else", which extract() reads with the text's other files. `prev`: the tokens of the latest clause
+    before it that names a file, which "it" or "there" stands for in a clause that names none ("X is generated; make
+    no changes there", _referent), unless that clause asks for a change or sets a condition ("fix X; don't rewrite
+    it")."""
     files = {i: t for i, t in enumerate(tokens) if _file(t)}
     if not files and not STATING & set(tokens):
         return [], set()
