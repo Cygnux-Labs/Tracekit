@@ -3666,6 +3666,11 @@ class SignerService:
         if sensor == "openshell" and callers != {owner(identity)}:   # it observes the runs it registered, no other
             raise RPCError("invalid_request", f"OpenShell's import observes the runs it registered: its callers are "
                                               f"its own identity, [{owner(identity)[:256]}]")
+        was = self._observers.get((tenant, obs))
+        if was and was[2] != sensor:   # run.final classes its coverage by its kind (_finish_run)
+            kind = f"the {was[2]} import" if was[2] else "an egress observer"
+            raise RPCError("invalid_request", f"{obs[:256]} observes as {kind}: one identity is one observer; give "
+                                              "each its own")
         if "check" in req:   # before anything is charged: a made-up token must not spend the observer's events
             why = self._attributed(tenant, req["check"])[2]
             if why:
@@ -3682,7 +3687,10 @@ class SignerService:
             restarted = covered if before and before[1] != req["instance"] else []
             lost = covered if "lost" in req and not restarted else []
             for k in [] if restarted or lost else covered:
-                self._beats[k] = now
+                if sensor and self.log.runs[k[:2]]["owner"] not in callers:   # its runs map no longer names the owner
+                    self._beats.pop(k)
+                else:
+                    self._beats[k] = now
         if restarted:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])

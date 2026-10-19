@@ -352,6 +352,17 @@ class TestImport(Sensed):
         self.assertEqual(self.gaps(es, "observer_lost"), [])   # its loss is no gap in a run it doesn't cover
         self.assertEqual(len(self.gaps(self.events("tracekit/signer"), "observer_lost")), 1)
 
+    def test_coverage_ends_when_the_runs_map_drops_the_owner_and_an_observer_keeps_its_kind(self):
+        """An import whose `callers` no longer name a run's owner covers that run no more, and its identity can't
+        heartbeat as an egress observer, which run.final would read as network observed."""
+        self.call("observe_effect", {"instance": "i", "sensor": "tetragon", "callers": [f"uid:{ME.subject}"],
+                                     "effects": []}, SENSOR)
+        run = self.register()
+        self.call("observe_effect", {"instance": "i", "sensor": "tetragon", "callers": [], "effects": []}, SENSOR)
+        self.refused("invalid_request", "observe_effect", {"instance": "i", "effects": []}, SENSOR)
+        es = self.final(run)
+        self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"], {"status": "none", "layers": []})
+
 
 class TestFalcoImport(Sensed):
     def test_falco_events_and_drops(self):
