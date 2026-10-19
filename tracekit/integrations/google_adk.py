@@ -10,13 +10,19 @@ The signer decides the call's arguments as the model sent them (`{}` for none), 
 result (`{"error": ...}`) and the run goes on. A tool's exception is recorded as an error and reaches ADK unchanged. A
 call ADK pauses for the user (its tool confirmation, or credentials) is not completed; run again under the same id once
 the user answers, it is decided as its next attempt.
+
+Each model response event is recorded too (tracekit.integrations.said): its thought summaries, the thought signatures
+(sealed), text and function calls, under the ids ADK gives the calls and the plugin decides them by. A response that
+can't be recorded only warns.
 """
+import asyncio
 import copy
 import warnings
 
 from google.adk.plugins.base_plugin import BasePlugin
 from pydantic_core import to_jsonable_python
 
+from tracekit.integrations import said
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -33,6 +39,7 @@ class Tracekit(BasePlugin):
         # lean: one entry per call the plugin decided, for its life; prune them at run end if agents run for days
         self._attempts = {}   # function_call_id -> the attempt its next execution is
         self._open = {}   # function_call_id -> (decision, attempt, the arguments decided) of a call let run
+        self.said = said.Said(lambda **f: run.call("model_event", **f), lambda: run.client.status({}))
 
     async def before_run_callback(self, *, invocation_context):
         first = invocation_context.plugin_manager.plugins[0]
@@ -41,6 +48,11 @@ class Tracekit(BasePlugin):
             warnings.warn(f"tracekit: Tracekit is not the first plugin ({first.name!r} is), so that plugin can answer "
                           "a tool call's error or result before Tracekit records it: list Tracekit first in plugins",
                           stacklevel=2)
+
+    async def on_event_callback(self, *, invocation_context, event):
+        """A model response, once ADK has given its function calls their ids and before it runs them."""
+        if not event.partial and event.content and event.content.role == "model":
+            await asyncio.to_thread(self.said, _said(event.content.parts or ()), event.model_version, "google")
 
     async def before_tool_callback(self, *, tool, tool_args, tool_context):
         call_id = tool_context.function_call_id
@@ -76,6 +88,23 @@ class Tracekit(BasePlugin):
         else:
             await complete(self.run, d, call_id, attempt, "ok",
                            result=result_field(d.get("send_result"), _as_the_model_reads(result)))
+
+
+def _said(parts):
+    """What the model said in a response's parts, in order: a thought part is a thought summary (include_thoughts), a
+    thought_signature the sealed reasoning behind its part. ADK's own requests to the user (adk_request_confirmation,
+    adk_request_credential, adk_request_input) are no model call."""
+    for p in parts:
+        if p.thought:
+            yield said.thought(p.text, p.thought_signature)
+            continue
+        if p.thought_signature:
+            yield said.thought(sealed=p.thought_signature)
+        fc = p.function_call
+        if fc is not None and not (fc.name or "").startswith("adk_request_"):
+            yield said.call(fc.id, fc.name, fc.args or {})
+        elif p.text:
+            yield said.text(p.text)
 
 
 def _as_the_model_reads(value):

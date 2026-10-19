@@ -10,13 +10,14 @@ import warnings
 from unittest import mock
 
 import adapter_contract as ac
+import test_said as ts
 
 HAVE = importlib.util.find_spec("llama_index") is not None
 if HAVE:
     from pydantic import BaseModel
     from llama_index.core.agent.workflow import (AgentWorkflow, CodeActAgent, FunctionAgent, ReActAgent, ToolCall,
                                                  ToolCallResult)
-    from llama_index.core.base.llms.types import ToolCallBlock
+    from llama_index.core.base.llms.types import TextBlock, ThinkingBlock, ToolCallBlock
     from llama_index.core.llms import ChatMessage
     from llama_index.core.llms.mock import MockFunctionCallingLLM
     from llama_index.core.tools import FunctionTool
@@ -43,7 +44,7 @@ def run(decision="allow", rule_ids=(), consume=True, state="approved", **more):
     r.call.side_effect = lambda m, **f: {"approval_request": {"approval_id": "apr-1"},
                                          "approval_wait": {"state": state}, "approval_abandon": {}}[m]
     r.approval_consume.return_value = {"ok": consume, "rule_ids": list(rule_ids)}
-    return r
+    return ts.vault(r, on=False)
 
 
 def model(*turns):
@@ -157,7 +158,8 @@ class Hook(Tools):
     def test_an_unanswered_approval_is_withdrawn(self):
         r = run("ask", ["A1"], state="requested")
         self.assertIn("not approved: requested", ask(gated(r, self.tool())))
-        self.assertEqual([c.args[0] for c in r.call.call_args_list][-1], "approval_abandon")
+        self.assertEqual([c.args[0] for c in r.call.call_args_list if c.args[0] != "model_event"][-1],
+                         "approval_abandon")
 
     def test_the_refusal_names_the_rules_but_not_the_unknown_tool_flag(self):
         self.assertEqual(ask(gated(run("deny", ["TK-D001", "TK-UNKNOWN-TOOL"]), self.tool())),
@@ -291,7 +293,7 @@ class Hook(Tools):
             if method == "approval_wait":
                 answered.wait(5)   # a person approves after the workflow timed out
                 return {"state": "approved"}
-            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}}[method]
+            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}, "model_event": {}}[method]
         r.call.side_effect = call
         threading.Timer(0.6, answered.set).start()
         with self.assertRaises(WorkflowTimeoutError):
@@ -385,6 +387,43 @@ class Agents(Tools):
         outer = tk.gate(FunctionAgent(tools=[ask_expert], llm=model([("ask_expert", {"question": "close"}, "q-1")])))
         self.assertEqual(ask(outer), "closed ACC-9")
         self.assertEqual(sorted(c.args[0] for c in r.decide.call_args_list), ["call-1", "q-1"])
+
+
+@unittest.skipUnless(HAVE, "llama_index not installed")
+class Said(Tools):
+    """Each AgentOutput is recorded before its calls run: thinking, text and tool calls, under the ids they are decided
+    by; the message itself only with the vault; a failure to record changes nothing for the agent."""
+
+    def answer(self, r):
+        def respond(messages, **kw):
+            if not any(m.role == "tool" for m in messages):
+                return ChatMessage(role="assistant", blocks=[
+                    ThinkingBlock(content="the user wants ACC-9 closed"), TextBlock(text="Closing ACC-9."),
+                    ToolCallBlock(tool_call_id="call-1", tool_name="close_account", tool_kwargs={"account": "ACC-9"})])
+            return ChatMessage(role="assistant", content="done")
+        agent = FunctionAgent(tools=[self.tool()], llm=MockFunctionCallingLLM(response_generator=respond))
+        return ask(Tracekit(r).gate(agent))
+
+    def test_the_reasoning_before_a_call_is_linked_to_it(self):
+        r = ts.vault(run())
+        self.assertEqual(self.answer(r), "done")
+        first = ts.recorded(r)[0]
+        self.assertEqual([t["id"] for t in first["tool_uses"]], ["call-1"])
+        self.assertEqual(r.decide.call_args.args[0], "call-1")
+        self.assertEqual(ts.segments(first), [("reasoning", "summary", "the user wants ACC-9 closed", []),
+                                              ("text", "full", "Closing ACC-9.", ["call-1"])])
+        self.assertEqual(ts.segments(ts.recorded(r)[-1]), [("text", "full", "done", [])])
+
+    def test_without_the_vault_only_the_commitment(self):
+        r = run()
+        self.answer(r)
+        self.assertTrue(all("body" not in f and f["content_digest"] for f in ts.recorded(r)))
+
+    def test_a_failure_to_record_changes_nothing_for_the_agent(self):
+        r = ts.failing(run())
+        with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
+            self.assertEqual(self.answer(r), "done")
+        self.assertEqual(self.ran, ["ACC-9"])
 
 
 @unittest.skipUnless(HAVE, "llama_index not installed")

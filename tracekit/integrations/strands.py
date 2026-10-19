@@ -11,6 +11,9 @@ allowed call whose input or tool a hook changed after the decision. The AfterToo
 hook, records the result the model reads; a call a hook changed after Tracekit's last look is recorded as an error, and
 one whose refusal it cleared as run against the decision (the signer signs `executed_against_policy`). A call that runs
 again under the same toolUseId (a hook's `retry`, an interrupt resumed) is decided again as the call's next attempt.
+Each model message is recorded too (tracekit.integrations.said), at AfterModelCallEvent: its reasoning (with the
+provider's signature or redacted content), text and tool uses, under their toolUseIds. A message that can't be
+recorded only warns.
 """
 import asyncio
 import copy
@@ -18,9 +21,11 @@ import math
 import threading
 import warnings
 
-from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookProvider, MultiAgentInitializedEvent
+from strands.hooks import (AfterModelCallEvent, AfterToolCallEvent, BeforeToolCallEvent, HookProvider,
+                           MultiAgentInitializedEvent)
 
 from tracekit.format.canon import event_hash, loads_strict
+from tracekit.integrations import said
 from tracekit.integrations.gate import gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -39,12 +44,18 @@ class Tracekit(HookProvider):
         self._attempts = {}   # toolUseId -> the attempt its next decision is
         self._decided = {}   # id(BeforeToolCallEvent) -> the call as decided: (decision, attempt, refusal, use, tool)
         self._running = {}   # toolUseId -> the call as decided, until its AfterToolCallEvent; None: nothing decided
+        self.said = said.Said(lambda **f: self.run.call("model_event", **f), lambda: self.run.client.status({}))
 
     def register_hooks(self, registry, **kwargs):
         registry.add_callback(BeforeToolCallEvent, self._decide, order=-math.inf)
         registry.add_callback(BeforeToolCallEvent, self._hold, order=math.inf)
         registry.add_callback(AfterToolCallEvent, self._record, order=math.inf)
+        registry.add_callback(AfterModelCallEvent, self._said)
         registry.add_callback(MultiAgentInitializedEvent, _not_an_orchestrator)
+
+    async def _said(self, event):
+        if event.stop_response is not None:
+            await asyncio.to_thread(self.said, _said(event.stop_response.message.get("content") or ()))
 
     async def _decide(self, event):
         use = event.tool_use
@@ -96,6 +107,20 @@ class Tracekit(HookProvider):
         except Exception as e:   # the call is over: what the model reads is unchanged
             warnings.warn(f"tracekit: the outcome of {use['toolUseId']} was not recorded: {type(e).__name__}: {e}",
                           stacklevel=2)
+
+
+def _said(content):
+    """What the model said in a message's content blocks, in order."""
+    for b in content:
+        r = b.get("reasoningContent")
+        if r is not None:
+            yield said.thought((r.get("reasoningText") or {}).get("text"),
+                               (r.get("reasoningText") or {}).get("signature") or r.get("redactedContent"))
+        elif "toolUse" in b:
+            u = b["toolUse"]
+            yield said.call(u.get("toolUseId"), u.get("name"), u.get("input") or {})
+        elif b.get("text"):
+            yield said.text(b["text"])
 
 
 def _plain(use):

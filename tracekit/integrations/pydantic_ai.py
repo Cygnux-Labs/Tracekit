@@ -10,13 +10,21 @@ model gets Tracekit's reason as a denied tool result and the run goes on. A refu
 the model gets the reason as a retry prompt. A tool's exception is recorded as an error and reaches Pydantic AI
 unchanged, so its retries and `ModelRetry` work as before; each retry is a new call id and a new decision, and a call
 that runs again under the same id (a deferral resumed) is decided as its next attempt.
+
+Each model response is recorded too (tracekit.integrations.said): its thinking (with the provider's signature), text
+and calls of the agent's function tools, under the ids they are decided by. A response that can't be recorded only
+warns.
 """
+import asyncio
+
 from pydantic_ai import ToolDenied, ToolReturn
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, SkipToolExecution
+from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart
 from pydantic_core import to_jsonable_python
 
 from tracekit.autowire import DECIDED_UPSTREAM
+from tracekit.integrations import said
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -30,6 +38,7 @@ class Tracekit(AbstractCapability):
         # lean: one entry per call the capability ran, for its life; prune them at run end if agents run for days
         self._attempts = {}   # tool_call_id -> the attempt its next execution is (a resumed deferral runs it again)
         self._ran = {}   # tool_call_id -> the arguments the tool ran with, from after_tool_execute
+        self.said = said.Said(lambda **f: self.run.call("model_event", **f), lambda: self.run.client.status({}))
 
     @classmethod
     def get_serialization_name(cls):
@@ -39,6 +48,11 @@ class Tracekit(AbstractCapability):
         # outermost: any other capability that changes a call's arguments does it inside this one, where
         # after_tool_execute sees the arguments the tool really ran with
         return CapabilityOrdering(position="outermost")
+
+    async def after_model_request(self, ctx, *, request_context, response):
+        tools = {t.name for t in request_context.model_request_parameters.function_tools if t.kind == "function"}
+        await asyncio.to_thread(self.said, _said(response, tools), response.model_name, response.provider_name)
+        return response
 
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
         return await self._gated(call, lambda: handler(args), lambda why: SkipToolExecution(ToolDenied(why)), args)
@@ -84,6 +98,20 @@ class Tracekit(AbstractCapability):
             DECIDED_UPSTREAM.reset(upstream)
             self._ran.pop(call_id, None)
             self._attempts[call_id] = attempt + 1
+
+
+def _said(response, tools):
+    """What the model said in a ModelResponse, in order; the calls of `tools`, the function tools this capability
+    decides."""
+    # lean: an output function's call (gated in wrap_output_process) and an approval-required tool's are left out, so
+    # their decides read as reconcile.fabricated; name them here if those tools are common
+    for p in response.parts:
+        if isinstance(p, ThinkingPart):
+            yield said.thought(p.content, p.signature)
+        elif isinstance(p, TextPart):
+            yield said.text(p.content)
+        elif isinstance(p, ToolCallPart) and p.tool_name in tools:
+            yield said.call(p.tool_call_id, p.tool_name, p.args or {})
 
 
 def _as_the_model_reads(value):
