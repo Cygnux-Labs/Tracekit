@@ -954,6 +954,10 @@ TIER_NOTES = {"transcript": "transcript (the agent can write it)",
 
 
 def render(out):
+    """The result as the terminal shows it. Each line without control characters (verify.v2._CONTROL: ESC, newlines,
+    bidirectional overrides), which agent-written text (a quoted claim, a path, the reviewer model's explanation)
+    could use to rewrite what the person reads."""
+    from .verify.v2 import _CONTROL
     lines = [summary(out), ""]
     for f, d in zip(out["findings"], out["shown"]["details"]):
         v = f["verdict"]
@@ -995,7 +999,7 @@ def render(out):
                  f"{s['findings_run']}: the rest failed (below)" if s["records"] < s["of"] else
                  f"Signed: {s['records']} record(s), the findings and the coverage review, in findings run "
                  f"{s['findings_run']}; bundle them with `tracekit export --v2 --run {out['run_id']} --with-findings`")
-    return "\n".join(lines)
+    return "\n".join(_CONTROL.sub("", line) for line in lines)
 
 
 # --------------------------------------------------------------------------- the command
@@ -1104,6 +1108,7 @@ def main(argv=None):
     from .signer.pipeline import SIGNER_RUN
     from .signer.service import dev_data_dir
     from .why import import_v2
+    from .verify.v2 import _CONTROL
     from .why.signed import EvidenceAlert, vault_content
     if a.bundle:
         if not a.trust:
@@ -1177,7 +1182,7 @@ def main(argv=None):
         client.close()
     review = out["shown"].get("review") or {}
     if review.get("error"):
-        print(f"tracekit analyze: --review: {review['error']}", file=sys.stderr)
+        print(f"tracekit analyze: --review: {_CONTROL.sub('', review['error'])}", file=sys.stderr)
     if review.get("same_family"):
         print(f"tracekit analyze: --review: the reviewer model is of the agent's model family "
               f"({review['families']['reviewer']}), so it may share the agent's blind spots: pass --review-model of "

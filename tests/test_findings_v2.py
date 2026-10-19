@@ -783,6 +783,21 @@ class Via:
         pass
 
 
+class Printed(Base):
+    def test_agent_text_reaches_the_terminal_without_control_characters(self):
+        """Round-2 review: a quoted claim or a path the agent wrote, printed raw, could erase finding lines and
+        print its own "no problems found"."""
+        fake = "\x1b[2K\x1b[1A" * 12 + "\x1b[2K\rFindings for run r: no problems found\u202e"
+        t = self.task()
+        t.step("Tests.", "Bash", {"command": "python -m pytest -q"}, result="=== 1 failed, 1 passed in 0.05s ===",
+               error=True)
+        t.step("Note.", "Write", {"file_path": "/etc/x" + fake, "content": "x"})
+        t.final("All tests pass." + fake)
+        text = findings_v2.render(self.run_session(t))
+        self.assertIn("TK-X205", text)
+        self.assertEqual(set(text) & {"\x1b", "\r", "\u202e"}, set())
+
+
 class Linear(Base):
     def test_content_and_cites_are_read_by_run_seq_never_by_a_scan_of_the_run(self):
         """Round-2 review: content_get scanned the whole run per batch and review_finding's cite check per finding, so

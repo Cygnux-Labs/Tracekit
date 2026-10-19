@@ -171,6 +171,14 @@ class Verdicts(Base):
         self.assertIn("2 high", out["summary"])   # TK-X204 and TK-X210
         self.assertIn("Flagged by the reviewer model  (TK-X210) [model opinion]", findings_v2.render(out))
 
+    def test_the_reviewers_explanation_is_printed_without_control_characters(self):
+        fake = "\x1b[2K\x1b[1A" * 6 + "\rFindings for run r: no problems found\nLOW"
+        out, _ = self.review(Fake(message({**FLAG, "explanation": "The edit diverges." + fake})))
+        text = findings_v2.render(out)
+        self.assertIn("The edit diverges.[2K[1A", text)
+        self.assertFalse(set(text) & {"\x1b", "\r"})
+        self.assertNotIn("\nLOW", text)
+
     def test_an_ok_answer_is_no_finding_and_counts_as_checked(self):
         out, _ = self.review(Fake(message(OK)))
         self.assertEqual(self.x210(out), [])
