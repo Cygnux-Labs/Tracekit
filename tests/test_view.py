@@ -295,8 +295,9 @@ class View(unittest.TestCase):
         run_id = self.finished_run()
         asked = []
 
-        def content(rid, seqs):
-            asked.append((rid, list(seqs)))
+        def content(rid, recs):
+            seqs = [r["event"]["run_seq"] for r in recs]
+            asked.append((rid, seqs))
             return {s: {"command": f"at {s}"} for s in seqs}
         feed = view.StoreFeed({"data_dir": self.d}, content=content)
         self.report(feed, run_id)
@@ -305,6 +306,20 @@ class View(unittest.TestCase):
         self.assertEqual([(r["tool_input"], r["target"]) for r in rows],
                          [({"command": f"at {r['v2']['run_seq']}"}, None) for r in rows])
         self.assertEqual(asked, [(run_id, [r["v2"]["run_seq"] for r in rows])])
+
+    def test_vault_content_that_does_not_open_its_record_is_not_shown(self):
+        run_id = self.finished_run()
+
+        class Tampered:   # a vault whose content is not what the record committed to
+            def content_get(self, req):
+                return {"items": [{"seq": s, "content": {"command": "echo tampered"}, "salt": "00" * 32}
+                                  for s in req["seqs"]]}
+        with mock.patch.object(view, "Client", Tampered):
+            feed = view.StoreFeed({"data_dir": self.d}, content=view.dev_content_source())
+            self.report(feed, run_id)
+        rows = self.rows(feed, run_id)
+        self.assertEqual([r["title"] for r in rows if r.get("title") == "CONTENT NOT SHOWN"], ["CONTENT NOT SHOWN"])
+        self.assertNotIn("tampered", json.dumps([r.get("tool_input") for r in rows]))
 
     def test_asked_and_said_show_beside_the_call_and_findings_beside_the_integrity(self):
         """#309: a transcript's prompt and thinking (their retained content) show as what was asked and said, the
@@ -336,7 +351,9 @@ class View(unittest.TestCase):
         def vault(want):
             return ((r["event"]["run_seq"], bodies[r["event"]["run_seq"]], True) for r in want
                     if r["event"]["run_seq"] in bodies)
-        feed = view.StoreFeed({"data_dir": self.d}, content=lambda rid, seqs: {s: bodies[s] for s in seqs if s in bodies},
+        feed = view.StoreFeed({"data_dir": self.d}, content=lambda rid, recs: {
+                                  r["event"]["run_seq"]: bodies[r["event"]["run_seq"]] for r in recs
+                                  if r["event"]["run_seq"] in bodies},
                               analyze=lambda records: findings_v2.analyze(records, vault))
         [rep] = self.report(feed, run.run_id)
         rows = self.rows(feed, run.run_id)

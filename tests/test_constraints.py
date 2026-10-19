@@ -7,11 +7,12 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import test_bundle_v2 as b
 from factories import unverified_bundles
 from test_reviews import ME, Signed
-from tracekit import constraints
+from tracekit import agent_hooks, constraints
 from tracekit.bundle_v2 import export
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
@@ -33,16 +34,42 @@ class Grammar(unittest.TestCase):
                 ("Please don't change anything.", [("read_only", None)]),
                 ("Don't push.", [("no_push", None)]),
                 ("No network access, please.", [("no_network", None)]),
-                ("Work offline.", [("no_network", None)])):
+                ("Work offline.", [("no_network", None)]),
+                ("Don't change anything except foo.py", [("only_change", "foo.py")]),
+                ("Don't touch anything other than src/foo.py.", [("only_change", "foo.py")]),
+                ("Do not modify anything, except foo.py and bar.py.", [("only_change", "foo.py"),
+                                                                      ("only_change", "bar.py")]),
+                ("Don't change anything but foo.py.", [("only_change", "foo.py")]),
+                ("Read-only except docs/notes.md.", [("only_change", "notes.md")]),
+                ("Fix foo.py. Don't change anything else.", [("only_change", "foo.py")]),
+                ("Don't touch billing.py. Fix foo.py and don't change anything else.",
+                 [("keep_away", "billing.py"), ("only_change", "foo.py")]),
+                ("I don't want anything changed.", [("read_only", None)]),
+                ("Don't change anything, but do run the tests.", [("read_only", None)]),
+                ("Don't commit or push.", [("no_push", None)]),
+                ("Don't go online.", [("no_network", None)]),
+                ("Don't use the internet.", [("no_network", None)]),
+                ("Don't search the web.", [("no_network", None)]),
+                ("No internet during this task.", [("no_network", None)]),
+                ("Please stay offline while you work.", [("no_network", None)])):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), want)
 
     def test_no_constraint_where_none_is_stated(self):
         for text in ("Updating billing.py to match the fix.", "A small consistency change in billing.py.",
                      "I'll leave the tests unchanged and fix billing.py.", "Please also update billing.py.",
-                     "Push the branch when you are done.", "Fix the network timeout in net.py.", "", None, 7):
+                     "Push the branch when you are done.", "Fix the network timeout in net.py.", "", None, 7,
+                     # everyday phrasings that state no constraint (#309 review): each would hold a wanted call
+                     "Make the CLI work offline.", "Add an offline mode to the app.",
+                     "We need the app to work offline.", "Don't forget to update README.md.",
+                     "Don't forget to push when you're done.", "Don't hesitate to change config.py.",
+                     "You don't need to touch test_a.py.", "Don't break the network code in net.py.",
+                     "Don't modify the web UI.", "Don't change the network timeout.", "No web UI changes.",
+                     "Don't change anything except the docs.", "Run the tests; don't change anything else.",
+                     "Don't forget to change anything that references it."):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [])
+        self.assertEqual(constraints.extract("Fix the online checkout, don't push."), [("no_push", None)])
 
     def test_a_later_request_lifts_what_it_names(self):
         keep = "billing.py".__eq__
@@ -65,6 +92,30 @@ class Grammar(unittest.TestCase):
         self.assertTrue(constraints.facts("WebFetch", {"url": "https://example.org"})["network"])
         self.assertTrue(constraints.facts("fetch_page", {"url": "https://example.org"}, "http")["network"])
 
+    def test_a_call_is_read_as_the_policy_engine_reads_it(self):
+        """A shell call through the policy engine's parser: an argv list, OpenAI's `commands`, a nested shell, eval and
+        wrappers; a write tool's path and `paths` (every file of a Codex patch, whose text is in `command`) before any
+        command."""
+        sh = lambda **a: constraints.facts("Bash", a, "shell")   # noqa: E731
+        for args in ({"command": "bash -c 'git push origin main'"}, {"command": ["git", "push", "origin", "main"]},
+                     {"commands": ["ls", "git push origin main"]}, {"command": "eval git push origin main"},
+                     {"cmd": "env A=1 sudo git push origin main"},
+                     {"command": ["bash", "-lc", "sh -c 'git push origin main'"]},
+                     {"command": "echo $(git push origin main)"}):
+            with self.subTest(args):
+                self.assertTrue(sh(**args)["push"] and sh(**args)["network"])
+        self.assertEqual(sh(command="sh -c 'echo x > Billing.py'")["names"], ["billing.py"])
+        self.assertEqual(sh(command="bash -c 'tee -a billing.py < in.txt'")["names"], ["billing.py"])
+        self.assertTrue(sh(command=["bash", "-lc", "curl https://example.org"])["network"])
+        self.assertEqual(sh(command="wc -l < billing.py 2>/dev/null >&2"), {"names": [], "write": False, "push": False,
+                                                                            "network": False})
+        self.assertTrue(sh(command="rm *.pyc")["write"])   # no name to compare, but a write
+        patch = ("*** Begin Patch\n*** Update File: src/config.py\n@@\n-a\n+b\n*** Add File: docs/new.md\n+x\n"
+                 "*** End Patch")
+        tool, ti = agent_hooks.tool("codex", "apply_patch", {"command": patch})
+        self.assertEqual(constraints.facts(tool, ti, "fs")["names"], ["config.py", "new.md"])
+        self.assertEqual(constraints.facts(tool, ti)["names"], ["config.py", "new.md"])   # as the analysis reads it
+
     def test_breaks(self):
         f = constraints.facts("Edit", {"file_path": "/w/billing.py"})
         self.assertEqual(constraints.breaks("keep_away", f, "billing.py".__eq__), "billing.py")
@@ -80,6 +131,13 @@ class Grammar(unittest.TestCase):
             constraints.mentions(text)
             constraints.facts("Bash", {"command": text})
             self.assertLess(time.perf_counter() - t0, 5, text[:20])
+        for many in ("Don't touch " + " or ".join(f"a{k}.py" for k in range(9000)),   # one clause naming 9,000 files
+                     "Don't change anything except " + " ".join(f"a{k}.py" for k in range(9000)),
+                     "Don't change anything" + "".join(f", except a{k}.py" for k in range(4000))):
+            t0 = time.perf_counter()
+            self.assertGreater(len(constraints.extract(many)), 3000)
+            constraints.mentions(many)
+            self.assertLess(time.perf_counter() - t0, 0.2)   # each file looked only at the next, not at every other
 
 
 class Live(Signed):
@@ -108,12 +166,52 @@ class Live(Signed):
         held = self.decide(run, "Edit", {"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"})
         self.assertEqual((held["decision"], held["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
         self.assertEqual(held["reason"], "the person's request in this run said not to modify billing.py; ask the "
-                                         "person (TK-CONSTRAINT)")
+                                         "person")
         for tool, args in (("Edit", {"file_path": "/w/pager.py", "old_string": "a", "new_string": "b"}),
                            ("Read", {"file_path": "/w/billing.py"}), ("Bash", {"command": "cat billing.py"})):
             with self.subTest(tool=tool, args=args):
                 self.assertEqual(self.decide(run, tool, args)["decision"], "allow")
         self.assertEqual(self.decide(run, "Bash", {"command": "sed -i s/a/b/ billing.py"})["decision"], "ask")
+
+    def test_a_codex_patch_and_a_nested_push_are_held(self):
+        run = self.run_()
+        self.add(run, "keep_away", "config.py")
+        self.add(run, "no_push")
+        tool, ti = agent_hooks.tool("codex", "apply_patch", {
+            "command": "*** Begin Patch\n*** Update File: src/config.py\n@@\n-a\n+b\n*** End Patch"})
+        for tool, args in ((tool, ti), ("Bash", {"command": "bash -c 'git push origin main'"}),
+                           ("shell", {"command": ["git", "push", "origin", "main"]}),
+                           ("shell", {"commands": ["git push origin main"]})):
+            with self.subTest(args):
+                self.assertIn("TK-CONSTRAINT", self.decide(run, tool, args)["rule_ids"])
+
+    def test_the_writer_checks_at_most_max_names_files_per_constraint(self):
+        """The salted commitments of a call's files are computed off the writer, once per distinct name and file
+        constraint, and at most MAX_NAMES names: a call writing more is held whenever the run has a file constraint."""
+        run = self.run_()
+        for i in range(svc.MAX_CONSTRAINTS):
+            self.add(run, "keep_away", f"never{i}.py")
+        with mock.patch.object(svc, "_commitment", wraps=svc._commitment) as commit:
+            out = self.decide(run, "Bash", {"command": "tee " + " ".join(f"f{i}" for i in range(9000))})
+            self.assertEqual((out["decision"], out["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
+            self.assertIn(f"more than {svc.MAX_NAMES} files", out["reason"])
+            self.assertLessEqual(commit.call_count, 2)   # the decision's own args commitment
+            commit.reset_mock()
+            out = self.decide(run, "Bash", {"command": "tee " + " ".join(f"f{i % 200}" for i in range(10000))})
+            self.assertEqual(out["decision"], "allow")
+            self.assertLessEqual(commit.call_count, svc.MAX_CONSTRAINTS * 200 + 2)
+        bare = self.run_()
+        self.add(bare, "no_push")
+        self.assertEqual(self.decide(bare, "Bash", {"command": "tee " + " ".join(f"f{i}" for i in range(9000))})[
+            "decision"], "allow")
+
+    def test_a_constraint_added_after_the_request_thread_looked_still_holds(self):
+        run = self.run_()
+        self.add(run, "no_push")
+        key = ("default", run["run_id"])
+        early = self.s._facts(key, "Edit", {"file_path": "/w/billing.py"}, "fs")   # before keep_away billing.py
+        self.add(run, "keep_away", "billing.py")
+        self.assertIn("not to modify billing.py", self.s._constrained(self.s.log.runs[key], early))
 
     def test_the_record_holds_a_commitment_never_the_name(self):
         run = self.run_()
@@ -193,11 +291,34 @@ class Live(Signed):
             with self.subTest(bad), self.assertRaises(RPCError) as e:
                 self.call(ME, "constraint_add", **run, constraint=bad)
             self.assertEqual(e.exception.code, "invalid_request")
+
+    def test_an_equal_constraint_is_the_one_the_run_has(self):
+        """The hook sends what each prompt states: the same constraint again is the one the run has (for a file, by
+        its commitment), so repeats never fill the run and the person's next constraint still holds."""
+        run = self.run_()
+        first = [self.add(run, kind, obj)["run_seq"] for kind, obj in (("no_push", None), ("keep_away", "a.py"))]
+        for _ in range(svc.MAX_CONSTRAINTS + 1):
+            self.assertEqual(self.add(run, "no_push")["run_seq"], first[0])
+            self.assertEqual(self.add(run, "keep_away", "src/A.py")["run_seq"], first[1])
+        self.add(run, "keep_away", "billing.py")
+        held = self.decide(run, "Edit", {"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"})
+        self.assertEqual((held["decision"], held["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
+        self.assertEqual([e["type"] for e in self.records(run)].count("constraint.added"), 3)
+
+    def test_past_the_cap_a_constraint_is_a_signed_gap(self):
+        run = self.run_()
         for i in range(svc.MAX_CONSTRAINTS):
             self.add(run, "keep_away", f"f{i}.py")
-        with self.assertRaises(RPCError) as e:
-            self.add(run, "no_push")
-        self.assertIn("the most a run takes", e.exception.message)
+        seq = self.add(run, "no_push")["run_seq"]
+        gap = next(e for e in self.records(run) if e["run_seq"] == seq)
+        self.assertEqual((gap["type"], gap["source"], gap["data"]["kind"]), ("capture.gap", "signer",
+                                                                              "constraint_refused"))
+        self.assertIn("a further no_push constraint was not added", gap["data"]["reason"])
+        self.assertEqual(self.add(run, "keep_away", "f3.py")["run_seq"], 4)   # an equal one is still the one it has
+        self.call(ME, "close_run", **run)
+        rep, code = v2.verify(*self.export(run))
+        self.assertEqual(code, 0, rep.checks)
+        self.assertIn("constraint_refused 1", next(c for c in rep.checks if c["check"] == "gaps")["detail"])
 
     def test_a_run_with_live_constraints_verifies(self):
         run = self.run_()

@@ -937,6 +937,8 @@ ENTRIES = {
                                                  "run-a")],
     "capture.gap.kind=result_unchecked": [registered(), ("capture.gap", {
         "kind": "result_unchecked", "tool_use_id": "t1", "reason": "no digests"}, "run-a")],
+    "capture.gap.kind=constraint_refused": [registered(), ("capture.gap", {
+        "kind": "constraint_refused", "reason": "the run has 32 live constraints"}, "run-a")],
     "effect.observed.sensor": [registered(), ("effect.observed", {
         "observer": "uid:7", "sensor": "tetragon", "kind": "exec", "ts": TS_, "pid": 7, "binary": "/usr/bin/curl",
         "attribution": "identity"}, "run-a")],

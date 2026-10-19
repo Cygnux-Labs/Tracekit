@@ -184,10 +184,14 @@ class _Effects:
                                 "dseq": d["run_seq"], "rseq": r and r["run_seq"],
                                 "ran": tcid in run.ran and t0 is not None}
         self.ran = sorted((c for c in self.calls.values() if c["ran"]), key=lambda c: c["t0"])
-        self.starts = [c["t0"] - self.skew for c in self.ran]
+        # the finished calls by start, each with the latest window end up to it; the unfinished ones (no result: their
+        # window never ends) apart, so one of them doesn't make every effect scan every call before it
+        self.done = [c for c in self.ran if c["t1"] is not None]
+        self.unfinished = [c for c in self.ran if c["t1"] is None]
+        self.starts = [c["t0"] - self.skew for c in self.done]
         self.ends, top = [], float("-inf")
-        for c in self.ran:
-            top = max(top, float("inf") if c["t1"] is None else c["t1"] + self.grace + self.skew)
+        for c in self.done:
+            top = max(top, c["t1"] + self.grace + self.skew)
             self.ends.append(top)
         self.ts = {r["event"]["run_seq"]: _t(r["event"]["data"].get("ts")) for r in run.records   # sensor times
                    if r["event"]["type"] == "effect.observed" and r["event"]["data"].get("sensor")}
@@ -215,16 +219,15 @@ class _Effects:
     def window(self, ts, fits):
         """(the latest call that ran whose window holds `ts` and `fits(call)`, whether only a call with no result yet
         could)."""
-        unfinished = False
         for j in range(bisect.bisect_right(self.starts, ts) - 1, -1, -1):
             if self.ends[j] < ts:
                 break
-            c = self.ran[j]
+            c = self.done[j]
             if fits(c) and self.in_window(c, ts):
-                if c["t1"] is not None:
-                    return c, False
-                unfinished = True
-        return None, unfinished
+                return c, False
+        # lean: scans the calls with no result, a few in a run (a crash leaves its last call); index them by kind and
+        # path if runs leave many
+        return None, any(c["t0"] - self.skew <= ts and fits(c) for c in self.unfinished)
 
     def between(self, kind, c):
         """The effects of `kind` in call c's window."""
@@ -277,7 +280,7 @@ def _judge(fx, d, ts, kind, proc):
     return "agent_process", None, None, None
 
 
-def _x206(fx, out, cov, tick):
+def _x206(fx, out, cov, late):
     """-> run_seq -> {call, how, status} of each effect it judged."""
     procs, by_pid, shown, groups, roots = {}, {}, {}, {}, {}
     c206 = cov["TK-X206"]
@@ -286,11 +289,13 @@ def _x206(fx, out, cov, tick):
     order = sorted(fx.effects, key=lambda r: (fx.ts[r["event"]["run_seq"]], r["event"]["data"]["kind"] != "exec",
                                               r["event"]["run_seq"]))
     for i, r in enumerate(order):
-        if i % 1000 == 0:
-            tick()
         e, d = r["event"], r["event"]["data"]
         seq, kind, ts = e["run_seq"], d["kind"], fx.ts[e["run_seq"]]
         if kind == "exit":   # says nothing a process's start doesn't
+            continue
+        if late():   # past the budget: counted, not checked
+            c206["not_checkable"]["budget"] = c206["not_checkable"].get("budget", 0) + 1
+            shown[seq] = {"call": None, "how": None, "status": "budget"}
             continue
         if kind == "exec":   # its parent, when the sensor names one the run saw start
             proc = procs.get(d.get("parent_exec_id"))
@@ -341,7 +346,7 @@ def _x206(fx, out, cov, tick):
     return shown
 
 
-def _x207(fx, out, cov, tick, shown):
+def _x207(fx, out, cov, late, shown):
     c207, kinds = cov["TK-X207"], set(fx.by_kind)
     # a run whose processes name their calls (Codex): a shell call's programs are the ones that name it
     claims = any(r["event"]["data"].get("tool_call_id") for r in fx.effects)
@@ -354,7 +359,6 @@ def _x207(fx, out, cov, tick, shown):
     hooks = {r["event"]["data"]["binary"] for r in fx.effects if (shown.get(r["event"]["run_seq"]) or {}).get(
         "status") == "hook_like"}
     for tcid, c in sorted(fx.calls.items(), key=lambda kv: kv[1]["dseq"]):
-        tick()
         if not c["ok"]:
             continue
         tool, facts = c["tool"], fx.run.args.get(c["dseq"]) or {}
@@ -383,6 +387,9 @@ def _x207(fx, out, cov, tick, shown):
                 p = posixpath.normpath(paths[0])
                 want.append(("file", f"write to {p}", lambda r: posixpath.normpath(r["event"]["data"]["path"]) == p))
         if not want:
+            continue
+        if late():   # past the budget: counted, not checked
+            c207["not_checkable"]["budget"] = c207["not_checkable"].get("budget", 0) + 1
             continue
         if not fx.observed:   # counted, not marked on each call: no sensor watched any of them
             c207["not_checkable"]["no_sensor"] = c207["not_checkable"].get("no_sensor", 0) + 1
@@ -433,16 +440,14 @@ def _finding(fx, out, rule, seqs, call, what):
 
 def check(run, out, cov, opts, deadline, clock):
     """TK-X206 and TK-X207 over findings_v2's run, adding to its result `out` (findings, shown details, and
-    shown.effects: run_seq -> {call, how, status} of each effect, for the viewer) and coverage `cov`; findings_v2.Budget
-    past `deadline` on `clock`. -> run_seq -> {call, how, status} of every effect judged (shown.effects, uncut)."""
-    from .findings_v2 import Budget
-
-    def tick():
-        if clock() > deadline:
-            raise Budget()
+    shown.effects: run_seq -> {call, how, status} of each effect, for the viewer) and coverage `cov`; past `deadline` on
+    `clock` what is left is not checkable: budget. -> run_seq -> {call, how, status} of every effect judged
+    (shown.effects, uncut)."""
+    def late():
+        return clock() > deadline
     fx = _Effects(run, opts or options())
-    shown = _x206(fx, out, cov, tick)
-    _x207(fx, out, cov, tick, shown)
+    shown = _x206(fx, out, cov, late)
+    _x207(fx, out, cov, late, shown)
     out["shown"]["effects"] = dict(itertools.islice(shown.items(), MAX_SHOWN))
     out["shown"]["effect_window"] = {"grace_s": fx.grace, "skew_s": fx.skew, "skips": fx.skips,
                                      **({"skew_seen": fx.skew_seen} if fx.skew_seen else {})}

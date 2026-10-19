@@ -401,6 +401,7 @@ CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
 MAX_CONSTRAINTS = 32   # live constraints a run takes (constraint_add)
+MAX_NAMES = 256   # distinct files of one call checked against a run's file constraints; past it, the call is held
 COOLDOWN_S = 3600   # respond.cooldown_s default: how long new runs of a held owner and principal inherit the hold
 MAX_UNMATCHED = 1 << 16   # (decision, result digest) pairs remembered as not matching; forgotten all at once past it
 
@@ -422,6 +423,10 @@ MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
 
 def _salt(key, label):
     return hmac.new(key, label.encode(), "sha256").digest()
+
+
+def _commitment(salt, digest):
+    return "hmac-sha256:" + hmac.new(salt, digest.encode(), "sha256").hexdigest()
 
 
 def content_config(content):
@@ -1833,7 +1838,7 @@ class SignerService:
     def _commit(self, label, digest):
         """A published commitment: HMAC of `digest` under the salt of `label` (a record's salt_label), which the signer
         can reveal to an auditor for that one record."""
-        return "hmac-sha256:" + hmac.new(_salt(self._salt_key, label), digest.encode(), "sha256").hexdigest()
+        return _commitment(_salt(self._salt_key, label), digest)
 
     def _same(self, call, digest):
         """Whether `digest` is the args digest the decision `call` was made for."""
@@ -2608,7 +2613,7 @@ class SignerService:
         cls = self.policy.tool_class(tool)
         host = classes.extract(cls, tool, args).get("host") if cls in ("http", "browser") and isinstance(
             args, dict) else None
-        facts = constraints.facts(tool, args, cls) if digest else None   # what a live constraint looks at
+        facts = self._facts(key, tool, args, cls) if digest else None   # what a live constraint looks at
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
@@ -2654,7 +2659,9 @@ class SignerService:
                     tx.set(run["denied"], digest, True)
                 elif verdict != "ask" and digest in run["denied"]:
                     gaps.append(("decision_flip", f"{verdict} after a deny for the same arguments in this run"))
-            held = facts and verdict != "deny" and self._constrained(run, facts)   # tighten only: never lowered
+            f = facts if facts is not None or not (digest and run.get("constraints")) else \
+                self._facts(key, tool, args, cls, run)   # the run's first constraint came meanwhile
+            held = f and verdict != "deny" and self._constrained(run, f)   # tighten only: never lowered
             if held and "TK-CONSTRAINT" not in rule_ids:
                 verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"]
             if unreadable and verdict in ("allow", "flag"):
@@ -3757,38 +3764,76 @@ class SignerService:
 
     def _constraint_add(self, identity, req):
         """A live constraint of the caller's run (module docstring): constraint.added, with the commitment of its file
-        name under the record's own salt, never the name; tighten-only, so any client of the run may add one."""
+        name under the record's own salt, never the name; tighten-only, so any client of the run may add one. One
+        equal to a live constraint of the run (the same kind, and for a file the same name: its commitment opens) is
+        that one: its run_seq, nothing written. Past MAX_CONSTRAINTS a new one is a signed capture.gap
+        constraint_refused (its run_seq), never dropped unrecorded."""
         key, c = self._authorize(identity, req), req["constraint"]
         if (c["kind"] in constraints.OBJECT_KINDS) != ("object" in c) or "object" in c and not constraints.norm(
                 c["object"]):
             raise RPCError("invalid_request", "keep_away and only_change name the file (`object`); the other kinds "
                                               "name none")
         self.quotas.take_event(identity)
-        data = {"kind": c["kind"]}
-        if "object" in c:
+        data, name = {"kind": c["kind"]}, constraints.digest(c["object"]) if "object" in c else None
+        if name:
             data["salt_id"] = secrets.token_hex(16)
-            data["object_commitment"] = self._commit(salt_label({"type": "constraint.added", "data": data}),
-                                                     constraints.digest(c["object"]))
+            data["object_commitment"] = self._commit(salt_label({"type": "constraint.added", "data": data}), name)
 
         def fn(tx, run):
             have = run.get("constraints") or []
+            same = next((seq for kind, label, commitment, seq in have if kind == c["kind"] and (
+                not name or self._opens(commitment, label, name))), None)
+            if same is not None:
+                return {"run_seq": same}
             if len(have) >= MAX_CONSTRAINTS:
-                raise RPCError("invalid_request", f"run {run['run_id'][:128]} has {MAX_CONSTRAINTS} live constraints, "
-                                                  "the most a run takes")
+                return {"run_seq": tx.emit(run, "capture.gap", {"kind": "constraint_refused", "reason": (
+                    f"the run has {MAX_CONSTRAINTS} live constraints, the most it takes: a further {c['kind']} "
+                    "constraint was not added, so calls that break it are not held")},
+                    source="signer")}
             seq = tx.emit(run, "constraint.added", data, request_id=req["request_id"])
-            tx.set(run, "constraints", [*have, constraint_state({"type": "constraint.added", "data": data})])
+            tx.set(run, "constraints", [*have, constraint_state({"type": "constraint.added", "data": data,
+                                                                 "run_seq": seq})])
             return {"run_seq": seq}
         return self.log.submit(identity, "constraint_add", req, fn, key)
 
+    def _facts(self, key, tool, args, cls, run=None):
+        """What run `key`'s live constraints look at in a call (constraints.facts), or None when it has none: its
+        distinct file names, at most MAX_NAMES (`many`: more), with `opens`, the names whose commitment under each file
+        constraint's salt opens it, by salt label. Off the writer (`run` None: the run's state as it is now), so the
+        writer only checks a constraint added since (_constrained)."""
+        live = list((run or self.log.runs.get(key) or {}).get("constraints") or ())
+        if not live:
+            return None
+        f = constraints.facts(tool, args, cls)
+        names = list(dict.fromkeys(f["names"]))
+        f.update(names=names[:MAX_NAMES], many=len(names) > MAX_NAMES, digests=None, opens={})
+        for _, label, commitment, _ in live:
+            if commitment and not f["many"]:
+                f["opens"][label] = self._opened(f, label, commitment)
+        return f
+
+    def _opened(self, f, label, commitment):
+        """The names of call facts `f` whose commitment under salt `label` is `commitment`: each name digested once,
+        the salt derived once."""
+        f["digests"] = f["digests"] or [constraints.digest(n) for n in f["names"]]
+        salt = _salt(self._salt_key, label)
+        return {n for n, d in zip(f["names"], f["digests"]) if hmac.compare_digest(commitment, _commitment(salt, d))}
+
     def _constrained(self, run, facts):
-        """What the agent is told when a call (its constraints.facts) breaks one of `run`'s live constraints, or
-        None: each file it writes is committed under a constraint's salt and compared with its commitment."""
+        """What the agent is told when a call (its _facts) breaks one of `run`'s live constraints, or None: a file it
+        writes breaks a file constraint whose commitment its name opens (keep_away) or opens none of (only_change);
+        a call writing more than MAX_NAMES files is held whenever the run has a file constraint."""
         live = run.get("constraints") or ()
-        only = [(label, c) for kind, label, c in live if kind == "only_change"]
-        for kind, label, commitment in live:
-            name = constraints.breaks(kind, facts, (lambda n: any(
-                self._opens(c, lb, constraints.digest(n)) for lb, c in only)) if kind == "only_change" else (
-                lambda n, lb=label, c=commitment: self._opens(c, lb, constraints.digest(n))))
+        if facts["many"] and any(kind in constraints.OBJECT_KINDS for kind, *_ in live):
+            return constraints.held("many", MAX_NAMES)
+        opens = facts["opens"]
+        for _, label, commitment, _ in live:   # one added after _facts looked
+            if commitment and label not in opens:
+                opens[label] = self._opened(facts, label, commitment)
+        only = [label for kind, label, *_ in live if kind == "only_change"]
+        for kind, label, *_ in live:
+            name = constraints.breaks(kind, facts, (lambda n: any(n in opens[lb] for lb in only))
+                                      if kind == "only_change" else opens.get(label, ()).__contains__)
             if name is not None:
                 return constraints.held(kind, name)
         return None

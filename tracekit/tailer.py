@@ -1,7 +1,10 @@
 """L1 transcript tailer (04-design §6): follows one Claude Code session transcript and reports it to the signer.
 
     python -I -m tracekit.tailer   (started by the v2 hook at SessionStart; the run handle comes on stdin as JSON:
-                                    {"run_id", "run_token", "path", "until"?})
+                                    {"run_id", "run_token", "path", "until"?, "offsets"?})
+
+`offsets` ({path: offset}): where to start reading the session's transcripts, for a run after the session's first (an
+idle close, a resumed session): the lines before are an earlier run's (the hook measures them, as it names the path).
 
 Dev mode: a detached process of the agent's own user, which exits once the hook's session state (`until`) is gone
 (SessionEnd). System mode (`tracekit init --v2`): run through sudo as the tracekit-tailer user, which reads the agent's
@@ -90,14 +93,14 @@ def _check(f, path, uid, off):
         raise Lost("another file replaced the transcript")
 
 
-def _sha256(f, n):
-    """The digest of the transcript's first n bytes."""
-    h = hashlib.sha256()
+def _sha256(f, n, h=None):
+    """`h` (a new sha256) updated with the transcript's first n bytes."""
+    h = h or hashlib.sha256()
     f.seek(0)
     while n > 0 and (b := f.read(min(n, 1 << 20))):
         h.update(b)
         n -= len(b)
-    return h.digest()
+    return h
 
 
 def _waiter(path):
@@ -176,8 +179,8 @@ def _report(send, e, sent, name="main"):
 class _Transcript:
     """One transcript being followed: its kept file, how far it was read, and the digest of the bytes before that."""
 
-    def __init__(self, path, name="main"):
-        self.path, self.name, self.f, self.off, self.sent = path, name, None, 0, []
+    def __init__(self, path, name="main", off=0):
+        self.path, self.name, self.f, self.off, self.sent = path, name, None, off, []
         self.read, self.checked = hashlib.sha256(), None   # the bytes before `off`; the ctime they were last checked at
 
 
@@ -203,12 +206,13 @@ def _follow(send, t, uid):
         t.f = _open(t.path, uid)
         if t.f is None:
             return False
+        _sha256(t.f, t.off, t.read)   # an earlier run's lines, from here on checked as the ones it reads
     _check(t.f, t.path, uid, t.off)
     ctime = os.fstat(t.f.fileno()).st_ctime_ns   # any write moves it, and no user can set it back
     if ctime != t.checked:
         # lean: rehashes all it has read on every change to the file; keep per-block hashes and re-read
         # only the blocks whose bytes changed if transcripts reach hundreds of MB
-        if _sha256(t.f, t.off) != t.read.digest():
+        if _sha256(t.f, t.off).digest() != t.read.digest():
             raise Lost("a line already read changed in place")
         # a ctime this recent may not move for a change in the same clock tick: check it again next wake
         t.checked = ctime if time.time_ns() - ctime > 1_000_000_000 else None
@@ -250,21 +254,23 @@ def _heartbeat(run):
     return time.monotonic()
 
 
-def tail(run, path, uid, until=None, wait=None, status=None):
+def tail(run, path, uid, until=None, wait=None, status=None, offsets=None):
     """Follow `path`, and its subagents' transcripts, for `run` until the run ends, `until` is gone, or a transcript is
-    lost (reported). `status()`: the signer's status answer, which says whether it keeps content (VaultBody)."""
+    lost (reported). `status()`: the signer's status answer, which says whether it keeps content (VaultBody);
+    `offsets` {path: offset}: where to start each (module docstring)."""
     wait, grew, beat = wait or _waiter(path), time.monotonic(), -HEARTBEAT_S
     send = _Sender(run, status)
     # lean: keeps one file open per subagent transcript; close quiet ones and reopen them by (dev, inode) if sessions
     # run more subagents than the tailer's file limit
-    main = cur = _Transcript(path)
+    start = {p: o for p, o in (offsets.items() if isinstance(offsets, dict) else ()) if type(o) is int and o >= 0}
+    main = cur = _Transcript(path, off=start.get(path, 0))
     ts = {path: main}
     try:
         while True:
             gone, idle = until is not None and not os.path.exists(until), time.monotonic() - grew > IDLE_TAILER_S
             cur = main
             for p in _subagents(path) if main.f is not None else ():
-                ts.setdefault(p, _Transcript(p, os.path.basename(p)))
+                ts.setdefault(p, _Transcript(p, os.path.basename(p), start.get(p, 0)))
             for cur in ts.values():
                 if _follow(send, cur, uid):
                     grew = time.monotonic()
@@ -297,7 +303,8 @@ def main():
     uid = pwd.getpwnam(sc["hooks"]["user"]).pw_uid if sc.get("signer") else os.getuid()
     client = Client()
     try:
-        tail(RunHandle(client, h), h["path"], uid, h.get("until"), status=lambda: client.status({}))
+        tail(RunHandle(client, h), h["path"], uid, h.get("until"), status=lambda: client.status({}),
+             offsets=h.get("offsets"))
     except RPCError as e:   # the run ended while the loss was being reported
         if e.code not in ENDED:
             raise

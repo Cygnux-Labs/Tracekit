@@ -128,8 +128,9 @@ if HAVE_LC:
 
 @unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
 class Said(unittest.TestCase):
-    """create_agent's model responses are recorded: reasoning and text before each call, linked by the call's id; the
-    response itself only with the vault; a failure to record changes nothing for the agent."""
+    """create_agent's model responses are recorded: reasoning and text before each call, and each call, under its id,
+    once it reaches the gate; the response itself only with the vault; a failure to record changes nothing for the
+    agent."""
 
     def setUp(self):
         self.signer = FakeSigner()
@@ -148,15 +149,16 @@ class Said(unittest.TestCase):
         status = self.signer.status
         self.signer.status = lambda req: {**status(req), **ts.VAULT}
         self.invoke()
-        first, last = self.sent
-        self.assertEqual([t["id"] for t in first["tool_uses"]], ["call-1"])
+        first, call, last = self.sent
+        self.assertNotIn("tool_uses", first)
+        self.assertEqual(([t["id"] for t in call["tool_uses"]], call["exchange_id"]), (["call-1"], first["exchange_id"]))
         decided = [e["data"]["tool_call_id"] for e in self.signer.read({**self.run, "limit": 100})["events"]
                    if e["type"] == "policy.decision"]
         self.assertEqual(decided, ["call-1"])
         self.assertEqual((first["model"], first["provider"]), ("m-1", "anthropic"))
         self.assertEqual(ts.segments(first), [("reasoning", "full", "raw chain of thought", []),
                                               ("reasoning", "summary", "the user wants an echo", []),
-                                              ("text", "full", "Echoing.", ["call-1"])])
+                                              ("text", "full", "Echoing.", [])])
         self.assertEqual(first["body"]["output"][1]["encrypted_content"], "sig-1")
         self.assertEqual(ts.segments(last), [("text", "full", "done", [])])
 
@@ -164,9 +166,26 @@ class Said(unittest.TestCase):
         out = self.invoke(response_format=ToolStrategy(dict(title="Echo", type="object",
                                                             properties={"text": {"type": "string"}})))
         self.assertEqual(out["structured_response"], {"text": "hi"})
-        self.assertEqual(len(self.sent), 1)   # the structured answer said nothing else
+        self.assertEqual(len(self.sent), 2)   # the response and its echo call: the structured answer said nothing else
         self.assertTrue(all("body" not in r and r["content_digest"] for r in self.sent))
         self.assertEqual([t["name"] for r in self.sent for t in r.get("tool_uses", ())], ["echo"])   # not Echo
+
+    def test_a_call_another_middleware_stops_before_the_gate_is_not_recorded(self):
+        """A person's reject, a call limit: the call never ran and no hook saw it; recorded, the signer would read it
+        as one that ran with no decision (reconcile.hook_missing)."""
+        from langchain.agents.middleware import HumanInTheLoopMiddleware, ToolCallLimitMiddleware
+        mw = lambda: TracekitMiddleware(self.signer, self.run["run_id"], self.run["run_token"])
+        a = create_agent(StubModel(), TOOLS, checkpointer=InMemorySaver(),
+                         middleware=[HumanInTheLoopMiddleware({"echo": True}), mw()])
+        a.invoke(prompt("echo", text="hi"), THREAD)
+        a.invoke(Command(resume={"decisions": [{"type": "reject", "message": "no"}]}), THREAD)
+        calls = [{"name": "echo", "args": {"text": str(i)}, "id": f"c{i}"} for i in range(3)]
+        create_agent(StubModel(), TOOLS, middleware=[ToolCallLimitMiddleware(run_limit=1), mw()]).invoke(
+            {"messages": [HumanMessage(json.dumps(calls))]})
+        self.assertEqual([t["id"] for r in self.sent for t in r.get("tool_uses", ())], ["c0"])   # the one that ran
+        decided = [e["data"]["tool_call_id"] for e in self.signer.read({**self.run, "limit": 100})["events"]
+                   if e["type"] == "policy.decision"]
+        self.assertEqual(decided, ["c0"])
 
     def test_a_failure_to_record_changes_nothing_for_the_agent(self):
         self.signer.model_event = mock.Mock(side_effect=SignerUnavailable("down"))

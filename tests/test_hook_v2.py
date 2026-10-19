@@ -25,6 +25,7 @@ from tracekit.integrations import claude_code
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, RunHandle
 from tracekit.signer import service
+from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileStorage
 from tracekit.verify import v2
 
@@ -151,20 +152,22 @@ class HookV2(unittest.TestCase):
         self.assertIn("rejected", err)
 
     def test_a_prompt_is_recorded_and_its_constraints_hold_the_call_that_breaks_them(self):
-        """UserPromptSubmit records the harness's copy of the prompt and adds what it keeps away as a live constraint:
-        the edit of that file waits for a person, who is told why; the agent reads it on stderr; others run."""
+        """UserPromptSubmit adds what the prompt keeps away as a live constraint, then records the harness's copy of
+        the prompt: the edit of that file waits for a person, who is told why; the agent reads it on stderr; others
+        run."""
         prompt = "Fix src/pager.py. Don't touch billing.py."
         self.assertEqual(self.hook("UserPromptSubmit", prompt=prompt), (0, ""))
         evs = self.events()
-        self.assertEqual([e["type"] for e in evs], ["run.registered", "input.observed", "constraint.added"])
-        self.assertEqual((evs[1]["data"]["source"], evs[1]["data"]["trust"]), ("claude-code:UserPromptSubmit", "trusted"))
-        self.assertEqual(evs[2]["data"]["kind"], "keep_away")
+        self.assertEqual([e["type"] for e in evs], ["run.registered", "constraint.added", "input.observed"])
+        self.assertEqual((evs[2]["data"]["source"], evs[2]["data"]["trust"]), ("claude-code:UserPromptSubmit", "trusted"))
+        self.assertEqual(evs[1]["data"]["kind"], "keep_away")
         self.assertNotIn("billing", json.dumps(evs))
         edit = {"file_path": os.path.join(self.dir, "billing.py"), "old_string": "a", "new_string": "b"}
         proc = self.hook("PreToolUse", tool_name="Edit", tool_input=edit, tool_use_id="t1", wait=False)
         line = proc.stderr.readline()
         self.assertIn("(TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the "
                       "person", line)
+        self.assertEqual(line.count("TK-CONSTRAINT"), 1, line)
         Client().approval_decide({"approval_id": line.split()[4], "decision": "reject"})
         err = proc.stderr.read()
         proc.wait(60)
@@ -174,6 +177,58 @@ class HookV2(unittest.TestCase):
         self.assertIn("said not to modify billing.py", err)
         other = dict(edit, file_path=os.path.join(self.dir, "pager.py"))
         self.assertEqual(self.hook("PreToolUse", tool_name="Edit", tool_input=other, tool_use_id="t2"), (0, ""))
+
+    def held_edit(self, name, tid):
+        """A PreToolUse Edit of `name`, held: -> the line the agent reads; the person rejects it."""
+        edit = {"file_path": os.path.join(self.dir, name), "old_string": "a", "new_string": "b"}
+        proc = self.hook("PreToolUse", tool_name="Edit", tool_input=edit, tool_use_id=tid, wait=False)
+        line = proc.stderr.readline()
+        if "waiting for approval" in line:
+            Client().approval_decide({"approval_id": line.split()[4], "decision": "reject"})
+        proc.stderr.read()
+        proc.wait(60)
+        proc.stdout.close()
+        proc.stderr.close()
+        return line
+
+    def test_a_later_run_of_the_session_holds_the_earlier_prompts_constraints(self):
+        """After the signer closes a session's run (idle), the session's next event registers a new run: it gets every
+        constraint the session's prompts stated, once each, and an equal one stated again adds nothing."""
+        for prompt in ("Don't touch billing.py.", "Never push. Don't touch billing.py."):
+            self.assertEqual(self.hook("UserPromptSubmit", prompt=prompt), (0, ""))
+        first = self.run_handle()
+        first.call("close_run", reason="idle")   # as the signer's idle close
+        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t1"))
+        self.assertNotEqual(self.run_handle().run_id, first.run_id)
+        for run in (first, self.run_handle()):
+            self.assertEqual([e["data"]["kind"] for e in run.call("read")["events"] if e["type"] == "constraint.added"],
+                             ["keep_away", "no_push"])
+
+    def test_a_prompt_too_large_to_record_still_adds_its_constraints(self):
+        code, err = self.hook("UserPromptSubmit", prompt="Don't touch billing.py. " + "x" * (1 << 20))
+        self.assertIn("over the signer's limit", err)   # an error the harness shows (exit 1 as `tracekit init` wires it)
+        self.assertEqual([e["type"] for e in self.events()], ["run.registered", "constraint.added"])
+        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t1"))
+
+    def test_each_constraint_goes_on_its_own_past_a_refusal(self):
+        sent = []
+
+        def call(method, constraint):
+            sent.append(constraint["kind"])
+            if constraint["kind"] == "keep_away":
+                raise RPCError("invalid_request", "refused")
+        st = {"run_id": "r1", "constraints": [["keep_away", "billing.py"], ["no_push", None], ["no_network", None]]}
+        path = os.path.join(self.dir, "st.json")
+        with mock.patch.object(claude_code, "RunHandle", lambda client, st: mock.Mock(call=call)):
+            with self.assertRaises(RPCError):
+                claude_code._constrain(None, path, st)
+            self.assertEqual((sent, st["sent"]), (["keep_away", "no_push", "no_network"], ["r1", 3]))
+            claude_code._constrain(None, path, dict(st, constraints=[*st["constraints"], ["read_only", None]]))
+            self.assertEqual(sent[3:], ["read_only"])   # only what the run has not had
+            sent.clear()
+            with self.assertRaises(RPCError):
+                claude_code.prompted(mock.Mock(call=call), "Don't touch billing.py. Never push.")
+            self.assertEqual(sent, ["keep_away", "no_push"])
 
     def test_session_end_closes_the_run_and_it_verifies(self):
         self.pre("ls")

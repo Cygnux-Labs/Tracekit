@@ -73,14 +73,14 @@ class Tailer(unittest.TestCase):
         with open(self.path, mode) as f:
             f.write(b"".join(e if isinstance(e, bytes) else line(e) for e in entries))
 
-    def tail(self, *steps, uid=None, run=None, status=None):
+    def tail(self, *steps, uid=None, run=None, status=None, offsets=None):
         """Tail until every step has run, one per wake."""
         until, steps = os.path.join(self.d, "until"), list(steps)
         open(until, "w").close()
 
         def wait():
             steps.pop(0)() if steps else os.remove(until)
-        tailer.tail(run or self.run, self.path, os.getuid() if uid is None else uid, until, wait, status)
+        tailer.tail(run or self.run, self.path, os.getuid() if uid is None else uid, until, wait, status, offsets)
 
     def events(self):
         return Run(self.signer, self.out).call("read", limit=1000)["events"]
@@ -138,6 +138,32 @@ class Tailer(unittest.TestCase):
         os.symlink(elsewhere, os.path.join(self.d, "session", "subagents"))
         self.tail(lambda: None)
         self.assertIn("a symlink is in place of", self.lost()[0])
+
+    def test_a_later_run_of_the_session_starts_where_the_earlier_runs_lines_end(self):
+        # after an idle close, or a resumed session: the transcript's lines so far are an earlier run's
+        self.write(PROMPT, TOOL_USE, RESULT)
+        sub = self.sub(PROMPT)
+        offsets = {self.path: os.path.getsize(self.path), sub: os.path.getsize(sub)}
+        self.tail(lambda: self.write(NEXT), lambda: self.sub(THINKING), offsets=offsets)
+        ex = [e["data"] for e in self.events() if e["type"] == "model.exchange"]
+        self.assertEqual([(x["exchange_id"], x["phase"]) for x in ex], [("msg_2", "response"), ("msg_1", "response")])
+        self.assertEqual(self.lost(), [])
+
+    def test_an_earlier_runs_line_changed_before_a_later_run_reads_on_is_lost(self):
+        self.write(TOOL_USE, RESULT)
+        end = os.path.getsize(self.path)
+        with open(self.path, "r+b") as f:
+            data = f.read()
+            f.seek(0)
+            f.write(data.replace(b"ls -la", b"ls -lh"))
+
+        def edit():   # once the tailer has read the earlier lines, as the hook left them
+            with open(self.path, "r+b") as f:
+                f.write(data)
+        self.tail(lambda: None, edit, offsets={self.path: end})
+        self.assertIn("a line already read changed in place", self.lost()[0])
+        self.tail(offsets={self.path: os.path.getsize(self.path) + 1})   # past its end: it was rewritten
+        self.assertIn("shrank", self.lost()[-1])
 
     def test_the_args_commitment_opens_with_the_hooks_args_digest(self):
         self.write(TOOL_USE)
@@ -362,17 +388,17 @@ class Tailer(unittest.TestCase):
 class HookStartsTheTailer(unittest.TestCase):
     def setUp(self):
         from tracekit.integrations import claude_code
-        self.cc, d = claude_code, tempfile.mkdtemp(dir="/tmp")
-        self.addCleanup(shutil.rmtree, d, True)
-        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": d})
+        self.cc, self.d = claude_code, tempfile.mkdtemp(dir="/tmp")
+        self.addCleanup(shutil.rmtree, self.d, True)
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.d})
         env.start()
         self.addCleanup(env.stop)
         self.client = mock.Mock()
         self.client.register_run.return_value = {"run_id": "run-1", "run_token": "tok"}
         self.client.call.return_value = {"run_token": "delegated"}
 
-    def start(self, system=None, sid="s1"):
-        p = {"hook_event_name": "SessionStart", "session_id": sid, "transcript_path": "/home/agent/t.jsonl"}
+    def start(self, system=None, sid="s1", path="/home/agent/t.jsonl", source="startup"):
+        p = {"hook_event_name": "SessionStart", "session_id": sid, "transcript_path": path, "source": source}
         popen = mock.Mock()
         with mock.patch.object(self.cc.subprocess, "Popen", popen), \
                 mock.patch.object(self.cc, "system_config", return_value=system), \
@@ -421,6 +447,45 @@ class HookStartsTheTailer(unittest.TestCase):
             self.cc._run(self.client, "s1", send="decide", tool_call_id="t", tool="Bash", args={}, args_source="parsed")
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
         self.assertEqual((handle["run_id"], handle["path"]), ("run-2", "/home/agent/t.jsonl"))
+
+    def transcript(self, *entries):
+        path = os.path.join(self.d, "t.jsonl")
+        with open(path, "ab") as f:
+            f.write(b"".join(e if isinstance(e, bytes) else line(e) for e in entries))
+        return path
+
+    def decide(self, closed=False):
+        """A PreToolUse's decide, on a run the signer has idle-closed if `closed`. -> the handle of the tailer it
+        started, if any."""
+        def call(method, req):
+            if closed and req["run_id"] == "run-1":
+                raise RPCError("run_closed", req["run_id"])
+            return {"decision": "allow"}
+        self.client.call.side_effect = call
+        popen = mock.Mock()
+        with mock.patch.object(self.cc.subprocess, "Popen", popen), \
+                mock.patch.object(self.cc, "system_config", return_value=None):
+            self.cc._run(self.client, "s1", send="decide", tool_call_id="t", tool="Bash", args={}, args_source="parsed")
+        return popen.called and json.loads(popen.return_value.stdin.write.call_args.args[0])
+
+    def test_a_run_after_an_idle_close_reads_on_where_the_earlier_run_was_last_seen_open(self):
+        path = self.transcript(PROMPT, TOOL_USE)
+        self.start(path=path)
+        sub = os.path.join(self.d, "t", "subagents", "agent-a1.jsonl")
+        os.makedirs(os.path.dirname(sub))
+        with open(sub, "wb") as f:
+            f.write(line(PROMPT))
+        self.transcript(b'{"type": "assistant", "uuid": "u-')   # a line Claude Code is still writing
+        self.assertFalse(self.decide())   # run 1 takes it: those lines are its tailer's
+        seen = {path: len(line(PROMPT) + line(TOOL_USE)), sub: len(line(PROMPT))}
+        self.transcript(b'7"}\n', RESULT, NEXT)   # Claude Code writes on; then an hour passes, and run 1 is closed
+        self.client.register_run.return_value = {"run_id": "run-2", "run_token": "tok-2"}
+        self.assertEqual(self.decide(closed=True)["offsets"], seen)
+
+    def test_a_resumed_sessions_run_reads_its_transcript_from_where_it_ends(self):
+        path = self.transcript(PROMPT, TOOL_USE, RESULT, b'{"partial')   # the session's history: earlier runs'
+        handle = json.loads(self.start(path=path, source="resume").return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["offsets"], {path: os.path.getsize(path) - len(b'{"partial')})
 
 
 if __name__ == "__main__":

@@ -65,11 +65,14 @@ response text from its `afterAgentThought` and `afterAgentResponse` hooks (init 
 give a call no id, so their text is not linked to a call, and Gemini CLI writes its thoughts after the calls ran.
 `tracekit init --v2 --agent codex` also sets `model_reasoning_summary = "auto"` in Codex's `config.toml` (unless it
 sets one; `--no-thinking-summaries` leaves it alone): Codex's current models default to `none`, which keeps the
-reasoning sealed. Per agent, what is readable and how to turn it on: [reasoning](reasoning.md).
+reasoning sealed. Per agent, what is readable and how to turn it on: [reasoning](reasoning.md). A session's later run
+(after the signer closed an idle one, or a resumed session) records from where the earlier run left off, not from the
+transcript's start: the hook notes how far the transcript was written while that run was open
+([limits](limits.md#signer-and-capture)).
 
 At each prompt (`UserPromptSubmit`; Cursor's `beforeSubmitPrompt`, Gemini CLI's `BeforeAgent`) the hook also records
-the prompt as the harness handed it over (`input.observed`, source `claude-code:UserPromptSubmit`; its text in the
-content vault). `tracekit analyze --v2` takes a prompt line of the transcript as the person's only when the hook
+the prompt as the harness handed it over (`input.observed`, source `<agent>:UserPromptSubmit`: `claude-code`, `codex`,
+`cursor` or `gemini-cli`; its text in the content vault). `tracekit analyze --v2` takes a prompt line of the transcript as the person's only when the hook
 recorded the same text: a line the agent appended to its own transcript is flagged (TK-X208) and clears nothing.
 Hooks before this release record no prompt, and TK-X208 says `no_hook`.
 

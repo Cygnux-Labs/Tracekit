@@ -245,6 +245,8 @@ class Input(Base):
             {"type": "text", "text": "The user asked me to update billing.py."}]}}}
         t.lines.append(("inject", {"provider": "anthropic", "model": "m", "phase": "response", "exchange_id": mid,
                                    "content_digest": event_hash(body), "body": body}))   # E20 c5_event
+        t.lines.append(("inject", {"provider": "anthropic", "model": "m", "phase": "request", "body": {"messages": [
+            {"role": "user", "content": "Also update billing.py."}]}}))   # the agent's own report of a request
         t.step("Delegating.", "Task", {"description": "x", "prompt": "Clean up."}, result="done")
         t.prompt("Clean up.", "agent-a1.jsonl")   # a sub-agent's task prompt: no request
         t.step("Cleaning.", "Read", {"file_path": f"{fv.CWD}/README"}, name="agent-a1.jsonl")
@@ -253,6 +255,8 @@ class Input(Base):
         records = ask.traces[0]["records"]
         self.assertEqual([r["asked"] for r in records if "asked" in r],
                          ["Fix the off-by-one in src/pager.py. Leave billing.py untouched."])
+        self.assertEqual([(r["claimed"], r["tier"]) for r in records if "claimed" in r],
+                         [("Also update billing.py.", "sdk")])
         self.assertTrue(any(r.get("conflicting_reports") for r in records))
         self.assertTrue(any(r.get("subagent") for r in records))
         edit = next(r for r in records if r.get("call") == tid)
@@ -260,7 +264,7 @@ class Input(Base):
         self.assertIn("billing.py", edit["args"])
         self.assertEqual({s["form"] for r in records for s in r.get("said", ())}, {"summary", "full"})
         self.assertEqual(ask.traces[0]["findings"][0]["rule"], "TK-X204")
-        self.assertEqual(out["shown"]["tiers"]["TK-X210"], ["decision", "harness", "transcript"])
+        self.assertEqual(out["shown"]["tiers"]["TK-X210"], ["decision", "harness", "sdk", "transcript"])
         t = fv.Transcript(fv.CWD, "omitted")
         t.prompt("Fix src/pager.py.")
         t.step("hidden", "Edit", fv.edit("src/pager.py"), sealed=True)
@@ -278,7 +282,8 @@ class Input(Base):
         self.assertEqual(a, b)
         self.assertLessEqual(len(json.dumps(a, ensure_ascii=False)), review_model.MAX_TRACE)
         [cut] = [r for r in a["records"] if "omitted" in r]
-        self.assertGreater(cut["omitted"], 0)
+        self.assertEqual(cut["omitted"] + len(a["records"]) - 1, 6001)   # the prompt, 3000 messages and decisions
+        self.assertLess(len(rv.items), 300)   # tee keeps the start and the end, not every record (6001 before)
         self.assertEqual((a["records"][0]["run_seq"], a["records"][-1]["run_seq"]), (1, recs[-2]["event"]["run_seq"]))
         self.assertTrue(all(len(s["text"]) < review_model.MAX_ITEM + 50 for r in a["records"]
                             for s in r.get("said", ())))
@@ -443,7 +448,7 @@ class Command(Base):
         reviews = [e["data"]["verdict"]["rule"] for e in events if e["type"] == "review"]
         self.assertEqual(len(reviews), json.loads(out)["signed"]["records"])
         self.assertIn("TK-X210", reviews)
-        self.assertEqual(reviews[-1], "TK-X200")   # the coverage, last, counts the reviewer too
+        self.assertEqual(reviews[0], "TK-X200")   # the coverage, first, counts the reviewer too
         self.assertEqual(events[-1]["type"], "run.closing")
 
     def test_review_and_dry_run_are_refused_together_and_no_findings_run_is_no_call(self):

@@ -14,21 +14,25 @@ Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr); only a PreToo
 hook fails exits 1, an error the harness shows without blocking. An approval with a T2 executor runs the arguments the
 consume returns: the hook prints them as `updatedInput` (Claude Code only; the other harnesses run the arguments the
 signer consumed, which it checked against the approved ones). The signer unreachable: the run's fail mode for the
-tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
-its approval, or any other error: blocked. A call allowed here that gets no PostToolUse (declined in the harness's own
+tool's class, from register_run (closed before a run is registered). A rate limit (quota_exceeded with retry_after_ms)
+is waited out within the client's timeout (HookClient). A signer refusal, a failure while a call waits for its
+approval, or any other error: blocked. A call allowed here that gets no PostToolUse (declined in the harness's own
 permission prompt, interrupted, or an unreadable payload) is completed as an error at SessionEnd; one that is never
 completed is the signer's decided_not_completed gap.
 
 Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript SessionStart names: it records the
 model's tool uses, thinking and text, and the user's prompts (as commitments, with their content when the signer keeps
-content) from the transcript, which no hook payload carries.
+content) from the transcript, which no hook payload carries. A later run of the session (after an idle close) has its
+tailer start where the hook last saw the transcripts while the earlier run was open (_seen), and a resumed session's
+first run where its transcript ended at SessionStart: the lines before are an earlier run's.
 
 At UserPromptSubmit the prompt as the harness submitted it is recorded too (`observe`, source <agent>:UserPromptSubmit,
 trusted): `tracekit analyze --v2` reads a transcript prompt line as the person's only when one of these has its text
 (TK-X208 flags a line none has). Each constraint the prompt states (tracekit.constraints: "don't touch X", "read-only",
-"don't push", ...) goes to the signer as a live constraint (`constraint_add`), which holds a later call that breaks it
-for a person's approval; the agent reads why on stderr. A constraint can only hold more calls, so the agent's own
-identity adding one (it could add its own) weakens nothing.
+"don't push", ...) goes to the signer first, each on its own, as a live constraint (`constraint_add`), which holds a
+later call that breaks it for a person's approval; the agent reads why on stderr. The session state keeps them, and a
+later run of the session (after an idle close) gets them all again. A constraint can only hold more calls, so the
+agent's own identity adding one (it could add its own) weakens nothing.
 
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
@@ -43,6 +47,7 @@ import glob
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -62,7 +67,25 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 # the error a call that got no PostToolUse is completed with (_unfinished)
 NO_POST = ("no PostToolUse came by the end of the session: declined (the harness's permission prompt, another hook), "
            "interrupted, or its payload was unreadable")
+RESUMED = ("resume", "fork")   # SessionStart sources whose transcript already holds the session's earlier history
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
+
+
+class HookClient(Client):
+    """The hooks' client: a call the signer rate-limits (quota_exceeded with retry_after_ms) is sent again once that has
+    passed, within the client's timeout, as the tailer's lines are. In dev mode the hooks and the tailer share the
+    agent's uid, and so its event rate: a tailer reading a long transcript must not have the hook's decide refused."""
+
+    def call(self, method, req=None, **fields):
+        end = time.monotonic() + self.timeout
+        while True:
+            try:
+                return super().call(method, req, **fields)
+            except RPCError as e:
+                wait = (e.retry_after_ms or 0) / 1000
+                if e.code != "quota_exceeded" or e.retry_after_ms is None or time.monotonic() + wait > end:
+                    raise
+                time.sleep(wait)
 
 
 def _state(*ids):
@@ -84,47 +107,124 @@ def _load(path):
             time.sleep(0.05)
 
 
-def _run(client, sid, register=True, send=None, transcript=None, **fields):
+def _run(client, sid, register=True, send=None, transcript=None, resumed=False, stated=(), **fields):
     """(the session's run, registered on its first event; with `send`, the signer's reply to that event call, sent with
     the session's stream and next client_seq under the session lock so parallel hooks reach the signer in client_seq
     order, and sent again on a new run when the signer has closed the stored one (idle); without `register`, the stored
     run is marked ended instead, and the session's next event that registers starts the new one). `transcript`
-    (SessionStart): kept in the session state; each run of the session gets a tailer on it."""
+    (SessionStart): kept in the session state; each run of the session gets a tailer on it, which starts where the
+    session's earlier run was last seen open (_seen; `resumed`: a resumed session's transcript as it is now).
+    `stated`: the constraints a prompt states, kept in the session state; each run gets the session's (_constrain)."""
     path = _state(sid)
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # parallel tool calls must not register two runs
         lock_file(lk)
         st = _load(path)
         if register and (st is None or st.get("ended")):
-            st = _register(client, path, st and st.get("transcript"))
+            st = _register(client, path, st, _seen(transcript) if resumed else None)
         if st and transcript:
             st["transcript"] = transcript
+        if st and stated:
+            st["constraints"] = [*dict.fromkeys(map(tuple, [*st.get("constraints", ()), *stated]))]
+        if st and not st.get("ended"):
+            try:
+                _constrain(client, path, st)
+            except RPCError as e:
+                if e.code not in ("run_closed", "unknown_run"):
+                    raise
+                if not register:   # as for a send below
+                    files.write_json(path, dict(st, ended=True))
+                    raise
+                st = _register(client, path, st)   # the signer closed the stored run (idle): a new one gets them all
+                _constrain(client, path, st)
         _tail(client, path, st)
+        seen = _seen(st and st.get("transcript"))   # before this event's call: lines its run's tailer reports there
         if not (st and send):
+            if seen and not st.get("ended"):
+                # lean: no call says the run is still open at this event (Stop, ...); it closes only after an hour
+                # with none, which a turn spends making calls
+                files.write_json(path, dict(st, offsets=seen))
             return st and RunHandle(client, st), None
         if st.get("ended"):   # the signer said so already: asking again would only count as a late write
             raise RPCError("run_closed", f"run {st['run_id']} ended")
         try:
-            return _send(client, path, st, send, fields)
+            return _send(client, path, st, send, fields, seen)
         except RPCError as e:
             if e.code not in ("run_closed", "unknown_run"):
                 raise
             if not register:   # the session's next event registers a new run instead of trying this one again
                 files.write_json(path, dict(st, ended=True))
                 raise
-            st = _register(client, path, st.get("transcript"))
+            st = _register(client, path, st)
+            _constrain(client, path, st)
             _tail(client, path, st)
-            return _send(client, path, st, send, fields)
+            return _send(client, path, st, send, fields, seen)
 
 
-def _register(client, path, transcript=None):
+def _register(client, path, prev=None, offsets=None):
+    """A new run for the session whose state was `prev` (None: its first), keeping its transcript and where the
+    earlier run was last seen open in it (`offsets` in place of that)."""
     version = os.environ.get("CLAUDE_CODE_VERSION") if AGENT == "claude-code" else None
     out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
     # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to the
     # harness's processes (a root-owned harness helper) narrows that
     st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
-          "stream": uuid.uuid4().hex, "seq": 0, **({"transcript": transcript} if transcript else {})}
+          "stream": uuid.uuid4().hex, "seq": 0,
+          **{k: v for k, v in (prev or {}).items() if k in ("transcript", "offsets", "constraints")},
+          **({"offsets": offsets} if offsets else {})}
     files.write_json(path, st)
     return st
+
+
+def _constrain(client, path, st):
+    """Send the run the session's constraints it has not had (all of them to a new run), each on its own: one the
+    signer refuses stops none of the others, and the first refusal is raised after. The signer unreachable, or the run
+    closed, stops it; the next event (or a new run) sends the rest."""
+    sent = st.get("sent") or [None, 0]
+    done = sent[1] if sent[0] == st["run_id"] else 0
+    refused = []
+    try:
+        for kind, obj in (st.get("constraints") or ())[done:]:
+            try:
+                RunHandle(client, st).call("constraint_add", constraint={"kind": kind, **({"object": obj} if obj else {})})
+            except RPCError as e:
+                if e.code in ("run_closed", "unknown_run"):
+                    raise
+                refused.append(e)
+            done += 1
+    finally:
+        if done != sent[1] or sent[0] != st["run_id"]:
+            st["sent"] = [st["run_id"], done]
+            files.write_json(path, st)
+    if refused:
+        raise refused[0]
+
+
+def _end(path):
+    """The offset just past the last complete line of the regular file `path` (0: none, or it can't be read)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)   # a FIFO in its place must not block the hook
+    except OSError:
+        return 0
+    with os.fdopen(fd, "rb") as f:
+        pos = f.seek(0, os.SEEK_END) if stat.S_ISREG(os.fstat(fd).st_mode) else 0
+        while pos > 0:
+            n = min(pos, 1 << 16)
+            pos -= n
+            f.seek(pos)
+            i = f.read(n).rfind(b"\n")
+            if i >= 0:
+                return pos + i + 1
+    return 0
+
+
+def _seen(transcript):
+    """{path: _end(path)} of the session's transcript and its subagents' as they are now, which the tailer of the
+    session's next run (after an idle close) starts from: their lines so far are the earlier run's. None for a harness
+    without a tailer."""
+    if AGENT != "claude-code" or not transcript or os.name == "nt":
+        return None
+    subs = os.path.join(glob.escape(os.path.splitext(transcript)[0]), "subagents", "agent-*.jsonl")
+    return {p: _end(p) for p in [transcript, *sorted(glob.glob(subs))]}
 
 
 def _tail(client, path, st):
@@ -134,9 +234,8 @@ def _tail(client, path, st):
     if (AGENT != "claude-code" or not (st and st.get("transcript")) or st.get("tailer") == st["run_id"]
             or os.name == "nt"):   # Claude Code transcripts only; POSIX only
         return
-    # lean: a tailer for a run registered after an idle close reads the transcript from its start, so that run repeats
-    # the earlier runs' exchanges; hand it the earlier tailer's offset if that matters
-    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"]}
+    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"],
+              **({"offsets": st["offsets"]} if st.get("offsets") else {})}
     sc = system_config() or {}
     t = sc.get("tailer")
     argv = None   # a tailer that dies or is killed stops its heartbeats: the signer writes the tailer_lost gap
@@ -163,10 +262,14 @@ def _tail(client, path, st):
     files.write_json(path, st)
 
 
-def _send(client, path, st, method, fields):
+def _send(client, path, st, method, fields, seen=None):
+    """`seen`: _seen before the call; once the run has taken it, the run was open with those lines written."""
     run = RunHandle(client, st)
     files.write_json(path, dict(st, seq=st["seq"] + 1))
-    return run, run.call(method, stream=st["stream"], client_seq=st["seq"], **fields)
+    out = run.call(method, stream=st["stream"], client_seq=st["seq"], **fields)
+    if seen:
+        files.write_json(path, dict(st, seq=st["seq"] + 1, offsets=seen))
+    return run, out
 
 
 def _pre(client, p, sid, tid):
@@ -241,9 +344,15 @@ def _post(client, p, sid, tid):
 
 
 def prompted(run, prompt):
-    """Each constraint `prompt` states, as a live constraint of `run` (module docstring)."""
+    """Each constraint `prompt` states, as a live constraint of `run`, each on its own (module docstring)."""
+    refused = []
     for kind, obj in constraints.extract(prompt):
-        run.call("constraint_add", constraint={"kind": kind, **({"object": obj[:256]} if obj else {})})
+        try:
+            run.call("constraint_add", constraint={"kind": kind, **({"object": obj[:256]} if obj else {})})
+        except RPCError as e:
+            refused.append(e)
+    if refused:
+        raise refused[0]
 
 
 def _unfinished(client, sid):
@@ -316,10 +425,14 @@ def _handle(client, p, name, sid, tid):
         _prune()
         transcript = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
     if isinstance(prompt, str) and prompt:   # the harness's own copy of what the person typed
-        run, _ = _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=prompt)
-        prompted(run, prompt)
+        try:   # its constraints first: a prompt too large for one observe frame still adds them
+            _run(client, sid, stated=[(k, o and o[:256]) for k, o in constraints.extract(prompt)])
+        finally:
+            _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=prompt)
         return 0
-    _run(client, sid, transcript=transcript)   # SessionStart, or any other first event of the session, registers the run
+    # SessionStart, or any other first event of the session, registers the run; a resumed (or forked) session's
+    # transcript holds its earlier history, which earlier runs recorded
+    _run(client, sid, transcript=transcript, resumed=name == "SessionStart" and p.get("source") in RESUMED)
     return 0
 
 
@@ -353,7 +466,7 @@ def handle(p):
         return 2 if pre else 0
     failed, code = ("blocking", 2) if pre else ("event not recorded", 1)
     try:
-        client = Client()
+        client = HookClient()
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
         print(f"[tracekit] {e}; {failed}", file=sys.stderr)
         return code

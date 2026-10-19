@@ -247,9 +247,9 @@ class Engine:
 
 
 def _shell(args):
-    """(commands, normalised lines, other words that name something) of a shell call. `command` or `cmd` is a command
-    line or an argv list; `commands` (OpenAI's shell tool) a list of command lines. Anything else, or more than one of
-    them, raises ParseError."""
+    """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
+    redirections write). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool) a list
+    of command lines. Anything else, or more than one of them, raises ParseError."""
     present = [k for k in classes.SHELL_KEYS if args.get(k) is not None]
     if len(present) > 1:
         raise shell.ParseError(f"more than one command field: {present}")

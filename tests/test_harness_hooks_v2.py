@@ -397,6 +397,22 @@ class WhatTheModelSaid(HarnessCase):
         self.assertIn("run.final", recs)
         self.assertEqual([t for t in recs if t.startswith("reconcile.")], [])
 
+    def test_a_resumed_codex_session_records_only_what_its_model_says_from_then_on(self):
+        self.serve()
+        path = self.transcript(*ROLLOUT)
+        pre = {"session_id": "cx-s", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "call_1",
+               "tool_input": {"command": "ls -la"}, "transcript_path": path, "model": "gpt-5-codex"}
+        for event in ("PreToolUse", "PostToolUse", "SessionEnd"):
+            self.assertEqual(self.hook("codex", dict(pre, hook_event_name=event, tool_response="a.txt"))[0], 0)
+        self.transcript({"timestamp": "t", "type": "response_item", "payload": SAID})   # after the last hook
+        # `codex resume`: the same session id, its rollout appended to
+        self.assertEqual(self.hook("codex", dict(pre, hook_event_name="SessionStart", source="resume"))[0], 0)
+        self.transcript({"timestamp": "t", "type": "response_item", "payload": dict(CALL, call_id="call_2")})
+        self.assertEqual(self.hook("codex", dict(pre, tool_use_id="call_2"))[0], 0)
+        _, _, events = self.events("cx-s")
+        self.assertEqual([[u["id"] for u in e["data"].get("tool_uses", ())] for e in events
+                          if e["type"] == "model.exchange"], [["call_2"]])
+
     def test_without_the_vault_the_body_is_not_sent(self):
         self.serve(vault=False)
         pre = {"session_id": "cx-n", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "call_1",

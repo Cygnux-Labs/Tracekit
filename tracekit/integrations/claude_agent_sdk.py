@@ -16,7 +16,8 @@ the signer, for at most APPROVAL_WAIT_S, below the hook's own timeout (HOOK_TIME
 approved by then is blocked. Every call that is not denied runs only after the signer's `approval_consume` agrees; an
 approval with a T2 executor runs the arguments it returns (the hook's `updatedInput`).
 PostToolUse and PostToolUseFailure complete the call against its decision; SessionEnd closes the run. The tools of
-the tool executor's server (executor_tools.claude_agent_sdk, named `tracekit-executor`) are left to the executor.
+the tool executor's server (executor_tools.claude_agent_sdk, named `tracekit-executor`) are left to the executor: the
+hook only notes the call's tool_use_id for the server's handler, which hands it to the executor to decide under.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open`, else it is blocked. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
@@ -24,7 +25,8 @@ timeout: register a new run for a long-idle agent) blocks the call. A failure to
 
 No hook carries the model's messages: `tracekit_said` records each AssistantMessage the app's message loop hands it
 (tracekit.integrations.said): its thinking (with its signature), text and tool uses, under the tool_use ids the
-PreToolUse hook decides them by. A message that can't be recorded only warns.
+PreToolUse hook decides them by (a tool executor's under its action's name, as the executor decides it). A message
+that can't be recorded only warns.
 """
 import itertools
 import threading
@@ -37,13 +39,14 @@ import rfc8785
 from claude_agent_sdk import AssistantMessage, HookMatcher, TextBlock, ThinkingBlock, ToolUseBlock
 
 from tracekit.format.canon import event_hash
-from tracekit.integrations import said
+from tracekit.integrations import executor_tools, said
 from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
 from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
+EXECUTOR_TOOL = f"mcp__{SERVER}__"   # the tool executor's actions, as the model names them
 HOOK_TIMEOUT_S = 600     # the SDK's default (60 s) is too short to wait for a person
 APPROVAL_WAIT_S = 540    # below HOOK_TIMEOUT_S, so the hook answers before the CLI gives up on it
 MAX_OPEN_CALLS = 4096    # calls let through and not completed yet, kept for their PostToolUse
@@ -97,7 +100,8 @@ def tracekit_hooks(signer, run):
         tid, tool, args = inp.get("tool_use_id") or tool_use_id, inp.get("tool_name") or "?", inp.get("tool_input")
         if not tid:   # never defaulted: a result could not be bound to its decision
             return _deny("the hook got no tool_use_id")
-        if tool.startswith(f"mcp__{SERVER}__"):   # a tool executor's action: the executor decides and records it (T2)
+        if tool.startswith(EXECUTOR_TOOL):   # a tool executor's action: the executor decides and records it (T2)
+            executor_tools.called(rpc.ids["run_id"], tool[len(EXECUTOR_TOOL):], args, tid)
             return {}
         try:
             d = await rpc("decide", tool_call_id=tid, tool=tool, args_source="parsed", args=args)
@@ -163,8 +167,8 @@ def tracekit_hooks(signer, run):
 
 def tracekit_said(signer, run):
     """An async callable to hand each message of `query()` or ClaudeSDKClient's `receive_response()`: it records an
-    AssistantMessage's thinking, text and tool uses (a tool executor's are the executor's to record); other messages
-    are left alone. `signer`, `run`: as for tracekit_hooks."""
+    AssistantMessage's thinking, text and tool uses; other messages are left alone. `signer`, `run`: as for
+    tracekit_hooks."""
     rpc = _Run(signer, run)
     record = said.Said(lambda **f: rpc.sync("model_event", rpc.request("model_event", **f)), lambda: signer.status({}))
 
@@ -180,8 +184,8 @@ def _said(content):
             yield said.thought(b.thinking, b.signature)
         elif isinstance(b, TextBlock):
             yield said.text(b.text)
-        elif isinstance(b, ToolUseBlock) and not b.name.startswith(f"mcp__{SERVER}__"):
-            yield said.call(b.id, b.name, b.input)
+        elif isinstance(b, ToolUseBlock):
+            yield said.call(b.id, b.name.removeprefix(EXECUTOR_TOOL), b.input)
 
 
 def _chain(entries, digest=event_hash([])):

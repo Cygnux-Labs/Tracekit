@@ -318,7 +318,8 @@ GAP_WORDS = {
     "held_call_unresolved": "a held call was never resolved",
     "observer_lost": "the network or process observer stopped reporting",
     "effect_outside_run": "an effect that no open run holds",
-    "result_unchecked": "a tool result nothing compared"}
+    "result_unchecked": "a tool result nothing compared",
+    "constraint_refused": "a constraint from the person's request the run had no room for"}
 SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamper", "rollback", "key_revoked",
                "decision_flip", "executed_against_denial", "concurrent_run"}
 
@@ -680,27 +681,20 @@ def review(records, rep, verdict):
 def dev_content_source():
     """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
     model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
-    service.dev_content); an answer too large for one frame is asked for again in halves. Each read is one signed
-    content.accessed record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said
-    once; while the signer is down it reads nothing."""
+    service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
+    doesn't, and nothing is shown). Each read is one signed content.accessed record. A refusal
+    (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the signer is down it
+    reads nothing."""
+    from .why.signed import vault_content
     state = {"client": None, "off": False}
 
-    def get(run_id, seqs):
-        try:
-            return state["client"].call("content_get", run_id=run_id, seqs=seqs, purpose="tracekit view")["items"]
-        except RPCError as e:
-            if e.code != "quota_exceeded" or e.retry_after_ms is not None or len(seqs) == 1:
-                raise
-            return get(run_id, seqs[:len(seqs) // 2]) + get(run_id, seqs[len(seqs) // 2:])
-
-    def read(run_id, seqs):
+    def read(run_id, records):
         if state["off"]:
             return {}
         out = {}
         try:
             state["client"] = state["client"] or Client()
-            for i in range(0, len(seqs), 1000):
-                out.update((x["seq"], x["content"]) for x in get(run_id, seqs[i:i + 1000]) if "content" in x)
+            out = {seq: content for seq, content, _ in vault_content(state["client"], records, "tracekit view")}
         except RPCError as e:
             state["off"] = True
             print(f"tracekit view: calls show their rules, not their arguments: the dev signer keeps none for this "
@@ -734,9 +728,10 @@ def dev_analysis():
 class StoreFeed:
     """What observe.make_handler serves (records, base, lock, verify()), from the store of a v2 signer's config.
     `on_run(tenant, run_id, records, reasons)`: called once a client run's records are on the tape, each time it grows
-    and verifies (records), and when it fails verification (None): mirror_run. `content(run_id, run_seqs)`: the
+    and verifies (records), and when it fails verification (None): mirror_run. `content(run_id, records)`: the
     retained arguments of those decisions and content of those model exchanges ({run_seq: content}), for the tape to
-    show (dev_content). `analyze(records)`: a final run's findings (dev_analysis), once per run."""
+    show (dev_content_source; EvidenceAlert when the content does not open its record: a CONTENT NOT SHOWN alert).
+    `analyze(records)`: a final run's findings (dev_analysis), once per run."""
 
     def __init__(self, cfg, log_vkey=None, on_run=None, content=None, analyze=None):
         self.cfg, self.pg = cfg, bool(cfg.get("storage"))
@@ -833,12 +828,17 @@ class StoreFeed:
         else:
             records = list(itertools.islice(reader.iter_run(tenant, run_id), count))   # what the checkpoint covers
             e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
-            seqs = [r["event"]["run_seq"] for r in records[state["shown"]:] if self.content and (
+            want = [r for r in records[state["shown"]:] if self.content and (
                 r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")
                 or r["event"]["type"] == "model.exchange" and (r["event"].get("data") or {}).get("content_digest"))]
-            if seqs:   # one content_get, one content.accessed record, per run and refresh
-                self.tr.content.update({(run_id, s): c for s, c in self.content(run_id, seqs).items()})
-            new = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
+            from .why.signed import EvidenceAlert
+            new = []
+            if want:   # content_get per run and refresh, each a content.accessed record
+                try:
+                    self.tr.content.update({(run_id, s): c for s, c in self.content(run_id, want).items()})
+                except EvidenceAlert as x:   # the vault's content does not open its record: none of it shown
+                    new = [self._own(e, "high", "CONTENT NOT SHOWN", str(x)[:1024], "ALERT")]
+            new += [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
             rv = review(records, rep, "verified")
             summary = (f"tenant {tenant} · the signer's own records" if run_id == SIGNER_RUN[1] else
                        f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "

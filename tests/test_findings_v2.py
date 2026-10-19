@@ -267,11 +267,115 @@ class Prompts(Base):   # TK-X208, and which prompt lines are requests
         self.assertEqual(checks(out, tid)["TK-X202"], "found")   # the transcript never showed that request
         self.assertEqual([p["status"] for p in out["shown"]["prompts"]], ["confirmed"])
 
+    def test_lines_claude_code_writes_itself_are_no_prompt_lines(self):
+        for text in ([{"type": "text", "text": "[Request interrupted by user for tool use]"}],
+                     "[Request interrupted by user]", "<bash-input>ls</bash-input>"):
+            with self.subTest(text=text):
+                t = self.task()
+                t.line("user", text)
+                out = self.run_session(t)
+                self.assertEqual(([p["status"] for p in out["shown"]["prompts"]], out["findings"]), (["confirmed"], []))
+
     def test_one_hook_prompt_confirms_one_line(self):
         t = self.task()
         t.prompt("Fix src/pager.py.", forged=True)   # the first prompt's text again, appended by the agent
         out = self.run_session(t)
         self.assertEqual([p["status"] for p in out["shown"]["prompts"]], ["confirmed", "unconfirmed"])
+
+
+def records(*specs):
+    """A finished run's records and its vault content from (type, source, data, body or None) specs, in order."""
+    recs, content = [], {}
+    for typ, source, data, body in (("run.registered", "sdk", {"agent": {"name": "x"}}, None), *specs,
+                                    ("run.final", "signer", {}, None)):
+        seq = len(recs)
+        recs.append({"event": {"type": typ, "run_seq": seq, "run_id": "r", "source": source, "stream": source,
+                               "data": data}, "hash": f"sha256:{seq:064x}"})
+        if body is not None:
+            content[seq] = body
+    return recs, lambda want: ((r["event"]["run_seq"], content[r["event"]["run_seq"]], True) for r in want
+                               if r["event"]["run_seq"] in content)
+
+
+def call(tcid, path, text="Updating."):
+    """The response asking for an Edit of `path` (a transcript line) and its decision."""
+    return (("model.exchange", "sdk", {"phase": "response", "exchange_id": f"m-{tcid}", "tool_uses": [
+                {"id": tcid, "name": "Edit", "executed_by": "client"}]},
+             {"transcript": "main", "entry": {"type": "assistant", "message": {"id": f"m-{tcid}", "content": [
+                 {"type": "text", "text": text}, {"type": "tool_use", "id": tcid, "name": "Edit", "input": {}}]}}}),
+            ("policy.decision", "signer", {"tool_use_id": tcid, "tool": "Edit", "decision": "allow"},
+             {"file_path": f"/w/{path}", "old_string": "a", "new_string": "b"}))
+
+
+class AgentClaims(unittest.TestCase):   # what the agent's own process sends is no request
+    ASK = "Fix src/pager.py. Don't touch billing.py."
+    MORE = "Now update billing.py and ledger.py too."
+
+    def test_a_trusted_input_or_a_request_the_agent_reports_neither_lifts_nor_clears(self):
+        prompt = {"transcript": "main", "entry": {"type": "user", "cwd": "/w", "message": {"content": self.ASK}}}
+        for claim in (("input.observed", "sdk", {"source": "user", "trust": "trusted"}, self.MORE),
+                      ("model.exchange", "sdk", {"phase": "request", "exchange_id": "q2"},
+                       {"messages": [{"role": "user", "content": self.MORE}]})):
+            with self.subTest(claim[0]):
+                recs, content = records(
+                    ("input.observed", "sdk", {"source": "claude-code:UserPromptSubmit", "trust": "trusted"}, self.ASK),
+                    ("model.exchange", "sdk", {"phase": "request", "exchange_id": "q1"}, prompt), claim,
+                    *call("t1", "billing.py"), *call("t2", "ledger.py"))
+                out = findings_v2.analyze(recs, content)
+                f, d = finding(out, "TK-X204")
+                self.assertEqual((f["verdict"]["severity"], d["labels"]), ("high", ["keep_away"]))
+                self.assertEqual(out["shown"]["calls"]["t2"]["checks"]["TK-X202"], "found")
+
+    def test_a_harness_without_a_transcript_tailer_its_hooks_prompt_is_the_request(self):
+        for agent in ("codex", "gemini-cli", "cursor"):
+            with self.subTest(agent):
+                recs, content = records(
+                    ("input.observed", "sdk", {"source": f"{agent}:UserPromptSubmit", "trust": "trusted"}, self.ASK),
+                    ("model.exchange", "sdk", {"phase": "response", "exchange_id": "m1", "tool_uses": [
+                        {"id": "c1", "name": "Edit", "executed_by": "client"}]},
+                     {"content": [{"type": "text", "text": "I will update billing.py as well."},
+                                  {"type": "tool_use", "id": "c1", "name": "Edit", "input": {}}],
+                      "source": f"{agent} transcript"}),
+                    ("policy.decision", "signer", {"tool_use_id": "c1", "tool": "Edit", "decision": "allow"},
+                     {"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"}))
+                out = findings_v2.analyze(recs, content)
+                f, d = finding(out, "TK-X204")
+                self.assertEqual((f["verdict"]["severity"], d["labels"]), ("high", ["keep_away"]))
+                self.assertEqual(out["shown"]["constraints"][0]["tier"], "harness")
+
+    def test_an_agent_report_reusing_the_gateways_exchange_id_leaves_the_gateways_text(self):
+        def response(source, text):
+            return ("model.exchange", source, {"phase": "response", "exchange_id": "m1", "tool_uses": [
+                {"id": "t1", "name": "Edit", "executed_by": "client"}]}, {"content": [
+                    {"type": "text", "text": text}, {"type": "tool_use", "id": "t1", "name": "Edit", "input": {}}]})
+        recs, content = records(response("gateway", "billing.py has the same bug; fixing it there."),
+                                response("sdk", "Nothing to see."), call("t1", "billing.py")[1])
+        self.assertEqual(checks(findings_v2.analyze(recs, content), "t1")["TK-X202"], "checked")
+
+    def test_a_lift_counts_only_from_text_as_trusted_as_the_constraint(self):
+        def run(lifter):
+            recs, content = records(
+                ("model.exchange", "gateway", {"phase": "request", "exchange_id": "q1"},
+                 {"messages": [{"role": "user", "content": self.ASK}]}), lifter, *call("t1", "billing.py"))
+            return finding(findings_v2.analyze(recs, content), "TK-X204")[0]["verdict"]["severity"]
+        self.assertEqual(run(("input.observed", "sdk", {"source": "user", "trust": "trusted"}, self.MORE)), "high")
+        self.assertEqual(run(("model.exchange", "gateway", {"phase": "request", "exchange_id": "q2"},
+                              {"messages": [{"role": "user", "content": self.MORE}]})), "low")
+
+
+class EgressNoNetwork(unittest.TestCase):   # TK-X204 over the egress observer's net effects
+    def test_the_harness_model_traffic_and_explained_hosts_break_nothing_an_unexplained_host_does(self):
+        def net(host, **extra):
+            return ("effect.observed", "signer", {"kind": "net", "host": host, "port": 443, "observer": "egress",
+                                                  **extra}, None)
+        ask = ("model.exchange", "gateway", {"phase": "request", "exchange_id": "q1", "upstream": "anthropic"},
+               {"messages": [{"role": "user", "content": "Fix src/pager.py. No network access."}]})
+        for effect, found in ((net("api.anthropic.com"), False), (net("example.org", explained_by="call"), False),
+                              (net("example.org", explained_by="explains"), False), (net("example.org"), True)):
+            with self.subTest(effect[2]):
+                recs, content = records(ask, effect)
+                out = findings_v2.analyze(recs, content)
+                self.assertEqual([f["verdict"]["rule"] for f in out["findings"]], ["TK-X204"] if found else [])
 
 
 class NothingSaid(Base):   # TK-X201
@@ -304,6 +408,14 @@ class NothingSaid(Base):   # TK-X201
         t.lines.insert(use, ("decide", t.lines.pop(use)[1]))   # decided, but the tailer never saw its tool_use line
         out = self.run_session(t)
         self.assertEqual(checks(out, tid)["TK-X201"], "no_response")
+
+    def test_a_call_of_a_harness_whose_messages_name_no_call_is_unlinked(self):   # Gemini CLI, Cursor
+        recs, content = records(
+            ("model.exchange", "sdk", {"phase": "response", "exchange_id": "m1", "said_only": True},
+             {"content": [{"type": "text", "text": "Reading src/pager.py."}], "source": "gemini chat"}),
+            ("policy.decision", "signer", {"tool_use_id": "gemini-abc", "tool": "Read", "decision": "allow"},
+             {"file_path": "/w/src/pager.py"}))
+        self.assertEqual(checks(findings_v2.analyze(recs, content), "gemini-abc")["TK-X201"], "unlinked")
 
     def test_the_order_of_a_reasoning_link_is_computed_from_run_seq(self):
         t = self.task()
@@ -461,8 +573,9 @@ class Bounded(unittest.TestCase):
     """Huge runs and hostile text: the analysis stays within its time and memory budget."""
 
     @staticmethod
-    def synthetic(n, text):
-        """A finished run of n calls, each asked for by a response saying `text`, as records and vault content."""
+    def synthetic(n, text, one_message=False):
+        """A finished run of n calls, each asked for by a response saying `text` (or text(i)), as records and vault
+        content; `one_message`: every response a line of one model message."""
         recs, content = [], {}
 
         def rec(typ, data, body=None):
@@ -475,10 +588,12 @@ class Bounded(unittest.TestCase):
         rec("model.exchange", {"phase": "request", "exchange_id": "q"},
             {"transcript": "main", "entry": {"type": "user", "cwd": "/w", "message": {"content": "fix src/a.py"}}})
         for i in range(n):
-            rec("model.exchange", {"phase": "response", "exchange_id": f"m{i}", "tool_uses": [
+            mid = "m" if one_message else f"m{i}"
+            rec("model.exchange", {"phase": "response", "exchange_id": mid, "tool_uses": [
                 {"id": f"t{i}", "name": "Edit", "executed_by": "client"}]},
-                {"transcript": "main", "entry": {"type": "assistant", "message": {"id": f"m{i}", "content": [
-                    {"type": "text", "text": text}, {"type": "tool_use", "id": f"t{i}", "name": "Edit", "input": {}}]}}})
+                {"transcript": "main", "entry": {"type": "assistant", "message": {"id": mid, "content": [
+                    {"type": "text", "text": text(i) if callable(text) else text},
+                    {"type": "tool_use", "id": f"t{i}", "name": "Edit", "input": {}}]}}})
             rec("policy.decision", {"tool_use_id": f"t{i}", "tool": "Edit", "decision": "allow"},
                 {"file_path": f"/w/src/f{i}.py"})
         rec("run.final", {})
@@ -496,12 +611,39 @@ class Bounded(unittest.TestCase):
         self.assertLess(took, 30)
         self.assertLess(peak, 200 << 20)
 
-    def test_past_the_budget_every_call_is_not_checkable(self):
+    def test_past_the_budget_what_is_left_is_not_checkable_and_what_was_found_stays(self):
         recs, content = self.synthetic(50, "x")
         out = findings_v2.analyze(recs, content, budget_s=-1)
         self.assertEqual(out["findings"], [])
-        self.assertEqual({r: c["not_checkable"] for r, c in out["coverage"]["verdict"]["checks"].items()},
-                         dict.fromkeys(findings_v2.CHECKS, [{"reason": "budget", "n": 50}]))
+        checks = out["coverage"]["verdict"]["checks"]
+        per_call = [r for r in findings_v2.CHECKS if r not in ("TK-X206", "TK-X207", "TK-X208")]   # no results here
+        self.assertEqual({r: checks[r]["not_checkable"] for r in per_call},
+                         dict.fromkeys(per_call, [{"reason": "budget", "n": 50}]))
+        self.assertEqual(checks["TK-X208"]["not_checkable"], [{"reason": "budget", "n": 1}])
+        self.assertIn("INCOMPLETE", out["summary"])
+        ticks = iter(range(10 ** 6))   # the clock runs out once 20 of the 50 calls are checked
+        out = findings_v2.analyze(recs, content, budget_s=0.5, clock=lambda: 0 if next(ticks) < 122 else 1)
+        x202 = out["coverage"]["verdict"]["checks"]["TK-X202"]
+        self.assertEqual((x202["found"], x202["not_checkable"]), (20, [{"reason": "budget", "n": 30}]))
+        self.assertEqual(len([f for f in out["findings"] if f["verdict"]["rule"] == "TK-X202"]), 20)
+        self.assertEqual(findings_v2.incomplete(out["coverage"]["verdict"]), 30 * 4 + 50 * 10)   # and the text checks
+
+    def test_text_past_the_size_caps_keeps_what_it_finds_and_says_what_it_could_not_check(self):
+        recs, content = self.synthetic(4, "Editing the next file.")
+        with mock.patch.object(findings_v2, "MAX_NAMES", 3):   # the request's words fill it: the rest is unread
+            out = findings_v2.analyze(recs, content)
+        checks = out["coverage"]["verdict"]["checks"]
+        self.assertEqual(checks["TK-X202"]["not_checkable"], [{"reason": "size", "n": 4}])
+        self.assertIn("INCOMPLETE", out["summary"])
+
+    def test_a_constraint_or_a_denial_in_each_message_and_one_long_message_stay_linear(self):
+        for label, run in (("a constraint and a denial in each message", self.synthetic(
+                               4000, lambda i: f"I won't touch g{i}.py. Editing f{i}.py now.")),
+                           ("one message over every line", self.synthetic(4000, "ok.", one_message=True))):
+            t0 = time.perf_counter()
+            out = findings_v2.analyze(*run)
+            self.assertLess(time.perf_counter() - t0, 5, label)   # was 13 s and more: each call read all before it
+            self.assertLessEqual(max(len(c["seqs"]) for c in out["shown"]["calls"].values()), findings_v2.MAX_GROUP)
 
     def test_hostile_text_is_read_in_linear_time(self):
         for text in ("a/" * 300_000, "." * 600_000, "don't " * 100_000 + "billing.py", "‮" * 100_000,
@@ -591,6 +733,15 @@ class Command(Base):
         self.assertEqual({f["verdict"]["rule"] for f in json.loads(out)["findings"]}, {"TK-X202", "TK-X203"})
         self.assertNotIn("signed", json.loads(out))
 
+    def test_an_analysis_its_budget_stopped_short_is_incomplete_and_exits_3(self):
+        t = self.task()
+        t.step("Fixing.", "Edit", edit("src/pager.py"))
+        replay(self.signer, t.lines)
+        code, out, err = self.cli("--dry-run", "--budget=-1")
+        self.assertEqual(code, 3)
+        self.assertIn("INCOMPLETE", out.splitlines()[0])
+        self.assertIn("INCOMPLETE", err)
+
     def test_each_pass_signs_its_findings_in_a_findings_run_that_verifies_with_the_run(self):
         t = self.task()
         t.step("Fixing.", "Edit", edit("billing.py"))
@@ -599,17 +750,17 @@ class Command(Base):
         self.assertEqual((code, err), (0, ""))
         got = json.loads(out)
         signed = got["signed"]
-        self.assertEqual(signed["records"], len(got["findings"]) + 1)
+        self.assertEqual((signed["records"], signed["of"]), (len(got["findings"]) + 1,) * 2)
         store = self.signer.s.log.storage
         events = [r["event"] for r in store.iter_run("default", signed["findings_run"])]
         self.assertEqual(events[0]["data"]["analyzes"], run_id)
         reviews = [e["data"] for e in events if e["type"] == "review"]
         self.assertEqual([{k: v for k, v in r["verdict"].items() if k != "title"} for r in reviews],
-                         [f["verdict"] for f in got["findings"]] + [got["coverage"]["verdict"]])
-        self.assertEqual(reviews[0]["reviewer"], f"tracekit-analyze/{__version__}")
-        self.assertEqual(reviews[0]["verdict"]["title"], "Edit of a file not mentioned before")
+                         [got["coverage"]["verdict"]] + [f["verdict"] for f in got["findings"]])
+        self.assertEqual(reviews[1]["reviewer"], f"tracekit-analyze/{__version__}")
+        self.assertEqual(reviews[1]["verdict"]["title"], "Edit of a file not mentioned before")
         hashes = {r["event"]["run_seq"]: r["hash"] for r in records}
-        self.assertTrue(reviews[0]["cites"] and all(hashes[c["run_seq"]] == c["hash"] for c in reviews[0]["cites"]))
+        self.assertTrue(reviews[1]["cites"] and all(hashes[c["run_seq"]] == c["hash"] for c in reviews[1]["cites"]))
         self.assertEqual(events[-1]["type"], "run.closing")
         self.signer.s.grace_s = 0
         self.signer.s.sweep()
@@ -641,6 +792,24 @@ class Command(Base):
         self.assertEqual(code, 2)
         self.assertTrue(out.startswith("Findings for run "))
         self.assertIn("the findings are printed but NOT signed: forbidden", err)
+
+    def test_a_pass_cut_short_signed_its_coverage_first_and_says_how_much(self):
+        t = self.task()
+        t.step("Fixing.", "Edit", edit("billing.py"))
+        replay(self.signer, t.lines)
+        via, signed = Via(self.signer), []
+        real = RunHandle.review_finding
+
+        def flaky(handle, reviewer, verdict, cites):
+            if signed:
+                raise RPCError("unavailable", "the signer went away")
+            signed.append(verdict["rule"])
+            return real(handle, reviewer, verdict, cites)
+        with mock.patch.object(RunHandle, "review_finding", flaky):
+            code, out, err = self.cli(client=via)
+        self.assertEqual((code, signed), (2, ["TK-X200"]))
+        self.assertIn("Signed only 1 of 2 records (the coverage review first)", out)
+        self.assertIn("the findings are printed but NOT all signed (only 1 of 2): unavailable", err)
 
     def test_an_open_run_is_refused_unless_open_is_passed(self):
         t = self.task()
