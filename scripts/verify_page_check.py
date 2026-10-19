@@ -504,8 +504,8 @@ def main():
     ap.add_argument("--corpus", help=argparse.SUPPRESS)
     ap.add_argument("--samples", action="store_true", help="write the page's embedded samples and exit")
     ap.add_argument("--shots", help="also screenshot the page's main states into this directory")
-    ap.add_argument("--large", type=int, default=20000, help="tool calls in the large run (two records each; export "
-                                                            "refuses a run past the bundle limits, about 24,000)")
+    ap.add_argument("--large", type=int, default=20000, help="tool calls in the large run (two records each; past "
+                                                            "about 24,000 export writes it in parts)")
     a = ap.parse_args()
     if a.samples:
         print(samples())

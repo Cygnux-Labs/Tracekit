@@ -1081,7 +1081,8 @@ class StoreFeed:
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):
     """Import one verified v2 run as a why run under `why_dir` (why.import_v2, from the records only), replacing an
     earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs; with `records` None (the
-    run failed verification), remove its import. A reader sees the old import or the new one, never part of either."""
+    run failed verification), remove its import. A reader sees the old import, the new one or, between the two
+    renames, neither: never part of one."""
     # lean: the whole run is imported again each time it grows; import only the new records if long runs make it slow
     from .why.import_v2 import _target, import_records
     target = _target(why_dir, run_id, tenant)

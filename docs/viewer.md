@@ -40,7 +40,8 @@ back); `PENDING` means no checkpoint covers the run's records yet. A run still b
 checkpoint and grows with each one; a long run is checked again no sooner than four times its last check's time. A run
 that stopped growing is checked again five minutes after its last check, one run at a time, so a later edit of its
 records turns it `FAILED`. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live view and the tape
-says how many; every run's latest verdict stays in the run list. Under each run: calls, **blocked** (red: the policy
+says how many; each run's latest verdict stays in the run list, for up to 10,000 runs (a failed run's goes last).
+Under each run: calls, **blocked** (red: the policy
 denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
 call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded
 under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `WAITING`) in STATUS, `SESS` the run's start and
@@ -249,8 +250,8 @@ instead; `?token=` on an `/api/` path is refused (401), so the token never sits 
 
 | Path | Answers |
 |---|---|
-| `/api/snapshot` | `{next, dropped, records}`: the tape rows the page renders (each run's verifier report, then its records once it verifies), `next` the index to stream from |
-| `/api/verify` | `{records, ok, problems, head}`: how many records are shown from runs that verified, and each run that failed with its failure (the header's chain badge) |
+| `/api/snapshot` | `{next, dropped, max, records, source?}`: the tape rows the page renders (each run's verifier report, then its records once it verifies), `next` the index to stream from, `dropped` how many rows left the live view and `max` how many it holds; `source` is `bundle` when the viewer shows a v1 bundle |
+| `/api/verify` | `{records, ok, problems, head, stopped}`: how many records are shown from runs that verified, each run that failed or could not be checked with why (the header's chain badge), and `stopped`, why the viewer stopped checking runs if it did (the page then says STOPPED, not LIVE) |
 | `/api/stream?from=N` | `text/event-stream`: one `data:` line per record from index `N` on, as they are recorded |
 | `/api/why/workspace`, `/api/why/runs/<id>` | the why logs, with `--why` ([below](#why)) |
 

@@ -56,6 +56,20 @@ class DocLinks(unittest.TestCase):
         self.assertEqual(broken, [])
 
 
+class DocTables(unittest.TestCase):
+    def test_every_table_has_one_header_and_no_row_outside_it(self):
+        """why.md's API table had its header twice, and two command rows sat after a paragraph, outside any table."""
+        sep, bad = re.compile(r"^\|(?: *:?-+:? *\|)+$"), []
+        for path in sorted(glob.glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True)):
+            lines = FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), read(path)).split("\n")
+            for i, line in enumerate(lines):
+                first = line.startswith("|") and not (i and lines[i - 1].startswith("|"))
+                if first and not sep.match(lines[i + 1] if i + 1 < len(lines) else "") or \
+                        sep.match(line) and i > 1 and lines[i - 2].startswith("|"):
+                    bad.append(f"{os.path.relpath(path, ROOT)}:{i + 1}")
+        self.assertEqual(bad, [])
+
+
 class LimitsIndex(unittest.TestCase):
     def test_every_doc_with_a_limits_section_is_linked_from_limits_md(self):
         limits = os.path.join(ROOT, "docs", "limits.md")
