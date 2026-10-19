@@ -78,7 +78,9 @@ outside it the agent may write (`/tmp` and `$TMPDIR` always are), `--budget S` t
 For a run a [kernel sensor](integrations/tetragon.md) covered: `--effect-grace S` (2 s) and `--clock-skew S` (0.5 s)
 set each call's window, and `--sensor-skip DIR` names a directory the sensor's file policy leaves out (see
 [effects](#effects-what-a-kernel-sensor-saw)).
-Exit 0, 4 when a finding is high or worse (or the vault's content doesn't open its record), 2 on an error: no run, a
+Exit 0, 4 when a finding is high or worse (or the vault's content doesn't open its record), 3 when none is but the
+analysis stopped short of a check (`INCOMPLETE`: its time budget or size caps; what it found before that stays), 2 on
+an error: no run, a
 run still open without `--open`, a bundle that doesn't verify, findings the signer would not sign (they are printed,
 and the reason is on stderr). For Claude Code, `tracekit init --dev --v2` sets up
 everything the checks read: the transcript tailer, the dev signer's vault, and thinking summaries.
@@ -192,7 +194,8 @@ Not checkable is never a pass. Each reason, and the change that makes it checkab
 | `no_text` | neither a request nor anything the model said before the call was recorded | the transcript tailer or the gateway, with the vault on |
 | `no_root`, `root_too_broad` | the project is unknown, or `/` or a home directory | `--project DIR` |
 | `relative_path` | a relative path with no working directory for the call (a Bash `cd`) | the transcript tailer records each call's cwd |
-| `budget` | the analysis reached its time or size budget | `--budget SECONDS` |
+| `budget` | the analysis ran out of time before it got to it (what it found before stays; the result is `INCOMPLETE`) | `--budget SECONDS` |
+| `size` | the run holds more text than the analysis reads (131,072 distinct words, 8 Mi characters of prompts), so a mention, constraint or lift may be missing: TK-X204 still finds a break of a constraint it read (labelled `size`), TK-X202 can't clear or find an edit | review those calls by hand or with `--review`; that much text in an agent's run is worth a look itself |
 | `no_hook` | the run's hook recorded no prompt, so no prompt line can be confirmed (TK-X208) | update the hooks: `tracekit init --dev --v2` |
 | `no_result` | the call a claim rests on has no recorded result | complete every call (the integrations do; a crashed agent leaves its last call without one) |
 | `no_account` | the model said nothing readable with a risky action or after it | the transcript tailer or the gateway, with the vault on |

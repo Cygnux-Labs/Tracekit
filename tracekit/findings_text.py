@@ -20,7 +20,7 @@ and vaulted content, else the transcript's copy of it, which can show a failure 
 
 Read in tokens, never with backtracking regular expressions: each pattern is a word set or a short token sequence and
 each text is cut at MAX_TEXT characters, so the pass is linear in what it reads (tests/test_findings_text.py times
-64 KiB hostile inputs) and stays within the analysis's time budget (findings_v2.Budget).
+64 KiB hostile inputs) and stays within the analysis's time budget (past it, what is left is not checkable: budget).
 """
 import bisect
 import hashlib
@@ -651,11 +651,11 @@ def check(run, content, out, cov, deadline, clock):
     """TK-X205 and the ported v1 text checks over `run` (findings_v2._Run, read once by findings_v2), with `content`
     as findings_v2.analyze takes it: findings into `out`, counts into `cov`, as findings_v2's own checks put theirs.
     lean: a second vault read of the model messages findings_v2 read; share its pass if reads cost."""
-    from .findings_v2 import Budget
-    p = _Pass(run)
+    p, stop = _Pass(run), None   # stop: the first run_seq the time budget left unread
     for seq, body, _ in content(p.want) if content else ():
         if clock() > deadline:
-            raise Budget()
+            stop = seq
+            break
         p.feed(run.by_seq[seq], body)
     shown, v2 = out["shown"], p.v2
     unread = sorted(r["event"]["run_seq"] for r in p.want if r["event"]["type"] == "model.exchange" and
@@ -711,14 +711,19 @@ def check(run, content, out, cov, deadline, clock):
             return f"its output in the transcript reads “{_snip(t[1])}”", [s for s in (call["rseq"], t[0]) if s]
         return None, [s for s in (call["rseq"],) if s is not None]
 
-    for _ in unread:
+    def late(seq):
+        return stop is not None and seq >= stop
+
+    for seq in unread:
         for rule in MESSAGE_CHECKS:
-            note(rule, "no_content")
+            note(rule, "budget" if late(seq) else "no_content")
     for m in p.msgs:
-        if clock() > deadline:
-            raise Budget()
         said, seq = m["said"], m["seq"]
         if said is None:
+            continue
+        if clock() > deadline:   # past the budget: counted, not checked
+            for rule in MESSAGE_CHECKS:
+                note(rule, "budget")
             continue
         unknown = first_unknown is not None and first_unknown < seq   # a command before it could not be read
         claims, quote, labels = said["claims"], said["quote"], ["forged"] if m["forged"] else []
@@ -775,8 +780,9 @@ def check(run, content, out, cov, deadline, clock):
                 note(rule, "no_content" if obj and unknown else "checked", [seq])
     # TK-X120: a risky action that ran, and nothing the model said with it or after it mentions
     for c in p.calls:
-        if clock() > deadline:
-            raise Budget()
+        if clock() > deadline or late(c["dseq"]):
+            note("TK-X120", "budget")
+            continue
         if c["fams"] is None:
             note("TK-X120", "no_content")
             continue
@@ -789,7 +795,7 @@ def check(run, content, out, cov, deadline, clock):
         if got and got[0] or set(risky) & (told_after[k] | told_in.get(c["x"], set())):
             note("TK-X120", "checked", [c["dseq"]], call=c)   # it failed, or the model mentioned it
         elif unread and unread[-1] > c["dseq"]:
-            note("TK-X120", "no_content", call=c)
+            note("TK-X120", "budget" if late(unread[-1]) else "no_content", call=c)
         elif k == len(p.msgs):
             note("TK-X120", "no_account", call=c)
         else:

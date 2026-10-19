@@ -559,12 +559,30 @@ class Bounded(unittest.TestCase):
         self.assertLess(took, 30)
         self.assertLess(peak, 200 << 20)
 
-    def test_past_the_budget_every_call_is_not_checkable(self):
+    def test_past_the_budget_what_is_left_is_not_checkable_and_what_was_found_stays(self):
         recs, content = self.synthetic(50, "x")
         out = findings_v2.analyze(recs, content, budget_s=-1)
         self.assertEqual(out["findings"], [])
-        self.assertEqual({r: c["not_checkable"] for r, c in out["coverage"]["verdict"]["checks"].items()},
-                         dict.fromkeys(findings_v2.CHECKS, [{"reason": "budget", "n": 50}]))
+        checks = out["coverage"]["verdict"]["checks"]
+        per_call = [r for r in findings_v2.CHECKS if r not in ("TK-X206", "TK-X207", "TK-X208")]   # no results here
+        self.assertEqual({r: checks[r]["not_checkable"] for r in per_call},
+                         dict.fromkeys(per_call, [{"reason": "budget", "n": 50}]))
+        self.assertEqual(checks["TK-X208"]["not_checkable"], [{"reason": "budget", "n": 1}])
+        self.assertIn("INCOMPLETE", out["summary"])
+        ticks = iter(range(10 ** 6))   # the clock runs out once 20 of the 50 calls are checked
+        out = findings_v2.analyze(recs, content, budget_s=0.5, clock=lambda: 0 if next(ticks) < 122 else 1)
+        x202 = out["coverage"]["verdict"]["checks"]["TK-X202"]
+        self.assertEqual((x202["found"], x202["not_checkable"]), (20, [{"reason": "budget", "n": 30}]))
+        self.assertEqual(len([f for f in out["findings"] if f["verdict"]["rule"] == "TK-X202"]), 20)
+        self.assertEqual(findings_v2.incomplete(out["coverage"]["verdict"]), 30 * 4 + 50 * 10)   # and the text checks
+
+    def test_text_past_the_size_caps_keeps_what_it_finds_and_says_what_it_could_not_check(self):
+        recs, content = self.synthetic(4, "Editing the next file.")
+        with mock.patch.object(findings_v2, "MAX_NAMES", 3):   # the request's words fill it: the rest is unread
+            out = findings_v2.analyze(recs, content)
+        checks = out["coverage"]["verdict"]["checks"]
+        self.assertEqual(checks["TK-X202"]["not_checkable"], [{"reason": "size", "n": 4}])
+        self.assertIn("INCOMPLETE", out["summary"])
 
     def test_hostile_text_is_read_in_linear_time(self):
         for text in ("a/" * 300_000, "." * 600_000, "don't " * 100_000 + "billing.py", "‮" * 100_000,
@@ -653,6 +671,15 @@ class Command(Base):
         self.assertEqual(code, 4)   # a high finding
         self.assertEqual({f["verdict"]["rule"] for f in json.loads(out)["findings"]}, {"TK-X202", "TK-X203"})
         self.assertNotIn("signed", json.loads(out))
+
+    def test_an_analysis_its_budget_stopped_short_is_incomplete_and_exits_3(self):
+        t = self.task()
+        t.step("Fixing.", "Edit", edit("src/pager.py"))
+        replay(self.signer, t.lines)
+        code, out, err = self.cli("--dry-run", "--budget=-1")
+        self.assertEqual(code, 3)
+        self.assertIn("INCOMPLETE", out.splitlines()[0])
+        self.assertIn("INCOMPLETE", err)
 
     def test_each_pass_signs_its_findings_in_a_findings_run_that_verifies_with_the_run(self):
         t = self.task()
