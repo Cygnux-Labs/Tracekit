@@ -1,0 +1,33 @@
+# Strict pack (policy v2): server.yaml with no new patterns, only stricter tiers. Rules named here are redefined by
+# id with the coding pack's own patterns, moved from flag to ask; `on_parse_error: deny` denies a shell command the
+# parser can't read (TK-SHELL-PARSE) instead of holding it. Two flags stay flags: TK-F007 (background processes)
+# matches `crontab -l`, which only lists, and TK-F012 (any URL a call acts on) would hold every web request and
+# navigation (a fifth of E17's benign calls). Expect more holds than the server pack: docs/policy-v2.md#packs-shipped
+# gives the false-positive rate measured on E17's and E21's benign calls.
+
+extends: server.yaml
+version: '2026.10-strict-1'
+description: server-hosted agents where installs, pushes, network commands and environment changes wait for a person
+on_parse_error: deny
+
+ask:
+  - id: TK-F004
+    class: shell
+    field: line
+    pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
+    label: side_effect
+    reason: a push, publish, install or apply
+    remedy: Wait for a person to approve the held call; the strict profile holds every change that leaves the workspace.
+  - id: TK-F011
+    class: shell
+    field: command
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    label: env_tamper
+    reason: changing the environment the next commands run in
+    remedy: Wait for a person to approve the held call, or pass the setting to the one command that needs it.
+  - id: TK-F013
+    class: shell
+    pattern: '^(curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp|dig|nslookup|host)( |$)'
+    label: egress
+    reason: a network command
+    remedy: Wait for a person to approve the held call, or work from files already in the workspace.

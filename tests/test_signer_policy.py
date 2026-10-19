@@ -349,6 +349,40 @@ class ServerCorpora(unittest.TestCase):
         self.assertEqual(set(recorded) - set(got), set())
 
 
+class StrictPack(unittest.TestCase):
+    """strict.yaml: server.yaml with existing flag rules held for a person and unreadable commands denied."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pol, errors = pc.build(os.path.join(PACKS, "strict.yaml"))
+        assert not errors and not pc.warnings(cls.pol), errors
+        cls.e = Engine(cls.pol, "regex")
+
+    def test_it_only_re_tiers_the_coding_packs_rules(self):
+        coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
+        mine = {r["id"]: r for r in self.pol["ask"] if r["id"] in coding}
+        self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013"])
+        for rid, r in mine.items():
+            self.assertEqual({k: r[k] for k in ("pattern", "label") + (("field",) if "field" in r else ())},
+                             {k: coding[rid][k] for k in ("pattern", "label") + (("field",) if "field" in r else ())})
+        self.assertNotIn("TK-F004", [r["id"] for r in self.pol["flag"]])
+
+    def test_holds_denies_and_what_stays_a_flag(self):
+        for args, want in (({"command": "git push origin main"}, "ask"), ({"command": "pip install -r req.txt"}, "ask"),
+                           ({"command": "curl -s https://api.example.com/health"}, "ask"),
+                           ({"command": "export PATH=/opt/bin:$PATH"}, "ask"), ({"command": "$EDITOR notes.md"}, "deny"),
+                           ({"command": "echo \"open"}, "deny"), ({"command": "crontab -l"}, "flag"),
+                           ({"command": "sleep 9 &"}, "flag"), ({"command": "git status"}, "allow")):
+            with self.subTest(args=args):
+                self.assertEqual(self.e.decide("Bash", args)["verdict"], want)
+        self.assertEqual(self.e.decide("WebFetch", {"url": "https://example.com/docs"})["verdict"], "flag")
+
+    def test_benign_false_positives_on_e17_are_at_most_five_percent(self):
+        cases = [c for cs in e17.load("benign").values() for c in cs]
+        held = [c for c in cases if self.e.decide(c["tool"], c["args"])["verdict"] in ("deny", "ask")]
+        self.assertLessEqual(len(held) / len(cases), 0.05, len(held))
+
+
 class SignerPolicy(unittest.TestCase):
     def setUp(self):
         self.open()
