@@ -145,7 +145,8 @@ def main(argv=None):
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger", add_help=False)
+    p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger "
+                       "(--v2: check a v2 run's request, reasoning and actions)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("cost", help="token usage (and cost, with your price table) per run or model", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)

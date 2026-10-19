@@ -1,0 +1,897 @@
+{
+  "experiment": "E20",
+  "seed": 20,
+  "reps": 8,
+  "faults": {
+    "F1": "TK-X202",
+    "F1o": "TK-X203"
+  },
+  "covers": [
+    "c0",
+    "c1",
+    "c2",
+    "c3",
+    "c4",
+    "c5_event",
+    "c5_line"
+  ],
+  "splices": [
+    "mid",
+    "end",
+    "subagent"
+  ],
+  "tuned": {
+    "cells": {
+      "F1/c0/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c0/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c0/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c1/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 6,
+          "checked": 2,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.75
+      },
+      "F1/c1/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 6,
+          "checked": 2,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.75
+      },
+      "F1/c1/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 5,
+          "checked": 3,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.625
+      },
+      "F1/c2/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c2/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c2/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c3/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c3/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c3/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c4/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c4/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c4/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c5_event/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c5_event/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c5_event/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1/c5_line/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.0
+      },
+      "F1/c5_line/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.0
+      },
+      "F1/c5_line/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.0
+      },
+      "F1o/c0/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c0/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c0/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c1/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 3,
+          "checked": 5,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c1/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 6,
+          "checked": 2,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c1/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c2/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c2/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c2/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c3/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c3/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c3/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c4/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c4/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c4/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_event/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_event/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_event/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_line/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_line/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_line/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      }
+    },
+    "controls": {
+      "sessions": 36,
+      "calls": 1252,
+      "false_alarms": {
+        "TK-X201": 0,
+        "TK-X202": 0,
+        "TK-X203": 0
+      },
+      "not_checkable": {
+        "TK-X201": 64,
+        "TK-X202": 0,
+        "TK-X203": 0
+      }
+    },
+    "misses": [
+      "tuned/F1/c1/mid/28",
+      "tuned/F1/c1/mid/31",
+      "tuned/F1/c1/end/33",
+      "tuned/F1/c1/end/36",
+      "tuned/F1/c1/subagent/42",
+      "tuned/F1/c1/subagent/45",
+      "tuned/F1/c1/subagent/47",
+      "tuned/F1/c5_line/mid/145",
+      "tuned/F1/c5_line/mid/146",
+      "tuned/F1/c5_line/mid/147",
+      "tuned/F1/c5_line/mid/148",
+      "tuned/F1/c5_line/mid/149",
+      "tuned/F1/c5_line/mid/150",
+      "tuned/F1/c5_line/mid/151",
+      "tuned/F1/c5_line/mid/152",
+      "tuned/F1/c5_line/end/153",
+      "tuned/F1/c5_line/end/154",
+      "tuned/F1/c5_line/end/155",
+      "tuned/F1/c5_line/end/156",
+      "tuned/F1/c5_line/end/157",
+      "tuned/F1/c5_line/end/158",
+      "tuned/F1/c5_line/end/159",
+      "tuned/F1/c5_line/end/160",
+      "tuned/F1/c5_line/subagent/161",
+      "tuned/F1/c5_line/subagent/162",
+      "tuned/F1/c5_line/subagent/163",
+      "tuned/F1/c5_line/subagent/164",
+      "tuned/F1/c5_line/subagent/165",
+      "tuned/F1/c5_line/subagent/166",
+      "tuned/F1/c5_line/subagent/167",
+      "tuned/F1/c5_line/subagent/168"
+    ],
+    "detection": {
+      "F1": {
+        "c0": 1.0,
+        "c1": 0.708,
+        "c2": 1.0,
+        "c3": 1.0,
+        "c4": 1.0,
+        "c5_event": 1.0,
+        "c5_line": 0.0
+      },
+      "F1o": {
+        "c0": 1.0,
+        "c1": 1.0,
+        "c2": 1.0,
+        "c3": 1.0,
+        "c4": 1.0,
+        "c5_event": 1.0,
+        "c5_line": 1.0
+      }
+    }
+  },
+  "held_out": {
+    "status": "pool missing",
+    "path": "eval/e20_heldout/pool.json"
+  },
+  "note": "Synthetic Claude Code sessions replayed through the tailer and hook into a vault-on signer. Detection is per spliced fault call; not-checkable outcomes are counted apart, never as passes. Model arms (a reviewer, real claude -p runs) are not part of this offline run."
+}
