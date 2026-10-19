@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>TRACEKIT Observer</title>
+  <title>Tracekit view</title>
   <style>
     :root {
       color-scheme: dark;
@@ -606,11 +606,23 @@
     }
 
     .v2 .c-tool {
-      width: 118px
+      width: 96px
     }
 
     .v2 .c-agent {
-      width: 160px
+      width: 130px
+    }
+
+    .v2 .c-st {
+      width: 104px
+    }
+
+    .v2 .c-ms {
+      width: 44px
+    }
+
+    .scoped .c-agent {
+      display: none
     }
 
     /* v2 records hold no paths: the files panel gives its room to the detail card and run review */
@@ -976,7 +988,12 @@
       display: flex;
       gap: 8px;
       align-items: center;
-      flex: 1 1 360px
+      flex: 1 1 360px;
+      flex-wrap: wrap
+    }
+
+    #rp2 {
+      flex-wrap: wrap
     }
 
     .rp button,
@@ -1048,6 +1065,7 @@
     /* why logs (docs/viewer.md#why): a why view takes the lower panels' room; header, run list and tape stay */
     .views {
       display: flex;
+      flex-wrap: wrap;
       gap: 2px
     }
 
@@ -1264,9 +1282,94 @@
       display: block
     }
 
+    /* the page's own connection to the viewer: lost means what is shown may be out of date */
+    .lost {
+      background: var(--red);
+      color: #000;
+      font-weight: 600;
+      padding: 2px 8px
+    }
+
+    /* a copy button beside a value (a hash, a run id, a command) */
+    button.cp {
+      font: inherit;
+      font-size: 10px;
+      background: none;
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      padding: 0 4px;
+      margin-left: 6px;
+      cursor: pointer;
+      vertical-align: baseline
+    }
+
+    button.cp:hover {
+      color: var(--yellow);
+      border-color: var(--yellow)
+    }
+
+    code.shell {
+      color: var(--yellow);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere
+    }
+
+    .kv dd.pre {
+      white-space: pre-wrap
+    }
+
+    .summary {
+      padding: 6px 8px 2px;
+      color: var(--text);
+      font-weight: 600
+    }
+
+    /* an approval of a held call, folded under the call's row */
+    tr.sub td {
+      color: var(--muted);
+      font-size: 11px
+    }
+
+    tr.sub td.tgt::before {
+      content: "└ ";
+      color: var(--faint)
+    }
+
+    td.more {
+      text-align: center
+    }
+
+    .ptool {
+      display: none
+    }
+
+    td.more button {
+      font: inherit;
+      background: none;
+      border: 1px solid var(--amber-dim);
+      color: var(--amber);
+      padding: 0 8px;
+      cursor: pointer
+    }
+
+    .al .n,
+    td .n {
+      color: var(--amber);
+      margin-left: 6px
+    }
+
+    .ev-INPUT,
+    .ev-FINDING {
+      color: var(--magenta)
+    }
+
     @media (max-width:900px) {
       body {
         overflow: auto
+      }
+
+      .wv .whyv {
+        order: -1
       }
 
       main {
@@ -1294,14 +1397,43 @@
         display: none
       }
 
-      .c-time {
-        width: 68px;
+      .c-time,
+      .v2 .c-time {
+        width: 70px;
         white-space: nowrap
       }
 
-      td.tgt {
-        white-space: normal;
-        word-break: break-all
+      .c-ev,
+      .v2 .c-ev {
+        width: 56px;
+        font-size: 10px
+      }
+
+      /* the tool moves into the target cell: the target keeps the room */
+      th.c-tool,
+      td.c-tool {
+        display: none
+      }
+
+      .ptool {
+        display: inline !important;
+        color: var(--cyan)
+      }
+
+      .c-st,
+      .v2 .c-st {
+        width: 72px
+      }
+
+      .cmd {
+        min-width: 0
+      }
+
+      /* a panel's title and legend wrap rather than widen the page */
+      .p>h2,
+      .legend {
+        flex-wrap: wrap;
+        white-space: normal
       }
 
       header.top {
@@ -1325,6 +1457,7 @@
       <span class="chain" id="chain">CHAIN …</span>
       <span class="clock" id="clock"></span>
     </header>
+    <div class="lost" id="lost" hidden></div>
     <div class="ticker" id="ticker"></div>
     <main>
       <section class="p agents">
@@ -1337,7 +1470,7 @@
           <table>
             <thead>
               <tr>
-                <th class="c-time">TIME</th>
+                <th class="c-time" id="tzh" title="this browser's local time">TIME</th>
                 <th class="c-agent">AGENT</th>
                 <th class="c-ev">EVT</th>
                 <th class="c-tool">TOOL</th>
@@ -1469,8 +1602,10 @@
           </tr>
         </tbody>
       </table>
-      <p style="padding:0 8px 8px;color:var(--muted)">Every row is a record in the hash-chained ledger. DETAIL shows its
-        seq, hash and previous hash. Reasoning is what the model reported about itself; actions are what it did.</p>
+      <p style="padding:0 8px 8px;color:var(--muted)">A row is a signed record of the hash-chained ledger unless it says
+        ANALYSIS (the viewer's own verification and findings: no seq, no hash, not evidence) or WHY (a why log). DETAIL
+        shows a record's seq, hash and previous hash. Times are this browser's local time. Reasoning is what the model
+        reported about itself; actions are what it did.</p>
     </div>
   </div>
   <script>
@@ -1510,6 +1645,16 @@
     const fmtT = ts => new Date(ts * 1000).toTimeString().slice(0, 8);
     const fmtN = n => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "K" : String(n);
     const fmtDur = s => s < 60 ? s.toFixed(0) + "s" : s < 3600 ? Math.floor(s / 60) + "m" + String(Math.floor(s % 60)).padStart(2, "0") : (s / 3600).toFixed(1) + "h";
+    // every time on the page is this browser's local time, labelled with its zone once (clock, TIME header)
+    const TZ = (() => { try { return new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date()).find(p => p.type === "timeZoneName").value; } catch { return "local"; } })();
+    const fmtD = ts => { const d = new Date(ts * 1000); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+    const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+    // a copy button for a value (a hash, a run id, a command); the click handler copies data-copy
+    const cp = v => v == null || v === "" ? "" : `<button type="button" class="cp" data-copy="${esc(v)}" title="copy">COPY</button>`;
+    // set a panel's HTML only when it changed: a live re-render must not clear a selection or move a scroll
+    function put(id, html) { const el = $(id); if (el._h !== html) { el.innerHTML = html; el._h = html; } }
+    // where a row comes from: a signed record of the log, the viewer's own analysis (no record: no seq, no hash), or a why log
+    const srcOf = r => !r ? "" : r.analysis ? "ANALYSIS" : r.why ? "WHY" : r.v2 || r.tk_seq != null ? "SIGNED" : "";
 
     /* ---------------- state ---------------- */
     let S;
@@ -1519,6 +1664,7 @@
         tools: new Map(), alerts: [], reasoning: [], tokIn: 0, tokOut: 0, cost: 0, costSeen: false, currency: "", spawnQ: [], withheldSeen: new Set(),
         asked: new Map(),  // v2: a call (tuid) -> the model message that asked for it {x: exchange id, seq: its record's run_seq}
         effects: new Map(),  // v2: a kernel sensor's effect (session|run_seq) -> {rec, call: tuid or null, how, status}: the run's analysis joins it to a call
+        cited: new Map(),  // v2: a record (session|run_seq) -> the findings that cite it
         firstTs: null, lastTs: null, gaps: 0, approved: 0,
         signer: { key: "signer", session: "", id: "signer", type: "signer", sub: false, signer: true, desc: "", status: "idle", actions: 0, tokIn: 0, tokOut: 0, cost: 0, first: 0, last: 0, current: null, errors: 0, blocked: 0, flags: 0, model: "" }
       };
@@ -1552,12 +1698,29 @@
       const w = a.desc ? a.desc.split(/\s+/)[0] : a.type.split(/[-_ ]/)[0];
       return w.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) + "·" + a.id.slice(0, 4);
     }
-    function pushTape(row) { row.i = S.tape.length; S.tape.push(row); }
+    function pushTape(row) { row.i = S.tape.length; S.tape.push(row); return row; }
     function alert(sev, text, sub, ref, ts, agent) { S.alerts.push({ sev, text, sub, ref, ts, agent, i: S.alerts.length }); }
     // a v2 tool_call_id is the client's ("c1"), unique only within its run
     const tuid = r => (r.v2 ? r.session_id + "|" : "") + (r.tool_use_id ?? r.v2?.tool_use_id);
-    // a call's last answer: approve, reject, ... or revoked (a person vetoed an agent's approval: the call never runs)
-    const lastAnswer = a => a.approvals?.filter(x => /^approval(\.revoked)?$/.test(x.v2.type)).pop()?.v2.approval;
+    // a held call's answers in words; consumed (the approved call ran) is no answer of its own
+    const ANSWER = { approve: "APPROVED", reject: "REJECTED", timeout: "TIMED OUT", self_approval_refused: "SELF-APPROVAL REFUSED", revoked: "REVOKED",
+                     expired: "EXPIRED", abandoned: "ABANDONED", refused: "REFUSED", binding_mismatch: "REFUSED: ARGUMENTS CHANGED" };
+    // a call's last answer: approve, reject, ... revoked (a person vetoed an agent's approval: the call never runs), expired
+    const lastAnswer = a => a.approvals?.filter(x => x.v2.approval in ANSWER).pop()?.v2.approval;
+    const ended = a => S.sessions.get(a.agent.session)?.end != null;
+    // a call's final state: [class, words]; only a call that may still be running is RUNNING
+    function callState(a) {
+      if (a.denied) return ["s-deny", "BLOCKED"];
+      if (a.error) return ["s-err", "FAILED"];
+      if (a.v2?.decision === "ask") {
+        const ap = lastAnswer(a);
+        if (ap === "approve") return ["s-ok", a.post ? "APPROVED · RAN" : "APPROVED"];
+        if (ap) return ["s-deny", ANSWER[ap]];
+        return ["s-flag", ended(a) ? "NOT ANSWERED" : "WAITING"];
+      }
+      if (a.post) return a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"];
+      return ended(a) ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"];
+    }
 
     function ingest(r) {
       S.recs.push(r);
@@ -1662,6 +1825,7 @@
       if (ev === "log") { sessionOf(r); pushTape({ ts: r.ts, agent: agentOf(r), ev: "SAYS", text: r.text || r.message || "log", rec: r }); return; }
       // v0.2 events, translated by `tracekit observe`
       if (ev === "tk_run") return;  // a run's verdict before a checkpoint covers it: the run list only
+      if (ev === "tk_note") { pushTape({ ts: r.ts, agent: agentOf(r), ev: r.tape, text: r.title + " · " + r.text, rec: r }); return; }
       if (ev === "tk_alert") {
         // a verifier report of a run with no record shown (it failed) is no agent: no lane, not counted
         const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" }, act = r.v2?.approval && S.actions.get(tuid(r));
@@ -1675,8 +1839,12 @@
         }
         if (r.tape === "GAP") S.gaps++;
         if (r.v2?.approval === "approve") S.approved++;
+        // a finding and the records it cites link both ways (a signed finding's cites are of the run it is about)
+        for (const c of r.v2?.cites || []) { const k = (r.v2.about || r.session_id) + "|" + c.run_seq; S.cited.set(k, [...(S.cited.get(k) || []), r]); }
         alert(r.severity || "med", r.title || "ALERT", r.text || "", { rec: r }, r.ts, a);
-        pushTape({ ts: r.ts, agent: a, ev: r.tape || "ALERT", text: (r.title || "") + " · " + (r.text || ""), rec: r }); return;
+        const row = pushTape({ ts: r.ts, agent: a, ev: r.tape || "ALERT", text: (r.title || "") + " · " + (r.text || ""), rec: r });
+        if (act) { row.under = act; (act.subs ||= []).push(row); }   // an approval is shown under its call's row
+        return;
       }
       if (ev === "tk_model") {
         const a = agentOf(r); const u = r.usage;
@@ -1701,11 +1869,12 @@
       if (F.tool && act.tool.toLowerCase() !== F.tool.toLowerCase() && !(F.tool.toLowerCase() === "mcp" && /^mcp__/.test(act.tool))) return false;
       if (F.file && !act.target.toLowerCase().includes(F.file.toLowerCase())) return false;
       if (F.flag && !act.flags.length) return false;
-      if (F.find) { const q = F.find.toLowerCase(); if (!(JSON.stringify(act.input) + JSON.stringify(act.post?.tool_response || "")).toLowerCase().includes(q)) return false; }
+      // FIND: what the row shows (the target: arguments, rule ids and reasons), the arguments and the result
+      if (F.find) { const q = F.find.toLowerCase(); if (!(act.target + JSON.stringify(act.input) + JSON.stringify(act.post?.tool_response || "")).toLowerCase().includes(q)) return false; }
       return true;
     }
     const KINDS = { dec: ["Decisions", row => !!row.act], apr: ["Approvals", row => ["HOLD", "APPROVE", "REJECT"].includes(row.ev)],
-                    gap: ["Gaps & alerts", row => ["GAP", "ALERT", "BLOCK"].includes(row.ev) || (row.ev === "VERIFY" && row.rec.severity === "high")] };
+                    gap: ["Gaps & alerts", row => ["GAP", "ALERT", "BLOCK", "FINDING"].includes(row.ev) || (row.ev === "VERIFY" && row.rec.severity === "high")] };
     function rowMatch(row) {
       if (F.kind && !KINDS[F.kind][1](row)) return false;
       if (row.act) return actMatch(row.act);
@@ -1735,6 +1904,10 @@
       m.className = "mode " + (mode === "live" ? (liveOk ? "live" : "off") : "replay");
       m.textContent = mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : SOURCE === "bundle" ? "BUNDLE" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
       m.title = mode === "live" && !liveOk ? liveErr : "";
+      // a page that lost its viewer says so where it can't be missed: what it shows may be out of date
+      $("lost").hidden = liveOk || !!BOOT || document.URL.startsWith("file:");
+      $("lost").textContent = liveErr || "Connection to the viewer lost; reconnecting…";
+      document.body.classList.toggle("scoped", !!(V2 && scope));
       const c = $("chain");
       const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
       const failed = V2 && !run ? [...RUNS.values()].filter(r => r.verdict === "failed").length : 0;
@@ -1743,13 +1916,15 @@
         c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" : run.verdict === "failed" ? "RUN ✗ FAILED" : "RUN … PENDING";
         c.title = (run.integrity || "") + " · " + (run.label || "");
       } else {
-        c.className = "chain" + (chainState.ok === true ? " ok" : chainState.ok === false ? " bad" : "");
-        c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS`
+        c.className = "chain" + (chainState.ok === true && chainState.n ? " ok" : chainState.ok === false ? " bad" : "");
+        // why logs alone have no signed records: nothing to check, which is not a passed check
+        c.textContent = chainState.ok === true ? (chainState.n ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS` : "NO SIGNED RECORDS")
           : chainState.ok === false ? (failed ? `✗ ${failed} OF ${RUNS.size} RUNS FAILED` : `CHAIN ✗ BROKEN`)
           : chainState.detail ? "CHAIN n/a" : "CHAIN …";
         c.title = chainState.detail || "";
       }
-      $("clock").textContent = new Date(nowTs() * 1000).toTimeString().slice(0, 8) + (mode === "replay" ? " (REPLAY)" : "");
+      $("clock").textContent = new Date(nowTs() * 1000).toTimeString().slice(0, 8) + " " + TZ + (mode === "replay" ? " (REPLAY)" : "");
+      $("tzh").title = "times are this browser's local time, " + TZ;
       const chips = [];
       if (F.agent) chips.push(["agent", "AGT " + F.agent]); if (F.tool) chips.push(["tool", "TOOL " + F.tool]);
       if (F.file) chips.push(["file", "FILE " + F.file]); if (F.flag) chips.push(["flag", "FLAGGED"]); if (F.find) chips.push(["find", "FIND " + F.find]);
@@ -1757,28 +1932,34 @@
     }
     function renderTicker() {
       const agents = [...S.agents.values()], running = agents.filter(a => a.status === "running").length;
-      const t = nowTs(), recent = S.actList.filter(a => a.start > t - 60).length;
+      // a recording that has ended (a bundle, every session over) is measured to its last record, not the wall clock
+      const done = SOURCE === "bundle" || (S.sessions.size > 0 && [...S.sessions.values()].every(s => s.end != null));
+      const t = done ? S.lastTs : nowTs(), recent = S.actList.filter(a => a.start > t - 60).length;
       const blocked = S.actList.filter(a => a.denied).length, errors = S.actList.filter(a => a.error).length;
       const flagged = S.actList.filter(a => a.flags.length).length;
-      const elapsed = S.firstTs ? (V2 || document.URL.startsWith("file:") ? S.lastTs : t) - S.firstTs : 0;
-      const held = S.actList.filter(a => a.v2?.decision === "ask").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = S.alerts.filter(a => a.sev === "high").length;
+      const elapsed = S.firstTs ? (V2 || done || document.URL.startsWith("file:") ? S.lastTs : t) - S.firstTs : 0;
+      const held = S.actList.filter(a => a.v2?.decision === "ask").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = highCount();
+      // signed records: the run's own count (its review), else every record the viewer verified (the chain badge's)
+      const signed = scope ? RUNS.get(scope)?.records ?? (RUNS.get(scope)?.verdict === "failed" ? "–" : null) : chainState.n;
       const items = V2 ? [
         // a v2 agent is keyed per run (its session): count the agents by name, as the runs list names them
         ["RUNS", scope ? 1 : [...RUNS.values()].length, ""], ["AGENTS", new Set(agents.map(a => a.name || a.type)).size, ""], ["CALLS", S.actList.length, "am"],
         ["FLAGGED", v2flag, v2flag ? "am" : ""], ["BLOCKED", blocked, blocked ? "dn" : ""], ["HELD", held, held ? "am" : ""],
         ["APPROVED", S.approved, S.approved ? "up" : ""], ["GAPS", S.gaps, S.gaps ? "dn" : ""], ["HIGH ALERTS", high, high ? "dn" : ""],
-        ["ERRORS", errors, errors ? "dn" : ""], ["SPAN", fmtDur(elapsed), ""], ["RECORDS", S.recs.length, ""]] : [
+        ["ERRORS", errors, errors ? "dn" : ""], ["SPAN", fmtDur(elapsed), ""], ["RECORDS", signed ?? "…", ""]] : [
         ["SESSIONS", S.sessions.size, ""], ["AGENTS", agents.length, ""], ["RUNNING", running, running ? "up" : ""],
         ["ACTIONS", S.actList.length, "am"], ["ACT/MIN", recent, recent ? "up" : ""],
         ["TOKENS IN", fmtN(S.tokIn), ""], ["TOKENS OUT", fmtN(S.tokOut), ""],
         ...(S.costSeen ? [["COST " + (S.currency || ""), S.cost.toFixed(4), ""]] : []),
         ["BLOCKED", blocked, blocked ? "dn" : ""], ["FLAGGED", flagged, flagged ? "am" : ""], ["ERRORS", errors, errors ? "dn" : ""],
         ["FILES", S.files.size, ""], ["ELAPSED", fmtDur(elapsed), ""], ["EVENTS", S.recs.length, ""]];
-      $("ticker").innerHTML = items.map(([k, v, c]) => {
+      put("ticker", items.map(([k, v, c]) => {
         const fl = lastCounts[k] !== undefined && lastCounts[k] !== v ? " flash" : ""; lastCounts[k] = v;
         return `<div class="tk${esc(fl)}"><b>${esc(k)}</b><i class="${esc(c)}">${esc(v)}</i></div>`;
-      }).join("");
+      }).join(""));
     }
+    // high alerts: the ticker's and the ALERTS panel's count are one number
+    const highCount = () => S.alerts.filter(a => a.sev === "high").length + whyAlerts().filter(a => a.severity === "high").length;
     function renderRuns() {
       const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
       const n = v => list.filter(r => r.verdict === v).length;
@@ -1787,10 +1968,10 @@
         const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
         html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}"><span class="nm">${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
-          <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(new Date(t0 * 1000).toISOString().slice(0, 10))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
+          <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(fmtD(t0))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
           ${r.decisions ? `<span class="meta"><span>${esc(calls)} calls</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${gaps ? "s-err" : ""}">${esc(gaps)} gaps</span></span>` : ""}</div>`;
       }
-      $("agents").innerHTML = html;
+      put("agents", html);
       $("agtitle").textContent = "RUNS";
       $("agsum").textContent = "verdicts: operator-side";
     }
@@ -1815,50 +1996,76 @@
         }
         html += "</div>";
       }
-      $("agents").innerHTML = html || `<div class="empty">Waiting for agents…</div>`;
+      put("agents", html || `<div class="empty">Waiting for agents…</div>`);
       const agents = [...S.agents.values()];
       $("agsum").textContent = `${agents.filter(a => a.status === "running").length} running / ${agents.length}`;
     }
-    let tapeShown = 0;
+    const TAPE_PAGE = 600;   // tape rows rendered at once; SHOW OLDER renders another page
+    let tapeShown = 0, tapeMax = TAPE_PAGE, tapeKey = [];
+    function tapeRow(row, isNew, n = 1) {
+      const a = row.act, sel = selected && (selected === a || selected === row.rec) ? " sel" : "";
+      let tool = "", text = "", st = "", ms = "";
+      if (a) {
+        tool = a.tool; text = a.target;
+        if (a.child) text += `  → ${label(a.child)}`;
+        st = callState(a);   // the call's final state; its approvals are the rows folded under it
+        ms = a.ms != null ? a.ms : "";
+      } else {
+        text = rel(String(row.text || ""), row.rec?.cwd).replace(/\s+/g, " ");
+        const ef = row.rec?.v2?.effect && S.effects.get(row.rec.session_id + "|" + row.rec.v2.run_seq);   // the Happened column
+        if (ef) st = ef.status === "found" ? ["s-deny", "UNEXPLAINED"] : ef.status === "explained" ? ["s-ok", "JOINED"] : ef.status ? ["s-flag", "NOT CHECKABLE"] : ["s-run", "NOT JOINED YET"];
+      }
+      // a row that is no signed record says where it comes from; a gap's code is in its tooltip
+      const src = srcOf(row.rec), tag = src === "ANALYSIS" || (src === "WHY" && V2) ? src : "", code = row.rec?.v2?.kind;
+      return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
+    }
     function renderTape() {
-      const rows = S.tape.filter(rowMatch), shown = rows.slice(-600).reverse();
+      if (V2) put("fchips", [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" "));
+      // only what changes the rows re-renders them (the live tick re-renders every second)
+      const key = [S, S.tape.length, S.recs.length, F.agent, F.tool, F.file, F.flag, F.find, F.kind, tapeMax, selected];
+      if (key.every((x, i) => x === tapeKey[i])) return;
+      tapeKey = key;
+      const rows = S.tape.filter(r => !r.under && rowMatch(r)), shown = rows.slice(-tapeMax).reverse();
       const fresh = rows.length - tapeShown; tapeShown = rows.length;
-      $("tape").innerHTML = shown.map((row, i) => {
-        const a = row.act, isNew = i < fresh && fresh < 20 ? " new" : "";
-        const sel = selected && (selected === a || selected === row.rec) ? " sel" : "";
-        let tool = "", text = "", st = "", ms = "";
-        if (a) {
-          tool = a.tool; text = a.target;
-          if (a.child) text += `  → ${label(a.child)}`;
-          const ap = lastAnswer(a);
-          st = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : a.v2?.decision === "ask" ? (ap === "approve" ? ["s-ok", "APPROVED"] : ap ? ["s-deny", ap.toUpperCase()] : ["s-flag", "HELD"]) : a.post ? (a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"]) : ["s-run", "RUNNING"];
-          ms = a.ms != null ? a.ms : "";
-        } else {
-          text = rel(String(row.text || ""), row.rec?.cwd).replace(/\s+/g, " ");
-          const ef = row.rec?.v2?.effect && S.effects.get(row.rec.session_id + "|" + row.rec.v2.run_seq);   // the Happened column
-          if (ef) st = ef.status === "found" ? ["s-deny", "UNEXPLAINED"] : ef.status === "explained" ? ["s-ok", "JOINED"] : ef.status ? ["s-flag", "NOT CHECKABLE"] : ["s-run", "NOT JOINED YET"];
-        }
-        return `<tr class="row${esc(isNew)}${esc(sel)}" data-i="${esc(row.i)}"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc(text.slice(0, 400))}">${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
-      }).join("") || `<tr><td colspan="7" class="empty">${anyFilter() ? "Nothing matches the filter." : "Waiting for events…"}</td></tr>`;
-      if (V2) $("fchips").innerHTML = [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" ");
-      $("tapesum").textContent = anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`;
+      // the same signer note in a row (the content the viewer itself reads, a hundred records a time) is one line ×N
+      const items = [];
+      for (const row of shown) {
+        const last = items[items.length - 1];
+        if (row.rec?.event === "tk_note" && last?.row.rec?.event === "tk_note" && last.row.text === row.text && last.row.agent === row.agent) last.n++;
+        else items.push({ row, n: 1 });
+      }
+      let html = "";
+      items.forEach(({ row, n }, i) => {
+        html += tapeRow(row, i < fresh && fresh < 20 ? " new" : "", n);
+        for (const sub of row.act?.subs || []) html += tapeRow(sub, "");
+      });
+      const older = rows.length - shown.length;
+      if (older) html += `<tr><td colspan="7" class="more"><button type="button" data-older="1">SHOW ${esc(Math.min(TAPE_PAGE, older))} OLDER · ${esc(older)} NOT SHOWN</button></td></tr>`;
+      put("tape", html || `<tr><td colspan="7" class="empty">${anyFilter() ? "Nothing matches the filter." : "Waiting for events…"}</td></tr>`);
+      $("tapesum").textContent = (anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`) + (older ? ` · newest ${shown.length} shown` : "");
     }
     function renderAlerts() {
-      const list = S.alerts.filter(al => !al.agent || agentMatch(al.agent)).slice(-200).reverse(), why = whyAlerts();
-      const src = al => { const r = al.ref?.pre || al.ref?.rec; return r?.why ? "WHY" : r?.v2 || r?.review ? "SIGNED" : ""; };
-      $("alerts").innerHTML = why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
-        + list.map((al, i) => `<div class="al" data-al="${esc(al.i)}"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`;
-      const hi = S.alerts.filter(a => a.sev === "high").length + why.filter(a => a.severity === "high").length;
-      $("alsum").textContent = `${S.alerts.length + why.length} total · ${hi} high`;
+      const why = whyAlerts(), src = al => srcOf(al.ref?.pre || al.ref?.rec);
+      // the same alert repeated (one per call of a long run) is one line with its count; it opens the newest
+      const groups = new Map();
+      for (const al of S.alerts) {
+        if (al.agent && !agentMatch(al.agent)) continue;
+        const k = al.sev + "|" + src(al) + "|" + al.text, g = groups.get(k);
+        if (g) { g.n++; g.al = al; } else groups.set(k, { al, n: 1 });
+      }
+      const list = [...groups.values()].sort((x, y) => y.al.i - x.al.i).slice(0, 200);
+      put("alerts", why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
+        + list.map(({ al, n }) => `<div class="al" data-al="${esc(al.i)}"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
+      $("alsum").textContent = `${S.alerts.length + why.length} total · ${highCount()} high`;
     }
     function renderMix() {
       const counts = new Map();
       for (const a of S.actList) if (agentMatch(a.agent)) counts.set(a.tool, (counts.get(a.tool) || 0) + 1);
       const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10), max = rows[0]?.[1] || 1;
-      $("mix").innerHTML = rows.map(([t, n]) => {
+      put("mix", rows.map(([t, n]) => {
         const cat = category({ tool: t, flags: [], denied: false, error: false });
         return `<div class="bar" data-tool="${esc(t)}"><span>${esc(t.slice(0, V2 ? 16 : 12))}</span><span class="tr"><span class="fl" style="display:block;width:${esc((n / max * 100).toFixed(1))}%;background:var(${esc(CAT_COLOR[cat])})"></span></span><span class="n">${esc(n)}</span></div>`;
-      }).join("") || `<div class="empty">No actions yet.</div>`;
+      }).join("") || `<div class="empty">No actions yet.</div>`);
       $("mixsum").textContent = `${counts.size} tools`;
     }
     let laneHits = [];
@@ -1901,7 +2108,8 @@
         g.fillStyle = "#1a1a17"; g.fillRect(xf, y + laneH / 2 - 1, Math.max(1, Math.min(W, x(a.status === "done" ? a.last : t1)) - xf), 2);
         for (const act of S.actList) {
           if (act.agent !== a || !actMatch(act)) continue;
-          const x0 = x(act.start), x1 = Math.max(x0 + 3, x(act.end ?? (act.denied ? act.start : t1)));
+          // only a call that may still be running reaches the right edge; a blocked, refused or unanswered one never ran
+          const x0 = x(act.start), x1 = Math.max(x0 + 3, x(act.end ?? (callState(act)[1] === "RUNNING" ? t1 : act.start)));
           g.fillStyle = css(CAT_COLOR[category(act)]);
           g.globalAlpha = selected === act ? 1 : .85;
           g.fillRect(x0, y + 3, x1 - x0, laneH - 6);
@@ -1916,7 +2124,7 @@
     }
     function renderReason() {
       const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
-      $("reason").innerHTML = list.map(r => `<div class="rs ${esc(r.kind)}" data-seq="${esc(r.rec.seq)}"><div class="h"><span>${esc(fmtT(r.ts))}</span><span class="who">${esc(label(r.agent))}</span><span>${esc(sayLabel(r))}</span></div><div class="t">${esc(r.text.slice(0, 1200))}</div></div>`).join("") || `<div class="empty">No reasoning yet.</div>`;
+      put("reason", list.map(r => `<div class="rs ${esc(r.kind)}" data-seq="${esc(r.rec.seq)}"><div class="h"><span>${esc(fmtT(r.ts))}</span><span class="who">${esc(label(r.agent))}</span><span title="${esc(r.kind === "committed" ? "committed: the record holds only a commitment to what was said, and this viewer reads no content" : "")}">${esc(sayLabel(r))}</span></div><div class="t">${esc(r.text.slice(0, 1200))}</div></div>`).join("") || `<div class="empty">No reasoning yet.</div>`);
     }
     // how a sensor's effect is joined to its call (findings_effects): a finding when it doesn't fit the call it names, or no call explains it
     function effectHow(e) {
@@ -1927,7 +2135,7 @@
     }
     // what an entry is: thinking (its form: the model's full reasoning, a summary of it, or withheld: sealed or absent), text it said, or committed only
     function sayLabel(r) {
-      return (r.kind === "think" ? "THINKING" : r.kind === "withheld" ? "THINKING (WITHHELD)" : r.kind === "committed" ? "COMMITTED, NOT READABLE HERE" : "SAID")
+      return (r.kind === "think" ? "THINKING" : r.kind === "withheld" ? "THINKING (WITHHELD)" : r.kind === "committed" ? "SAID · TEXT NOT KEPT HERE" : "SAID")
         + (r.kind === "think" && r.form ? " · " + r.form.toUpperCase() : "");
     }
     function renderFiles() {
@@ -1936,9 +2144,20 @@
       $("filesum").textContent = `${S.files.size} files · ${[...S.files.values()].filter(f => f.w).length} written`;
     }
     function j(v) { try { return typeof v === "string" ? v : JSON.stringify(v, null, 2); } catch { return String(v); } }
+    // a record's content in words where the page knows its shape (what a model said, a prompt), else the record
+    function bodyHtml(sel) {
+      if (sel.event === "model_turn") return `<div class="sec">WHAT THE MODEL SAID · SELF-REPORTED, NOT PROOF</div><dl class="kv">` + (sel.blocks || []).map(b => `<dt>${esc(b.kind === "thinking" ? "thinking" + (b.form ? " · " + b.form : "") : b.kind === "thinking_redacted" ? "thinking withheld" : b.kind === "committed" ? "text not kept" : "said")}</dt><dd class="pre">${esc(b.text || "")}</dd>`).join("") + `</dl>`;
+      if (sel.event === "UserPromptSubmit") return `<div class="sec">PROMPT · WHAT THE PERSON ASKED</div><pre>${esc(sel.prompt || "")}</pre>`;
+      return `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash", "prev"].includes(k) && !(k === "seq" && sel.tk_seq !== undefined)))).slice(0, 8000))}</pre>`;
+    }
+    // the findings that cite these records: each opens the finding, whose CITES opens the records again
+    function citedHtml(recs) {
+      const list = [...new Set(recs.filter(r => r && r.v2).flatMap(r => S.cited.get(r.session_id + "|" + r.v2.run_seq) || []))];
+      return list.length ? `<div class="sec">FINDINGS THAT CITE THIS</div><dl class="kv">` + list.map(f => `<dt>${esc(srcOf(f).toLowerCase())}</dt><dd class="go" data-i="${esc(S.tape.findIndex(t => t.rec === f))}">${esc(f.title)}</dd>`).join("") + `</dl>` : "";
+    }
     function renderDetail(sel) {
       let html = "";
-      if (V2 && (sel.pre || sel).v2 || sel.review) { $("detail").innerHTML = detailV2(sel); return; }
+      if (V2 && (sel.pre || sel).v2 || sel.review || sel.analysis) return put("detail", detailV2(sel));
       if (sel.pre) { // action
         const a = sel, st = a.denied ? "BLOCKED" : a.error ? "FAILED" : a.post ? "OK" : "RUNNING";
         const before = S.reasoning.filter(r => r.agent === a.agent && r.ts <= a.start + 0.5 && r.kind !== "withheld").slice(-1)[0];
@@ -1959,16 +2178,17 @@
             return `<dt><a href="#" data-tkseq="${esc(x.seq)}">seq ${esc(x.seq)}</a></dt><dd>${esc(r ? r.event + " · " : "")}<span class="${esc(st[0])}">${esc(st[1])}</span></dd>`;
           }).join("") + `</dl>`;
         }
-        html += `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash", "prev"].includes(k) && !(k === "seq" && sel.tk_seq !== undefined)))).slice(0, 8000))}</pre>` + evidence(sel);
+        html += bodyHtml(sel) + evidence(sel);
         $("detsum").textContent = `${sel.event} · seq ${lseq(sel)}`;
       }
-      $("detail").innerHTML = html;
+      put("detail", html);
     }
     /* ---------------- v2 runs: detail card and run review ---------------- */
     const short = h => h ? String(h).slice(0, String(h).indexOf(":") + 13) + "…" : "";
+    // a run's verdict; its integrity is said once (VERIFIED, not "VERIFIED Integrity VERIFIED")
     function verdictLine(id) {
       const v = RUNS.get(id);
-      return v ? `<dt>VERDICT</dt><dd><span class="vchip ${esc(v.verdict)}">${esc(String(v.verdict).toUpperCase())}</span> ${esc(v.integrity ? "Integrity " + v.integrity + " · Assurance " + v.assurance : "")}<div class="dim">${esc(v.label)}</div></dd>` : "";
+      return v ? `<dt>VERDICT</dt><dd><span class="vchip ${esc(v.verdict)}">${esc(String(v.verdict).toUpperCase())}</span> ${esc((v.integrity && v.integrity.toLowerCase() !== String(v.verdict) ? "Integrity " + v.integrity + " · " : "") + (v.assurance ? "Assurance " + v.assurance : ""))}<div class="dim">${esc(v.label)}</div></dd>` : "";
     }
     function rulesHtml(rules) {
       return (rules || []).map(x => `<div><span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(not in a policy this viewer has)")}</div>`).join("") || "none matched";
@@ -1976,11 +2196,11 @@
     const cols = (l, r) => `<div>` + l + `</div><div>` + r + `</div>`;  // the detail card's two columns
     function detailV2(sel) {
       if (sel.pre) {
-        const a = sel, v = a.v2 || {}, ap = lastAnswer(a);
-        const out = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : v.decision === "ask" && ap !== "approve" ? ["s-flag", ap ? ap.toUpperCase() : "HELD"] : a.post ? ["s-ok", v.decision === "ask" ? "APPROVED · RAN" : "RAN"] : ["s-run", "NO RESULT YET"];
+        const a = sel, v = a.v2 || {}, out = callState(a), seq = lseq(a.pre), reveal = `tracekit signer reveal --record ${seq}`;
         const left = `<dl class="kv"><dt>CALL</dt><dd style="color:var(--cyan)">${esc(a.tool)}</dd><dt>RUN</dt><dd>${esc(label(a.agent))}</dd><dt>TIME</dt><dd>${esc(fmtT(a.start))}${a.ms != null ? ` · ${esc(a.ms)} ms` : ""}</dd>
       <dt>DECISION</dt><dd>${esc(String(v.decision).toUpperCase())} → <span class="${esc(out[0])}">${esc(out[1])}</span></dd><dt>RULES</dt><dd>` + rulesHtml(v.rules) + `</dd>` + verdictLine(a.pre.session_id) + `</dl>
-      <div class="sec">ARGUMENTS</div><dl class="kv"><dt>commitment</dt><dd class="hash" title="${esc(v.args_commitment)}">${esc(short(v.args_commitment))}</dd><dt></dt><dd class="dim">arguments are a salted commitment; <code>tracekit signer reveal --record ${esc(lseq(a.pre))}</code> gives an auditor the salt</dd><dt>policy</dt><dd class="dim" title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</dd></dl>` + argsFrom(a);
+      <div class="sec">ARGUMENTS</div>` + (Object.keys(a.input).length ? `<pre>${esc(j(a.input).slice(0, 6000))}</pre><div class="dim" style="padding:0 8px">kept by the signer and read by this viewer; the record holds only their commitment</div>` : "")
+          + `<dl class="kv"><dt>commitment` + cp(v.args_commitment) + `</dt><dd class="hash">${esc(v.args_commitment || "")}</dd><dt>reveal` + cp(reveal) + `</dt><dd class="dim"><code class="shell">${esc(reveal)}</code> gives an auditor the salt that opens the commitment</dd><dt>policy</dt><dd class="dim" title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</dd></dl>` + argsFrom(a);
         let right = a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "";
         if (a.post) right += `<div class="sec">RESULT</div><dl class="kv"><dt>status</dt><dd>${esc(a.error ? "failed" : "ok")}</dd><dt>output</dt><dd>${esc(j(a.post.tool_response?.output))}</dd></dl>`;
         // what the model said before this call in the message that asked for it: "signed before this call" only when its record's run_seq is lower than the decision's
@@ -1991,72 +2211,119 @@
         const happened = [...S.effects.values()].filter(e => e.call === a.id);
         right += `<div class="sec">HAPPENED · WHAT THE KERNEL SENSOR SAW</div>` + (happened.length ? `<dl class="kv">` + happened.map(e => `<dt>${esc(e.rec.v2.effect.kind)}</dt><dd class="go" data-tkseq="${esc(e.rec.tk_seq)}">${esc(e.rec.v2.effect.target)}<div class="${e.status === "found" ? "s-deny" : "dim"}">${esc(effectHow(e))}</div></dd>`).join("") + `</dl>`
           : `<div class="dim">${S.effects.size ? "nothing the sensor saw is joined to this call" : "no kernel sensor's records in this view (docs/integrations/tetragon.md)"}</div>`);
-        $("detsum").textContent = `${a.tool} · seq ${lseq(a.pre)}`;
-        return cols(left, right + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
+        $("detsum").textContent = `${a.tool} · seq ${seq}`;
+        return cols(left, right + citedHtml([a.pre, a.post]) + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
       }
-      const v = sel.v2 || {};
-      let left = `<dl class="kv"><dt>TYPE</dt><dd>${esc(v.type || sel.event)}</dd><dt>TIME</dt><dd>${esc(fmtT(sel.ts))}</dd><dt>SOURCE</dt><dd>${esc(sel.signer ? "signer" : sel.agent)}</dd>${sel.title ? `<dt>EVENT</dt><dd>${esc(sel.title)}</dd>` : ""}`;
-      if (!sel.review) left += `<dt>DETAIL</dt><dd>${esc(sel.text || sel.reason || sel.source || sel.prompt || "")}</dd>`;
+      const v = sel.v2 || {}, src = srcOf(sel), seq = lseq(sel);
+      let left = `<dl class="kv"><dt>TYPE</dt><dd>${esc(v.type || sel.event)}</dd><dt>TIME</dt><dd>${esc(fmtT(sel.ts))}</dd><dt>SOURCE</dt><dd>${esc((sel.signer ? "signer" : sel.agent) + (src === "ANALYSIS" ? " · the viewer's own analysis, not a record of the log" : src === "SIGNED" ? " · a signed record" : ""))}</dd>${sel.title ? `<dt>EVENT</dt><dd>${esc(sel.title)}</dd>` : ""}`;
+      if (!sel.review) left += `<dt>DETAIL</dt><dd class="pre">${esc(sel.text || sel.reason || sel.source || sel.prompt || "")}</dd>`;
       if (v.rules) left += `<dt>RULES</dt><dd>` + rulesHtml(v.rules) + `</dd>`;
-      if (v.approver) left += `<dt>APPROVER</dt><dd>${esc(v.approver)}</dd><dt>VIA</dt><dd>${esc(v.via ? v.via + " (a bridge vouches for the person)" : "the approver's own connection")}</dd><dt>SELF</dt><dd class="${v.self_approved ? "s-deny" : ""}">${esc(v.self_approved ? "self-approved" : "not self-approved")}</dd>${v.break_glass ? `<dt>BREAK-GLASS</dt><dd class="s-deny">yes: outside the approver list, with a reason</dd>` : ""}`;
-      if (v.binding_digest) left += `<dt>BINDING</dt><dd class="hash" title="${esc(v.binding_digest)}">${esc(short(v.binding_digest))}</dd>`;
+      // only an approval can be a self-approval: a requester rejecting their own call is no risk
+      if (v.approver) left += `<dt>APPROVER</dt><dd>${esc(v.approver)}</dd><dt>VIA</dt><dd>${esc(v.via ? v.via + " (a bridge vouches for the person)" : "the approver's own connection")}</dd>${v.approval === "approve" ? `<dt>SELF</dt><dd class="${v.self_approved ? "s-deny" : ""}">${esc(v.self_approved ? "self-approved" : "not self-approved")}</dd>` : ""}${v.break_glass ? `<dt>BREAK-GLASS</dt><dd class="s-deny">yes: outside the approver list, with a reason</dd>` : ""}`;
+      if (v.binding_digest) left += `<dt>BINDING` + cp(v.binding_digest) + `</dt><dd class="hash">${esc(v.binding_digest)}</dd>`;
       if (v.kind) left += `<dt>GAP KIND</dt><dd>${esc(v.kind)}</dd>`;
       const ef = v.effect && S.effects.get(sel.session_id + "|" + v.run_seq), call = ef?.call && S.actions.get(ef.call);
       if (ef) left += `<dt>CALL</dt><dd class="${ef.status === "found" ? "s-deny" : ""}">${call ? `<a href="#" data-tkseq="${esc(call.pre.tk_seq)}">${esc(call.tool)} ${esc(call.pre.tool_use_id)}</a> · ` : ""}${esc(effectHow(ef))}</dd>`;
-      if (v.cites) left += `<dt>CITES</dt><dd>` + v.cites.map(c => { const r = S.recs.find(r => r.session_id === sel.session_id && r.v2?.run_seq === c.run_seq);
-        return r ? `<a href="#" data-tkseq="${esc(r.tk_seq)}">record ${esc(c.run_seq)}</a> <span class="${r.hash === c.hash ? "s-ok" : "s-deny"}">${r.hash === c.hash ? "hash matches" : "HASH MISMATCH"}</span>` : `record ${esc(c.run_seq)} <span class="dim">not in this view</span>`; }).join("<br>") + `</dd>`;
+      if (v.about) left += `<dt>ABOUT</dt><dd class="go" data-run="${esc(v.about)}">${esc("run " + v.about)}</dd>`;
+      // the records a finding cites (a signed finding's are of the run it is about): each opens its row
+      if (v.cites) left += `<dt>CITES</dt><dd>` + v.cites.map(c => { const r = ALL.find(r => r.session_id === (v.about || sel.session_id) && r.v2?.run_seq === c.run_seq);
+        return r ? `<a href="#" data-tkseq="${esc(r.tk_seq)}">record ${esc(c.run_seq)} · ${esc(r.event === "UserPromptSubmit" ? "prompt" : r.v2.type)}</a> <span class="${r.hash === c.hash ? "s-ok" : "s-deny"}">${r.hash === c.hash ? "hash matches" : "HASH MISMATCH"}</span>` : `record ${esc(c.run_seq)} <span class="dim">not in this view</span>`; }).join("<br>") + `</dd>`;
       if (!sel.signer) left += verdictLine(sel.session_id);
-      const right = sel.review ? `<div class="sec">VERIFIER REPORT</div><pre>${esc(sel.text)}</pre>`
-        : `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash", "prev"].includes(k) && !(k === "seq" && sel.tk_seq !== undefined)))).slice(0, 8000))}</pre>`;
-      $("detsum").textContent = `${v.type || sel.event} · seq ${lseq(sel)}`;
+      const right = (sel.review ? `<div class="sec">VERIFIER REPORT</div><pre>${esc(sel.text)}</pre>` : bodyHtml(sel)) + citedHtml([sel]);
+      $("detsum").textContent = `${v.type || sel.event}` + (seq != null ? ` · seq ${seq}` : " · the viewer's analysis");
       return cols(left + `</dl>` + evidence(sel), right);
+    }
+    // a verifier report's failing checks, each with the lines that say why (indented under it)
+    function failLines(report) {
+      const out = []; let failing = false;
+      for (const l of String(report || "").split("\n")) { if (/^\S/.test(l)) failing = l.startsWith("[FAIL]"); if (failing && l.trim()) out.push(l.trim()); }
+      return out;
+    }
+    // one sentence a person reads first: the verdict, what the run's calls came to, its findings
+    function runSentence(r) {
+      if (r.verdict === "failed") return "Failed verification: " + (failLines(r.report).join(" · ").replace(/^\[FAIL\]\s*/, "") || "see the verifier report") + ". None of its records are shown.";
+      if (r.verdict !== "verified") return "Pending: no checkpoint covers this run's last record yet.";
+      const acts = S.actList, held = acts.filter(a => a.v2?.decision === "ask"), by = new Map();
+      for (const a of held) { const w = (ANSWER[lastAnswer(a)] || (ended(a) ? "not answered" : "waiting")).toLowerCase(); by.set(w, (by.get(w) || 0) + 1); }
+      let out = "Verified. " + plural(acts.length, "call") + (acts.length ? `: ${acts.filter(a => a.post).length} ran, ${acts.filter(a => a.denied).length} blocked, ${held.length} held` + (held.length ? " (" + [...by].map(([w, n]) => n + " " + w).join(", ") + ")" : "") : "") + ".";
+      const fs = S.recs.filter(x => x.v2?.finding?.kind === "finding"), hi = fs.filter(x => x.severity === "high").length;
+      if (r.findings || fs.length) out += fs.length ? " " + plural(fs.length, "finding") + (hi ? `, ${hi} high` : "") + "." : r.findings?.not_checkable?.length ? " No findings in what could be checked." : " No findings.";
+      return out;
     }
     function renderReview() {
       const r = scope && RUNS.get(scope);
       if (!r) {
-        $("detail").innerHTML = `<div class="empty">Select a run for its review, or any row for its record.</div>`;
+        put("detail", `<div class="empty">Select a run for its review, or any row for its record.</div>`);
         $("detsum").textContent = "click any row"; return;
       }
       const d = r.decisions || {}, f = r.first || {};
-      const line = (seq, k, text, cls) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}">${esc(text)}</dd>`;
-      let left = `<div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span> ${esc(r.integrity || "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
+      const line = (seq, k, text, cls, tip) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}" title="${esc(tip || "")}">${esc(text)}</dd>`;
+      let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span>${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
+      if (r.analyzes) left += `<dt>FINDINGS ABOUT</dt><dd class="go" data-run="${esc(r.analyzes)}">${esc("run " + r.analyzes + ": its signed findings are the rows of this run")}</dd>`;
       // live constraints: what the person's request said not to do; a call that breaks one waits for a person
-      if (r.constraints?.length) left += line(r.constraints[0].seq, "CONSTRAINTS", r.constraints.map(c => c.kind).join(" · ") + ` · held ${r.constraint_holds} call(s) for approval`, "s-flag");
+      if (r.constraints?.length) left += line(r.constraints[0].seq, "CONSTRAINTS", r.constraints.map(c => c.kind).join(" · ") + ` · held ${plural(r.constraint_holds, "call")} for approval`, "s-flag");
       if (r.decisions) {
         const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, c = r.coverage, gaps = Object.entries(r.gaps || {});
-        left += line(null, "RECORDS", `${r.records} · ${fmtT(t0)} → ${fmtT(t1)} (${fmtDur(t1 - t0)}) · ${r.state}`)
+        left += line(null, "RECORDS", `${r.records} · ${fmtT(t0)} → ${fmtT(t1)} ${TZ} (${fmtDur(t1 - t0)}) · ${r.state}`)
           + line(null, "COVERAGE", c ? `${c.layers.join("+") || "no layers"} · reconciled ${c.reconciled}` + Object.entries(c.unreconciled).map(([k, n]) => ` · unreconciled ${k} ${n}`).join("") + (c.provider_executed ? ` · provider-run tools ${c.provider_executed}` : "") : "not final yet: run.final records it")
           // the analyzer's opinion of the run (tracekit analyze --v2), beside its integrity, never in it
           + (r.findings ? line(null, "FINDINGS", r.findings.line) + (r.findings.monitorability ? line(null, "MONITORABILITY", r.findings.monitorability + " (the share of actions whose reasoning can be read)") : "")
-            + (r.findings.not_checkable?.length ? line(null, "NOT CHECKABLE", r.findings.not_checkable.join(", ") + " · never counted as a pass: tracekit analyze --v2 says what makes each checkable", "s-flag") : "") : "");
+            + (r.findings.not_checkable?.length ? `<dt>NOT CHECKABLE</dt><dd class="s-flag">` + r.findings.not_checkable.map(g => `<div title="${esc(g.code)}">${esc(`${g.rule} for ${g.n}: ${g.text}`)}</div>`).join("") + `<div class="dim">never counted as a pass: tracekit analyze --v2 says what makes each checkable</div></dd>` : "") : "");
+        // the commands that make this review evidence: export the run's bundle and verify it offline
+        const file = r.id + ".tkb", word = x => /^[\w.:@/=-]+$/.test(x) ? x : shq(x);
+        const exp = `tracekit export --v2 --run ${word(r.id)}` + (r.tenant && r.tenant !== "default" ? ` --tenant ${word(r.tenant)}` : "") + ` --with-findings -o ${word(file)}`, ver = `tracekit verify ${word(file)} --trust trust.json`;
+        left += `<dt>EXPORT` + cp(exp) + `</dt><dd><code class="shell">${esc(exp)}</code></dd><dt>VERIFY` + cp(ver) + `</dt><dd><code class="shell">${esc(ver)}</code><div class="dim">trust.json pins the signer's log key; that check, not this page, is the evidence</div></dd>`;
         right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", d.ask || 0, d.ask ? "s-flag" : "");
-        for (const a of r.approvals) right += line(a.seq, a.decision === "approve" ? "→ APPROVED" : "→ " + String(a.decision).toUpperCase(), `${a.tool_use_id} by ${a.approver}` + (a.via ? ` vouched for by ${a.via}` : "") + (a.self_approved ? " · SELF-APPROVED" : " · not self-approved") + (a.break_glass ? " · BREAK-GLASS" : ""), a.self_approved || a.break_glass || a.decision !== "approve" ? "s-deny" : "s-ok");
+        // only an approval can be a self-approval: a requester rejecting their own call is no risk
+        for (const a of r.approvals) right += line(a.seq, "→ " + (ANSWER[a.decision] || String(a.decision).toUpperCase()), `${a.tool_use_id} by ${a.approver}` + (a.via ? ` vouched for by ${a.via}` : "") + (a.decision === "approve" ? (a.self_approved ? " · SELF-APPROVED" : " · not self-approved") : a.self_approved ? " · by the requester" : "") + (a.break_glass ? " · BREAK-GLASS" : ""), a.decision !== "approve" || a.self_approved || a.break_glass ? "s-deny" : "s-ok");
         for (const i of r.incidents || []) right += line(i.seq, "INCIDENT", `${i.trigger} ${i.rule_ids.join(" ")} · ${i.incident_id} · ${i.mode} · ${i.actions.join("+") || "no action"} · run ${i.state}`, i.actions.length ? "s-deny" : "s-flag");
-        right += (gaps.length ? gaps.map(([k, n]) => line(f["gap:" + k], "GAP", `${k} ×${n}`, "s-err")).join("") : line(null, "GAPS", "none signed")) + `</dl>`;
+        right += (gaps.length ? gaps.map(([k, n]) => line(f["gap:" + k], "GAP", `${(r.gap_words || {})[k] || k} ×${n}`, "s-err", k)).join("") : line(null, "GAPS", "none signed")) + `</dl>`;
       } else {
-        left += line(null, "RECORDS", r.verdict === "failed" ? "none shown: a run that fails verification shows only its report" : "shown once a checkpoint covers the run");
+        // a run that fails: its failing checks first, then the whole report
+        const failed = failLines(r.report);
+        left += line(null, "RECORDS", r.verdict === "failed" ? "none shown: a run that fails verification shows only its report" : "shown once a checkpoint covers the run")
+          + (failed.length ? `<dt>FAILED</dt><dd class="s-deny">` + failed.map(l => `<div>${esc(l)}</div>`).join("") + `</dd>` : "");
         if (r.report) right = `<div class="sec">VERIFIER REPORT</div><pre>${esc(r.report)}</pre>`;
       }
-      $("detail").innerHTML = cols(left + `</dl>`, right);
+      put("detail", cols(left + `</dl>`, right));
       $("detsum").textContent = "run review";
     }
-    function lseq(r) { return r.tk_seq ?? r.seq; }  // the ledger's seq (v0.2 records carry it as tk_seq)
+    // the ledger's seq (v0.2 records carry it as tk_seq); a row the viewer made has none
+    function lseq(r) { return r.analysis ? null : r.tk_seq ?? r.seq; }
     function evidence(r) {
-      if (r.v2) return `<div class="sec">LEDGER EVIDENCE · SEQ ${esc(lseq(r))}</div><dl class="kv"><dt>type</dt><dd>${esc(r.v2.type)}</dd><dt>run_seq</dt><dd>${esc(r.v2.run_seq ?? "")}</dd><dt>hash</dt><dd class="hash" title="${esc(r.hash || "")}">${esc(short(r.hash))}</dd><dt>prev</dt><dd class="dim" title="${esc(r.prev || "")}">${esc(short(r.prev))}</dd></dl>`;
-      return `<div class="sec">LEDGER EVIDENCE · SEQ ${esc(lseq(r))}</div><dl class="kv"><dt>hash</dt><dd class="hash">${esc(r.hash || "")}</dd><dt>prev</dt><dd class="dim">${esc(r.prev || "")}</dd></dl>`;
+      if (r.analysis) return `<div class="sec">NOT A RECORD OF THE LOG</div><div class="dim" style="padding:2px 8px">The viewer made this row (its own verification or analysis): it has no seq and no hash, and it is not evidence. <code class="shell">tracekit verify</code> checks the run's records.</div>`;
+      return `<div class="sec">LEDGER EVIDENCE · SEQ ${esc(lseq(r))}</div><dl class="kv">` + (r.v2 ? `<dt>type</dt><dd>${esc(r.v2.type)}</dd><dt>run_seq</dt><dd>${esc(r.v2.run_seq ?? "")}</dd>` : "")
+        + `<dt>hash` + cp(r.hash) + `</dt><dd class="hash">${esc(r.hash || "")}</dd><dt>prev</dt><dd class="dim">${esc(r.prev || "")}</dd></dl>`;
     }
     function select(x) { selected = x; schedule(); }
 
     /* ---------------- interaction ---------------- */
+    // COPY: before every other click handler, so a copy button inside a clickable line only copies
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-i],[data-al],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump]"); if (!t) return;
+      const b = e.target.closest("[data-copy]"); if (!b) return;
+      e.stopPropagation(); e.preventDefault();
+      const done = ok => { b.textContent = ok ? "COPIED" : "SELECT IT"; setTimeout(() => { b.textContent = "COPY"; }, 1200); };
+      const fallback = () => {   // no clipboard API (plain HTTP beyond loopback): a hidden field and the copy command
+        const f = document.createElement("textarea"); f.value = b.dataset.copy; document.body.append(f); f.select();
+        let ok = false; try { ok = document.execCommand("copy"); } catch { } f.remove(); done(ok);
+      };
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(b.dataset.copy).then(() => done(true), fallback); else fallback();
+    }, true);
+    document.addEventListener("click", e => {
+      const t = e.target.closest("[data-i],[data-al],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump],[data-older]"); if (!t) return;
       if (t.dataset.run !== undefined) return setScope(t.dataset.run || null);
       if (t.dataset.kind !== undefined) { F.kind = t.dataset.kind || null; return schedule(); }
       if (t.dataset.jump) return jump(t.dataset.jump);
+      if (t.dataset.older) { tapeMax += TAPE_PAGE; return schedule(); }
       if (t.dataset.tkseq && R) { const i = R.findIndex(r => r.tk_seq === +t.dataset.tkseq); if (i >= 0) seekRun(i + 1, R[i]); return; }
-      if (t.dataset.tkseq) { e.preventDefault(); const r = S.recs.find(r => r.tk_seq === +t.dataset.tkseq); if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } return; }
+      if (t.dataset.tkseq) {   // a record of another run (a signed finding's citation) opens that run first
+        e.preventDefault();
+        const r = ALL.find(r => r.tk_seq === +t.dataset.tkseq && !r.analysis); if (!r) return;
+        if (!inScope(r)) setScope(r.session_id);
+        const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); return;
+      }
       if (t.dataset.clear) { F[t.dataset.clear] = t.dataset.clear === "flag" ? false : null; return schedule(); }
-      if (t.dataset.i) { const row = S.tape[+t.dataset.i]; return select(row.act || row.rec); }
+      if (t.dataset.i) { const row = S.tape[+t.dataset.i]; return row && select(row.act || row.rec); }
       if (t.dataset.al) { const al = S.alerts[+t.dataset.al]; return select(al.ref?.pre ? al.ref : al.ref?.rec); }
       if (t.dataset.agent) { F.agent = F.agent === t.dataset.agent ? null : t.dataset.agent; return schedule(); }
       if (t.dataset.tool) { F.tool = F.tool === t.dataset.tool ? null : t.dataset.tool; return schedule(); }
@@ -2081,15 +2348,15 @@
         case "FIND": case "/": F.find = arg || null; break;
         case "FLAG": case "F": F.flag = !F.flag; break;
         case "CLR": case "CLEAR": F.agent = F.tool = F.file = F.find = F.kind = null; F.flag = false; selected = null; break;
-        case "SEQ": {   // a record with no row of its own (a call's decision, a checkpoint): the row before it
-          const n = +arg, r = S.recs.reduce((b, r) => lseq(r) <= n && (!b || lseq(r) > lseq(b)) ? r : b, null);
+        case "SEQ": {   // a record with no row of its own (a call's decision, a checkpoint): the row before it; never a row the viewer made
+          const n = +arg, r = S.recs.reduce((b, r) => lseq(r) != null && lseq(r) <= n && (!b || lseq(r) > lseq(b)) ? r : b, null);
           if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); }
           if (!r || lseq(r) !== n) $("cmd").placeholder = `seq ${arg} has no row of its own on the tape` + (r ? `; showing the row before it, seq ${lseq(r)}` : "");
           break;
         }
         case "HELP": case "?": $("help").hidden = false; break;
-        case "PAUSE": if (BOOT) { playing = false; updatePlay(); } break;
-        case "PLAY": if (BOOT) { playing = true; updatePlay(); tick(); } break;
+        case "PAUSE": if (BOOT) { playing = false; updatePlay(); } else if (V2 && scope && rplay) togglePlay(); break;
+        case "PLAY": if (BOOT) { playing = true; updatePlay(); tick(); } else if (V2 && scope && !rplay) togglePlay(); else if (V2 && !scope) $("cmd").placeholder = "PLAY replays a run: select one in panel 1"; break;
         case "SPEED": $("speed").value = arg; break;
         default: F.find = s;
       }
@@ -2100,7 +2367,7 @@
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
       if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
       else if (V2 && !BOOT && scope && rpKeys(e)) return;
-      else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; $("detail").innerHTML = `<div class="empty">Select an action, alert or reasoning entry.</div>`; $("detsum").textContent = "click any row"; schedule(); }
+      else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; schedule(); }
       else if (e.key === "f" || e.key === "F") { F.flag = !F.flag; schedule(); }
       else if (e.key === "?") { $("help").hidden = !$("help").hidden; }
     });
@@ -2146,16 +2413,22 @@
       if (!r.ok) throw new Error(`observer answered HTTP ${r.status}`);
       return r.json();
     }
+    let checking = null;
     async function startLive() {
       try {
         const snap = await getJSON("api/snapshot");
-        snap.records.forEach(accept); liveOk = true; liveErr = ""; SOURCE = snap.source || ""; loadWhy(); schedule();
+        // a reconnect starts again from the server's snapshot: stream positions are the server's own, and a viewer that
+        // restarted numbers its records anew, so resuming from the old position would miss or repeat records
+        if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); selected = null; reset(); }
+        snap.records.forEach(accept); tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; loadWhy(); schedule();
+        const want = new URLSearchParams(location.hash.slice(1)).get("run");   // a link to one run: /#run=<id>
+        if (want && RUNS.has(want) && scope !== want) setScope(want);
         const es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
-        es.onerror = () => { liveOk = false; liveErr = "Connection lost; reconnecting…"; schedule(); };
+        es.onerror = () => { es.close(); liveOk = false; liveErr = "Connection to the viewer lost; reconnecting…"; schedule(); setTimeout(startLive, 2000); };
         const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { if (document.URL.startsWith("file:")) { chainState = { ok: null, n: 0, detail: "A static report: nothing here verifies it. Check the why logs with `tracekit why verify`." }; schedule(); } } };
-        check(); setInterval(check, 10000);
+        check(); if (!checking) checking = setInterval(check, 10000);
       } catch (e) {
         liveOk = false; liveErr = e.message || String(e); schedule();
         if (!e.fatal) setTimeout(startLive, 3000);  // the observer may still be starting: keep trying
@@ -2206,6 +2479,8 @@
     }
     function setScope(id) {
       if (R) stopRun(true);
+      // the why views follow the run selected here, from the start of its own graph
+      if (id !== scope) { WRUN = WPICK = WNODE = null; GV.focus = null; wvKey = ""; tapeMax = TAPE_PAGE; }
       scope = id; selected = null; rebuild(); updRp(); schedule();
     }
     function updRp() {
@@ -2215,7 +2490,9 @@
       $("pos").textContent = R ? `${rpos}/${R.length}` : "live";
       mode = R ? "replay" : "live";
     }
-    function startRun() { R = ALL.filter(inScope); rpos = 0; rebuild(); updRp(); }
+    // a replay steps through the run's records, not the rows the viewer made (its verdict, its analysis)
+    const runRecs = () => ALL.filter(r => inScope(r) && !r.analysis);
+    function startRun() { R = runRecs(); rpos = 0; rebuild(); updRp(); }
     function stopRun(quiet) { clearTimeout(rtimer); R = null; rplay = false; if (!quiet) { rebuild(); updRp(); schedule(); } }
     function seekRun(n, pick) {
       if (!R) startRun();
@@ -2226,10 +2503,13 @@
       updRp(); schedule();
     }
     const JUMP = { deny: r => r.v2?.decision === "deny", hold: r => r.v2?.decision === "ask" || r.v2?.type === "approval.request", gap: r => r.tape === "GAP" };
+    // the next deny, hold or gap; with none ahead, the page stays as it is and says so
     function jump(k) {
+      const list = R || runRecs(), from = R ? rpos : 0, i = list.findIndex((r, i) => i >= from && JUMP[k](r));
+      if (i < 0) { $("cmd").placeholder = `no ${{ deny: "denied call", hold: "held call", gap: "gap" }[k]} ${R ? "after this point" : "in this run"}`; return; }
+      if (rplay) { rplay = false; clearTimeout(rtimer); }   // a jump stops the playback where it lands
       if (!R) startRun();
-      const i = R.findIndex((r, i) => i >= rpos && JUMP[k](r));
-      if (i >= 0) seekRun(i + 1);
+      seekRun(i + 1);
     }
     function rtick() {
       clearTimeout(rtimer);
@@ -2260,6 +2540,7 @@
     let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "", WNODE = null, WPICK = null;
     const TL = { agent: "", type: "", flag: false, q: "" };   // TIMELINE's filters
     const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null, fit: true };
+    const COMMITTED = "content committed, not in the log";   // a signed run's imported content: no value (why.core)
     const WTYPE = { input: "input", decision: "model call", action: "tool call", message: "message" };
     const WSTATUS = { confirmed: "PRIMARY CAUSE", contributing: "CONTRIBUTING FACTOR", suppressive: "SUPPRESSES IT", inconclusive: "INCONCLUSIVE", untested: "NOT TESTED", "no-effect-seen": "NO EFFECT SEEN", "ruled-out": "RULED OUT" };
     const PSTATE = { unavailable: "unavailable (signer restarted: the run's untrusted-value index is kept in memory only)", truncated: "truncated (past 20000 untrusted values in the run, later ones are not tracked)" };
@@ -2363,20 +2644,20 @@
     }
     function renderWhyPanel() {
       if (document.activeElement?.classList.contains("wtarget")) return;   // don't wipe the target being typed
-      const ref = whyRef(selected), el = $("detail");
+      const ref = whyRef(selected);
       $("detsum").textContent = ref ? `why · ${ref.run}` : "select a call";
-      if (!ref) { el.innerHTML = `<div class="empty">${selected ? "No why log covers this record: record the run with the why runtime (docs/why.md), and start the viewer with --why DIR if its logs are elsewhere." : "Select a tool call: why it happened."}</div>`; return; }
+      if (!ref) { put("detail", `<div class="empty">${selected ? "No why log covers this record: record the run with the why runtime (docs/why.md), and start the viewer with --why DIR if its logs are elsewhere." : "Select a tool call: why it happened."}</div>`); return; }
       const d = whyDetail(ref.run), A = d && !d.error && d.actions[ref.node];
-      if (!A) { el.innerHTML = `<div class="empty">${esc(!d ? "loading…" : d.error || "WHY explains tool calls: select one.")}</div>`; return; }
+      if (!A) { put("detail", `<div class="empty">${esc(!d ? "loading…" : d.error || "WHY explains tool calls: select one.")}</div>`); return; }
       const [left, right] = whyBody(ref, d, A);
-      el.innerHTML = cols(left, right);
+      put("detail", cols(left, right));
     }
     // NODE: one why event of the graph or a lineage step, in full: what it saw, did and produced, its links, its record
     function renderNode() {
-      const d = whyDetail(WNODE.run), el = $("detail");
+      const d = whyDetail(WNODE.run);
       $("detsum").textContent = `why · ${WNODE.run}`;
       const n = d && !d.error && d.nodes.find(x => x.id === WNODE.id);
-      if (!n) { el.innerHTML = `<div class="empty">${esc(!d ? "loading…" : d.error || "This node is not in the run's why log any more.")}</div>`; return; }
+      if (!n) { put("detail", `<div class="empty">${esc(!d ? "loading…" : d.error || "This node is not in the run's why log any more.")}</div>`); return; }
       const by = Object.fromEntries(d.nodes.map(x => [x.id, x])), ms = v => v == null ? "–" : `${(+v).toFixed(1)} ms`;
       const link = id => { const x = by[id]; return x ? `<a href="#" data-wopen="${esc(id)}">${esc(WTYPE[x.type] || x.type)} · ${esc(x.agent)} · ${esc(String(x.label).slice(0, 50))}</a>` : esc(id); };
       const kv = (rows, more = "") => `<dl class="kv">` + rows.filter(r => r[1] != null && r[1] !== "").map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("") + more + `</dl>`;
@@ -2406,9 +2687,9 @@
       const ins = d.edges.filter(e => e.dst === n.id && e.evidence !== "tested"), outs = d.edges.filter(e => e.src === n.id && e.evidence !== "tested");
       const edges = (title, list, end) => list.length ? `<div class="sec">${esc(title)}</div><div class="wflow">` + list.map(e => link(e[end]) + ` <span class="dim">${esc(e.kind)}${e.evidence === "inferred" ? " · inferred" : ""}</span>`).join("<br>") + `</div>` : "";
       const ev = (n.evidence || []).map(x => `signed record #${esc(x.seq)} ${esc(x.type || "")} <span class="dim">${esc(String(x.hash || "").slice(0, 16))}</span>`).join("<br>");
-      el.innerHTML = `<div class="sec">${esc(WTYPE[n.type] || n.type)} · ${esc(n.agent)} · EVENT #${esc(n.seq)}${n.trust === "untrusted" ? ` · <span class="s-deny">UNTRUSTED</span>` : ""}</div><div class="wverdict">${esc(n.label)}</div>`
+      put("detail", `<div class="sec">${esc(WTYPE[n.type] || n.type)} · ${esc(n.agent)} · EVENT #${esc(n.seq)}${n.trust === "untrusted" ? ` · <span class="s-deny">UNTRUSTED</span>` : ""}</div><div class="wverdict">${esc(n.label)}</div>`
         + cols(body, edges("CAME FROM", ins, "src") + edges("LED TO", outs, "dst")
-          + `<div class="sec">RECORD</div>` + kv([["time", n.ts], ["hash", n.hash], ["prev", n.prev]], ev && `<dt>Tracekit</dt><dd>` + ev + `</dd>`));
+          + `<div class="sec">RECORD</div>` + kv([["time", n.ts], ["hash", n.hash], ["prev", n.prev]], ev && `<dt>Tracekit</dt><dd>` + ev + `</dd>`)));
     }
     async function whyReplay(ref, kind, body) {
       WBUSY = ref.run + "|" + ref.node; WMSG = ""; schedule();
@@ -2433,19 +2714,28 @@
       const VNAME = { why: "WHY DID IT HAPPEN?" };
       $("views").innerHTML = ["desk", "runs", "overview", "timeline", "why", "graph", "agents", "influence"].map(k => `<button type="button" data-view="${esc(k)}" class="${VIEW === k ? "on" : ""}">${esc(VNAME[k] || k.toUpperCase())}</button>`).join("");
       if (VIEW === "desk") return;
-      const runs = WHY.runs.map(r => r.run_id);
-      if (!runs.includes(WRUN)) WRUN = whyRef(selected)?.run || (scope && Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0]) || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
-      const key = [VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit, WPICK, WBUSY, WMSG, WHY.runs.length].join("|");
+      const runs = WHY.runs.map(r => r.run_id), run = V2 && scope ? RUNS.get(scope) : null;
+      // a selected signed run shows its own why run (or says why it has none), never another run's
+      if (!runs.includes(WRUN)) WRUN = run ? Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0] || null
+        : whyRef(selected)?.run || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
+      const el = $("whyv");
+      const key = [VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit, WPICK, WBUSY, WMSG, WHY.runs.length, scope, run?.verdict, el.clientWidth, el.clientHeight].join("|");
       if (key === wvKey || document.activeElement?.closest("#whyv input")) return;   // never under a field being typed in
       wvKey = key;
       $("wvtitle").textContent = VNAME[VIEW] || VIEW.toUpperCase();
       $("wrun").hidden = VIEW === "influence" || VIEW === "runs";
-      $("wrun").innerHTML = runs.map(id => `<option value="${esc(id)}"${id === WRUN ? " selected" : ""}>${esc(id)}</option>`).join("");
-      const el = $("whyv");
+      // a run by its agents and short id (a signed run's import is tk-<run id>-<hash>)
+      $("wrun").innerHTML = (WRUN ? "" : `<option value="" selected>no why run</option>`) + WHY.runs.map(r => `<option value="${esc(r.run_id)}"${r.run_id === WRUN ? " selected" : ""} title="${esc(r.run_id)}">${esc(r.run_id.startsWith("tk-") ? (r.agents.join(", ") || "run") + " · " + r.run_id.slice(3, 11) : r.run_id)}</option>`).join("");
       if (VIEW === "influence") return influenceView(el);
       if (VIEW === "runs") return runsView(el);
       const d = WRUN && whyDetail(WRUN);
-      if (!d || d.error) { el.innerHTML = `<div class="empty">${esc(d ? d.error : WRUN ? "loading…" : "No why logs yet.")}</div>`; $("wvsum").textContent = ""; return; }
+      if (!d || d.error) {
+        const calls = run && Object.values(run.decisions || {}).reduce((x, y) => x + y, 0);
+        el.innerHTML = `<div class="empty">${esc(d ? d.error : WRUN ? "loading…" : !run ? "No why logs yet."
+          : run.verdict === "failed" ? "This run failed verification: no graph or why view is built from records that don't verify. Its review in DETAIL says which check failed."
+          : run.verdict !== "verified" ? "This run's graph is built once a checkpoint covers its records." : calls ? "This run's graph is being built…" : "This run has no tool calls, so it has no graph.")}</div>`;
+        $("wvsum").textContent = ""; return;
+      }
       ({ graph: graphView, agents: agentsView, overview: overviewView, timeline: timelineView, why: whyView }[VIEW] || graphView)(el, d);
     }
     const fms = v => v == null ? "–" : v < 1 ? `${Math.round(v * 1000)} µs` : `${(+v).toFixed(1)} ms`;
@@ -2460,9 +2750,9 @@
       const R = WHY.runs, sum = k => R.reduce((n, r) => n + (k === "high" ? r.alerts.high : r[k] || 0), 0);
       el.innerHTML = `<p class="dim" style="padding:0 8px">Every recorded multi-agent run. Open one to see what happened and why.</p>`
         + tiles([["RUNS", R.length], ["HIGH ALERTS", sum("high"), "", sum("high") > 0], ["TOOL CALLS RECORDED", sum("actions")], ["CONFIRMED CAUSES", sum("confirmed_causes")]])
-        + `<table class="wt"><thead><tr><th>RUN</th><th>STARTED (UTC)</th><th>AGENTS</th><th>MODEL CALLS</th><th>TOOL CALLS</th><th>ALERTS</th><th>TESTS</th><th>LOG</th></tr></thead><tbody>`
+        + `<table class="wt"><thead><tr><th>RUN</th><th>STARTED (${esc(TZ)})</th><th>AGENTS</th><th>MODEL CALLS</th><th>TOOL CALLS</th><th>ALERTS</th><th>TESTS</th><th>LOG</th></tr></thead><tbody>`
         + R.map(r => `<tr class="row" data-wgo="${esc(r.run_id)}"><td>${esc(r.run_id)}${r.finished === false ? ` <span class="s-run">running</span>` : ""}${r.guard ? ` <span class="dim">${esc("guard: " + r.guard)}</span>` : ""}<br><span class="dim">${esc(String(r.task || "").slice(0, 90))}</span></td>
-          <td class="dim">${esc(String(r.started || "").slice(0, 19).replace("T", " "))}</td><td>${esc(r.agents.length)}</td><td>${esc(r.decisions)}</td><td>${esc(r.actions)}</td>
+          <td class="dim">${esc(r.started ? fmtD(Date.parse(r.started) / 1000) + " " + fmtT(Date.parse(r.started) / 1000) : "")}</td><td>${esc(r.agents.length)}</td><td>${esc(r.decisions)}</td><td>${esc(r.actions)}</td>
           <td>${r.alerts.high ? `<span class="s-deny">${esc(r.alerts.high + " high")}</span> ` : ""}${r.alerts.review ? `<span class="s-flag">${esc(r.alerts.review + " review")}</span>` : ""}${!r.alerts.high && !r.alerts.review ? `<span class="dim">none</span>` : ""}</td>
           <td>${esc(r.tests)}${r.confirmed_causes ? ` <span class="dim">${esc(`(${r.confirmed_causes} causal)`)}</span>` : ""}</td><td>${r.integrity === "ok" ? `<span class="s-ok">intact</span>` : `<span class="s-deny">failed</span>`}</td></tr>`).join("") + `</tbody></table>`;
       $("wvsum").textContent = `${R.length} runs`;
@@ -2479,7 +2769,8 @@
             + (c.length ? `<span class="sub"><span class="s-deny">CONFIRMED CAUSE</span> ${esc(c.map(x => `${x.label} (${sgn(x.test.effect)})`).join(", "))}</span>` : "")
             + (a.node && d.actions[a.node] ? `<span class="sub"><button type="button" data-wwhy="${esc(a.node)}" data-wr="${esc(d.run_id)}">INVESTIGATE →</button></span>` : "") + `</div>`;
         }).join("") || `<div class="empty">No alerts. No untrusted content reached a sensitive action.</div>`)
-        + tiles([["UNTRUSTED INPUTS", s.untrusted_inputs, "of " + s.inputs], ["MODEL TIME", fms(s.model_ms)], ["TOOL TIME", fms(s.tool_ms)], ["TOKENS", tok || "–", d.nodes.some(n => n.usage && n.usage.estimated) ? "estimated" : ""], ["ERRORS", s.errors, "", s.errors > 0], ["CAUSAL TESTS", s.tests, s.confirmed_causes + " confirmed"]])
+        // a time no event recorded is unknown, not zero
+        + tiles([["UNTRUSTED INPUTS", s.untrusted_inputs, "of " + s.inputs], ["MODEL TIME", d.nodes.some(n => n.type === "decision" && n.duration_ms != null) ? fms(s.model_ms) : "–"], ["TOOL TIME", acts.some(n => n.duration_ms != null) ? fms(s.tool_ms) : "–"], ["TOKENS", tok || "–", d.nodes.some(n => n.usage && n.usage.estimated) ? "estimated" : ""], ["ERRORS", s.errors, "", s.errors > 0], ["CAUSAL TESTS", s.tests, s.confirmed_causes + " confirmed"]])
         + `<div class="sec">HOW TO READ THE EVIDENCE</div><dl class="kv"><dt>Reached</dt><dd>Content was in the context of a decision that led to the action. Recorded, not guessed. Says nothing about whether it mattered.</dd><dt>Confirmed cause</dt><dd>Replaying the run without it changed how often the action happens, with a 95% interval that excludes zero.</dd><dt>Ruled out</dt><dd>Replays without it changed nothing detectable. The interval shows how large an effect could still hide.</dd></dl>`;
       $("wvsum").textContent = `${s.alerts.high} high · ${s.alerts.review} review`;
     }
@@ -2510,7 +2801,7 @@
       d.alerts.forEach(a => { if (a.node && !(a.node in sev)) sev[a.node] = a.severity; });
       const ordered = [...acts].sort((a, b) => (rank[sev[a.id]] ?? 3) - (rank[sev[b.id]] ?? 3) || a.seq - b.seq);
       const pick = WPICK && d.actions[WPICK] ? WPICK : ordered.find(a => d.actions[a.id])?.id, A = pick && d.actions[pick];
-      const picker = `<div class="sec">TOOL CALLS</div>` + ordered.map(a => `<div class="al${a.id === pick ? " on" : ""}" data-wpick="${esc(a.id)}"><span class="sev ${esc(sev[a.id] === "high" ? "high" : sev[a.id] === "review" ? "med" : "low")}">${esc(sev[a.id] ? String(sev[a.id]).toUpperCase() : "·")}</span><span class="tx">${esc(a.label)}</span><span class="sub">${esc(`${a.agent} · #${a.seq} ` + Object.values(a.args || {}).join(", ").slice(0, 26))}</span></div>`).join("");
+      const picker = `<div class="sec">TOOL CALLS</div>` + ordered.map(a => `<div class="al${a.id === pick ? " on" : ""}" data-wpick="${esc(a.id)}"><span class="sev ${esc(sev[a.id] === "high" ? "high" : sev[a.id] === "review" ? "med" : "low")}">${esc(sev[a.id] ? String(sev[a.id]).toUpperCase() : "·")}</span><span class="tx">${esc(a.label)}</span><span class="sub">${esc(`${a.agent} · #${a.seq} ` + (a.args?.content === COMMITTED ? "" : Object.values(a.args || {}).join(", ").slice(0, 26)))}</span></div>`).join("");
       if (!A) { el.innerHTML = runHead(d) + picker; return; }
       const [left, right] = whyBody({ run: d.run_id, node: pick }, d, A);
       el.innerHTML = runHead(d) + `<div class="wsplit"><div>` + picker + `</div><div>` + left + right + `</div></div>`;
@@ -2528,11 +2819,17 @@
     function decided(p) {   // a tool call's signed decision: [word, colour], an approval's answer over a hold
       if (!p || !p.decision) return null;
       const ap = p.approval && p.approval.decision;
-      return ap === "approve" ? ["APPROVED", "--green"] : ap ? [String(ap).toUpperCase(), "--red"] : DECIDED[p.decision] || [String(p.decision).toUpperCase(), "--muted"];
+      return ap === "approve" ? ["APPROVED", "--green"] : ap ? [ANSWER[ap] || String(ap).toUpperCase(), "--red"] : DECIDED[p.decision] || [String(p.decision).toUpperCase(), "--muted"];
     }
     const GTYPE = { input: "Input", decision: "Model call", action: "Tool call", message: "Message" };
     // GRAPH: Causeway's flowchart (tGraph), in this page's colours
+    const GRAPH_MAX = 600;   // nodes the flowchart draws; a larger run would be dots too small to read
+    const fit = (x, n) => String(x).length > n ? String(x).slice(0, n - 1) + "…" : String(x);
     function graphView(el, d) {
+      if (d.nodes.length > GRAPH_MAX) {
+        el.innerHTML = `<div class="empty">${esc(`This run has ${d.nodes.length} events: too large to draw here (the graph draws up to ${GRAPH_MAX}). Use TIMELINE or WHY DID IT HAPPEN?, or select a call and open its WHY tab.`)}</div>`;
+        $("wvsum").textContent = `${d.nodes.length} nodes · too large to draw`; return;
+      }
       const show = e => e.evidence === "observed" || (e.evidence === "inferred" && GV.inferred) || (e.evidence === "tested" && (e.verdict === "causal" || e.verdict === "suppressive" || GV.ruled));
       const N = d.nodes, by = {}, depth = {}, cols = {}, lanes = d.agents.map(a => a.name);
       N.forEach(n => { by[n.id] = n; depth[n.id] = 0; });
@@ -2547,7 +2844,8 @@
       const W = PAD * 2 + (nc - 1) * CX + BW, H = PAD * 2 + maxr * RY, pos = {};
       Object.entries(cols).forEach(([c, arr]) => { const off = (maxr - arr.length) * RY / 2; arr.forEach((n, i) => pos[n.id] = [PAD + c * CX, PAD + off + i * RY]); });
       const TC = { input: "--cyan", decision: "--magenta", action: "--green", message: "--amber" }, keep = GV.focus && by[GV.focus] ? reach(E, GV.focus) : null;
-      let svg = `<svg viewBox="${esc(`0 0 ${W} ${H}`)}" width="${esc(GV.fit ? "100%" : W)}" style="${esc(GV.fit ? `max-width:${W}px;min-width:${Math.min(W, 720)}px` : `height:${H}px`)}"><defs>`
+      // FIT: the whole graph in the panel, its width and its height; ACTUAL SIZE: scroll
+      let svg = `<svg id="gsvg" viewBox="${esc(`0 0 ${W} ${H}`)}" width="${esc(GV.fit ? "100%" : W)}" style="${esc(GV.fit ? `max-width:${W}px` : `height:${H}px`)}"><defs>`
         + ["faint", "red", "blue"].map(k => `<marker id="ar-${esc(k)}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L8,4L0,8z" style="${esc(`fill:var(--${k})`)}"/></marker>`).join("") + `</defs>`;
       E.forEach((e, i) => {
         if (!pos[e.src] || !pos[e.dst]) return;
@@ -2561,13 +2859,21 @@
       N.forEach(n => {
         const [x, y] = pos[n.id], unt = n.trust === "untrusted" && n.type === "input", dc = n.type === "action" && decided(n.policy), rule = dc && (n.policy.rule_ids || [])[0];
         svg += `<g data-wnode="${esc(n.id)}" style="${esc("cursor:pointer" + (keep && !keep.nodes.has(n.id) ? ";opacity:.13" : ""))}" transform="${esc(`translate(${x},${y})`)}"><rect width="${esc(BW)}" height="${esc(BH)}" rx="8" style="${esc(`fill:var(--panel2);stroke:${unt ? "var(--red)" : "var(--line2)"};stroke-width:${unt ? 2 : 1}`)}"/><rect width="4" height="${esc(BH - 12)}" x="6" y="6" rx="2" style="${esc(`fill:var(${TC[n.type] || "--muted"})`)}"/>`
-          + `<text x="16" y="17" style="fill:var(--text);font-size:11px;font-weight:600">${esc(String(n.label).slice(0, 20))}</text><text x="16" y="32" style="fill:var(--muted);font-size:10.5px">${dc ? `<tspan style="${esc(`fill:var(${dc[1]})`)}">${esc(dc[0] + (rule ? " " + rule : ""))}</tspan>` : ""}${esc(dc ? "" : `${GTYPE[n.type] || n.type} · ${n.agent}`)}</text>`
+          + `<text x="16" y="17" style="fill:var(--text);font-size:11px;font-weight:600">${esc(fit(n.label, 20))}</text><text x="16" y="32" style="fill:var(--muted);font-size:10.5px">${dc ? `<tspan style="${esc(`fill:var(${dc[1]})`)}">${esc(fit(dc[0] + (rule ? " " + rule : ""), 21))}</tspan>` : ""}${esc(dc ? "" : fit(`${GTYPE[n.type] || n.type} · ${n.agent}`, 21))}</text>`
           + `${n.sensitive ? `<circle cx="${esc(BW - 10)}" cy="10" r="4" style="fill:var(--amber)"><title>sensitive</title></circle>` : ""}<title>${esc(n.label + (dc ? ` · ${dc[0]} ${(n.policy.rule_ids || []).join(", ")}` : "") + ` · ${GTYPE[n.type] || n.type} · ${n.agent}`)}</title></g>`;
       });
+      // the legend names only what this graph shows
+      const types = new Set(N.map(n => n.type)), marks = new Map(N.map(n => n.type === "action" && decided(n.policy)).filter(Boolean));
+      const swatch = (style, text) => `<span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="${esc(style)}"/></svg> ${esc(text)}</span>`;
+      const legend = `<span class="legend">` + [["input", "--cyan", "input"], ["decision", "--magenta", "model call"], ["action", "--green", "tool call"], ["message", "--amber", "message"]].filter(([k]) => types.has(k)).map(([, c, l]) => `<span style="${esc(`--c:var(${c})`)}">${esc(l)}</span>`).join("") + `</span>`
+        + (E.some(e => e.evidence === "observed") ? swatch("stroke:var(--faint);stroke-width:1.5", "recorded flow") : "") + (E.some(e => e.evidence === "tested" && e.verdict === "causal") ? swatch("stroke:var(--red);stroke-width:3", "confirmed cause") : "")
+        + (E.some(e => e.evidence === "tested" && e.verdict === "suppressive") ? swatch("stroke:var(--blue);stroke-width:3", "suppresses it") : "") + (E.some(e => e.evidence === "inferred") ? swatch("stroke:var(--faint);stroke-dasharray:4 3", "inferred") : "")
+        + (N.some(n => n.trust === "untrusted" && n.type === "input") ? `<span class="gunt">untrusted</span>` : "") + [...marks].map(([w, c]) => `<span style="${esc(`color:var(${c})`)}">${esc(w)}</span>`).join("");
       el.innerHTML = `<div class="wbar"><label><input type="checkbox" data-gv="inferred"${GV.inferred ? " checked" : ""}> inferred links</label><label><input type="checkbox" data-gv="ruled"${GV.ruled ? " checked" : ""}> ruled-out tests</label>
         <button type="button" data-gfit="1" class="${GV.fit ? "on" : ""}">FIT</button><button type="button" data-gfit="" class="${GV.fit ? "" : "on"}">ACTUAL SIZE</button><button type="button" data-wnode="">CLEAR HIGHLIGHT</button><span>click a node to trace it upstream and downstream</span></div>
-        <div class="wbar glegend"><span class="legend"><span style="--c:var(--cyan)">input</span><span style="--c:var(--magenta)">model call</span><span style="--c:var(--green)">tool call</span><span style="--c:var(--amber)">message</span></span>
-        <span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="stroke:var(--faint);stroke-width:1.5"/></svg> recorded flow</span><span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="stroke:var(--red);stroke-width:3"/></svg> confirmed cause</span><span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="stroke:var(--faint);stroke-dasharray:4 3"/></svg> inferred</span><span class="gunt">untrusted</span><span class="s-deny">DENIED</span><span class="s-flag">HELD · FLAGGED</span></div>` + svg + `</svg>`;
+        <div class="wbar glegend">` + legend + `</div>` + svg + `</svg>`;
+      const gs = $("gsvg");   // FIT: as tall as the panel's room below the bars (the viewBox keeps the proportions)
+      if (GV.fit && gs) gs.style.height = Math.max(120, Math.min(H, el.clientHeight - (gs.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop) - 6)) + "px";
       el.querySelector(`[data-wnode="${CSS.escape(GV.focus || "")}"]`)?.scrollIntoView({ block: "nearest", inline: "center" });
       $("wvsum").textContent = `${N.length} nodes · ${E.length - SEQ.length} of ${d.edges.length} edges (observed${GV.inferred ? ", inferred" : ""}, tested)` + (SEQ.length ? ` · ${SEQ.length} in run order` : "") + (!GV.fit && W > el.clientWidth ? " · scroll →" : "");
     }
