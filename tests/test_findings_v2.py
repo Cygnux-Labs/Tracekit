@@ -381,11 +381,15 @@ class AgentClaims(unittest.TestCase):   # what the agent's own process sends is 
     MORE = "Now update billing.py and ledger.py too."
 
     def test_a_trusted_input_or_a_request_the_agent_reports_neither_lifts_nor_clears(self):
+        """Nor a request the LLM gateway recorded: the agent wrote its body (it holds its run token, so it can send
+        one through the gateway itself), so it is the agent's claim where the hook records the person's prompts."""
         prompt = {"transcript": "main", "entry": {"type": "user", "cwd": "/w", "message": {"content": self.ASK}}}
         for claim in (("input.observed", "sdk", {"source": "user", "trust": "trusted"}, self.MORE),
                       ("model.exchange", "sdk", {"phase": "request", "exchange_id": "q2"},
+                       {"messages": [{"role": "user", "content": self.MORE}]}),
+                      ("model.exchange", "gateway", {"phase": "request", "exchange_id": "q3"},
                        {"messages": [{"role": "user", "content": self.MORE}]})):
-            with self.subTest(claim[0]):
+            with self.subTest(claim[:2]):
                 recs, content = records(
                     ("input.observed", "sdk", {"source": "claude-code:UserPromptSubmit", "trust": "trusted"}, self.ASK),
                     ("model.exchange", "sdk", {"phase": "request", "exchange_id": "q1"}, prompt), claim,
@@ -422,14 +426,21 @@ class AgentClaims(unittest.TestCase):   # what the agent's own process sends is 
         self.assertEqual(checks(findings_v2.analyze(recs, content), "t1")["TK-X202"], "checked")
 
     def test_a_lift_counts_only_from_text_as_trusted_as_the_constraint(self):
+        """A constraint the hook's prompt states (harness) is lifted by the hook's next prompt, never by what the
+        agent's process sent: a trusted input, or a model request, through the gateway or not (tier sdk)."""
         def run(lifter):
             recs, content = records(
-                ("model.exchange", "gateway", {"phase": "request", "exchange_id": "q1"},
-                 {"messages": [{"role": "user", "content": self.ASK}]}), lifter, *call("t1", "billing.py"))
-            return finding(findings_v2.analyze(recs, content), "TK-X204")[0]["verdict"]["severity"]
-        self.assertEqual(run(("input.observed", "sdk", {"source": "user", "trust": "trusted"}, self.MORE)), "high")
-        self.assertEqual(run(("model.exchange", "gateway", {"phase": "request", "exchange_id": "q2"},
-                              {"messages": [{"role": "user", "content": self.MORE}]})), "low")
+                ("input.observed", "sdk", {"source": "codex:UserPromptSubmit", "trust": "trusted"}, self.ASK), lifter,
+                *call("t1", "billing.py"))
+            out = findings_v2.analyze(recs, content)
+            return finding(out, "TK-X204")[0]["verdict"]["severity"], out["shown"]["constraints"][0]["tier"]
+        self.assertEqual(run(("input.observed", "sdk", {"source": "user", "trust": "trusted"}, self.MORE)),
+                         ("high", "harness"))
+        for source in ("gateway", "sdk"):
+            self.assertEqual(run(("model.exchange", source, {"phase": "request", "exchange_id": "q2"},
+                                  {"messages": [{"role": "user", "content": self.MORE}]})), ("high", "harness"))
+        self.assertEqual(run(("input.observed", "sdk", {"source": "codex:UserPromptSubmit", "trust": "trusted"},
+                              self.MORE)), ("low", "harness"))
 
 
 class EgressNoNetwork(unittest.TestCase):   # TK-X204 over the egress observer's net effects

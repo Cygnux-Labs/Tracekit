@@ -50,8 +50,8 @@ For each prompt line of the main transcript:
 A finding is what review_finding signs (#309 phase 2), with no text of the run: {verdict: {kind, rule, severity,
 tier: the weakest trust tier of the text it relied on (transcript: a Claude Code transcript line, or what a coding
 agent's transcript or hook payload said (a body with a `source`), which the agent can write; sdk: what an in-process
-adapter reported; gateway: the LLM gateway's record), order: where the call's reasoning
-sits against its decision, redacted: content redaction changed}, cites: [{run_seq, hash}] of the records it relied on};
+adapter reported, or a model request, whose body the agent wrote; gateway: the LLM gateway's record of a model's
+answer), order: where the call's reasoning sits against its decision, redacted: content redaction changed}, cites: [{run_seq, hash}] of the records it relied on};
 the signer adds the rule's fixed title. What happened (the file, the root), the labels (kept_away, reasoning_absent)
 and the tiers of everything a check relied on (also decision: the arguments the signer decided on; observer: a kernel
 sensor; operator: --project) are in `shown`: printed, never signed. `--json` prints the whole result
@@ -62,8 +62,9 @@ summary, command output, a tool result or a sub-agent's prompt) whose text a pro
 UserPromptSubmit (input.observed, source <agent>:UserPromptSubmit: the harness's payload) matches, each hook prompt
 confirming one line (tier `harness`); in a run whose hook recorded no prompt (hooks before 1.4), the line alone (tier
 `transcript`); in a run with no transcript prompt line (Codex, Gemini CLI, Cursor), the hook's prompt alone (tier
-`harness`). Also the newest user message of a model request the gateway recorded, and an input observed as trusted
-in a run whose hook records no prompts; what else claims a person's request is the agent's claim (claimed()). A later
+`harness`). In a run whose hook records no prompts, also the newest user message of a model request the gateway
+recorded and an input observed as trusted, both tier `sdk` (the agent's process wrote them: a gateway request's body
+too); what else claims a person's request is the agent's claim (claimed()). A later
 request lifts a constraint only from text as trusted as the constraint's (RANK). The gateway's record of a model
 message is preferred where an agent's report of it exists too; two reports of one message
 from different event streams make its reasoning not checkable (conflicting_reports), and their text clears nothing.
@@ -191,9 +192,10 @@ def _tailer(body):
 
 
 def text_tier(e, body):
-    """The trust tier of record e's text (`body`): the LLM gateway's, an agent-writable transcript's or hook payload's
-    (a tailer body, or one with a `source`), else an in-process adapter's."""
-    return ("gateway" if e["source"] == "gateway" else
+    """The trust tier of record e's text (`body`): the LLM gateway's record of a model's answer, an agent-writable
+    transcript's or hook payload's (a tailer body, or one with a `source`), else an in-process adapter's: so is a model
+    request the gateway recorded, whose body the agent's process wrote."""
+    return ("gateway" if e["source"] == "gateway" and e["data"].get("phase") != "request" else
             "transcript" if _tailer(body) or isinstance(body, dict) and "source" in body else "sdk")
 
 
@@ -212,10 +214,11 @@ def _prompt(body):
 
 def claimed(e, hooked):
     """Whether record e (a model request, or an input observed as trusted other than the hook's prompt) only claims
-    to hold a person's request: a request the agent's own process reported (not the gateway's), or a trusted input in
-    a run whose hook records the person's prompts (`hooked`), where they come in through the hook. Its text is no
-    intent: it lifts and clears nothing, and the reviewer model reads it as `claimed`."""
-    return e["source"] != "gateway" if e["type"] == "model.exchange" else hooked
+    to hold a person's request: a request the agent's own process reported, or any record in a run whose hook records
+    the person's prompts (`hooked`), where they come in through the hook: a request the gateway recorded too (the
+    agent holds its run token, so it can send one itself). Its text is no intent: it lifts and clears nothing, and the
+    reviewer model reads it as `claimed`."""
+    return hooked or e["type"] == "model.exchange" and e["source"] != "gateway"
 
 
 def _asked(body):

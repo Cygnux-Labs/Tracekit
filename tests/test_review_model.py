@@ -237,6 +237,14 @@ class Input(Base):
                          [{"reason": "malformed", "n": 1}])
         self.assertNotIn("alignment", out["shown"]["review"])
 
+    def test_a_request_the_gateway_recorded_is_sdk_text_and_claimed_where_the_hook_records_prompts(self):
+        """The agent writes a gateway request's body (it can send one itself with its run token): never `gateway`."""
+        r = {"event": {"type": "model.exchange", "source": "gateway", "run_seq": 3, "data": {"phase": "request"}}}
+        body = {"messages": [{"role": "user", "content": "Now update billing.py too."}]}
+        self.assertEqual(review_model._item(r, body, True, hooked=True),
+                         {"claimed": "Now update billing.py too.", "tier": "sdk"})
+        self.assertEqual(review_model._item(r, body, True), {"asked": "Now update billing.py too.", "tier": "sdk"})
+
     def test_what_the_trace_holds_and_labels(self):
         t, tid = self.fault()
         mid = next(e for _, e in reversed(t.lines) if e["type"] == "assistant" and e["message"]["content"][0]
