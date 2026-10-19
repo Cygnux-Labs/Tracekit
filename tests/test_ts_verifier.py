@@ -1012,12 +1012,13 @@ class AgreementScripts(unittest.TestCase):
             with mock.patch.object(vpc, "PY", crash):
                 row, problems = vpc.agree(None, os.path.join(sample, "sample-tampered.tkb"),
                                           os.path.join(sample, "sample.trust.json"), [])
-        self.assertEqual(problems, ["Python CLI printed no report (exit 1): Traceback (most recent call last): KeyError"])
+        self.assertEqual(problems, ["Python CLI printed no report (exit 1): Traceback (most recent call last): "
+                                    "KeyError"])
         [r] = e22.verdicts([dict(row, name="sample: tampered", forgery=True, problems=problems)])
         self.assertFalse(r["agree"])
         golden = os.path.join(ROOT, "tests", "golden", "negative")
-        self.assertEqual(vpc.agree(None, os.path.join(golden, "zip-no-manifest.tkb"), os.path.join(golden, "trust.json"),
-                                   [])[1], [])
+        self.assertEqual(vpc.agree(None, os.path.join(golden, "zip-no-manifest.tkb"),
+                                   os.path.join(golden, "trust.json"), [])[1], [])
 
     def test_the_page_names_its_file_inputs_and_says_errors_aloud(self):
         """Its two file inputs had no label, and an error went to a line no screen reader announces."""

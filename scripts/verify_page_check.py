@@ -6,10 +6,11 @@ Run it with a Python that has Playwright (and its Chromium, or Google Chrome ins
 TRACEKIT_PYTHON (default: this Python) runs Tracekit: it exports a fresh corpus from a real signer (clean, tampered,
 wrong trust key, findings, sensor effects, an unknown ext name, a too-new bundle, a large run and a zip of tiny
 lines) and runs `tracekit verify --json` on it. The page is opened over file:// and over a local HTTP server; for every bundle of that
-corpus, tests/golden/ (v2, negative and parts) and docs/sample/ it must give the TypeScript CLI's report and exit code, line
-for line, and the Python CLI's (except where that CLI hands a non-v2 file to the v1 verifier, and the order of the
-upgrade commands: npx first in TypeScript). It also checks that a worker the page starts can't fetch either, that the
-page works by keyboard, logs no error and makes no request, and (with --shots) that no state is wider than the screen.
+corpus, tests/golden/ (v2, negative and parts) and docs/sample/ it must give the TypeScript CLI's report and exit
+code, line for line, and the Python CLI's (except where that CLI hands a non-v2 file to the v1 verifier, and the
+order of the upgrade commands: npx first in TypeScript). It also checks that a worker the page starts can't fetch
+either, that the page works by keyboard, logs no error and makes no request, and (with --shots) that no state is wider
+than the screen.
 Not run by CI: `make test-ts` runs the page's logic under Node.
 `python scripts/verify_page_check.py --corpus DIR` (with Tracekit importable) only exports the corpus;
 `--samples` writes the page's two embedded samples (sdk/typescript/src/verify/sample/).

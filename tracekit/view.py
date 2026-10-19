@@ -708,9 +708,9 @@ def dev_content_source():
     """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
     model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
     service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
-    doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed record. A refusal
-    (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the signer is down it
-    reads nothing."""
+    doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed
+    record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the
+    signer is down it reads nothing."""
     from .why.signed import vault_content
     state = {"client": None, "off": False}
 
@@ -918,7 +918,8 @@ class StoreFeed:
                 pass
             new = [self._own(e, "high", f"RUN {run_id} · Integrity {rep.integrity}", f"{OPERATOR_SIDE}\n\n{text}",
                              "VERIFY")]
-            # its rows of when it verified leave the tape (shown again from the start, findings too, if it verifies again)
+            # its rows of when it verified leave the tape (shown again from the start, findings too, if it verifies
+            # again)
             state = dict(state, count=count, shown=0, failed=rep.integrity, analyzed=False)
             records = None   # a mirror of it, from when it verified, goes
         else:

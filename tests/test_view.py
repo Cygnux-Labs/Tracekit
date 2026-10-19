@@ -55,7 +55,7 @@ def store_feed(test, cfg, **kw):
 
 
 def page_js(names, script):
-    """What `script` prints, run in Node after terminal.html's own definitions `names` (functions or one-line consts)."""
+    """What `script` prints, run in Node after terminal.html's own definitions `names` (functions, one-line consts)."""
     page = observe.read_text(observe.UI)
     code = "".join(re.search(rf"^    (?:function {n}\(.*?^    }}|const {n} = .*?;)$", page, re.M | re.S).group(0) + "\n"
                    for n in names)
@@ -135,15 +135,17 @@ class Translate(unittest.TestCase):
             {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
             {"type": "message", "content": [{"type": "output_text", "text": "AFTER"}]},
             {"type": "function_call", "call_id": "c2", "name": "f", "arguments": "{}"}]}
-        turn = tr.feed(v2rec(1, "model.exchange", {"phase": "response", "exchange_id": "x1", "content_digest": "sha256:c",
-                                                   "tool_uses": [{"id": "c1", "name": "f"}, {"id": "c2", "name": "f"}]}))[0]
+        uses = [{"id": "c1", "name": "f"}, {"id": "c2", "name": "f"}]
+        turn = tr.feed(v2rec(1, "model.exchange", {"phase": "response", "exchange_id": "x1",
+                                                   "content_digest": "sha256:c", "tool_uses": uses}))[0]
         self.assertEqual([(b["text"], b["after"]) for b in turn["blocks"]], [("BEFORE", 0), ("AFTER", 1)])
         self.assertEqual(turn["calls"], ["c1", "c2"])
         if not shutil.which("node"):
             self.skipTest("needs node to run the page's saidBefore()")
         said = json.loads(page_js(["saidBefore"], f"""
             const rec = {{ session_id: "r1" }}, asked = {{ x: "x1", seq: 1 }};
-            const entries = [{{ x: "x1", seq: 0, rec, text: "EARLIER RECORD" }}, ...{json.dumps(turn["blocks"])}.map(b =>
+            const entries = [{{ x: "x1", seq: 0, rec, text: "EARLIER RECORD" }},
+              ...{json.dumps(turn["blocks"])}.map(b =>
               ({{ x: "x1", seq: 1, rec, calls: {json.dumps(turn["calls"])}, k: b.after, text: b.text }})),
               {{ x: "x1", seq: 1, rec, text: "COMMITTED" }}, {{ x: "x1", seq: 2, rec, text: "LATER RECORD" }}];
             process.stdout.write(JSON.stringify(["c1", "c2", "c9"].map(id => entries.filter(r =>
@@ -1325,21 +1327,23 @@ class Pages(unittest.TestCase):
 
 
     def test_text_set_on_the_page_shows_bidi_and_invisible_characters_escaped(self):
-        """DETAIL's heading is set as text: a tool name holding U+202E rendered reversed there, escaped everywhere else."""
+        """DETAIL's heading is set as text: a tool name holding U+202E rendered reversed there, though escaped
+        everywhere else."""
         page = observe.read_text(observe.UI)
         sinks = re.findall(r'\$\("detsum"\)\.textContent = ([^;]*);', page)
         self.assertEqual([x for x in sinks if not (x.startswith("vis(") or re.fullmatch(r'"[^"]*"', x))], [])
         if shutil.which("node"):
-            self.assertEqual(page_js(["vis"], 'process.stdout.write(vis("rm\\u202e/hs.exe <b>"))'), "rm\\u202e/hs.exe <b>")
+            self.assertEqual(page_js(["vis"], 'process.stdout.write(vis("rm\\u202e/hs.exe <b>"))'),
+                             "rm\\u202e/hs.exe <b>")
 
     def test_runs_tape_rows_and_alerts_open_by_keyboard(self):
         """Runs, tape rows and alerts took no keyboard focus: a keyboard user could open none of them."""
         page = observe.read_text(observe.UI)
-        for row in ('data-run="" tabindex="0"', 'data-run="${esc(r.id)}" tabindex="0"', 'data-i="${esc(row.i)}" tabindex="0"',
-                    'data-al="${esc(al.i)}" tabindex="0"'):
+        for row in ('data-run="" tabindex="0"', 'data-run="${esc(r.id)}" tabindex="0"',
+                    'data-i="${esc(row.i)}" tabindex="0"', 'data-al="${esc(al.i)}" tabindex="0"'):
             self.assertIn(row, page)
-        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-al][tabindex]"))'
-                      ' e.target.click();', page)
+        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],'
+                      '[data-al][tabindex]")) e.target.click();', page)
 
 
 VERIFIED = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")
@@ -1513,7 +1517,8 @@ class LiveRuns(unittest.TestCase):
             at = {"log_id": "l", "tenant": "default"}   # what an import reads
             self.recs[run] = [v2rec(0, "run.registered", {"agent": {"name": run}}, run, **at)] + [
                 v2rec(k, "policy.decision", {"tool": "Bash", "decision": "allow", "tool_use_id": f"c{k}",
-                                             "policy_hash": "sha256:p", "rule_ids": []}, run, **at) for k in range(1, 6)]
+                                             "policy_hash": "sha256:p", "rule_ids": []}, run, **at)
+                for k in range(1, 6)]
             self.refresh(feed)
             store.scan(announce=False)
         live = {os.path.basename(_target(why, k[1], k[0])) for k in feed.latest if k[1] != "r1"}
