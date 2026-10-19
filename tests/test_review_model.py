@@ -370,6 +370,28 @@ class Calls(Base):
         self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X210"]["checked"], 1)
         self.assertEqual([e for e in run.records() if e["type"] == "model.exchange"], [])   # the gateway records it
 
+    def test_the_default_reviewer_is_of_another_family_than_the_agent_when_one_is_configured(self):
+        _, records, _ = e20.replay(self.signer, self.fault()[0].lines)   # the agent: claude-opus-5-5
+        keys = {"ANTHROPIC_API_KEY": "a-key", "OPENAI_API_KEY": "o-key", "TRACEKIT_REVIEW_API_KEY": "r-key"}
+        model, url, env = review_model.choose(records, keys)
+        self.assertEqual((model, url, env), (review_model.OPENAI_MODEL, review_model.OPENAI_URL,
+                                             {"OPENAI_API_KEY": "o-key"}))   # never another endpoint's key
+        local = {"TRACEKIT_REVIEW_MODEL": "qwen3-coder",
+                 "TRACEKIT_REVIEW_URL": "http://localhost:8000/v1/chat/completions"}
+        self.assertEqual(review_model.choose(records, {**keys, **local})[:2], tuple(local.values()))
+        same = review_model.choose(records, {"ANTHROPIC_API_KEY": "a-key"})   # only the agent's family: as before
+        self.assertEqual(same[:2], (review_model.reviewer.DEFAULT_MODEL, review_model.URL))
+        self.assertEqual(review_model.choose(records, {})[:2], same[:2])
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "o-key"}):
+            for k in ("ANTHROPIC_API_KEY", "TRACEKIT_REVIEW_MODEL", "TRACEKIT_REVIEW_URL", "TRACEKIT_REVIEW_API_KEY"):
+                os.environ.pop(k, None)
+            _, _, err = Command.cli(self, "--review", model=Fake(message(OK)))
+            self.assertEqual(self.Model.call_args.args[:2], (review_model.OPENAI_URL, review_model.OPENAI_MODEL))
+            self.assertNotIn("model family", err)
+            _, _, err = Command.cli(self, "--review", "--review-model", "claude-sonnet-5", model=Fake(message(OK)))
+            self.assertEqual(self.Model.call_args.args[:2], (review_model.URL, "claude-sonnet-5"))   # as given
+            self.assertIn("OPENAI_API_KEY or ANTHROPIC_API_KEY", err)   # and the warning says how to pick another
+
     def test_config(self):
         for url in ("https://api.example.com/v1/responses", "http://model.internal/v1/messages", "ftp://x/v1/messages"):
             with self.assertRaises(ValueError):
@@ -389,7 +411,7 @@ class Command(Base):
         client = mock.Mock(content_get=self.signer.content_get,
                            run=run or (lambda agent, analyzes: Findings(self.signer, analyzes)))
         with mock.patch("tracekit.sdk.client.Client", return_value=client), \
-                mock.patch("tracekit.review_model.Model", return_value=model or Fake(message(FLAG))), \
+                mock.patch("tracekit.review_model.Model", return_value=model or Fake(message(FLAG))) as self.Model, \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = findings.main(["--v2", "--store", os.path.join(self.d, "data"), *args])
         return code, out.getvalue(), err.getvalue()

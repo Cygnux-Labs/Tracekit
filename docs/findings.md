@@ -185,7 +185,7 @@ claimed against the results, and instructions followed from tool output. **Warn 
 exit code, and nothing is held or denied on it.
 
 ```bash
-tracekit analyze --v2 --review                                   # Anthropic API, $ANTHROPIC_API_KEY
+tracekit analyze --v2 --review                                   # a reviewer of another family, if configured
 tracekit analyze --v2 --review --review-model gpt-5 \
     --review-url https://api.openai.com/v1/chat/completions      # $OPENAI_API_KEY
 tracekit analyze --v2 --review --review-model qwen3-coder \
@@ -223,7 +223,13 @@ tracekit analyze --v2 --review --review-gateway \
   is refused: there is no findings run to record the call in.
 - **Reviewer diversity.** A reviewer of the agent's own model family may share its blind spots, which the paper names
   as a limit. The analyzer reads each model's family from its name (`claude`: anthropic, `gpt` or `o3`: openai,
-  `gemini`: google, ...) and warns when they match; `--review-model` picks another.
+  `gemini`: google, ...). Without `--review-model` and `--review-url` it picks, of the reviewers configured, the first
+  of another family than the agent's: the one `TRACEKIT_REVIEW_MODEL` and `TRACEKIT_REVIEW_URL` name (a model of
+  your own), then Anthropic's (`claude-opus-5-5`, with `ANTHROPIC_API_KEY`), then OpenAI's (`gpt-5`, with
+  `OPENAI_API_KEY`). So a Claude agent is reviewed by `gpt-5` once `OPENAI_API_KEY` is set, and a GPT agent by
+  Claude. With none of another family configured it uses the first configured (else Anthropic's, as before) and
+  warns that the reviewer shares the agent's family, naming the setting that would pick another. Each provider gets
+  only its own key; `TRACEKIT_REVIEW_API_KEY` goes only to the endpoint you name.
 - **What it costs.** One model call per `tracekit analyze --v2 --review`, its input at most about 50,000 characters
   (the prompt and the run). The run's text goes to that model ([privacy](privacy.md#what-leaves-the-machine)); for
   sensitive runs use a model on your own machines.

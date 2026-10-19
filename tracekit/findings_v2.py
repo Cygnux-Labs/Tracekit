@@ -174,8 +174,8 @@ def _tailer(body):
 
 
 def text_tier(e, body):
-    """The trust tier of record e's text (`body`): the LLM gateway's, an agent-writable transcript's or hook payload's (a
-    tailer body, or one with a `source`), else an in-process adapter's."""
+    """The trust tier of record e's text (`body`): the LLM gateway's, an agent-writable transcript's or hook payload's
+    (a tailer body, or one with a `source`), else an in-process adapter's."""
     return ("gateway" if e["source"] == "gateway" else
             "transcript" if _tailer(body) or isinstance(body, dict) and "source" in body else "sdk")
 
@@ -936,26 +936,19 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--review", action="store_true", help="also ask a reviewer model (TK-X210, warn only), which "
                     "sends the run's text to that model (docs/privacy.md#what-leaves-the-machine)")
-    ap.add_argument("--review-model", default=review_model.reviewer.DEFAULT_MODEL, metavar="M",
-                    help="the reviewer model, best of another family than the agent's (default %(default)s)")
-    ap.add_argument("--review-url", default=review_model.URL, metavar="URL", help="its endpoint: .../v1/messages "
-                    "(Anthropic Messages; default %(default)s) or .../v1/chat/completions (OpenAI chat, as a local "
-                    "model server speaks it)")
+    ap.add_argument("--review-model", metavar="M", help="the reviewer model (default: one of another model family "
+                    "than the agent's, of those configured: TRACEKIT_REVIEW_MODEL with TRACEKIT_REVIEW_URL, "
+                    f"{review_model.reviewer.DEFAULT_MODEL} with ANTHROPIC_API_KEY, {review_model.OPENAI_MODEL} with "
+                    f"OPENAI_API_KEY; else {review_model.reviewer.DEFAULT_MODEL})")
+    ap.add_argument("--review-url", metavar="URL", help="its endpoint: .../v1/messages (Anthropic Messages; default "
+                    f"{review_model.URL}) or .../v1/chat/completions (OpenAI chat, as a local model server speaks it)")
     ap.add_argument("--review-gateway", action="store_true", help="--review-url is Tracekit's LLM gateway, which "
                     "records the call (default: the analyzer records it)")
     a = ap.parse_args(argv)
-    rv = None
-    if a.review:
-        if a.dry_run:
-            print("tracekit analyze: --review records the model call in a findings run and --dry-run signs nothing: "
-                  "drop one", file=sys.stderr)
-            return 2
-        try:
-            rv = review_model.Reviewer(review_model.Model(a.review_url, a.review_model, a.review_gateway),
-                                       a.review_model)
-        except ValueError as e:
-            print(f"tracekit analyze: {e}", file=sys.stderr)
-            return 2
+    if a.review and a.dry_run:
+        print("tracekit analyze: --review records the model call in a findings run and --dry-run signs nothing: "
+              "drop one", file=sys.stderr)
+        return 2
     from .sdk.client import Client, SignerUnavailable
     from .signer.pipeline import SIGNER_RUN
     from .signer.service import dev_data_dir
@@ -991,6 +984,16 @@ def main(argv=None):
         print(f"tracekit analyze: run {run_id} is still open (no run.final yet): what it does next is not in it. Wait "
               "for it to end, or pass --open for a partial analysis", file=sys.stderr)
         return 2
+    rv = None
+    if a.review:
+        given = a.review_model or a.review_url or a.review_gateway
+        model, url, env = (review_model.choose(records) if not given else (
+            a.review_model or review_model.reviewer.DEFAULT_MODEL, a.review_url or review_model.URL, None))
+        try:
+            rv = review_model.Reviewer(review_model.Model(url, model, a.review_gateway, env=env), model)
+        except ValueError as e:
+            print(f"tracekit analyze: {e}", file=sys.stderr)
+            return 2
     client, note = Client(), None
 
     def content(recs):
@@ -1028,7 +1031,8 @@ def main(argv=None):
     if review.get("same_family"):
         print(f"tracekit analyze: --review: the reviewer model is of the agent's model family "
               f"({review['families']['reviewer']}), so it may share the agent's blind spots: pass --review-model of "
-              "another family", file=sys.stderr)
+              "another family, or configure one (OPENAI_API_KEY or ANTHROPIC_API_KEY for the other provider, or "
+              "TRACEKIT_REVIEW_MODEL with TRACEKIT_REVIEW_URL) and it is picked", file=sys.stderr)
     print(json.dumps(out, indent=2) if a.json else render(out))
     if failed is not None:
         print(f"tracekit analyze: the findings are printed but NOT signed: {failed}. The signer signs them for an "

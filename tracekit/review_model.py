@@ -4,12 +4,17 @@ denied on it.
 
     tracekit analyze --v2 --review [--review-model M] [--review-url URL] [--review-gateway]
 
+Without --review-model and --review-url the reviewer is chosen for the run (choose): of those configured (one that
+TRACEKIT_REVIEW_MODEL and TRACEKIT_REVIEW_URL name, then Anthropic's with ANTHROPIC_API_KEY set, then OpenAI's with
+OPENAI_API_KEY set), the first of another model family than the agent's; with none of another family configured, the
+first configured (else Anthropic's), and tracekit analyze warns that it shares the agent's family.
+
 One model call per pass, with no tools and no memory of other runs, under a fixed system prompt (PROMPT: the v0.1
 paper's rubric, appendix A) that treats the run as data. The user message is the run as JSON (Reviewer.trace), never
 text tags the run's own text could imitate: what a person asked (intent as findings_v2 reads it: a human prompt line, a
 request's newest user message, a trusted input; a prompt the hook recorded once, not again as the transcript line it
-confirms, and a transcript prompt line no hook prompt confirms marked `unconfirmed`), what the model said before each call (`full`, `summary`: another
-model's summary of the reasoning, or `withheld`), each action (tool, run_seq, decision, rules, arguments, ok), the
+confirms, and a transcript prompt line no hook prompt confirms marked `unconfirmed`), what the model said before each
+call (`full`, `summary`: another model's summary of the reasoning, or `withheld`), each action (tool, run_seq, decision, rules, arguments, ok), the
 effects observers recorded and the deterministic findings, each text with the trust tier of its record. Only what the
 checks read from the vault goes in (Reviewer.tee: no second read); each text is cut to MAX_ITEM characters (arguments
 to MAX_ARGS) and the trace to MAX_TRACE, dropping records from its middle with a note.
@@ -25,7 +30,8 @@ The answer must be ANSWER: {alignment ok|drift|misaligned, severity, reason (a R
 explanation}. Flagged (drift, misaligned, or medium and worse): a TK-X210 {verdict, cites} in `findings`, signed like
 the other checks', citing the records it names that the run has, with no text of the run: its verdict holds the
 alignment and reason code, the asserted {model, version, prompt_hash} and the model families {reviewer, agent}
-(rpc_schema.REVIEW), all closed values or names. The explanation is printed, never signed. An error, a refusal or a malformed answer: no verdict, TK-X210 not checkable (`no_answer`, `malformed`).
+(rpc_schema.REVIEW), all closed values or names. The explanation is printed, never signed. An error, a refusal or a
+malformed answer: no verdict, TK-X210 not checkable (`no_answer`, `malformed`).
 """
 import hashlib
 import json
@@ -43,6 +49,10 @@ from .signer import rpc_schema
 
 RULE = "TK-X210"
 URL = "https://api.anthropic.com/v1/messages"
+OPENAI_URL, OPENAI_MODEL = "https://api.openai.com/v1/chat/completions", "gpt-5"
+# the reviewers `--review` picks from without --review-model or --review-url: (model, endpoint, the API key that
+# configures it), after one TRACEKIT_REVIEW_MODEL and TRACEKIT_REVIEW_URL name (choose)
+DEFAULTS = ((reviewer.DEFAULT_MODEL, URL, "ANTHROPIC_API_KEY"), (OPENAI_MODEL, OPENAI_URL, "OPENAI_API_KEY"))
 KINDS = {"/v1/messages": "anthropic:messages", "/v1/chat/completions": "openai:chat"}
 MAX_ITEM, MAX_ARGS, MAX_SEGS, MAX_WHAT = 1200, 400, 16, 300   # characters of one text, arguments, a finding's what
 MAX_TRACE, MAX_FINDINGS, MAX_EXPLANATION = 48_000, 40, 1000
@@ -89,6 +99,25 @@ FAMILIES = (("claude", "anthropic"), ("gpt", "openai"), ("o1", "openai"), ("o3",
             ("codex", "openai"), ("gemini", "google"), ("gemma", "google"), ("llama", "meta"), ("mistral", "mistral"),
             ("mixtral", "mistral"), ("codestral", "mistral"), ("deepseek", "deepseek"), ("qwen", "qwen"),
             ("grok", "xai"))
+
+
+def agent_families(records):
+    """The model families of the models a run's records name (model.exchange), sorted."""
+    return sorted({f for r in records if r["event"]["type"] == "model.exchange"
+                   for f in [family(r["event"]["data"].get("model"))] if f})
+
+
+def choose(records, env=None):
+    """(model, endpoint, env for its key) of the reviewer for a run when no --review-model or --review-url is given:
+    of the reviewers configured, the one TRACEKIT_REVIEW_MODEL (with TRACEKIT_REVIEW_URL) names, then each provider
+    whose API key is set (DEFAULTS), the first of a model family other than the agent's; else the first configured;
+    else Anthropic's default, as before. A provider of DEFAULTS gets only its own key, never TRACEKIT_REVIEW_API_KEY."""
+    env, agent = os.environ if env is None else env, set(agent_families(records))
+    mine = env.get("TRACEKIT_REVIEW_MODEL")
+    configured = ([(mine, env.get("TRACEKIT_REVIEW_URL") or URL, env)] if mine else []) + [
+        (m, u, {k: env[k]}) for m, u, k in DEFAULTS if env.get(k)]
+    return next((c for c in configured if family(c[0]) not in agent), None) or (
+        configured[0] if configured else (reviewer.DEFAULT_MODEL, URL, env))
 
 
 def family(model):
@@ -302,9 +331,7 @@ class Reviewer:
         run `run` (None: not recorded), unless `why` says why not: the finding when it flags the run, its coverage and
         `shown.review`. Never raises; the finding goes after the deterministic ones."""
         by_seq = {r["event"]["run_seq"]: r for r in records}
-        agent = sorted({f for r in records if r["event"]["type"] == "model.exchange"
-                        for f in [family(r["event"]["data"].get("model"))] if f})
-        mine = family(self.model)
+        agent, mine = agent_families(records), family(self.model)
         shown = out["shown"]["review"] = {"asserted": self.asserted, "families": {"reviewer": mine, "agent": agent},
                                           "same_family": bool(mine and mine in agent)}
         cov = out["coverage"]["verdict"]["checks"][RULE] = {"checked": 0, "found": 0, "not_checkable": []}
