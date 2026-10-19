@@ -150,6 +150,31 @@ class HookV2(unittest.TestCase):
         self.assertIn("TK-SHELL-PARSE", err)
         self.assertIn("rejected", err)
 
+    def test_a_prompt_is_recorded_and_its_constraints_hold_the_call_that_breaks_them(self):
+        """UserPromptSubmit records the harness's copy of the prompt and adds what it keeps away as a live constraint:
+        the edit of that file waits for a person, who is told why; the agent reads it on stderr; others run."""
+        prompt = "Fix src/pager.py. Don't touch billing.py."
+        self.assertEqual(self.hook("UserPromptSubmit", prompt=prompt), (0, ""))
+        evs = self.events()
+        self.assertEqual([e["type"] for e in evs], ["run.registered", "input.observed", "constraint.added"])
+        self.assertEqual((evs[1]["data"]["source"], evs[1]["data"]["trust"]), ("claude-code:UserPromptSubmit", "trusted"))
+        self.assertEqual(evs[2]["data"]["kind"], "keep_away")
+        self.assertNotIn("billing", json.dumps(evs))
+        edit = {"file_path": os.path.join(self.dir, "billing.py"), "old_string": "a", "new_string": "b"}
+        proc = self.hook("PreToolUse", tool_name="Edit", tool_input=edit, tool_use_id="t1", wait=False)
+        line = proc.stderr.readline()
+        self.assertIn("(TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the "
+                      "person", line)
+        Client().approval_decide({"approval_id": line.split()[4], "decision": "reject"})
+        err = proc.stderr.read()
+        proc.wait(60)
+        proc.stdout.close()
+        proc.stderr.close()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("said not to modify billing.py", err)
+        other = dict(edit, file_path=os.path.join(self.dir, "pager.py"))
+        self.assertEqual(self.hook("PreToolUse", tool_name="Edit", tool_input=other, tool_use_id="t2"), (0, ""))
+
     def test_session_end_closes_the_run_and_it_verifies(self):
         self.pre("ls")
         self.post("ls")
@@ -381,6 +406,37 @@ class InitV2(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 install.install_hooks(settings, uninstall=True)
             self.assertIn(f"Tracekit v2 hooks removed from {settings}", out.getvalue())
+
+    def test_init_turns_thinking_summaries_on_unless_told_or_already_set(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        settings = os.path.join(d, ".claude", "settings.json")
+
+        def init(*extra):
+            out = io.StringIO()
+            with mock.patch("os.getcwd", return_value=d), mock.patch.dict(os.environ, {"HOME": d}), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--project", *extra]), 0)
+            with open(settings) as f:
+                return json.load(f).get(install.THINKING), out.getvalue()
+        on, out = init()
+        self.assertIs(on, True)
+        self.assertIn("thinking summaries: on", out)
+        self.assertIn("claude -p --thinking-display summarized", out)
+        with open(settings) as f:
+            s = json.load(f)
+        with open(settings, "w") as f:
+            json.dump(dict(s, **{install.THINKING: False}), f)
+        on, out = init()   # a person's own choice stays, and init says what it costs
+        self.assertIs(on, False)
+        self.assertIn("thinking summaries: off", out)
+        os.remove(settings)
+        on, out = init("--no-thinking-summaries")
+        self.assertIsNone(on)
+        self.assertNotIn("thinking summaries", out)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(settings, uninstall=True, thinking=True)   # uninstall leaves the setting
+        self.assertIsNone(init("--no-thinking-summaries")[0])
 
     def test_v2_option_refusals(self):
         code, err = self.init("--v2")

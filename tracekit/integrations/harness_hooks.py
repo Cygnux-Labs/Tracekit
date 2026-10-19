@@ -11,13 +11,34 @@ Each payload is mapped onto the Claude Code hook's (tracekit.agent_hooks.normali
 through the mapping tables, arguments, pre or post) and handled by the v2 Claude Code hook's core
 (tracekit.integrations.claude_code.handle): the same run per session, signer decisions and approvals, fail modes, and
 a missing session or tool call id blocks the call. Only the reply differs: each harness's own stdout and exit code.
+
+What the model said (docs/reasoning.md) is recorded before each event is handled, as model_event responses on the
+session's stream (tracekit.integrations.said): Codex's reasoning items, messages and tool calls from its rollout and
+Gemini CLI's thoughts and text from its chat recording (the transcript the payload names; each hook reads the lines
+written since the session's last one), and the text of Cursor's afterAgentThought and afterAgentResponse events. Each
+Codex tool call in the rollout is a tool use under its call_id, named as its PreToolUse hook is decided (agent_hooks.tool)
+with its arguments `coerced` (Codex rewrites them for the hook), so the model's reasoning before it is linked to the
+decision and reconciliation pairs the two; Gemini CLI and Cursor give a call no id, so theirs is not linked, and their
+messages are sent `said_only`: the signer reads no call from them, so it never takes the calls their hooks decide for
+calls no model asked for. Recording
+never changes a hook's answer: a failure prints a line and the hook goes on.
 """
 import contextlib
 import json
+import os
 import sys
 
-from tracekit import agent_hooks
-from tracekit.integrations import claude_code
+from tracekit import agent_hooks, parsers
+from tracekit.format.canon import event_hash
+from tracekit.deploy import files
+from tracekit.integrations import claude_code, said
+from tracekit.locking import lock_file
+from tracekit.sdk.client import Client
+
+MAX_READ = 1 << 22   # lean: bytes of a transcript one hook reads; the next hook of the session reads on from there
+SEEN = 4096   # Gemini CLI message ids remembered per session: it writes a message again as its tool calls complete
+NO_HOOK = ("write_stdin", "wait")   # Codex tools that fire no PreToolUse (unified_exec/write_stdin.rs:131, code-mode
+# wait_handler.rs:216): no decide to link them to
 
 
 def run(harness, raw, stdout=None, stderr=None, event=None):
@@ -40,6 +61,9 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     err, q = agent_hooks.Tee(stderr), None
     try:
         q = agent_hooks.normalise(harness, p)
+        if q is not None or p.get("hook_event_name") in agent_hooks.CURSOR_SAID:
+            claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]   # a run said() registers is the harness's
+            said_since(harness, p, stderr)
         if q is None:   # an event Tracekit does not record
             code = 0
         else:
@@ -54,6 +78,163 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     agent_hooks._reply(harness, stdout, code == 0, err.getvalue().strip(), is_pre)
     return code
+
+
+def said_since(harness, p, stderr):
+    """Record what the model said since the session's last hook (see the module docstring). Never raises."""
+    sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
+           p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
+    ev, path, model = p.get("hook_event_name"), p.get("transcript_path"), p.get("model")
+    if not isinstance(sid, str) or not sid or (
+            ev not in agent_hooks.CURSOR_SAID if harness == "cursor" else not isinstance(path, str) or not path):
+        return
+    try:
+        state = claude_code._state(sid, "said")
+        with open(state[:-len(".json")] + ".lock", "a") as lk:   # parallel hooks of a session read the lines once
+            lock_file(lk)
+            st = claude_code._load(state) or {}
+            if harness == "cursor":
+                text = p.get("text") if isinstance(p.get("text"), str) else ""
+                said_items = [([said.thought(text)] if ev == "afterAgentThought" else said.text(text), model, "unknown",
+                               "cursor hook")]
+            else:
+                if st.get("path") != path:   # the session's first transcript, or a new one: from its start
+                    st = {"path": path, "offset": 0, "seen": []}
+                lines = _read(path, st)
+                said_items = ([(items, model) for items in _responses(lines)] if harness == "codex" else
+                              [(items, m.get("model"), "google", "gemini chat") for m, items in _gemini(lines, st["seen"])])
+            if said_items:
+                client = Client()
+                try:
+                    # a SessionEnd records into the run it ends, never into a new one
+                    s = said.Said(lambda **f: claude_code._run(client, sid, register=ev != "SessionEnd",
+                                                               send="model_event", **f), lambda: client.status({}))
+                    s.vault.limit = st.get("vault")   # asked once per session, not once per hook process
+                    for args in said_items:
+                        if harness == "codex":
+                            _send(s, *args, stderr)
+                        else:   # their messages name no call the hooks decide: none to reconcile against
+                            s(*args, said_only=True)
+                    st["vault"] = s.vault.limit
+                finally:
+                    client.close()
+            if harness != "cursor":
+                files.write_json(state, st)
+    except Exception as e:   # what the model said goes unrecorded; the hook's answer is unchanged
+        # lean: lines read and not sent are not read again, and no gap says so; have the signer write a gap if this
+        # happens in practice
+        print(f"[tracekit] what the model said was not recorded ({type(e).__name__}: {e})", file=stderr)
+
+
+def _read(path, st):
+    """The JSON objects on the complete lines of `path` past st["offset"], which moves past them."""
+    with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        if size < st["offset"]:
+            # lean: a transcript rewritten in place (Gemini CLI's rewind, a resumed session) is read on from its new
+            # end, as reading it again would record its lines twice; follow such rewrites line by line if they matter
+            st["offset"] = size
+        f.seek(st["offset"])
+        data = f.read(MAX_READ)
+    end = data.rfind(b"\n") + 1 or len(data) * (len(data) == MAX_READ)   # a line longer than MAX_READ is skipped
+    st["offset"] += end
+    out = []
+    for line in data[:end].splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict):
+            out.append(e)
+    return out
+
+
+def _responses(lines):
+    """Codex rollout lines (`{"type": "response_item", "payload": <a Responses API item>}`) -> its model's responses,
+    each the list of its items in rollout order: reasoning, assistant messages, tool calls. Any other item (a tool's
+    output, a user or developer message) ends a response; other kinds of line don't."""
+    out, cur = [], []
+    for e in lines:
+        item = e.get("payload") if e.get("type") == "response_item" else None
+        if not isinstance(item, dict):
+            continue
+        t = item.get("type")
+        if t == "reasoning" or t == "message" and item.get("role") == "assistant" or str(t).endswith("_call"):
+            cur.append(item)
+        elif cur:
+            out.append(cur)
+            cur = []
+    return out + [cur] * bool(cur)
+
+
+def _use(item):
+    """The tool use a Codex call item is decided as: the name and arguments of the PreToolUse payload Codex builds for it
+    (core/src/tools/registry.rs:150-160, 943-960; exec_command.rs:499-509; apply_patch.rs:394-398; mcp.rs:114-131,
+    449-457), mapped as agent_hooks.tool maps them; None for a call that fires no PreToolUse."""
+    t, name, cid = item.get("type"), str(item.get("name") or ""), item.get("call_id")
+    if t == "custom_tool_call" and name == "apply_patch":
+        hook, ti = "apply_patch", {"command": item.get("input")}
+    elif t == "function_call" and name and name not in NO_HOOK:
+        raw = item.get("arguments") if isinstance(item.get("arguments"), str) else ""
+        try:
+            ti = json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            ti = raw
+        ns = item.get("namespace") or ""
+        if name == "exec_command":
+            if not isinstance(ti, dict) or not isinstance(ti.get("cmd"), str):   # Codex fires no hook for these
+                return None
+            hook, ti = "Bash", {"command": ti["cmd"]}
+        elif ns.startswith("mcp"):
+            hook = ns.rstrip("_") + "__" + name.lstrip("_")
+            hook = hook if hook.startswith("mcp__") else "mcp__" + hook
+        else:
+            hook = name if name == "spawn_agent" else ns + name
+    else:
+        return None
+    if not cid:
+        return None
+    tool, args = agent_hooks.tool("codex", hook, ti)
+    # coerced: the payload is Codex's rewrite of the model's arguments, so reconciliation compares the tool, not them
+    return {"id": parsers._id(cid), "name": tool[:256] or "?", "executed_by": "client", "args_source": "coerced",
+            "args_digest": event_hash({"tool": tool, "args": args})}
+
+
+def _send(s, items, model, stderr):
+    """One Codex response as a model_event (said.Said's send and vault): the rollout's items as they are, each call as
+    a tool use under its call_id (_use), not as said.Said would read the items."""
+    body = {"output": items, "source": "codex rollout"}
+    try:
+        uses = [u for u in map(_use, items) if u]
+        s.send(provider="openai", model=str(model or "unknown")[:128], phase="response",
+               content_digest=event_hash(body), **s.vault(body), **({"tool_uses": uses[:128]} if uses else {}))
+    except Exception as e:
+        print(f"[tracekit] a Codex response was not recorded ({type(e).__name__}: {e})", file=stderr)
+
+
+def _gemini(lines, seen):
+    """Gemini CLI chat recording lines -> (message, said items) of each of its model's messages not seen before: a
+    thought summary per thought ({subject, description}), then its text. Gemini CLI writes a message again as its tool
+    calls complete, and queues thoughts until then (chatRecordingService.ts:1097, 1168-1199)."""
+    for e in lines:
+        if e.get("type") != "gemini" or e.get("id") in seen:
+            continue
+        thoughts = [t for t in e.get("thoughts") or () if isinstance(t, dict)]
+        items = [said.thought(" ".join(x for x in (f"**{t['subject']}**" if t.get("subject") else "",
+                                                   str(t.get("description") or "")) if x)) for t in thoughts]
+        items += said.text(_parts_text(e.get("content")))
+        if items:
+            seen[:] = (seen + [e.get("id")])[-SEEN:]
+            yield e, items
+
+
+def _parts_text(content):
+    """The text of a Gemini CLI message's content (a string, a part or a list of parts)."""
+    if isinstance(content, str):
+        return content
+    parts = content if isinstance(content, list) else [content]
+    return "".join(p["text"] for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str)
+                   and not p.get("thought"))
 
 
 def entry(harness=None, event=None):

@@ -11,7 +11,9 @@ its result back, so a detector sees it mid-run); raw arguments that failed stric
 tool name, or (neither side coerced, both digests known) other arguments → args_mismatch. Tool uses the provider ran
 itself (executed_by provider) are counted for run.final's `provider_executed`, never matched against a decide. Each
 decide with neither an L3 tool use nor a provider one → fabricated; each id in tool_results_sent with neither a decide
-nor an L3 tool use → result_without_call. A run with no L3 record gets none of these: its coverage says L3 is absent. The internal args
+nor an L3 tool use → result_without_call. A run with no L3 record gets none of these: its coverage says L3 is absent.
+A response recorded `said_only` (what the model said, without its calls: a harness whose hooks name no call) is no L3
+record, so it never makes a decide fabricated. The internal args
 digests live in the run's `digests`, which no snapshot holds.
 
 A framework that hands its hooks no tool-call id (CrewAI, an MCP session under mcp-agent) decides each call under an id
@@ -84,7 +86,7 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
         put(sub(put, rec, "mismatched"), e["tool_call_id"], True)
     if rec is not None and e["type"] == "capture.gap" and e["data"].get("kind") == "result_unchecked":   # once per call
         put(sub(put, rec, "unchecked"), e["tool_call_id"], True)
-    if rec is None or layer is None:
+    if rec is None or layer is None or e["data"].get("said_only"):   # said_only: no call to read from it
         return []
     digests, now = digests or {}, []
     if layer not in rec["layers"]:
@@ -171,9 +173,10 @@ def explained(rec, host, explains, labels):
     return None
 
 
-def matrix(rec, posture, observed):
+def matrix(rec, posture, observed, sensors=()):
     """run.final's coverage matrix of the run of index `rec`; `posture`: signer.yaml's; `observed`: whether an egress
-    observer covered the run and heartbeat throughout. Processes and services: none until an observer covers them."""
+    observer covered the run and heartbeat throughout; `sensors`: the kernel sensors whose imports did, which make
+    processes observed. Services: none until an observer covers them."""
     def cls(status, layers, asserted=False):
         return {"status": status, "layers": sorted(layers), **({"asserted": True} if asserted else {})}
     models, tools, gw = rec.get("models", {}), rec.get("tools", {}), posture.get("gateway_mandatory", False)
@@ -184,7 +187,7 @@ def matrix(rec, posture, observed):
             "tool_calls": cls("enforced", tools, True) if custody else cls("reported" if tools else "none", tools),
             "network": cls("enforced" if enforced else "observed", ["egress"], enforced) if observed else
             cls("reported", tools) if rec.get("hosts") else cls("none", ()),
-            "processes": cls("none", ()), "services": cls("none", ())}
+            "processes": cls("observed" if sensors else "none", sensors), "services": cls("none", ())}
 
 
 def counted(rec, mandatory, k="l3"):

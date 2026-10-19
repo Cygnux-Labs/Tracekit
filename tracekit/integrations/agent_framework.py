@@ -3,19 +3,27 @@ asks the signer to decide every function call an agent makes before it runs (an 
 records the outcome after.
 
     from tracekit.integrations.agent_framework import Tracekit
-    agent = Agent(client=client, tools=[...], middleware=[Tracekit(run)])
+    tk = Tracekit(run)
+    agent = Agent(client=client, tools=[...], middleware=[tk, tk.chat])   # tk.chat: optional, records the model's words
 
 The decision names the model's own call id (`context.metadata["call_id"]`) and the arguments Agent Framework parsed
 from the model's JSON and validated against the function: the ones it runs with (no arguments or an empty string are
 {}). A refused call never runs: the model gets Tracekit's reason as the call's result and the run goes on. A
 function's exception is recorded as an error and reaches Agent Framework unchanged, which hands the model its error
 result; a call that runs again under the same id (a model that reuses an id) is decided as its next attempt.
+
+Function middleware sees no model response: `tk.chat`, a chat middleware, records each one (tracekit.integrations.said):
+its reasoning (with its protected_data, sealed), text and function calls, under the call ids the function middleware
+decides them by; streamed, once the stream ends. A response that can't be recorded only warns.
 """
-from agent_framework import Content, FunctionMiddleware, MiddlewareTermination
+import asyncio
+
+from agent_framework import ChatMiddleware, Content, FunctionMiddleware, MiddlewareTermination
 from pydantic_core import to_jsonable_python
 
 from tracekit.autowire import DECIDED_UPSTREAM
 from tracekit.format.canon import loads_strict
+from tracekit.integrations import said
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -28,6 +36,7 @@ class Tracekit(FunctionMiddleware):
         self.run = run_handle(run)
         # lean: one entry per call id the middleware decided, for its life; prune them at run end if agents run for days
         self._attempts = {}   # call id -> the attempt its next decision is (a model may send an id again)
+        self.chat = _Said(said.Said(lambda **f: self.run.call("model_event", **f), lambda: self.run.client.status({})))
 
     async def process(self, context, call_next):
         call_id, tool = context.metadata.get("call_id"), context.function.name
@@ -71,6 +80,35 @@ class Tracekit(FunctionMiddleware):
         else:
             await complete(self.run, d, call_id, attempt, "ok",
                            result=result_field(d and d.get("send_result"), _as_the_model_reads(out)))
+
+
+class _Said(ChatMiddleware):
+    """`Tracekit(run).chat`: records the assistant messages of each chat response."""
+
+    def __init__(self, record):
+        self.record = record
+
+    async def process(self, context, call_next):
+        if context.stream:   # the finalized response, once the stream is consumed
+            context.stream_result_hooks.append(self._said)
+        await call_next()
+        if not context.stream and context.result is not None:
+            await self._said(context.result)
+
+    async def _said(self, response):
+        for m in response.messages:
+            if m.role == "assistant":
+                await asyncio.to_thread(self.record, _said(m.contents), response.model)
+
+
+def _said(contents):
+    for c in contents:
+        if c.type == "text_reasoning":
+            yield said.thought(c.text, c.protected_data)
+        elif c.type == "text":
+            yield said.text(c.text)
+        elif c.type == "function_call":
+            yield said.call(c.call_id, c.name, c.arguments or {})
 
 
 def _as_json(value):

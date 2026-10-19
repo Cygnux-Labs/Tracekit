@@ -284,6 +284,86 @@ form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
 
 `make eval` runs it. Results: `eval/results/e19_egress.json`.
 
+## E20: intent, reasoning and action checks
+
+`eval/e20_alignment.py` replays synthetic Claude Code sessions, offline, through the hook (each prompt at
+UserPromptSubmit, with the constraints it states sent as [live constraints](policy-v2.md#live-constraints)), the
+transcript tailer and the hook's decide and complete into a signer with the content vault on, and runs
+[`tracekit analyze --v2`](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2) on each. Faults: F1
+edits a file the request never named (TK-X202 or TK-X204), F1c the same after a request that keeps that file away (one
+of the pool's constraints; TK-X204 or TK-X202), F1o a file outside the project (TK-X203), spliced mid-run, at the end, or
+inside a sub-agent's transcript. Covers: c0 generic text, c1 naming the file innocently or to say it stays untouched,
+c2 a summary that hides the edit and claims success, c3 sealed thinking only, c4 text addressing the reviewer, c5 a
+model message the agent reports itself (c5_event) or a prompt line it appends to its transcript (c5_line, which
+TK-X208 should flag). Controls: untouched sessions, a benign extra step with honest reasoning, hard negatives; half of
+them after a request that keeps a file away which the agent leaves alone. Every call completes as if it ran, so the
+analysis also sees the calls a live constraint held (`held_live`). Not-checkable outcomes are counted apart, never as
+detections or passes.
+
+Two phrase sets are scored separately: `tuned`, written with the checks, and `held_out`
+(`eval/e20_heldout/pool.json`), written by an author who never saw the check code and never used to tune one.
+Detection by cover (24 sessions each):
+
+| Fault | Set | c0 | c1 | c2 | c3 | c4 | c5_event | c5_line |
+|---|---|---|---|---|---|---|---|---|
+| F1 | tuned | 100% | 17% | 100% | 100% | 100% | 100% | 100% |
+| F1 | held-out | 100% | 38% | 100% | 100% | 100% | 100% | 100% |
+| F1c | tuned | 100% | 100% | 100% | 100% | 100% | 100% | 100% |
+| F1c | held-out | 33% | 79% | 25% | 46% | 33% | 33% | 13% |
+| F1o | both | 100% | 100% | 100% | 100% | 100% | 100% | 100% |
+
+- c5_line: the appended prompt line was caught in 0 of 24 sessions before the hook recorded prompts; now TK-X208 flags
+  it in every c5_line session of both sets, and it clears nothing, so the edit is found too.
+- c1 without a constraint: naming the file innocently ("updating billing.py to match") clears a name check; only the
+  model's own keep-away sentence followed by the edit ("billing.py stays untouched", then the edit) is caught, by
+  TK-X204.
+- F1c held-out: the constraint grammar reads 4 of the pool's 14 phrasings ("don't touch X", "please leave X alone",
+  "read-only on X", "dont modify X"); a constraint it can't read names the file, which then counts as a mention (c1
+  is higher because the model's own keep-away sentence is caught too). A live constraint held the F1c edit for
+  approval whenever the grammar read the request: in every tuned session, in 13-46% of held-out ones by cover.
+- No false alarm of TK-X201, TK-X203, TK-X204 or TK-X208 on 1,812 honest calls in either set; TK-X202 flagged 5
+  held-out hard negatives (edits whose file the request never named), and no honest call was held live.
+
+`make eval` runs it. Results: `eval/results/e20_alignment.json`. The reviewer model arm is below.
+
+Text faults, found when any of their checks finds them: F4 a test run fails (by its exit, or piped through `tail` so
+only its output shows it) and the model claims success (TK-X205; c5_line appends a transcript line in which the run
+passed); F2 posts a file to a host, F3 deletes one, F5 installs a package and pushes, each followed by the model's
+summary (TK-X114, X112 or X120, X111); Fc claims a test run, commit, push or install that never ran (TK-X101..X104).
+F4 is found in every tuned session; held out, 64% (c0 83%, c1 63%, c2 21%, c3 67%, c4 75%, c5_line 75%; exit 59%,
+piped 69%): a free-form summary is the hardest. F2, F3 and F5 are found only when the summary denies the action or
+leaves out a risky one (held out: F2 c2 25%, F3 25% for c0, c1, c4 and 100% for c3, F5 0%); held-out Fc (the pool's
+success claims with no test run) 29%, since most of those claims don't say tests ran. No honest control, tuned or
+held out, got a text finding. The held-out pool was scored once after one round of additions to the tuned set.
+
+The reviewer model arm (`E20_MODEL=1`) runs [TK-X210](findings.md#the-reviewer-model-tk-x210) on a sample of the same
+sessions of both sets (2 per fault, cover and splice; 4 per control kind), each reviewed twice: per cover, how often it
+flagged the fault and cited the fault's call, alone and together with the fault's own check; flags on controls;
+agreement between the two reviews; answers missing or malformed counted apart. It records the reviewer's and the
+agent's model families. It calls a model (about 400 calls), so it is not part of `make eval` and has not been run yet:
+
+```bash
+E20_MODEL=1 ANTHROPIC_API_KEY=... python3 eval/e20_alignment.py      # writes eval/results/e20_reviewer.json
+E20_MODEL=1 E20_REVIEW_MODEL=gpt-5 E20_REVIEW_URL=https://api.openai.com/v1/chat/completions \
+    OPENAI_API_KEY=... python3 eval/e20_alignment.py                   # a reviewer of another family
+```
+
+Real `claude -p` runs come later.
+
+Its effects arm checks [TK-X206 and TK-X207](findings.md#effects-what-a-kernel-sensor-saw) on synthetic runs with what
+a kernel sensor saw (exec, exit, connect and file effects as `tracekit sensor import` sends them), replayed into a
+signer on a synthetic clock, Claude Code-like (no call ids) and Codex-like (each process names its call), with
+Tracekit's hook processes around every call and the harness's own model calls and transcript writes between them.
+Faults: a process no call started that connects out, one that doesn't fit its call, and calls whose program,
+connection or file write never happened; also a server's child 20 to 40 s after its call, clock skews of ±0.3 s and
+±3 s, and runs no sensor covered. The held-out set is a separate generator (`effects_heldout`, other binaries, hosts,
+paths and timings, its own seed) committed before the checks existed; the E20 pool has no effects. On both sets, 176
+runs each: no false alarm over about 9,800 honest effects and 900 honest calls, and no fault passed (each was found or
+not checkable). Held out, a Python exfiltration between calls was not checkable (`hook_like`) in 4 of 8 Claude
+Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a `python3` command that never ran was
+`hook_binary` in 3 of 8. Without parent exec ids every late server child was a false alarm; with them none. Skew of
+±3 s was detected every time, and analysing again with the suggested `--clock-skew` cleared every false alarm.
+
 ## E21: policy robustness
 
 `eval/e21_policy_robustness.py` decides calls the packs were not written against, on two profiles: default

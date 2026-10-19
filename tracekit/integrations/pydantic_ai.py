@@ -10,13 +10,23 @@ model gets Tracekit's reason as a denied tool result and the run goes on. A refu
 the model gets the reason as a retry prompt. A tool's exception is recorded as an error and reaches Pydantic AI
 unchanged, so its retries and `ModelRetry` work as before; each retry is a new call id and a new decision, and a call
 that runs again under the same id (a deferral resumed) is decided as its next attempt.
+
+Each model response is recorded too (tracekit.integrations.said): its thinking (with the provider's signature), text
+and calls of the agent's function tools, under the ids they are decided by. Its other calls (an output tool's, a tool
+that needs approval) may never be decided: each is recorded as a call of that response only when the capability
+decides it, so the signer never takes a decided call for one the model didn't ask for. A response that can't be
+recorded only warns.
 """
+import asyncio
+
 from pydantic_ai import ToolDenied, ToolReturn
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, SkipToolExecution
+from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart
 from pydantic_core import to_jsonable_python
 
 from tracekit.autowire import DECIDED_UPSTREAM
+from tracekit.integrations import said
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -30,6 +40,7 @@ class Tracekit(AbstractCapability):
         # lean: one entry per call the capability ran, for its life; prune them at run end if agents run for days
         self._attempts = {}   # tool_call_id -> the attempt its next execution is (a resumed deferral runs it again)
         self._ran = {}   # tool_call_id -> the arguments the tool ran with, from after_tool_execute
+        self.said = said.Said(lambda **f: self.run.call("model_event", **f), lambda: self.run.client.status({}))
 
     @classmethod
     def get_serialization_name(cls):
@@ -39,6 +50,11 @@ class Tracekit(AbstractCapability):
         # outermost: any other capability that changes a call's arguments does it inside this one, where
         # after_tool_execute sees the arguments the tool really ran with
         return CapabilityOrdering(position="outermost")
+
+    async def after_model_request(self, ctx, *, request_context, response):
+        tools = {t.name for t in request_context.model_request_parameters.function_tools if t.kind == "function"}
+        await asyncio.to_thread(self.said, _said(response, tools), response.model_name, response.provider_name)
+        return response
 
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
         return await self._gated(call, lambda: handler(args), lambda why: SkipToolExecution(ToolDenied(why)), args)
@@ -58,6 +74,8 @@ class Tracekit(AbstractCapability):
     async def _gated(self, call, run_it, refused, args=None, output=False):
         call_id, tool, raw = call.tool_call_id, call.tool_name, call.args or {}   # Pydantic AI reads "" as {}
         attempt = self._attempts.get(call_id, 0)
+        if call_id in self.said.later:   # a call its recorded response left out: recorded as its call now
+            await asyncio.to_thread(self.said.decided, call_id)
         d, why = await gate_call(self.run, call_id, attempt, tool, raw, json_text=True)
         if why is not None:
             raise refused(why)
@@ -84,6 +102,20 @@ class Tracekit(AbstractCapability):
             DECIDED_UPSTREAM.reset(upstream)
             self._ran.pop(call_id, None)
             self._attempts[call_id] = attempt + 1
+
+
+def _said(response, tools):
+    """What the model said in a ModelResponse, in order; the calls of `tools`, the function tools this capability
+    decides as they run, and its other calls as `later`: it decides those only if they run (an output function, an
+    approved tool)."""
+    for p in response.parts:
+        if isinstance(p, ThinkingPart):
+            yield said.thought(p.content, p.signature)
+        elif isinstance(p, TextPart):
+            yield said.text(p.content)
+        elif isinstance(p, ToolCallPart):
+            c = said.call(p.tool_call_id, p.tool_name, p.args or {})
+            yield c if p.tool_name in tools else said.later(c)
 
 
 def _as_the_model_reads(value):

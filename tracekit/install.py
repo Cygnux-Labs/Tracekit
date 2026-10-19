@@ -380,22 +380,25 @@ def plugin_enabled(user=None):
 
 
 def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
-                  module="tracekit.hook", signer=None):
+                  module="tracekit.hook", signer=None, thinking=False):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
     env.ANTHROPIC_BASE_URL (C3), signer env.TRACEKIT_SIGNER or a dict of env variables (each removed on uninstall
-    while it still has that value); the SIGNER_ENV variables it doesn't name are removed.
+    while it still has that value); the SIGNER_ENV variables it doesn't name are removed. thinking: also turn
+    Claude Code's thinking summaries on (THINKING: true) unless the file already sets them; uninstall leaves them.
+    Returns the file's THINKING setting then.
     Raises SettingsError instead of overwriting a file it cannot parse,
     or one that is a symlink. With owner (as root) the whole edit runs as that user. python, module: see _hook_command."""
     if owner is not None:
         return files.as_user(owner, install_hooks, settings_path, uninstall, None, proxy_url, extra, mode, python,
-                             module, signer, errors=(SettingsError,))
+                             module, signer, thinking, errors=(SettingsError,))
     settings_path = os.path.abspath(settings_path)
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
     try:
         d = files.open_dir(os.path.dirname(settings_path))
         try:
-            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python, module, signer)
+            return _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python, module, signer,
+                                     thinking)
         finally:
             files.close(d)
     except files.UnsafePath as e:
@@ -403,7 +406,7 @@ def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, ex
 
 
 def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None, module="tracekit.hook",
-                      signer=None):
+                      signer=None, thinking=False):
     name = os.path.basename(settings_path)
     s, raw = {}, files.read(d, name)
     original = None
@@ -471,19 +474,35 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
             s.pop(k, None)
         else:
             s[k] = v
+    if thinking and not uninstall:   # a person's own setting stays
+        s.setdefault(THINKING, True)
     if original is not None:
         try:
             unchanged = json.loads(original) == s
         except ValueError:
             unchanged = False
         if unchanged:
-            return
+            return s.get(THINKING)
         files.backup(d, name, raw)
     files.write(d, name, files.json_bytes(s), mode)
     if replaced:
         old = " and ".join(sorted(replaced))
         print(f"Tracekit {old} hooks removed from {settings_path}" if uninstall else
               f"Tracekit {old} hooks replaced by {new} hooks in {settings_path}")
+    return s.get(THINKING)
+
+
+THINKING = "showThinkingSummaries"   # Claude Code keeps the model's thinking summaries in its transcript
+
+
+def thinking_line(settings, on):
+    """What init says about Claude Code's thinking summaries (`on`: the THINKING setting of `settings`)."""
+    if on is True:
+        return (f"thinking summaries: on ({THINKING} in {settings}), so `tracekit analyze --v2` can read the model's "
+                "reasoning; for headless runs pass `claude -p --thinking-display summarized`; init "
+                "--no-thinking-summaries leaves the setting alone")
+    return (f"thinking summaries: off ({settings} sets {THINKING} to {str(on).lower()}): `tracekit analyze --v2` can't "
+            f"read the model's reasoning; set {THINKING} to true to check it")
 
 
 def _my_uid():
@@ -1231,12 +1250,14 @@ def v2_plist(user):
 
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
                    experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=False,
-                   egress=False):
+                   egress=False, thinking=True):
     """`sudo tracekit init --v2 --user AGENT`: the v2 signer service as its own user, from the root-owned venv, with
     the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
     different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
     which the harness helper attests. public_witness (`--public-witness`): the public witness cosigns the signer's logs.
     egress (`--egress`, Linux): the agent's outside traffic only through a local egress observer (docs/egress.md).
+    thinking: turn Claude Code's thinking summaries (install_hooks), or Codex's reasoning summaries
+    (agent_hooks.codex_reasoning), on for AGENT unless its settings set them.
     Returns (socket, settings path or None)."""
     if public_witness:
         from . import public_witness as pw
@@ -1333,10 +1354,15 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                   f"needed): see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then "
                                   f"{target_user}'s network is reported only")
     if settings and agent == "claude":
-        install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK,
-                      signer={"TRACEKIT_SIGNER": sock, **proxy} if proxy else sock)
+        on = install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK,
+                           signer={"TRACEKIT_SIGNER": sock, **proxy} if proxy else sock, thinking=thinking)
+        if thinking:
+            print(thinking_line(settings, on))
     elif settings:
         files.as_user(owner, agent_hooks.install, agent, None, False, True, OPT_PYTHON, settings, errors=(SettingsError,))
+        if agent == "codex" and thinking:
+            print(agent_hooks.reasoning_line(*files.as_user(owner, agent_hooks.codex_reasoning, settings,
+                                                            errors=(SettingsError,))))
     if proxy and agent != "claude":
         print(f"egress: start {target_user}'s agent with HTTPS_PROXY=http://{EGRESS_LISTEN}: anything else it sends "
               "outside is refused by the firewall")

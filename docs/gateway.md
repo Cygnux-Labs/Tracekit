@@ -26,6 +26,7 @@ api_key_file: secrets/provider.key     # the provider credential
 api_key_header: authorization          # sent as "Bearer <key>"; x-api-key (Anthropic) sends the key as is
 signer: https://signer.internal:8443
 max_body: 33554432                     # bytes, for request bodies and non-streamed responses
+show_reasoning: true                   # the default: ask for the reasoning a request hides (readable reasoning)
 ```
 
 The gateway reaches the signer as itself, with the `TRACEKIT_SIGNER_TOKEN_FILE` or `TRACEKIT_SIGNER_CERT`/`_KEY`
@@ -89,12 +90,13 @@ reach the provider, an agent can't call the model around it.
 
 ## What is recorded
 
-Before forwarding a request: `model.exchange` phase `request`, with a digest of the body and the tool results the
-request sends back. After the response completes: phase `response`, with the tool uses the model asked for (name,
+Before forwarding a request: `model.exchange` phase `request`, with a digest of the body as sent to the provider and
+the tool results the request sends back. After the response completes: phase `response`, with the tool uses the model asked for (name,
 args commitment, `executed_by`), usage, the stop reason and any error. A non-streamed response reaches the client only
 after it is recorded; a streamed one passes through as it arrives, except the chunk with its terminal event, held
 until the response is recorded. With the signer's content vault on, each record also carries the body: the request as
-the client sent it, the response as the upstream sent it (a stream: assembled), when it fits the vault's
+sent to the provider (the client's, or as amended to [show reasoning](#readable-reasoning)), the response as the
+upstream sent it (a stream: assembled), when it fits the vault's
 `max_record_bytes` and half the signer's 1 MiB frame. The signer redacts it, commits to the redacted form as the
 record's `content_digest` and keeps it encrypted. Without the vault, the digest covers the raw bytes and no body leaves
 the gateway. If the signer refuses the record (the run closed, its quota is used up), the client
@@ -141,6 +143,48 @@ OpenAI types the client runs (`function`, `custom`, `local_shell`, `apply_patch`
 refused; `shell` and `tool_search` count, since the provider may host them: with `allow`, list them if your client runs
 them. A refused request is answered 403 `provider tool(s) ... not allowed by this gateway's provider_tools` and never
 reaches the provider or the signer.
+
+## Readable reasoning
+
+A request can have the model reason and ask for none of the reasoning back: an Anthropic Messages request with
+`thinking` on and `display` unset or `"omitted"` (the default on Claude models since Opus 4.7) gets thinking blocks
+with empty text and only a signature, and an OpenAI Responses request with `reasoning` and no `summary` gets reasoning
+items with no summary. The gateway changes only that, so the run keeps what the model said before each call, for
+`tracekit analyze --v2` ([findings](findings.md)):
+
+| Endpoint | When the request has | The gateway sends |
+|---|---|---|
+| `/v1/messages` | `thinking.type` `enabled` or `adaptive`, and `thinking.display` unset, null or `"omitted"` | `thinking.display: "summarized"` |
+| `/v1/responses` | `reasoning` with `effort` other than `none`, and no `summary` (nor the deprecated `generate_summary`) | `reasoning.summary: "auto"` |
+
+Nothing else in the request changes. A request that doesn't turn reasoning on itself is sent as the client sent it:
+no `thinking` (even to a model that thinks by default), `thinking.type` `disabled` or `between_tools` (which takes no
+`display`), `display: "updates"`, a summary already asked for, and every chat completions request (it has no such
+field). The response reaches the agent as the provider sent it: with the summaries, the rest as it would be without
+them. To send every request as the client sent it:
+
+```yaml
+show_reasoning: false
+```
+
+**What is recorded.** The request record's digest, and with the vault on its body, are of the request as sent to the
+provider, and the record names the fields changed, as JSON pointers: `ext: {"amended": ["/thinking/display"]}` (format
+1.4's non-critical slot, [format v2](format-v2.md#3-events)). `tracekit verify` counts them on a line of its own:
+`gateway amendments: gateway amended 2 request(s) to show reasoning (/thinking/display: 2); each record commits to
+the request as sent`. A verifier that doesn't interpret `amended` (another implementation of format 1.4) prints a
+`not interpreted` warning in its place, and every other line the same. As any use of that slot does, a bundle holding
+such a record needs a 1.4 verifier (`verifier_min_version` 1.4.0); an older one reports it `UNVERIFIABLE` with the
+commands that verify it.
+
+**When the provider refuses it.** A model or server that doesn't take the field answers 400 (or 422). The gateway
+records that answer as the exchange's response, with the error `upstream status 400 to the request as amended to show
+reasoning; sent again without the amendment as exchange gx-...`, and sends the request again as the client sent it, as
+a new exchange; the agent gets that answer and never sees the first. Once a request sent again succeeds, the gateway
+stops amending that model's requests until it restarts. Any 400 or 422 to an amended request counts, so a request bad
+for another reason reaches the provider twice and the agent gets the second error.
+
+A summary is the provider's account of the reasoning, not the reasoning ([limits](limits.md#intent-reasoning-and-action-checks)),
+and with the content vault on it is kept with the rest of the response ([privacy](privacy.md#the-content-vault)).
 
 ## Replay runs
 

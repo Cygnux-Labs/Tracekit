@@ -10,8 +10,10 @@ Trust comes only from the verifier's own pinned config (JSON):
      "rekor": {"trusted_root": {...}, "publishing_key": "<base64 SPKI>", "class": "public"},   optional: a Sigstore
                                                           trusted_root and the signer's P-256 Rekor publishing key
      "monitors": [{"vkey": "<monitor vkey>", "class": "...", "max_age_s": 3600}],   optional: `tracekit monitor` keys
-     "issuers": [{"vkey": "<CA vkey>", "issuance_log_vkey": "<log vkey>"}]}   optional: record-key issuers
+     "issuers": [{"vkey": "<CA vkey>", "issuance_log_vkey": "<log vkey>"}],   optional: record-key issuers
                                                           (tracekit.issuer, `tracekit issuer vkey`)
+     "analyzers": ["<scheme:subject>", ...]}              optional: the identities whose signed findings read
+                                                          independent (the operator's `tracekit analyze --v2`)
 
 Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its origin, and by the origin's pinned
 hybrid SLH-DSA key when there is one (registry notes too), and cosigned by the required number of pinned witnesses;
@@ -64,7 +66,8 @@ by kind) gives a `coverage` line; unreconciled calls and unexplained effects mak
 on them. Its `matrix` gives the `coverage matrix` line: per action class (model calls, tool calls, network, processes,
 services) enforced, observed, reported or not covered, the layers behind it and `asserted` where the status rests on
 the operator's posture; across several runs, each class's weakest. It never says a run is complete. Each capture.gap
-`observer_lost` (an egress observer went silent while its run was open) is an `observers` warning.
+`observer_lost` (an egress observer or a kernel sensor's import went silent, restarted or lost events while its run was
+open) is an `observers` warning.
 Gaps: every other signer-written capture.gap in a run (unless its kind is in INFO_GAPS), approval.binding_mismatch and
 trace.tamper record is counted by kind on a `gaps` warning; a run that declares a fail-open class makes `fail-open
 classes` a warning (calls the agent classed as one of them may have run unrecorded while the signer was down: the
@@ -77,6 +80,27 @@ target each outcome must agree with the tool uses those records name; the outcom
 effect and give its interval and verdict (recomputed from looks, family, min_effect, applied and stopped); and every
 replay run of an investigation with findings must be counted or listed `uncounted` by one; else `findings` fails.
 Replay runs of an investigation with no finding are a `replay runs` warning.
+Signed findings (`tracekit analyze --v2`, format 1.4): a `review` record with `cites`, in a findings run. Each cite
+must be a record of the analysed run, in the bundle, with that run_seq and hash, and its verdict must have the shape
+a signed finding has (a kind, rule and severity, and each field review_finding gives it of the values it allows: a
+reviewer model's alignment, reason code, asserted model and families, an effect check's window; other fields pass),
+else `reviews` fails. Each finding is
+labelled by its author, the findings run's registered identity, positive-only: `independent` only when the trust
+config's `analyzers` pins it; `self-asserted` (a warning) when it is the analysed run's own identity or either run's
+signer_isolation is same-user (the agent could have written it); else `unpinned author <id>`. Without the analysed run
+in the bundle, its cites are not counted and its author not checked (`reviews counted`, a warning). A review without
+cites (a migrated v1 judge verdict) is `imported`, never checked. The findings themselves are an opinion of the run,
+never part of its integrity: they get a `Findings:` line of their own after Integrity and Assurance (how many, by
+severity, and their authors' labels); only a cite that does not match fails, as tampered or made-up evidence would.
+Live constraints (format 1.4): a policy.decision held by TK-CONSTRAINT must be an ask that comes after a
+constraint.added in its run, else `constraints` fails; the line counts the constraints and the calls they held.
+
+Versions (format-v2.md §9): a bundle whose verifier_min_version is above this verifier's is `UNVERIFIABLE (needs
+tracekit >= x)` (exit 2), the `bundle readable` line listing the commands that verify it with the user's paths
+(`upgrade`). Format 1.4's non-critical slot: an `ext` field on any record and the `ext` record type, whose names a
+verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) and otherwise reports on a `not
+interpreted` warning each; the records are signed, chained and included like any other, and the bundle stays VERIFIED.
+This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`).
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -119,7 +143,7 @@ import zipfile
 
 from tracekit import __version__, crypto
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, Report, _load_trusted_key
-from tracekit.bundle_v2 import FORMAT, KEY_TYPES, run_name
+from tracekit.bundle_v2 import FORMAT, KEY_TYPES, ext_names, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
@@ -129,6 +153,7 @@ from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
 from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
+from tracekit.signer import rpc_schema
 from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.storage.base import ZERO_HASH
 
@@ -147,10 +172,44 @@ MAX_LINES = MAX_ENTRY // 256   # per JSON lines file: no signed record is shorte
 CLASSES = ("public", "customer", "tracekit", "operator")
 MATRIX = ("model_calls", "tool_calls", "network", "processes", "services")
 COVERED = ("none", "reported", "observed", "enforced")   # weakest first
+SEVERITIES = ("critical", "high", "medium", "low", "info")   # a signed finding's, worst first
+# the closed fields of a signed finding's verdict (rpc_schema.REVIEW) and the values each may take
+VERDICT = {"kind": ("finding", "coverage"), "severity": SEVERITIES, "tier": ("gateway", "harness", "transcript", "sdk"),
+           "order": ("signed_before", "transcript_order", "after"), "alignment": tuple(rpc_schema.ALIGNMENTS),
+           "reason": tuple(rpc_schema.REVIEW_REASONS)}
+_RULE = re.compile(r"TK-[A-Z][0-9]{3}")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_MODEL = re.compile(r"[A-Za-z0-9._:/@+-]{1,128}")
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
 _VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_IDENTITY = re.compile(r"[a-z0-9_]+:.+")   # scheme:subject, as run.registered's identity reads
 _EOCD, _CEN, _LOC = struct.Struct("<IHHHHIIH"), struct.Struct("<IHHHHHHIIIHHHHHII"), struct.Struct("<IHHHHHIIIHH")
+PAGE = "https://cygnux-labs.github.io/Tracekit/verify/"   # the browser verifier of the latest release (RELEASING.md)
+_POINTER = re.compile(r"(/([^~/]|~[01])*)+")   # a JSON pointer (RFC 6901) to a field
+
+
+def _amended(rep, events):
+    """ext.amended: the JSON pointers of the fields an LLM gateway changed in a model request before sending it, to show
+    the reasoning the request has the model do. The signer writes it on a gateway's request record only, whose content
+    digest is of the request as sent; anywhere else, or not a list of pointers, it is a warning."""
+    def fields(e):
+        v, d = e["ext"].get("amended") if isinstance(e.get("ext"), dict) else None, e.get("data")
+        return v if (e.get("type"), e.get("source")) == ("model.exchange", "gateway") and isinstance(d, dict) and \
+            d.get("phase") == "request" and isinstance(v, list) and v and all(
+                isinstance(p, str) and len(p) <= 256 and _POINTER.fullmatch(p) for p in v) else None
+    good, bad = [e for e in events if fields(e)], [e for e in events if not fields(e)]
+    n = collections.Counter(p for e in good for p in fields(e))
+    rep.check("gateway amendments", not bad, f"gateway amended {len(good)} request(s) to show reasoning"
+              + (f" ({', '.join(f'{p}: {c}' for p, c in sorted(n.items())[:8])})" if n else "")
+              + "; each record commits to the request as sent",
+              [f"seq {e.get('seq')}: ext.amended is not a list of JSON pointers on a gateway's model request"
+               for e in bad][:20], warn=True)
+
+
+# the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
+# whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
+EXT_CHECKS = {"amended": _amended}
 
 
 class Unusable(ValueError):
@@ -245,7 +304,7 @@ def load_trust(path):
         t = loads_strict(f.read(MAX_LINE))
     r = t.get("rekor", {}) if isinstance(t, dict) else None
     ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor", "monitors",
-                                             "issuers"}
+                                             "issuers", "analyzers"}
           and isinstance(r, dict) and (not r or set(r) == {"trusted_root", "publishing_key", "class"}
                                        and isinstance(r["trusted_root"], dict) and isinstance(r["publishing_key"], str)
                                        and r["class"] in CLASSES)
@@ -261,14 +320,16 @@ def load_trust(path):
                   for m in t.get("monitors", []))
           and isinstance(t.get("issuers", []), list)
           and all(isinstance(i, dict) and set(i) == {"vkey", "issuance_log_vkey"}
-                  and all(isinstance(v, str) for v in i.values()) for i in t.get("issuers", [])))
+                  and all(isinstance(v, str) for v in i.values()) for i in t.get("issuers", []))
+          and isinstance(t.get("analyzers", []), list)
+          and all(isinstance(a, str) and _IDENTITY.fullmatch(a) for a in t.get("analyzers", [])))
     if not ok:
         raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, "
-                         "issuers)")
+                         "issuers, analyzers)")
     for k in (t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]
               + [v for i in t.get("issuers", []) for v in i.values()]):
         checkpoint.parse_vkey(k)
-    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], **t}
+    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], "analyzers": [], **t}
 
 
 def _jsonl(data):
@@ -307,7 +368,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
             raise Unusable("verifier_min_version is not a version number")
         if _version(need) > _version(__version__):
             rep.integrity = f"UNVERIFIABLE (needs tracekit >= {need})"
-            rep.check("bundle readable", False, rep.integrity)
+            rep.check("bundle readable", False, rep.integrity, upgrade(need, path, trust_path))
             return rep, EXIT_BAD
     except Exception as e:
         rep.check("bundle readable", False, f"cannot read bundle: {type(e).__name__}: {e}")
@@ -319,6 +380,33 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
     if rep.failures:
         rep.integrity = "FAILED"
     return rep, EXIT_FAIL if rep.failures else EXIT_BAD if rep.integrity.startswith("UNVERIFIABLE") else EXIT_OK
+
+
+def upgrade(need, bundle, trust):
+    """Ways to verify the bundle with a verifier of version `need` or later, as commands with the user's own paths."""
+    from tracekit.cli import _quote
+    b, t = (_quote(os.fsdecode(p)) if isinstance(p, (str, bytes, os.PathLike)) else n
+            for p, n in ((bundle, "BUNDLE"), (trust, "TRUST.json")))
+    return [f'uvx --from "tracekit-ai>={need}" tracekit verify {b} --trust {t}',
+            f"npx -y @cygnuxlabs/tracekit@latest verify {b} --trust {t}",
+            f"or open {PAGE} and choose both files: the page verifies them in your browser and sends nothing"]
+
+
+def _ext(rep, events, full):
+    """A line per ext name the records carry: its EXT_CHECKS check, or a `not interpreted` warning. The records were
+    checked like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version."""
+    carry = {}   # name -> the events carrying it
+    for e in events:
+        for n in {str(x)[:64] for x in ext_names(e)}:
+            carry.setdefault(n, []).append(e)
+    later = f"; tracekit >= {full} checks it" if isinstance(full, str) and _VERSION.fullmatch(full) \
+        and _version(full) > _version(__version__) else ""
+    for n, es in sorted(carry.items()):
+        if n in EXT_CHECKS:
+            EXT_CHECKS[n](rep, es)
+        else:
+            rep.check("not interpreted", False, f"{len(es)} record(s) carry ext.{n}: their signatures, chain and "
+                      f"inclusion are checked above; what ext.{n} means is not checked{later}", warn=True)
 
 
 def _revocations(rep, trust, paths):
@@ -591,9 +679,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     lost = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
             if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "observer_lost"]
     if lost:
-        rep.check("observers", False, f"{len(lost)} egress observer(s) went silent while their run was open", lost[:20],
-                  warn=True)
+        rep.check("observers", False, f"{len(lost)} observer gap(s): an observer went silent, restarted or lost events "
+                                      "while its run was open", lost[:20], warn=True)
     _findings(rep, runs)
+    _reviews(rep, runs, trust["analyzers"])
+    _constraints(rep, runs)
     _incidents(rep, runs, policies)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
@@ -660,6 +750,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
+    pointed = _jsonl(files["registry/records.jsonl"]) if run_set else []   # the records a run-set's leaves name
+    _ext(rep, list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values()),
+         manifest.get("verifier_version"))
 
 
 def _approvals(rep, runs, policies):
@@ -995,6 +1088,103 @@ def _findings(rep, runs):
                   [rid[:128] for rid in orphans[:20]], warn=True)
 
 
+def _author(records):
+    """('scheme:subject', signer_isolation) of a run's run.registered (Nones when it is not one)."""
+    e = records[0]["event"]
+    d = e.get("data") if e.get("type") == "run.registered" else {}
+    i = d.get("identity")
+    return (f"{i['scheme']}:{i['subject']}" if i else None), d.get("signer_isolation")
+
+
+def _verdict(v):
+    """What is wrong with a signed finding's verdict `v` (VERDICT; its asserted model, families and window), or None."""
+    if not isinstance(v, dict) or not isinstance(v.get("rule"), str) or not _RULE.fullmatch(v["rule"]) or any(
+            v.get(k) not in VERDICT[k] for k in ("kind", "severity")):
+        return "its verdict has no kind, rule and severity of a signed finding"
+    a, f, w = v.get("asserted"), v.get("families"), v.get("window")
+    fams = (*rpc_schema.MODEL_FAMILIES, None)
+    bad = [k for k, allowed in VERDICT.items() if k in v and v[k] not in allowed] + [k for k, ok in (
+        ("asserted", isinstance(a, dict) and all(isinstance(a.get(x), str) and _MODEL.fullmatch(a[x]) for x in (
+            "model", "version")) and isinstance(a.get("prompt_hash"), str) and _DIGEST.fullmatch(a["prompt_hash"])),
+        ("families", isinstance(f, dict) and f.get("reviewer") in fams and isinstance(f.get("agent"), list)
+         and all(x in fams[:-1] for x in f["agent"])),
+        ("window", isinstance(w, dict) and all(type(w.get(x)) in (int, float) and w[x] >= 0
+                                               for x in ("grace_s", "skew_s")))) if k in v and not ok]
+    return f"its verdict's {', '.join(bad)} is not what a signed finding holds" if bad else None
+
+
+def _reviews(rep, runs, pinned):
+    """The `reviews` line, and `reviews counted` for signed findings whose analysed run is not in the bundle (module
+    docstring: Signed findings). `pinned`: the trust config's `analyzers`."""
+    by_id = {rs[0]["event"].get("run_id"): rs for rs in runs.values()}
+    total, labels, problems, selfs, uncounted = 0, collections.Counter(), [], [], []
+    for rs in runs.values():
+        reviews = [r["event"] for r in rs if r["event"].get("type") == "review"]
+        signed = [e for e in reviews if "cites" in e["data"]]
+        total, labels["imported"] = total + len(reviews), labels["imported"] + len(reviews) - len(signed)
+        if not signed:
+            continue
+        problems += [f"seq {e['seq']}: {why}" for e in signed for why in [_verdict(e["data"]["verdict"])] if why]
+        rid, analyzes = str(rs[0]["event"].get("run_id"))[:128], _about(rs)[0]
+        if analyzes is None:
+            problems += [f"seq {e['seq']}: a signed finding outside a findings run" for e in signed]
+            continue
+        target = by_id.get(analyzes)
+        if target is None:
+            labels["author not checked"] += len(signed)
+            uncounted.append(f"findings run {rid}: run {str(analyzes)[:128]} is not in the bundle")
+            continue
+        hashes = {r["event"].get("run_seq"): r["hash"] for r in target}
+        problems += [f"seq {e['seq']}: cites run_seq {c['run_seq']} of run {str(analyzes)[:128]}, "
+                     + ("which it does not have" if c["run_seq"] not in hashes else "whose hash differs")
+                     for e in signed for c in e["data"]["cites"] if hashes.get(c["run_seq"]) != c["hash"]]
+        (author, isolation), (theirs, their_isolation) = _author(rs), _author(target)
+        if author == theirs or "same-user" in (isolation, their_isolation):
+            label = "self-asserted"
+            selfs.append(f"findings run {rid}: " + (
+                f"its author {str(author)[:256]} is the analysed run's identity" if author == theirs else
+                "the signer runs as the same user as a client (signer_isolation same-user)"))
+        else:
+            label = "independent" if author in pinned else f"unpinned author {str(author)[:256]}"
+        labels[label] += len(signed)
+    if total:
+        rep.check("reviews", not problems and not selfs, f"{total} review(s): " + ", ".join(
+            f"{n} {k}" for k, n in sorted(labels.items()) if n), (problems or selfs)[:20], warn=not problems)
+        verdicts = [r["event"]["data"].get("verdict") for rs in runs.values() for r in rs
+                    if r["event"].get("type") == "review"]
+        sev = collections.Counter(str(v.get("severity"))[:16] for v in verdicts
+                                  if isinstance(v, dict) and v.get("kind") == "finding")
+        cov = sum(isinstance(v, dict) and v.get("kind") == "coverage" for v in verdicts)
+        rep.findings = (f"{sum(sev.values())} finding(s)" + (" (" + ", ".join(
+            f"{sev[s]} {s}" for s in SEVERITIES if sev[s]) + ")" if sev else "")
+            + (f" and {cov} coverage review(s)" if cov else "") + "; " + ", ".join(
+                f"{n} {k}" for k, n in sorted(labels.items()) if n) + " (an opinion of the run, not its integrity)")
+    if uncounted:
+        rep.check("reviews counted", False, f"{labels['author not checked']} signed finding(s) not counted: export the "
+                  "analysed run with `tracekit export --v2 --run <run> --with-findings` to check their citations",
+                  uncounted[:20], warn=True)
+
+
+def _constraints(rep, runs):
+    """The `constraints` line: live constraints added, and the calls they held, each after one in its run (module
+    docstring: Live constraints)."""
+    added, held, problems = 0, 0, []
+    for rs in runs.values():
+        seen = False
+        for r in rs:
+            e = r["event"]
+            if e.get("type") == "constraint.added":
+                added, seen = added + 1, True
+            elif e.get("type") == "policy.decision" and "TK-CONSTRAINT" in (e["data"].get("rule_ids") or ()):
+                held += 1
+                if not seen or e["data"].get("decision") != "ask":
+                    problems.append(f"seq {e['seq']}: a {str(e['data'].get('decision'))[:16]} held by TK-CONSTRAINT "
+                                    + ("before any constraint.added in its run" if not seen else "is no ask"))
+    if added or held:
+        rep.check("constraints", not problems, f"{added} live constraint(s) added; {held} call(s) held by them",
+                  problems[:20])
+
+
 def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):
     """The run-set line (COMPLETE or INCOMPLETE) and the log tail line. Returns the (seq, hash) of every key.retire
     the registry range points to, the highest seq the range points to when it starts at registry size 0 (else -1):
@@ -1242,4 +1432,5 @@ def print_report(rep, code, stream=None):
         s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(c['detail'])}" if c["detail"] else "") + "\n")
         for p in c["problems"]:
             s.write(f"        {clean(p)}\n")
-    s.write(f"\nIntegrity: {clean(rep.integrity)}.\nAssurance: {clean(rep.assurance)}.\n")
+    s.write(f"\nIntegrity: {clean(rep.integrity)}.\nAssurance: {clean(rep.assurance)}.\n"
+            + (f"Findings: {clean(rep.findings)}.\n" if getattr(rep, "findings", None) else ""))

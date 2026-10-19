@@ -1,7 +1,8 @@
 """Bundle v2 (`tracekit.bundle.v2`): one run's evidence, or a tenant's run-set, from file storage, checked by
 `tracekit.verify.v2`.
 
-    manifest.json               untrusted index: format, verifier_min_version, sha256 of every other file
+    manifest.json               untrusted index: format, verifier_min_version, verifier_version (advisory), sha256 of
+                                every other file
     runs/<id>.jsonl             a run's v2 records in run_seq order, no stubs (id: sha256 of "<tenant>/<run_id>",
                                 32 hex, so names never carry caller text)
     keys/records.jsonl          the signer.epoch and key.retire records the checkpoint covers
@@ -28,8 +29,9 @@ The tenant salt goes into the bundle so its verifier can recompute H(tenant_salt
 whoever holds the bundle can test guessed run ids against this tenant's leaves (and link this tenant's registry
 origin); other tenants' leaves stay opaque, as each tenant has its own salt.
 
-With findings (export(..., with_runs=about(...))), the run's `tracekit why` findings runs (run.registered `analyzes`
-the run) and replay runs (`replay_of` the run) are bundled with it, so the verifier can count each finding's replay runs.
+With findings (export(..., with_runs=about(...))), the run's findings runs (run.registered `analyzes` the run: `tracekit
+analyze --v2` and `tracekit why` findings) and replay runs (`replay_of` the run) are bundled with it, so the verifier
+can check each finding's citations and count each `tracekit why` finding's replay runs.
 
 No views, no code, no trust configuration: the verifier pins its own. Never content from the signer's content vault:
 records hold commitments only."""
@@ -45,8 +47,8 @@ from tracekit.storage.base import registry_tree
 FORMAT = "tracekit.bundle.v2"
 VERIFIER_MIN_VERSION = "1.0.0"
 # what each verifier version added to format 1.0, oldest first: record types, data fields per type and enum values per
-# (type, field) (gap kinds: capture.gap and trace.tamper `kind`); a bundle needs the newest version whose entries its
-# records use (`needs`)
+# (type, field) (gap kinds: capture.gap and trace.tamper `kind`), and from 1.4.0 the ext names it interprets; a bundle
+# needs the newest version whose entries its records use (`needs`)
 VERSIONS = {
     "1.1.0": {"types": ["input.observed", "content.accessed", "content.erased", "why.finding"],
               "fields": {"policy.decision": ["provenance", "provenance_state"], "run.registered": ["replay_of"]},
@@ -69,7 +71,14 @@ VERSIONS = {
                          "run.closing": {"reason": ["quarantine"]}}},
     "1.3.0": {"types": ["reconcile.result_mismatch"], "fields": {},
               "values": {"capture.gap": {"kind": ["result_unchecked"]}}},
+    "1.4.0": {"types": ["constraint.added"], "fields": {"effect.observed": ["sensor"], "review": ["cites"],
+                                                        "model.exchange": ["said_only"]},
+              "values": {}, "ext": ["amended"]},
 }
+# the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
+# uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain
+# and inclusion whatever the ext holds, and interprets the names its rows list (format-v2.md §9)
+EXT = "1.4.0"
 KEY_TYPES = ("signer.epoch", "key.retire")
 
 
@@ -85,19 +94,50 @@ def run_name(tenant, run_id):
     return f"runs/{hashlib.sha256(f'{tenant}/{run_id}'.encode('utf-8')).hexdigest()[:32]}.jsonl"
 
 
-def _uses(event, added):
+def ext_names(event):
+    """The ext names an event carries: its `ext` field's keys, and an `ext` record's name."""
+    ext = event.get("ext")
+    return [*(ext if isinstance(ext, dict) else ()), *([event["data"]["name"]] if event.get("type") == "ext" else [])]
+
+
+def _entries(event, added):
+    """The entries of a VERSIONS row that `event` uses: `type`, `type.field`, `type.field=value` and `ext.<name>`."""
     typ, data = event["type"], event["data"]
-    return typ in added["types"] or any(f in data for f in added["fields"].get(typ, ())) or any(
-        f in data and data[f] in values for f, values in added["values"].get(typ, {}).items())
+    return ([typ] if typ in added["types"] else []) \
+        + [f"{typ}.{f}" for f in added["fields"].get(typ, ()) if f in data] \
+        + [f"{typ}.{f}={data[f]}" for f, vs in added["values"].get(typ, {}).items() if f in data and data[f] in vs] \
+        + [f"ext.{n}" for n in ext_names(event) if n in added.get("ext", ())]
 
 
 def needs(events):
-    """The verifier version a bundle of `events` needs: the newest whose VERSIONS entries one of them uses."""
-    need = VERIFIER_MIN_VERSION
+    """(critical, full) verifier versions of a bundle of `events`. critical, its verifier_min_version: the newest whose
+    VERSIONS entries other than ext names one of them uses, EXT at least when one uses the ext slot. full, its
+    verifier_version: the newest whose entries, ext names among them, they use. A verifier between the two verifies the
+    bundle and says which ext names it did not interpret."""
+    order = [VERIFIER_MIN_VERSION, *VERSIONS]
+    critical = full = VERIFIER_MIN_VERSION
     for version, added in VERSIONS.items():
-        if any(_uses(e, added) for e in events):
-            need = version
-    return need
+        used = [x for e in events for x in _entries(e, added)]
+        if any(not x.startswith("ext.") for x in used):
+            critical = version
+        if used:
+            full = version
+    if any("ext" in e or e["type"] == "ext" for e in events):
+        critical = max(critical, EXT, key=order.index)
+    return critical, max(critical, full, key=order.index)
+
+
+def raised_by(events, version):
+    """What makes a bundle of `events` need `version`: each entry of its VERSIONS row they use other than ext names, and
+    `ext` (the slot) for EXT, with the seqs of the records that use it (the first five)."""
+    seqs = {}
+    for e in events:
+        used = _entries(e, VERSIONS[version]) if version in VERSIONS else []
+        for x in [x for x in used if not x.startswith("ext.")] + (
+                ["ext"] if version == EXT and ("ext" in e or e["type"] == "ext") else []):
+            seqs.setdefault(x, []).append(e["seq"])
+    return [f"{x}: seq {', '.join(map(str, s[:5]))}" + (f" and {len(s) - 5} more" if len(s) > 5 else "")
+            for x, s in sorted(seqs.items())]
 
 
 def _run_set(storage, tenant, tsalt, origin, size, lo, hi):
@@ -209,7 +249,8 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
                 files[f"policies/{h.removeprefix('sha256:')}.json"] = f.read()
         except (FileNotFoundError, ValueError):   # a policy this signer never ran: the verifier says so
             pass
-    manifest = {"format": FORMAT, "verifier_min_version": needs(events),
+    need, full = needs(events)
+    manifest = {"format": FORMAT, "verifier_min_version": need, "verifier_version": full,
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}
     tmp = out_path + ".tmp"
     try:
@@ -226,4 +267,5 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
             os.unlink(tmp)
         raise
     return {"bundle": out_path, "records": sum(map(len, runs.values())), "tree_size": size,
-            **({"runs": len(runs), "registry_leaves": run_set[1] - run_set[0]} if run_set else {})}
+            **({"runs": len(runs), "registry_leaves": run_set[1] - run_set[0]} if run_set else {}),
+            "verifier_min_version": need, "raised_by": raised_by(events, need), "verifier_version": full}

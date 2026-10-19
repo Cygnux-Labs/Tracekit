@@ -7,12 +7,16 @@ import json
 import os
 import threading
 import unittest
+from unittest import mock
 
-from adapter_contract import OnFake, OnReal
+from adapter_contract import OnFake, OnReal, _serve, tmpdir
 from test_autotrace import ANTHROPIC_EVENTS, ANTHROPIC_MSG, OPENAI_CHAT, OPENAI_CHUNKS, anthropic, genai, gtypes, httpx, \
     openai, sse, transport
-from tracekit import autotrace
+from tracekit import autotrace, findings_v2
+from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import Client, RunHandle
+from tracekit.signer.service import CONTENT_READ, DEFAULT_GRANTS, SignerService
+from tracekit.why.signed import vault_content
 
 VECTORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vectors", "parsers")
 
@@ -297,6 +301,59 @@ class TestOnFake(OnFake, Recording, unittest.TestCase):
 
 class TestOnReal(OnReal, Recording, unittest.TestCase):
     pass
+
+
+@unittest.skipUnless(httpx is not None and anthropic is not None, "anthropic not installed")
+class ResponseBodies(unittest.TestCase):
+    """Each response carries content_digest, and its body only when the signer keeps content (the vault), so what the
+    model said before a call is checkable (`tracekit analyze --v2`); tool_uses are what they were."""
+    MSG = {**ANTHROPIC_MSG, "content": [{"type": "thinking", "thinking": "List the directory first.",
+                                         "signature": "EqQBsealed"}, *ANTHROPIC_MSG["content"]]}
+
+    def record(self, retain, stream=False):
+        me = f"uid:{os.getuid()}"
+        s = SignerService(tmpdir(self), content={"retain": retain},
+                          authorize={me: sorted(DEFAULT_GRANTS | {CONTENT_READ})})
+        self.addCleanup(s.close)
+        client = Client(_serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
+        self.addCleanup(client.close)
+        run = client.run("autotrace")
+        autotrace.init(run=run)
+        self.addCleanup(autotrace.uninstrument)
+        c = anthropic_client(lambda r: (200, sse(ANTHROPIC_EVENTS), True) if stream else (200, self.MSG, False))
+        out = c.messages.create(model="claude-x", max_tokens=10, messages=[{"role": "user", "content": "ls"}],
+                                **({"stream": True} if stream else {}))
+        for _ in out if stream else ():
+            pass
+        tid = "toolu_s" if stream else "toolu_1"
+        run.decide(tid, "Grep" if stream else "Bash", {} if stream else {"command": "pwd"})
+        records = list(s.log.storage.iter_run("default", run.run_id))
+        [resp] = [r["event"] for r in records if r["event"]["type"] == "model.exchange"
+                  and r["event"]["data"]["phase"] == "response"]
+        vault = mock.Mock(content_get=lambda req: s.call(CallerIdentity("uid", str(os.getuid()), True), "content_get",
+                                                         req))
+        items = vault.content_get({"run_id": run.run_id, "seqs": [resp["run_seq"]], "purpose": "test"})["items"] \
+            if retain else [{}]   # a signer that keeps no content refuses content_get
+        analysed = findings_v2.analyze(records, (lambda recs: vault_content(vault, recs, "test")) if retain else None)
+        return out, resp["data"], items[0], analysed["shown"]["calls"][tid]
+
+    def test_the_body_reaches_the_vault_only_when_it_is_on(self):
+        out, on, item, call = self.record(True)
+        self.assertTrue(on["content_digest"].startswith("hmac-sha256:"))
+        self.assertEqual((item["content"], "salt" in item), (out.model_dump(mode="json"), True))
+        self.assertEqual((call["form"], call["checks"]["TK-X201"]), ("summary", "checked"))   # reasoning checkable
+        _, off, item, call = self.record(False)
+        self.assertTrue(off["content_digest"].startswith("hmac-sha256:"))
+        self.assertNotIn("content", item)
+        self.assertEqual(call["checks"]["TK-X201"], "no_content")
+        for data in (on, off):   # the args each signer committed to (salted): the same tool use either way
+            self.assertEqual([{k: v for k, v in t.items() if k != "args_commitment"} for t in data["tool_uses"]],
+                             [{"id": "toolu_1", "name": "Bash", "executed_by": "client", "args_source": "parsed"}])
+
+    def test_a_stream_keeps_what_it_accumulated(self):
+        _, data, item, _ = self.record(True, stream=True)
+        self.assertEqual([t["id"] for t in data["tool_uses"]], ["toolu_s"])
+        self.assertEqual([b["type"] for b in item["content"]["content"]], ["tool_use"])
 
 
 @unittest.skipUnless(httpx is not None and openai is not None, "openai not installed")

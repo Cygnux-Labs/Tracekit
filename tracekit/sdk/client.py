@@ -292,6 +292,7 @@ class Client:
         # before any event)
         self._seqs = collections.OrderedDict()
         self._order = {}   # run_id -> the lock its event calls hold from taking their client_seq to their answer
+        self.vault = VaultBody(lambda: self.status({}))   # vault(content): a model_event's body, if the signer keeps it
         _clients.add(self)
 
     def run(self, agent, parent=None, **fields):
@@ -485,6 +486,36 @@ def sendable(out):
         return False
 
 
+class VaultBody:
+    """`vault(content, size=None)`: {"body": content} for a model_event when the signer keeps content (`status()`, its
+    status answer, names the vault's max_record_bytes), the content's `size` in bytes (default: its canonical JSON)
+    fits that and half a frame, and `content` is strict JSON (no integer past 2^53, non-finite number or lone
+    surrogate, which a frame cannot carry); else {}: the record keeps the digest and the vault notes the content as
+    not retained. The LLM gateway's and the transcript tailer's."""
+
+    def __init__(self, status):
+        self.status, self.limit = status, None   # the largest body the signer's vault takes; 0: it keeps none
+
+    def __call__(self, content, size=None):
+        if self.limit is None:
+            # lean: asked once per process, until the signer answers; restart it after turning the signer's vault on
+            # or off
+            try:
+                self.limit = min((self.status().get("content") or {}).get("max_record_bytes", 0), MAX_LINE // 2)
+            except SignerUnavailable:
+                return {}
+            except RPCError:   # not granted `status`: no body
+                self.limit = 0
+        if not self.limit or (size or 0) > self.limit:
+            return {}
+        try:
+            c = canonical(content)
+            loads_strict(c)
+        except ValueError:   # CanonicalizationError, StrictJSONError
+            return {}
+        return {"body": content} if size is not None or len(c) <= self.limit else {}
+
+
 def named_rules(rule_ids):
     """The rule ids a refusal names to the model: TK-UNKNOWN-TOOL only flags a tool the policy doesn't name, it never
     refuses one."""
@@ -635,6 +666,13 @@ class RunHandle:
         so the signer's provenance index has it; the task or user prompt goes in with trust="trusted". The signer
         records a commitment, never the value."""
         return self.call("observe", value=value, source=source, trust=trust, **fields)
+
+    def review_finding(self, reviewer, verdict, cites):
+        """Sign a finding in this findings run (`client.run(name, analyzes=<run id>)`, as an identity signer.yaml
+        `analyzers` lists): `reviewer` the tool and version ("tracekit-analyze/1.4.0"), `verdict` {kind, rule,
+        severity, ...} and `cites` [{run_seq, hash}] of records of the analysed run (rpc_schema.REVIEW: no text of the
+        run; the signer adds the rule's fixed title). Returns {"run_seq"}."""
+        return self.call("review_finding", review={"reviewer": reviewer, "verdict": verdict, "cites": cites})
 
     def approval_consume(self, tool_call_id, tool, args, approval_id_hint=None, **fields):
         """Call right before running a call that was not denied: {"ok": True} when it may run now. `args` as for

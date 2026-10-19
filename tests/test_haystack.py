@@ -12,6 +12,7 @@ import warnings
 from unittest import mock
 
 import adapter_contract as ac
+import test_said as ts
 
 os.environ.setdefault("HAYSTACK_TELEMETRY_ENABLED", "False")   # Haystack's usage telemetry: off, offline
 HAVE = importlib.util.find_spec("haystack") is not None
@@ -19,7 +20,7 @@ if HAVE:
     from haystack.components.agents import Agent, State
     from haystack.components.agents.state import replace_values
     from haystack.components.generators.chat import MockChatGenerator
-    from haystack.dataclasses import ChatMessage, TextContent, ToolCall
+    from haystack.dataclasses import ChatMessage, ReasoningContent, TextContent, ToolCall
     from haystack.hooks import hook
     from haystack.tools import AgentTool, Tool, create_tool_from_function
     from haystack.tools.errors import ToolInvocationError
@@ -38,7 +39,7 @@ def run(decision="allow", rule_ids=(), consume=True, state="approved", **more):
     r.call.side_effect = lambda m, **f: {"approval_request": {"approval_id": "apr-1"},
                                          "approval_wait": {"state": state}, "approval_abandon": {}}[m]
     r.approval_consume.return_value = {"ok": consume, "rule_ids": list(rule_ids)}
-    return r
+    return ts.vault(r, on=False)
 
 
 def model(*calls):
@@ -112,12 +113,14 @@ class Hook(unittest.TestCase):
         answer(agent(r, self.tool()))
         r.approval_consume.assert_called_once_with("call-1", "close_account", {"account": "ACC-9"},
                                                    approval_id_hint="apr-1", attempt=0)
-        self.assertEqual(r.call.call_args_list[1], mock.call("approval_wait", approval_id="apr-1", timeout_ms=300000))
+        self.assertEqual([c for c in r.call.call_args_list if c.args[0] != "model_event"][1],
+                         mock.call("approval_wait", approval_id="apr-1", timeout_ms=300000))
 
     def test_an_unanswered_approval_is_withdrawn(self):
         r = run("ask", ["A1"], state="requested")
         self.assertIn("not approved: requested", answer(agent(r, self.tool())))
-        self.assertEqual([c.args[0] for c in r.call.call_args_list][-1], "approval_abandon")
+        self.assertEqual([c.args[0] for c in r.call.call_args_list if c.args[0] != "model_event"][-1],
+                         "approval_abandon")
 
     def test_the_refusal_names_the_rules_but_not_the_unknown_tool_flag(self):
         out = answer(agent(run("deny", ["TK-D001", "TK-UNKNOWN-TOOL"]), self.tool()))
@@ -305,7 +308,7 @@ class Hook(unittest.TestCase):
             if method == "approval_wait":
                 answered.wait(5)   # a person approves after the agent run was cancelled
                 return {"state": "approved"}
-            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}}[method]
+            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}, "model_event": {}}[method]
         r.call.side_effect = call
 
         async def go():
@@ -316,6 +319,51 @@ class Hook(unittest.TestCase):
         self.assertIn("approval_abandon", [c.args[0] for c in r.call.call_args_list])
         r.approval_consume.assert_not_called()
         self.assertEqual(self.ran, [])
+
+
+@unittest.skipUnless(HAVE, "haystack-ai not installed")
+class Said(unittest.TestCase):
+    """At before_tool the message is recorded: its reasoning (with OpenAI's encrypted_content), text and tool calls,
+    under the ids they are decided by (one Tracekit gives a call without one); the message itself only with the vault;
+    a failure to record changes nothing for the agent."""
+
+    def answer(self, r):
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return f"closed {account}"
+        msg = ChatMessage.from_assistant("Closing ACC-9.", meta={"model": "m-1"}, tool_calls=[
+            ToolCall("close_account", {"account": "ACC-9"}, "call-1"), ToolCall("close_account", {"account": "ACC-7"})],
+            reasoning=ReasoningContent("the user wants both closed", {"id": "rs_1", "encrypted_content": "ENC"}))
+        steps = iter([msg])
+
+        def reply(messages):
+            return next(steps, None) or "done"
+        tk = Tracekit(r)
+        return answer(Agent(chat_generator=MockChatGenerator(response_fn=reply),
+                            tools=[create_tool_from_function(close_account)],
+                            hooks={"before_tool": [tk], "after_tool": [tk]}))
+
+    def test_the_reasoning_before_a_call_is_linked_to_it(self):
+        r = ts.vault(run())
+        self.assertEqual(self.answer(r), "done")
+        (f,) = ts.recorded(r)
+        decided = [c.args[0] for c in r.decide.call_args_list]
+        self.assertEqual(decided[0], "call-1")
+        self.assertTrue(decided[1].startswith("haystack-"))   # Tracekit's id for the call that had none
+        self.assertEqual([t["id"] for t in f["tool_uses"]], decided)
+        self.assertEqual(ts.segments(f), [("reasoning", "summary", "the user wants both closed", []),
+                                          ("text", "full", "Closing ACC-9.", decided)])
+        self.assertEqual((f["model"], f["body"]["output"][0]["encrypted_content"]), ("m-1", "ENC"))
+
+    def test_without_the_vault_only_the_commitment(self):
+        r = run()
+        self.answer(r)
+        self.assertTrue(all("body" not in f and f["content_digest"] for f in ts.recorded(r)))
+
+    def test_a_failure_to_record_changes_nothing_for_the_agent(self):
+        r = ts.failing(run())
+        with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
+            self.assertEqual(self.answer(r), "done")
 
 
 @unittest.skipUnless(HAVE, "haystack-ai not installed")

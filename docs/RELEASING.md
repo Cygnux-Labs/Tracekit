@@ -21,7 +21,9 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    (one-time setup, step 3) to require a second person.
 5. Once the `npm` job has published, refresh the TypeScript lockfile in a follow-up PR: `make test-ts`, then commit
    `sdk/typescript/package-lock.json`. The version bump can't lock signer packages that aren't published yet, and once
-   they are, `npm ci` (the `release-dry-run` job, `scripts/release/build.py`) fails until the lockfile names them.
+   they are, `npm ci` (the `release-dry-run` job, `scripts/release/build.py`) fails until the lockfile names them. In
+   the same PR add the tag to `RELEASED` in `tests/test_released_verifiers.py`, so CI runs this release's verifier on
+   every later signer's bundles.
 6. Once the `pypi` job has published, an owner of the `Cygnux-Labs` GitHub organisation publishes the MCP gateway's
    entry in the MCP Registry from the tagged checkout. The registry proves the `io.github.Cygnux-Labs` namespace
    through a GitHub login, and `mcp-publisher login github` (device flow) can't see the org's Owner role: create a
@@ -34,6 +36,11 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    Claude Code plugin directory's listing (this repository is over the directory's 50 MiB limit). From the tagged
    checkout, `rsync -a --delete --exclude .git --exclude LICENSE plugin/ <clone>/` (the clone keeps its own
    `LICENSE`), then commit and push there; change nothing else. The directory picks up new commits about every 6 hours.
+8. Host the browser verifier. The verifiers' upgrade lines send people with a bundle too new for theirs to
+   https://cygnux-labs.github.io/Tracekit/verify/, so publish the release's `verify.html` there, as the latest, and at
+   `verify/<v>/` for good: check the downloaded file (`gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`),
+   then on the `gh-pages` branch (the repository's Pages source, one-time setup step 4) copy it to
+   `verify/<v>/index.html` and `verify/index.html`, commit and push. The release workflow doesn't run this step.
 
 ### What gets built, signed and published
 
@@ -41,6 +48,7 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
 |---|---|---|---|
 | `tracekit_ai-<v>.tar.gz`, `tracekit_ai-<v>-py3-none-any.whl` | `scripts/release/build.py` | build provenance (`actions/attest-build-provenance`); PEP 740 attestations from trusted publishing | PyPI, GitHub release |
 | `cygnuxlabs-tracekit-<v>.tgz` | `scripts/release/build.py` (`npm pack`) | build provenance; `npm publish --provenance` | npm, GitHub release |
+| `verify.html`, the browser verifier | `scripts/release/build.py` (the npm build's `dist/verify.html`, built twice and compared) | build provenance | GitHub release, the npm package (`dist/verify.html`), GitHub Pages (procedure step 8) |
 | `cygnuxlabs-tracekit-signer-<platform>-<v>.tgz` (4) | `scripts/build-signer-bundles.py`, `npm pack` | build provenance; `npm publish --provenance` | npm (before `@cygnuxlabs/tracekit`), GitHub release |
 | `ghcr.io/cygnux-labs/tracekit-signer` (linux/amd64 + linux/arm64) | `docker buildx`, `deploy/docker/Dockerfile` | build provenance pushed to the registry; cosign keyless signature and CycloneDX attestation, by digest | ghcr.io |
 | `tracekit-ai.cdx.json`, `tracekit-signer-image.cdx.json` | `scripts/release/build.py` (cyclonedx-bom, syft; versions pinned) | build provenance | GitHub release |
@@ -52,7 +60,7 @@ The sdist and wheel are byte-identical across builds of the same commit: `build.
 
 ### Dry run
 
-`make release-dry-run` builds the Python files, the `@cygnuxlabs/tracekit` tarball, the Python SBOM and `SHA256SUMS` into
+`make release-dry-run` builds the Python files, the `@cygnuxlabs/tracekit` tarball, `verify.html`, the Python SBOM and `SHA256SUMS` into
 a temporary directory twice, checks the two Python builds are identical, and runs `verify-release.sh --dry-run`
 (sums and SBOM, no attestations). It publishes nothing; it needs the package index and npm. To keep the output:
 `python3 scripts/release/build.py [OUT] [--image docker:IMAGE]` (default `dist/release/`; `--image` needs syft at
@@ -68,7 +76,10 @@ scripts/release/verify-release.sh DIR ghcr.io/cygnux-labs/tracekit-signer@sha256
 
 It checks every file against `SHA256SUMS`, that the SBOM is present, and that every listed file and the image digest
 carries a provenance attestation from `Cygnux-Labs/Tracekit`'s `release.yml`. A file from PyPI or npm can be
-checked the same way: `gh attestation verify <file> --repo Cygnux-Labs/Tracekit`. The image signature also verifies
+checked the same way: `gh attestation verify <file> --repo Cygnux-Labs/Tracekit`. So can the browser verifier wherever
+it came from (the attestation is of its bytes): before using it for evidence, save the page you would open, from the
+release or https://cygnux-labs.github.io/Tracekit/verify/<v>/, as `verify.html`, run
+`gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`, and open that file. The image signature also verifies
 with cosign:
 
 ```sh
@@ -86,6 +97,8 @@ cosign verify ghcr.io/cygnux-labs/tracekit-signer@sha256:<digest> \
    A package must exist before it can be configured; publish the first version by hand from the dry run's tarballs.
 3. **GitHub**: environments `release`, `pypi` and `npm`, each limited to `v*` tags; optionally with required
    reviewers and "prevent self-review" (off since 2026-10-17). Package `tracekit-signer` on ghcr.io linked to the repository (first push creates it).
+4. **GitHub Pages**: create the `gh-pages` branch (empty but for `.nojekyll`) and set it as the repository's Pages
+   source, so https://cygnux-labs.github.io/Tracekit/verify/ serves the browser verifier (procedure step 8).
 
 Until these are done the publish jobs fail and nothing is released; the build job still checks the package.
 

@@ -187,6 +187,9 @@ Three guarantees. They're related, but one doesn't give you the others, and each
   ([FAQ](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md#what-does-same-user-dev-mode-protect)).
 - **A verified run proves the record is intact**: not intent, not that a reported tool result is true, and not that
   every action was captured ([FAQ](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md#what-cant-tracekit-prove)).
+  `tracekit analyze --v2` compares what was asked, what the model said and what ran, but what the model said is its
+  own account, and findings are an opinion beside the integrity, never part of it
+  ([findings](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)).
 - **Actions outside the capture path leave no record**, such as a subprocess a hook never sees or code that skips the
   adapter ([adapters](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/adapters.md)).
 - **Policy rules match text and tool names.** A determined agent can reword a command; the protection is the signer's
@@ -216,9 +219,9 @@ is tested, but may change between releases ([what's stable](https://github.com/C
 |---|---|---|
 | **Witness** | Independent [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md) cosign each checkpoint; a [monitor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/monitor.md) watches the log for rewrites and forks | 8 of 8 tamper attacks caught with a witness (E1) |
 | **Cross-check** | The signer compares the calls the model asked for, as an [LLM gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/gateway.md) or the session transcript saw them, with the calls the agent reported. A skipped hook or a made-up call is flagged | 12 of 12 seeded discrepancies flagged, 0 false (E10) |
-| **Contain** | Signed [incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md) hold or quarantine a run. Tools run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/executor.md), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md)). An [egress observer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/egress.md) flags traffic no call explains | 8 of 8 containment and 10 of 10 detection checks (E17) |
+| **Contain** | Signed [incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md) hold or quarantine a run. Tools run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/executor.md), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md)). An [egress observer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/egress.md) flags traffic no call explains. A [kernel sensor import](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/tetragon.md) records the processes, connections and file writes Tetragon or [Falco](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/falco.md) saw | 8 of 8 containment and 10 of 10 detection checks (E17) |
 | **Explain** | Where each argument came from, and [`tracekit why`](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md): which input caused an action, found by replaying the run without it | 6 of 6 true causes named, 0 false blames, one 7B model, small sample |
-| **More approvers** | A web page with passkeys, Slack, or a reviewer agent that approves within bounds | 7 of 7 abuse cases against agent approvers caught (E18) |
+| **Check** | [`tracekit analyze --v2`](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2), signed: an action with nothing said before it, an edit of a file nobody named, a write outside the project, a broken "don't touch X", a prompt line the harness never submitted, and how much of the run's reasoning could be read ([which agents' reasoning is readable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/reasoning.md)); `--review` adds a reviewer model's second opinion (warn only). [Live constraints](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md#live-constraints) hold the call that would break "don't touch X" for approval | Unrequested edits behind generic, sealed or reviewer-addressed cover text all caught, and an appended prompt line in 24 of 24; named innocently, 17-38%; "don't touch X" phrasings read: 4 of 14 held-out (E20, synthetic) || **More approvers** | A web page with passkeys, Slack, or a reviewer agent that approves within bounds | 7 of 7 abuse cases against agent approvers caught (E18) |
 
 ## Proof
 
@@ -321,7 +324,12 @@ tracekit init --dev --v2                    # wire Claude Code's hooks; add --ag
 - **Self-contained.** A `.tkb` file is a zip of records, inclusion proofs, checkpoints and the policy snapshots that
   decided the calls. It holds no verification code.
 - **Old files keep verifying.** Formats only grow, each format's verifier is frozen, and an older verifier reports a
-  newer file `UNVERIFIABLE (needs tracekit >= x)`, never `FAILED`.
+  newer file `UNVERIFIABLE (needs tracekit >= x)`, never `FAILED`. Verify such a file with
+  `uvx --from "tracekit-ai>=x" tracekit verify run.tkb --trust trust.json`,
+  `npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json`, or the
+  [browser verifier](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md#a-bundle-that-needs-a-newer-verifier),
+  which checks it in your browser and sends nothing. From 1.4.0, an addition an older verifier can leave unread is non-critical: the bundle verifies, and the
+  report names what that verifier didn't interpret.
 
 Verify a v1 bundle in GitHub Actions with `uses: Cygnux-Labs/Tracekit@main` (`bundle:` and `key:` or `witness:`).
 `require-anchor` defaults to `true`, so an unanchored bundle fails the step; set `require-anchor: "false"` to only

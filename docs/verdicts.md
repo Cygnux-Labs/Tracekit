@@ -1,6 +1,7 @@
 # Reading a v2 verify report
 
-`tracekit verify bundle.tkb --trust trust.json` prints one line per check, then two summary lines:
+`tracekit verify bundle.tkb --trust trust.json` prints one line per check, then two summary lines, and a third when
+the bundle holds signed findings:
 
 ```text
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
@@ -8,10 +9,11 @@
 ...
 Integrity: VERIFIED.
 Assurance: witnessed; records ed25519; checkpoint Ed25519 only (tracekit.example.org/log/1); cosigned ed25519 by ...
+Findings: 2 finding(s) (1 high, 1 medium) and 1 coverage review(s); 3 independent (an opinion of the run, not its integrity).
 ```
 
 Each line is `PASS`, `WARN` or `FAIL`. `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
-"integrity", "assurance", "notes"}`. The algorithm behind each line is in [format v2](format-v2.md#11-verification-algorithm);
+"integrity", "assurance", "notes"}`, with `"findings"` when there is a Findings line. The algorithm behind each line is in [format v2](format-v2.md#11-verification-algorithm);
 this page says what each one means, and what it does not. The v1 report is described in [signing](signing.md).
 
 ## Exit codes
@@ -29,18 +31,40 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 
 | Verdict | Means |
 |---|---|
-| `VERIFIED` | every check passed and every run in the bundle ends in its `run.final` |
+| `VERIFIED` | every check this verifier implements passed and every run in the bundle ends in its `run.final`. Records carrying an ext name it doesn't interpret verified like every other; what the name says is on a `not interpreted` warning |
 | `VERIFIED TO HEAD n (open)` | the bundle's one run has no `run.final` yet; its records up to `run_seq` n verify. Records after n may exist |
 | `VERIFIED (k run(s) open)` | a run-set bundle in which k runs have no `run.final` yet |
 | `FAILED` | at least one check failed; the failed lines say which |
 | `UNUSABLE BUNDLE` | the trust config or the zip could not be read, or the manifest is not `tracekit.bundle.v2` |
-| `UNVERIFIABLE (needs tracekit >= x)` | the bundle asks for a newer verifier (`verifier_min_version`) |
+| `UNVERIFIABLE (needs tracekit >= x)` | the bundle asks for a newer verifier (`verifier_min_version`); nothing failed. The `bundle readable` line lists the commands that verify it ([below](#a-bundle-that-needs-a-newer-verifier)) |
 | `UNVERIFIABLE (key revoked)` | records signed by a record key whose certificate a passed `--revocations` file revokes ([issuer.md](issuer.md)) |
 
 `VERIFIED` means: the records were signed by keys the log declared and had not retired; they form one unbroken run
 chain; the run's first and last records are in a tree whose checkpoint the pinned log key signed; nothing was edited,
 dropped, reordered or added after signing. It does **not** mean the run did everything the agent did (see coverage and
 tiers), that a tool result is true, or that the signer was out of the agent's reach (see isolation and assurance).
+
+## A bundle that needs a newer verifier
+
+`UNVERIFIABLE (needs tracekit >= x)` means the bundle uses something your verifier doesn't know; nothing failed.
+Verify it with a newer one. From 1.4.0 the `bundle readable` line prints these with your own paths (1.3 and earlier
+print only the verdict):
+
+```text
+[FAIL] bundle readable — UNVERIFIABLE (needs tracekit >= 1.4.0)
+        uvx --from "tracekit-ai>=1.4.0" tracekit verify run.tkb --trust trust.json
+        npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json
+        or open https://cygnux-labs.github.io/Tracekit/verify/ and choose both files: the page verifies them in your browser and sends nothing
+```
+
+`uvx` (from [uv](https://docs.astral.sh/uv/)) runs the Python verifier of that version without installing it; `npx`
+runs the TypeScript one (Node ≥ 20.12), which lists itself first. The page is the TypeScript verifier too: its Content
+Security Policy lets it load and send nothing, so the bundle never leaves your browser. For evidence, use a copy you
+checked against the release (`gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`, [releasing](RELEASING.md#verifying-a-release)).
+
+From 1.4.0, what an older verifier can leave unread is non-critical (`ext`, [format v2](format-v2.md#9-bundle-layout)):
+a 1.4.0 verifier verifies a later bundle and names each ext name it did not interpret on a `not interpreted` warning,
+with the version that checks it.
 
 ## Assurance
 
@@ -75,7 +99,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | Line | Pass means | On failure |
 |---|---|---|
 | `trust config` | — | the trust config is malformed (exit 2) |
-| `bundle readable` | — | not a zip, unsafe entries, no manifest, or too new (exit 2) |
+| `bundle readable` | — | not a zip, unsafe entries, no manifest, or too new (exit 2): then it lists the commands that verify the bundle ([above](#a-bundle-that-needs-a-newer-verifier)) |
 | `manifest` | the files are exactly those listed, with those hashes | a file was added, removed or changed after export |
 | `checkpoint` | the note is signed by the pinned log key named after its origin (and by its pinned hybrid SLH-DSA key, if any), and is of the proofs' tree size | wrong key, wrong origin, edited note, a pinned hybrid line missing or bad |
 | `witness quorum` | at least `witnesses_required` pinned cosignatures (any class) | too few |
@@ -100,10 +124,12 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `log tail` | records after the checkpoint are unproven: the range has no `log.closed` at the checkpoint's last record | that records were hidden |
 | `policy` | a tool call ran against a deny, or an `ask` with no consumed approval, and the signer recorded it as `capture.gap{executed_against_policy}` | that the call did harm |
 | `coverage` | the signer's reconciliation found calls it could not match across capture layers (`unreconciled: hook_missing 1, ...`), or a host an [egress observer](egress.md) saw the run reach that no http or model call nor `explains` entry covers (`unexplained_effect 1`) | that the agent hid a call; a layer may simply not have reported, and an unexplained host may be a tool's own dependency the policy's `explains` doesn't list yet |
-| `observers` | an egress observer covering the run went silent or restarted while the run was open, and the signer wrote a `capture.gap{observer_lost}`: the run's traffic after that (on a restart, what the old process had not reported) was not observed | that the run sent anything unobserved |
+| `observers` | an egress observer covering the run went silent or restarted while the run was open, and the signer wrote a `capture.gap{observer_lost}`: the run's traffic after that (on a restart, what the old process had not reported) was not observed. A [kernel sensor's import](integrations/tetragon.md) writes the same gap when it goes silent, restarts or reports lost events | that the run sent anything unobserved, or ran anything unrecorded |
 | `break-glass approvals` | an approval was answered under the break-glass role, with its approver and reason | that the approval was wrong |
 | `held calls` | the signer wrote a `held_call_unresolved` gap: a call the executor or a gateway decided and may have run got no result before its run ended (after `gateway_wait_s`) | that the call ran, or did harm |
 | `tiers` (`decided and completed by different capture paths`) | a tool call's decision and result records name different `source` or `tier`, for example a call a gateway decided (T2) completed by the agent, which a current signer refuses; each such call is listed and counted at the weaker tier | which record is false, or that the call didn't run |
+| `gateway amendments` | `ext.amended` is on a record other than an LLM gateway's model request, or isn't a list of JSON pointers: the signer never writes that. It passes otherwise: `gateway amended n request(s) to show reasoning (/thinking/display: n)`, the requests the [gateway](gateway.md#readable-reasoning) sent with a field changed so the provider shows reasoning, each record committing to the request as sent | that the records are false: they verified like every other |
+| `not interpreted` | records carry an ext name (format 1.4's non-critical slot) this verifier doesn't check, one line per name: `n record(s) carry ext.<name>`. They verified like every record (signature, chain, inclusion); what the name says is not checked. `tracekit >= x checks it` names a verifier that does (from the manifest, advisory) | that anything is wrong: a later Tracekit wrote something this verifier doesn't read |
 | `external decisions` | another policy system's imported decision (`policy.external`) disagreed with the signer's for the same call (or named another tool, or a call the signer never decided), recorded as `capture.gap{decision_mismatch}`; the line also counts imports by system and by verified signature | that either decision was wrong: the signer's decision is the one that applied |
 
 ### Informational lines (always `PASS`)
@@ -135,6 +161,50 @@ without one keeps the report it always had):
 The argument bounds themselves are not checkable offline: the records hold the arguments as salted commitments, so the
 line says so in its detail. To audit one approval, `tracekit signer reveal --record <seq>` prints the salt of that
 record and an auditor holding the arguments recomputes the commitment ([privacy](privacy.md#the-v2-signer)).
+
+## Reviews
+
+A signed finding is what `tracekit analyze --v2` found in a run, signed by the signer in a findings run of the
+analyzer's own ([findings](findings.md), [format v2](format-v2.md#3-events)). It holds a rule, a severity, the rule's
+fixed title and citations of the records it rests on, never text of the run. When a bundle holds `review` records,
+both verifiers add:
+
+| Line | Pass means | Warning / failure |
+|---|---|---|
+| `reviews` | `n review(s): 2 independent, 1 imported`: the reviews counted by label (below), and each citation of a signed finding is a record of the analysed run, in the bundle, with that `run_seq` and hash, and its verdict has a signed finding's shape | **warn** when a finding is `self-asserted`, naming its findings run and why. **fail** when a citation names a record the analysed run doesn't have, or one with another hash (the records are intact; the finding misstates them), a signed finding is outside a findings run, or its verdict holds a value no signer of its format signs (an alignment, reason code, model family or window outside what `review_finding` allows) |
+| `reviews counted` | — | **warn**: a findings run is in the bundle without the run it analyses, so its citations are not counted. Export the analysed run with `tracekit export --v2 --run <run> --with-findings` |
+
+The label says who wrote a finding: its author, the identity the signer measured when the findings run registered.
+Only `independent` vouches for the author; read every other label as the analyzer's word:
+
+| Label | Means |
+|---|---|
+| `independent` | your trust config's `analyzers` lists the author ([format v2](format-v2.md#10-the-trust-config)), and the author is not the analysed run's identity |
+| `unpinned author <id>` | the author is not the analysed run's identity, but your trust config doesn't list it. If you trust that identity to analyse runs, add it to `analyzers` |
+| `self-asserted` | the agent could have written the finding about itself: the author is the analysed run's own identity, or a run's `signer_isolation` is `same-user` (the signer runs as its client's user, which can then use its keys). Every finding of the dev signer reads this |
+| `author not checked` | the analysed run is not in the bundle |
+| `imported` | a review without citations, such as a v1 judge verdict carried over; never checked |
+
+A finding says that a check fired on these records, not that the agent did wrong. A bundle with signed findings needs
+`verifier_min_version` 1.4.0: an older verifier reports `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
+
+The `Findings:` line, after `Integrity` and `Assurance`, sums them up: how many findings by severity, the coverage
+reviews, and the author labels. It is kept apart on purpose. Integrity depends only on the cryptographic and structural
+checks; a finding is someone's opinion of the run and never changes it. Only a citation that doesn't match fails the
+bundle (`reviews`), because then the analyzer misstated the evidence or the evidence changed.
+
+## Live constraints
+
+A [live constraint](policy-v2.md#live-constraints) is what the person's request said not to do in the rest of a run
+(`constraint.added`); the signer held each later call that broke one for a person's approval (`TK-CONSTRAINT`). When a
+bundle holds either, both verifiers add:
+
+| Line | Pass means | Failure |
+|---|---|---|
+| `constraints` | `n live constraint(s) added; m call(s) held by them`: each decision held by `TK-CONSTRAINT` is an `ask` that comes after a `constraint.added` in its run | a decision held by `TK-CONSTRAINT` before any constraint in its run, or one that is not an `ask`: the signer never writes either |
+
+The line counts holds, not breaches: a held call ran only if a person approved it (`approvals by people`). A
+constraint holds a file's commitment, never its name; the person's prompt it came from is in the content vault.
 
 ## Signed gaps
 

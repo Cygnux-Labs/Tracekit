@@ -496,6 +496,79 @@ class PluginHooks(unittest.TestCase):
         self.assertEqual(v2.call_args.kwargs["plugin"], os.path.join(home, ".claude", "settings.json"))
 
 
+class ThinkingSummaries(unittest.TestCase):
+    """D-THINKING-SUMMARIES: with Claude Code's hooks and the content vault on, thinking summaries off leave every
+    transcript's reasoning sealed, so `tracekit analyze --v2` can't check it."""
+
+    def check(self, settings_extra, vault=True):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        settings = os.path.join(d, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(settings, module=install.V2_HOOK)
+        with open(settings) as f:
+            s = json.load(f)
+        with open(settings, "w") as f:
+            json.dump(dict(s, **settings_extra), f)
+        cfg = {"data_dir": d, "content": {"retain": True} if vault else None}
+        with mock.patch.object(install, "user_settings", return_value=os.path.join(d, "none.json")):
+            return {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=settings)}["D-THINKING-SUMMARIES"]
+
+    def test_off_with_the_vault_warns_and_names_the_setting_and_the_headless_flag(self):
+        got = self.check({})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn('"showThinkingSummaries": true', got["fix"])
+        self.assertIn("claude -p --thinking-display summarized", got["fix"])
+        self.assertEqual(self.check({"showThinkingSummaries": False})["status"], "warn")
+
+    def test_on_or_without_the_vault_is_ok(self):
+        self.assertEqual(self.check({"showThinkingSummaries": True})["status"], "ok")
+        self.assertEqual(self.check({}, vault=False)["status"], "ok")
+
+
+class CodingAgentReasoning(unittest.TestCase):
+    """D-CODEX-REASONING and D-GEMINI-THOUGHTS: with an agent's v2 hooks installed and the content vault on, a setting
+    that keeps its reasoning unreadable is a warning naming the exact fix."""
+
+    def check(self, harness, files, vault=True):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for name, text in files.items():
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+        hooks = os.path.join(d, "settings.json" if harness == "gemini" else "hooks.json")
+        cfg = {"data_dir": d, "content": {"retain": True} if vault else None}
+        rid = "D-CODEX-REASONING" if harness == "codex" else "D-GEMINI-THOUGHTS"
+        return {r["id"]: r for r in doctor.v2_checks(cfg, "dev", harnesses={harness: hooks})}[rid]
+
+    def test_codex_summaries_unset_or_none_warn_with_the_line_to_add(self):
+        for files in ({}, {"config.toml": 'model_reasoning_summary = "none"\n'}):
+            got = self.check("codex", files)
+            self.assertEqual(got["status"], "warn")
+            self.assertIn('model_reasoning_summary = "auto"', got["fix"])
+            self.assertIn("tracekit init --dev --v2 --agent codex", got["fix"])
+        self.assertEqual(self.check("codex", {"config.toml": 'model_reasoning_summary = "auto"\n'})["status"], "ok")
+        self.assertEqual(self.check("codex", {}, vault=False)["status"], "ok")
+
+    def test_gemini_thoughts_turned_off_in_model_configs_warn(self):
+        off = {"modelConfigs": {"overrides": [{"match": {"model": "gemini-3-pro"}, "modelConfig": {
+            "generateContentConfig": {"thinkingConfig": {"includeThoughts": False}}}}]}}
+        got = self.check("gemini", {"settings.json": json.dumps(off)})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("includeThoughts: false", got["fix"])
+        self.assertEqual(self.check("gemini", {"settings.json": "{}"})["status"], "ok")
+
+    def test_dev_doctor_finds_the_agents_with_v2_hooks(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        from tracekit import agent_hooks
+        with mock.patch.dict(os.environ, {"HOME": d}), mock.patch("os.getcwd", return_value=d), \
+                contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codex", v2=True)
+            agent_hooks.install("gemini")   # v1: not checked
+            self.assertEqual(doctor._dev_harnesses(), {"codex": agent_hooks.config_path("codex")})
+
+
 @unittest.skipIf(os.name == "nt", "POSIX modes")
 class DevProfile(unittest.TestCase):
     def test_dev_signer_warns_instead_of_failing(self):

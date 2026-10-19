@@ -10,6 +10,10 @@
  * SLH-DSA-SHA2-128s hybrid checkpoint lines (Web Crypto has no SLH-DSA), Rekor v2 anchors, record-key certificates,
  * tracekit why findings and replay runs.
  * Monitor reports, revocations and the v1 format bridge are inputs of the reference's CLI that this one doesn't take.
+ * A bundle that needs a newer verifier is UNVERIFIABLE, with the commands that verify it; one whose records carry ext
+ * names this verifier doesn't interpret (format 1.4's non-critical slot) verifies, with a `not interpreted` warning
+ * per name; it interprets `amended` (the fields an LLM gateway changed in a request to show reasoning). web.ts is this
+ * verifier as a browser page (verify.html).
  */
 import { type Floats, canonicalize, strictParseBytes } from "./jcs.js";
 import {
@@ -24,7 +28,9 @@ export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
-export const VERSION = "1.3.0";
+export const VERSION = "1.4.0";
+/** The browser verifier of the latest release (docs/RELEASING.md). */
+const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
 const FORMAT = "tracekit.bundle.v2";
 const MAX_LINE = 1 << 20;
@@ -34,6 +40,15 @@ const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
 const MATRIX = ["model_calls", "tool_calls", "network", "processes", "services"];
 const COVERED = ["none", "reported", "observed", "enforced"];   // weakest first
+const SEVERITIES = ["critical", "high", "medium", "low", "info"];   // a signed finding's, worst first
+// the closed fields of a signed finding's verdict (tracekit/signer/rpc_schema.py REVIEW) and the values each may take
+const FAMILIES = ["anthropic", "openai", "google", "meta", "mistral", "deepseek", "qwen", "xai"];
+const VERDICT: Record<string, J[]> = {
+  kind: ["finding", "coverage"], severity: SEVERITIES, tier: ["gateway", "harness", "transcript", "sdk"],
+  order: ["signed_before", "transcript_order", "after"], alignment: ["ok", "drift", "misaligned"],
+  reason: ["none", "unrequested_action", "unexplained_action", "contradicted_reasoning", "scope_creep", "workaround",
+    "false_success", "followed_tool_output", "injection", "other"],
+};
 
 export type Check = { check: string; status: "pass" | "warn" | "fail"; detail: string; problems: string[] };
 
@@ -44,6 +59,8 @@ export class Report {
   notes: string[] = [];
   integrity = "UNUSABLE BUNDLE";
   assurance = "none";
+  /** The Findings line: signed findings, an opinion of the run kept apart from its integrity (null: none). */
+  findings: string | null = null;
   /** Checks the bundle needs that this verifier does not implement. */
   unsupported: string[] = [];
 
@@ -116,7 +133,7 @@ const fmt = (ts: bigint | number) => {
 };
 
 type Trust = { logs: string[]; witnesses: { vkey: string; class: string }[]; algs: string[]; witnesses_required: number;
-  rekor?: Record<string, J>; issuers: J[] };
+  rekor?: Record<string, J>; issuers: J[]; analyzers: string[] };
 
 async function loadTrust(data: Uint8Array): Promise<Trust> {
   const floats: Floats = new WeakMap();
@@ -128,7 +145,7 @@ async function loadTrust(data: Uint8Array): Promise<Trust> {
   const opt = (o: Record<string, J>, k: string) => Object.hasOwn(o, k) ? o[k] : [];
   const r = isObj(t) ? get(t, "rekor", {}) : null;
   const ok = isObj(t) && Object.keys(t).every((k) => ["logs", "witnesses", "algs", "witnesses_required", "rekor",
-    "monitors", "issuers"].includes(k))
+    "monitors", "issuers", "analyzers"].includes(k))
     && isObj(r) && (!Object.keys(r).length || exactly(r, ["trusted_root", "publishing_key", "class"])
       && isObj(r.trusted_root) && typeof r.publishing_key === "string" && CLASSES.includes(r.class))
     && strings(t.logs)
@@ -138,14 +155,31 @@ async function loadTrust(data: Uint8Array): Promise<Trust> {
     && Array.isArray(opt(t, "monitors")) && opt(t, "monitors").every((m: J) => exactly(m, ["vkey", "class", "max_age_s"])
       && typeof m.vkey === "string" && CLASSES.includes(m.class) && int(m, "max_age_s", 0) > 0)
     && Array.isArray(opt(t, "issuers")) && opt(t, "issuers").every((i: J) => exactly(i, ["vkey", "issuance_log_vkey"])
-      && Object.values(i).every((v) => typeof v === "string"));
-  if (!ok) throw new Error("not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers)");
+      && Object.values(i).every((v) => typeof v === "string"))
+    && Array.isArray(opt(t, "analyzers"))
+    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:.+$/.test(a));
+  if (!ok) throw new Error("not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers, analyzers)");
   for (const k of [...t.logs, ...opt(t, "witnesses").map((w: J) => w.vkey), ...opt(t, "monitors").map((m: J) => m.vkey),
     ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) await parseVkey(k);
   t.witnesses ??= [];
   t.witnesses_required ??= 0;
   t.issuers ??= [];
+  t.analyzers ??= [];
   return t as Trust;
+}
+
+/** `s` as one shell argument, as the reference quotes it (shlex.quote; on Windows subprocess.list2cmdline). */
+function quote(s: string) {
+  if ((globalThis as J).process?.platform === "win32") return /[ \t]/.test(s) || !s ? `"${s}"` : s;
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'"'"'`)}'`;
+}
+
+/** Ways to verify the bundle with a verifier of version `need` or later, as commands with the user's own paths. */
+function upgrade(need: string, names: { bundle: string; trust: string }) {
+  const [b, t] = [quote(names.bundle), quote(names.trust)];
+  return [`npx -y @cygnuxlabs/tracekit@latest verify ${b} --trust ${t}`,
+    `uvx --from "tracekit-ai>=${need}" tracekit verify ${b} --trust ${t}`,
+    `or open ${PAGE} and choose both files: the page verifies them in your browser and sends nothing`];
 }
 
 function newer(need: string, have: string) {
@@ -156,8 +190,12 @@ function newer(need: string, have: string) {
 
 const errorText = (e: unknown) => `${(e as Error)?.constructor?.name ?? "Error"}: ${(e as Error)?.message ?? e}`;
 
-/** Verify a v2 bundle (zip bytes) against the verifier's own pinned trust config (JSON bytes). Never throws. */
-export async function verify(bundle: Uint8Array, trust: Uint8Array): Promise<{ report: Report; code: number }> {
+/**
+ * Verify a v2 bundle (zip bytes) against the verifier's own pinned trust config (JSON bytes). Never throws. `names`: the
+ * files' paths, for the commands a bundle that needs a newer verifier is told to run.
+ */
+export async function verify(bundle: Uint8Array, trust: Uint8Array,
+  names = { bundle: "BUNDLE", trust: "TRUST.json" }): Promise<{ report: Report; code: number }> {
   const rep = new Report();
   let t: Trust, files: Map<string, Uint8Array>, manifest: J;
   try {
@@ -179,7 +217,7 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array): Promise<{ r
       throw new Error("verifier_min_version is not a version number");
     if (newer(need, VERSION)) {
       rep.integrity = `UNVERIFIABLE (needs tracekit >= ${need})`;
-      rep.check("bundle readable", false, rep.integrity);
+      rep.check("bundle readable", false, rep.integrity, upgrade(need, names));
       return { report: rep, code: EXIT_BAD };
     }
   } catch (e) {
@@ -308,9 +346,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     for (const [kid, k] of declared) timeline.set(kid, k);
   }
 
-  // the runs: one, or with a run-set any number, or one with its tracekit why findings and replay runs
-  // lean: findings (verify/v2.py's _findings) are not checked here: a bundle with them is UNVERIFIABLE; port it when
-  // TS users verify findings bundles
+  // the runs: one, or with a run-set any number, or one with its findings runs (and replay runs)
+  // lean: tracekit why findings (verify/v2.py's _findings) are not checked here: a bundle with a why.finding or a replay
+  // run is UNVERIFIABLE; port it when TS users verify tracekit why bundles
   const names = [...files.keys()].filter((n) => n.startsWith("runs/")).sort();
   const runSet = files.has("registry/run-set.json");
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
@@ -330,10 +368,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     }
     if (!(await included(records[0]) && await included(records.at(-1)))) outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}`);
   }
-  const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding")
-    || get(rs[0].event, "type") === "run.registered" && ["analyzes", "replay_of"].some((k) => has(get(rs[0].event, "data"), k)));
+  const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding") || about(rs)[1] !== null);
   if (why) rep.unsupport("tracekit why findings");
-  else if (names.length !== 1 && !runSet) throw new Error("a v2 bundle holds exactly one run, or a run-set");
+  else if (names.length !== 1 && !runSet && !aboutOne(runs))
+    throw new Error("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
   let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
   if (runSet) {
     [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
@@ -437,7 +475,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       }).join(", "));
   const lost = gaps("observer_lost");
   if (lost.length)
-    rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
+    rep.check("observers", false, `${lost.length} observer gap(s): an observer went silent, restarted or lost events while its run was open`, lost.slice(0, 20), true);
+  checkReviews(rep, runs, trust.analyzers);
+  checkConstraints(rep, runs);
   checkIncidents(rep, runs, policies, floats);
   const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
   if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -507,6 +547,63 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
+  const pointed = runSet ? jsonl("registry/records.jsonl") : [];   // the records a run-set's leaves name
+  checkExt(rep, [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
+    .values()], get(manifest, "verifier_version"));
+}
+
+/**
+ * ext.amended: the JSON pointers of the fields an LLM gateway changed in a model request before sending it, to show the
+ * reasoning the request has the model do. The signer writes it on a gateway's request record only, whose content digest
+ * is of the request as sent; anywhere else, or not a list of pointers, it is a warning.
+ */
+function checkAmended(rep: Report, events: J[]) {
+  const fields = (e: J): string[] | null => {
+    const v = isObj(get(e, "ext")) ? get(e.ext, "amended") : null;
+    const data = get(e, "data", {});
+    return get(e, "type") === "model.exchange" && get(e, "source") === "gateway" && isObj(data)
+      && get(data, "phase") === "request" && Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string"
+        && p.length <= 256 && /^(\/([^~/]|~[01])*)+$/u.test(p)) ? v : null;
+  };
+  const good = events.filter((e) => fields(e)), bad = events.filter((e) => !fields(e));
+  const n = new Map<string, number>();
+  for (const e of good) for (const p of fields(e)!) n.set(p, (n.get(p) ?? 0) + 1);
+  const shown = [...n].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, 8).map(([p, c]) => `${p}: ${c}`);
+  rep.check("gateway amendments", bad.length === 0, `gateway amended ${good.length} request(s) to show reasoning`
+    + (shown.length ? ` (${shown.join(", ")})` : "") + "; each record commits to the request as sent",
+  bad.map((e) => `seq ${str(get(e, "seq"))}: ext.amended is not a list of JSON pointers on a gateway's model request`)
+    .slice(0, 20), true);
+}
+
+/**
+ * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
+ * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
+ */
+const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended]]);
+
+/** The ext names an event carries: its `ext` field's keys, and an `ext` record's name. */
+const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {}),
+  ...get(e, "type") === "ext" ? [at(at(e, "data"), "name")] : []];
+
+/**
+ * A line per ext name the records carry: its EXT_CHECKS check, or a `not interpreted` warning. The records were checked
+ * like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version.
+ */
+function checkExt(rep: Report, events: J[], full: J) {
+  const carry = new Map<string, J[]>();   // name -> the events carrying it
+  for (const e of events)
+    for (const n of new Set(extNames(e).map((x) => cut(str(x), 64)))) {
+      if (!carry.has(n)) carry.set(n, []);
+      carry.get(n)!.push(e);
+    }
+  const later = typeof full === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(full) && newer(full, VERSION)
+    ? `; tracekit >= ${full} checks it` : "";
+  for (const [n, es] of [...carry].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    const interpret = EXT_CHECKS.get(n);
+    if (interpret) interpret(rep, es);
+    else rep.check("not interpreted", false, `${es.length} record(s) carry ext.${n}: their signatures, chain and `
+      + `inclusion are checked above; what ext.${n} means is not checked${later}`, [], true);
+  }
 }
 
 /** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
@@ -583,6 +680,141 @@ const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.qua
 const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary",
   "reconcile.unexplained_effect"];
 const RECOMPUTED = ["sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch"];
+
+/** [analyzes, replay_of, investigation] of a run's run.registered (nulls when it is not one). */
+function about(rs: J[]): J[] {
+  const e = at(rs[0], "event"), d = get(e, "type") === "run.registered" ? get(e, "data") : null;
+  return ["analyzes", "replay_of", "investigation"].map((k) => truthy(d) ? get(d, k) : null);
+}
+
+/** Whether every run but one of the same tenant is a findings or replay run of that one. */
+function aboutOne(runs: Map<string, J[]>): boolean {
+  const all = [...runs.values()], main = all.filter((rs) => about(rs)[0] === null && about(rs)[1] === null);
+  if (main.length !== 1) return false;
+  const head = main[0][0].event;
+  return all.every((rs) => rs === main[0] || same(get(rs[0].event, "tenant"), get(head, "tenant"))
+    && about(rs).slice(0, 2).some((x) => same(x, get(head, "run_id"))));
+}
+
+/** ["scheme:subject", signer_isolation] of a run's run.registered (nulls when it is not one). */
+function author(rs: J[]): J[] {
+  const e = at(rs[0], "event"), d = get(e, "type") === "run.registered" ? get(e, "data") : {};
+  const i = get(d, "identity");
+  return [truthy(i) ? `${str(at(i, "scheme"))}:${str(at(i, "subject"))}` : null, get(d, "signer_isolation")];
+}
+
+/**
+ * Signed findings (format 1.4, docs/format-v2.md §11): each `review` with `cites`, in a findings run, cites records of
+ * the analysed run that are in the bundle with those hashes (else `reviews` fails), and is labelled by its author (the
+ * findings run's registered identity), positive-only: independent only when the trust config's `analyzers` pins it;
+ * self-asserted (a warning) when it is the analysed run's identity or either run's signer_isolation is same-user; else
+ * unpinned. Without its analysed run: not counted, author not checked (`reviews counted`). No cites: imported.
+ */
+/** What is wrong with a signed finding's verdict `v` (VERDICT; its asserted model, families and window), or null. */
+function verdictProblem(v: J): string | null {
+  if (!isObj(v) || typeof v.rule !== "string" || !/^TK-[A-Z][0-9]{3}$/.test(v.rule)
+      || !["kind", "severity"].every((k) => VERDICT[k].includes(get(v, k))))
+    return "its verdict has no kind, rule and severity of a signed finding";
+  const a = get(v, "asserted"), f = get(v, "families"), w = get(v, "window");
+  const name = (x: J) => typeof x === "string" && /^[A-Za-z0-9._:/@+-]{1,128}$/.test(x);
+  const seconds = (x: J) => typeof x === "number" && x >= 0;
+  const checks: [string, boolean][] = [
+    ["asserted", isObj(a) && name(get(a, "model")) && name(get(a, "version"))
+      && typeof get(a, "prompt_hash") === "string" && /^sha256:[0-9a-f]{64}$/.test(str(get(a, "prompt_hash")))],
+    ["families", isObj(f) && (get(f, "reviewer") === null || FAMILIES.includes(str(get(f, "reviewer"))))
+      && Array.isArray(get(f, "agent")) && list(get(f, "agent")).every((x) => typeof x === "string" && FAMILIES.includes(x))],
+    ["window", isObj(w) && seconds(get(w, "grace_s")) && seconds(get(w, "skew_s"))],
+  ];
+  const bad = [...Object.keys(VERDICT).filter((k) => has(v, k) && !VERDICT[k].includes(v[k])),
+    ...checks.filter(([k, ok]) => has(v, k) && !ok).map(([k]) => k)];
+  return bad.length ? `its verdict's ${bad.join(", ")} is not what a signed finding holds` : null;
+}
+
+function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
+  const byId = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs]));
+  const labels: string[] = [], problems: string[] = [], selfs: string[] = [], uncounted: string[] = [];
+  let total = 0;
+  for (const rs of runs.values()) {
+    const reviews = rs.map((r) => r.event).filter((e) => get(e, "type") === "review");
+    const signed = reviews.filter((e) => has(at(e, "data"), "cites"));
+    total += reviews.length;
+    labels.push(...Array(reviews.length - signed.length).fill("imported"));
+    if (!signed.length) continue;
+    for (const e of signed) {
+      const why = verdictProblem(get(at(e, "data"), "verdict"));
+      if (why) problems.push(`seq ${e.seq}: ${why}`);
+    }
+    const rid = cut(str(get(rs[0].event, "run_id")), 128), analyzes = about(rs)[0];
+    if (analyzes === null) {
+      problems.push(...signed.map((e) => `seq ${e.seq}: a signed finding outside a findings run`));
+      continue;
+    }
+    const target = byId.get(analyzes);
+    if (!target) {
+      labels.push(...Array(signed.length).fill("author not checked"));
+      uncounted.push(`findings run ${rid}: run ${cut(str(analyzes), 128)} is not in the bundle`);
+      continue;
+    }
+    const hashes = new Map<J, J>(target.map((r) => [get(r.event, "run_seq"), r.hash]));
+    for (const e of signed)
+      for (const c of list(at(e.data, "cites")))
+        if (hashes.get(at(c, "run_seq")) !== at(c, "hash"))
+          problems.push(`seq ${e.seq}: cites run_seq ${c.run_seq} of run ${cut(str(analyzes), 128)}, `
+            + (hashes.has(c.run_seq) ? "whose hash differs" : "which it does not have"));
+    const [mine, isolation] = author(rs), [theirs, theirIsolation] = author(target);
+    let label;
+    if (mine === theirs || [isolation, theirIsolation].includes("same-user")) {
+      label = "self-asserted";
+      selfs.push(`findings run ${rid}: ` + (mine === theirs
+        ? `its author ${cut(str(mine), 256)} is the analysed run's identity`
+        : "the signer runs as the same user as a client (signer_isolation same-user)"));
+    } else label = pinned.includes(mine) ? "independent" : `unpinned author ${cut(str(mine), 256)}`;
+    labels.push(...Array(signed.length).fill(label));
+  }
+  if (total) {
+    rep.check("reviews", !problems.length && !selfs.length, `${total} review(s): `
+      + count(labels).map(([k, n]) => `${n} ${k}`).join(", "), (problems.length ? problems : selfs).slice(0, 20),
+    !problems.length);
+    const verdicts = [...runs.values()].flatMap((rs) => rs.map((r) => r.event))
+      .filter((e) => get(e, "type") === "review").map((e) => get(at(e, "data"), "verdict"));
+    const sev = count(verdicts.filter((v) => isObj(v) && get(v, "kind") === "finding")
+      .map((v) => cut(str(get(v, "severity")), 16)));
+    const n = sev.reduce((a, [, k]) => a + k, 0), cov = verdicts.filter((v) => isObj(v) && get(v, "kind") === "coverage").length;
+    rep.findings = `${n} finding(s)` + (n ? " (" + SEVERITIES.flatMap((s) => sev.filter(([k]) => k === s))
+      .map(([k, c]) => `${c} ${k}`).join(", ") + ")" : "") + (cov ? ` and ${cov} coverage review(s)` : "") + "; "
+      + count(labels).map(([k, c]) => `${c} ${k}`).join(", ") + " (an opinion of the run, not its integrity)";
+  }
+  if (uncounted.length)
+    rep.check("reviews counted", false, `${labels.filter((l) => l === "author not checked").length} signed finding(s) not `
+      + "counted: export the analysed run with `tracekit export --v2 --run <run> --with-findings` to check their citations",
+    uncounted.slice(0, 20), true);
+}
+
+/** The `constraints` line, as verify/v2.py's _constraints: live constraints added, and the calls they held, each an
+ * ask after one in its run. */
+function checkConstraints(rep: Report, runs: Map<string, J[]>) {
+  let added = 0, held = 0;
+  const problems: string[] = [];
+  for (const rs of runs.values()) {
+    let seen = false;
+    for (const r of rs) {
+      const e = r.event;
+      if (get(e, "type") === "constraint.added") {
+        added++;
+        seen = true;
+      } else if (get(e, "type") === "policy.decision" && list(get(at(e, "data"), "rule_ids", [])).includes("TK-CONSTRAINT")) {
+        held++;
+        const decision = get(e.data, "decision");
+        if (!seen || decision !== "ask")
+          problems.push(`seq ${e.seq}: a ${cut(str(decision), 16)} held by TK-CONSTRAINT `
+            + (!seen ? "before any constraint.added in its run" : "is no ask"));
+      }
+    }
+  }
+  if (added || held)
+    rep.check("constraints", !problems.length, `${added} live constraint(s) added; ${held} call(s) held by them`,
+      problems.slice(0, 20));
+}
 
 /** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
  * bundled compiled policy (`policies`, by policy_hash), responses honoured. */
@@ -877,6 +1109,7 @@ export function formatReport(rep: Report): string {
     s += `[${c.status.toUpperCase()}] ${c.check}` + (c.detail ? ` — ${clean(c.detail)}` : "") + "\n";
     for (const p of c.problems) s += `        ${clean(p)}\n`;
   }
-  return s + `\nIntegrity: ${clean(rep.integrity)}.\nAssurance: ${clean(rep.assurance)}.\n`;
+  return s + `\nIntegrity: ${clean(rep.integrity)}.\nAssurance: ${clean(rep.assurance)}.\n`
+    + (rep.findings ? `Findings: ${clean(rep.findings)}.\n` : "");
 }
 

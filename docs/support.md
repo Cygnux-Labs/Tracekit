@@ -38,9 +38,10 @@ experimental.
 | Wassette behind the MCP gateway (its policy rule is tested against a stand-in with Wassette's tool names, not against Wassette in CI) | [Wassette](integrations/wassette.md) |
 | `tracekit follow` (nono's and agentsh's audit logs) and the signer's `importers` | [nono](integrations/nono.md), [agentsh](integrations/agentsh.md) |
 | Verified tool results (signer.yaml `verify_tool_results`) | [gateway](gateway.md#verified-tool-results) |
+| The kernel sensor import (`tracekit sensor import`), Linux: checked against event lines shaped as Tetragon's and Falco's source writes them, not a live sensor | [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md) |
 | OTLP import and export, the v1 OTLP receiver, ingest gateway and model proxy (these three need `--experimental`) | [OpenTelemetry](otel.md) |
 | Witnesses, the public witness, Rekor and RFC 3161 anchors, `tracekit monitor`, the record-key issuer, external and KMS log keys, SLH-DSA hybrid checkpoints | [witnesses](witnesses.md), [monitor](monitor.md), [issuer](issuer.md) |
-| Cost, usage, coverage and findings (`tracekit cost`, `tracekit analyze`) | [findings](findings.md) |
+| Cost, usage, coverage and findings (`tracekit cost`, `tracekit analyze`), and the intent, reasoning and action checks of v2 runs (`tracekit analyze --v2`, printed, not yet signed; `--review`, a reviewer model) | [findings](findings.md) |
 | Container image, Helm chart, compose stack (`tracekit deploy compose`) | [compose](deploy-compose.md), [Kubernetes](deploy-kubernetes.md), [container](deploy-container.md) |
 | System mode on macOS (`--experimental-macos`) | [platforms](portability.md) |
 | Harness binding and the transcript tailer | [quickstart](quickstart-v2.md#system-mode-linux-macos-experimental) |

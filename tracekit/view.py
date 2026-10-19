@@ -21,6 +21,12 @@ identity (`authorize` grants it approval_decide_on_behalf), and the signer decid
 Dev assurance: the pinned log key is read from the directory being checked, so a run that verifies matches the key of
 whoever can write that directory, the same user as the dev signer and this viewer.
 
+With the dev signer's content (dev_content_source) a model exchange shows what was asked (a person's prompt) and what
+the model said before each call (parsers.said: its reasoning, labelled full, summary or withheld, and its text),
+self-reported, never proof; without it, that something was said and committed. Once a run is final its intent,
+reasoning and action checks (tracekit analyze --v2, dev_analysis) add a FINDING alert each and the run review's
+findings and monitorability lines, beside its integrity, never in it.
+
 With why logs (`--why DIR`, else WHY_DIR in the data dir when present) the page also investigates them
 (why.server.Store, docs/viewer.md#why): their alerts, the why provenance of each call's arguments, the WHY, GRAPH,
 AGENTS and INFLUENCE views; FIND THE CAUSE and RUN TEST replay only the programs passed with --allow-program.
@@ -57,6 +63,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
+from . import findings_v2, parsers
 from .bundle_v2 import export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -344,6 +351,8 @@ class Translator(observe.Translator):
             return [{**self._base(e, rec, "SessionEnd"), "reason": {"close_run": "closed by the agent",
                                                                     "idle_timeout": "closed after the idle timeout"}
                      .get(d.get("reason"), d.get("reason"))}]
+        if t == "model.exchange":
+            return self._exchange(e, rec, d)
         if t == "run.final":
             cov = d.get("coverage") or {}
             line = (f"final · head run_seq {d.get('head_run_seq')} · coverage {'+'.join(cov.get('layers') or []) or 'none'}"
@@ -481,10 +490,52 @@ class Translator(observe.Translator):
                     "incident.response": f"response engine {'on' if d.get('enabled') else 'paused'} by {d.get('by')}",
                     "identity.suspension": f"{d.get('identity')} {d.get('state')} by {d.get('by')}"}[t]
             return alert("med", t.upper().replace(".", " · "), text, "ALERT", incident=d.get("incident_id"))
+        if t == "constraint.added":   # a live constraint (#309): the person's request said not to do this
+            return alert("info", f"CONSTRAINT · {CONSTRAINTS.get(d.get('kind'), d.get('kind'))}",
+                         "a later call that breaks it waits for a person's approval (TK-CONSTRAINT)"
+                         + (": the file is committed, not named" if d.get("object_commitment") else ""), "HOLD",
+                         constraint=d.get("kind"))
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
+        if t == "effect.observed" and d.get("sensor"):   # what a kernel sensor saw; the run's analysis joins it to a call
+            k = d.get("kind")
+            target = (f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("path") if k == "file" else
+                      f"{d.get('binary')} status {d.get('status')}" if k == "exit" else d.get("binary"))
+            claim = d.get("tool_call_id")
+            return alert("info", f"EFFECT · {k} {target}",
+                         f"{d.get('binary')} pid {d.get('pid')} · {d.get('sensor')} via {d.get('observer')}"
+                         + (f" · names call {claim} (the process's claim" + (", a call the run ran)" if
+                                                                            d.get("explained_by") else ")")
+                            if claim else ""), "EFFECT",
+                         effect={"kind": k, "target": target, "claim": claim, "by_claim": bool(d.get("explained_by"))})
         return super().feed(rec) or alert("info", t, json.dumps(d, ensure_ascii=False)[:200], "ALERT")
+
+
+    def _exchange(self, e, rec, d):
+        """A model exchange: a person's prompt (UserPromptSubmit), what the model said (a model_turn whose blocks name
+        their form), a response's tool uses (observe's model line); without retained content, what is committed."""
+        body = self.content.pop((e["run_id"], e.get("run_seq")), None)
+        out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []   # a transcript line has neither
+        x = {"exchange_id": d.get("exchange_id"), "tool_ids": [u["id"] for u in d.get("tool_uses") or ()]}
+        for r in out:
+            r["v2"] = x
+        if d.get("phase") == "request":
+            prompt = findings_v2._tailer(body) and findings_v2._prompt(body)
+            return [{**self._base(e, rec, "UserPromptSubmit"), "prompt": prompt[0], "v2": x}] if prompt else []
+        if body is None:
+            blocks = [] if d.get("tool_uses") else [{"kind": "committed", "text": "said something here; it is "
+                                                     "committed, and this viewer reads no content"}]
+        else:
+            blocks = [{"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] == "reasoning" else
+                       "text", "text": s["text"], "form": s["form"]}
+                      for s in parsers.said(*findings_v2._message(body, d)) if s["text"] or s["kind"] == "reasoning"]
+        turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "message_id": d.get("exchange_id"), "v2": x}]
+        return (turn if blocks else []) + out
+
+
+CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only certain files",
+               "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
 
 
 def review(records, rep, verdict):
@@ -493,7 +544,7 @@ def review(records, rep, verdict):
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
-           "incidents": [],
+           "incidents": [], "constraints": [], "constraint_holds": 0,
            "state": "open", "first": {}}
     for rec in records:
         e = rec["event"]
@@ -505,7 +556,10 @@ def review(records, rep, verdict):
             out["agent"] = (d.get("agent") or {}).get("name") or "agent"
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
+            out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
+        elif t == "constraint.added":
+            out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
             who = _who(d["approver_identity"]) if d.get("approver_identity") else d.get("approver")
             out["approvals"].append({"decision": d.get("decision"), "tool_use_id": d.get("tool_use_id"),
@@ -542,11 +596,20 @@ def review(records, rep, verdict):
 
 
 def dev_content_source():
-    """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions, read with
-    `content_get` (the dev signer keeps them and grants this user content_read: service.dev_content). Each read is one
-    signed content.accessed record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for
-    good, said once; while the signer is down it reads nothing."""
+    """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
+    model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
+    service.dev_content); an answer too large for one frame is asked for again in halves. Each read is one signed
+    content.accessed record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said
+    once; while the signer is down it reads nothing."""
     state = {"client": None, "off": False}
+
+    def get(run_id, seqs):
+        try:
+            return state["client"].call("content_get", run_id=run_id, seqs=seqs, purpose="tracekit view")["items"]
+        except RPCError as e:
+            if e.code != "quota_exceeded" or e.retry_after_ms is not None or len(seqs) == 1:
+                raise
+            return get(run_id, seqs[:len(seqs) // 2]) + get(run_id, seqs[len(seqs) // 2:])
 
     def read(run_id, seqs):
         if state["off"]:
@@ -555,8 +618,7 @@ def dev_content_source():
         try:
             state["client"] = state["client"] or Client()
             for i in range(0, len(seqs), 1000):
-                got = state["client"].call("content_get", run_id=run_id, seqs=seqs[i:i + 1000], purpose="tracekit view")
-                out.update((x["seq"], x["content"]) for x in got["items"] if "content" in x)
+                out.update((x["seq"], x["content"]) for x in get(run_id, seqs[i:i + 1000]) if "content" in x)
         except RPCError as e:
             state["off"] = True
             print(f"tracekit view: calls show their rules, not their arguments: the dev signer keeps none for this "
@@ -567,13 +629,34 @@ def dev_content_source():
     return read
 
 
+def dev_analysis():
+    """StoreFeed's `analyze` for the dev signer's store: tracekit analyze --v2 over a final run, its content read with
+    content_get and each item opening its record's commitment (why.signed.vault_content). A signer that gives no
+    content leaves the checks that read it not checkable; one whose content does not open its record is an alert."""
+    from .why.signed import vault_content
+
+    def run(records):
+        client = Client()
+        try:
+            def content(recs):
+                try:
+                    yield from vault_content(client, recs, "tracekit view")
+                except (RPCError, SignerUnavailable, OSError):
+                    return
+            return findings_v2.analyze(records, content)
+        finally:
+            client.close()
+    return run
+
+
 class StoreFeed:
     """What observe.make_handler serves (records, base, lock, verify()), from the store of a v2 signer's config.
     `on_run(tenant, run_id, records, reasons)`: called once a client run's records are on the tape, each time it grows
     and verifies (records), and when it fails verification (None): mirror_run. `content(run_id, run_seqs)`: the
-    retained arguments of those decisions ({run_seq: arguments}), for the tape to show (dev_content)."""
+    retained arguments of those decisions and content of those model exchanges ({run_seq: content}), for the tape to
+    show (dev_content). `analyze(records)`: a final run's findings (dev_analysis), once per run."""
 
-    def __init__(self, cfg, log_vkey=None, on_run=None, content=None):
+    def __init__(self, cfg, log_vkey=None, on_run=None, content=None, analyze=None):
         self.cfg, self.pg = cfg, bool(cfg.get("storage"))
         self.store = "the Postgres store" if self.pg else os.path.join(cfg["data_dir"], "store")
         self.note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if self.pg else DEV_NOTE
@@ -593,7 +676,7 @@ class StoreFeed:
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         self.runs = {}   # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report}
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
-        self.on_run, self.content = on_run, content
+        self.on_run, self.content, self.analyze = on_run, content, analyze
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
@@ -660,8 +743,9 @@ class StoreFeed:
         else:
             records = list(reader.iter_run(tenant, run_id))
             e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
-            seqs = [r["event"]["run_seq"] for r in records[state["shown"]:] if self.content
-                    and r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")]
+            seqs = [r["event"]["run_seq"] for r in records[state["shown"]:] if self.content and (
+                r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")
+                or r["event"]["type"] == "model.exchange" and (r["event"].get("data") or {}).get("content_digest"))]
             if seqs:   # one content_get, one content.accessed record, per run and refresh
                 self.tr.content.update({(run_id, s): c for s, c in self.content(run_id, seqs).items()})
             new = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
@@ -671,7 +755,12 @@ class StoreFeed:
                        + f" · approvals {len(rv['approvals'])} · gaps {sum(rv['gaps'].values())}")
             new.append(self.tr.alert(e, records[-1], "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance "
                                      f"{rv['assurance']}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}", "VERIFY"))
-            state = dict(state, count=count, shown=len(records), failed=None)
+            if self.analyze and rv["state"] == "final" and not state.get("analyzed"):
+                found = self._findings(e, records)
+                rv["findings"] = found and found[-1].pop("summary")
+                new[-1:-1] = found
+            state = dict(state, count=count, shown=len(records), failed=None,
+                         analyzed=state.get("analyzed") or bool(self.analyze and rv["state"] == "final"))
         new[-1]["review"] = rv
         if key[1] == SIGNER_RUN[1]:
             new[-1].update(signer=True, agent="signer")
@@ -685,6 +774,36 @@ class StoreFeed:
                 self.on_run(tenant, run_id, records, self.tr.reasons)
             except Exception as e:   # the run's own view does not depend on its graph
                 print(f"tracekit view: no graph for run {run_id}: {e}", file=sys.stderr, flush=True)
+
+    def _findings(self, e, records):
+        """A final run's findings as FINDING alerts, each with its cited records; the last carries the run review's
+        findings and monitorability lines (`summary`)."""
+        try:
+            out = self.analyze(records)
+        except Exception as x:   # an EvidenceAlert: the vault's content does not open its record
+            return [{**self.tr.alert(e, records[-1], "high", "FINDINGS NOT RUN", str(x)[:1024], "ALERT"),
+                     "summary": {"line": f"not run: {str(x)[:256]}"}}]
+        alerts = []
+        for f, d in zip(out["findings"], out["shown"]["details"]):
+            v = f["verdict"]
+            why, todo = findings_v2.WHY[v["rule"]]
+            alerts.append({**self.tr.alert(
+                e, records[-1], {"critical": "high", "high": "high", "medium": "med"}.get(v["severity"], v["severity"]),
+                f"FINDING {v['rule']} · {findings_v2.TITLES[v['rule']]}",
+                f"{d['what']}\nWhy it matters: {why}\nWhat to do: {todo}\nRelied on: {', '.join(d['tiers'])}",
+                "FINDING"), "v2": {"finding": v, "cites": f["cites"]}})
+        actions, readable = findings_v2.monitorability(out["coverage"]["verdict"])
+        cov = out["coverage"]["verdict"]
+        gaps = [f"{r} {g['reason']} {g['n']}" for r, c in cov["checks"].items() for g in c["not_checkable"]]
+        line = {"line": out["summary"].split(": ", 1)[1], "monitorability": (
+            f"reasoning readable before {readable} of {actions} actions · "
+            + ", ".join(f"{k} {n}" for k, n in cov["reasoning"].items())), "not_checkable": gaps}
+        alerts.append({**self.tr.alert(e, records[-1], "info", "FINDINGS · " + line["line"],
+                                       f"{line['monitorability']}\nnot checkable: {', '.join(gaps) or 'none'}\n"
+                                       "findings are the analyzer's opinion of the run, not part of its integrity",
+                                       "FINDING"), "summary": line,
+                       "v2": {"effects": out["shown"].get("effects", {})}})   # each sensor effect's call (TK-X206)
+        return alerts
 
     def _trim(self):
         """Under self.lock: drop the oldest records past max_records, counted in base (what /api/snapshot calls dropped)."""
@@ -984,8 +1103,9 @@ def main(argv=None):
                 return code
             feed = observe.Feed(ledger, source="bundle" if a.bundle else None)
         else:
-            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, None if a.config or a.data_dir
-                                                        else dev_content_source())
+            dev = not (a.config or a.data_dir)
+            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
+                                                        dev_analysis() if dev else None)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None

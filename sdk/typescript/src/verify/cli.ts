@@ -32,11 +32,12 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`tracekit verify: ${(e as Error).message}`);
     return EXIT_BAD;
   }
-  const { report, code: verdict } = await verify(...data);
+  const { report, code: verdict } = await verify(...data, { bundle, trust });
   const code = verdict === EXIT_OK && strict && report.warnings.length ? EXIT_WARN : verdict;
   if (json)
     console.log(JSON.stringify({ exit_code: code, checks: report.checks, failures: report.failures,
-      warnings: report.warnings, integrity: report.integrity, assurance: report.assurance, notes: report.notes }, null, 2));
+      warnings: report.warnings, integrity: report.integrity, assurance: report.assurance, notes: report.notes,
+      ...(report.findings ? { findings: report.findings } : {}) }, null, 2));
   else process.stdout.write(formatReport(report));
   return code;
 }

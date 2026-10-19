@@ -148,8 +148,40 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   archive or a replica of the store still holds the run's wrapped key and blobs, and opens with `keys/content.key`
   ([limits](limits.md#content-vault-11)). Records and commitments are untouched, and bundles still verify. Erasing a
   run (on request or by retention) also erases its `tracekit why` replay runs (runs whose `run.registered` names it in
-  `replay_of`), each with its own `content.erased`: a replay run's requests copy the run's content, so its content
-  never outlives the run's.
+  `replay_of`) and its findings runs (`analyzes`), each with its own `content.erased`: a replay run's requests and a
+  reviewer model's call (`tracekit analyze --v2 --review`) copy the run's content, so their content never outlives the
+  run's.
+- **Transcript lines (Claude Code).** The transcript tailer commits to each line it reports, whole: a prompt, the
+  model's thinking (a summary, or only its sealed signature), its text and its tool uses, with the line's working
+  directory and flags. With the vault on, the line itself is the record's `body`: kept, redacted, encrypted and
+  erasable like any content. With it off, the text stays in Claude Code's own transcript; the record holds only the
+  commitment. The sealed forms of reasoning (a thinking block's signature, `redacted_thinking`, OpenAI's
+  `encrypted_content`) are kept byte for byte in the body, so a run recorded now can be checked if a provider later
+  lets an auditor read them.
+- **Prompts at the hook.** The Claude Code hook (and the Codex, Cursor and Gemini CLI hooks) also records each prompt as
+  the harness submitted it (`input.observed`): a commitment, the prompt itself kept in the vault when it is on. A live
+  constraint it states records a commitment to the file it names, never the name.
+- **Model responses (`tracekit.instrument()` model calls, OpenAI Agents).** Each recorded model response commits to
+  what the model returned: autotrace to the SDK's message (or the stream as it accumulated), the OpenAI Agents
+  integration to the response's output items. With the vault on, that is the record's `body` too, so the model's
+  reasoning and text before each tool call can be read by `tracekit analyze --v2`; with it off, the record holds only
+  the commitment.
+- **Model messages from integrations and coding agents.** A framework integration records each model message it sees,
+  and a Codex, Gemini CLI or Cursor hook what the model said since the last hook (from Codex's rollout, Gemini CLI's
+  chat recording, Cursor's `afterAgentThought` and `afterAgentResponse`): a commitment always, and the message (its
+  reasoning, sealed forms byte for byte, text and calls) as the record's `body` only when the signer says the vault is
+  on. Without the vault the text stays where it came from: the framework's memory, the agent's own files
+  ([reasoning](reasoning.md)).
+- **Reasoning summaries through the LLM gateway.** The gateway asks the provider to show the reasoning a request has
+  the model do but hides ([gateway](gateway.md#readable-reasoning); `show_reasoning: false` turns it off), so its
+  responses carry the provider's summaries of the reasoning, to the agent and, with the vault on, into the response's
+  `body`: kept, redacted, encrypted and erasable like the rest of it. With the vault off, the record holds only the
+  commitment. A summary can restate what the model read, in words the redaction patterns may not match.
+- **Findings carry no content.** `tracekit analyze --v2` reads content through `content_get` (a `content.accessed`
+  record each), and a finding names only its rule, severity, trust tier and the records it cites by `run_seq` and
+  hash. The paths and excerpts it prints come from the content it read and are never signed. With `--review`, the
+  reviewer model's call is a `model.exchange` in the findings run; with the vault on, its bodies (the run's text sent
+  and the model's explanation) are kept there as content, erased with the analysed run.
 - **Bundles never hold vault content.** A bundle that holds `content.accessed` or `content.erased` records needs a 1.1
   verifier.
 
@@ -172,3 +204,10 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   model provider, through your LLM gateway, the `approval_review` view of each approval it answers: the tool, the rules'
   reason and rationale, the bounds and budget left, and the signer's **redacted** copy of the tenant's arguments. It
   serves only the tenants its config lists; leave a tenant out when its arguments must not reach a model provider.
+- `tracekit analyze --v2 --review` (off unless you pass it) sends the model at `--review-url` (default: the reviewer
+  it picks of those configured, `TRACEKIT_REVIEW_URL`'s, else the Anthropic or OpenAI API whose key is set, preferring
+  another model family than the agent's; [findings](findings.md#the-reviewer-model-tk-x210)) one JSON copy of the run it analyses, cut to about 48,000 characters: what the person asked, what the model
+  said, each call's tool, decision and arguments, the effects observers recorded, and the findings so far, each text
+  as the vault keeps it (**redacted** by the signer). For a run whose text must not leave your machines, point `--review-url` at a
+  model you run yourself (an open-weights model behind a local `/v1/chat/completions` or `/v1/messages` endpoint), or
+  at your LLM gateway in front of one.

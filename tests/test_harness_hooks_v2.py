@@ -18,7 +18,8 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
-from tracekit import agent_hooks, cli, install
+from tracekit import agent_hooks, cli, install, parsers
+from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
 from tracekit.sdk.client import Client
 from tracekit.signer.rpc_schema import RPCError
@@ -239,15 +240,17 @@ class Installer(unittest.TestCase):
                     hooks = [h for hs in blob["hooks"].values() for h in hs]
                     cmds = [h["command"] if harness == "cursor" else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
-                    self.assertEqual(len(cmds), 6 if harness == "cursor" else 5)
+                    self.assertEqual(len(cmds), 8 if harness == "cursor" else 5)   # Cursor: and what its model said
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
                     if harness == "cursor":
                         self.assertTrue(all(h["failClosed"] for h in hooks))
-                    self.assertEqual(self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1],
-                                     f"v2 {harness} hooks: {path}\n")   # idempotent: nothing replaced
+                    again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
+                    self.assertEqual(again[0], f"v2 {harness} hooks: {path}")   # idempotent: nothing replaced
+                    if harness == "codex":   # init turned Codex's reasoning summaries on, once
+                        self.assertNotIn("set by init", again[1])
                     code, out = self.cli("uninstall", "--agent", harness, "--project")
                     self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")   # once: the CLI repeated it
                     with open(path) as f:
@@ -263,6 +266,215 @@ class Installer(unittest.TestCase):
         self.assertEqual(json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertIn("no tool_use_id", p.stderr)
 
+
+
+class CodexReasoningSummary(unittest.TestCase):
+    """init --v2 --agent codex turns Codex's reasoning summaries on (current models default to none), one line at the
+    top level of its config.toml, and leaves a file that sets them, or a --no-thinking-summaries init, alone."""
+
+    def setUp(self):
+        self.d = ac.tmpdir(self)
+        self.hooks = os.path.join(self.d, ".codex", "hooks.json")
+        self.toml = os.path.join(self.d, ".codex", "config.toml")
+        os.makedirs(os.path.dirname(self.toml))
+
+    def write(self, text):
+        with open(self.toml, "w") as f:
+            f.write(text)
+
+    def read(self):
+        with open(self.toml) as f:
+            return f.read()
+
+    def test_unset_goes_at_the_top_level_before_the_first_table(self):
+        self.write('model = "gpt-5-codex"\n# servers\n[mcp_servers.docs]\ncommand = "docs"\n')
+        self.assertEqual(agent_hooks.codex_reasoning(self.hooks), [self.toml, "auto", True])
+        self.assertEqual(self.read(), 'model = "gpt-5-codex"\n# servers\nmodel_reasoning_summary = "auto"\n'
+                                      '[mcp_servers.docs]\ncommand = "docs"\n')
+        self.assertTrue([n for n in os.listdir(os.path.dirname(self.toml)) if n.startswith("config.toml.bak-")])
+        self.write('model = "m"')   # no table, no final newline
+        agent_hooks.codex_reasoning(self.hooks)
+        self.assertEqual(self.read(), 'model = "m"\nmodel_reasoning_summary = "auto"\n')
+
+    def test_a_set_value_is_left_and_a_profiles_is_not_the_top_level(self):
+        for text, value in (('model_reasoning_summary = "none"  # mine\n', "none"),
+                            ("model_reasoning_summary='detailed'\n[x]\n", "detailed")):
+            self.write(text)
+            self.assertEqual(agent_hooks.codex_reasoning(self.hooks), [self.toml, value, False])
+            self.assertEqual(self.read(), text)
+        self.write('[profiles.fast]\nmodel_reasoning_summary = "none"\n')
+        self.assertEqual(agent_hooks.codex_reasoning(self.hooks)[1:], ["auto", True])
+        self.assertTrue(self.read().startswith('model_reasoning_summary = "auto"\n[profiles.fast]'))
+        self.assertIn("off", agent_hooks.reasoning_line(self.toml, "none", False))
+
+    def test_a_missing_file_is_created_and_init_opts_out(self):
+        os.rmdir(os.path.dirname(self.toml))
+        out = io.StringIO()
+        with mock.patch("os.getcwd", return_value=self.d), contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project",
+                                       "--no-thinking-summaries"]), 0)
+        self.assertFalse(os.path.exists(self.toml))
+        with mock.patch("os.getcwd", return_value=self.d), contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project"]), 0)
+        self.assertEqual(self.read(), 'model_reasoning_summary = "auto"\n')
+        self.assertIn("Codex reasoning summaries: on", out.getvalue())
+
+
+def line(e):
+    return (json.dumps(e) + "\n").encode()
+
+
+REASONING = {"type": "reasoning", "summary": [{"type": "summary_text", "text": "**Listing** list the files first"}],
+             "encrypted_content": "gAAAAsealed"}
+SAID = {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Listing the files."}]}
+CALL = {"type": "function_call", "name": "exec_command", "arguments": json.dumps({"cmd": "ls -la", "yield_time_ms": 10}),
+        "call_id": "call_1"}
+ROLLOUT = [{"timestamp": "t", "type": "session_meta", "payload": {"id": "cx-s"}},
+           {"timestamp": "t", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+               {"type": "input_text", "text": "list the files"}]}},
+           *({"timestamp": "t", "type": "response_item", "payload": i} for i in (REASONING, SAID, CALL))]
+
+
+@unittest.skipIf(os.name == "nt", "the content vault test reads as the socket's uid")
+class WhatTheModelSaid(HarnessCase):
+    """Each harness hook records what the model said since the session's last hook, before deciding: Codex's rollout
+    responses (its calls linked by call_id), Gemini CLI's thoughts, Cursor's afterAgentThought."""
+
+    def setUp(self):
+        super().setUp()
+        self.d = ac.tmpdir(self)
+        self.frames = []
+
+    def serve(self, vault=True):
+        from tracekit.signer import service as svc
+        self.service = SignerService(os.path.join(self.d, "data"), policy=load_policy(), grace_s=0,
+                                     content={"retain": True} if vault else None,
+                                     authorize={f"uid:{os.getuid()}": sorted(svc.DEFAULT_GRANTS | {svc.CONTENT_READ})})
+        self.addCleanup(self.service.close)
+
+        def handle(identity, frame):
+            if frame.get("method") == "model_event":
+                self.frames.append(frame)
+            return self.service.handle_frame(identity, frame)
+        os.environ["TRACEKIT_SIGNER"] = ac._serve(self, handle)
+
+    def transcript(self, *entries):
+        path = os.path.join(self.d, "rollout.jsonl")
+        with open(path, "ab") as f:
+            f.write(b"".join(map(line, entries)))
+        return path
+
+    def events(self, sid):
+        st = claude_code._load(claude_code._state(sid))
+        c = Client()
+        self.addCleanup(c.close)
+        return st, c, c.call("read", {"run_id": st["run_id"], "run_token": st["run_token"], "limit": 100})["events"]
+
+    def test_codex_reasoning_is_recorded_before_the_decision_and_linked_by_call_id(self):
+        self.serve()
+        path = self.transcript(*ROLLOUT)
+        pre = {"session_id": "cx-s", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "call_1",
+               "tool_input": {"command": "ls -la"}, "transcript_path": path, "model": "gpt-5-codex"}
+        self.assertEqual(self.hook("codex", pre)[0], 0)
+        self.assertEqual(self.hook("codex", dict(pre, hook_event_name="PostToolUse", tool_response="a.txt"))[0], 0)
+        st, c, events = self.events("cx-s")
+        kinds = [e["type"] for e in events]
+        said = events[kinds.index("model.exchange")]
+        self.assertLess(kinds.index("model.exchange"), kinds.index("policy.decision"))
+        self.assertEqual(kinds.count("model.exchange"), 1)   # the PostToolUse found nothing new
+        self.assertEqual(self.frames[0]["tool_uses"], [{"id": "call_1", "name": "Bash", "executed_by": "client",
+                                                        "args_source": "coerced", "args_digest": event_hash(
+                                                            {"tool": "Bash", "args": {"command": "ls -la"}})}])
+        self.assertEqual([u["id"] for u in said["data"]["tool_uses"]], ["call_1"])
+        got = c.call("content_get", {"run_id": st["run_id"], "seqs": [said["run_seq"]], "purpose": "test"})["items"]
+        body = got[0]["content"]
+        self.assertEqual(body, {"output": [REASONING, SAID, CALL], "source": "codex rollout"})
+        self.assertEqual([(x["kind"], x["form"], x["tools"]) for x in parsers.said("openai:responses", body)],
+                         [("reasoning", "summary", []), ("text", "full", ["call_1"])])
+        self.assertEqual(self.hook("codex", dict(pre, hook_event_name="SessionEnd", reason="exit"))[0], 0)
+        self.service.sweep()   # grace 0: run.final, with nothing for reconciliation to report
+        recs = [r["event"]["type"] for r in self.service.log.storage.iter_run("default", st["run_id"])]
+        self.assertIn("run.final", recs)
+        self.assertEqual([t for t in recs if t.startswith("reconcile.")], [])
+
+    def test_without_the_vault_the_body_is_not_sent(self):
+        self.serve(vault=False)
+        pre = {"session_id": "cx-n", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "call_1",
+               "tool_input": {"command": "ls -la"}, "transcript_path": self.transcript(*ROLLOUT)}
+        self.assertEqual(self.hook("codex", pre)[0], 0)
+        self.assertEqual(len(self.frames), 1)
+        self.assertNotIn("body", self.frames[0])
+        self.assertIn("tool_uses", self.frames[0])
+
+    def test_gemini_thoughts_are_recorded_and_name_no_call(self):
+        self.serve()
+        msg = {"id": "m1", "timestamp": "t", "type": "gemini", "content": "Listing.", "model": "gemini-3-pro",
+               "thoughts": [{"subject": "Listing", "description": "list the files first", "timestamp": "t"}],
+               "toolCalls": [{"id": "run_shell_command-1", "name": "run_shell_command", "args": {"command": "ls"}}]}
+        path = self.transcript({"sessionId": "g-s", "projectHash": "h"}, msg, dict(msg, toolCalls=[]),
+                               {"$patch": {"id": "m1"}})
+        pre = {"session_id": "g-s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
+               "tool_input": {"command": "ls"}, "transcript_path": path}
+        self.assertEqual(self.hook("gemini", pre)[0], 0)
+        self.assertEqual(len(self.frames), 1)   # a message written again is recorded once
+        self.assertNotIn("tool_uses", self.frames[0])
+        self.assertEqual([(x["kind"], x["form"], x["text"]) for x in parsers.said("openai:responses",
+                                                                                  self.frames[0]["body"])],
+                         [("reasoning", "summary", "**Listing** list the files first"), ("text", "full", "Listing.")])
+        self.assertEqual((self.frames[0]["provider"], self.frames[0]["model"]), ("google", "gemini-3-pro"))
+
+    def test_a_harness_that_names_no_call_is_never_accused_of_fabricating_one(self):
+        """Gemini CLI's and Cursor's messages are recorded without their calls (neither gives a call an id): the
+        signer must not read each decided call as one no model message asked for (reconcile.fabricated)."""
+        self.serve()
+        msg = {"id": "m1", "timestamp": "t", "type": "gemini", "content": "Listing.", "model": "gemini-3-pro",
+               "thoughts": [{"subject": "Listing", "description": "list the files first", "timestamp": "t"}]}
+        path = self.transcript({"sessionId": "g-f", "projectHash": "h"}, msg)
+        pre = {"session_id": "g-f", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
+               "tool_input": {"command": "ls"}, "transcript_path": path}
+        self.assertEqual(self.hook("gemini", pre)[0], 0)
+        self.assertEqual(self.hook("gemini", dict(pre, hook_event_name="AfterTool", tool_response="a.txt"))[0], 0)
+        self.hook("cursor", {"conversation_id": "cu-f", "hook_event_name": "afterAgentThought", "text": "list first"})
+        cur = {"conversation_id": "cu-f", "hook_event_name": "preToolUse", "tool_name": "Shell", "tool_use_id": "tu_1",
+               "tool_input": {"command": "ls"}, "cwd": self.d}
+        self.assertEqual(self.hook("cursor", cur)[0], 0)
+        self.hook("cursor", dict(cur, hook_event_name="postToolUse", tool_output="a.txt"))
+        runs = {sid: self.events(sid)[0]["run_id"] for sid in ("g-f", "cu-f")}
+        self.hook("gemini", dict(pre, hook_event_name="SessionEnd", reason="exit"))
+        self.hook("cursor", {"conversation_id": "cu-f", "hook_event_name": "sessionEnd", "reason": "exit"})
+        self.service.sweep()
+        for sid, run_id in runs.items():
+            recs = [r["event"]["type"] for r in self.service.log.storage.iter_run("default", run_id)]
+            self.assertIn("run.final", recs)
+            self.assertEqual((recs.count("model.exchange") > 0, recs.count("policy.decision")), (True, 1), sid)
+            self.assertEqual([t for t in recs if t.startswith("reconcile.")], [], sid)
+
+    def test_cursor_thinking_is_recorded(self):
+        self.serve()
+        out = self.hook("cursor", {"conversation_id": "cu-s", "generation_id": "g1", "model": "claude-x",
+                                   "hook_event_name": "afterAgentThought", "text": "check the tests first",
+                                   "duration_ms": 900})
+        self.assertEqual(out[:2], (0, "{}"))
+        self.assertEqual([(x["kind"], x["text"]) for x in parsers.said("openai:responses", self.frames[0]["body"])],
+                         [("reasoning", "check the tests first")])
+        self.assertEqual(self.frames[0]["body"]["source"], "cursor hook")
+        self.hook("cursor", {"conversation_id": "cu-s", "hook_event_name": "afterAgentResponse", "text": "Done."})
+        self.assertEqual(self.frames[1]["body"]["output"][0]["content"][0]["text"], "Done.")
+
+    def test_a_failure_to_record_never_changes_the_decision(self):
+        self.serve()
+        pre = {"session_id": "cx-f", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "call_1",
+               "tool_input": {"command": "ls -la"}, "transcript_path": self.d}   # a directory: unreadable
+        code, out, err = self.hook("codex", pre)
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("what the model said was not recorded", err)
+        with mock.patch.object(harness_hooks.said.Said, "__init__", side_effect=RuntimeError("boom")):
+            code, _, err = self.hook("codex", dict(pre, tool_use_id="call_2",
+                                                   transcript_path=self.transcript(*ROLLOUT)))
+        self.assertEqual(code, 0)
+        self.assertIn("boom", err)
+        _, _, events = self.events("cx-f")
+        self.assertEqual([e["data"]["decision"] for e in events if e["type"] == "policy.decision"], ["allow", "allow"])
 
 
 class NoTailer(unittest.TestCase):

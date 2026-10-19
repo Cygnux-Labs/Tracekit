@@ -37,7 +37,8 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
               "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
-              "openshell-middleware": "openshell", "follow": "follow"}  # subcommands with their own parsers
+              "openshell-middleware": "openshell", "follow": "follow",
+              "sensor": "sensor"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
@@ -46,7 +47,8 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "issuer": "the record-key issuer", "witness": "the witness", "public-witness": "the public witness",
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
-                 "srt-decider": "the srt-proxy decider", "follow": "tracekit follow"}
+                 "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
+                 "sensor": "the kernel sensor import"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -102,6 +104,9 @@ def main(argv=None):
                                                          "firewall rule; undone by uninstall; docs/egress.md)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
+    p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2: leave Claude Code's "
+                   "showThinkingSummaries and Codex's model_reasoning_summary alone (init turns them on so `tracekit "
+                   "analyze --v2` can read the model's reasoning)")
     p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable; default: the last init's, else a local clone)")
     p.add_argument("--checkpoint-every", type=int, help="records between checkpoints (default: the last init's, else 50)")
     p.add_argument("--user", help="system mode: the user whose agents are traced (default: $SUDO_USER)")
@@ -149,7 +154,8 @@ def main(argv=None):
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger", add_help=False)
+    p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger "
+                       "(--v2: check a v2 run's request, reasoning and actions)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("cost", help="token usage (and cost, with your price table) per run or model", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -169,6 +175,9 @@ def main(argv=None):
     p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("egress", help="egress observer for the v2 signer: `egress serve --config egress.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("sensor", help="kernel sensor import for the v2 signer: `sensor import --config sensor.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("reviewer", help="the reference agent approver: `reviewer serve|eval --config reviewer.yaml`",
@@ -249,8 +258,8 @@ def main(argv=None):
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
     p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
-    p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's `tracekit why` "
-                   "findings and their replay runs, which the verifier counts")
+    p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's findings runs "
+                   "(`tracekit analyze --v2`, `tracekit why`) and replay runs, which the verifier checks")
 
     p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
                                     "and verify it")
@@ -420,7 +429,7 @@ def _run(a):
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
                                                         a.allow_privileged, a.agent, a.harness, a.public_witness,
-                                                        a.egress)
+                                                        a.egress, not a.no_thinking_summaries)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -436,10 +445,13 @@ def _run(a):
                 return 2
             try:
                 path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
+                summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"v2 {a.agent} hooks:", path or "not installed")
+            if summary:
+                print(agent_hooks.reasoning_line(*summary))
             return 0
         if a.dev and a.agent != "claude":
             from . import agent_hooks
@@ -469,12 +481,14 @@ def _run(a):
                           f"/plugin disable {install.PLUGIN}, then run init again")
                     return 0
                 try:
-                    if hooks:
-                        install.install_hooks(hooks, module=install.V2_HOOK)
+                    on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
+                                                         thinking=not a.no_thinking_summaries)
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1
                 print("v2 hooks:", hooks or "not installed")
+                if hooks and not a.no_thinking_summaries:
+                    print(install.thinking_line(hooks, on))
                 return 0
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
@@ -637,7 +651,8 @@ def _run(a):
             integrity, assurance = mod.integrity(rep, code), mod.assurance(rep)
         if a.json:
             print(json.dumps({"exit_code": code, "checks": rep.checks, "failures": rep.failures, "warnings": rep.warnings,
-                              "integrity": integrity, "assurance": assurance, "notes": rep.notes},
+                              "integrity": integrity, "assurance": assurance, "notes": rep.notes,
+                              **({"findings": rep.findings} if getattr(rep, "findings", None) else {})},
                              indent=2))
         else:
             mod.print_report(rep, code)

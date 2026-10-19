@@ -1,4 +1,4 @@
-.PHONY: help install test quickstart test-contrib test-ts release-dry-run eval-scale lint build check demo demos eval eval-agents clean
+.PHONY: help install test quickstart test-contrib test-ts verify-page release-dry-run eval-scale lint build check demo demos eval eval-agents clean
 PY ?= python3
 
 help:
@@ -9,6 +9,7 @@ help:
 	@echo "make lint      pyflakes over the package, SDK and tests"
 	@echo "make build     build the sdist and wheel into dist/"
 	@echo "make check     lint + test + build + twine check"
+	@echo "make verify-page  build the browser verifier, one self-contained page: sdk/typescript/dist/verify.html"
 	@echo "make release-dry-run  build every release artifact, SBOM and sum locally, publish nothing, and check them (needs the package index and npm)"
 	@echo "make demo      run the scripted end-to-end demo"
 	@echo "make demos     record the offline demos in docs/demos/ again (scripts/record_demos.py; --check checks them)"
@@ -36,6 +37,10 @@ test-contrib:
 
 test-ts:
 	cd sdk/typescript && npm install --no-audit --no-fund && npm test
+
+verify-page:
+	cd sdk/typescript && npm install --no-audit --no-fund && npm run build
+	@echo "browser verifier: sdk/typescript/dist/verify.html"
 
 lint:
 	$(PY) -m pyflakes tracekit tracekit_sdk.py tests eval examples contrib
@@ -74,6 +79,7 @@ eval:
 	$(PY) eval/e17_containment.py
 	$(PY) eval/e18_agent_approvers.py
 	$(PY) eval/e19_egress.py
+	$(PY) eval/e20_alignment.py
 	$(PY) eval/e21_policy_robustness.py
 	if [ "$$(uname)" = Linux ]; then $(PY) eval/e9_signer_perf.py --quick; fi
 
