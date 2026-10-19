@@ -13,7 +13,7 @@ import { deflateRawSync } from "node:zlib";
 import {
   MAX_ENTRY, StrictJSONError, Unusable, canonicalize, readZip, strictParse, strictParseBytes, verify, verifyRecord,
 } from "../dist/verify/index.js";
-import { MEANING, asJson, asText, nextSteps, summarize, verdict } from "../dist/verify/explain.js";
+import { MEANING, asJson, asText, cliExit, nextSteps, summarize, verdict } from "../dist/verify/explain.js";
 import {
   COSIGNATURE, ED25519, b64decode, bytes, ed25519Verify, hex, keyId, leafHash, openNote, parseVkey, registryOrigin,
   runHash, sha256, spkiOf, unhex,
@@ -293,9 +293,18 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.deepEqual([alone.v.word, alone.v.means], ["UNVERIFIABLE",
     "Signatures are intact, but you haven't said whose signer you trust."]);
   assert.match(alone.steps[0].text, /^Ask for the sender's trust file/);
+  // the exit line: the CLIs refuse without a trust file, and check a v1 bundle, or what this verifier lacks, themselves
+  assert.equal(cliExit(alone.report), " The command-line verifiers need the trust file: without one they exit 2.");
+  assert.equal(cliExit((await words(sample("sample-tampered.tkb"), null, { ...names, trust: null })).report),
+    " The command-line verifiers need the trust file: without one they exit 2.");
+  assert.equal(cliExit(ok.report), " The command-line verifiers exit with the same code.");
+  const rekor = await words(file("tests/golden/v2/closed.tkb"), file("tests/golden/v2/trust-rekor.json"));
+  assert.deepEqual([rekor.code, cliExit(rekor.report)], [2, " The TypeScript command-line verifier exits with the same "
+    + "code; the Python one checks what this page doesn't."]);
   const v1 = await words(file("tests/golden/v1/demo-run.tkb"), trust, { bundle: "demo-run.tkb", trust: "t.json" });
   assert.deepEqual([v1.code, v1.v.word], [2, "UNVERIFIABLE"]);
   assert.match(v1.v.means, /format v1 bundle/);
+  assert.equal(cliExit(v1.report), "");
   assert.deepEqual(v1.steps.map((s) => s.command), ["uvx --from tracekit-ai tracekit verify demo-run.tkb --key signer.pub"]);
   const newer = await words(file("tests/golden/negative/manifest-newer-verifier.tkb"), file("tests/golden/negative/trust.json"));
   assert.match(newer.v.means, /needs a newer verifier/);

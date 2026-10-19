@@ -8,7 +8,7 @@
  * The verification runs in a worker started from this same script (a blob: URL, which inherits the page's policy), so a
  * large bundle doesn't freeze the page; in the page itself where the browser refuses the worker.
  */
-import { MEANING, asJson, asText, nextSteps, summarize, verdict } from "./explain.js";
+import { MEANING, asJson, asText, cliExit, nextSteps, summarize, verdict } from "./explain.js";
 import { type Report, VERSION, clean, readZip, verify } from "./index.js";
 
 /** The page's samples (src/verify/sample/), base64: a clean bundle, a tampered copy and their trust config. */
@@ -127,7 +127,7 @@ function page() {
     $("integrity").textContent = `Integrity: ${clean(report.integrity)}.`;
     $("assurance").textContent = `Assurance: ${clean(report.assurance)}.`;
     last = { text: asText(report, code), json: JSON.stringify(asJson(report, code), null, 2) + "\n", name: bundle.name };
-    $("exit").textContent = last.text.trim().split("\n").at(-1) + " The command-line verifiers exit with the same code.";
+    $("exit").textContent = last.text.trim().split("\n").at(-1) + cliExit(report);
     $("report").textContent = last.text;
     $("copied").textContent = "";
     $("result").hidden = false;

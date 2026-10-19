@@ -27,6 +27,17 @@ export const asText = (rep: Report, code: number) => formatReport(rep) + `\nExit
 
 const failed = (rep: Report, name: string) => rep.checks.find((c) => c.check === name && c.status === "fail");
 const anchored = (rep: Report) => !rep.checks.some((c) => c.check === "trust config" && c.status === "warn");
+const v1 = (rep: Report) => rep.checks.some((c) => c.check === "bundle readable"
+  && c.problems.some((p) => p.startsWith("a format v1 bundle")));
+
+/** What the command-line verifiers exit with for the same files, where that is known: they refuse a v2 bundle without a
+ * trust file, and the Python one checks what this verifier doesn't (and v1 bundles, against signer.pub). */
+export function cliExit(rep: Report): string {
+  if (v1(rep)) return "";
+  if (!anchored(rep)) return " The command-line verifiers need the trust file: without one they exit 2.";
+  return rep.unsupported.length ? " The TypeScript command-line verifier exits with the same code; the Python one checks "
+    + "what this page doesn't." : " The command-line verifiers exit with the same code.";
+}
 
 export function verdict(rep: Report, code: number): Verdict {
   const behaved = "It doesn't mean the agent behaved well, or that the record holds everything it did: the summary, "
@@ -51,7 +62,7 @@ export function verdict(rep: Report, code: number): Verdict {
   const nothing = "Nothing failed: it doesn't mean the bundle is bad.";
   if (failed(rep, "trust config"))
     return { word: "UNVERIFIABLE", means: "The trust file couldn't be used, so nothing was checked.", notMeans: nothing };
-  if (readable?.problems.some((p) => p.startsWith("a format v1 bundle")))
+  if (v1(rep))
     return { word: "UNVERIFIABLE", means: "This is a format v1 bundle (from Tracekit's laptop signer); this page checks "
       + "format v2 bundles, so nothing was checked.", notMeans: nothing };
   if (rep.integrity.startsWith("UNVERIFIABLE (needs"))
