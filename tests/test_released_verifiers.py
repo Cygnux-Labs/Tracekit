@@ -19,7 +19,7 @@ from tracekit.signer import service as svc
 from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RELEASED = ["v1.3.0"]   # add each release's tag
+RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0"]   # add each release's tag
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
 VERIFY = ("import json, sys, tracekit\nfrom tracekit.verify import v2\nrep, code = v2.verify(sys.argv[1], sys.argv[2])\n"
           "print(json.dumps({'version': tracekit.__version__, 'code': code, 'integrity': rep.integrity, "
