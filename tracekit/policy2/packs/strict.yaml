@@ -6,7 +6,7 @@
 # gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
-version: '2026.10-strict-1'
+version: '2026.10-strict-2'
 description: server-hosted agents where installs, pushes, network commands and environment changes wait for a person
 on_parse_error: deny
 
@@ -21,7 +21,7 @@ ask:
   - id: TK-F011
     class: shell
     field: command
-    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s>]*\.(bashrc|profile|zshrc|bash_profile)\b'
     label: env_tamper
     reason: changing the environment the next commands run in
     remedy: Wait for a person to approve the held call, or pass the setting to the one command that needs it.

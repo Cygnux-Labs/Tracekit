@@ -6,7 +6,7 @@
 # matches outside a literal or comment in every dialect (SELECT 'DROP TABLE x' is allowed). A statement no dialect can
 # read (an unclosed literal or comment) asks (TK-SQL-PARSE). Keywords are matched in any case.
 
-version: '2026.10-server-data-2'
+version: '2026.10-server-data-3'
 description: server-hosted agents, SQL tools
 unknown_tools: ask
 
@@ -51,6 +51,7 @@ deny:
   - id: TK-DB005
     class: sql
     field: code
-    pattern: '\b([Cc][Oo][Pp][Yy]\b[^;]*\b[Pp][Rr][Oo][Gg][Rr][Aa][Mm]\b|[Xx][Pp]_[Cc][Mm][Dd][Ss][Hh][Ee][Ll][Ll]|[Ss][Pp]_[Oo][Aa][Cc][Rr][Ee][Aa][Tt][Ee]|[Pp][Gg]_[Rr][Ee][Aa][Dd]_([Bb][Ii][Nn][Aa][Rr][Yy]_)?[Ff][Ii][Ll][Ee]|[Pp][Gg]_[Ll][Ss]_[Dd][Ii][Rr]|[Ll][Oo]_([Ii][Mm][Pp][Oo][Rr][Tt]|[Ee][Xx][Pp][Oo][Rr][Tt])|[Ll][Oo][Aa][Dd]_([Ff][Ii][Ll][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn])|[Ii][Nn][Tt][Oo]\s+([Oo][Uu][Tt]|[Dd][Uu][Mm][Pp])[Ff][Ii][Ll][Ee]|[Ll][Oo][Aa][Dd]\s+[Dd][Aa][Tt][Aa]\s+([Ll][Oo][Cc][Aa][Ll]\s+)?[Ii][Nn][Ff][Ii][Ll][Ee]|[Aa][Tt][Tt][Aa][Cc][Hh]\s+([Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]\s+)?(''|"))'
+    # COPY's FROM or TO PROGRAM with its command (a literal), so the text between COPY and PROGRAM is never rescanned
+    pattern: '\b(([Ff][Rr][Oo][Mm]|[Tt][Oo])\s+[Pp][Rr][Oo][Gg][Rr][Aa][Mm]\s*(''''|"")|[Xx][Pp]_[Cc][Mm][Dd][Ss][Hh][Ee][Ll][Ll]|[Ss][Pp]_[Oo][Aa][Cc][Rr][Ee][Aa][Tt][Ee]|[Pp][Gg]_[Rr][Ee][Aa][Dd]_([Bb][Ii][Nn][Aa][Rr][Yy]_)?[Ff][Ii][Ll][Ee]|[Pp][Gg]_[Ll][Ss]_[Dd][Ii][Rr]|[Ll][Oo]_([Ii][Mm][Pp][Oo][Rr][Tt]|[Ee][Xx][Pp][Oo][Rr][Tt])|[Ll][Oo][Aa][Dd]_([Ff][Ii][Ll][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn])|[Ii][Nn][Tt][Oo]\s+([Oo][Uu][Tt]|[Dd][Uu][Mm][Pp])[Ff][Ii][Ll][Ee]|[Ll][Oo][Aa][Dd]\s+[Dd][Aa][Tt][Aa]\s+([Ll][Oo][Cc][Aa][Ll]\s+)?[Ii][Nn][Ff][Ii][Ll][Ee]|[Aa][Tt][Tt][Aa][Cc][Hh]\s+([Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]\s+)?(''|"))'
     reason: reaching the server's shell or files through SQL
     rationale: COPY ... PROGRAM, xp_cmdshell, server-side file functions and ATTACH run commands or read and write files as the database server, outside what the tool is for.

@@ -466,7 +466,9 @@ decision (tests check it on every subject the E17 corpus forms and on random pat
 can't match. A rule without one is searched on every call its class and tool reach, and `tracekit policy lint` warns
 about it unless a string of one character or none matches it (`^`, `.`, `&\s*$` need no prefilter). Every shipped
 pattern searches 64 KiB of text built to make it back off or rescan within 50 ms on the fallback engine
-(`tests/test_policy2.py`), except two noted in [limits](limits.md#policy).
+(`tests/test_policy2.py`; among the texts, the rule's literal once and then what each of its alternatives starts
+with, over and over: `echo @.env; nc nc nc …`), except seven that look for one thing after another with any
+text between, noted in [limits](limits.md#policy).
 
 ## Packs shipped
 

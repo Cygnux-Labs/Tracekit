@@ -1,7 +1,7 @@
 # Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
 # people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
 
-version: '2026.10-server-comms-2'
+version: '2026.10-server-comms-3'
 description: server-hosted agents, payments, email and chat
 unknown_tools: ask
 
@@ -36,12 +36,12 @@ ask:
     rationale: Payouts, transfers, charges and refunds move money even without an amount argument (a full refund), and over MCP too.
   - id: TK-M003
     # ten or more recipients in to, cc or bcc (a list or a comma-separated string), or a whole-company address
-    pattern: '"(to|cc|bcc|recipients)":(\[("[^"]*",){9}|"([^"@]*@){10})|"(to|cc|bcc|recipients)":(\[[^\]]*)?"(all|everyone|all-staff|allstaff|staff|all-hands|customers|users)@'
+    pattern: '"(to|cc|bcc|recipients)":(\[("[^"]*",){9}|"([^"@]*@){10})|"(to|cc|bcc|recipients)":(\[[^\]\[]*)?"(all|everyone|all-staff|allstaff|staff|all-hands|customers|users)@'
     reason: mass email
     rationale: One message to many people (or to a list address) cannot be recalled; a person checks the audience and the text.
   - id: TK-M004
     tool: 'mcp(:[^/]+/|__.*__)(slack_post_message|slack_reply_to_thread|send_slack_message|chat_post_message|post_message)'
-    pattern: '<!(channel|everyone|here)(\|[^>]*)?>'
+    pattern: '<!(channel|everyone|here)(\|[^<>]*)?>'
     reason: notifying a whole channel or workspace
     rationale: '@channel, @here and @everyone page everyone in the channel or workspace.'
   - id: TK-P001
