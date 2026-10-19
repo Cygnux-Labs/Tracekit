@@ -227,6 +227,29 @@ class Recording:
             self.assertEqual(self.ids(r), [("fc-1", "client"), ("gemini:r-1:1", "client")])
             self.assertEqual(r["tool_uses"][1]["id_synthetic"], True)
 
+    @unittest.skipUnless(genai is not None, "google-genai not installed")
+    def test_every_providers_stream_is_committed(self):
+        # autotrace's chunks are SDK objects (usage, Responses items, Gemini parts): what a stream keeps of them hashes
+        from google.genai import models
+        usage = {**OPENAI_CHUNKS[-1], "choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 4,
+                                                              "total_tokens": 7}}
+        for ch in openai_client(lambda r: (200, sse([*OPENAI_CHUNKS, usage]), True)).chat.completions.create(
+                model="m", messages=[], stream=True, stream_options={"include_usage": True}):
+            pass
+        with openai_client(lambda r: (200, sse(RESPONSES_STREAM["stream"]), True)).responses.stream(
+                model="gpt-5", input="weather?") as s:
+            s.until_done()
+        resp = gtypes.GenerateContentResponse.model_validate(vector("gemini_generate_content", 0)["response"])
+        saved, models.Models._generate_content_stream = models.Models._generate_content_stream, lambda self, **kw: iter([
+            resp])
+        try:
+            list(genai.Client(api_key="test").models.generate_content_stream(model="g", contents="hi"))
+        finally:
+            models.Models._generate_content_stream = saved
+        out = self.exchanges()
+        self.assertEqual([(r["streamed"], bool(r.get("content_digest"))) for _, r in out], [(True, True)] * 3)
+        self.assertEqual([r["usage"].get("input_tokens") for _, r in out], [3, 5, 20])
+
     # --- lifecycle ---
 
     def test_errors_are_reraised_and_recorded(self):
