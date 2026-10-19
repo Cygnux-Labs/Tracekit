@@ -35,8 +35,11 @@ runs, and the sample v1 bundle.
 
 Panel 1 lists each run with its verdict: `VERIFIED` means `tracekit verify`'s checks passed on the run's bundle against
 the pinned log key (here the store's own key: `dev` assurance); `FAILED` means they did not, and the run shows only its
-failure report (a run that verified at an earlier checkpoint and fails at a later one has the records it showed taken
-back); `PENDING` means no checkpoint covers the run's records yet. A run still being written is shown up to the newest
+failure report (a run that verified at an earlier checkpoint and fails at a later one has the records it showed, and
+its earlier report and findings, taken back); `ERROR` means the viewer could not check the run (its NOT CHECKED row
+says why; it tries again five minutes later or when the run grows); `PENDING` means no checkpoint covers the run's
+records yet. A viewer that stops checking runs altogether says `STOPPED`, not `LIVE`, with the reason, until it
+restarts. A run still being written is shown up to the newest
 checkpoint and grows with each one; a long run is checked again no sooner than four times its last check's time. A run
 that stopped growing is checked again five minutes after its last check, one run at a time, so a later edit of its
 records turns it `FAILED`. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live view and the tape
