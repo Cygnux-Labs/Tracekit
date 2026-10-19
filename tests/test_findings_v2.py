@@ -267,6 +267,15 @@ class Prompts(Base):   # TK-X208, and which prompt lines are requests
         self.assertEqual(checks(out, tid)["TK-X202"], "found")   # the transcript never showed that request
         self.assertEqual([p["status"] for p in out["shown"]["prompts"]], ["confirmed"])
 
+    def test_lines_claude_code_writes_itself_are_no_prompt_lines(self):
+        for text in ([{"type": "text", "text": "[Request interrupted by user for tool use]"}],
+                     "[Request interrupted by user]", "<bash-input>ls</bash-input>"):
+            with self.subTest(text=text):
+                t = self.task()
+                t.line("user", text)
+                out = self.run_session(t)
+                self.assertEqual(([p["status"] for p in out["shown"]["prompts"]], out["findings"]), (["confirmed"], []))
+
     def test_one_hook_prompt_confirms_one_line(self):
         t = self.task()
         t.prompt("Fix src/pager.py.", forged=True)   # the first prompt's text again, appended by the agent

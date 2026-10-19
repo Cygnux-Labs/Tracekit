@@ -149,7 +149,9 @@ FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorabilit
 TIERS = ("operator", "observer", "gateway", "decision", "harness", "sdk", "transcript")   # trust, best first
 TEXT_TIERS = ("transcript", "sdk", "harness", "gateway")   # weakest first: a finding names the weakest text it relied on
 RANK = {"transcript": 0, "sdk": 0, "harness": 1, "gateway": 2}   # the agent can write both transcript and sdk text
-COMMAND_OUTPUT = ("<command-", "<local-command-", "<bash-stdout", "<bash-stderr")
+# lines Claude Code itself writes as a user line: command and bash-mode input and output, a person's Esc
+COMMAND_OUTPUT = ("<command-", "<local-command-", "<bash-input", "<bash-stdout", "<bash-stderr",
+                  "[Request interrupted by user")
 
 
 class Budget(Exception):
