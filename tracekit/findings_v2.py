@@ -255,15 +255,26 @@ def _message(body, data):
 def _names(read):
     """[(name, kept away)] of the words of a request (its constraints._read()), each a basename as constraints compare
     them (constraints.norm). A file a clause keeps away ("leave billing.py untouched", "don't modify billing.py") is
-    marked kept away, and the other words of a clause that keeps a file away or refuses a change ("don't touch the
-    Brewfile"), its other files aside, are no mention."""
+    marked kept away; the other words of a clause that keeps a file away are no mention, its other files aside. In a
+    clause with a negation (constraints._negating) a file is a mention only where a change of it is asked for ("fix
+    pager.py and don't touch billing.py") or it is where a negated change of something else would be ("don't change
+    the signature in utils.py"): a prohibition the grammar can't read ("nobody should ever edit X", "don't let
+    anything happen to X") names nothing as asked."""
     out = []
     for tokens, _, kept in read:
-        whole = not kept and not constraints._refusing(tokens)
-        for t in tokens:
-            if (whole or constraints._file(t)) and constraints.norm(t):
-                out.append((constraints.norm(t), constraints.norm(t) in kept))
+        negating = constraints._negating(tokens)
+        for i, t in enumerate(tokens):
+            name = constraints.norm(t)
+            if name and (name in kept or not kept and not negating or constraints._file(t) and (
+                    not negating or constraints._said(tokens, i) == "changed" or _aspect(tokens, i))):
+                out.append((name, name in kept))
     return out
+
+
+def _aspect(tokens, i):
+    """Whether the file at tokens[i] is where a change word's own object is ("the signature in utils.py")."""
+    c = constraints._tied(tokens, i)
+    return c is not None and constraints._where(tokens, c, i)
 
 
 def _targets(cmd):
