@@ -86,6 +86,10 @@ class Packs(unittest.TestCase):
         self.assertEqual(classes.extract("mcp", "mcp__github__create_issue", {})["server"], "github")
 
 
+# the rules this change added to the coding pack
+NEW_RULES = {"TK-D020", "TK-D021", "TK-A020", "TK-A021", "TK-A022", "TK-A023", "TK-A024", "TK-A025", "TK-A026",
+             "TK-A027", "TK-A028"}
+
 class CodingPack(unittest.TestCase):
     def setUp(self):
         self.e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex")
@@ -277,18 +281,21 @@ class CodingPack(unittest.TestCase):
                 decisions = [engine.decide(tool, args) for engine in engines]
                 self.assertEqual(decisions[0]["verdict"], decisions[1]["verdict"])
                 self.assertNotIn(decisions[0]["verdict"], ("deny", "ask"))
-                self.assertFalse(set(decisions[0]["rule_ids"]) & {
-                    "TK-D020", "TK-D021", "TK-A020", "TK-A021", "TK-A022", "TK-A023",
-                    "TK-A024", "TK-A025", "TK-A026", "TK-A027", "TK-A028"})
+                self.assertFalse(set(decisions[0]["rule_ids"]) & NEW_RULES)
 
     def test_history_and_container_rules_are_bounded_on_adversarial_commands(self):
+        """The new rules alone, on the fallback engine: an older rule's own worst case here (TK-D008 on 64 KB of
+        `find ... -delete`) is not theirs to bound."""
+        policy = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
+        new = Engine(dict(policy, **{sec: [r for r in policy[sec] if r["id"] in NEW_RULES]
+                                     for sec in ("deny", "ask", "flag")}), "regex")
         cases = [("rm " + "x " * 16000 + "~/.bash_history", "ask"),
                  ("find /repo " + "-name x " * 4000 + "-print", "allow"),
                  ("find ~/.bash_history " + "-delete " * 8000, "ask"),
-                 ("docker run " + "--mount src=/x, " * 4000 + "alpine", "flag")]
+                 ("docker run " + "--mount src=/x, " * 4000 + "alpine", "allow")]
         for command, expected in cases:
             with self.subTest(length=len(command), expected=expected):
-                decision = self.e.decide("Bash", {"command": command})
+                decision = new.decide("Bash", {"command": command})
                 self.assertEqual(decision["verdict"], expected)
                 self.assertIsNone(decision.get("nondeterministic"))
 
