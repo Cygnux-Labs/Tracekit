@@ -2636,11 +2636,16 @@ class SignerService:
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
         # rule_ids say only TK-OVERSIZE: name the subjects it stands for
-        big = {"reasons": [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
-                            + ", ".join(ruled[0]["oversize"]))[:4096]]} if ruled and ruled[0].get("oversize") else {}
+        reasons = [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
+                    + ", ".join(ruled[0]["oversize"]))[:4096]] if ruled and ruled[0].get("oversize") else []
+        if ruled and ruled[0].get("nondeterministic"):   # the rule it was matching when time ran out is no match
+            reasons.append(f"nondeterministic: the fallback regex engine ran out of its {engine.REGEX_TIMEOUT_S:g} s on "
+                           "these arguments, so the call is denied; the rule it was matching then is among the rule ids "
+                           "without having matched (install google-re2 on the signer)")
         if ruled and ruled[0].get("error"):   # the record and the response say why, as for TK-OVERSIZE
-            big = {"reasons": [f"TK-ENGINE-ERROR: the policy engine failed on these arguments ({ruled[0]['error']}), "
-                               "so the call is denied"]}
+            reasons = [f"TK-ENGINE-ERROR: the policy engine failed on these arguments ({ruled[0]['error']}), "
+                       "so the call is denied"]
+        big = {"reasons": reasons} if reasons else {}
         written = []   # (run_seq, commitment) of each decision record this call (not a retry the cache answers) wrote
 
         def fn(tx, run):
@@ -2730,7 +2735,7 @@ class SignerService:
                         tool_call_id=tcid)
             out = {"decision": "allow" if d["decision"] == "flag" else d["decision"], "decision_id": d["decision_id"],
                    "rule_ids": d["rule_ids"], "run_seq": seq, "expires_at": expires_at,
-                   **({"reason": big["reasons"][0][:1024]} if big else {})}
+                   **({"reason": "; ".join(big["reasons"])[:1024]} if big else {})}
             if d["decision"] in ("deny", "ask") and not big and (why := "; ".join(x for x in (
                     held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"])) if x)[:1024]):
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids

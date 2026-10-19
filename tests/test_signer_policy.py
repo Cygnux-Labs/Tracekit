@@ -914,6 +914,20 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual(rec["reasons"], [d["reason"]])
         self.assertTrue(d["reason"].startswith("TK-OVERSIZE: over 64 KiB, so never matched: "), d["reason"])
 
+    def test_a_fallback_timeout_says_its_rule_did_not_match(self):
+        # the timed-out rule's own reason and remedy were shown, as if it had matched
+        self.open(Engine({"tools": {"Bash": "shell"}, "deny": [
+            {"id": "X-SLOW", "class": "shell", "pattern": "(a|aa)+$", "reason": "a run of a", "remedy": "Do less."}]},
+            "regex"))
+        with mock.patch.object(engine_mod, "REGEX_TIMEOUT_S", 0.05):
+            d = self.decide("Bash", {"command": "echo " + "a" * 40 + "b"})
+        self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["X-SLOW"]))
+        self.assertTrue(d["reason"].startswith("nondeterministic: the fallback regex engine ran out of its 0.05 s"),
+                        d["reason"])
+        self.assertNotIn("a run of a", d["reason"])
+        [rec] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
+        self.assertEqual((rec["nondeterministic"], rec["reasons"]), (True, [d["reason"]]))
+
     def test_a_denial_says_what_to_do(self):
         # each rule's remedy follows the reasons, once; the signed record names the rules only
         self.open(Engine({"tools": {"Bash": "shell"}, "deny": [
