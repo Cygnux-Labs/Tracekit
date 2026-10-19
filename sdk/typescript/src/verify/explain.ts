@@ -12,7 +12,7 @@ export type Verdict = { word: "VERIFIED" | "FAILED" | "UNVERIFIABLE"; means: str
 export type Step = { text: string; command?: string };
 
 /** `s` as one shell argument (POSIX shells; the page doesn't know the reader's). */
-const sh = (s: string) => /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'"'"'`)}'`;
+export const sh = (s: string) => /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'"'"'`)}'`;
 const TRUST_FILE = "the sender's trust file: a small .json that names their signer's log key (tracekit last writes it next "
   + "to the bundle, as <name>.trust.json)";
 

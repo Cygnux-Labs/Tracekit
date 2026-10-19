@@ -1617,6 +1617,8 @@
     // bidi and invisible format characters are shown as \uXXXX, so a name cannot render as something else
     // lean: a filter clicked on such a name compares the shown text and matches nothing; decode data-* if that matters
     const esc = s => String(s ?? "").replace(/[&<>"'\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0")));
+    // the same for text set as textContent, which needs no markup escaped
+    const vis = s => String(s ?? "").replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
     const FIELD = { Bash: "command", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", Read: "file_path", NotebookEdit: "notebook_path", WebFetch: "url", WebSearch: "query", Glob: "pattern", Grep: "pattern", Agent: "description", Task: "description" };
     const FILE_TOOLS = { Read: "R", Write: "W", Edit: "W", MultiEdit: "W", NotebookEdit: "W" };
     const SEVERE = new Set(["denied", "out_of_scope_write", "secrets_access"]);
@@ -2171,7 +2173,7 @@
         html += `<div class="sec">INPUT</div><pre>${esc(j(a.input).slice(0, 6000))}</pre>` + argsFrom(a);
         if (a.post) html += `<div class="sec">RESULT</div><pre>${esc(j(a.post.tool_response).slice(0, 6000))}</pre>`;
         html += evidence(a.pre) + (a.post ? evidence(a.post) : "");
-        $("detsum").textContent = `${a.tool} · seq ${lseq(a.pre)}`;
+        $("detsum").textContent = vis(`${a.tool} · seq ${lseq(a.pre)}`);
       } else if (sel.seq !== undefined) { // raw record
         if (Array.isArray(sel.evidence) && sel.evidence.length) {  // a signed finding: jump to the records it cites
           html += `<div class="sec">EVIDENCE CITED BY THIS FINDING</div><dl class="kv">` + sel.evidence.map(x => {
@@ -2181,7 +2183,7 @@
           }).join("") + `</dl>`;
         }
         html += bodyHtml(sel) + evidence(sel);
-        $("detsum").textContent = `${sel.event} · seq ${lseq(sel)}`;
+        $("detsum").textContent = vis(`${sel.event} · seq ${lseq(sel)}`);
       }
       put("detail", html);
     }
@@ -2215,7 +2217,7 @@
         const happened = [...S.effects.values()].filter(e => e.call === a.id);
         right += `<div class="sec">HAPPENED · WHAT THE KERNEL SENSOR SAW</div>` + (happened.length ? `<dl class="kv">` + happened.map(e => `<dt>${esc(e.rec.v2.effect.kind)}</dt><dd class="go" data-tkseq="${esc(e.rec.tk_seq)}">${esc(e.rec.v2.effect.target)}<div class="${e.status === "found" ? "s-deny" : "dim"}">${esc(effectHow(e))}</div></dd>`).join("") + `</dl>`
           : `<div class="dim">${S.effects.size ? "nothing the sensor saw is joined to this call" : "no kernel sensor's records in this view (https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Tetragon)"}</div>`);
-        $("detsum").textContent = `${a.tool} · seq ${seq}`;
+        $("detsum").textContent = vis(`${a.tool} · seq ${seq}`);
         return cols(left, right + citedHtml([a.pre, a.post]) + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
       }
       // a row the viewer made is named for what it is, not by its internal event
@@ -2235,7 +2237,7 @@
         return r ? `<a href="#" data-tkseq="${esc(r.tk_seq)}">record ${esc(c.run_seq)} · ${esc(r.event === "UserPromptSubmit" ? "prompt" : r.v2.type)}</a> <span class="${r.hash === c.hash ? "s-ok" : "s-deny"}">${r.hash === c.hash ? "hash matches" : "HASH MISMATCH"}</span>` : `record ${esc(c.run_seq)} <span class="dim">not in this view</span>`; }).join("<br>") + `</dd>`;
       if (!sel.signer) left += verdictLine(sel.session_id);
       const right = (sel.review ? `<div class="sec">VERIFIER REPORT</div><pre>${esc(sel.text)}</pre>` : sel.analysis ? "" : bodyHtml(sel)) + citedHtml([sel]);
-      $("detsum").textContent = type + (seq != null ? ` · seq ${seq}` : "");
+      $("detsum").textContent = vis(type + (seq != null ? ` · seq ${seq}` : ""));
       return cols(left + `</dl>` + evidence(sel), right);
     }
     // a verifier report's failing checks, each with the lines that say why (indented under it)
@@ -2664,7 +2666,7 @@
     function renderWhyPanel() {
       if (document.activeElement?.classList.contains("wtarget")) return;   // don't wipe the target being typed
       const ref = whyRef(selected);
-      $("detsum").textContent = ref ? `why · ${ref.run}` : "select a call";
+      $("detsum").textContent = vis(ref ? `why · ${ref.run}` : "select a call");
       if (!ref) { put("detail", `<div class="empty">${selected ? "No why log covers this record: record the run with the why runtime (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why), and start the viewer with --why DIR if its logs are elsewhere." : "Select a tool call: why it happened."}</div>`); return; }
       const d = whyDetail(ref.run), A = d && !d.error && d.actions[ref.node];
       if (!A) { put("detail", `<div class="empty">${esc(!d ? "loading…" : d.error || "WHY explains tool calls: select one.")}</div>`); return; }
@@ -2674,7 +2676,7 @@
     // NODE: one why event of the graph or a lineage step, in full: what it saw, did and produced, its links, its record
     function renderNode() {
       const d = whyDetail(WNODE.run);
-      $("detsum").textContent = `why · ${WNODE.run}`;
+      $("detsum").textContent = vis(`why · ${WNODE.run}`);
       const n = d && !d.error && d.nodes.find(x => x.id === WNODE.id);
       if (!n) { put("detail", `<div class="empty">${esc(!d ? "loading…" : d.error || "This node is not in the run's why log any more.")}</div>`); return; }
       const by = Object.fromEntries(d.nodes.map(x => [x.id, x])), ms = v => v == null ? "–" : `${(+v).toFixed(1)} ms`;

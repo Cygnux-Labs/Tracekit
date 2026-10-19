@@ -1324,6 +1324,14 @@ class Pages(unittest.TestCase):
         self.assertTrue(r.getheader("Set-Cookie").startswith("tracekit_observe="))
 
 
+    def test_text_set_on_the_page_shows_bidi_and_invisible_characters_escaped(self):
+        """DETAIL's heading is set as text: a tool name holding U+202E rendered reversed there, escaped everywhere else."""
+        page = observe.read_text(observe.UI)
+        sinks = re.findall(r'\$\("detsum"\)\.textContent = ([^;]*);', page)
+        self.assertEqual([x for x in sinks if not (x.startswith("vis(") or re.fullmatch(r'"[^"]*"', x))], [])
+        if shutil.which("node"):
+            self.assertEqual(page_js(["vis"], 'process.stdout.write(vis("rm\\u202e/hs.exe <b>"))'), "rm\\u202e/hs.exe <b>")
+
     def test_runs_tape_rows_and_alerts_open_by_keyboard(self):
         """Runs, tape rows and alerts took no keyboard focus: a keyboard user could open none of them."""
         page = observe.read_text(observe.UI)

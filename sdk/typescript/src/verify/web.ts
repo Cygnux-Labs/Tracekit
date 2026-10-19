@@ -8,7 +8,7 @@
  * The verification runs in a worker started from this same script (a blob: URL, which inherits the page's policy), so a
  * large bundle doesn't freeze the page; in the page itself where the browser refuses the worker.
  */
-import { MEANING, asJson, asText, cliExit, nextSteps, summarize, verdict } from "./explain.js";
+import { MEANING, asJson, asText, cliExit, nextSteps, sh, summarize, verdict } from "./explain.js";
 import { type Report, VERSION, clean, readZip, verify } from "./index.js";
 
 /** The page's samples (src/verify/sample/), base64: a clean bundle, a tampered copy and their trust config. */
@@ -116,7 +116,7 @@ function page() {
       if (mine !== turn) return;
       $("result").hidden = true;
       $("busy").textContent = `Couldn't check this file: ${clean(String((err as Error)?.message ?? err))}. The `
-        + `command-line verifier may say more: npx -y @cygnuxlabs/tracekit@latest verify ${names.bundle}`;
+        + `command-line verifier may say more: npx -y @cygnuxlabs/tracekit@latest verify ${sh(names.bundle)}`;
       document.body.dataset.state = "error";
       return;
     }

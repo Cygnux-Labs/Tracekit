@@ -716,6 +716,12 @@ class Agreement(unittest.TestCase):
         self.assertTrue(error["own"])
         self.assertTrue(error["busy"].startswith("Couldn't check this file: boom. "), error["busy"])
         self.assertEqual(error["report"], "")
+        with tempfile.TemporaryDirectory() as d:   # the command it suggests names the file as one shell word
+            odd = shutil.copy(bundle, os.path.join(d, "it's mine.tkb"))
+            busy = json.loads(subprocess.run(["node", "--input-type=module", "-e", PAGE_WORKER, "--", PAGE,
+                                              os.path.join(d, "page.mjs"), "error", odd, trust],
+                                             capture_output=True, text=True, check=True).stdout)["busy"]
+        self.assertTrue(busy.endswith("verify 'it'\"'\"'s mine.tkb'"), busy)
 
     def test_a_new_choice_never_shows_under_the_last_bundles_verdict(self):
         """Choosing another bundle wrote its name under the last one's VERIFIED banner, every check [PASS], for as long
