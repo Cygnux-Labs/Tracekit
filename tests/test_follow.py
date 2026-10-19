@@ -18,6 +18,7 @@ from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import rpc_schema, service as svc
+from tracekit.storage.file import FileStorage
 from tracekit.verify import v2
 
 FOLLOWER = CallerIdentity("mtls", "spiffe://acme/agentsh-follow", True)
@@ -269,6 +270,17 @@ class TestAgentsh(Followed):
         self.assertRegex(gap, r"^no tailer_heartbeat for \d+s while the run was open: the log follower stopped or was "
                               r"killed; what the log says after that is not recorded: read the log itself for it, and "
                               r"restart `tracekit follow`$")
+
+    def test_a_follower_killed_across_a_signer_restart_without_a_snapshot_is_a_gap(self):
+        al, log = self.agentsh()
+        al.write(SHADOW)
+        log.step()   # its run registered
+        with mock.patch.object(FileStorage, "snapshot_put"):   # the signer stopped without its snapshot
+            self.close()
+        self.open()   # the run's state replayed from its records: still watched for the follower's heartbeats
+        self.s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)
+        [gap] = self.gaps()
+        self.assertIn("the log follower stopped or was killed", gap)
 
     def test_a_rotated_log_is_followed_into_the_new_one(self):
         al, log = self.agentsh()

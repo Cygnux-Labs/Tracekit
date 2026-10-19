@@ -535,6 +535,8 @@ class RecordLog:
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
                 if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
                     run["rec"], run["spans"] = None, {}
+                    if "request_id" in e:   # an importer's over RPC (tracekit follow, not OTLP): watched for its beats
+                        run["tailed"] = True
                 elif "replay_of" in e["data"]:   # not reconciled: a tracekit why replay run has no decisions by design
                     run["rec"] = None
             elif e["type"] == "run.closing":
