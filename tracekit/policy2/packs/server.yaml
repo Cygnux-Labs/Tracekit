@@ -10,7 +10,7 @@
 # grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-6'
+version: '2026.10-server-7'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -32,14 +32,15 @@ deny:
     rationale: The metadata service hands out the server's own cloud credentials; no tool call of an agent has a reason to reach it.
   - id: TK-S002
     # private keys and the token formats of AWS, GitHub, GitLab, Slack, Stripe, Anthropic, OpenAI, Google, npm, JWTs,
-    # and URLs with a password in them
-    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"]*:[^/\s@"]+@'
+    # and URLs with a password in them (a scheme of at most 64 characters: an unbounded one was rescanned from each
+    # word on the fallback engine)
+    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]{0,63}://[^/\s:@"]*:[^/\s@"]+@'
     reason: a secret in the arguments
     rationale: A credential in a tool call is on its way somewhere it should not be, and lands in the evidence log too; tools should get their credentials from the deployment, not from the model.
   - id: TK-S003
     class: shell
     field: line
-    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"]*:[^/\s@"]+@'
+    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]{0,63}://[^/\s:@"]*:[^/\s@"]+@'
     reason: a secret in a shell command
     rationale: TK-S002 for the whole command line, where a secret can sit in a VAR= prefix, a redirection or a heredoc.
   - id: TK-S004

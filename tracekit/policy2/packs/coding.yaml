@@ -8,7 +8,7 @@
 # (the agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.10-v2-9'
+version: '2026.10-v2-10'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -40,7 +40,7 @@ deny:
   # --- shell ---
   - id: TK-D001
     class: shell
-    pattern: '^(sudo|sudoedit|doas|pkexec)( |$)|^su (.* )?(-c|root)( |$)'
+    pattern: '^(sudo|sudoedit|doas|pkexec)( |$)|^su (.*? )?(-c|root)( |$)'
     reason: privilege escalation
     rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
   - id: TK-D002
@@ -181,7 +181,7 @@ flag:
     # template path (no space: never a whole command) is exempt
     field: target
     pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
-    unless: '^([^ ]*/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
+    unless: '^([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
     class: mcp

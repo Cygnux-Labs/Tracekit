@@ -398,6 +398,15 @@ all matches of one decision share 1 s, and when it runs out the decision denies 
 leaves the remaining rules out and is marked `nondeterministic: true`. RE2 never times out, so on such a subject the
 two engines can decide differently; install `google-re2` on the signer.
 
+Each rule gets a prefilter when it is loaded: strings of two or more characters, one of which every match contains, in
+lower case (`[Mm][Ee][Tt][Aa]` gives `meta`; `policy2/compile.py` `literals`). A subject that holds none of them is not
+searched, and the rules that read the same subject share one copy of it in a decision. The prefilter never changes a
+decision (tests check it on every subject the E17 corpus forms and on random patterns); it only skips searches that
+can't match. A rule without one is searched on every call its class and tool reach, and `tracekit policy lint` warns
+about it unless a string of one character or none matches it (`^`, `.`, `&\s*$` need no prefilter). Every shipped
+pattern searches 64 KiB of text built to make it back off or rescan within 50 ms on the fallback engine
+(`tests/test_policy2.py`), except two noted in [limits](limits.md#policy).
+
 ## Packs shipped
 
 | Pack | For | Contents |

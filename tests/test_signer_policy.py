@@ -317,6 +317,17 @@ class ServerCorpora(unittest.TestCase):
         self.assertGreaterEqual(sum(r["benign"] for r in out["classes"].values()), 600)
         self.assertTrue(out["ok"], {k: out[k] for k in ("missed", "false_positives", "engine_mismatches", "unmapped")})
 
+    def test_e17_decisions_are_the_recorded_ones(self):
+        """Every case gets the verdict and rule ids eval/results/e17_policy_corpus.json records, from both engines (E17
+        holds them equal): the prefilter, the shared subjects and the linear rewrites of patterns change no decision.
+        A change to a rule or the corpus re-runs eval/e17_policy_corpus.py and commits what it records."""
+        with open(os.path.join(os.path.dirname(e17.CORPUS), "..", "..", "eval", "results", "e17_policy_corpus.json"),
+                  encoding="utf-8") as f:
+            recorded = json.load(f)["decisions"]
+        got = e17.run()["decisions"]
+        self.assertEqual({k: (recorded.get(k), v) for k, v in got.items() if recorded.get(k) != v}, {})
+        self.assertEqual(set(recorded) - set(got), set())
+
 
 class SignerPolicy(unittest.TestCase):
     def setUp(self):

@@ -4,6 +4,7 @@ Patterns are limited to a syntax that RE2 and the `regex` module (ASCII mode, af
 so a decision does not depend on which engine made it. `build` returns every lint error at once.
 """
 import hashlib
+import itertools
 import json
 import ntpath
 import os
@@ -127,6 +128,81 @@ def check_pattern(pattern):
     except re.error as e:
         raise PolicyError(f"bad regex: {e}") from e
     _walk(_sre_p.parse(pattern))
+
+
+MAX_EXACT = 64   # strings an exact set of the literal walk may hold before it gives up on exactness
+
+
+def literals(pattern):
+    """The prefilter of a checked pattern: a tuple of lower-case ASCII strings of two or more characters, one of which
+    is in the lower-cased text of every match (so a subject holding none of them can't match), or None when the
+    pattern has no such set. Case variants fold (`[Mm][Ee]` is "me"); a class of more than eight characters, an
+    optional or repeated part and any non-ASCII character end a literal run. A string holding another of the set is
+    left out: the shorter one is in every subject the longer one is."""
+    exact, req = _seq(_sre_p.parse(pattern))
+    req = exact if exact is not None else req
+    if not req or min(map(len, req)) < 2:
+        return None
+    return tuple(sorted(s for s in req if not any(t != s and t in s for t in req)))
+
+
+def _seq(items):
+    """(exact, required) of a sequence: every string it can match when that set is small (else None), and a set one of
+    which every match contains (None: no such set)."""
+    run, found, exact = {""}, [], True
+    for op, av in items:
+        ex, req = _node(op, av)
+        prod = {a + b for a in run for b in ex} if ex is not None else None
+        if prod is not None and len(prod) <= MAX_EXACT:
+            run = prod
+            continue
+        exact = False
+        found.append(run)
+        run = set(ex) if ex is not None else {""}
+        if req is not None:
+            found.append(req)
+    if exact:
+        return frozenset(run), None
+    found.append(run)
+    return None, max(found, key=lambda s: (min(map(len, s)), -len(s)))
+
+
+def _node(op, av):
+    if op == _sre_c.LITERAL:
+        return ({chr(av).lower()}, None) if av < 128 else (None, None)
+    if op == _sre_c.AT:
+        return {""}, None
+    if op == _sre_c.IN:
+        chars = set()
+        for kind, v in av:
+            if kind == _sre_c.LITERAL and v < 128:
+                chars.add(chr(v).lower())
+            elif kind == _sre_c.RANGE and v[1] < 128 and v[1] - v[0] < 26:
+                chars.update(chr(c).lower() for c in range(v[0], v[1] + 1))
+            else:   # NEGATE, a category (\d, \s, \w), a wide range or a non-ASCII character
+                return None, None
+        return (chars, None) if len(chars) <= 8 else (None, None)
+    if op == _sre_c.SUBPATTERN:
+        return _seq(av[-1])
+    if op == _sre_c.BRANCH:
+        parts = [_seq(b) for b in av[1]]
+        if all(ex is not None for ex, _ in parts) and len(set().union(*(ex for ex, _ in parts))) <= MAX_EXACT:
+            return set().union(*(ex for ex, _ in parts)), None
+        reqs = [ex if ex is not None else req for ex, req in parts]
+        return None, (None if any(r is None or "" in r for r in reqs) else set().union(*reqs))
+    if op in (_sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT):
+        lo, hi, items = av
+        ex, req = _seq(items)
+        if ex is not None and hi <= 2:   # x? and x{1,2}: their exact strings
+            out = {""} if lo == 0 else set()
+            for k in range(max(lo, 1), hi + 1):
+                out |= {"".join(p) for p in itertools.product(ex, repeat=k)}
+            if len(out) <= MAX_EXACT:
+                return out, None
+        if lo == 0:
+            return None, None
+        return None, (ex if ex is not None else req)
+    return None, None   # ANY, NOT_LITERAL
 
 
 def _read(path):
@@ -432,11 +508,23 @@ def _lint_agent(rule):
     return errors
 
 
+def _unfiltered(pattern):
+    """Whether a pattern has no prefilter (`literals`) though no string of one character or none matches it (a
+    catch-all such as `^` or `.` needs none)."""
+    try:
+        if not isinstance(pattern, str) or literals(pattern) is not None:
+            return False
+        rx = re.compile(translate(pattern), re.ASCII)
+    except (PolicyError, re.error):
+        return False
+    return not any(rx.search(chr(c)) for c in range(128)) and not rx.search("")
+
+
 def warnings(pol):
     """What lint lets through but a person should know: a tool mapped to class unknown (what every unmapped tool is, so
-    unknown_tools still decides it; a 1.1 policy may do it, so it isn't an error), and an agent approver on a
-    money-moving rule (class payment, or a tool the policy maps to payment) without executor t2 binds the approval, not
-    what runs."""
+    unknown_tools still decides it; a 1.1 policy may do it, so it isn't an error), a rule the prefilter can't skip
+    (`_unfiltered`), and an agent approver on a money-moving rule (class payment, or a tool the policy maps to payment)
+    without executor t2 binds the approval, not what runs."""
     payments = [t for t, c in pol.get("tools", {}).items() if c == "payment"]
 
     def money(r):
@@ -449,6 +537,9 @@ def warnings(pol):
     return [f"tool {t!r} maps to class 'unknown', which unknown_tools decides like any unmapped tool: map an "
             "application's own tool to class app (known, no class fields)"
             for t, c in pol.get("tools", {}).items() if c == "unknown"] + [
+        f"{sec} rule {r['id']}: no literal of two or more characters is in every match, so the rule is searched on "
+        "every call its class and tool reach; name the text it looks for (a command, a key name, a path part)"
+        for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict) and _unfiltered(r.get("pattern"))] + [
         f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
         "arguments the agent reported, not what its process runs; add executor: t2"
         for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)

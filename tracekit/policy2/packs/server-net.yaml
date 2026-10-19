@@ -4,7 +4,7 @@
 # hosts (a rule in the extending file replaces the parent's). Cloud metadata addresses are denied for every tool by
 # TK-S001 in server.yaml.
 
-version: '2026.10-server-net-3'
+version: '2026.10-server-net-4'
 description: server-hosted agents, HTTP egress
 unknown_tools: ask
 
@@ -39,7 +39,7 @@ deny:
     field: host
     # internal names: localhost, a name without a dot (resolved through the server's search domains, as metadata is),
     # and internal suffixes; the host is canonical (lowercase, fullwidth letters folded, no port)
-    pattern: '^(localhost|[^.:\[]+|kubernetes\.default|.*\.(localhost|internal|local|lan|corp|intranet|svc|home\.arpa))\.?$'
+    pattern: '^(localhost|[^.:\[]+|kubernetes\.default|.*?\.(localhost|internal|local|lan|corp|intranet|svc|home\.arpa))\.?$'
     reason: request to an internal name
     rationale: The name twin of TK-N001; a deployment that calls an internal service by name redefines this rule with an unless.
   - id: TK-N002
