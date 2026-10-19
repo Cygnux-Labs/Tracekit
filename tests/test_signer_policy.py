@@ -569,6 +569,31 @@ class CodingPack(unittest.TestCase):
                         self.assertEqual((d["verdict"], d["rule_ids"]), want[i])
         self.verdicts([("rm ~/.bash_history", "TK-A027")])
 
+    def test_history_logs_and_package_sources_written_in_any_case_by_any_writer(self):
+        # the tags weren't casefolded (`rm ~/.bash_history` was held, `rm ~/.Bash_History` not); ln, sed's script given
+        # as --expression=, -e'…' or --file=, cp -t's directory, a copy into a directory and macOS's /private/var/log
+        # weren't read; a shell write to a package source file (TK-A024's) wasn't held
+        self.verdicts([(c, "TK-A027") for c in (
+            "rm ~/.Bash_History", "> ~/.ZSH_HISTORY", "find ~ -name .BASH_HISTORY -delete",
+            "ln -sf /dev/null ~/.bash_history", "sed --expression='/x/d' -i ~/.bash_history",
+            "sed -e'/x/d' -i ~/.bash_history", "sed --file=x.sed -i ~/.bash_history", "cp -t ~ /tmp/.bash_history",
+            "cp /tmp/.bash_history ~/", "rm -rf /private/var/log/system.log")])
+        self.verdicts([(c, "TK-A030") for c in (
+            "echo 'registry=https://packages.example.test' >> ~/.npmrc", "tee -a /etc/pip.conf",
+            "cp x.list /etc/apt/sources.list.d/", "cat > ~/.PyPIrc")])
+        self.verdicts([({"file_path": p}, "TK-A020") for p in (
+            "/Users/u/library/keychains/login.keychain-db", "/Users/u/Library/Application Support/Google/Chrome/"
+            "Default/login data", r"C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\LOGIN DATA")], tool="Read")
+        self.verdicts([({"path": "/Users/u/Library/Keychains", "pattern": "x"}, "TK-A020")], tool="Grep")
+        self.verdicts([({"file_path": "C:/Users/u/AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine/"
+                                      "consolehost_history.txt"}, "TK-A026")], tool="Write")
+        self.verdicts([("cat '/Users/u/Library/Application Support/Google/Chrome/Default/login data'", "TK-A021")])
+        for command in ("cp ~/.bash_history /tmp/history-copy", "sed -e 's/x/y/' -i notes.txt", "cat ~/.npmrc",
+                        "cp ~/.npmrc /tmp/npmrc"):
+            with self.subTest(command=command):
+                d = self.e.decide("Bash", {"command": command})
+                self.assertFalse({"TK-A027", "TK-A030"} & set(d["rule_ids"]), d)
+
     def test_a_shell_the_parser_cannot_read_is_opaque_and_split_or_called_commands_are_read(self):
         # fish, PowerShell and tcsh scripts were read as nothing; rbash and mksh are POSIX shells; `env -iS` and
         # `npx -c` passed their command as one word

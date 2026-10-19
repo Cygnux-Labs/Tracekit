@@ -213,7 +213,8 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|(^|/)var/log(/|$)'
+    # in lower case: the path is also matched casefolded (PowerShell's ConsoleHost_history.txt)
+    pattern: '(^|/)(\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|(^|/)var/log(/|$)'
     reason: modifying shell history or system logs
     remedy: Wait for a person to approve the held write, or keep notes in the project instead of history or log files.
     rationale: These files may be evidence of earlier activity; writing to them is held while reading stays allowed.
