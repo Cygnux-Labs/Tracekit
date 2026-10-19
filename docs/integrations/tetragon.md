@@ -174,7 +174,9 @@ signed gap:
 - `process_throttle` (`THROTTLE_START`): its cgroup rate limit (`--cgroup-rate`) stopped sending a cgroup's exec and
   exit events.
 
-The import adds lines it can't read and an agent's events it can't record. It sends them to the signer as `lost`,
+The import adds lines it can't read and an agent's events it can't record. It skips, and counts on stderr when it
+exits, events it never records: a connect to no IP address (a unix socket: any family but `AF_INET` and `AF_INET6`),
+other kinds of event, and events of no agent; none of these is a loss. It sends the losses to the signer as `lost`,
 which writes a `capture.gap{observer_lost}` in each run the import covers (in the tenant's signer run when it covers
 none) and ends its coverage of those runs: their matrix says processes not covered. An import that stops sending for
 90 s, or restarts, is the same gap, as for the [egress observer](../egress.md#heartbeats-and-coverage).

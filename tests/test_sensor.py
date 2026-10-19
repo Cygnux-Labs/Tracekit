@@ -159,6 +159,8 @@ class TestFalcoLines(unittest.TestCase):
         self.assertIsNone(sensor.falco(dict(other, tags=["container", "shell"])))   # not a tracekit rule
         self.assertIsNone(self.effect(falco_line("Tracekit agent exec", "clone"))[1])
         self.assertIn("dropping 1287 of 23110 syscall event(s) in one second", sensor.falco(json.loads(FALCO_DROPS)))
+        unix = falco_line("Tracekit agent connect", "connect", **{"fd.sip": None, "fd.sport": None})   # a unix socket
+        self.assertEqual(self.effect(unix)[1], sensor.LOCAL)
 
 
 class Sensed(Lifecycle):
@@ -200,7 +202,7 @@ class TestImport(Sensed):
                      exec_line(pod="web-1")):   # a pod no runs entry matches: not an agent's
             imp.add(text)
         self.assertTrue(imp.flush())
-        self.assertEqual(imp.skipped, 1)
+        self.assertEqual(imp.skipped, {sensor.NO_AGENT: 1})
         es = self.final(run)
         effects = [e["data"] for e in self.typed(es, "effect.observed")]
         # the call a process's environment names is the agent's claim: recorded, never signed as explaining the
@@ -254,6 +256,19 @@ class TestImport(Sensed):
                       "rate limit dropped 12 event(s)", lost["reason"])
         self.assertIn("2 x tetragon lines the import could not read or record", lost["reason"])
         self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"], {"status": "none", "layers": []})
+
+    def test_a_connect_to_no_ip_address_is_skipped_not_a_loss(self):
+        imp = self.importer()
+        imp.flush()
+        run = self.register()
+        # an agent's process connecting to a unix socket: Tetragon's sockaddr of any family but AF_INET(6)
+        imp.add(kprobe_line("security_socket_connect", [{"sockaddr_arg": {"family": "AF_UNIX", "addr": "invalid IP"}}]))
+        imp.add("\n")   # a blank line: nothing
+        self.assertTrue(imp.flush())
+        self.assertEqual(imp.skipped, {sensor.LOCAL: 1})
+        es = self.final(run)
+        self.assertEqual((self.typed(es, "effect.observed"), self.gaps(es, "observer_lost")), ([], []))
+        self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"]["status"], "observed")
 
     def test_a_loss_with_no_run_covered_goes_to_the_signer_run(self):
         imp = self.importer()
@@ -360,7 +375,7 @@ class TestFalcoImport(Sensed):
                       "1287 of 23110", lost["reason"])
         (outside,) = self.gaps(self.events("tracekit/signer"), "effect_outside_run")
         self.assertIn("falco mtls:spiffe://acme/falco saw exec by pid 51583", outside["reason"])
-        self.assertEqual(imp.skipped, 1)
+        self.assertEqual(imp.skipped, {sensor.NO_AGENT: 1})
 
 
 class TestDelivery(Sensed):

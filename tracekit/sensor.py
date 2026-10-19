@@ -14,12 +14,13 @@ sensor.yaml:
       - match: {namespace: agents, pod: "coder-*"}   # globs over namespace, pod, container (id) and uid; all must match
         caller: k8s_sa:system:serviceaccount:agents:coder   # that identity's latest open run takes the event
 
-The first `runs` entry that matches an event attributes it; an event none matches is not an agent's and is skipped
-(counted on stderr at exit). The import covers only the runs of its `caller`s, which every call names (`callers`). Losses go to the signer as `lost`, an observer_lost gap in each run the import covers: the
-ones the sensor reports in its stream, lines the import can't read, an agent's events it can't record (no binary, a
-field the signer would refuse), and events past MAX_PENDING while the signer can't take them. Every call is the import's
-heartbeat; one goes at least every HEARTBEAT_S. Each call names this process (`instance`), so the signer sees a
-restart.
+The first `runs` entry that matches an event attributes it; an event none matches is not an agent's and is skipped,
+as are a connect to no IP address (a unix socket's) and kinds of event the import doesn't record (each counted on stderr
+at exit). The import covers only the runs of its `caller`s, which every call names (`callers`). Losses go to the signer
+as `lost`, an observer_lost gap in each run the import covers: the ones the sensor reports in its stream, lines the
+import can't read, an agent's events it can't record (no binary, a field the signer would refuse), and events past
+MAX_PENDING while the signer can't take them. Every call is the import's heartbeat; one goes at least every
+HEARTBEAT_S. Each call names this process (`instance`), so the signer sees a restart.
 """
 import argparse
 import collections
@@ -52,6 +53,9 @@ TIME = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z")
 # Codex exports each shell call's id into the process (codex-rs/protocol/src/shell_environment.rs); the sensor reads it
 # only from the processes it is configured to keep that variable of
 CODEX_ENV = "CODEX_TOOL_CALL_ID"
+# events the import skips, by why (counted on stderr at exit): none is a loss of an agent's event Tracekit records
+NO_AGENT, NOT_RECORDED = "event(s) of no agent", "event(s) of a kind the import doesn't record"
+LOCAL = "connect(s) to no IP address (a unix socket)"
 
 
 def _ts(v):
@@ -69,7 +73,8 @@ def _digest(text):
 def tetragon(e):
     """(attributes, effect) of one Tetragon export line (GetEventsResponse as protojson with proto names: cilium/tetragon
     api/v1/tetragon/events.proto, tetragon.proto), a loss it reports, or None for one the import doesn't record. The
-    attributes are read first: an effect that can't be built raises only for a process some `runs` entry matches."""
+    attributes are read first: an effect that can't be built raises only for a process some `runs` entry matches, and
+    one the import skips is None or why (LOCAL)."""
     if "rate_limit_info" in e:   # its export rate limit dropped events (pkg/ratelimit/ratelimit.go)
         n = e["rate_limit_info"].get("number_of_dropped_process_events", "?")
         return f"Tetragon's export rate limit dropped {n} event(s) (raise --export-rate-limit)"
@@ -96,8 +101,8 @@ def tetragon(e):
             out = {"kind": "exit", "status": ev.get("status", 0), **({"signal": ev["signal"]} if ev.get("signal") else {})}
         else:
             out = _kprobe(ev.get("args", ()))
-            if out is None:
-                return None
+            if not isinstance(out, dict):
+                return out
         env = {v.get("Key"): v.get("Value") for v in p.get("environment_variables", ())}
         return {**out, "ts": _ts(e["time"]), "pid": p["pid"], "binary": p["binary"], "exec_id": p["exec_id"],
                 **_claim(env.get(CODEX_ENV))}
@@ -106,10 +111,12 @@ def tetragon(e):
 
 def _kprobe(args):
     """The effect of a process_kprobe's arguments: a sockaddr (security_socket_connect) or sock (tcp_connect) is a
-    connect, a file or path argument a file event; None for any other hook."""
+    connect, a file or path argument a file event; None for any other hook, LOCAL for a connect to no IP address."""
     for a in args:
-        if "sockaddr_arg" in a:
-            return {"kind": "connect", "host": a["sockaddr_arg"]["addr"].lower(), "port": a["sockaddr_arg"].get("port", 0)}
+        if "sockaddr_arg" in a:   # Tetragon writes "invalid IP" as the addr of any family but AF_INET and AF_INET6
+            s = a["sockaddr_arg"]
+            return {"kind": "connect", "host": s["addr"].lower(), "port": s.get("port", 0)} if s.get("family") in (
+                "AF_INET", "AF_INET6") else LOCAL
         if "sock_arg" in a:
             return {"kind": "connect", "host": a["sock_arg"]["daddr"].lower(), "port": a["sock_arg"].get("dport", 0)}
         if "file_arg" in a or "path_arg" in a:
@@ -136,6 +143,8 @@ def falco(e):
         if kind == "exec":
             out = {"kind": kind, **({"args_digest": _digest(f["proc.cmdline"])} if f.get("proc.cmdline") else {})}
         elif kind == "connect":
+            if f["fd.sip"] is None:   # a unix socket's
+                return LOCAL
             out = {"kind": kind, "host": f["fd.sip"].lower(), "port": f["fd.sport"]}
         elif kind == "file":
             out = {"kind": kind, "path": f["fd.name"]}
@@ -174,25 +183,33 @@ class Import:
         self.lost = collections.Counter()   # loss -> times, not yet sent
         self.sending = None   # the call in flight: sent again, same request_id, until the signer takes it
         self.beat = 0.0   # monotonic time of the last call the signer took
-        self.skipped = 0
+        self.skipped = collections.Counter()   # why -> events skipped
 
     def add(self, line):
-        """One line of the sensor's stream."""
+        """One line of the sensor's stream: an effect to send, a loss (one the sensor reports, a line the import can't
+        read, an agent's event it can't record) or an event it skips. A blank line is nothing."""
+        if not line.strip():
+            return
+        skip = None
         try:
             got = self.parse(json.loads(line))
             if isinstance(got, tuple):
                 attrs, effect = got
                 rule = next((r for r in self.runs if _matches(r["match"], attrs)), None)
-                got = rule and effect()
-                if got is not None:
+                got = effect() if rule else NO_AGENT
+                if isinstance(got, dict):
                     got = {"caller": rule["caller"], **got}
                     if validate(ITEM, got):   # one the signer would refuse would hold up every event after it
                         raise ValueError(got)
+                else:
+                    got, skip = None, got or NOT_RECORDED
+            elif got is None:
+                skip = NOT_RECORDED
         except (ValueError, KeyError, TypeError, AttributeError):
             got = f"{self.sensor} lines the import could not read or record"
         with self.lock:
-            if got is None:
-                self.skipped += 1
+            if skip:
+                self.skipped[skip] += 1
             elif isinstance(got, str):
                 self.lost[got] += 1
             elif len(self.pending) >= MAX_PENDING:
@@ -306,8 +323,8 @@ def run(imp, lines):
         pass
     for _ in range(FINAL_TRIES):
         if imp.flush():
-            print(f"tracekit sensor: {'stopped: ' + str(failed[0]) if failed else 'done'}; {imp.skipped} event(s) of "
-                  "no agent skipped", file=sys.stderr)
+            print(f"tracekit sensor: {'stopped: ' + str(failed[0]) if failed else 'done'}; skipped: "
+                  + (", ".join(f"{n} {why}" for why, n in sorted(imp.skipped.items())) or "none"), file=sys.stderr)
             return 1 if failed else 0
         time.sleep(1)
     print(f"tracekit sensor: the signer could not take {len(imp.pending)} event(s); they are not recorded",
