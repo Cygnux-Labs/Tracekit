@@ -57,7 +57,8 @@ OBJECT_KINDS = ("keep_away", "only_change")
 MAX_TEXT = 1 << 16   # lean: characters of one text the grammar reads; past it, cut
 WINDOW = 5
 SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
-CLAUSE = re.compile(r"[,;:()\[\]—–]\s*|\s+(?=(?:but|except|though)\s)", re.I)   # within a sentence; keeps the word
+# within a sentence, keeping the word; a space run is tried from its start only (from inside it, quadratic)
+CLAUSE = re.compile(r"[,;:()\[\]—–]\s*|(?<!\s)\s+(?=(?:but|except|though)\s)", re.I)
 TOKEN = re.compile(r"[\w.~/\\'-]+")
 READ_ONLY = re.compile(r"\bread[\s_-]*only\b", re.I)
 OFF_LIMITS = re.compile(r"\boff[\s_-]*limits\b", re.I)
