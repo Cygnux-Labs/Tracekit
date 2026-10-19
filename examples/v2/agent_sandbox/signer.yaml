@@ -1,0 +1,107 @@
+# The Tracekit signer outside the Sandbox, in namespace tracekit with its own ServiceAccount, volume and keys
+# (docs/integrations/agent-sandbox.md). Agents reach it at https://tk.tracekit.svc:8443 with a projected
+# service-account token of audience tracekit-signer, which it checks by TokenReview. Before applying, create the
+# namespace and in it the TLS Secret `tk-tls` (a certificate for tk.tracekit.svc).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tk
+  namespace: tracekit
+---
+# TokenReview of the agents' service-account tokens
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tracekit-tk-tokenreview
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:auth-delegator}
+subjects:
+  - {kind: ServiceAccount, name: tk, namespace: tracekit}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tk-signer
+  namespace: tracekit
+data:
+  signer.yaml: |
+    data_dir: /var/lib/tracekit-signer/data
+    durability: ack-on-fsync
+    http:
+      listen: 0.0.0.0:8443
+      cert: /etc/tracekit/tls/tls.crt
+      key: /etc/tracekit/tls/tls.key
+      authenticators: [k8s_sa]
+      k8s_sa:
+        audience: tracekit-signer
+        tokenreview: https://kubernetes.default.svc
+        token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    # every service account in the agents namespace is tenant `agents`, and may run and record its own runs
+    tenants: {"k8s_sa:system:serviceaccount:agents:*": agents}
+    authorize: {"k8s_sa:system:serviceaccount:agents:*": [register_run, decide, complete, close_run]}
+    metrics: {listen: 127.0.0.1:9464}
+    policy: /etc/tracekit/packs/server.yaml
+    # witnesses:                             # docs/witnesses.md: a witness off the cluster detects a rolled-back log
+    #   - {url: https://witness.example.org, vkey: "witness.example.org+1234abcd+BA...", class: customer}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tk-data
+  namespace: tracekit
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tk
+  namespace: tracekit
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # the signer holds its data volume's storage lock
+  selector:
+    matchLabels: {app: tk}
+  template:
+    metadata:
+      labels: {app: tk}
+    spec:
+      serviceAccountName: tk
+      automountServiceAccountToken: true   # its own token, for TokenReview
+      securityContext: {fsGroup: 10001, fsGroupChangePolicy: OnRootMismatch}
+      containers:
+        - name: signer
+          image: tracekit-signer:local   # deploy/docker/Dockerfile; pin yours by digest
+          command: [sh, -c, "umask 077 && mkdir -p /var/lib/tracekit-signer/data && exec tracekit signer serve --config /etc/tracekit/signer.yaml"]
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          ports:
+            - {name: https, containerPort: 8443}
+          readinessProbe:
+            tcpSocket: {port: https}
+            periodSeconds: 5
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/tracekit-signer}
+            - {name: config, mountPath: /etc/tracekit/signer.yaml, subPath: signer.yaml, readOnly: true}
+            - {name: tls, mountPath: /etc/tracekit/tls, readOnly: true}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: tk-data}}
+        - {name: config, configMap: {name: tk-signer}}
+        - {name: tls, secret: {secretName: tk-tls, defaultMode: 0440}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tk
+  namespace: tracekit
+spec:
+  selector: {app: tk}
+  ports:
+    - {name: https, port: 8443, targetPort: https}
