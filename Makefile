@@ -12,7 +12,7 @@ help:
 	@echo "make release-dry-run  build every release artifact, SBOM and sum locally, publish nothing, and check them (needs the package index and npm)"
 	@echo "make demo      run the scripted end-to-end demo"
 	@echo "make demos     record the offline demos in docs/demos/ again (scripts/record_demos.py; --check checks them)"
-	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults, v1 and v2), E6 (findings), E17 (server policy corpora, detection), E18 (agent approvers), E19 (egress observation), on Linux E9 --quick (signer perf); rewrites eval/results/"
+	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults, v1 and v2), E6 (findings), E17 (server policy corpora, detection), E18 (agent approvers), E19 (egress observation), E21 (policy rewrite robustness), on Linux E9 --quick (signer perf); rewrites eval/results/"
 	@echo "make eval-agents  E5: real Claude Code runs (needs the claude CLI; spends model usage)"
 	@echo "make eval-scale   E7: SQL index over a million-event ledger (contrib/query)"
 	@echo "E8 (insider attacks) needs root and a Linux system-mode signer; CI runs it, see eval/e8_insider.py"
@@ -74,6 +74,7 @@ eval:
 	$(PY) eval/e17_containment.py
 	$(PY) eval/e18_agent_approvers.py
 	$(PY) eval/e19_egress.py
+	$(PY) eval/e21_robustness.py
 	if [ "$$(uname)" = Linux ]; then $(PY) eval/e9_signer_perf.py --quick; fi
 
 eval-agents:

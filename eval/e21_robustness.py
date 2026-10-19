@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Measure policy coverage when harmful shell commands gain an equivalent shell layer."""
 
+import argparse
 import glob
+import importlib.util
 import json
 import os
 import shlex
@@ -15,13 +17,18 @@ RESULTS = os.path.join(ROOT, "eval", "results", "e21_robustness.json")
 SHELL_TOOLS = {"Bash", "bash", "shell", "local_shell", "run_shell_command", "terminal"}
 HELD = {"deny", "ask"}
 TRANSFORMATIONS = {
+    "cd-dot-and": "Prefix a stateless command with `cd . &&`; its working directory is unchanged.",
+    "true-semi": "Prefix with `true;`; the extra command succeeds before the original command.",
+    "command-prefix": "Prefix a single simple command with Bash's `command` builtin.",
     "bash-c": "Run the unchanged command text as a Bash command. This preserves Bash syntax such as here-strings; shlex quoting passes it as one -c argument.",
     "env-bash-c": "Use env to launch the same Bash -c command with unchanged command text. env adds no assignments, so Bash receives the same string and inherited environment.",
 }
+STATEFUL_BUILTINS = {"cd", "exit", "exec", "return", "set", "unset", "export", "readonly", "alias", "unalias", "umask", "trap"}
 
 sys.path.insert(0, ROOT)
 from tracekit.policy2 import compile as pc  # noqa: E402
 from tracekit.policy2.engine import Engine  # noqa: E402
+from tracekit.policy2 import shell  # noqa: E402
 
 
 def load_cases():
@@ -41,9 +48,34 @@ def load_cases():
 
 
 def rewrites(command):
-    """Wrap the exact source command; each transformation changes only its launch layer."""
+    """Return wrappers appropriate for a stateless shell command."""
+    if stateful_reason(command):
+        return {}
     quoted = shlex.quote(command)
-    return {"bash-c": f"bash -c {quoted}", "env-bash-c": f"env bash -c {quoted}"}
+    parsed, _, _ = shell.analyse(command)
+    out = {"cd-dot-and": f"cd . && {command}", "true-semi": f"true; {command}",
+           "bash-c": f"bash -c {quoted}", "env-bash-c": f"env bash -c {quoted}"}
+    top_level = [cmd for cmd in parsed if not cmd["via"]]
+    if (len(top_level) == 1 and all(not cmd["opaque"] for cmd in parsed)
+            and not any(op in command for op in ("&&", "||", ";", "|", "\n", ">", "<", "$(", "`"))):
+        out["command-prefix"] = f"command {command}"
+    return out
+
+
+def stateful_reason(command):
+    """Return why child-shell rewrites would not preserve the agent shell's state."""
+    try:
+        parsed, _, _ = shell.analyse(command)
+    except shell.ParseError:
+        return "shell parse failed"
+    for cmd in parsed:
+        argv = cmd["argv"]
+        name, args = argv[0], argv[1:]
+        if name in STATEFUL_BUILTINS:
+            return f"stateful builtin: {name}"
+        if name == "history" and args[:1] in (["-c"], ["-d"]):
+            return "history state change"
+    return None
 
 
 def _rates(counts):
@@ -54,7 +86,7 @@ def _rates(counts):
 def measure(cases, engines, policy):
     summaries = {name: Counter() for name in ("original", *TRANSFORMATIONS)}
     rule_counts = {name: defaultdict(Counter) for name in TRANSFORMATIONS}
-    source_missed, mismatches, rewrite_misses = [], [], []
+    source_missed, mismatches, rewrite_misses, rule_misses, excluded_rewrites = [], [], [], [], []
     rewritten_cases = 0
     held_rule_ids = {rule["id"] for section in ("deny", "ask") for rule in policy.get(section, [])}
     held_rule_ids.add("TK-SHELL-PARSE")
@@ -75,8 +107,12 @@ def measure(cases, engines, policy):
         command = args.get("command") if isinstance(args, dict) else None
         if case["tool"] not in SHELL_TOOLS or not isinstance(command, str) or not command:
             continue
+        excluded = stateful_reason(command)
+        if excluded:
+            excluded_rewrites.append({"source": case["source"], "reason": excluded})
+            continue
         rewritten_cases += 1
-        source_rules = (set(decisions[0]["rule_ids"]) & set(decisions[1]["rule_ids"])) & held_rule_ids
+        source_rules = (set(decisions[0]["rule_ids"]) & set(decisions[-1]["rule_ids"])) & held_rule_ids
         # A rule cohort contains only cases that both engines agree that rule held at source.
         for name, rewritten in rewrites(command).items():
             results = [engine.decide(case["tool"], {**args, "command": rewritten}) for engine in engines]
@@ -97,6 +133,8 @@ def measure(cases, engines, policy):
                 counts["same_rule"] += int(same_rule)
                 counts["covered_by_rule_or_parse"] += int(same_rule or parser_held)
                 counts["contained"] += int(contained)
+                if not (same_rule or parser_held):
+                    rule_misses.append({"source": case["source"], "form": name, "rule": rule_id})
 
     by_form = {name: _rates(summaries[name]) for name in summaries}
     per_rule = {}
@@ -110,22 +148,32 @@ def measure(cases, engines, policy):
     return {"source_cases": len(cases), "rewritten_cases": rewritten_cases,
             "by_form": by_form, "per_rule": per_rule,
             "source_missed": source_missed, "rewrite_missed": rewrite_misses,
-            "engine_mismatches": mismatches}
+            "rule_missed": rule_misses, "engine_mismatches": mismatches,
+            "excluded_rewrites": excluded_rewrites}
 
 
-def run():
+def run(rebaseline=False):
     policy, errors = pc.build(PACK)
     if errors:
         raise ValueError("\n".join(errors))
     cases = load_cases()
-    measured = measure(cases, (Engine(policy, "re2"), Engine(policy, "regex")), policy)
+    engines = ((Engine(policy, "re2"), Engine(policy, "regex")) if importlib.util.find_spec("re2")
+               else (Engine(policy, "regex"),))
+    measured = measure(cases, engines, policy)
     previous = None
     try:
         with open(RESULTS, encoding="utf-8") as stream:
             previous = json.load(stream).get("baseline")
     except FileNotFoundError:
         pass
-    baseline = previous if previous is not None else {"by_form": measured["by_form"], "per_rule": measured["per_rule"]}
+    if previous is None and not rebaseline:
+        raise ValueError("no saved baseline; pass --rebaseline to establish one explicitly")
+    current_policy_hash = getattr(engines[0], "policy_hash", pc.policy_hash(policy))
+    if not rebaseline and (not previous.get("policy_hash") or previous["policy_hash"] != current_policy_hash):
+        raise ValueError("saved baseline lacks this policy hash; pass --rebaseline to replace it explicitly")
+    baseline = ({"policy_hash": current_policy_hash, "engines": [getattr(e, "engine", None) for e in engines],
+                 "by_form": measured["by_form"], "per_rule": measured["per_rule"]}
+                if rebaseline else previous)
     regressions = []
     for form, old_rules in baseline.get("per_rule", {}).items():
         for rule_id, old in old_rules.items():
@@ -140,17 +188,28 @@ def run():
             if metrics["coverage_rate"] < old["coverage_rate"]:
                 regressions.append({"form": form, "rule": rule_id, "metric": "rule_coverage_rate",
                                     "baseline": old["coverage_rate"], "current": metrics["coverage_rate"]})
-    no_regression = not measured["source_missed"] and not measured["engine_mismatches"] and not regressions
-    return {**measured, "transformations": TRANSFORMATIONS, "baseline": baseline,
+            if metrics["same_rule_rate"] < old.get("same_rule_rate", 0.0):
+                regressions.append({"form": form, "rule": rule_id, "metric": "same_rule_rate",
+                                    "baseline": old.get("same_rule_rate", 0.0), "current": metrics["same_rule_rate"]})
+    no_regression = (not measured["source_missed"] and not measured["rewrite_missed"]
+                     and not measured["rule_missed"]
+                     and not measured["engine_mismatches"] and not regressions)
+    return {**measured, "policy_hash": current_policy_hash,
+            "engines": [getattr(e, "engine", None) for e in engines],
+            "transformations": TRANSFORMATIONS, "baseline": baseline,
             "regressions": regressions,
             "no_regression": {"source_matches_expected": not measured["source_missed"],
+                              "rewrites_contained": not measured["rewrite_missed"],
+                              "every_source_rule_covers_rewrites": not measured["rule_missed"],
                               "engines_agree": not measured["engine_mismatches"],
                               "rewrite_coverage_not_below_baseline": not regressions},
             "ok": no_regression}
 
 
 def main():
-    result = run()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--rebaseline", action="store_true", help="replace the saved baseline with this run")
+    result = run(rebaseline=parser.parse_args().rebaseline)
     os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
     with open(RESULTS, "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2, sort_keys=True)
@@ -159,7 +218,8 @@ def main():
     for form, counts in result["by_form"].items():
         print(f"{form}: {counts['contained']}/{counts['total']} contained ({counts['rate'] if counts['rate'] is not None else 0:.1%})")
     print(f"source misses {len(result['source_missed'])}; rewrite misses {len(result['rewrite_missed'])}; "
-          f"engine mismatches {len(result['engine_mismatches'])}; regressions {len(result['regressions'])}")
+          f"rule misses {len(result['rule_missed'])}; engine mismatches {len(result['engine_mismatches'])}; "
+          f"regressions {len(result['regressions'])}")
     print(f"wrote {os.path.relpath(RESULTS, ROOT)}")
     return 0 if result["ok"] else 1
 
