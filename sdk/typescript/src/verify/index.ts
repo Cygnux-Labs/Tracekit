@@ -1168,7 +1168,8 @@ export function runFiles(names: Iterable<string>): Map<string, string[]> {
   const out = new Map<string, string[]>();
   for (const n of [...names].filter((x) => x.startsWith("runs/")).sort()) {
     const m = PART.exec(n), run = m ? `${m[1]}.jsonl` : n;
-    out.set(run, [...out.get(run) ?? [], n]);
+    if (!out.has(run)) out.set(run, []);
+    out.get(run)!.push(n);
   }
   return out;
 }
