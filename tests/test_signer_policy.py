@@ -181,6 +181,23 @@ class CodingPack(unittest.TestCase):
         # an argument keeps its case
         self.assertEqual(self.e.decide("Bash", {"command": "grep -rn 'Git push --force' docs"})["verdict"], "allow")
 
+    def test_a_windows_path_keeps_its_directories_case_and_the_line_its_original_case(self):
+        # lower-casing a whole program word without a / hid AppData\Local\tracekit from TK-D007; the lower-cased line
+        # is matched beside the original one, so a rule keyed on an upper-case program name still matches
+        self.verdicts([({"command": ["C:\\Users\\u\\AppData\\Local\\tracekit\\x.exe"]}, "TK-D007"),
+                       ("C:\\\\Users\\\\u\\\\App''Data\\\\Local\\\\tracekit\\\\x.exe", "TK-D007"),
+                       ("%LOCAL''APPDATA%\\\\tracekit\\\\x.exe", "TK-D007")])
+        server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
+        self.assertIn("TK-S003", server.decide("Bash", {"command": "AK''IAIOSFODNN7EXAMPLE"})["rule_ids"])
+
+    def test_a_trailing_ampersand_is_read_in_the_raw_command(self):
+        # TK-F007 read the normalised line, where a quoted `&` looks like a background job
+        for command in ('echo "a&"', "echo 'x &'", "curl 'https://x.example/?a=1&'"):
+            with self.subTest(command=command):
+                d = self.e.decide("Bash", {"command": command})
+                self.assertFalse({"TK-F007", "TK-F014"} & set(d["rule_ids"]), d)
+        self.assertIn("TK-F014", self.e.decide("Bash", {"command": "sleep 9 &"})["rule_ids"])
+
 
 class PackReading(unittest.TestCase):
     """How the shipped packs read SQL, hosts, paths and commands an agent can spell more than one way."""

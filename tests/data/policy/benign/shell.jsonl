@@ -144,3 +144,6 @@
 {"tool": "Bash", "args": {"command": "git push origin main\nrm -d build"}, "expect": "allow", "note": "a push and, on the next line, another command's -d"}
 {"tool": "Bash", "args": {"command": "git push origin main\necho :b1"}, "expect": "allow", "note": "a push and, on the next line, another command's :word"}
 {"tool": "Bash", "args": {"command": "grep -rn 'Git push --force' docs"}, "expect": "allow", "note": "searching for a force push: an argument keeps its case"}
+{"tool": "Bash", "args": {"command": "echo \"a&\""}, "expect": "allow", "note": "a quoted & is no background job"}
+{"tool": "Bash", "args": {"command": "echo 'x &'"}, "expect": "allow", "note": "a quoted trailing & is no background job"}
+{"tool": "Bash", "args": {"command": "curl 'https://x.example/?a=1&'"}, "expect": "allow", "note": "a URL ending in & is no background job"}
