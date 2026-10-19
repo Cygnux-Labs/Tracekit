@@ -16,9 +16,10 @@ const sh = (s: string) => /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `
 const TRUST_FILE = "the sender's trust file: a small .json that names their signer's log key (tracekit last writes it next "
   + "to the bundle, as <name>.trust.json)";
 
-/** The report as `tracekit verify --json` prints it. */
+/** The report as `tracekit verify --json` prints it (cli.ts prints this). */
 export const asJson = (rep: Report, code: number) => ({ exit_code: code, checks: rep.checks, failures: rep.failures,
-  warnings: rep.warnings, integrity: rep.integrity, assurance: rep.assurance, notes: rep.notes });
+  warnings: rep.warnings, integrity: rep.integrity, assurance: rep.assurance, notes: rep.notes,
+  ...rep.findings ? { findings: rep.findings } : {} });
 
 /** The report as `tracekit verify` prints it, then its exit code. */
 export const asText = (rep: Report, code: number) => formatReport(rep) + `\nExit code ${code}`

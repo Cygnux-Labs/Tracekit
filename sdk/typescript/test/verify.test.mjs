@@ -285,6 +285,9 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   for (const [, name] of src.matchAll(/(?:check|unsupport)\("([^"]+)"/g)) assert.ok(MEANING[name], name);
   assert.deepEqual(Object.keys(asJson(ok.report, ok.code)),
     ["exit_code", "checks", "failures", "warnings", "integrity", "assurance", "notes"]);
+  // the Findings line, when a bundle has one, as the CLIs' --json carry it
+  assert.equal(asJson(Object.assign(new ok.report.constructor(), ok.report, { findings: "1 signed" }), 0).findings,
+    "1 signed");
   assert.ok(asText(ok.report, ok.code).endsWith("\nIntegrity: VERIFIED.\n" + `Assurance: ${ok.report.assurance}.\n`
     + "\nExit code 0.\n"));
   const facts = Object.fromEntries(summarize(await readZip(sample("sample.tkb")), ok.report));

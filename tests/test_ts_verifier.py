@@ -116,6 +116,18 @@ def page_verify(bundle, trust=None, *flags):
                               capture_output=True, text=True, check=True).stdout
 
 
+def page_json(bundle, trust):
+    """The JSON report verify.html downloads for `bundle` and `trust` (explain.ts's asJson)."""
+    _build()
+    url = lambda p: "file://" + os.path.join(TS, "dist", "verify", p).replace(os.sep, "/")   # noqa: E731
+    return json.loads(subprocess.run(
+        ["node", "--input-type=module", "-e", f"import {{ readFileSync }} from 'node:fs'; import {{ verify }} from "
+         f"'{url('index.js')}'; import {{ asJson }} from '{url('explain.js')}'; const [b, t] = process.argv.slice(1); "
+         "const { report, code } = await verify(readFileSync(b), readFileSync(t)); "
+         "console.log(JSON.stringify(asJson(report, code)));", "--", bundle, trust],
+        capture_output=True, text=True, check=True).stdout)
+
+
 @unittest.skipIf(SKIP, SKIP)
 class Agreement(unittest.TestCase):
     @classmethod
@@ -705,6 +717,7 @@ class Reviews(test_reviews.Signed):
                 ts = ts_verify(bundle, trust)
                 self.assertEqual(pick(ts["checks"]), pick(rep.checks))
                 self.assertEqual(ts.get("findings"), rep.findings)   # the Findings line, apart from Integrity
+                self.assertEqual(page_json(bundle, trust), ts)   # the page's download is the CLI's --json
                 self.assertTrue(rep.findings.endswith("(an opinion of the run, not its integrity)"))
 
 
