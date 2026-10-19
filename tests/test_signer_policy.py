@@ -97,7 +97,7 @@ class Packs(unittest.TestCase):
 
 # the rules this change added to the coding pack
 NEW_RULES = {"TK-D020", "TK-D021", "TK-A020", "TK-A021", "TK-A022", "TK-A023", "TK-A024", "TK-A025", "TK-A026",
-             "TK-A027", "TK-A028"}
+             "TK-A027", "TK-A028", "TK-A029", "TK-A030"}
 
 class CodingPack(unittest.TestCase):
     def setUp(self):
@@ -420,14 +420,14 @@ class CodingPack(unittest.TestCase):
             ("Bash", {"command": "sed -i 's/x/y/' /var/log/app.log"}, "ask", "TK-A027"),
             ("Bash", {"command": "sed --in-place 's/x/y/' /var/log/app.log"}, "ask", "TK-A027"),
             ("Bash", {"command": "perl -pi -e 's/x//' /var/log/app.log"}, "ask", "TK-A027"),
-            ("Bash", {"command": "history -c"}, "ask", "TK-A027"),
-            ("Bash", {"command": "history -cw"}, "ask", "TK-A027"),
-            ("Bash", {"command": "history -w -c"}, "ask", "TK-A027"),
-            ("Bash", {"command": "HISTFILE=/dev/null"}, "ask", "TK-A027"),
-            ("Bash", {"command": "unset HISTFILE"}, "ask", "TK-A027"),
-            ("Bash", {"command": "set +o history"}, "ask", "TK-A027"),
-            ("Bash", {"command": "export HISTFILE=/dev/null"}, "ask", "TK-A027"),
-            ("Bash", {"command": "journalctl --vacuum-time=1s"}, "ask", "TK-A027"),
+            ("Bash", {"command": "history -c"}, "ask", "TK-A029"),
+            ("Bash", {"command": "history -cw"}, "ask", "TK-A029"),
+            ("Bash", {"command": "history -w -c"}, "ask", "TK-A029"),
+            ("Bash", {"command": "HISTFILE=/dev/null"}, "ask", "TK-A029"),
+            ("Bash", {"command": "unset HISTFILE"}, "ask", "TK-A029"),
+            ("Bash", {"command": "set +o history"}, "ask", "TK-A029"),
+            ("Bash", {"command": "export HISTFILE=/dev/null"}, "ask", "TK-A029"),
+            ("Bash", {"command": "journalctl --vacuum-time=1s"}, "ask", "TK-A029"),
             ("Bash", {"command": "cp /var/log/app.log /tmp/app.log"}, "allow", ""),
             ("Bash", {"command": "cp ~/.bash_history /tmp/history-copy"}, "allow", ""),
             ("Bash", {"command": "cp -r /var/log /tmp/logs"}, "allow", ""),
@@ -532,20 +532,42 @@ class CodingPack(unittest.TestCase):
             "docker run -v //:/host alpine", "docker run -v /.:/host alpine", "podman run -v /proc/.:/p alpine",
             "docker run --mount type=bind,src=//,dst=/h alpine", "podman run --rootfs --privileged alpine",
             "docker run -v --privileged alpine")])
-        self.verdicts([("history -cw", "TK-A027"), ("history -w -c", "TK-A027")])
+        self.verdicts([("history -cw", "TK-A029"), ("history -w -c", "TK-A029")])
         for command in ("docker run -v /home/u/src:/src alpine", "docker run -v ./proc:/p alpine",
                         "history -r ~/my-cache", "history -a ~/a-c",
                         "find /tmp -path /var/log -prune -o -name '*.tmp' -delete",
                         "find /tmp -name .bash_history -prune -o -exec rm {} +"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
-                self.assertFalse({"TK-A023", "TK-A027"} & set(d["rule_ids"]), d)
+                self.assertFalse({"TK-A023", "TK-A027", "TK-A029"} & set(d["rule_ids"]), d)
         # docs/limits.md's rows: a delete by a shell find runs, and Yarn Berry's registry setting, aren't held
         for command in ("find /var/log -exec sh -c 'rm \"$1\"' _ {} \\;",
                         "yarn config set npmRegistryServer https://packages.example.test/"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-A025", "TK-A027"} & set(d["rule_ids"]), d)
+
+    def test_write_and_delete_tags_leave_the_older_target_rules_as_they_were(self):
+        """The WRITE_TARGET:/DELETE_TARGET: tags were target subjects, so TK-D010 read `DELETE_TARGET:.env` as a
+        credentials file written and TK-A011 and TK-A013 a startup item or hook. They are `effects` now, which only the
+        rules that read them see: each decision here is the one before the tags (fc022a1), on both engines."""
+        before = {   # (verdict, rule ids) at fc022a1: the coding pack's, the server pack's
+            "rm .env": (("flag", ["TK-F003", "TK-F005"]),) * 2,
+            "rm -f ./.env.test": (("flag", ["TK-F003", "TK-F005"]),) * 2,
+            "rm ~/.ssh/id_rsa": (("flag", ["TK-F001", "TK-F003", "TK-F005"]),
+                                 ("deny", ["TK-S004", "TK-F001", "TK-F003", "TK-F005"])),
+            "rm .git/hooks/pre-commit": (("flag", ["TK-F003"]),) * 2,
+            "rm -rf .git/hooks": (("flag", ["TK-F003"]),) * 2,
+            "find .git/hooks -name '*.sample' -delete": (("allow", []),) * 2,
+            "rm ~/.config/systemd/user/x.service": (("flag", ["TK-F003"]),) * 2}
+        for i, name in enumerate(("coding.yaml", "server.yaml")):
+            policy = pc.build(os.path.join(PACKS, name))[0]
+            for engine in [Engine(policy, "regex")] + [Engine(policy, "re2")] * HAVE_RE2:
+                for command, want in before.items():
+                    with self.subTest(pack=name, engine=engine.engine, command=command):
+                        d = engine.decide("Bash", {"command": command})
+                        self.assertEqual((d["verdict"], d["rule_ids"]), want[i])
+        self.verdicts([("rm ~/.bash_history", "TK-A027")])
 
 
 class PackReading(unittest.TestCase):

@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-19'
+version: '2026.10-v2-20'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -213,11 +213,22 @@ ask:
     rationale: These files may be evidence of earlier activity; writing to them is held while reading stays allowed.
   - id: TK-A027
     class: shell
-    field: target
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):/var/log(?:/.*)?$|^history\s(?:[^\n]*\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*--vacuum-[^\s=]+(?:=|\s|$)'
+    field: effects
+    # TK-A026 for the shell: a file a command writes or deletes (a redirection, rm, mv, cp, ln, tee, truncate, dd, sed
+    # -i, perl -i, find -delete or -exec rm), each also casefolded, so the pattern is in lower case. Anchored and lazy,
+    # so the fallback engine stays linear
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*?/)?(?:\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):(?:/private)?/var/log(?:/|$)'
     reason: clearing shell history or system logs
     remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
+  - id: TK-A029
+    class: shell
+    field: target
+    # history -c (alone or in a cluster, after other options), turning the history file off, vacuuming the journal
+    pattern: '^history\s(?:[^\n]*?\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*?--vacuum-[^\s=]+(?:=|\s|$)'
+    reason: clearing shell history or system logs
+    remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
+    rationale: Clearing the history, turning it off or vacuuming the journal can hide earlier activity; a person confirms it.
   - id: TK-A028
     class: shell
     field: argv
@@ -351,7 +362,7 @@ flag:
     # template path (no space: never a whole command) is exempt
     field: target
     pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
-    unless: '^(?:WRITE_TARGET:)?([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
+    unless: '^([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
     class: mcp
