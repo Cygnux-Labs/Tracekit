@@ -22,10 +22,11 @@ identity: the signer gives it that identity's latest open run. Else 407. That id
 token too (`caller`): the signer attributes by it instead when the token was issued to another identity.
 Relative paths are from the config file.
 
-A plain listener takes SOCKS5 too, as microsandbox's outbound proxy speaks it: CONNECT to an IPv4 or IPv6 address, with
-a username and password that are a run id and its run token (attribution by token), or none (attribution by identity).
-Such an address is reached only through the server name its TLS ClientHello sends, which must resolve to it here, with
-the checks below; that name is the host recorded. An address `allow` lists passes as itself, any protocol.
+Either listener takes SOCKS5 too (inside TLS on the `http` one), as microsandbox's and E2B's outbound proxies speak it:
+CONNECT, with a username and password that are a run id and its run token (attribution by token), or none (attribution
+by identity). A host name is resolved and checked as CONNECT's. An address is reached only through the server name its
+TLS ClientHello sends, which must resolve to it here, with the same checks; that name is the host recorded. An address
+`allow` lists passes as itself, any protocol.
 
 CONNECT host:port: the TLS ClientHello's SNI must be the host, else the tunnel is closed before anything reaches it;
 a raw IP address, a DNS-over-HTTPS endpoint or a name that resolves to a loopback, private or link-local address is
@@ -295,6 +296,20 @@ def _recv_exact(sock, n):
     return bytes(data)
 
 
+class _Unread:
+    """A connection's reader with the byte read ahead of it put back in front; http.server reads lines from it."""
+
+    def __init__(self, first, rest):
+        self.first, self.rest = first, rest
+
+    def readline(self, limit=-1):
+        line, self.first = self.first, b""
+        return line if line.endswith(b"\n") or len(line) == limit else line + self.rest.readline(limit - len(line))
+
+    def __getattr__(self, name):
+        return getattr(self.rest, name)
+
+
 def _relay(a, b, count):
     """Copy both ways until either side closes or both are idle for IDLE_S; `count(out, back)` for each chunk (out:
     from `a`)."""
@@ -403,24 +418,26 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return why
 
     def handle(self):
-        """SOCKS5 when a plain connection's first byte says so, else HTTP."""
+        """SOCKS5 when the connection's first byte says so, else HTTP."""
         try:
-            socks = not isinstance(self.connection, ssl.SSLSocket) and \
-                self.connection.recv(1, socket.MSG_PEEK) == b"\x05"
+            first = self.connection.recv(1)
         except OSError:
             return
-        self._socks5() if socks else super().handle()
+        if first == b"\x05":
+            return self._socks5()
+        self.rfile = _Unread(first, self.rfile)
+        super().handle()
 
     def _socks5(self):
-        """A SOCKS5 CONNECT (RFC 1928) to an address, as microsandbox's outbound proxy sends it: a username and password
-        (RFC 1929) are a run id and its run token, attribution by token; with none, the connection's identity. SOCKS5
-        carries no reason for a refusal: it goes to stderr."""
+        """A SOCKS5 CONNECT (RFC 1928), its version byte read, as microsandbox's and E2B's outbound proxies send it: a
+        username and password (RFC 1929) are a run id and its run token, attribution by token; with none, the
+        connection's identity. SOCKS5 carries no reason for a refusal: it goes to stderr."""
         c, obs = self.connection, self.server.observer
 
         def reply(code):
             c.sendall(b"\x05" + bytes([code]) + b"\x00\x01" + bytes(6))
         try:
-            methods = _recv_exact(c, _recv_exact(c, 2)[1])
+            methods = _recv_exact(c, _recv_exact(c, 1)[0])
             caller = self._caller()
             if 2 in methods:
                 c.sendall(b"\x05\x02")
@@ -440,18 +457,29 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if why:
                 return print(f"tracekit egress: refused a SOCKS5 client: {why[1]}", file=sys.stderr)
             _, cmd, _, atyp = _recv_exact(c, 4)
-            # lean: addresses only, as microsandbox sends them; add the domain form (socks5h) when a client needs it
-            if cmd != 1 or atyp not in (1, 4):
+            if cmd != 1 or atyp not in (1, 3, 4):
                 reply(7 if cmd != 1 else 8)
-                return print("tracekit egress: refused a SOCKS5 request: only CONNECT (TCP) to an IPv4 or IPv6 address "
-                             "is taken", file=sys.stderr)
-            host = socket.inet_ntop(socket.AF_INET if atyp == 1 else socket.AF_INET6,
-                                    _recv_exact(c, 4 if atyp == 1 else 16))
+                return print("tracekit egress: refused a SOCKS5 request: only CONNECT (TCP) is taken", file=sys.stderr)
+            if atyp == 3:   # a host name, resolved and checked as CONNECT's
+                host = _recv_exact(c, _recv_exact(c, 1)[0]).decode("latin-1").lower().rstrip(".")
+            else:   # an address the client resolved: see _tunnel
+                host = socket.inet_ntop(socket.AF_INET if atyp == 1 else socket.AF_INET6,
+                                        _recv_exact(c, 4 if atyp == 1 else 16))
             port = int.from_bytes(_recv_exact(c, 2), "big")
+            if atyp != 3:
+                addresses, why = ([(host, port)] if host in obs.allow else None), None
+            elif HOST.fullmatch(host):
+                addresses, why = obs.resolve(host, port)
+            else:
+                addresses, why = None, (400, "not a host name observe_effect takes")
+            if why:
+                reply({403: 2, 502: 4}.get(why[0], 1))
+                return print(f"tracekit egress: refused a SOCKS5 request for {host[:253]}:{port}: {why[1]}",
+                             file=sys.stderr)
             reply(0)
         except OSError:
             return
-        self._tunnel(who, host, port, [(host, port)] if host in obs.allow else None)
+        self._tunnel(who, host, port, addresses)
 
     def do_CONNECT(self):
         host, port = _target(self.path)

@@ -21,6 +21,7 @@ import unittest
 from unittest import mock
 
 from test_signer_lifecycle import Lifecycle
+from test_netserver import self_signed
 from test_signer_service import ME, OTHER
 from tracekit import egress
 from tracekit.bundle_v2 import export
@@ -399,10 +400,11 @@ def client_hello(name):
     return out.read()
 
 
-def socks5(proxy, ip, port, creds=("run-1", "tok.mac"), cmd=1):
-    """A SOCKS5 request to ip:port as microsandbox's outbound proxy sends it (crates/network/lib/proxy/socks.rs): the
-    socket and each reply."""
+def socks5(proxy, host, port, creds=("run-1", "tok.mac"), cmd=1, tls=None):
+    """A SOCKS5 request to host:port as microsandbox's outbound proxy sends it (crates/network/lib/proxy/socks.rs), or
+    E2B's (a host name for a domain-matched flow; inside TLS with `tls`, an SSLContext): the socket and each reply."""
     s = socket.create_connection(proxy, 5)
+    s = tls.wrap_socket(s) if tls else s
     s.sendall(b"\x05\x02\x00\x02" if creds else b"\x05\x01\x00")
     replies = [s.recv(2)]
     if replies[0] == b"\x05\x02":
@@ -410,8 +412,12 @@ def socks5(proxy, ip, port, creds=("run-1", "tok.mac"), cmd=1):
         s.sendall(bytes([1, len(user)]) + user + bytes([len(password)]) + password)
         replies.append(s.recv(2))
     if replies[-1] in (b"\x05\x00", b"\x01\x00"):
-        a = ipaddress.ip_address(ip)
-        s.sendall(bytes([5, cmd, 0, 1 if a.version == 4 else 4]) + a.packed + port.to_bytes(2, "big"))
+        try:
+            a = ipaddress.ip_address(host)
+            target = bytes([1 if a.version == 4 else 4]) + a.packed
+        except ValueError:
+            target = bytes([3, len(host)]) + host.encode()
+        s.sendall(bytes([5, cmd, 0]) + target + port.to_bytes(2, "big"))
         replies.append(s.recv(10))
     return s, replies
 
@@ -754,8 +760,8 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(got, [b"a" * 1000, b"b" * 1000])
 
     @unittest.skipUnless(sys.byteorder == "little", "the rows below are a little-endian machine's")
-    def socks(self, ip, **kw):
-        return socks5(self.srv.server_address[:2], ip, self.up.port, **kw)
+    def socks(self, host, **kw):
+        return socks5(self.srv.server_address[:2], host, self.up.port, **kw)
 
     def test_a_socks5_address_is_reached_by_its_sni_and_its_credentials_are_the_run(self):
         s, replies = self.socks("127.0.0.1")
@@ -807,6 +813,46 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(self.read(s), b"pong")
         self.srv.observer.flush(math.inf)
         self.assertEqual(self.sent[-1]["effects"][0]["caller"], "uid:1234")
+
+    def test_a_socks5_host_name_is_resolved_and_checked_as_connects(self):
+        s, replies = self.socks("localhost")
+        self.assertEqual(replies[-1], OPENED)
+        s.sendall(client_hello("localhost"))
+        self.assertEqual(self.read(s), b"pong")
+        with mock.patch.object(sys, "stderr", io.StringIO()) as err:
+            s, replies = self.socks("localhost")
+            s.sendall(client_hello("evil.example"))
+            self.assertEqual(self.read(s), b"")
+            self.assertEqual(self.socks("dns.google")[1][-1][:2], b"\x05\x02")   # refused: not allowed
+            self.assertEqual(self.socks("a!b.example")[1][-1][:2], b"\x05\x01")
+        self.assertIn("its TLS server name is 'evil.example', not 'localhost'", err.getvalue())
+        self.assertIn("DNS-over-HTTPS endpoint", err.getvalue())
+        self.assertEqual(len(self.up.got), 1)
+        self.srv.observer.flush(math.inf)
+        self.assertEqual([e["host"] for r in self.sent for e in r["effects"]], ["localhost"])
+
+    def test_socks5_and_http_inside_tls_on_the_http_listener(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self_signed(d)
+        with open(os.path.join(d, "bearer"), "w") as f:
+            f.write("b" * 40)
+        self.srv = egress.serve({"http": {"listen": "127.0.0.1:0", "cert": os.path.join(d, "c.pem"),
+                                          "key": os.path.join(d, "k.pem"), "authenticators": ["token"],
+                                          "token_file": os.path.join(d, "bearer")}, "signer": "unused"}, self.client)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+        tls = ssl.create_default_context()
+        tls.check_hostname, tls.verify_mode = False, ssl.CERT_NONE
+        s, replies = self.socks("localhost", tls=tls)   # E2B's egressProxy with tls.enabled
+        self.assertEqual(replies, [b"\x05\x02", b"\x01\x00", OPENED])
+        s.sendall(client_hello("localhost"))
+        self.assertEqual(self.read(s), b"pong")
+        s = tls.wrap_socket(socket.create_connection(self.srv.server_address[:2], 5))
+        s.sendall(f"CONNECT localhost:{self.up.port} HTTP/1.1\r\nProxy-Authorization: {self.auth}\r\n\r\n".encode())
+        self.assertTrue(s.recv(65536).startswith(b"HTTP/1.1 200 Connection established"))
+        s.close()
 
     def test_the_peer_uid_is_the_established_socket_with_both_addresses(self):
         rows = ["  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",

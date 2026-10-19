@@ -120,6 +120,7 @@ Framework, Strands Agents and the TypeScript SDK. Setup:
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md">TypeScript</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/vercel-ai.md">Vercel AI SDK</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/microsandbox.md">microsandbox</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/e2b.md">E2B</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/otel.md">OpenTelemetry</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/custom.md">any other agent</a></sub>
 
