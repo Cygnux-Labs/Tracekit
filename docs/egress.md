@@ -61,6 +61,11 @@ Each request through the proxy is attributed to a run:
 The connection's identity goes with a run token too: when the token was issued to another identity, the signer
 attributes the observation by the connection's identity instead.
 
+A plain loopback listener (`listen`) takes SOCKS5 on the same port, as [microsandbox](integrations/microsandbox.md)'s
+outbound proxy speaks it: CONNECT to an IPv4 or IPv6 address, with the run id and its run token as the username and
+password (by token), or no credentials (by identity). Such an address is reached only through the server name of its
+TLS ClientHello, which must resolve to it on the observer's host; that name is the host recorded.
+
 To send the agent process's own traffic through the observer too, set `HTTPS_PROXY` (and `HTTP_PROXY`) for it. In
 [system mode](#linux-system-mode) that needs no run token: the observer reads the agent's uid. Over the network (the
 central chart, compose) the observer knows a client only by what it sends, and proxy settings carry no identity: a
@@ -90,6 +95,11 @@ with every heartbeat.
   naming the address, unless `allow` lists it. The proxy connects to the addresses it checked.
 - a host name `observe_effect` would not take (other characters than `a-z 0-9 . _ : -`, or over 253): 400.
 - a run id or token that can't be one (a token is 1 to 1024 of `A-Z a-z 0-9 . _ ~ + / = -`): 407.
+- over SOCKS5: a client with neither a run token nor an identity, or a token the signer refuses (the handshake fails);
+  any command but CONNECT, and a host name instead of an address (`command not supported`, `address type not
+  supported`); and an address whose TLS server name is missing or resolves elsewhere on the observer's host (closed
+  before anything reaches it), unless `allow` lists the address. SOCKS5 carries no reason: each refusal is a line on
+  stderr.
 
 Plain HTTP requests in absolute form (`GET http://host/path`) are forwarded with `Connection: close`; a body needs a
 `Content-Length` (at most 32 MiB; send larger uploads over HTTPS) and is streamed through as it arrives, never held
