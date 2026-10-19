@@ -143,3 +143,4 @@
 {"tool": "Bash", "args": {"command": "git push origin release-0000000000000000000000000000000000000000:x"}, "expect": "allow", "note": "a branch name ending in forty zeros is not the all-zero object id"}
 {"tool": "Bash", "args": {"command": "git push origin main\nrm -d build"}, "expect": "allow", "note": "a push and, on the next line, another command's -d"}
 {"tool": "Bash", "args": {"command": "git push origin main\necho :b1"}, "expect": "allow", "note": "a push and, on the next line, another command's :word"}
+{"tool": "Bash", "args": {"command": "grep -rn 'Git push --force' docs"}, "expect": "allow", "note": "searching for a force push: an argument keeps its case"}

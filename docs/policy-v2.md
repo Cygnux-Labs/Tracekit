@@ -163,7 +163,7 @@ Every class also has `target`: what the call acts on rather than what it carries
 |---|---|
 | `class: shell`, no `field` or `field: argv` | each simple command the line runs, as its argv joined by spaces, argv[0] a basename in lower case (the agent's file system may ignore case) |
 | `class: shell`, `field: command` | the raw command line |
-| `class: shell`, `field: line` | the raw command line and each line the parser normalised (quotes and escapes resolved, redirections kept) |
+| `class: shell`, `field: line` | the raw command line and each line the parser normalised (quotes and escapes resolved, program names in lower case, redirections kept) |
 | `class: fs`, `field: path` | the normalised path, and with a `..` also the lexically normalised one; each also casefolded |
 | `class: sql`, `field: code` | each dialect's reading of the statement (`code` above) |
 | `field: target` (any class, or no class) | shell: each command's argv without its data words (a `git commit`/`tag`/`merge` message, the pattern `grep`, `rg` or `git grep` searches for), its redirection targets and `VAR=` assignments, and a program an interpreter reads from a heredoc or herestring (a command it can't parse: the raw command); fs: the paths; http and browser: the URL; email: the attachments; mcp, app and unknown tools: the whole arguments. Each URL in a target is also matched as `scheme://canonical-host/` |

@@ -3,9 +3,10 @@
 #
 # Shell rules without a field match each command's argv (wrappers, paths, quoting and the program name's case resolved
 # by policy2/shell.py); `field: command` matches the raw command line; `field: line` matches it and each line
-# policy2/shell.py normalised (quotes and escapes resolved, redirections kept). File rules match the signer-normalised
-# `path` (and, with `..`, the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system
-# may ignore case). Rules stay tripwires: the protection is the signer, its storage and the witnesses.
+# policy2/shell.py normalised (quotes and escapes resolved, program names in lower case, redirections kept). File rules
+# match the signer-normalised `path` (and, with `..`, the lexically normalised one), with `\` as `/` and also casefolded
+# (the agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
+# witnesses.
 
 version: '2026.10-v2-9'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
@@ -156,7 +157,7 @@ ask:
 flag:
   - id: TK-F001
     class: shell
-    field: command
+    field: line
     pattern: '\b(curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp)\b'
     label: network
   - id: TK-F002
@@ -165,12 +166,12 @@ flag:
     label: network
   - id: TK-F003
     class: shell
-    field: command
+    field: line
     pattern: '\b(rm|mv|chmod|chown|dd|truncate|shred|unlink)\b'
     label: destructive
   - id: TK-F004
     class: shell
-    field: command
+    field: line
     pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
@@ -187,7 +188,7 @@ flag:
     label: external_tool
   - id: TK-F007
     class: shell
-    field: command
+    field: line
     pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|&\s*$|&\s*;|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]*-d|\bdaemonize\b|\bwhile\s+(true|:)'
     label: background_spawn
   - id: TK-F008

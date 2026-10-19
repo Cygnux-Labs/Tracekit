@@ -9,9 +9,10 @@ be read from the line (a glob, brace or expansion in its name, a shell or interp
 file or inherited stdin, `source` of a stream).
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
-`analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
-redirections kept, for rules that match a whole command line; and the words that name something besides the commands'
-argv: redirection targets, `VAR=` assignments and the program an interpreter reads from a heredoc or herestring.
+`analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved, program
+names in lower case and redirections kept, for rules that match a whole command line; and the words that name
+something besides the commands' argv: redirection targets, `VAR=` assignments and the program an interpreter reads
+from a heredoc or herestring.
 """
 import re
 
@@ -94,9 +95,10 @@ def analyse(command):
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [" ".join(argv)], "refs": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
-    _Parser("", ctx, []).emit(list(argv), 1, [])
-    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"]
+    ctx = {"cmds": [], "lines": [], "refs": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
+    words = list(argv)
+    _lower_programs(words, range(len(words)), argv, _Parser("", ctx, []).emit(list(argv), 1, []))
+    return ctx["cmds"], [x for x in [" ".join(words)] + ctx["lines"] if x], ctx["refs"]
 
 
 def data_words(argv):
@@ -421,7 +423,7 @@ class _Parser:
             self.gap()
 
     def simple(self, pid, piped=False):
-        words, globs, names, strings, docs = [], [], [], [], []
+        words, globs, names, strings, docs, idx = [], [], [], [], [], []
         consumed = loop_header = stdin_redirect = False
         while True:
             self.blank()
@@ -471,9 +473,11 @@ class _Parser:
                 self.ctx["refs"].append(text)
                 continue
             words.append(text)
+            idx.append(len(self.out) - 1)
             globs.append(g)
             names.append(g or (expanded and _name_unreadable(text)))
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
+        _lower_programs(self.out, idx, words, cmds)
         for d in docs:
             d["cmds"] = cmds
         shell = _stdin_shell(cmds)
@@ -737,6 +741,16 @@ class _Parser:
         self.ctx["exp"] += 1
         self.nested(re.sub(r"\\([`\\$])", r"\1", m.group(1)), self.via + ["``"])
         return self.s[start:self.i]
+
+
+def _lower_programs(out, idx, words, cmds):
+    """Lower-case the program name of each command `words` runs (wrappers' too) in a normalised line `out`, as emit
+    does in argv: `out[idx[i]]` is `words[i]`."""
+    for cmd in cmds:
+        k = len(words) - len(cmd["argv"])
+        if k >= 0 and words[k + 1:] == cmd["argv"][1:]:
+            head, slash, name = out[idx[k]].rpartition("/")
+            out[idx[k]] = head + slash + name.lower()
 
 
 def _stdin_shell(cmds):
