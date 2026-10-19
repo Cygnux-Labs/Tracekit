@@ -407,7 +407,7 @@ record runs under the pack in shadow, backtest your own store and set `max` abov
 
 A policy is written ahead of time; a person's request often adds a limit for one task: "don't touch billing.py",
 "read-only, just tell me what you'd change", "don't push". A live constraint is such a limit, held by the signer for the
-rest of the run. It is experimental, new after 1.3.0.
+rest of the run. It is experimental, new in 1.4.
 
 The Claude Code hook (and the Codex, Cursor and Gemini hooks, which share it) reads the person's prompt at
 `UserPromptSubmit`, as the harness hands it over, and sends each constraint it states with `constraint_add` (RPC 19),

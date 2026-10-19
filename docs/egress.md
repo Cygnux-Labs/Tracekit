@@ -180,7 +180,8 @@ check it.
 | `model_calls` | the LLM gateway recorded them and posture says `gateway_mandatory` (asserted) | the LLM gateway recorded them | only the agent's process did | no model call recorded |
 | `tool_calls` | every decision came through the executor or the MCP gateway and posture says `tool_calls: enforced` (asserted) | — | otherwise, when calls were recorded | no call recorded |
 | `network` | an egress observer covered the run throughout and posture says `network: enforced` (asserted) | an egress observer covered the run throughout | no observer, but the run's http calls name hosts | neither |
-| `processes`, `services` | — | — | — | not covered yet |
+| `processes` | — | a Tetragon or Falco [import](integrations/tetragon.md) covered the run throughout (experimental, Linux) | — | otherwise |
+| `services` | — | — | — | always: nothing covers them yet |
 
 Each class lists the layers behind it (`gateway`, `adapter`, `hook`, `egress`, ...) and `asserted: true` where the
 status rests on posture. The verifier prints it as a `coverage matrix` line and never says a run is complete

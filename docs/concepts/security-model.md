@@ -95,7 +95,7 @@ synthetic and written by the project.
 | Saved-state tampering (E11) | 21 of 21 caught |
 | Tenant isolation (E12) | Every attack refused, no leaks under concurrency |
 | Policy packs on the project's corpus (E17) | 536 of 536 harmful calls stopped, 1 false alarm in 712 |
-| Policy packs on calls written blind to the rules (E21) | Server pack: about half of 420 harmful calls stopped or held, 18 false alarms in 432 |
+| Policy packs on calls written blind to the rules (E21) | Server pack: 215 of 420 harmful calls stopped or held, 18 false alarms in 432 |
 | Agent approvers (E18) | 7 of 7 attacks caught |
 | Unrequested edits behind cover text, checked by `tracekit analyze --v2` (E20, synthetic, held-out phrases) | Caught under every cover but one (the file named innocently: 0 of 24); after a "don't touch X", 25 to 71% by cover |
 | The v1 regex gate on a rougher set (E3) | 11 of 16 caught: rules are tripwires |

@@ -113,8 +113,9 @@ audit, ask for `isolation: separate-user` or `remote` and `Assurance: witnessed`
 - **Data governance.** Training, validation and test data, their quality and their provenance are out of scope.
 - **Model evaluation.** It doesn't measure accuracy or robustness, red-team a model, or assess bias and fairness.
 - **Transparency to end users.** It doesn't tell people they are dealing with an AI, or mark generated content.
-- **What no capture path sees.** A subprocess's own actions, code that skips the adapter and a call around a gateway
-  that isn't mandatory leave no record. Processes and files aren't captured yet ([limits](../limits.md)).
+- **What no capture path sees.** A subprocess's own actions (unless a kernel sensor import covers the run), code that
+  skips the adapter and a call around a gateway that isn't mandatory leave no record. Processes and files are captured
+  only by the experimental kernel sensor import (Linux, Tetragon or Falco) ([limits](../limits.md)).
 - **Prevention of everything it records.** A record doesn't stop an action. Only calls routed through Tracekit can be
   denied or held, and policy rules are tripwires a determined agent can reword around.
 - **Intent and truth.** A verified bundle doesn't prove why a call was made, or that a tool result the agent

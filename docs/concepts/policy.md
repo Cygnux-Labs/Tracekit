@@ -168,9 +168,9 @@ Rules are tripwires, not a sandbox. A determined agent can phrase a command so n
 [evaluation](../evaluation.md#e3-policy-gate) lists misses such as `X=rm; $X -rf ~` and a base64 payload piped to a
 shell. On the shipped packs' own test corpus (536 harmful and 712 benign calls across 11 classes, written by the
 project) every harmful call is denied or held, with one false alarm. On calls written blind to the rules (E21's
-held-out pool: 420 harmful, 432 benign), the server pack catches about half of the harmful ones and the strict pack
-about 60%, while holding 4% and 11% of the benign ones ([evaluation](../evaluation.md#e21-policy-robustness)). The protection that
-doesn't depend on wording is the signer's isolation and the witnesses: a call that slips past the rules is still
+held-out pool: 420 harmful, 432 benign), the server pack catches 51% of the harmful ones and the strict pack 60%,
+while holding 4% and 11% of the benign ones ([evaluation](../evaluation.md#e21-policy-robustness)). The protection
+that doesn't depend on wording is the signer's isolation and the witnesses: a call that slips past the rules is still
 recorded, and the record can't be hidden.
 
 ## Reference

@@ -297,6 +297,12 @@ as it needs nothing the schema lacks:
   gateway refuses a 1.2 signer: upgrade the signer first, then the agents' Tracekit and the gateway. A bundle that
   holds a `reconcile.result_mismatch` record (verified tool results) needs a 1.3 verifier; every other bundle verifies
   with 1.2 too. A same-user dev signer from 1.2 is replaced by the first 1.3 client that finds it.
+- **1.4** speaks signer protocol 19. A 1.4 signer serves clients and gateways from protocol 15 up (1.2 and 1.3
+  included), but a 1.4 client or gateway refuses a 1.3 signer: upgrade the signer first. A bundle whose records use
+  1.4's additions (live constraints, signed findings that cite records, kernel sensor or OpenShell effects, `said_only`
+  model messages, the `ext` slot) needs a 1.4 verifier; an older one reports it `UNVERIFIABLE (needs tracekit >=
+  1.4.0)`. A same-user dev signer from 1.3 is replaced by the first 1.4 client that finds it. The store's schema is
+  unchanged.
 
 Helm (`tracekit-central`): migrate each replica's schema before upgrading the release with `signer.content.retain`
 set. Compose: the stack's init script runs only on an empty database, so on an existing stack run
