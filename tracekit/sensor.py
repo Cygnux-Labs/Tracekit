@@ -1,12 +1,13 @@
 """Kernel sensor import (experimental): the process, connect and file events a kernel sensor exports as JSON lines,
 recorded by the v2 signer in the run each is attributed to, as effect.observed under the import's own signer identity
-(observe_effect with `sensor`). Tetragon first. docs/integrations/tetragon.md.
+(observe_effect with `sensor`). Tetragon and Falco: docs/integrations/tetragon.md, docs/integrations/falco.md.
 
     tracekit sensor import --config sensor.yaml [FILE]   # FILE: an export file, followed (with --follow) through
-                                                        # rotation; none: stdin (`tetra getevents -o json | ...`)
+                                                        # rotation; none: stdin (`tetra getevents -o json | ...`,
+                                                        # Falco's program_output)
 
 sensor.yaml:
-    sensor: tetragon
+    sensor: tetragon                       # or falco
     signer: https://signer.internal:8443   # the import's own identity: $TRACEKIT_SIGNER_* (tracekit.sdk.client),
                                            # granted observe_effect in signer.yaml authorize
     runs:                                  # which processes are an agent's, and whose runs their events go to
@@ -115,13 +116,47 @@ def _kprobe(args):
     return None
 
 
+def falco(e):
+    """(attributes, effect) of one Falco alert as its json_output writes it (falcosecurity/falco userspace/engine/
+    formats.cpp; internal ones userspace/falco/falco_outputs.cpp), a loss it reports, or None. Only rules tagged
+    `tracekit` are recorded, from the fields their output names (docs/integrations/falco.md)."""
+    if e.get("rule") == FALCO_DROP:   # userspace/falco/event_drops.cpp: one second's counts, as strings
+        f = e.get("output_fields") or {}
+        return (f"Falco reported dropping {f.get('n_drops', '?')} of {f.get('n_evts', '?')} syscall event(s) in one "
+                "second (raise syscall_event_drops.rate for every second's report)")
+    if e.get("source") != "syscall" or "tracekit" not in e.get("tags", ()):
+        return None
+    f = e["output_fields"]
+    attrs = {"namespace": f.get("k8s.ns.name"), "pod": f.get("k8s.pod.name"), "container": f.get("container.id"),
+             "uid": f.get("user.uid")}
+
+    def effect():
+        kind = FALCO_KINDS.get(f.get("evt.type"))
+        if kind == "exec":
+            out = {"kind": kind, **({"args_digest": _digest(f["proc.cmdline"])} if f.get("proc.cmdline") else {})}
+        elif kind == "connect":
+            out = {"kind": kind, "host": f["fd.sip"].lower(), "port": f["fd.sport"]}
+        elif kind == "file":
+            out = {"kind": kind, "path": f["fd.name"]}
+        else:
+            return None
+        return {**out, "ts": _ts(e["time"]), "pid": f["proc.pid"], "binary": f["proc.exepath"],
+                **_claim(f.get(f"proc.env[{CODEX_ENV}]"))}
+    return attrs, effect
+
+
+FALCO_DROP = "Falco internal: syscall event drop"
+FALCO_KINDS = {"execve": "exec", "execveat": "exec", "connect": "connect", "open": "file", "openat": "file",
+               "openat2": "file"}
+
+
 def _claim(call_id):
     """The tool call id a process's environment carried, when it is one the signer takes."""
     return {"tool_call_id": call_id} if isinstance(call_id, str) and CALL_ID.match(call_id) and len(call_id) <= 128 \
         else {}
 
 
-PARSERS = {"tetragon": tetragon}
+PARSERS = {"tetragon": tetragon, "falco": falco}
 
 
 class Import:
@@ -131,6 +166,8 @@ class Import:
         self.client, self.parse, self.sensor, self.runs = client, PARSERS[sensor], sensor, runs
         self.instance = uuid.uuid4().hex
         self.lock = threading.Lock()
+        # lean: effects wait in memory (MAX_PENDING) while the signer can't take them, and a killed import loses them
+        # (its restart is a signed gap); spool them to disk if outages outlast the memory
         self.pending = collections.deque()   # effects not yet sent, oldest first
         self.lost = collections.Counter()   # loss -> times, not yet sent
         self.sending = None   # the call in flight: sent again, same request_id, until the signer takes it

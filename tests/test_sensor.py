@@ -112,18 +112,65 @@ class TestTetragonLines(unittest.TestCase):
         self.assertIn("throttled the exec and exit events of cgroup cri-containerd-1fb931d2.scope", throttled)
 
 
+def falco_line(rule, evt_type, **fields):
+    """A Falco alert as json_output writes it (userspace/engine/formats.cpp: time with nanoseconds, rule, priority,
+    source, hostname, output, tags, output_fields with the fields the rule's output names, typed as libsinsp's tojson
+    gives them: proc.pid and user.uid numbers, fd.sport a number, fd.sip a string), for the sample rules of
+    docs/integrations/falco.md."""
+    f = {"evt.time": 1791799201615123456, "evt.type": evt_type, "proc.pid": 51583, "proc.exepath": "/usr/bin/curl",
+         "proc.cmdline": "curl -s https://example.com/install.sh", "user.uid": 1000, "container.id": "1fb931d2f6e5",
+         "k8s.ns.name": "agents", "k8s.pod.name": "coder-1", "proc.env[CODEX_TOOL_CALL_ID]": "call_7", **fields}
+    return json.dumps({"hostname": "node-1", "output": f"10:00:01.615123456: Informational {rule}",
+                       "output_fields": f, "priority": "Informational", "rule": rule, "source": "syscall",
+                       "tags": ["tracekit"], "time": TIME})
+
+
+# userspace/falco/falco_outputs.cpp handle_msg and event_drops.cpp: an internal alert, every count a string
+FALCO_DROPS = json.dumps({"output": "Falco internal: syscall event drop. 1287 system calls dropped in last second.",
+                          "priority": "Debug", "rule": "Falco internal: syscall event drop", "time": TIME,
+                          "output_fields": {"ebpf_enabled": "1", "n_drops": "1287", "n_drops_buffer_total": "1287",
+                                            "n_drops_bug": "0", "n_drops_page_faults": "0", "n_evts": "23110"},
+                          "hostname": "node-1", "source": "internal"})
+
+
+class TestFalcoLines(unittest.TestCase):
+    def effect(self, text):
+        attrs, effect = sensor.falco(json.loads(text))
+        return attrs, effect()
+
+    def test_exec_connect_and_file_events(self):
+        attrs, e = self.effect(falco_line("Tracekit agent exec", "execve"))
+        self.assertEqual(attrs, {"namespace": "agents", "pod": "coder-1", "container": "1fb931d2f6e5", "uid": 1000})
+        self.assertEqual(e, {"kind": "exec", "args_digest": sensor._digest("curl -s https://example.com/install.sh"),
+                             "ts": "2026-10-12T10:00:01.615123Z", "pid": 51583, "binary": "/usr/bin/curl",
+                             "tool_call_id": "call_7"})
+        e = self.effect(falco_line("Tracekit agent connect", "connect", **{"fd.sip": "93.184.215.14",
+                                                                          "fd.sport": 443}))[1]
+        self.assertEqual((e["kind"], e["host"], e["port"]), ("connect", "93.184.215.14", 443))
+        e = self.effect(falco_line("Tracekit agent write outside the workspace", "openat",
+                                   **{"fd.name": "/home/agent/.bashrc"}))[1]
+        self.assertEqual((e["kind"], e["path"]), ("file", "/home/agent/.bashrc"))
+
+    def test_what_the_import_does_not_record(self):
+        other = json.loads(falco_line("Terminal shell in container", "execve"))
+        self.assertIsNone(sensor.falco(dict(other, tags=["container", "shell"])))   # not a tracekit rule
+        self.assertIsNone(self.effect(falco_line("Tracekit agent exec", "clone"))[1])
+        self.assertIn("dropping 1287 of 23110 syscall event(s) in one second", sensor.falco(json.loads(FALCO_DROPS)))
+
+
 class Sensed(Lifecycle):
     def open(self):
         self.s = svc.SignerService(self.dir, policy=Engine({"tools": {"Bash": "shell"}}), grace_s=0, idle_s=3600,
                                    observe_grace_s=60, authorize={
                                        "mtls:spiffe://acme/tetragon": ["observe_effect"],
-                                       "mtls:spiffe://acme/egress": ["observe_effect"],
+                                       "mtls:spiffe://acme/falco": ["observe_effect"],
                                        f"uid:{ME.subject}": sorted(svc.DEFAULT_GRANTS)})
         self.closed = False
 
-    def importer(self):
-        client = types.SimpleNamespace(observe_effect=lambda req: self.call("observe_effect", req, SENSOR))
-        return sensor.Import(client, "tetragon", RUNS)
+    def importer(self, name="tetragon"):
+        who = CallerIdentity("mtls", f"spiffe://acme/{name}", True)
+        return sensor.Import(types.SimpleNamespace(observe_effect=lambda req: self.call("observe_effect", req, who)),
+                             name, RUNS)
 
     def final(self, run, after=61):
         self.call("close_run", run)
@@ -234,6 +281,31 @@ class TestImport(Sensed):
                 self.refused("invalid_request", "observe_effect", {"instance": "i", **req}, SENSOR)
         self.refused("forbidden", "observe_effect", {"instance": "i", "sensor": "tetragon",
                                                      "effects": [dict(exec_effect, caller=f"uid:{ME.subject}")]})
+
+
+class TestFalcoImport(Sensed):
+    def test_falco_events_and_drops(self):
+        imp = self.importer("falco")
+        imp.flush()
+        run = self.register()
+        self.call("decide", self.ev(run, 0, tool_call_id="call_7", tool="Bash", args_source="parsed",
+                                    args={"command": "curl -s https://example.com/install.sh"}))
+        imp.add(falco_line("Tracekit agent exec", "execve"))
+        imp.add(falco_line("Tracekit agent exec", "execve", **{"k8s.pod.name": "idle-1"}))   # no open run
+        imp.add(falco_line("Tracekit agent exec", "execve", **{"k8s.ns.name": None, "k8s.pod.name": None}))   # host
+        imp.add(FALCO_DROPS)
+        self.assertTrue(imp.flush())
+        es = self.final(run)
+        [x] = [e["data"] for e in self.typed(es, "effect.observed")]
+        self.assertEqual({k: x[k] for k in ("sensor", "kind", "explained_by", "observer")},
+                         {"sensor": "falco", "kind": "exec", "explained_by": "call",
+                          "observer": "mtls:spiffe://acme/falco"})
+        (lost,) = self.gaps(es, "observer_lost")
+        self.assertIn("the falco import mtls:spiffe://acme/falco reported lost events: 1 x Falco reported dropping "
+                      "1287 of 23110", lost["reason"])
+        (outside,) = self.gaps(self.events("tracekit/signer"), "effect_outside_run")
+        self.assertIn("falco mtls:spiffe://acme/falco saw exec by pid 51583", outside["reason"])
+        self.assertEqual(imp.skipped, 1)
 
 
 class TestDelivery(Sensed):

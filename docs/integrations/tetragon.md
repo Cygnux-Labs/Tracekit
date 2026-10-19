@@ -15,7 +15,7 @@ an `effect.observed` record. It works whatever sandbox the agent runs in, or non
 | What a third party can check later | Nothing signed: an export file, rotated away | A signed, hash-chained bundle, verified offline |
 
 Tracekit doesn't check or change what Tetragon sees: a record says what Tetragon exported, under the import's own
-signer identity.
+signer identity. The same import reads [Falco](falco.md)'s alerts.
 
 ## Setup
 

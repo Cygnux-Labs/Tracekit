@@ -222,8 +222,9 @@ gateway gave no digests of (past what it digests per request, or a gateway older
 result to compare, is a `capture.gap{kind: result_unchecked, tool_use_id, reason}` (`source: signer`, `tool_call_id`),
 once per call. A bundle with either needs `verifier_min_version` 1.3.0.
 
-Kernel sensor events (format 1.4, experimental, [Tetragon](integrations/tetragon.md)): an import of a kernel sensor's
-export (`observe_effect` with `sensor`, the same grant) reports what an agent's processes did; the signer writes
+Kernel sensor events (format 1.4, experimental, [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md)):
+an import of a kernel sensor's export (`observe_effect` with `sensor`, the same grant) reports what an agent's
+processes did; the signer writes
 `effect.observed{observer, sensor, kind: exec|exit|connect|file, ts, pid, binary, exec_id?, args_commitment?,
 salt_id?, status?, signal?, host?, port?, path?, tool_call_id?, attribution, explained_by?: call}` (`source: signer`,
 one per event) in the run it is attributed to. `args_commitment` commits to `"sha256:" + hex(SHA-256(UTF-8 bytes of
