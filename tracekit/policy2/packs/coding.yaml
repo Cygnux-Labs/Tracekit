@@ -139,13 +139,13 @@ ask:
     class: fs
     tool: Read|Grep
     field: path
-    pattern: '(^|/)\.password-store(/.+)?$|(^|/)Library/Keychains/[^/]+$|(^|/)\.local/share/keyrings/[^/]+$|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium)/[^/]+/(Login Data|Cookies|Web Data)$|(^|/)Library/Application Support/(Google/Chrome|Chromium)/[^/]+/(Login Data|Cookies|Web Data)$'
+    pattern: '(^|/)\.password-store(/.+)?$|(^|/)Library/Keychains/[^/]+$|(^|/)\.local/share/keyrings/[^/]+$|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|(^|/)Library/Application Support/(Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|^[A-Za-z]:/Users/[^/]+/AppData/Local/(Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/Network/Cookies$'
     reason: reading an operating-system or browser credential store
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
   - id: TK-A021
     class: shell
     field: target
-    pattern: '^(security\s+(find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|pass\s+show|ssh-add\s+-L)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium)/[^/ ]+/(?:Login Data|Cookies|Web Data)|Library/Application Support/(?:Google/Chrome|Chromium)/[^/ ]+/(?:Login Data|Cookies|Web Data))'
+    pattern: '^(security\s+(find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|pass\s+show|ssh-add\s+-L)\b|^(cat|sqlite3)\b.*(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|Library/Application Support/(?:Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|[A-Za-z]:/Users/[^/]+/AppData/Local/(?:Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/Network/Cookies)'
     reason: reading credentials from an operating-system or browser store
     rationale: These commands can read saved credentials or enumerate an SSH agent; a person confirms the access.
   - id: TK-A022
@@ -157,8 +157,8 @@ ask:
     rationale: The daemon configuration and socket can grant a container full host access; reading them is allowed.
   - id: TK-A023
     class: shell
-    field: argv
-    pattern: '^(docker|podman)\s+run\b.*?(--privileged\b|--pid(=|\s+)host\b|(-v|--volume(=|\s+))\s*(/|/proc):/|--mount.*?(src|source)=(/|/proc)[, ])'
+    field: container_host_access
+    pattern: '^host-access$'
     reason: starting a container with host-level privileges or mounts
     rationale: These options expose the host disk, process space or device access to the container; a person confirms it.
   - id: TK-A024
@@ -170,9 +170,8 @@ ask:
     rationale: Package source settings can redirect future installs to an untrusted index; reading configuration is allowed.
   - id: TK-A025
     class: shell
-    field: argv
-    unless: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?)\s+(install|add)\b.*--(index-url|extra-index-url|default-index)\s+https?://pypi\.org(?:/|\s)|^(pip3?|python3?\s+-m\s+pip)\s+config\s+set\b.*https?://pypi\.org(?:/|\s)|^(npm|pnpm|yarn|bun)\s+(install|add)\b.*--registry(?:=|\s+)https?://registry\.npmjs\.org(?:/|\s)|^(npm|pnpm|yarn|bun)\s+config\s+set\b.*https?://registry\.npmjs\.org(?:/|\s)'
-    pattern: '^(pip3?|python3?\s+-m\s+pip)\s+(install|add)\b.*?--(extra-)?index-url\b|^(npm|pnpm|yarn|bun)\s+(install|add)\b.*?--registry(?:=|\s+)|^(uv(\s+pip)?|poetry|cargo|gem)\s+(install|add)\b.*?--(index-url|extra-index-url|index|default-index|source|registry)(?:=|\s+)|^(pip3?|python3?\s+-m\s+pip)\s+config\s+set\b.*?(index-url|extra-index-url)|^(npm|pnpm|yarn|bun)\s+config\s+set\b.*?registry'
+    field: package_index
+    pattern: '^'
     reason: installing packages through an explicitly selected index
     rationale: The signer cannot establish whether a custom index is trusted; a person confirms the source.
   - id: TK-A026
@@ -185,7 +184,7 @@ ask:
   - id: TK-A027
     class: shell
     field: target
-    pattern: '^(?:(?:rm|unlink|truncate|shred|tee|cp|mv|install)\b.*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|(?:rm|unlink|truncate|shred|tee|cp|mv|install)\b.*?(?:^|\s)/var/log(?:/|\b)|sed\b.*?-[A-Za-z]*i[A-Za-z]*(?:\s|$).*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|sed\b.*?-[A-Za-z]*i[A-Za-z]*(?:\s|$).*?(?:^|\s)/var/log(?:/|\b)|perl\b.*?-[A-Za-z]*i[A-Za-z]*(?:\s|$).*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|perl\b.*?-[A-Za-z]*i[A-Za-z]*(?:\s|$).*?(?:^|\s)/var/log(?:/|\b)|dd\b.*?\bof=.*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|dd\b.*?\bof=(?:/var/log(?:/|\b))|find\b.*?-(?:delete|exec\s+(?:rm|truncate|shred)\b).*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)|find\b.*?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt).*?-(?:delete|exec\s+(?:rm|truncate|shred)\b)|find\b.*?-(?:delete|exec\s+(?:rm|truncate|shred)\b).*?(?:^|\s)/var/log(?:/|\b)|find\b.*?(?:^|\s)/var/log(?:/|\b).*?-(?:delete|exec\s+(?:rm|truncate|shred)\b))|^WRITE_TARGET:(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^WRITE_TARGET:/var/log(?:/.*)?$'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):/var/log(?:/.*)?$|^history\s+-c(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^export\s+HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*--vacuum-[^\s=]+(?:=|\s|$)'
     reason: clearing shell history or system logs
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
   - id: TK-A028
@@ -245,7 +244,7 @@ flag:
     # template path (no space: never a whole command) is exempt
     field: target
     pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
-    unless: '^([^ ]*/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
+    unless: '^(?:WRITE_TARGET:)?([^ ]*/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
     class: mcp

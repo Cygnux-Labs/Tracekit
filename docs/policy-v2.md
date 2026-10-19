@@ -129,7 +129,7 @@ class's fields from the raw arguments (`policy2/classes.py`):
 
 | Class | Fields | Taken from |
 |---|---|---|
-| `shell` | `command`, `argv`, `line` | `command`, `cmd` or `commands` (one of them: a string, or a list of strings) |
+| `shell` | `command`, `argv`, `line`, `package_index`, `container_host_access` | `command`, `cmd` or `commands` (one of them: a string, or a list of strings); `package_index` is each explicitly selected package source, with default PyPI/npm registries omitted; `container_host_access` detects privileged `run` options |
 | `fs` | `path`, `op`, `content_digest` | `file_path`, `notebook_path`, `path`; op from the tool (Write, Edit, Read…) or `op` |
 | `http` | `method`, `url`, `host`, `internal`, `sends_to` | `url`, `method` (default GET); `host` and `internal` as below; `sends_to`: the host, when the method is not GET or HEAD or there is a `body`, `data`, `json`, `files`, `form` or `content` |
 | `sql` | `statement`, `code`, `verb`, `db` | `sql`, `query` or `statement`; `db` or `database`; `code` as below, `verb` its first word |
@@ -141,6 +141,9 @@ class's fields from the raw arguments (`policy2/classes.py`):
 | `unknown` | — | — |
 
 Every class also has `target`: what the call acts on rather than what it carries (below).
+
+For shell targets, redirection destinations and parsed write/delete operands are tagged `WRITE_TARGET:` or
+`DELETE_TARGET:`. Rules can use these tags to distinguish a destination from a file that a command only reads or copies.
 
 - `host`: the URL's host as a browser reads it (`host:port/path` without a scheme is http; controls, tabs and newlines dropped, `view-source:` and `blob:`
   peeled, `\` as `/`, any number of slashes after the scheme, the host after the last `@`), percent-decoded, NFKC

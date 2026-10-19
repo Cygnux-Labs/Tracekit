@@ -147,12 +147,7 @@
 {"tool": "Bash", "args": {"command": "npm install --registry=https://registry.npmjs.org demo"}, "expect": "allow", "note": "explicit standard npm registry"}
 {"tool": "Bash", "args": {"command": "pip config set global.index-url https://pypi.org/simple"}, "expect": "allow", "note": "standard Python index setting"}
 {"tool": "Bash", "args": {"command": "npm config set registry https://registry.npmjs.org/"}, "expect": "allow", "note": "standard npm registry setting"}
-{"tool": "Bash", "args": {"command": "npm i https://packages.example.test/demo.tgz"}, "expect": "allow", "note": "uncovered npm i URL form"}
-{"tool": "Bash", "args": {"command": "pip install -q https://packages.example.test/demo.whl"}, "expect": "allow", "note": "uncovered quiet pip URL form"}
-{"tool": "Bash", "args": {"command": "pip install -U https://packages.example.test/demo.whl"}, "expect": "allow", "note": "uncovered upgrade pip URL form"}
 {"tool": "Bash", "args": {"command": "history"}, "expect": "allow", "note": "read shell history"}
-{"tool": "Bash", "args": {"command": "history -c"}, "expect": "allow", "note": "no named file write target"}
-{"tool": "Bash", "args": {"command": "unset HISTFILE"}, "expect": "allow", "note": "no named file write target"}
 {"tool": "Bash", "args": {"command": "cat /var/log/app.log; echo done"}, "expect": "allow", "note": "read a log then run an unrelated command"}
 {"tool": "Bash", "args": {"command": "cat < ~/.bash_history"}, "expect": "allow", "note": "read history through input redirection"}
 {"tool": "Bash", "args": {"command": "sed -n '1,10p' /var/log/app.log"}, "expect": "allow", "note": "read a log with sed"}
