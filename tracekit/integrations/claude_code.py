@@ -32,8 +32,10 @@ trusted): `tracekit analyze --v2` reads a transcript prompt line as the person's
 "don't push", ...) goes to the signer first, each on its own, as a live constraint (`constraint_add`), which holds a
 later call that breaks it for a person's approval; the agent reads why on stderr. A scope ("only change X") is no live
 constraint (_live): holding every other write (tests, lockfiles) would ask too often; `tracekit analyze --v2` checks
-it. The session state keeps them, and a later run of the session (after an idle close) gets them all again. A
-constraint can only hold more calls, so the agent's own identity adding one (it could add its own) weakens nothing.
+it. The session state keeps them (written before they are sent, so an unreachable signer loses none), and a later run
+of the session (after an idle close) gets them all again. A constraint can only hold more calls, so the agent's own
+identity adding one (it could add its own) weakens nothing: past the signer's cap of file constraints a further one is
+refused and every write of the run is held from then on, which the hook tells the person (exit 1, FULL on stderr).
 
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
@@ -69,6 +71,8 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 NO_POST = ("no PostToolUse came by the end of the session: declined (the harness's permission prompt, another hook), "
            "interrupted, or its payload was unreadable")
 RESUMED = ("resume", "fork")   # SessionStart sources whose transcript already holds the session's earlier history
+FULL = ("[tracekit] the run has the most file constraints the signer takes: what this prompt says not to change was "
+        "not added, so every write of the run is now held for your approval")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
 
 
@@ -126,9 +130,11 @@ def _run(client, sid, register=True, send=None, transcript=None, resumed=False, 
             st["transcript"] = transcript
         if st and stated:
             st["constraints"] = [*dict.fromkeys(map(tuple, [*st.get("constraints", ()), *stated]))]
+            files.write_json(path, st)   # kept if the signer can't be reached now: the next event sends them
+        full = False
         if st and not st.get("ended"):
             try:
-                _constrain(client, path, st)
+                full = _constrain(client, path, st)
             except RPCError as e:
                 if e.code not in ("run_closed", "unknown_run"):
                     raise
@@ -136,7 +142,7 @@ def _run(client, sid, register=True, send=None, transcript=None, resumed=False, 
                     files.write_json(path, dict(st, ended=True))
                     raise
                 st = _register(client, path, st)   # the signer closed the stored run (idle): a new one gets them all
-                _constrain(client, path, st)
+                full = _constrain(client, path, st)
         _tail(client, path, st)
         seen = _seen(st and st.get("transcript"))   # before this event's call: lines its run's tailer reports there
         if not (st and send):
@@ -144,7 +150,7 @@ def _run(client, sid, register=True, send=None, transcript=None, resumed=False, 
                 # lean: no call says the run is still open at this event (Stop, ...); it closes only after an hour
                 # with none, which a turn spends making calls
                 files.write_json(path, dict(st, offsets=seen))
-            return st and RunHandle(client, st), None
+            return st and RunHandle(client, st), {"refused": True} if full else None
         if st.get("ended"):   # the signer said so already: asking again would only count as a late write
             raise RPCError("run_closed", f"run {st['run_id']} ended")
         try:
@@ -179,14 +185,16 @@ def _register(client, path, prev=None, offsets=None):
 def _constrain(client, path, st):
     """Send the run the session's constraints it has not had (all of them to a new run), each on its own: one the
     signer refuses stops none of the others, and the first refusal is raised after. The signer unreachable, or the run
-    closed, stops it; the next event (or a new run) sends the rest."""
+    closed, stops it; the next event (or a new run) sends the rest. -> whether the signer took one only as a refusal
+    past its cap (`refused`: every write of the run is held from then on), which it says on stderr."""
     sent = st.get("sent") or [None, 0]
     done = sent[1] if sent[0] == st["run_id"] else 0
-    refused = []
+    refused, full = [], False
     try:
         for kind, obj in (st.get("constraints") or ())[done:]:
             try:
-                RunHandle(client, st).call("constraint_add", constraint={"kind": kind, **({"object": obj} if obj else {})})
+                full = RunHandle(client, st).call("constraint_add", constraint={
+                    "kind": kind, **({"object": obj} if obj else {})}).get("refused") is True or full
             except RPCError as e:
                 if e.code in ("run_closed", "unknown_run"):
                     raise
@@ -196,8 +204,11 @@ def _constrain(client, path, st):
         if done != sent[1] or sent[0] != st["run_id"]:
             st["sent"] = [st["run_id"], done]
             files.write_json(path, st)
+    if full:
+        print(FULL, file=sys.stderr)
     if refused:
         raise refused[0]
+    return full
 
 
 def _end(path):
@@ -351,15 +362,17 @@ def _live(prompt):
 
 def prompted(run, prompt):
     """Each live constraint `prompt` states (_live), as a live constraint of `run`, each on its own (module
-    docstring)."""
-    refused = []
+    docstring). -> whether the signer took one only as a refusal past its cap (_constrain)."""
+    refused, full = [], False
     for kind, obj in _live(prompt):
         try:
-            run.call("constraint_add", constraint={"kind": kind, **({"object": obj} if obj else {})})
+            full = run.call("constraint_add", constraint={"kind": kind, **({"object": obj} if obj else {})}).get(
+                "refused") is True or full
         except RPCError as e:
             refused.append(e)
     if refused:
         raise refused[0]
+    return full
 
 
 def _unfinished(client, sid):
@@ -433,10 +446,10 @@ def _handle(client, p, name, sid, tid):
         transcript = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
     if isinstance(prompt, str) and prompt:   # the harness's own copy of what the person typed
         try:   # its constraints first: a prompt too large for one observe frame still adds them
-            _run(client, sid, stated=_live(prompt))
+            refused = _run(client, sid, stated=_live(prompt))[1]
         finally:
             _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=prompt)
-        return 0
+        return 1 if refused else 0   # shown to the person (FULL, on stderr), never blocking the prompt
     # SessionStart, or any other first event of the session, registers the run; a resumed (or forked) session's
     # transcript holds its earlier history, which earlier runs recorded
     _run(client, sid, transcript=transcript, resumed=name == "SessionStart" and p.get("source") in RESUMED)

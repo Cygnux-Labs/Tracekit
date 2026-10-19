@@ -23,7 +23,7 @@ from tracekit.format import checkpoint
 from tracekit.format.checkpoint import ED25519
 from tracekit.integrations import claude_code
 from tracekit.sdk import autospawn
-from tracekit.sdk.client import Client, RunHandle
+from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer import service
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileStorage
@@ -210,6 +210,33 @@ class HookV2(unittest.TestCase):
         self.assertEqual([e["type"] for e in self.events()], ["run.registered", "constraint.added"])
         self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t1"))
 
+    def test_a_constraint_past_the_signers_cap_is_told_to_the_person_and_every_write_is_held(self):
+        prompt = "Don't touch " + " or ".join(f"f{i}.py" for i in range(service.MAX_CONSTRAINTS)) + " or billing.py."
+        self.assertIn(claude_code.FULL, self.hook("UserPromptSubmit", prompt=prompt)[1])   # exit 1 as init wires it
+        self.assertIn("so every write is held", self.held_edit("pager.py", "t1"))
+
+    def test_a_prompts_constraints_outlive_a_signer_it_could_not_reach(self):
+        """The session state keeps a prompt's constraints before they are sent: a signer unreachable at that
+        UserPromptSubmit (after an earlier prompt's constraint went) loses none; the next event sends them."""
+        added, down = [], [False]
+
+        class Fake:
+            def register_run(self, agent):
+                return {"run_id": "r1", "run_token": "tok", "fail_modes": {}}
+
+            def call(self, method, req=None, **fields):
+                if down[0]:
+                    raise SignerUnavailable("connection refused")
+                added.append({**(req or {}), **fields}["constraint"])
+                return {"run_seq": len(added)}
+        claude_code._run(Fake(), "s9", stated=claude_code._live("Don't push."))
+        down[0] = True
+        with self.assertRaises(SignerUnavailable):
+            claude_code._run(Fake(), "s9", stated=claude_code._live("Don't touch billing.py."))
+        down[0] = False
+        claude_code._run(Fake(), "s9")   # the session's next event
+        self.assertEqual(added, [{"kind": "no_push"}, {"kind": "keep_away", "object": "billing.py"}])
+
     def test_each_constraint_goes_on_its_own_past_a_refusal(self):
         sent = []
 
@@ -217,6 +244,7 @@ class HookV2(unittest.TestCase):
             sent.append(constraint["kind"])
             if constraint["kind"] == "keep_away":
                 raise RPCError("invalid_request", "refused")
+            return {"run_seq": len(sent)}
         st = {"run_id": "r1", "constraints": [["keep_away", "billing.py"], ["no_push", None], ["no_network", None]]}
         path = os.path.join(self.dir, "st.json")
         with mock.patch.object(claude_code, "RunHandle", lambda client, st: mock.Mock(call=call)):

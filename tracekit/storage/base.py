@@ -133,6 +133,11 @@ class Storage:
         """The run's records in run_seq order."""
         raise NotImplementedError
 
+    def run_records(self, tenant, run_id, run_seqs):
+        """The run's records of `run_seqs` (those it has), in run_seq order: read by run_seq, not by a scan of the run,
+        so a caller that wants a few records of a long run reads only those."""
+        raise NotImplementedError
+
     def get_run(self, tenant, run_id):
         """{"run_seq": last run_seq, "head": its record hash, "count"}, or None for an unknown run."""
         raise NotImplementedError

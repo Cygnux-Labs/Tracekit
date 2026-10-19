@@ -24,9 +24,11 @@ programs (and curl's or wget's connection), a fetch tool's connection, a write t
 selects writes (options(skips)). Checkable only when run.final's coverage matrix says a sensor observed the run's
 processes throughout, and only for kinds of effect the sensor recorded in the run.
 """
+import argparse
 import bisect
 import datetime
 import itertools
+import math
 import posixpath
 import shlex
 
@@ -104,10 +106,18 @@ def options(grace_s=GRACE_S, skew_s=SKEW_S, skips=None):
             [posixpath.normpath(s) for s in skips if s]}
 
 
+def seconds(v):
+    """An argparse type: a finite number of seconds, 0 or more (nan never compares, so a budget of it never ends)."""
+    s = float(v)
+    if not math.isfinite(s) or s < 0:
+        raise argparse.ArgumentTypeError(f"{v!r} is no number of seconds (finite, 0 or more)")
+    return s
+
+
 def arguments(ap):
-    ap.add_argument("--effect-grace", type=float, default=GRACE_S, metavar="S",
+    ap.add_argument("--effect-grace", type=seconds, default=GRACE_S, metavar="S",
                     help="seconds after a call's result its effects still count as its own (default %(default)g)")
-    ap.add_argument("--clock-skew", type=float, default=SKEW_S, metavar="S",
+    ap.add_argument("--clock-skew", type=seconds, default=SKEW_S, metavar="S",
                     help="seconds the kernel sensor's clock may be off the signer's (default %(default)g)")
     ap.add_argument("--sensor-skip", metavar="DIR", action="append",
                     help="TK-X207: a directory the kernel sensor's file policy leaves out (repeatable; '': it selects "

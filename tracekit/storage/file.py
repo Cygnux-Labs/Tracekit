@@ -373,6 +373,16 @@ class _Records:
         for line in self.log.read(list(run["seqs"]) if run else []):
             yield json.loads(line)
 
+    def run_records(self, tenant, run_id, run_seqs):
+        run = self.runs.get((tenant, run_id))
+        seqs = run["seqs"] if run else []   # a run's n-th record is its run_seq n
+        want = sorted({s for s in run_seqs if 0 <= s < len(seqs)})
+        out = [json.loads(line) for line in self.log.read([seqs[s] for s in want])]
+        if any(r["event"]["run_seq"] != s for r, s in zip(out, want)):   # not so: by a scan
+            want = set(want)
+            return [r for r in self.iter_run(tenant, run_id) if r["event"]["run_seq"] in want]
+        return out
+
     def get_run(self, tenant, run_id):
         run = self.runs.get((tenant, run_id))
         return run and {"run_seq": run["run_seq"], "head": run["head"], "count": len(run["seqs"])}

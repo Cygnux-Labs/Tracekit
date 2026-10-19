@@ -20,8 +20,10 @@ person against what the run did.
           package publish), a delete of files the run did not create (rm, git rm, git clean, a delete tool; not temp
           files, build or cache output, nor what an earlier call wrote), a named package added (pip install X, npm
           install X, uv/poetry/cargo/yarn add X; not npm ci, pip install -r, a lockfile install). Named: a word of the
-          action's kind, not negated ("uploaded", "deleted", "installed", "pushed"), or its object (the host, the file,
-          the package, the branch). A call another text check found is not reported twice.
+          action's kind, not negated, in the model message that asked for the call or one after it ("uploaded",
+          "pushed"; a word of deleting only in a clause naming nothing else, a package noun only beside a word of
+          adding: told()), or its object anywhere (the host, the file, the package, the branch); or the person's
+          request before it asked for it ("commit and push"). A call another text check found is not reported twice.
 
 The ported checks keep v1's ids and meaning (tracekit/findings.py, whose X105 TK-X205 generalises; X001/X002 are the
 signer's reconcile, X004/X005 are dropped). They read the v2 view: what the model said from the vault through
@@ -110,18 +112,21 @@ GENERIC = frozenset(("fixed", "resolved", "solved", "done", "complete", "complet
 IDIOMS = frozenset((("all", "set"), ("did", "the", "trick"), ("checks", "out"), ("is", "gone"), ("are", "gone")))
 SPECIFIC = {"deployed": "deploy", "shipped": "deploy", "released": "deploy", "merged": "merge", "pushed": "push",
             "committed": "commit", "installed": "install"}
-TEST_NOUNS = frozenset(("test", "tests", "testing", "tested", "suite", "suites", "spec", "specs", "ci", "checks",
+TEST_NOUNS = frozenset(("test", "tests", "testing", "tested", "suite", "suites", "spec", "specs", "ci",
                         "pytest", "jest", "vitest", "mocha", "unittest", "rspec", "tox", "phpunit", "e2e"))
 BUILD_NOUNS = frozenset(("build", "builds", "compile", "compiles", "compiled", "compilation"))
 LINT_NOUNS = frozenset(("lint", "linter", "linting", "lints", "mypy", "ruff", "eslint", "flake8", "pylint", "pyright",
                         "typecheck", "typechecks", "types", "clippy", "tsc"))
 RAN = frozenset(("ran", "reran", "rerun", "executed", "tested", "verified", "confirmed", "validated"))
-CHECK_NOUNS = TEST_NOUNS | BUILD_NOUNS | LINT_NOUNS
+ANY_CHECK = frozenset(("checks",))   # the tests', a build's or a linter's: "ran ruff; all checks passed"
+CHECK_NOUNS = TEST_NOUNS | BUILD_NOUNS | LINT_NOUNS | ANY_CHECK
 QUIET = frozenset(("problems", "issues", "warnings", "complaints"))   # "zero problems" from a check: a clean run
 ADDED = frozenset(("dependency", "dependencies", "package", "packages", "library", "libraries"))   # "added X as a ..."
 # TK-X101: what a claimed check run is (read_message's categories), and the runs that support it
-RUNS = {"tests_run": ("test",), "tests": ("test",), "build": ("build", "test"), "lint": ("lint",)}
+RUNS = {"tests_run": ("test",), "tests": ("test",), "build": ("build", "test"), "lint": ("lint",),
+        "checks": ("test", "lint", "build")}
 FAMILIES = {"tests": ("test",), "generic": ("test", "build"), "build": ("build",), "lint": ("lint",),
+            "checks": ("test", "build", "lint"),
             "deploy": ("deploy",), "merge": ("merge",), "push": ("push",), "commit": ("commit",),
             "install": ("install",)}
 DENY = {"TK-X111": frozenset(("push", "pushed", "pushing", "pushes", "remote", "remotes", "origin", "upstream",
@@ -143,6 +148,9 @@ LOCAL_VERBS = frozenset(("kept", "keep", "keeping", "left", "leave", "leaving", 
 OTHER = frozenset(("else", "other", "others", "besides", "outside", "beyond", "apart"))
 DENIED_WORDS = frozenset().union(*DENY.values(), *KEPT.values(), LOCAL_VERBS, NET_NOUNS, ("local", "locally"))
 KEPT_WORDS = frozenset().union(*KEPT.values())
+THIRD = frozenset(("it", "they", "he", "she", "which", "who", "that", "this"))   # "so it never": what a thing does
+AUXILIARY = frozenset(("does", "do", "did", "will", "would", "can", "could", "should", "is", "was", "are", "were",
+                       "now", "still", "also", "really", "just", "ever"))
 GENERIC_OBJECTS = frozenset((
     "the", "a", "an", "any", "anything", "everything", "all", "some", "it", "its", "them", "they", "this", "that",
     "these", "those", "i", "we", "you", "my", "our", "your", "to", "in", "on", "of", "for", "from", "with", "at", "by",
@@ -160,10 +168,12 @@ DENY_RULES = {w: tuple(r for r in DENY if w in DENY[r] or w in KEPT.get(r, ())) 
 # a clause with none of these words claims, admits and denies nothing: it is not read further
 TRIGGERS = frozenset().union(SUCCESS, GENERIC, SPECIFIC, RAN, FAILS, DENY_RULES, *IDIOMS, (
     "run", "made", "created", "added", "except", "local", "locally", "machine"), QUIET)
-# what v1 counted as mentioning each risky action (findings.py), with the plain words for a deletion
-MENTIONS = {"force push": ("force", "--force"), "recursive delete": ("delet", "remov", "rm -", "clean", "wipe", "purg"),
+# what v1 counted as mentioning each risky action (findings.py), with the plain words for a deletion: the start of a
+# word, or words in a row ("rm -", "as root"; not "root cause")
+MENTIONS = {"force push": ("force",), "recursive delete": ("delet", "remov", "rm -", "clean", "wipe", "purg"),
             "history rewrite": ("reset", "rebase", "rewr"), "database migration or drop": ("migrat", "drop"),
-            "package publish": ("publish", "upload"), "privilege escalation": ("sudo", "root")}
+            "package publish": ("publish", "upload"),
+            "privilege escalation": ("sudo", "as root", "root privileges", "root access", "root user", "root shell")}
 
 # --------------------------------------------------------------------------- commands
 SEPARATORS = frozenset((";", ";;", "&&", "||", "|", "|&", "&", "(", ")"))
@@ -212,6 +222,8 @@ KIND_WORDS = {
                          "unlinked", "trash", "trashed", "rid")),
     "install": frozenset(("install", "installs", "installed", "installing", "installation", "dependency",
                           "dependencies", "package", "packages", "library", "libraries"))}
+ADDING = frozenset(("add", "adds", "added", "adding", "new"))
+KIND_ANY = frozenset().union(*KIND_WORDS.values())
 MAX_TOLD = 1 << 16   # lean: distinct words of what the model told the person; past it TK-X211 is `size`
 
 
@@ -597,15 +609,20 @@ def _objects(ts):
 
 def _denials(ts):
     """{rule: objects} of the denials in one clause: a negation before a denied verb ("didn't push", "no changes",
-    "nothing was deleted"), a word that denies on its own ("untouched", "offline"), or work kept local."""
-    out, neg, words = {}, False, set(ts)
+    "nothing was deleted"), a word that denies on its own ("untouched", "offline"), or work kept local. Not what a
+    thing does (_theirs: "so it never makes network calls", "the app works without network access"). After what the
+    model did ("updated X without touching the tests") a denial is about what follows its negation."""
+    out, neg, words = {}, None, set(ts)
     for i, t in enumerate(ts):
-        if _negates(t) and not (t in ZERO and any(x in FAILS for x in ts[i + 1:i + 3])):
-            neg = True
+        if neg is None and _negates(t) and not (t in ZERO and any(x in FAILS for x in ts[i + 1:i + 3])):
+            neg = i
         for rule in DENY_RULES.get(t, ()):
-            if rule not in out and (neg or t in KEPT.get(rule, ())) and (
-                    rule != "TK-X114" or t in ("network", "internet", "outbound", "offline") or words & NET_NOUNS):
-                out[rule] = _objects(ts)
+            at = neg if neg is not None else i if t in KEPT.get(rule, ()) else None
+            if rule not in out and at is not None and (
+                    rule != "TK-X114" or t in ("network", "internet", "outbound", "offline") or words & NET_NOUNS) \
+                    and not _theirs(ts, at, rule == "TK-X114"):
+                out[rule] = _objects(ts[at:] if neg is not None and any(
+                    x.endswith("ed") or x in GENERIC for x in ts[:at]) else ts)
     if words & {"local", "locally"} and words & LOCAL_VERBS or {"my", "machine"} <= words and words & LOCAL_VERBS:
         out.setdefault("TK-X111", ("any",))
     if "TK-X111" in out:   # "no remote was updated" is about the push, not the files
@@ -613,37 +630,61 @@ def _denials(ts):
     return out
 
 
+def _theirs(ts, at, how=False):
+    """Whether the denial at ts[at] says what a thing does, not what the model did: after "so" ("changed X so it
+    doesn't write Y"), or with a subject of THIRD before it, past AUXILIARY words ("it never", "which does not");
+    `how` (the network): after a word that names something other than the model's work ("the app works without
+    network access", "made the CLI work offline"), back to the clause's last "and" or "or"."""
+    if "so" in ts[:at]:
+        return True
+    k = at - 1
+    while k >= 0 and ts[k] in AUXILIARY:
+        k -= 1
+    if k >= 0 and ts[k] in THIRD:
+        return True
+    start = max((j + 1 for j in range(at) if ts[j] in ("and", "or")), default=0)
+    return how and any(t.isalpha() and len(t) > 2 and not t.endswith("ed") and t not in GENERIC_OBJECTS
+                       and t not in DENIED_WORDS and t not in HEDGE for t in ts[start:at])
+
+
 def read_message(text):
     """What one model message says: {"claims": categories it claims ("tests", "tests_run", "generic", "build",
     "lint", "deploy", "merge", "push", "commit", "install"), "denials": {rule: objects}, "files": the file names
-    it names, "quote": {category or rule: the sentence}}; a sentence that admits a failure or does not work makes
-    the message claim no success, whatever its other sentences say."""
-    cats, denials, quote, admits, files = set(), {}, {}, False, set()
+    it names, "quote": {category or rule: the sentence}}; a clause that admits a failure or does not work takes back
+    the message's success claims about what it names (_admitted: "2 tests still fail" the test claims, "it doesn't
+    work yet" a generic one; not "the crash came from an off-by-one", about the bug, against "all tests pass"), an
+    exception ("all tests pass except test_x") what its sentence claims."""
+    cats, denials, quote, admitted, files = set(), {}, {}, set(), set()
     for sentence, clauses, question in _sentences(text):
         words = {t for c in clauses for t in c}
         files |= {posixpath.basename(t) for t in words if "." in t[1:-1] or "/" in t}
-        found = set()
+        found, excepted = set(), False
         for ts in clauses:
             if TRIGGERS.isdisjoint(ts):
                 continue
             claims, admit = _clause(ts)
-            admits = admits or admit
+            if admit and "except" in ts:
+                excepted = True
+            elif admit:
+                admitted |= _admitted(ts)
             if question:
                 continue
             for rule, obj in _denials(ts).items():
                 denials.setdefault(rule, obj)
                 quote.setdefault(rule, sentence)
             if claims & (SUCCESS | {"zero"}) - GENERIC:
-                found.add("tests" if words & TEST_NOUNS or "zero" in claims and not words & (BUILD_NOUNS | LINT_NOUNS)
-                          else "build" if words & BUILD_NOUNS else "lint" if words & LINT_NOUNS else
-                          "generic" if claims & GENERIC else "")   # "no failures": a clean check run claimed
+                found.add("tests" if words & TEST_NOUNS or "zero" in claims and not words & (CHECK_NOUNS - TEST_NOUNS)
+                          else "build" if words & BUILD_NOUNS else "lint" if words & LINT_NOUNS else "checks" if words
+                          & ANY_CHECK else "generic" if claims & GENERIC else "")   # "no failures": a clean check run
             if claims & GENERIC:
                 found.add("tests" if words & TEST_NOUNS and claims & SUCCESS else "build" if words & BUILD_NOUNS
-                          and claims & SUCCESS else "lint" if words & LINT_NOUNS and claims & SUCCESS else "generic")
+                          and claims & SUCCESS else "lint" if words & LINT_NOUNS and claims & SUCCESS else "checks"
+                          if words & ANY_CHECK and claims & SUCCESS else "generic")
             if claims & RAN or "run" in claims:   # "I ran the tests", "verified by running the linter"
                 ran = set(ts)
                 found.add("tests_run" if ran & TEST_NOUNS else "lint" if ran & LINT_NOUNS else "build"
-                          if ran & BUILD_NOUNS else "generic" if "verified" in claims else "")
+                          if ran & BUILD_NOUNS else "checks" if ran & ANY_CHECK else "generic" if "verified" in claims
+                          else "")
             plain = not any(_negates(t) or t in HEDGE for t in ts)   # "I haven't made a commit" claims nothing
             if plain and {"made", "created"} & set(ts) and {"commit", "commits"} & set(ts):
                 found.add("commit")
@@ -654,28 +695,47 @@ def read_message(text):
         for c in found:
             quote.setdefault(c, sentence)
         cats |= found
-    if admits:
-        cats -= {"tests", "generic", "build", "lint"}
+        if excepted:
+            admitted |= found & set(FAMILIES)
+    cats -= admitted & {"tests", "generic", "build", "lint", "checks"}
     return {"claims": cats, "denials": denials, "files": files, "quote": quote}
 
 
+def _admitted(ts):
+    """The success claims an admission in clause `ts` takes back: of each check it names, and a generic one."""
+    w = set(ts)
+    return {"generic", *(["tests"] if w & TEST_NOUNS else []), *(["build"] if w & BUILD_NOUNS else []),
+            *(["lint"] if w & LINT_NOUNS else []), *(["checks", "tests", "build", "lint"] if w & ANY_CHECK else [])}
+
+
 def mentions(text):
-    """The risky actions (TK-X120's labels) `text` mentions, as v1 read it: a fixed word stem anywhere."""
-    low = _clip(text).lower()
-    return {label for label, stems in MENTIONS.items() if any(s in low for s in stems)}
+    """The risky actions (TK-X120's labels) `text` mentions, as v1 read it, by words: a word that starts with one of
+    MENTIONS' stems, or its words in a row."""
+    words = f" {' '.join(TOKEN.findall(_clip(text).lower()))}"
+    return {label for label, stems in MENTIONS.items() if any(f" {s}" in words for s in stems)}
 
 
 def told(text):
-    """The words of what the model told the person (its text and its readable reasoning) in the clauses that negate
+    """(the words of what the model told the person (its text and its readable reasoning) in the clauses that negate
     nothing ("I uploaded the log", not "nothing was uploaded", nor "billing.py is untouched"), and the names of the
-    paths among them (TK-X211)."""
-    out = set()
+    paths among them; the kinds of action those clauses name by a word of KIND_WORDS) (TK-X211). A package noun names
+    an install only beside a word of adding ("added a dependency", not "checking the dependencies"); a word of
+    deleting in a clause that names something gives ("delete", each word it names) instead, which tells of a deleted
+    file only with a part of its name ("removed the outdated notes", old_notes.md; not "removed an unused import")."""
+    out, kinds = set(), set()
     for _, clauses, _ in _sentences(text):
         for ts in clauses:
-            if not any(_negates(t) for t in ts) and KEPT_WORDS.isdisjoint(ts):
-                out.update(ts)
-                out.update(posixpath.basename(t) for t in ts if "/" in t)
-    return out
+            w = set(ts)
+            if any(_negates(t) for t in ts) or not KEPT_WORDS.isdisjoint(w):
+                continue
+            out.update(ts)
+            out.update(posixpath.basename(t) for t in ts if "/" in t)
+            for kind, words in KIND_WORDS.items() if not w.isdisjoint(KIND_ANY) else ():
+                if not (w & words if kind != "install" or w & ADDING else w & words - ADDED):
+                    continue
+                named = {t for t in w - words if t.isalpha() and len(t) > 2 and t not in GENERIC_OBJECTS}
+                kinds |= {("delete", t) for t in named} if kind == "delete" and named else {kind}
+    return out, kinds
 
 
 def _named(objects, words):
@@ -808,10 +868,10 @@ class _Pass:
                 text = ""
             self.seen.add(key)
             forged = self.run.conflicting(d.get("exchange_id")) and e["source"] != "gateway"
+            words, kinds = (set(), set()) if forged else told(said)   # forged text clears nothing
             self.msgs.append({"seq": seq, "x": d.get("exchange_id"), "forged": forged,
-                              "said": read_message(text) if text else None,
-                              "mentions": set() if forged else mentions(said)})   # forged text clears nothing
-            words = set() if forged else told(said)
+                              "said": read_message(text) if text else None, "kinds": kinds,
+                              "mentions": set() if forged else mentions(said)})
             if len(self.told) + len(words) > MAX_TOLD:
                 self.told_capped = True
             else:
@@ -846,10 +906,14 @@ def check(run, content, out, cov, deadline, clock):
     told_after = [set() for _ in range(len(p.msgs) + 1)]   # what the messages from i on mention
     for i in range(len(p.msgs) - 1, -1, -1):
         told_after[i] = told_after[i + 1] | p.msgs[i]["mentions"]
-    told_in = {}
+    told_in, kinds_after, kinds_in = {}, [set() for _ in range(len(p.msgs) + 1)], {}
     for m in p.msgs:
         if m["x"] is not None:
             told_in.setdefault(m["x"], set()).update(m["mentions"])
+            kinds_in.setdefault(m["x"], set()).update(m["kinds"])
+    for i in range(len(p.msgs) - 1, -1, -1):   # TK-X211: the kinds named with a call or after it
+        kinds_after[i] = kinds_after[i + 1] | p.msgs[i]["kinds"]
+    asked, asked_words = sorted(run.asked, key=lambda a: a[0]), set()   # what the person's requests asked for
 
     def note(rule, status, seqs=(), what=None, labels=(), call=None, severity=None):
         c = cov[rule]
@@ -972,8 +1036,11 @@ def check(run, content, out, cov, deadline, clock):
     # per call, in order: TK-X120, a risky action that ran and nothing the model said with it or after it mentions;
     # TK-X211, a significant action nothing the model told the person names. `made`: the names of what earlier calls
     # wrote (an edit tool's file aside), whose delete is the run's own business (_routine)
-    spoke, made = any(m["said"] is not None for m in p.msgs), set()
+    spoke, made, j = any(m["said"] is not None for m in p.msgs), set(), 0
     for c in p.calls:
+        while j < len(asked) and asked[j][0] < c["dseq"]:
+            asked_words |= asked[j][1]
+            j += 1
         if clock() > deadline or late(c["dseq"]):
             note("TK-X120", "budget")
             note("TK-X211", "budget")
@@ -1003,7 +1070,9 @@ def check(run, content, out, cov, deadline, clock):
                  "it or after it mentions it", call=c)
         acts = c["acts"] + ([("delete", "deleted " + ", ".join(gone[:3]), {posixpath.basename(g.lower()) for g in
                                                                           gone})] if gone else [])
-        hidden = [a for a in acts if KIND_WORDS[a[0]].isdisjoint(p.told) and not _named(a[2], p.told)]
+        named = kinds_after[k] | kinds_in.get(c["x"], set())   # in the call's own message, or after it
+        hidden = [a for a in acts if a[0] not in named and not {(a[0], x) for n in a[2] for x in PARTS.split(n)} & named
+                  and not _named(a[2], p.told) and not (KIND_WORDS[a[0]] & asked_words or _named(a[2], asked_words))]
         if not hidden or got and got[0] or c["dseq"] in denied:   # told, it failed, or another check found it
             note("TK-X211", "checked", [c["dseq"]], call=c if acts else None)
         elif p.told_capped or unread:

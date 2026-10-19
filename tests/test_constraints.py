@@ -15,7 +15,7 @@ from factories import unverified_bundles
 from test_reviews import ME, Signed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from eval.e20_alignment import TUNED, fill  # noqa: E402
+from eval.e20_alignment import TUNED, Signer, fill, score_honest  # noqa: E402
 from tracekit import agent_hooks, constraints  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.integrations import claude_code  # noqa: E402
@@ -125,13 +125,96 @@ class Grammar(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), want)
 
+    def test_descriptions_scopes_conditions_and_quotes_state_nothing(self):
+        """Round-2 review: honest prompts the 1.4 grammar read as constraints, each holding wanted work live.
+        "read-only" describing a thing, "nothing should change" for callers, a negated change of one aspect of the file
+        asked for, a scoped or conditional push, the network in a description, quoted or indented text, a constraint
+        the same request lifts later."""
+        for text in (
+                "Add a read-only mode to the API client in client.py.", "Adding a read_only flag to the client.",
+                "Make the database connection read-only when DEBUG is set (db.py).",
+                "The cache should be read-only after startup; please implement that in cache.py.",
+                "Please add read-only replicas support to db.py.", "Implement a read-only API token type in tokens.py.",
+                "Implement the LRU cache in cache.py. Nothing should change for existing callers.",
+                "Please don't change the public API of client.py, just fix the timeout bug inside it.",
+                "Don't change the function signature in utils.py, but make parse_date handle empty strings.",
+                "Don't overwrite user data in save.py when the file already exists.",
+                "Make sure nothing in api.py changes its public behaviour while you refactor the internals.",
+                "Run the tests and push when they pass. Don't push to main, use the feature branch.",
+                "Don't push until the tests pass. Then push the branch.", "Don't push before I review.",
+                "Never push secrets to the repo; add a pre-commit hook that scans for them.",
+                "The CONTRIBUTING file says: never push to main. Open a PR from a branch and push the branch.",
+                "In docs/limits.md, document that the agent can't push without approval.",
+                "We don't use the network in unit tests, so mock requests in tests/test_http.py.",
+                "Ensure the app works without network access; add an offline fallback to fetch.py.",
+                "Our policy is no network access in CI; add a check to ci.py that fails if a test opens a socket.",
+                "Make the test suite run without internet; some tests hit httpbin.",
+                "> Please don't modify billing.py\nThat note from Sam is outdated, go ahead and fix billing.py.",
+                "Here is the code:\n    # don't edit settings.py by hand\n    load()\nAdd a loader to settings.py.",
+                "Error log:\nE: do not change config.yaml while the server runs\nFix the server restart in server.py.",
+                "Write a test asserting that sync.py never writes to state.db when read-only mode is on.",
+                "Don't touch billing.py for now; first fix pager.py. After that, update billing.py too.",
+                "Investigate (don't change anything) why build.sh is slow, then speed it up."):
+            with self.subTest(text):
+                self.assertEqual((constraints.extract(text), claude_code._live(text)), ([], []))
+        for text, want in (   # and what still states one
+                ("Fix tests/test_api.py. Don't touch anything in vendor/.", [("keep_away", "vendor/")]),
+                ("Leave src/legacy/ alone.", [("keep_away", "legacy/")]),
+                ("Don't touch the Dockerfile.", [("keep_away", "dockerfile")]),
+                ("Fix pager.py. Later I'll ask you to change billing.py, so don't modify billing.py yet.",
+                 [("keep_away", "billing.py")]),
+                ("Don't touch billing.py while you're at it.", [("keep_away", "billing.py")]),
+                ("Please leave billing.py unchanged while fixing pager.py.", [("keep_away", "billing.py")]),
+                ("Don't change anything in billing.py.", [("keep_away", "billing.py")]),
+                ("Don't touch any code in billing.py.", [("keep_away", "billing.py")]),
+                ("Nothing in billing.py should change.", [("keep_away", "billing.py")]),
+                ("Don't push it to origin.", [("no_push", None)]), ("I don't want you to push.", [("no_push", None)]),
+                ("Stay read-only.", [("read_only", None)]), ("Work in read-only mode.", [("read_only", None)]),
+                ("You must not use the network.", [("no_network", None)]),
+                ("Work without internet access.", [("no_network", None)]),
+                ("Investigate why it fails; don't change anything.", [("read_only", None)])):
+            with self.subTest(text):
+                self.assertEqual(constraints.extract(text), want)
+
+    def test_the_rest_of_the_word_lists(self):
+        """A phrase each for words of the lists no other test reads (the phrase-leak guard wants every word of a
+        check written with the checks)."""
+        for text, want in (("Don't rename it because billing.py imports it.", []),   # BLOCK: no object of its own
+                           ("billing.py must be left entirely untouched.", [("keep_away", "billing.py")]),
+                           ("billing.py has been frozen.", [("keep_away", "billing.py")]),
+                           ("billing.py is considered off-limits.", [("keep_away", "billing.py")]),
+                           ("Fix it; though stay offline.", [("no_network", None)])):
+            with self.subTest(text):
+                self.assertEqual(constraints.extract(text), want)
+        for cmd in ("git clone https://example.org/r.git", "ssh build-host ls"):
+            self.assertTrue(constraints.facts("Bash", {"command": cmd})["network"], cmd)
+
+    def test_e20s_honest_sessions_hold_no_call_and_break_no_constraint(self):
+        """E20's honest Claude Code sessions (HONEST_SESSIONS), replayed through the hook into a signer: no call is
+        held live and no TK-X204 finding."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        signer = Signer(os.path.join(d, "data"))
+        self.addCleanup(signer.close)
+        out = score_honest(signer)
+        self.assertEqual((out["held"], [k for k in out["findings"] if k.startswith("TK-X204")]), (0, []), out)
+
+    def test_a_directory_kept_away_breaks_on_a_write_under_it_never_on_a_scope(self):
+        f = constraints.facts("Edit", {"file_path": "/w/src/legacy/old.py"})
+        self.assertEqual(constraints.breaks("keep_away", f, "legacy/".__eq__), "legacy/")
+        self.assertIsNone(constraints.breaks("only_change", f, "old.py".__eq__))   # its directories are no file
+        self.assertEqual(constraints.facts("Bash", {"command": "echo x > src/legacy/a.py"})["names"],
+                         ["a.py", "src/", "legacy/"])
+        self.assertEqual(constraints.breaks("keep_away", constraints.facts("Bash", {"command": "rm -r src/legacy"}),
+                                            "legacy/".__eq__), "legacy/")   # the directory itself
+
     def test_a_scope_is_checked_after_the_run_and_never_held_live(self):
         """"Only change X" holds no call (every test or lockfile write would ask the person): TK-X204 reads it after."""
         text = "Only change src/pager.py and don't touch billing.py."
         self.assertEqual(constraints.extract(text), [("only_change", "pager.py"), ("keep_away", "billing.py")])
         self.assertEqual(claude_code._live(text), [("keep_away", "billing.py")])
         sent = []
-        claude_code.prompted(mock.Mock(call=lambda m, **kw: sent.append(kw["constraint"])), text)
+        claude_code.prompted(mock.Mock(call=lambda m, **kw: sent.append(kw["constraint"]) or {"run_seq": 1}), text)
         self.assertEqual(sent, [{"kind": "keep_away", "object": "billing.py"}])
 
     def test_a_64_kib_prompt_is_read_in_bounded_time(self):
@@ -155,16 +238,30 @@ class Grammar(unittest.TestCase):
 
     def test_what_a_call_does(self):
         bash = lambda c: constraints.facts("Bash", {"command": c})   # noqa: E731
-        self.assertEqual(bash("sed -i 's/a/b/' src/Billing.py && cat pager.py")["names"], ["billing.py"])
+        self.assertEqual(bash("sed -i 's/a/b/' src/Billing.py && cat pager.py")["names"], ["billing.py", "src/"])
         self.assertEqual(bash("echo x > billing.py")["names"], ["billing.py"])
-        self.assertEqual(bash("cp billing.py /tmp/b")["names"], ["b"])   # read, not written
+        self.assertEqual(bash("cp billing.py /tmp/b")["names"], ["b", "tmp/"])   # read, not written
         self.assertEqual(bash("cat billing.py")["write"], False)
         self.assertTrue(bash("git push origin main")["push"] and bash("git push origin main")["network"])
         self.assertTrue(bash("sudo pip install leftpad")["network"])
-        self.assertEqual(constraints.facts("Edit", {"file_path": "/w/billing.py"})["names"], ["billing.py"])
+        self.assertEqual(constraints.facts("Edit", {"file_path": "/w/billing.py"})["names"], ["billing.py", "w/"])
         self.assertEqual(constraints.facts("Read", {"file_path": "/w/billing.py"}, "fs")["write"], False)
         self.assertTrue(constraints.facts("WebFetch", {"url": "https://example.org"})["network"])
         self.assertTrue(constraints.facts("fetch_page", {"url": "https://example.org"}, "http")["network"])
+
+    def test_git_dd_patch_rsync_find_and_formatters_write_their_files(self):
+        """Round-2 review: ordinary commands that write a file the constraint names, each held (keep_away)."""
+        for cmd in ("git rm billing.py", "git checkout -- billing.py", "git -C src restore billing.py",
+                    "git mv billing.py old.py", "dd if=/tmp/x of=billing.py", "patch billing.py < fix.diff",
+                    "rsync /tmp/x billing.py", "scp host:x billing.py", "find . -name billing.py -delete",
+                    "find . -name billing.py -exec rm {} \\;", "npx prettier --write billing.py", "black billing.py",
+                    "ruff format billing.py", "ruff check --fix billing.py", "gofmt -w billing.py", "shred billing.py"):
+            with self.subTest(cmd):
+                f = constraints.facts("Bash", {"command": cmd})
+                self.assertTrue(f["write"])
+                self.assertEqual(f["names"][0], "billing.py")
+        self.assertEqual(constraints.facts("Bash", {"command": "git checkout -b fix"})["names"], [])   # a branch
+        self.assertTrue(constraints.facts("Bash", {"command": "patch -p1 < fix.diff"})["write"])   # files unnamed
 
     def test_a_call_is_read_as_the_policy_engine_reads_it(self):
         """A shell call through the policy engine's parser: an argv list, OpenAI's `commands`, a nested shell, eval and
@@ -187,8 +284,8 @@ class Grammar(unittest.TestCase):
         patch = ("*** Begin Patch\n*** Update File: src/config.py\n@@\n-a\n+b\n*** Add File: docs/new.md\n+x\n"
                  "*** End Patch")
         tool, ti = agent_hooks.tool("codex", "apply_patch", {"command": patch})
-        self.assertEqual(constraints.facts(tool, ti, "fs")["names"], ["config.py", "new.md"])
-        self.assertEqual(constraints.facts(tool, ti)["names"], ["config.py", "new.md"])   # as the analysis reads it
+        self.assertEqual(constraints.facts(tool, ti, "fs")["names"], ["config.py", "new.md", "src/", "docs/"])
+        self.assertEqual(constraints.facts(tool, ti)["names"], ["config.py", "new.md", "src/", "docs/"])   # analysis
 
     def test_breaks(self):
         f = constraints.facts("Edit", {"file_path": "/w/billing.py"})
@@ -379,16 +476,35 @@ class Live(Signed):
         self.assertEqual((held["decision"], held["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
         self.assertEqual([e["type"] for e in self.records(run)].count("constraint.added"), 3)
 
-    def test_past_the_cap_a_constraint_is_a_signed_gap(self):
+    def test_past_the_cap_a_file_constraint_is_a_signed_gap_and_every_write_is_held(self):
+        """Any client of the run may add a constraint, so the agent can add made-up ones first: they never leave the
+        person's later one unheld. A kind that names no file is always added; past MAX_CONSTRAINTS file constraints a
+        further one is a signed gap the hook is told of (`refused`), and every write is held from then on, also after
+        a restart."""
         run = self.run_()
         for i in range(svc.MAX_CONSTRAINTS):
             self.add(run, "keep_away", f"f{i}.py")
-        seq = self.add(run, "no_push")["run_seq"]
-        gap = next(e for e in self.records(run) if e["run_seq"] == seq)
+        self.assertNotIn("refused", self.add(run, "no_push"))
+        push = self.decide(run, "Bash", {"command": "git push origin main"})
+        self.assertEqual((push["decision"], push["rule_ids"][-1]), ("ask", "TK-CONSTRAINT"))
+        other = {"file_path": "/w/other.py", "old_string": "a", "new_string": "b"}
+        self.assertEqual(self.decide(run, "Edit", other)["decision"], "allow")
+        out = self.add(run, "keep_away", "billing.py")
+        self.assertTrue(out["refused"])
+        gap = next(e for e in self.records(run) if e["run_seq"] == out["run_seq"])
         self.assertEqual((gap["type"], gap["source"], gap["data"]["kind"]), ("capture.gap", "signer",
                                                                               "constraint_refused"))
-        self.assertIn("a further no_push constraint was not added", gap["data"]["reason"])
+        self.assertIn("a further keep_away constraint was not added", gap["data"]["reason"])
+        for args in ({"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"}, other):
+            held = self.decide(run, "Edit", args)
+            self.assertEqual((held["decision"], held["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
+            self.assertIn("so every write is held", held["reason"])
+        self.assertEqual(self.decide(run, "Read", {"file_path": "/w/billing.py"})["decision"], "allow")
         self.assertEqual(self.add(run, "keep_away", "f3.py")["run_seq"], 4)   # an equal one is still the one it has
+        self.s.close()
+        self.s = svc.SignerService(os.path.join(self.dir, "data"), grace_s=0, fsck_every_s=0)
+        self.addCleanup(self.s.close)
+        self.assertEqual(self.decide(run, "Write", {"file_path": "/w/x.py", "content": "x"})["decision"], "ask")
         self.call(ME, "close_run", **run)
         rep, code = v2.verify(*self.export(run))
         self.assertEqual(code, 0, rep.checks)

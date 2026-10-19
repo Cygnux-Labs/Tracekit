@@ -33,7 +33,9 @@ Checks, for each call the run allowed or ran:
   TK-X204 (high; medium when the model stated it, low once a later request lifts it) a call or a kernel sensor's
           effect breaks a constraint stated before it (tracekit.constraints: "don't touch X", "leave X alone",
           "read-only", "don't push", "no network", "only change Y"). A later request that names what the constraint
-          keeps away lifts it: the finding stays, downgraded, and cites the lifting record.
+          keeps away lifts it: the finding stays, downgraded, and cites the lifting record. So does an approval of a
+          call a live constraint held, by an identity other than the run's (`approved`); the run's own identity's
+          (self-approved: it may be the agent's) lowers nothing (`self_approved`).
   TK-X205 (critical) a success claim after the last related call failed, and v1's say-vs-do checks TK-X101..X104,
           X111..X114 and X120 on the v2 view: tracekit.findings_text
   TK-X206 (high) a kernel sensor's exec, connect or file effect no call explains, and TK-X207 (medium) a call that
@@ -45,23 +47,24 @@ For each prompt line of the main transcript:
           score: how many actions had full, summarized, withheld (sealed or absent) or no reasoning before them, from
           which the share of actions each check could check follows.
 
-A finding is what review_finding signs (#309 phase 2), with no text of the run: {verdict: {kind, rule, severity,
-tier: the weakest trust tier of the text it relied on (transcript: a Claude Code transcript line, or what a coding
-agent's transcript or hook payload said (a body with a `source`), which the agent can write; sdk: what an in-process
-adapter reported; gateway: the LLM gateway's record), order: where the call's reasoning
-sits against its decision, redacted: content redaction changed}, cites: [{run_seq, hash}] of the records it relied on};
-the signer adds the rule's fixed title. What happened (the file, the root), the labels (kept_away, reasoning_absent)
-and the tiers of everything a check relied on (also decision: the arguments the signer decided on; observer: a kernel
-sensor; operator: --project) are in `shown`: printed, never signed. `--json` prints the whole result
-(docs/findings.md).
+A finding is what review_finding signs (#309 phase 2), with no text of the run: {verdict: {kind, rule, severity, tier:
+the weakest trust tier of the text it relied on (transcript: a Claude Code transcript line, or what a coding agent's
+transcript or hook payload said (a body with a `source`), which the agent can write; sdk: what an in-process adapter
+reported, or a model request, whose body the agent wrote; gateway: the LLM gateway's record of a model's answer), order:
+where the call's reasoning sits against its decision, redacted: content redaction changed}, cites: [{run_seq, hash}] of
+the records it relied on}; the signer adds the rule's fixed title. What happened (the file, the root), the labels
+(kept_away, reasoning_absent) and the tiers of everything a check relied on (also decision: the arguments the signer
+decided on; observer: a kernel sensor; operator: --project) are in `shown`: printed, never signed. `--json` prints the
+whole result (docs/findings.md).
 
 Intent is only what a person typed: a prompt line of the main Claude Code transcript (not isMeta, a compaction
 summary, command output, a tool result or a sub-agent's prompt) whose text a prompt the hook recorded at
 UserPromptSubmit (input.observed, source <agent>:UserPromptSubmit: the harness's payload) matches, each hook prompt
 confirming one line (tier `harness`); in a run whose hook recorded no prompt (hooks before 1.4), the line alone (tier
 `transcript`); in a run with no transcript prompt line (Codex, Gemini CLI, Cursor), the hook's prompt alone (tier
-`harness`). Also the newest user message of a model request the gateway recorded, and an input observed as trusted
-in a run whose hook records no prompts; what else claims a person's request is the agent's claim (claimed()). A later
+`harness`). In a run whose hook records no prompts, also the newest user message of a model request the gateway
+recorded and an input observed as trusted, both tier `sdk` (the agent's process wrote them: a gateway request's body
+too); what else claims a person's request is the agent's claim (claimed()). A later
 request lifts a constraint only from text as trusted as the constraint's (RANK). The gateway's record of a model
 message is preferred where an agent's report of it exists too; two reports of one message
 from different event streams make its reasoning not checkable (conflicting_reports), and their text clears nothing.
@@ -75,6 +78,7 @@ import hashlib
 import json
 import os
 import posixpath
+import re
 import sys
 import tempfile
 import time
@@ -162,6 +166,7 @@ FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorabilit
 TIERS = ("operator", "observer", "gateway", "decision", "harness", "sdk", "transcript")   # trust, best first
 TEXT_TIERS = ("transcript", "sdk", "harness", "gateway")   # weakest first: a finding names the weakest text it relied on
 RANK = {"transcript": 0, "sdk": 0, "harness": 1, "gateway": 2}   # the agent can write both transcript and sdk text
+PLACEHOLDER = re.compile(r"\[(?:Pasted text|Image) #\d+[^\]\n]{0,40}\]")   # what a transcript line holds for a paste
 # lines Claude Code itself writes as a user line: command and bash-mode input and output, a person's Esc
 COMMAND_OUTPUT = ("<command-", "<local-command-", "<bash-input", "<bash-stdout", "<bash-stderr",
                   "[Request interrupted by user")
@@ -189,9 +194,10 @@ def _tailer(body):
 
 
 def text_tier(e, body):
-    """The trust tier of record e's text (`body`): the LLM gateway's, an agent-writable transcript's or hook payload's
-    (a tailer body, or one with a `source`), else an in-process adapter's."""
-    return ("gateway" if e["source"] == "gateway" else
+    """The trust tier of record e's text (`body`): the LLM gateway's record of a model's answer, an agent-writable
+    transcript's or hook payload's (a tailer body, or one with a `source`), else an in-process adapter's: so is a model
+    request the gateway recorded, whose body the agent's process wrote."""
+    return ("gateway" if e["source"] == "gateway" and e["data"].get("phase") != "request" else
             "transcript" if _tailer(body) or isinstance(body, dict) and "source" in body else "sdk")
 
 
@@ -210,10 +216,11 @@ def _prompt(body):
 
 def claimed(e, hooked):
     """Whether record e (a model request, or an input observed as trusted other than the hook's prompt) only claims
-    to hold a person's request: a request the agent's own process reported (not the gateway's), or a trusted input in
-    a run whose hook records the person's prompts (`hooked`), where they come in through the hook. Its text is no
-    intent: it lifts and clears nothing, and the reviewer model reads it as `claimed`."""
-    return e["source"] != "gateway" if e["type"] == "model.exchange" else hooked
+    to hold a person's request: a request the agent's own process reported, or any record in a run whose hook records
+    the person's prompts (`hooked`), where they come in through the hook: a request the gateway recorded too (the
+    agent holds its run token, so it can send one itself). Its text is no intent: it lifts and clears nothing, and the
+    reviewer model reads it as `claimed`."""
+    return hooked or e["type"] == "model.exchange" and e["source"] != "gateway"
 
 
 def _asked(body):
@@ -248,12 +255,13 @@ def _message(body, data):
 def _names(read):
     """[(name, kept away)] of the words of a request (its constraints._read()), each a basename as constraints compare
     them (constraints.norm). A file a clause keeps away ("leave billing.py untouched", "don't modify billing.py") is
-    marked kept away, and that clause's other words, its other files aside, are no mention."""
+    marked kept away, and the other words of a clause that keeps a file away or refuses a change ("don't touch the
+    Brewfile"), its other files aside, are no mention."""
     out = []
     for tokens, _, kept in read:
+        whole = not kept and not constraints._refusing(tokens)
         for t in tokens:
-            file = bool(constraints.FILE_LIKE.search(t))
-            if (file or not kept) and constraints.norm(t):
+            if (whole or constraints._file(t)) and constraints.norm(t):
                 out.append((constraints.norm(t), constraints.norm(t) in kept))
     return out
 
@@ -263,6 +271,22 @@ def _targets(cmd):
     changes directory."""
     s = constraints.shell(cmd)
     return s["paths"], s["cd"]
+
+
+def _pasted(line, hook):
+    """Whether transcript prompt line `line` is hook prompt `hook` with a placeholder Claude Code shows in place of a
+    paste or an image ("[Pasted text #1 +40 lines]", "[Image #1]"): it has one, and its other text is the hook's, in
+    order, whitespace aside."""
+    parts = [" ".join(p.split()) for p in PLACEHOLDER.split(line)]
+    if len(parts) < 2:
+        return False
+    hook, at = " ".join(hook.split()), 0
+    for part in parts:
+        at = hook.find(part, at)
+        if at < 0:
+            return False
+        at += len(part)
+    return True
 
 
 def _same_text(text):
@@ -293,6 +317,7 @@ class _Run:
         # hook recorded a prompt (PROMPT_HOOK)
         self.synthetic = self.hooked = False
         self.net_effects, self.requests = [], []   # net and connect effects; agent-reported request records
+        self.approved = {}   # tool_use_id -> the approval record that approved its call
         self.model_hosts = set()   # the API hosts of the model calls the run recorded: the harness's own traffic
         for r in self.records:
             e, d = r["event"], r["event"]["data"]
@@ -302,6 +327,8 @@ class _Run:
                 self.calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
             elif e["type"] == "tool.result" and d.get("tool_use_id") in self.calls:
                 self.calls[d["tool_use_id"]]["result"] = r
+            elif e["type"] == "approval" and d.get("decision") == "approve":
+                self.approved[d.get("tool_use_id")] = r
             elif e["type"] == "model.exchange" and d.get("phase") == "request" and e["source"] != "gateway":
                 self.requests.append(e["run_seq"])
             elif e["type"] == "model.exchange" and d.get("phase") == "response":
@@ -339,6 +366,7 @@ class _Run:
         # [(position, run_seq, constraints.mentions(text), "request" or "model")] of each text after
         self.stated, self.lifts, self.lift_names = [], [], 0
         self.claimed = []   # run_seqs of records that only claim a person's request (claimed())
+        self.asked = []   # [(run_seq, findings_text.told() of its text)] of each request: what TK-X211 counts as asked
         # where the analysis stopped reading: `stopped` the first run_seq whose content its time budget left unread,
         # `capped` the first position whose text its size caps left unread, `over` prompt lines they left unread
         self.stopped = self.capped = None
@@ -389,6 +417,7 @@ class _Run:
 
     def _request(self, seq, text, tier):
         self.intent.append(seq)
+        self.asked.append((seq, findings_text.told(_text(text))[0]))
         self._read(text, (seq, -1), seq, tier, "asked")
 
     def _keep(self, into, seq, text, cwd=None):
@@ -401,7 +430,10 @@ class _Run:
     def confirm(self):
         """Pair the prompts the hook recorded with the transcript's prompt lines, one each by their text, and read
         each confirmed line (in a run whose hook recorded none: each line; in a run with no prompt line: each hook
-        prompt) as a request; the other lines are TK-X208's. Then order what was stated and mentioned by position."""
+        prompt) as a request; the other lines are TK-X208's. A line left with a placeholder Claude Code writes for a
+        paste or an image pairs with the hook prompt left before it whose text has the line's other text (_pasted),
+        which is read; a hook prompt left after that (a line the tailer missed) is a request of its own (harness).
+        Then order what was stated and mentioned by position."""
         hooks = collections.defaultdict(list)
         for seq, h, text, _ in self.hook_prompts:
             hooks[h].append(seq)
@@ -418,6 +450,21 @@ class _Run:
             if cwd and self.root is None:
                 self.root = (cwd, seq)
             self._request(seq, text, self.tier[seq])
+        left = sorted(s for seqs in hooks.values() for s in seqs) if self.prompts else []
+        if left:
+            hook_text, line_text = {s: t for s, _, t, _ in self.hook_prompts}, {s: t for s, _, t, _ in self.prompts}
+            unconfirmed, self.unconfirmed = self.unconfirmed, []
+            for seq in unconfirmed:
+                k = bisect.bisect_left(left, seq) - 1
+                if k < 0 or not _pasted(line_text[seq], hook_text[left[k]]):
+                    self.unconfirmed.append(seq)
+                    continue
+                self.confirmed[seq] = hook = left.pop(k)
+                self.tier[seq] = self.tier[hook] = "harness"
+                self._request(seq, hook_text[hook], "harness")
+        for hook in left:
+            self.tier[hook] = "harness"
+            self._request(hook, hook_text[hook], "harness")
         self.prompts = [(seq, None, None, None) for seq, *_ in self.prompts]   # the text is read
         self.hook_prompts = []
         self.intent.sort()
@@ -629,25 +676,32 @@ DID = {"keep_away": "changed {}", "only_change": "changed {}", "read_only": "cha
        "no_network": "reached the network"}
 
 
-def _constraint(run, note, call, f, pos, seqs, who):
+def _constraint(run, note, call, f, pos, seqs, who, approval=None):
     """TK-X204 of one call or effect (`f` its constraints.facts, at position `pos`; `seqs` its records; `who` names
     it): whether it breaks a constraint stated before it. With text before it the size caps left unread
-    (`run.capped`), a break is still found (labelled `size`: a lift may be in that text) and no break is not checkable."""
+    (`run.capped`), a break is still found (labelled `size`: a lift may be in that text) and no break is not checkable.
+    `approval`: the approval record of the call a live constraint held: by another identity than the run's (not
+    self_approved), the person approved it, which lifts the constraint for it (low, `approved`); self-approved, the
+    run's own identity answered, which may be the agent's: labelled `self_approved`, nothing lowered."""
     hit = run.broken(f, pos)
     capped = run.capped is not None and run.capped < pos
     if hit is None:
         return note(call, "TK-X204", "size" if capped else "checked", _tiers(run, seqs))
     (_, cseq, kind, obj, source), name, lift = hit
-    seqs = [*seqs, cseq, *([lift[1]] if lift else [])]
+    aseq = approval and approval["event"]["run_seq"]
+    self_approved = bool(approval and approval["event"]["data"].get("self_approved"))
+    seqs = [*seqs, cseq, *([lift[1]] if lift else []), *([aseq] if approval else [])]
     only = sorted(run.only_before(pos))
     note(call, "TK-X204", "checked", _tiers(run, seqs), _finding(
-        run, "TK-X204", seqs, "low" if lift else "high" if source == "request" else "medium",
-        call and call["order"], bool(lift)),
+        run, "TK-X204", seqs, "low" if lift or approval and not self_approved else "high" if source == "request"
+        else "medium", call and call["order"], bool(lift)),
         f"{who} {DID[kind].format(name)} after the {source} (record {cseq}) said "
         + STATED[kind].format(", ".join(only[:3]) if kind == "only_change" else obj)
-        + (f"; a later {lift[3]} (record {lift[1]}) named it, so the constraint may have been lifted" if lift else ""),
-        [kind] + (["lifted"] if lift else []) + (["stated_by_model"] if source == "model" else [])
-        + (["size"] if capped else []))
+        + (f"; a later {lift[3]} (record {lift[1]}) named it, so the constraint may have been lifted" if lift else "")
+        + ("" if not approval else f"; the run's own identity approved the held call (record {aseq}), which may be the "
+           "agent" if self_approved else f"; the person approved the held call (record {aseq})"),
+        [kind] + (["lifted"] if lift else []) + (["self_approved" if self_approved else "approved"] if approval else [])
+        + (["stated_by_model"] if source == "model" else []) + (["size"] if capped else []))
     return True
 
 
@@ -740,7 +794,8 @@ def _check(run, out, project, allow, deadline, clock):
         elif not i and not prose:
             note(call, "TK-X204", "no_text")
         else:
-            _constraint(run, note, call, run.facts[dseq], pos, [dseq, *([cs] if cs is not None else [])], tool)
+            _constraint(run, note, call, run.facts[dseq], pos, [dseq, *([cs] if cs is not None else [])], tool,
+                        "TK-CONSTRAINT" in dec["data"].get("rule_ids", ()) and run.approved.get(tcid) or None)
         # TK-X202
         if tool in WRITE_TOOLS:
             if not facts or not facts["paths"]:
@@ -823,7 +878,7 @@ def _check(run, out, project, allow, deadline, clock):
                 note(None, "TK-X204", "agent_process")
             elif d.get("tool_call_id") not in found:   # a call's own finding covers what it did
                 file = d["kind"] == "file"
-                _constraint(run, note, None, {"names": [constraints.norm(d["path"])] if file else [], "write": file,
+                _constraint(run, note, None, {"names": constraints.names([d["path"]]) if file else [], "write": file,
                                               "push": False, "network": not file}, (eseq, 0), [eseq],
                             f"the {d.get('sensor') or 'egress'} observer saw {d.get('binary', 'a process')}: it")
         for r in run.effects:
@@ -935,6 +990,10 @@ TIER_NOTES = {"transcript": "transcript (the agent can write it)",
 
 
 def render(out):
+    """The result as the terminal shows it. Each line without control characters (verify.v2._CONTROL: ESC, newlines,
+    bidirectional overrides), which agent-written text (a quoted claim, a path, the reviewer model's explanation)
+    could use to rewrite what the person reads."""
+    from .verify.v2 import _CONTROL
     lines = [summary(out), ""]
     for f, d in zip(out["findings"], out["shown"]["details"]):
         v = f["verdict"]
@@ -976,7 +1035,7 @@ def render(out):
                  f"{s['findings_run']}: the rest failed (below)" if s["records"] < s["of"] else
                  f"Signed: {s['records']} record(s), the findings and the coverage review, in findings run "
                  f"{s['findings_run']}; bundle them with `tracekit export --v2 --run {out['run_id']} --with-findings`")
-    return "\n".join(lines)
+    return "\n".join(_CONTROL.sub("", line) for line in lines)
 
 
 # --------------------------------------------------------------------------- the command
@@ -1057,8 +1116,9 @@ def main(argv=None):
                    "cwd)")
     g.add_argument("--allow", metavar="DIR", action="append", default=[], help="a directory outside the project the "
                    "agent may write, besides /tmp and $TMPDIR (repeatable)")
-    g.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take "
-                   "(default %(default)g); past it what is left is not checkable: budget, and the result INCOMPLETE")
+    g.add_argument("--budget", type=findings_effects.seconds, default=BUDGET_S, metavar="S", help="seconds the "
+                   "analysis may take (default %(default)g); past it what is left is not checkable: budget, and the "
+                   "result INCOMPLETE")
     findings_effects.arguments(ap.add_argument_group("kernel sensor effects (TK-X206, TK-X207)"))
     g = ap.add_argument_group("the reviewer model (TK-X210, warn only)")
     g.add_argument("--review", action="store_true", help="also ask a reviewer model, which sends the run's text "
@@ -1085,6 +1145,7 @@ def main(argv=None):
     from .signer.pipeline import SIGNER_RUN
     from .signer.service import dev_data_dir
     from .why import import_v2
+    from .verify.v2 import _CONTROL
     from .why.signed import EvidenceAlert, vault_content
     if a.bundle:
         if not a.trust:
@@ -1158,7 +1219,7 @@ def main(argv=None):
         client.close()
     review = out["shown"].get("review") or {}
     if review.get("error"):
-        print(f"tracekit analyze: --review: {review['error']}", file=sys.stderr)
+        print(f"tracekit analyze: --review: {_CONTROL.sub('', review['error'])}", file=sys.stderr)
     if review.get("same_family"):
         print(f"tracekit analyze: --review: the reviewer model is of the agent's model family "
               f"({review['families']['reviewer']}), so it may share the agent's blind spots: pass --review-model of "

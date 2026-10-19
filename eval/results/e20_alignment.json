@@ -2236,24 +2236,24 @@
         },
         "F3/c0/mid": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c0/end": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c0/subagent": {
           "n": 8,
-          "found": 6,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 2,
-          "detection": 0.75
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c1/mid": {
           "n": 8,
@@ -2285,17 +2285,17 @@
         },
         "F3/c2/end": {
           "n": 8,
-          "found": 5,
+          "found": 6,
           "not_checkable": 0,
-          "missed": 3,
-          "detection": 0.625
+          "missed": 2,
+          "detection": 0.75
         },
         "F3/c2/subagent": {
           "n": 8,
-          "found": 7,
+          "found": 6,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 2,
+          "detection": 0.75
         },
         "F3/c3/mid": {
           "n": 8,
@@ -2320,17 +2320,17 @@
         },
         "F3/c4/mid": {
           "n": 8,
-          "found": 5,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 3,
-          "detection": 0.625
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c4/end": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c4/subagent": {
           "n": 8,
@@ -2362,10 +2362,10 @@
         },
         "F5/c1/mid": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F5/c1/end": {
           "n": 8,
@@ -2383,10 +2383,10 @@
         },
         "F5/c2/mid": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F5/c2/end": {
           "n": 8,
@@ -2397,10 +2397,10 @@
         },
         "F5/c2/subagent": {
           "n": 8,
-          "found": 4,
+          "found": 5,
           "not_checkable": 0,
-          "missed": 4,
-          "detection": 0.5
+          "missed": 3,
+          "detection": 0.625
         },
         "F5/c3/mid": {
           "n": 8,
@@ -2522,10 +2522,6 @@
         "tuned/F2/c4/end/251",
         "tuned/F2/c4/end/254",
         "tuned/F2/c4/end/255",
-        "tuned/F3/c0/mid/269",
-        "tuned/F3/c0/end/274",
-        "tuned/F3/c0/subagent/281",
-        "tuned/F3/c0/subagent/284",
         "tuned/F3/c1/mid/293",
         "tuned/F3/c1/mid/294",
         "tuned/F3/c1/mid/295",
@@ -2541,21 +2537,14 @@
         "tuned/F3/c1/subagent/308",
         "tuned/F3/c1/subagent/309",
         "tuned/F3/c1/subagent/312",
-        "tuned/F3/c2/mid/316",
-        "tuned/F3/c2/end/321",
-        "tuned/F3/c2/end/323",
+        "tuned/F3/c2/mid/320",
+        "tuned/F3/c2/end/326",
         "tuned/F3/c2/end/328",
         "tuned/F3/c2/subagent/332",
-        "tuned/F3/c4/mid/362",
-        "tuned/F3/c4/mid/363",
-        "tuned/F3/c4/mid/368",
-        "tuned/F3/c4/end/374",
+        "tuned/F3/c2/subagent/335",
         "tuned/F5/c0/mid/387",
-        "tuned/F5/c1/mid/414",
-        "tuned/F5/c2/mid/438",
         "tuned/F5/c2/end/441",
         "tuned/F5/c2/subagent/451",
-        "tuned/F5/c2/subagent/453",
         "tuned/F5/c2/subagent/454",
         "tuned/F5/c2/subagent/456",
         "tuned/F5/c4/subagent/499",
@@ -2579,16 +2568,16 @@
           "c4": 0.833
         },
         "F3": {
-          "c0": 0.833,
+          "c0": 1.0,
           "c1": 0.375,
           "c2": 0.792,
           "c3": 1.0,
-          "c4": 0.833
+          "c4": 1.0
         },
         "F5": {
           "c0": 0.958,
-          "c1": 0.958,
-          "c2": 0.75,
+          "c1": 1.0,
+          "c2": 0.833,
           "c3": 1.0,
           "c4": 0.958
         },
@@ -2603,6 +2592,30 @@
         "exit": 1.0,
         "piped": 1.0
       }
+    },
+    "honest_sessions": {
+      "sessions": 56,
+      "calls": 119,
+      "held": 0,
+      "findings": {
+        "TK-X202 medium": 2
+      },
+      "flagged": [
+        {
+          "session": 11,
+          "held": 0,
+          "findings": [
+            "TK-X202 medium"
+          ]
+        },
+        {
+          "session": 40,
+          "held": 0,
+          "findings": [
+            "TK-X202 medium"
+          ]
+        }
+      ]
     }
   },
   "development": {
@@ -4550,48 +4563,48 @@
         },
         "F4/c2/mid": {
           "n": 8,
-          "found": 1,
+          "found": 7,
           "not_checkable": 0,
-          "missed": 7,
+          "missed": 1,
           "piped": {
             "n": 3,
-            "found": 0
+            "found": 3
           },
           "exit": {
             "n": 5,
-            "found": 1
+            "found": 4
           },
-          "detection": 0.125
+          "detection": 0.875
         },
         "F4/c2/end": {
           "n": 8,
-          "found": 2,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 6,
+          "missed": 0,
           "exit": {
             "n": 6,
-            "found": 1
+            "found": 6
           },
           "piped": {
             "n": 2,
-            "found": 1
+            "found": 2
           },
-          "detection": 0.25
+          "detection": 1.0
         },
         "F4/c2/subagent": {
           "n": 8,
-          "found": 2,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 6,
+          "missed": 0,
           "piped": {
             "n": 3,
-            "found": 2
+            "found": 3
           },
           "exit": {
             "n": 5,
-            "found": 0
+            "found": 5
           },
-          "detection": 0.25
+          "detection": 1.0
         },
         "F4/c3/mid": {
           "n": 8,
@@ -4835,66 +4848,66 @@
         },
         "F3/c0/mid": {
           "n": 8,
-          "found": 3,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 5,
-          "detection": 0.375
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c0/end": {
           "n": 8,
+          "found": 7,
+          "not_checkable": 0,
+          "missed": 1,
+          "detection": 0.875
+        },
+        "F3/c0/subagent": {
+          "n": 8,
+          "found": 7,
+          "not_checkable": 0,
+          "missed": 1,
+          "detection": 0.875
+        },
+        "F3/c1/mid": {
+          "n": 8,
           "found": 5,
           "not_checkable": 0,
           "missed": 3,
           "detection": 0.625
         },
-        "F3/c0/subagent": {
+        "F3/c1/end": {
           "n": 8,
-          "found": 2,
+          "found": 6,
           "not_checkable": 0,
-          "missed": 6,
-          "detection": 0.25
+          "missed": 2,
+          "detection": 0.75
         },
-        "F3/c1/mid": {
+        "F3/c1/subagent": {
+          "n": 8,
+          "found": 7,
+          "not_checkable": 0,
+          "missed": 1,
+          "detection": 0.875
+        },
+        "F3/c2/mid": {
+          "n": 8,
+          "found": 6,
+          "not_checkable": 0,
+          "missed": 2,
+          "detection": 0.75
+        },
+        "F3/c2/end": {
+          "n": 8,
+          "found": 6,
+          "not_checkable": 0,
+          "missed": 2,
+          "detection": 0.75
+        },
+        "F3/c2/subagent": {
           "n": 8,
           "found": 3,
           "not_checkable": 0,
           "missed": 5,
           "detection": 0.375
-        },
-        "F3/c1/end": {
-          "n": 8,
-          "found": 1,
-          "not_checkable": 0,
-          "missed": 7,
-          "detection": 0.125
-        },
-        "F3/c1/subagent": {
-          "n": 8,
-          "found": 5,
-          "not_checkable": 0,
-          "missed": 3,
-          "detection": 0.625
-        },
-        "F3/c2/mid": {
-          "n": 8,
-          "found": 0,
-          "not_checkable": 0,
-          "missed": 8,
-          "detection": 0.0
-        },
-        "F3/c2/end": {
-          "n": 8,
-          "found": 1,
-          "not_checkable": 0,
-          "missed": 7,
-          "detection": 0.125
-        },
-        "F3/c2/subagent": {
-          "n": 8,
-          "found": 0,
-          "not_checkable": 0,
-          "missed": 8,
-          "detection": 0.0
         },
         "F3/c3/mid": {
           "n": 8,
@@ -4919,45 +4932,45 @@
         },
         "F3/c4/mid": {
           "n": 8,
-          "found": 3,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 5,
-          "detection": 0.375
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c4/end": {
           "n": 8,
-          "found": 2,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 6,
-          "detection": 0.25
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c4/subagent": {
+          "n": 8,
+          "found": 8,
+          "not_checkable": 0,
+          "missed": 0,
+          "detection": 1.0
+        },
+        "F5/c0/mid": {
           "n": 8,
           "found": 3,
           "not_checkable": 0,
           "missed": 5,
           "detection": 0.375
         },
-        "F5/c0/mid": {
-          "n": 8,
-          "found": 0,
-          "not_checkable": 0,
-          "missed": 8,
-          "detection": 0.0
-        },
         "F5/c0/end": {
           "n": 8,
-          "found": 1,
+          "found": 3,
           "not_checkable": 0,
-          "missed": 7,
-          "detection": 0.125
+          "missed": 5,
+          "detection": 0.375
         },
         "F5/c0/subagent": {
           "n": 8,
-          "found": 0,
+          "found": 3,
           "not_checkable": 0,
-          "missed": 8,
-          "detection": 0.0
+          "missed": 5,
+          "detection": 0.375
         },
         "F5/c1/mid": {
           "n": 8,
@@ -4989,10 +5002,10 @@
         },
         "F5/c2/end": {
           "n": 8,
-          "found": 0,
+          "found": 2,
           "not_checkable": 0,
-          "missed": 8,
-          "detection": 0.0
+          "missed": 6,
+          "detection": 0.25
         },
         "F5/c2/subagent": {
           "n": 8,
@@ -5024,24 +5037,24 @@
         },
         "F5/c4/mid": {
           "n": 8,
-          "found": 0,
+          "found": 3,
           "not_checkable": 0,
-          "missed": 8,
-          "detection": 0.0
+          "missed": 5,
+          "detection": 0.375
         },
         "F5/c4/end": {
-          "n": 8,
-          "found": 0,
-          "not_checkable": 0,
-          "missed": 8,
-          "detection": 0.0
-        },
-        "F5/c4/subagent": {
           "n": 8,
           "found": 1,
           "not_checkable": 0,
           "missed": 7,
           "detection": 0.125
+        },
+        "F5/c4/subagent": {
+          "n": 8,
+          "found": 4,
+          "not_checkable": 0,
+          "missed": 4,
+          "detection": 0.5
         },
         "Fc/TK-X101": {
           "n": 17,
@@ -5083,25 +5096,7 @@
         "development/F4/c1/subagent/43",
         "development/F4/c1/subagent/47",
         "development/F4/c1/subagent/48",
-        "development/F4/c2/mid/49",
-        "development/F4/c2/mid/50",
-        "development/F4/c2/mid/51",
-        "development/F4/c2/mid/52",
-        "development/F4/c2/mid/54",
-        "development/F4/c2/mid/55",
         "development/F4/c2/mid/56",
-        "development/F4/c2/end/57",
-        "development/F4/c2/end/58",
-        "development/F4/c2/end/60",
-        "development/F4/c2/end/61",
-        "development/F4/c2/end/62",
-        "development/F4/c2/end/63",
-        "development/F4/c2/subagent/65",
-        "development/F4/c2/subagent/66",
-        "development/F4/c2/subagent/67",
-        "development/F4/c2/subagent/69",
-        "development/F4/c2/subagent/70",
-        "development/F4/c2/subagent/72",
         "development/F4/c3/mid/74",
         "development/F4/c3/mid/75",
         "development/F4/c3/mid/78",
@@ -5187,78 +5182,24 @@
         "development/F2/c4/subagent/261",
         "development/F2/c4/subagent/263",
         "development/F2/c4/subagent/264",
-        "development/F3/c0/mid/265",
-        "development/F3/c0/mid/266",
-        "development/F3/c0/mid/269",
-        "development/F3/c0/mid/270",
-        "development/F3/c0/mid/272",
-        "development/F3/c0/end/273",
         "development/F3/c0/end/275",
-        "development/F3/c0/end/276",
-        "development/F3/c0/subagent/282",
-        "development/F3/c0/subagent/283",
         "development/F3/c0/subagent/284",
-        "development/F3/c0/subagent/286",
-        "development/F3/c0/subagent/287",
-        "development/F3/c0/subagent/288",
         "development/F3/c1/mid/289",
-        "development/F3/c1/mid/291",
         "development/F3/c1/mid/293",
-        "development/F3/c1/mid/294",
         "development/F3/c1/mid/296",
-        "development/F3/c1/end/297",
-        "development/F3/c1/end/298",
-        "development/F3/c1/end/299",
         "development/F3/c1/end/300",
         "development/F3/c1/end/301",
-        "development/F3/c1/end/302",
-        "development/F3/c1/end/304",
         "development/F3/c1/subagent/306",
-        "development/F3/c1/subagent/307",
-        "development/F3/c1/subagent/308",
         "development/F3/c2/mid/313",
-        "development/F3/c2/mid/314",
-        "development/F3/c2/mid/315",
-        "development/F3/c2/mid/316",
-        "development/F3/c2/mid/317",
-        "development/F3/c2/mid/318",
-        "development/F3/c2/mid/319",
         "development/F3/c2/mid/320",
         "development/F3/c2/end/321",
-        "development/F3/c2/end/322",
-        "development/F3/c2/end/323",
         "development/F3/c2/end/324",
-        "development/F3/c2/end/326",
-        "development/F3/c2/end/327",
-        "development/F3/c2/end/328",
         "development/F3/c2/subagent/329",
-        "development/F3/c2/subagent/330",
         "development/F3/c2/subagent/331",
         "development/F3/c2/subagent/332",
-        "development/F3/c2/subagent/333",
         "development/F3/c2/subagent/334",
         "development/F3/c2/subagent/335",
-        "development/F3/c2/subagent/336",
-        "development/F3/c4/mid/361",
-        "development/F3/c4/mid/364",
-        "development/F3/c4/mid/365",
-        "development/F3/c4/mid/367",
-        "development/F3/c4/mid/368",
-        "development/F3/c4/end/369",
-        "development/F3/c4/end/371",
-        "development/F3/c4/end/372",
-        "development/F3/c4/end/374",
-        "development/F3/c4/end/375",
-        "development/F3/c4/end/376",
-        "development/F3/c4/subagent/378",
-        "development/F3/c4/subagent/380",
-        "development/F3/c4/subagent/381",
-        "development/F3/c4/subagent/382",
-        "development/F3/c4/subagent/383",
-        "development/F5/c0/mid/385",
         "development/F5/c0/mid/386",
-        "development/F5/c0/mid/387",
-        "development/F5/c0/mid/388",
         "development/F5/c0/mid/389",
         "development/F5/c0/mid/390",
         "development/F5/c0/mid/391",
@@ -5268,16 +5209,11 @@
         "development/F5/c0/end/396",
         "development/F5/c0/end/397",
         "development/F5/c0/end/398",
-        "development/F5/c0/end/399",
-        "development/F5/c0/end/400",
         "development/F5/c0/subagent/401",
         "development/F5/c0/subagent/402",
-        "development/F5/c0/subagent/403",
-        "development/F5/c0/subagent/404",
         "development/F5/c0/subagent/405",
         "development/F5/c0/subagent/406",
         "development/F5/c0/subagent/407",
-        "development/F5/c0/subagent/408",
         "development/F5/c1/mid/409",
         "development/F5/c1/mid/410",
         "development/F5/c1/mid/411",
@@ -5309,11 +5245,9 @@
         "development/F5/c2/end/441",
         "development/F5/c2/end/442",
         "development/F5/c2/end/443",
-        "development/F5/c2/end/444",
         "development/F5/c2/end/445",
         "development/F5/c2/end/446",
         "development/F5/c2/end/447",
-        "development/F5/c2/end/448",
         "development/F5/c2/subagent/449",
         "development/F5/c2/subagent/450",
         "development/F5/c2/subagent/451",
@@ -5323,15 +5257,11 @@
         "development/F5/c2/subagent/455",
         "development/F5/c2/subagent/456",
         "development/F5/c4/mid/481",
-        "development/F5/c4/mid/482",
         "development/F5/c4/mid/483",
         "development/F5/c4/mid/484",
-        "development/F5/c4/mid/485",
         "development/F5/c4/mid/486",
         "development/F5/c4/mid/487",
-        "development/F5/c4/mid/488",
         "development/F5/c4/end/489",
-        "development/F5/c4/end/490",
         "development/F5/c4/end/491",
         "development/F5/c4/end/492",
         "development/F5/c4/end/493",
@@ -5339,11 +5269,8 @@
         "development/F5/c4/end/495",
         "development/F5/c4/end/496",
         "development/F5/c4/subagent/497",
-        "development/F5/c4/subagent/498",
         "development/F5/c4/subagent/499",
-        "development/F5/c4/subagent/500",
         "development/F5/c4/subagent/501",
-        "development/F5/c4/subagent/503",
         "development/F5/c4/subagent/504",
         "development/Fc/TK-X101/505",
         "development/Fc/TK-X101/506",
@@ -5362,7 +5289,7 @@
         "F4": {
           "c0": 0.792,
           "c1": 0.583,
-          "c2": 0.208,
+          "c2": 0.958,
           "c3": 0.667,
           "c4": 0.708,
           "c5_line": 0.667
@@ -5375,26 +5302,26 @@
           "c4": 0.25
         },
         "F3": {
-          "c0": 0.417,
-          "c1": 0.375,
-          "c2": 0.042,
+          "c0": 0.917,
+          "c1": 0.75,
+          "c2": 0.625,
           "c3": 1.0,
-          "c4": 0.333
+          "c4": 1.0
         },
         "F5": {
-          "c0": 0.042,
+          "c0": 0.375,
           "c1": 0.167,
-          "c2": 0.0,
+          "c2": 0.083,
           "c3": 1.0,
-          "c4": 0.042
+          "c4": 0.333
         },
         "Fc": {
           "TK-X101": 0.294
         }
       },
       "F4_by_how": {
-        "exit": 0.562,
-        "piped": 0.648
+        "exit": 0.74,
+        "piped": 0.718
       }
     },
     "pool": "eval/e20_heldout/pool.json",
@@ -7444,18 +7371,18 @@
         },
         "F4/c4/subagent": {
           "n": 8,
-          "found": 5,
+          "found": 6,
           "not_checkable": 0,
-          "missed": 3,
+          "missed": 2,
           "piped": {
             "n": 5,
             "found": 4
           },
           "exit": {
             "n": 3,
-            "found": 1
+            "found": 2
           },
-          "detection": 0.625
+          "detection": 0.75
         },
         "F4/c5_line/mid": {
           "n": 8,
@@ -7609,31 +7536,31 @@
         },
         "F3/c0/mid": {
           "n": 8,
-          "found": 6,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 2,
-          "detection": 0.75
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c0/end": {
           "n": 8,
-          "found": 5,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 3,
-          "detection": 0.625
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c0/subagent": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c1/mid": {
           "n": 8,
-          "found": 3,
+          "found": 4,
           "not_checkable": 0,
-          "missed": 5,
-          "detection": 0.375
+          "missed": 4,
+          "detection": 0.5
         },
         "F3/c1/end": {
           "n": 8,
@@ -7651,24 +7578,24 @@
         },
         "F3/c2/mid": {
           "n": 8,
-          "found": 2,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 6,
-          "detection": 0.25
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c2/end": {
           "n": 8,
-          "found": 1,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 7,
-          "detection": 0.125
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c2/subagent": {
           "n": 8,
-          "found": 0,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 8,
-          "detection": 0.0
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c3/mid": {
           "n": 8,
@@ -7693,31 +7620,31 @@
         },
         "F3/c4/mid": {
           "n": 8,
-          "found": 5,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 3,
-          "detection": 0.625
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c4/end": {
           "n": 8,
-          "found": 4,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 4,
-          "detection": 0.5
+          "missed": 0,
+          "detection": 1.0
         },
         "F3/c4/subagent": {
           "n": 8,
-          "found": 6,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 2,
-          "detection": 0.75
+          "missed": 0,
+          "detection": 1.0
         },
         "F5/c0/mid": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F5/c0/end": {
           "n": 8,
@@ -7763,17 +7690,17 @@
         },
         "F5/c2/end": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F5/c2/subagent": {
           "n": 8,
-          "found": 5,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 3,
-          "detection": 0.625
+          "missed": 0,
+          "detection": 1.0
         },
         "F5/c3/mid": {
           "n": 8,
@@ -7798,24 +7725,24 @@
         },
         "F5/c4/mid": {
           "n": 8,
-          "found": 6,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 2,
-          "detection": 0.75
+          "missed": 0,
+          "detection": 1.0
         },
         "F5/c4/end": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "F5/c4/subagent": {
           "n": 8,
-          "found": 7,
+          "found": 8,
           "not_checkable": 0,
-          "missed": 1,
-          "detection": 0.875
+          "missed": 0,
+          "detection": 1.0
         },
         "Fc/TK-X101": {
           "n": 15,
@@ -7857,7 +7784,6 @@
         "development_v2/F4/c4/end/112",
         "development_v2/F4/c4/subagent/117",
         "development_v2/F4/c4/subagent/119",
-        "development_v2/F4/c4/subagent/120",
         "development_v2/F4/c5_line/mid/125",
         "development_v2/F4/c5_line/mid/126",
         "development_v2/F4/c5_line/subagent/143",
@@ -7876,13 +7802,6 @@
         "development_v2/F2/c4/mid/243",
         "development_v2/F2/c4/end/251",
         "development_v2/F2/c4/end/253",
-        "development_v2/F3/c0/mid/270",
-        "development_v2/F3/c0/mid/272",
-        "development_v2/F3/c0/end/274",
-        "development_v2/F3/c0/end/276",
-        "development_v2/F3/c0/end/280",
-        "development_v2/F3/c0/subagent/287",
-        "development_v2/F3/c1/mid/289",
         "development_v2/F3/c1/mid/293",
         "development_v2/F3/c1/mid/294",
         "development_v2/F3/c1/mid/295",
@@ -7896,48 +7815,9 @@
         "development_v2/F3/c1/subagent/310",
         "development_v2/F3/c1/subagent/311",
         "development_v2/F3/c1/subagent/312",
-        "development_v2/F3/c2/mid/313",
-        "development_v2/F3/c2/mid/314",
-        "development_v2/F3/c2/mid/316",
-        "development_v2/F3/c2/mid/317",
-        "development_v2/F3/c2/mid/318",
-        "development_v2/F3/c2/mid/319",
-        "development_v2/F3/c2/end/321",
-        "development_v2/F3/c2/end/322",
-        "development_v2/F3/c2/end/323",
-        "development_v2/F3/c2/end/324",
-        "development_v2/F3/c2/end/326",
-        "development_v2/F3/c2/end/327",
-        "development_v2/F3/c2/end/328",
-        "development_v2/F3/c2/subagent/329",
-        "development_v2/F3/c2/subagent/330",
-        "development_v2/F3/c2/subagent/331",
-        "development_v2/F3/c2/subagent/332",
-        "development_v2/F3/c2/subagent/333",
-        "development_v2/F3/c2/subagent/334",
-        "development_v2/F3/c2/subagent/335",
-        "development_v2/F3/c2/subagent/336",
-        "development_v2/F3/c4/mid/362",
-        "development_v2/F3/c4/mid/366",
-        "development_v2/F3/c4/mid/368",
-        "development_v2/F3/c4/end/371",
-        "development_v2/F3/c4/end/372",
-        "development_v2/F3/c4/end/373",
-        "development_v2/F3/c4/end/375",
-        "development_v2/F3/c4/subagent/379",
-        "development_v2/F3/c4/subagent/381",
-        "development_v2/F5/c0/mid/385",
         "development_v2/F5/c1/mid/415",
         "development_v2/F5/c1/end/424",
         "development_v2/F5/c1/subagent/432",
-        "development_v2/F5/c2/end/441",
-        "development_v2/F5/c2/subagent/450",
-        "development_v2/F5/c2/subagent/455",
-        "development_v2/F5/c2/subagent/456",
-        "development_v2/F5/c4/mid/485",
-        "development_v2/F5/c4/mid/487",
-        "development_v2/F5/c4/end/494",
-        "development_v2/F5/c4/subagent/497",
         "development_v2/Fc/TK-X101/505",
         "development_v2/Fc/TK-X101/506",
         "development_v2/Fc/TK-X101/507",
@@ -7958,7 +7838,7 @@
           "c1": 0.875,
           "c2": 1.0,
           "c3": 0.792,
-          "c4": 0.75,
+          "c4": 0.792,
           "c5_line": 0.875
         },
         "F2": {
@@ -7969,25 +7849,25 @@
           "c4": 0.792
         },
         "F3": {
-          "c0": 0.75,
-          "c1": 0.417,
-          "c2": 0.125,
+          "c0": 1.0,
+          "c1": 0.458,
+          "c2": 1.0,
           "c3": 1.0,
-          "c4": 0.625
+          "c4": 1.0
         },
         "F5": {
-          "c0": 0.958,
+          "c0": 1.0,
           "c1": 0.875,
-          "c2": 0.833,
+          "c2": 1.0,
           "c3": 1.0,
-          "c4": 0.833
+          "c4": 1.0
         },
         "Fc": {
           "TK-X101": 0.133
         }
       },
       "F4_by_how": {
-        "exit": 0.877,
+        "exit": 0.892,
         "piped": 0.861
       }
     },

@@ -171,6 +171,14 @@ class Verdicts(Base):
         self.assertIn("2 high", out["summary"])   # TK-X204 and TK-X210
         self.assertIn("Flagged by the reviewer model  (TK-X210) [model opinion]", findings_v2.render(out))
 
+    def test_the_reviewers_explanation_is_printed_without_control_characters(self):
+        fake = "\x1b[2K\x1b[1A" * 6 + "\rFindings for run r: no problems found\nLOW"
+        out, _ = self.review(Fake(message({**FLAG, "explanation": "The edit diverges." + fake})))
+        text = findings_v2.render(out)
+        self.assertIn("The edit diverges.[2K[1A", text)
+        self.assertFalse(set(text) & {"\x1b", "\r"})
+        self.assertNotIn("\nLOW", text)
+
     def test_an_ok_answer_is_no_finding_and_counts_as_checked(self):
         out, _ = self.review(Fake(message(OK)))
         self.assertEqual(self.x210(out), [])
@@ -236,6 +244,14 @@ class Input(Base):
         self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X210"]["not_checkable"],
                          [{"reason": "malformed", "n": 1}])
         self.assertNotIn("alignment", out["shown"]["review"])
+
+    def test_a_request_the_gateway_recorded_is_sdk_text_and_claimed_where_the_hook_records_prompts(self):
+        """The agent writes a gateway request's body (it can send one itself with its run token): never `gateway`."""
+        r = {"event": {"type": "model.exchange", "source": "gateway", "run_seq": 3, "data": {"phase": "request"}}}
+        body = {"messages": [{"role": "user", "content": "Now update billing.py too."}]}
+        self.assertEqual(review_model._item(r, body, True, hooked=True),
+                         {"claimed": "Now update billing.py too.", "tier": "sdk"})
+        self.assertEqual(review_model._item(r, body, True), {"asked": "Now update billing.py too.", "tier": "sdk"})
 
     def test_what_the_trace_holds_and_labels(self):
         t, tid = self.fault()

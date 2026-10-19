@@ -103,6 +103,15 @@ class StorageContract:
         self.assertEqual(s.get_run("acme", "b"), {"run_seq": 2, "head": records[7]["hash"], "count": 3})
         self.assertEqual(s.get_run("beta", "other-run")["count"], 1)
 
+    def test_run_records_reads_the_run_seqs_asked_in_order(self):
+        s, c = self.store(), Chain()
+        records = c.batch(9, runs=("a", "b", "c"))
+        s.append_batch(records)
+        self.assertEqual(s.run_records("acme", "b", [2, 0, 9, -1, 0]), [records[1], records[7]])
+        self.assertEqual((s.run_records("acme", "x", [0]), s.run_records("acme", "a", [])), ([], []))
+        s = self.reopen(s)
+        self.assertEqual(s.run_records("acme", "c", {1}), [records[5]])
+
     def test_tail_state_after_reopen(self):
         s, c = self.store(), Chain()
         records = c.batch(10, runs=("a", "b"))
