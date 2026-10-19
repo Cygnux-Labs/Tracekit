@@ -1324,6 +1324,16 @@ class Pages(unittest.TestCase):
         self.assertTrue(r.getheader("Set-Cookie").startswith("tracekit_observe="))
 
 
+    def test_runs_tape_rows_and_alerts_open_by_keyboard(self):
+        """Runs, tape rows and alerts took no keyboard focus: a keyboard user could open none of them."""
+        page = observe.read_text(observe.UI)
+        for row in ('data-run="" tabindex="0"', 'data-run="${esc(r.id)}" tabindex="0"', 'data-i="${esc(row.i)}" tabindex="0"',
+                    'data-al="${esc(al.i)}" tabindex="0"'):
+            self.assertIn(row, page)
+        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-al][tabindex]"))'
+                      ' e.target.click();', page)
+
+
 VERIFIED = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")
 FAILED = (mock.Mock(integrity="FAILED", assurance="none"), 1, "[FAIL] signatures — seq 1: bad signature\n\nFAILED.")
 

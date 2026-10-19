@@ -1964,11 +1964,11 @@
     function renderRuns() {
       const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
       const n = v => list.filter(r => r.verdict === v).length;
-      let html = `<div class="run${scope ? "" : " sel"}" data-run=""><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
+      let html = `<div class="run${scope ? "" : " sel"}" data-run="" tabindex="0"><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
       for (const r of list) {
         const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
-        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}"><span class="nm">${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
+        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}" tabindex="0"><span class="nm">${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
           <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(fmtD(t0))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
           ${r.decisions ? `<span class="meta"><span>${esc(calls)} calls</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${gaps ? "s-err" : ""}">${esc(gaps)} gaps</span></span>` : ""}</div>`;
       }
@@ -2018,7 +2018,7 @@
       }
       // a row that is no signed record says where it comes from; a gap's code is in its tooltip
       const src = srcOf(row.rec), tag = src === "ANALYSIS" || (src === "WHY" && V2) ? src : "", code = row.rec?.v2?.kind;
-      return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
+      return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}" tabindex="0"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
     }
     function renderTape() {
       if (V2) put("fchips", [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" "));
@@ -2057,7 +2057,7 @@
       }
       const list = [...groups.values()].sort((x, y) => y.al.i - x.al.i).slice(0, 200);
       put("alerts", why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
-        + list.map(({ al, n }) => `<div class="al" data-al="${esc(al.i)}"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
+        + list.map(({ al, n }) => `<div class="al" data-al="${esc(al.i)}" tabindex="0"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
       $("alsum").textContent = `${S.alerts.length + why.length} total · ${highCount()} high`;
     }
     function renderMix() {
@@ -2370,7 +2370,10 @@
     $("cmd").addEventListener("keydown", e => { if (e.key === "Enter") { runCommand(e.target.value); e.target.value = ""; } if (e.key === "Escape") e.target.blur(); });
     document.addEventListener("keydown", e => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
-      if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
+      // a run, tape row or alert reached with Tab opens with Enter, as a click does
+      // lean: a panel redrawn as records arrive loses the focus inside it; keep the focused row's key across redraws if that bites
+      if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-al][tabindex]")) e.target.click();
+      else if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
       else if (V2 && !BOOT && scope && rpKeys(e)) return;
       else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; schedule(); }
       else if (e.key === "f" || e.key === "F") { F.flag = !F.flag; schedule(); }

@@ -1013,6 +1013,15 @@ class AgreementScripts(unittest.TestCase):
         self.assertEqual(vpc.agree(None, os.path.join(golden, "zip-no-manifest.tkb"), os.path.join(golden, "trust.json"),
                                    [])[1], [])
 
+    def test_the_page_names_its_file_inputs_and_says_errors_aloud(self):
+        """Its two file inputs had no label, and an error went to a line no screen reader announces."""
+        _build()
+        with open(PAGE, encoding="utf-8") as f:
+            page = f.read()
+        for name in ("bundle", "trust"):
+            self.assertIn(f'<label for="{name}">', page)
+        self.assertIn('<p id="busy" hidden role="status">', page)
+
     def test_e22_forges_each_bundles_other_signer_trust_from_its_own_origin(self):
         """E22's "another signer's trust config" forgery wrote one shared file, so every base was checked against a key
         under the last base's origin, not its own."""

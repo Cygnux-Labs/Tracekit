@@ -13,12 +13,13 @@ pre { white-space: pre-wrap; }
 <body>
 <main id="drop">
 <h1>tracekit verify</h1>
-<p>bundle (.tkb): <input type="file" id="bundle" accept=".tkb,.zip,.json" multiple> <b id="bundle-name">none chosen</b><br>
-trust.json (optional): <input type="file" id="trust" accept=".json"> <b id="trust-name">none</b>
+<p><label for="bundle">bundle (.tkb):</label> <input type="file" id="bundle" accept=".tkb,.zip,.json" multiple>
+<b id="bundle-name">none chosen</b><br>
+<label for="trust">trust.json (optional):</label> <input type="file" id="trust" accept=".json"> <b id="trust-name">none</b>
 <button type="button" id="clear-trust" hidden>remove</button><br>
 samples: <button type="button" id="sample-clean">clean</button> <button type="button" id="sample-tampered">tampered</button></p>
 <hr>
-<p id="busy" hidden>Verifying...</p>
+<p id="busy" hidden role="status">Verifying...</p>
 <section id="result" hidden aria-live="polite">
 <div id="banner"><h2 id="verdict-word"></h2><p id="verdict-means"></p><p id="verdict-not"></p></div>
 <div id="next" hidden><h3>what to do next</h3><ol id="steps"></ol></div>
