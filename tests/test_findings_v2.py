@@ -733,15 +733,23 @@ class Bounded(unittest.TestCase):
                                    if r["event"]["run_seq"] in content)
 
     def test_a_huge_run_is_bounded_in_time_and_memory(self):
+        # timed untraced: tracemalloc slows every allocation about sixfold (5,000 calls: 4 s, 23 s traced), so the
+        # timed traced run measured the tracing. Memory grows linearly (about 9 KiB a call), so the traced run is a
+        # fifth of the size against a fifth of the old ceiling (200 MiB for 5,000 calls)
         recs, content = self.synthetic(5000, "Editing the next file. " * 40)
-        tracemalloc.start()
         t0 = time.perf_counter()
         out = findings_v2.analyze(recs, content)
-        took, peak = time.perf_counter() - t0, tracemalloc.get_traced_memory()[1]
-        tracemalloc.stop()
+        took = time.perf_counter() - t0
         self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X202"]["found"], 5000)
         self.assertLess(took, 30)
-        self.assertLess(peak, 200 << 20)
+        recs, content = self.synthetic(1000, "Editing the next file. " * 40)
+        tracemalloc.start()
+        try:
+            findings_v2.analyze(recs, content)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 40 << 20)
 
     def test_past_the_budget_what_is_left_is_not_checkable_and_what_was_found_stays(self):
         recs, content = self.synthetic(50, "x")
