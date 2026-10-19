@@ -290,6 +290,11 @@ tracekit doctor                             # check this setup
 tracekit init --dev --v2                    # wire Claude Code's hooks; add --agent codex, cursor or gemini
 ```
 
+Nothing to install for whoever checks a run: the
+[browser verifier](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md#verify-in-your-browser), one
+page, takes the `.tkb` and its trust file, sends nothing anywhere, and says VERIFIED, FAILED or UNVERIFIABLE with what
+it means and what to do next.
+
 ## The evidence format
 
 - **Specified.** [Evidence format v2](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/format-v2.md) aims to be

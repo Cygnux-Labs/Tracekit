@@ -5,6 +5,15 @@
  * MAX_DEPTH. No node: imports: browsers load this too.
  */
 
+/** A string as Python's repr() writes it, as the reference verifier's messages quote names and keys. */
+export function repr(s: string): string {
+  const q = s.includes("'") && !s.includes('"') ? '"' : "'";
+  const named: Record<string, string> = { "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t", [q]: "\\" + q };
+  // lean: control characters only; Python also escapes other code points it can't print (U+0080..U+009F, U+2028...)
+  return q + s.replace(/[\\'"\x00-\x1f\x7f]/g, (c) => named[c] ?? (c === "'" || c === '"' ? c
+    : "\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"))) + q;
+}
+
 /** `code` is one of: invalid_utf8, syntax, duplicate_key, non_finite, int_range, lone_surrogate, depth. */
 export class StrictJSONError extends Error {
   constructor(readonly code: string, message: string) {
@@ -56,7 +65,7 @@ export function strictParse(text: string, floats?: Floats): unknown {
     float = false;
     match(WS);
     const c = text[i];
-    if ((c === "{" || c === "[") && depth === MAX_DEPTH) fail("depth", `nesting deeper than ${MAX_DEPTH} at ${i}`);
+    if ((c === "{" || c === "[") && depth === MAX_DEPTH) fail("depth", `nesting deeper than ${MAX_DEPTH}`);
     if (c === "{") {
       i++;
       const o: Record<string, unknown> = {};
@@ -65,7 +74,7 @@ export function strictParse(text: string, floats?: Floats): unknown {
       do {
         match(WS);
         const k = str();
-        if (Object.hasOwn(o, k)) fail("duplicate_key", JSON.stringify(k));
+        if (Object.hasOwn(o, k)) fail("duplicate_key", repr(k));
         expect(":");
         Object.defineProperty(o, k, { value: value(depth + 1), enumerable: true, writable: true, configurable: true });   // "__proto__" too
         mark(o, k);

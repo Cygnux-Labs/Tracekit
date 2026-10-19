@@ -1,7 +1,8 @@
 // Build dist/verify.html, the browser verifier, from tsc's output (run after `tsc -p .`): src/verify/page.html with
 // dist/verify/web.js and the modules it imports inlined as one module script, each module in a function scope of its own,
-// and a Content Security Policy that allows only that script and the page's style, by hash, so the page loads and sends
-// nothing. The same tree gives the same bytes (scripts/release/build.py builds it twice and compares).
+// after the samples of src/verify/sample/, and a Content Security Policy that allows only that script and the page's
+// style, by hash, and workers from blob: URLs (web.ts starts its own script as one, which inherits this policy), so the
+// page loads and sends nothing. The same tree gives the same bytes (scripts/release/build.py builds it twice and compares).
 // lean: regular expressions over tsc's output, not a bundler: the import and export forms below, and any other fails
 // the build; use a bundler (after a dependency risk review) when the verifier's modules need more.
 import { createHash } from "node:crypto";
@@ -37,10 +38,13 @@ async function inline(file, entry = false) {
   return v;
 }
 
+// the page's samples (scripts/verify_page_check.py --samples writes them), as base64 the script decodes
+script += `const SAMPLES = ${JSON.stringify(Object.fromEntries(["sample.tkb", "sample-tampered.tkb", "sample.trust.json"]
+  .map((n) => [n, readFileSync(new URL(`../src/verify/sample/${n}`, import.meta.url)).toString("base64")])))};\n`;
 await inline("web.js", true);
 if (/<\/script|<!--/i.test(script)) throw new Error("the script holds text that would end the page's script element");
 const page = readFileSync(new URL("../src/verify/page.html", import.meta.url), "utf8");
 const style = page.match(/<style>([\s\S]*?)<\/style>/)[1];
 const hash = (s) => `'sha256-${createHash("sha256").update(s, "utf8").digest("base64")}'`;
-const csp = `default-src 'none'; script-src ${hash(script)}; style-src ${hash(style)}; connect-src 'none'`;
+const csp = `default-src 'none'; script-src ${hash(script)}; style-src ${hash(style)}; worker-src blob:; connect-src 'none'`;
 writeFileSync(new URL("../verify.html", dist), page.replace("%CSP%", csp).replace("%SCRIPT%", () => script));

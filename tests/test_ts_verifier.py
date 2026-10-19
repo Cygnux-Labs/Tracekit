@@ -83,31 +83,36 @@ def ts_cli(bundle, trust, *flags):
     return p.returncode, p.stdout
 
 
-# runs verify.html's script in Node on a stand-in for its page: the two file inputs, already chosen, and the report
+# runs verify.html's script in Node on a stand-in for its page: the files chosen in its file dialog, and the report as
+# text (Node has no Worker: the page then verifies in its own thread)
 PAGE_RUN = r"""
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-const [page, bundle, trust, tmp] = process.argv.slice(1);
+const [page, tmp, ...paths] = process.argv.slice(1);
 const file = (p) => ({ name: p.split(/[\\/]/).pop(), arrayBuffer: async () => {
   const b = readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
 } });
-const on = [], input = (p) => ({ files: [file(p)], addEventListener: (_, f) => on.push(f) });
-const el = { bundle: input(bundle), trust: input(trust), report: {}, version: {} };
-globalThis.document = { getElementById: (id) => el[id] };
+const node = () => ({ dataset: {}, classList: { add() {}, remove() {} }, on: {}, textContent: "", append() {},
+  replaceChildren() {}, setAttribute() {}, addEventListener(t, f) { this.on[t] = f; } });
+const el = {};
+globalThis.document = { getElementById: (id) => el[id] ??= node(), createElement: node, body: node(),
+  addEventListener() {} };
 writeFileSync(tmp, readFileSync(page, "utf8").match(/<script type="module">([\s\S]*)<\/script>/)[1]);
 await import(pathToFileURL(tmp));
-await on[0]();
+el.bundle.files = paths.map(file);
+await el.bundle.on.change();
 process.stdout.write(el.report.textContent);
 """
 
 
-def page_verify(bundle, trust):
-    """The report verify.html shows for `bundle` and `trust` (its script run in Node, the page's DOM stood in for)."""
+def page_verify(bundle, trust=None):
+    """The report verify.html shows for `bundle` and `trust` (None: none chosen), both chosen in its file dialog (its
+    script run in Node, the page's DOM stood in for)."""
     _build()
     with tempfile.TemporaryDirectory() as d:
-        return subprocess.run(["node", "--input-type=module", "-e", PAGE_RUN, "--", PAGE, bundle, trust,
-                               os.path.join(d, "page.mjs")], capture_output=True, text=True, check=True).stdout
+        return subprocess.run(["node", "--input-type=module", "-e", PAGE_RUN, "--", PAGE, os.path.join(d, "page.mjs"),
+                               bundle, *([trust] if trust else [])], capture_output=True, text=True, check=True).stdout
 
 
 @unittest.skipIf(SKIP, SKIP)
@@ -385,15 +390,16 @@ class Agreement(unittest.TestCase):
         self.assertEqual(ts_cli(bundle, trust, "--strict")[0], 3)
 
     def test_the_browser_page_reports_what_the_cli_does(self):
-        """verify.html: its one script and its style allowed by hash and nothing else, no network API in the script,
-        and for each bundle the TypeScript CLI's report."""
+        """verify.html: its one script and its style allowed by hash, workers only from blob: URLs (its own script, which
+        inherits the policy), nothing else, no network API in the script, and for each bundle the TypeScript CLI's
+        report. Without a trust config, never VERIFIED: an intact bundle is UNVERIFIABLE, a changed one FAILED."""
         _build()
         with open(PAGE, encoding="utf-8") as f:
             page = f.read()
         script = re.search(r'<script type="module">(.*)</script>', page, re.S)[1]
         h = lambda s: "'sha256-%s'" % base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()   # noqa: E731
         self.assertIn(f"content=\"default-src 'none'; script-src {h(script)}; style-src "
-                      f"{h(re.search(r'<style>(.*?)</style>', page, re.S)[1])}; connect-src 'none'\"", page)
+                      f"{h(re.search(r'<style>(.*?)</style>', page, re.S)[1])}; worker-src blob:; connect-src 'none'\"", page)
         self.assertEqual(page.count("<script"), 1)
         self.assertNotRegex(script, r"fetch|XMLHttpRequest|WebSocket|sendBeacon|EventSource|import\(")
         for name in ("closed", "sensor", "run-set", "gap"):
@@ -402,6 +408,17 @@ class Agreement(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertTrue(page_verify(self.bundles[name], self.trusts["witnessed"]).startswith(
                     text + "\nExit code 0"))
+        alone = page_verify(self.bundles["closed"])
+        self.assertTrue(alone.startswith("[WARN] trust config — none: the checkpoint's signature and its witnesses are "
+                                         "not checked"), alone)
+        self.assertNotIn("witness quorum", alone)
+        self.assertIn("\nIntegrity: UNVERIFIABLE (no trust config: the records match their own checkpoint, which no "
+                      "pinned key checked).\nAssurance: none: no trust config pins a log key or witness.\n", alone)
+        self.assertTrue(alone.endswith("\nExit code 2.\n"))
+        edited = page_verify(self.mutate(lambda rs: rs[1]["event"]["data"].update(tool="other")))
+        self.assertIn("\n[FAIL] signatures — ", edited)
+        self.assertTrue(edited.endswith("\nIntegrity: FAILED.\nAssurance: none: no trust config pins a log key or "
+                                        "witness.\n\nExit code 1.\n"))
 
     def test_tiers_of_calls_whose_records_disagree(self):
         import test_bundle_v2 as b   # a synthetic log: a T2 decision completed by the client, which the signer refuses
@@ -458,6 +475,14 @@ class Agreement(unittest.TestCase):
                 if name.endswith(".tkb"):
                     with self.subTest(f"{d}/{name}"):
                         code, rep = self.agree(os.path.join(golden, d, name), trust)
+                        # every line's words too, but for what the TypeScript one adds: npx first among the
+                        # commands that verify a bundle needing a newer verifier, and the command for a v1 bundle
+                        ts = ts_verify(os.path.join(golden, d, name), trust)["checks"]
+                        if name == "manifest-newer-verifier.tkb":
+                            ts[0]["problems"][:2] = ts[0]["problems"][1::-1]
+                        if name == "manifest-format-v1.tkb":
+                            self.assertIn("uvx --from tracekit-ai tracekit verify", ts[0]["problems"].pop())
+                        self.assertEqual(ts, rep.checks)
                         if d == "negative":
                             self.assertEqual({"exit_code": code, "integrity": rep.integrity, "first_failure": next(
                                 (c["check"] for c in rep.checks if c["status"] == "fail"), None)}, negative[name])

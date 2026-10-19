@@ -3,12 +3,16 @@
  * DecompressionStream), no zip64, under the bundle limits. Names that could escape a directory, symlinks and duplicate
  * entries are refused.
  */
+import { repr } from "./jcs.js";
+
 export const MAX_ENTRIES = 10_000;
 export const MAX_ENTRY = 64 << 20;
 export const MAX_TOTAL = 512 << 20;
 const NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9._-]+)*$/;
 
 export class Unusable extends Error {}
+/** An entry whose bytes don't match its CRC-32: Python's zipfile names it so, and the reports print the name. */
+class BadZipFile extends Unusable {}
 
 let CRC: Uint32Array | undefined;
 
@@ -78,7 +82,7 @@ export async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>
   if (entries.length !== count) throw new Unusable("not the canonical zip layout: entry count");
   let pos = 0;
   for (const e of entries) {
-    const n = JSON.stringify(e.name.slice(0, 80));
+    const n = repr(e.name);
     if (e.csize === 0xffffffff || e.usize === 0xffffffff || e.local === 0xffffffff) throw new Unusable("zip64 is not supported");
     if (e.method !== 0 && e.method !== 8 || e.method === 0 && e.csize !== e.usize)
       throw new Unusable(`${n}: compression method ${e.method} (only stored and deflate)`);
@@ -92,7 +96,7 @@ export async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>
         || v.getUint32(e.local + 18, true) !== e.csize || v.getUint32(e.local + 22, true) !== e.usize
         || v.getUint16(e.local + 26, true) !== e.raw.length || v.getUint16(e.local + 28, true)
         || local.some((b, i) => b !== e.raw[i]))
-      throw new Unusable(`bad local header for ${n}: it does not repeat the central entry`);
+      throw new Unusable(`bad local header for ${n}`);
     pos = e.local + 30 + e.raw.length + e.csize;
   }
   if (pos !== cdOffset) throw new Unusable("not the canonical zip layout: bytes before the central directory");
@@ -100,7 +104,7 @@ export async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>
   let total = 0;
   for (const e of entries) {
     const n = e.name;
-    if (!NAME.test(n) || n.split("/").some((p) => /^\.+$/.test(p))) throw new Unusable(`bad entry name ${JSON.stringify(n.slice(0, 80))}`);
+    if (!NAME.test(n) || n.split("/").some((p) => /^\.+$/.test(p))) throw new Unusable(`bad entry name ${repr(n.slice(0, 80))}`);
     if (files.has(n)) throw new Unusable(`duplicate entry ${n}`);
     if (((e.attr >>> 16) & 0o170000) === 0o120000) throw new Unusable(`symlink entry ${n}`);
     const start = e.local + 30 + e.raw.length;
@@ -114,12 +118,13 @@ export async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>
       try {
         out = await inflate(body, limit);
       } catch (x) {
+        // lean: the decompressor's own message, which differs from zlib's in the reference verifier's report
         throw new Unusable(`${n}: ${(x as Error).message}`);
       }
     }
     if (out.length > cap) throw new Unusable(`${n} is larger than the bundle limits`);
+    if (crc32(out) !== e.crc) throw new BadZipFile(`Bad CRC-32 for file ${repr(n)}`);   // first, as zipfile does
     if (out.length !== e.usize) throw new Unusable(`${n}: ${out.length} bytes, not the ${e.usize} its entry says`);
-    if (crc32(out) !== e.crc) throw new Unusable(`${n}: bad CRC-32`);
     files.set(n, out);
     total += out.length;
   }

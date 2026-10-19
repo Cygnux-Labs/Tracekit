@@ -12,16 +12,17 @@
  * Monitor reports, revocations and the v1 format bridge are inputs of the reference's CLI that this one doesn't take.
  * A bundle that needs a newer verifier is UNVERIFIABLE, with the commands that verify it; one whose records carry ext
  * names this verifier doesn't interpret (format 1.4's non-critical slot) verifies, with a `not interpreted` warning
- * per name. web.ts is this verifier as a browser page (verify.html).
+ * per name. `verify(bundle, null)` (no trust config) checks what needs no pinned key and is never VERIFIED. web.ts is
+ * this verifier as a browser page (verify.html).
  */
-import { type Floats, canonicalize, strictParseBytes } from "./jcs.js";
+import { type Floats, canonicalize, repr as quoted, strictParseBytes } from "./jcs.js";
 import {
   HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, equal, keyAlg, leafHash, openNote, parseLeaf, parseVkey,
   registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
-import { MAX_ENTRY, readZip } from "./zip.js";
+import { MAX_ENTRY, Unusable, readZip } from "./zip.js";
 
 export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
@@ -39,6 +40,10 @@ const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
 const MATRIX = ["model_calls", "tool_calls", "network", "processes", "services"];
 const COVERED = ["none", "reported", "observed", "enforced"];   // weakest first
+
+/** The reference verifier's exception names, which reports print: a bundle the format refuses, a key it lacks. */
+class ValueError extends Error {}
+class KeyError extends Error {}
 
 export type Check = { check: string; status: "pass" | "warn" | "fail"; detail: string; problems: string[] };
 
@@ -79,7 +84,7 @@ function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad:
 const kind = (v: unknown) => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
 function at(o: unknown, k: string): J {
   if (!isObj(o)) throw new TypeError(`${kind(o)} is not an object`);
-  if (!Object.hasOwn(o, k)) throw new TypeError(`missing ${JSON.stringify(k)}`);
+  if (!Object.hasOwn(o, k)) throw new KeyError(repr(k));
   return o[k];
 }
 function get(o: unknown, k: string, missing: J = null): J {
@@ -108,7 +113,7 @@ function text(v: unknown): string {
 const truthy = (v: unknown) => Array.isArray(v) ? v.length > 0 : isObj(v) ? Object.keys(v).length > 0 : !!v;
 const str = (v: unknown): string => v === null ? "None" : v === true ? "True" : v === false ? "False"
   : typeof v === "string" ? v : JSON.stringify(v);
-const repr = (v: unknown) => typeof v === "string" ? `'${v.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'` : str(v);
+const repr = (v: unknown) => typeof v === "string" ? quoted(v) : str(v);
 const cut = (s: string, n: number) => [...s].slice(0, n).join("");
 const count = (xs: string[]) => {
   const m = new Map<string, number>();
@@ -123,7 +128,7 @@ const fmt = (ts: bigint | number) => {
 type Trust = { logs: string[]; witnesses: { vkey: string; class: string }[]; algs: string[]; witnesses_required: number;
   rekor?: Record<string, J>; issuers: J[]; analyzers: string[] };
 
-async function loadTrust(data: Uint8Array): Promise<Trust> {
+async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   const floats: Floats = new WeakMap();
   const t: J = strictParseBytes(data.subarray(0, MAX_LINE), floats);
   const int = (o: Record<string, J>, k: string, d: number) => !Object.hasOwn(o, k) ? d
@@ -146,7 +151,8 @@ async function loadTrust(data: Uint8Array): Promise<Trust> {
       && Object.values(i).every((v) => typeof v === "string"))
     && Array.isArray(opt(t, "analyzers"))
     && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:.+$/.test(a));
-  if (!ok) throw new Error("not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers, analyzers)");
+  if (!ok) throw new ValueError(`${name}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, `
+    + "issuers, analyzers)");
   for (const k of [...t.logs, ...opt(t, "witnesses").map((w: J) => w.vkey), ...opt(t, "monitors").map((m: J) => m.vkey),
     ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) await parseVkey(k);
   t.witnesses ??= [];
@@ -178,16 +184,25 @@ function newer(need: string, have: string) {
 
 const errorText = (e: unknown) => `${(e as Error)?.constructor?.name ?? "Error"}: ${(e as Error)?.message ?? e}`;
 
+/** Without a trust config: the bundle against its own checkpoint, whose signature no pinned key checks. */
+const UNANCHORED = "UNVERIFIABLE (no trust config: the records match their own checkpoint, which no pinned key checked)";
+
 /**
  * Verify a v2 bundle (zip bytes) against the verifier's own pinned trust config (JSON bytes). Never throws. `names`: the
- * files' paths, for the commands a bundle that needs a newer verifier is told to run.
+ * files' paths, for the commands a bundle that needs a newer verifier is told to run. `trust` null (the browser page,
+ * when no trust config is chosen): every check that needs no pinned key, and never VERIFIED: a changed record still
+ * FAILS, and an intact bundle is UNVERIFIABLE, since anyone can sign a bundle and its checkpoint with keys of their own.
  */
-export async function verify(bundle: Uint8Array, trust: Uint8Array,
+export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
   names = { bundle: "BUNDLE", trust: "TRUST.json" }): Promise<{ report: Report; code: number }> {
   const rep = new Report();
-  let t: Trust, files: Map<string, Uint8Array>, manifest: J;
-  try {
-    t = await loadTrust(trust);
+  let t: Trust, files: Map<string, Uint8Array>, manifest: J, v1 = false;
+  if (trust === null) {
+    t = { logs: [], witnesses: [], algs: ["ed25519"], witnesses_required: 0, issuers: [], analyzers: [] };
+    rep.check("trust config", false, "none: the checkpoint's signature and its witnesses are not checked, so nothing ties "
+      + "these records to a signer you trust", [], true);
+  } else try {
+    t = await loadTrust(trust, names.trust);
   } catch (e) {
     rep.check("trust config", false, errorText(e));
     return { report: rep, code: EXIT_BAD };
@@ -196,20 +211,24 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array,
   try {
     files = await readZip(bundle);
     const m = files.get("manifest.json");
-    if (!m) throw new Error("no manifest.json");
+    if (!m) throw new KeyError(repr("manifest.json"));
     files.delete("manifest.json");
     manifest = strictParseBytes(m, floats);
-    if (!isObj(manifest) || manifest.format !== FORMAT) throw new Error(`format is not ${FORMAT}`);
+    v1 = isObj(manifest) && manifest.format === "tracekit.bundle.v1";
+    if (!isObj(manifest) || manifest.format !== FORMAT) throw new Unusable(`format is not ${FORMAT}`);
     const need = manifest.verifier_min_version;
     if (!(typeof need === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(need)))
-      throw new Error("verifier_min_version is not a version number");
+      throw new Unusable("verifier_min_version is not a version number");
     if (newer(need, VERSION)) {
       rep.integrity = `UNVERIFIABLE (needs tracekit >= ${need})`;
       rep.check("bundle readable", false, rep.integrity, upgrade(need, names));
       return { report: rep, code: EXIT_BAD };
     }
   } catch (e) {
-    rep.check("bundle readable", false, `cannot read bundle: ${errorText(e)}`);
+    // a format v1 bundle (the laptop signer's): the reference verifier checks it, against the signer.pub the sender pins
+    rep.check("bundle readable", false, `cannot read bundle: ${errorText(e)}`, v1 ? ["a format v1 bundle: verify it with "
+      + `the signer's public key (signer.pub, from the sender): uvx --from tracekit-ai tracekit verify ${quote(names.bundle)}`
+      + " --key signer.pub"] : []);
     return { report: rep, code: EXIT_BAD };
   }
   try {
@@ -218,6 +237,7 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array,
     rep.check("bundle structure", false, "", [`malformed and could not be fully checked: ${errorText(e)}`]);
   }
   if (rep.failures.length) rep.integrity = "FAILED";
+  else if (trust === null) rep.integrity = UNANCHORED;
   else if (rep.unsupported.length) rep.integrity = `UNVERIFIABLE (not checked by this verifier: ${rep.unsupported.join(", ")})`;
   return { report: rep, code: rep.failures.length ? EXIT_FAIL : rep.integrity.startsWith("UNVERIFIABLE") ? EXIT_BAD : EXIT_OK };
 }
@@ -227,20 +247,20 @@ type Key = { spki: Uint8Array; from: number; until: number | null };
 async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, trust: Trust, floats: Floats) {
   const file = (name: string) => {
     const f = files.get(name);
-    if (!f) throw new TypeError(`no ${name}`);
+    if (!f) throw new KeyError(repr(name));
     return f;
   };
   const json = (name: string) => strictParseBytes(file(name), floats);
   const jsonl = (name: string) => {
     const data = file(name);
-    if (data.length && data.at(-1) !== 0x0a) throw new Error("a JSON lines file must end in a newline");
+    if (data.length && data.at(-1) !== 0x0a) throw new ValueError("a JSON lines file must end in a newline");
     const lines: Uint8Array[] = [];
     for (let i = 0, j; (j = data.indexOf(0x0a, i)) >= 0; i = j + 1) {
       // checked before any is parsed: a run of tiny lines costs no memory
-      if (lines.length === MAX_LINES) throw new Error("more lines than the bundle limits");
+      if (lines.length === MAX_LINES) throw new ValueError("more lines than the bundle limits");
       lines.push(data.subarray(i, j));
     }
-    if (lines.some((l) => l.length > MAX_LINE)) throw new Error("line longer than the bundle limits");
+    if (lines.some((l) => l.length > MAX_LINE)) throw new ValueError("line longer than the bundle limits");
     return lines.map((l) => strictParseBytes(l, floats) as J);
   };
 
@@ -254,21 +274,24 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const proofs = json("proofs/records.json");
   const name = at(proofs, "checkpoint");
   if (!(typeof name === "string" && name.startsWith("checkpoints/") && name.endsWith(".note")))
-    throw new Error("proofs name no checkpoint note");
+    throw new ValueError("proofs name no checkpoint note");
   const witnesses = new Map(trust.witnesses.map((w) => [w.vkey, w.class]));
+  const anchored = trust.logs.length > 0;   // a trust config pins at least one log key
   let note;
   try {
-    note = await openNote(file(name), trust.logs, [...witnesses.keys()]);
+    note = await openNote(file(name), trust.logs, [...witnesses.keys()], anchored);
   } catch (e) {
     if (!(e instanceof NoteError)) throw e;
     rep.check("checkpoint", false, e.message);
     return;
   }
   const { origin, size, root, cosigs } = note;
-  rep.check("checkpoint", same(size, at(proofs, "tree_size")), `${origin} at tree size ${size}, signed by its pinned log key`);
+  rep.check("checkpoint", same(size, at(proofs, "tree_size")), `${origin} at tree size ${size}, `
+    + (anchored ? "signed by its pinned log key" : "its signature not checked (no trust config)"));
   if (note.unchecked) rep.unsupport("SLH-DSA-SHA2-128s checkpoint signature");
-  rep.check("witness quorum", cosigs.length >= trust.witnesses_required,
-    `${cosigs.length} pinned cosignature(s), ${trust.witnesses_required} required`);
+  if (anchored)
+    rep.check("witness quorum", cosigs.length >= trust.witnesses_required,
+      `${cosigs.length} pinned cosignature(s), ${trust.witnesses_required} required`);
   if (truthy(trust.rekor) && files.has(`rekor/${size}.json`)) rep.unsupport("rekor anchor");
 
   const included = async (r: J) => {
@@ -343,7 +366,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   for (const name of names) {
     const records = jsonl(name);
     runs.set(name, records);
-    if (!records.length) throw new Error("a run has no records");
+    if (!records.length) throw new ValueError("a run has no records");
     const head = at(records[0], "event");
     for (const [i, r] of records.entries()) {
       await checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), problems);
@@ -359,7 +382,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding") || about(rs)[1] !== null);
   if (why) rep.unsupport("tracekit why findings");
   else if (names.length !== 1 && !runSet && !aboutOne(runs))
-    throw new Error("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
+    throw new ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
   let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
   if (runSet) {
     [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
@@ -372,7 +395,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     + "record(s)", keyProblems);
   const every = [...runs.values()].flat();
   const seqs = [...keyRecords, ...every].map((r) => num(at(at(r, "event"), "seq")));
-  if (!seqs.length) throw new Error("the bundle holds no key or run records");
+  if (!seqs.length) throw new ValueError("the bundle holds no key or run records");
   const relied = Math.max(...seqs);
   const rotated = timeline.size > 1 || keyRecords.some((r) => get(r.event, "type") === "key.retire");
   if (provenTo < relied && rotated)   // one key never retired: the assurance line notes it, no warning
@@ -526,8 +549,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     true);
   rep.check("key assurance", true, "asserted: the log declares its record keys; none is attested");
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
-  rep.assurance = await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
-    + (provenTo < relied ? "; key retirements not proven complete" : "");
+  rep.assurance = !anchored ? "none: no trust config pins a log key or witness"
+    : await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
+      + (provenTo < relied ? "; key retirements not proven complete" : "");
   approvals(rep, runs, policies, floats);
   const glass = typed("approval").filter((e) => get(at(e, "data"), "break_glass") === true);
   if (glass.length)
@@ -878,7 +902,10 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
 ): Promise<[[number, string][], number, [string, bigint][][]]> {
   const problems: string[] = [], tsalt = b64decode(at(rs, "tenant_salt"));
   const lo = at(rs, "from"), hi = at(rs, "to"), regOrigin = await registryOrigin(origin, tsalt);
-  const span = `registry ${str(lo)}..${str(hi)}`;
+  // a bound as the reference prints it: 2.0 when its token had a fraction or exponent
+  // lean: integral floats below 1e16 only; Python's repr of others (1e+16, 1e-05) differs from JavaScript's
+  const bound = (k: string, v: J) => floats.get(rs)?.has(k) && Number.isInteger(v) && Math.abs(v) < 1e16 ? `${v}.0` : str(v);
+  const span = `registry ${bound("from", lo)}..${bound("to", hi)}`;
   if (![lo, hi].every((n) => Number.isSafeInteger(n)) || floats.get(rs)?.has("from") || floats.get(rs)?.has("to")) {
     rep.check("run-set", false, `INCOMPLETE, ${span}`, ["the registry range is not two integers"]);
     return [[], -1, []];
@@ -893,7 +920,8 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   for (const n of [...new Set([num(lo), num(hi)])].filter((n) => n !== 0).sort((a, b) => a - b)) {
     let got: J;
     try {
-      const note = await openNote(file(`checkpoints/registry-${n}.note`), vkeys, [...witnesses.keys()]);
+      const note = await openNote(file(`checkpoints/registry-${n}.note`), vkeys, [...witnesses.keys()],
+        trust.logs.length > 0);
       got = note.size;
       roots.set(n, note.root);
       regCosigs.push(note.cosigs);
@@ -1006,9 +1034,11 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
     + (capped ? `; capped by the run-set's registry notes (${capped})` : "") + (selfApproved ? "; approvals: self" : "");
 }
 
+/** `x` without control characters, as the report prints bundle-derived strings. */
+export const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+
 /** The report as text, as the reference CLI prints it; control characters in bundle-derived strings are dropped. */
 export function formatReport(rep: Report): string {
-  const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
   let s = "";
   for (const c of rep.checks) {
     s += `[${c.status.toUpperCase()}] ${c.check}` + (c.detail ? ` — ${clean(c.detail)}` : "") + "\n";
