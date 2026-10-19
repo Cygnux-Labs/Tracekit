@@ -614,7 +614,7 @@
     }
 
     .v2 .c-st {
-      width: 104px
+      width: 116px
     }
 
     .v2 .c-ms {
@@ -2214,8 +2214,9 @@
         $("detsum").textContent = `${a.tool} · seq ${seq}`;
         return cols(left, right + citedHtml([a.pre, a.post]) + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
       }
-      const v = sel.v2 || {}, src = srcOf(sel), seq = lseq(sel);
-      let left = `<dl class="kv"><dt>TYPE</dt><dd>${esc(v.type || sel.event)}</dd><dt>TIME</dt><dd>${esc(fmtT(sel.ts))}</dd><dt>SOURCE</dt><dd>${esc((sel.signer ? "signer" : sel.agent) + (src === "ANALYSIS" ? " · the viewer's own analysis, not a record of the log" : src === "SIGNED" ? " · a signed record" : ""))}</dd>${sel.title ? `<dt>EVENT</dt><dd>${esc(sel.title)}</dd>` : ""}`;
+      // a row the viewer made is named for what it is, not by its internal event
+      const v = sel.v2 || {}, src = srcOf(sel), seq = lseq(sel), type = v.type || (!sel.analysis ? sel.event : sel.tape === "VERIFY" ? "verifier report" : sel.tape === "FINDING" ? "finding of the viewer's analysis" : "the viewer's analysis");
+      let left = `<dl class="kv"><dt>TYPE</dt><dd>${esc(type)}</dd><dt>TIME</dt><dd>${esc(fmtT(sel.ts))}</dd><dt>SOURCE</dt><dd>${esc((sel.signer ? "signer" : sel.agent) + (src === "ANALYSIS" ? " · the viewer's own analysis, not a record of the log" : src === "SIGNED" ? " · a signed record" : ""))}</dd>${sel.title ? `<dt>EVENT</dt><dd>${esc(sel.title)}</dd>` : ""}`;
       if (!sel.review) left += `<dt>DETAIL</dt><dd class="pre">${esc(sel.text || sel.reason || sel.source || sel.prompt || "")}</dd>`;
       if (v.rules) left += `<dt>RULES</dt><dd>` + rulesHtml(v.rules) + `</dd>`;
       // only an approval can be a self-approval: a requester rejecting their own call is no risk
@@ -2229,8 +2230,8 @@
       if (v.cites) left += `<dt>CITES</dt><dd>` + v.cites.map(c => { const r = ALL.find(r => r.session_id === (v.about || sel.session_id) && r.v2?.run_seq === c.run_seq);
         return r ? `<a href="#" data-tkseq="${esc(r.tk_seq)}">record ${esc(c.run_seq)} · ${esc(r.event === "UserPromptSubmit" ? "prompt" : r.v2.type)}</a> <span class="${r.hash === c.hash ? "s-ok" : "s-deny"}">${r.hash === c.hash ? "hash matches" : "HASH MISMATCH"}</span>` : `record ${esc(c.run_seq)} <span class="dim">not in this view</span>`; }).join("<br>") + `</dd>`;
       if (!sel.signer) left += verdictLine(sel.session_id);
-      const right = (sel.review ? `<div class="sec">VERIFIER REPORT</div><pre>${esc(sel.text)}</pre>` : bodyHtml(sel)) + citedHtml([sel]);
-      $("detsum").textContent = `${v.type || sel.event}` + (seq != null ? ` · seq ${seq}` : " · the viewer's analysis");
+      const right = (sel.review ? `<div class="sec">VERIFIER REPORT</div><pre>${esc(sel.text)}</pre>` : sel.analysis ? "" : bodyHtml(sel)) + citedHtml([sel]);
+      $("detsum").textContent = type + (seq != null ? ` · seq ${seq}` : "");
       return cols(left + `</dl>` + evidence(sel), right);
     }
     // a verifier report's failing checks, each with the lines that say why (indented under it)
