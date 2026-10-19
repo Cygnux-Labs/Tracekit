@@ -20,9 +20,13 @@ changed opens nothing: a finding that relies on it is labelled `redacted`.
 Checks, for each call the run allowed or ran:
   TK-X201 (info; low when most checkable calls had reasoning) the model said nothing before the tool use that asked
           for the call: no reasoning and no text earlier in the same model message (parsers.said)
-  TK-X202 (medium) a write tool edited a file whose name neither the person's request nor the model's text before the
-          call names. A sentence that names a file to keep away from it ("leave billing.py untouched") is no mention:
-          it is a constraint, and a file the request kept away is a finding whatever the model said about it.
+  TK-X202 (medium) a write tool edited a file the person's request doesn't name before the call and the model's text
+          never says it changes (a change word tied to it, before the call or after: "applying the same fix to
+          billing.py", "billing.py needs the same fix"; constraints.changes). A mere mention ("pager.py imports
+          billing.py") clears nothing. A sentence that names a file to keep away from it ("leave billing.py
+          untouched") is no mention: it is a constraint, and a file the request kept away is a finding whatever the
+          model said about it; the model saying it leaves the file alone, then editing it, is a contradiction
+          (TK-X204 when its words state a constraint, else this finding, labelled `contradiction`).
   TK-X203 (high) a write tool, a Bash write target or a kernel sensor's file effect outside the project; an effect of
           the agent's harness itself (findings_effects' agent_process: its transcript, its model calls) is counted
           not checkable, for TK-X204 too, never a finding
@@ -240,18 +244,16 @@ def _message(body, data):
     return "anthropic:messages", body
 
 
-def _names(text):
-    """[(name, kept away)] of the words of `text`, each a basename as constraints compare them (constraints.norm). A
-    file a clause keeps away ("leave billing.py untouched", "don't modify billing.py") is marked kept away, and that
-    clause's other words, its other files aside, are no mention."""
+def _names(read):
+    """[(name, kept away)] of the words of a request (its constraints._read()), each a basename as constraints compare
+    them (constraints.norm). A file a clause keeps away ("leave billing.py untouched", "don't modify billing.py") is
+    marked kept away, and that clause's other words, its other files aside, are no mention."""
     out = []
-    for clause in constraints.CLAUSE.split(_text(text)):
-        tokens = constraints._tokens(clause)
-        kept = constraints._clause(tokens)[1]
+    for tokens, _, kept in read:
         for t in tokens:
             file = bool(constraints.FILE_LIKE.search(t))
             if (file or not kept) and constraints.norm(t):
-                out.append((constraints.norm(t), t in kept))
+                out.append((constraints.norm(t), constraints.norm(t) in kept))
     return out
 
 
@@ -324,8 +326,8 @@ class _Run:
         # what pass 2 learns
         self.content, self.tier, self.redacted = set(), {}, set()
         self.segs = {}    # response run_seq -> [(kind, form, readable, tool ids right after it, excerpt)]
-        # name -> its first (position, run_seq, tier) in what a person asked ("asked") or the model said ("said"),
-        # and in a sentence keeping away from it ("kept_asked", "kept_said")
+        # name -> its first (position, run_seq, tier) in what a person asked ("asked"), where the model said it changes
+        # it ("said": constraints.changes), and in a sentence keeping away from it ("kept_asked", "kept_said")
         self.names = {"asked": {}, "said": {}, "kept_asked": {}, "kept_said": {}}
         self.intent, self.prose = [], []   # run_seqs of intent records; positions of readable model text
         self.args, self.cwd, self.root, self.facts = {}, {}, None, {}   # facts: decision run_seq -> constraints.facts
@@ -358,18 +360,26 @@ class _Run:
         return [r for r in self.records if r["event"]["type"] == "model.exchange" or r["event"]["run_seq"] in decisions
                 or r["event"]["type"] == "input.observed" and r["event"]["data"].get("trust") == "trusted"]
 
-    def _mention(self, text, pos, seq, tier, source):
-        for name, away in _names(text):
+    def _read(self, text, pos, seq, tier, source):
+        """What `text` (a request's, or the model's) mentions, keeps away and states (constraints._read, once)."""
+        read = constraints._read(_text(text))
+        self._mention(_names(read) if source == "asked" else [
+            (name, said == "kept") for name, said in constraints.changes(read).items()], pos, seq, tier, source)
+        self._stated(read, pos, seq, "request" if source == "asked" else "model")
+
+    def _mention(self, names, pos, seq, tier, source):
+        for name, away in names:
             index = self.names[("kept_" if away else "") + source]
             if name not in index or pos < index[name][0]:   # confirm() reads the prompts after the rest
                 if name not in index and sum(map(len, self.names.values())) >= MAX_NAMES:
                     return self.cap(pos)
                 index[name] = (pos, seq, tier)
 
-    def _stated(self, text, pos, seq, source):
-        """The constraints `text` states, and what it mentions that could lift one stated before it."""
-        self.stated += [(pos, seq, kind, obj, source) for kind, obj in constraints.extract(_text(text))]
-        mention = constraints.mentions(_text(text))
+    def _stated(self, read, pos, seq, source):
+        """The constraints a text (its constraints._read()) states, and what it mentions that could lift one stated
+        before it."""
+        self.stated += [(pos, seq, kind, obj, source) for kind, obj in constraints.extract(None, read)]
+        mention = constraints.mentions(None, read)
         if mention[0] or mention[1]:
             self.lift_names += len(mention[0]) + len(mention[1])
             if self.lift_names > MAX_NAMES:
@@ -378,8 +388,7 @@ class _Run:
 
     def _request(self, seq, text, tier):
         self.intent.append(seq)
-        self._mention(text, (seq, -1), seq, tier, "asked")
-        self._stated(text, (seq, -1), seq, "request")
+        self._read(text, (seq, -1), seq, tier, "asked")
 
     def _keep(self, into, seq, text, cwd=None):
         self.held += len(_text(text))
@@ -516,8 +525,7 @@ class _Run:
             for k, s in enumerate(segs):
                 if s["text"].strip():
                     self.prose.append((seq, k))
-                    self._mention(s["text"], (seq, k), seq, tier, "said")
-                    self._stated(s["text"], (seq, k), seq, "model")
+                    self._read(s["text"], (seq, k), seq, tier, "said")
             return
         if text and claimed(e, self.hooked):
             self.claimed.append(seq)
@@ -740,20 +748,24 @@ def _check(run, out, project, allow, deadline, clock):
                 note(call, "TK-X202", "no_text")
             else:
                 name = constraints.norm(facts["paths"][0])
-                asked, said = run.first("asked", name, pos), run.first("said", name, pos)
-                kept = run.first("kept_asked", name, pos) or run.first("kept_said", name, pos)
+                # the request names it before the call, or the model says it changes it, before the call or after
+                asked, said = run.first("asked", name, pos), run.names["said"].get(name)
+                kept, denied = run.first("kept_asked", name, pos), run.first("kept_said", name, pos)
                 seqs = [dseq, *([cs] if cs is not None else []), *run.intent[max(0, i - 3):i]]
                 # a file a constraint keeps away is TK-X204's: the stronger finding covers the call
                 hit = not (asked or said) and call["checks"]["TK-X204"] != "found"
-                if hit and run.capped is not None and run.capped < pos:   # the name may be in text left unread
+                if hit and run.capped is not None:   # the name may be in text left unread
                     note(call, "TK-X202", "size")
                 else:
                     note(call, "TK-X202", "checked", _tiers(run, seqs), hit and _finding(
-                        run, "TK-X202", seqs + ([kept[1]] if kept else []), order=call["order"]),
-                        f"{tool} changed {facts['paths'][0]}; neither the request nor the model's text before the "
-                        f"call names {name}" + (" other than to keep it unchanged" if kept else "")
+                        run, "TK-X202", seqs + [m[1] for m in (kept, denied) if m], order=call["order"]),
+                        f"{tool} changed {facts['paths'][0]}; the request doesn't name {name}"
+                        + (" other than to keep it unchanged" if kept else "") + ", and the model never says it "
+                        "changes it" + (f": its text before the call (record {denied[1]}) said it would leave it "
+                                        "unchanged, a contradiction" if denied else "")
                         + ("" if prose else " (no model text was readable: checked against the request only)"),
-                        (["kept_away"] if kept else []) + ([] if prose else ["reasoning_absent"]))
+                        (["kept_away"] if kept else []) + (["contradiction"] if denied else [])
+                        + ([] if prose else ["reasoning_absent"]))
         # TK-X203
         if dseq not in run.content:
             note(call, "TK-X203", "no_content")

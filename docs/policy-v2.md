@@ -411,14 +411,17 @@ rest of the run. It is experimental, new after 1.3.0.
 
 The Claude Code hook (and the Codex, Cursor and Gemini hooks, which share it) reads the person's prompt at
 `UserPromptSubmit`, as the harness hands it over, and sends each constraint it states with `constraint_add` (RPC 19),
-each on its own and before it records the prompt. The session's state keeps them: after the signer closes an idle
-run, the session's next run gets every constraint its earlier prompts stated. A small fixed grammar reads them
-([tracekit/constraints.py](../tracekit/constraints.py)):
+each on its own and before it records the prompt; a scope (`only_change`) it leaves to `tracekit analyze --v2`
+(TK-X204), since holding every other write would ask the person about each test, lockfile or build write. The
+session's state keeps them: after the signer closes an idle run, the session's next run gets every constraint its
+earlier prompts stated. A small fixed grammar reads them ([tracekit/constraints.py](../tracekit/constraints.py)); a
+condition after the file ("don't edit X until the tests pass"), a question ("should I change X?"), quoted text and
+code state none ([limits](limits.md#intent-reasoning-and-action-checks)):
 
 | Kind | Read from | Holds |
 |---|---|---|
-| `keep_away` | "don't touch / modify / edit / change / delete X", "leave X alone", "X stays untouched", "X is read-only", for a file name X | a call that writes X: a write tool's path or paths (every file of a Codex patch), a shell redirection, `rm`, `touch`, `tee`, `sed -i`, the destination of `cp` or `mv`; shell commands read as the policy engine reads them, through `bash -c`, `eval`, wrappers, argv lists and OpenAI's `commands` |
-| `only_change` | "only change / edit / modify / touch X", "don't change anything except / but / other than X", "read-only except X"; "don't change anything else": each file the request names | a call that writes any other file |
+| `keep_away` | a negated change of a file X ("don't touch / modify / edit / write to X", "make no changes to X", "please refrain from editing X"), X said to stay as it is ("leave X alone / as is", "X stays untouched", "X is read-only / off-limits / out of scope", "X must not be modified"), "hands off X", "stay away from X", "make no changes there" for the file named before | a call that writes X: a write tool's path or paths (every file of a Codex patch), a shell redirection, `rm`, `touch`, `tee`, `sed -i`, the destination of `cp` or `mv`; shell commands read as the policy engine reads them, through `bash -c`, `eval`, wrappers, argv lists and OpenAI's `commands` |
+| `only_change` | "only change / edit / modify / touch X", "only X should change", "limit the change to X", "touch nothing but X", "don't change anything except / but / other than X", "read-only except X"; "don't change anything else", "X and nothing else", "everything else is out of scope": each file the request names | a call that writes any other file: checked after the run (TK-X204), never held live by the hook |
 | `read_only` | "read-only" naming no file, "don't change anything" | any call that writes, commits or installs |
 | `no_push` | "don't push", "never push", "no pushing" | a `git push` |
 | `no_network` | "no network (access)", "no internet", "don't use the web", "don't go online", "work / stay offline" | an http or browser call, `WebFetch`, `curl`, `wget`, `ssh`, `git pull`/`fetch`/`clone`/`push`, a package install |

@@ -34,7 +34,7 @@ class Pools(unittest.TestCase):
             e20.load_pool(path)
 
     def test_every_pool_v2_item_builds_without_scoring(self):
-        pool, unmapped = e20.load_pool(e20.POOL)
+        pool, unmapped = e20.load_pool(e20.DEV_POOL_V2)
         self.assertEqual({u["key"]: u["n"] for u in unmapped}, {
             "covers.F6": 18, "covers.F7": 18, "covers.{F1-F5}.fault": 5, "failure_outputs[].runner": 10,
             "honest_controls.hard_negatives[].note": 10, "targets[].lang": 12})

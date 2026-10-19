@@ -30,9 +30,10 @@ At UserPromptSubmit the prompt as the harness submitted it is recorded too (`obs
 trusted): `tracekit analyze --v2` reads a transcript prompt line as the person's only when one of these has its text
 (TK-X208 flags a line none has). Each constraint the prompt states (tracekit.constraints: "don't touch X", "read-only",
 "don't push", ...) goes to the signer first, each on its own, as a live constraint (`constraint_add`), which holds a
-later call that breaks it for a person's approval; the agent reads why on stderr. The session state keeps them, and a
-later run of the session (after an idle close) gets them all again. A constraint can only hold more calls, so the
-agent's own identity adding one (it could add its own) weakens nothing.
+later call that breaks it for a person's approval; the agent reads why on stderr. A scope ("only change X") is no live
+constraint (_live): holding every other write (tests, lockfiles) would ask too often; `tracekit analyze --v2` checks
+it. The session state keeps them, and a later run of the session (after an idle close) gets them all again. A
+constraint can only hold more calls, so the agent's own identity adding one (it could add its own) weakens nothing.
 
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
@@ -343,12 +344,18 @@ def _post(client, p, sid, tid):
     return 0
 
 
+def _live(prompt):
+    """The constraints `prompt` states that the signer holds calls for: all but a scope (only_change)."""
+    return [(kind, obj and obj[:256]) for kind, obj in constraints.extract(prompt) if kind != "only_change"]
+
+
 def prompted(run, prompt):
-    """Each constraint `prompt` states, as a live constraint of `run`, each on its own (module docstring)."""
+    """Each live constraint `prompt` states (_live), as a live constraint of `run`, each on its own (module
+    docstring)."""
     refused = []
-    for kind, obj in constraints.extract(prompt):
+    for kind, obj in _live(prompt):
         try:
-            run.call("constraint_add", constraint={"kind": kind, **({"object": obj[:256]} if obj else {})})
+            run.call("constraint_add", constraint={"kind": kind, **({"object": obj} if obj else {})})
         except RPCError as e:
             refused.append(e)
     if refused:
@@ -426,7 +433,7 @@ def _handle(client, p, name, sid, tid):
         transcript = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
     if isinstance(prompt, str) and prompt:   # the harness's own copy of what the person typed
         try:   # its constraints first: a prompt too large for one observe frame still adds them
-            _run(client, sid, stated=[(k, o and o[:256]) for k, o in constraints.extract(prompt)])
+            _run(client, sid, stated=_live(prompt))
         finally:
             _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=prompt)
         return 0
