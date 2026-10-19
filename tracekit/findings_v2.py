@@ -76,6 +76,7 @@ import time
 
 from . import __version__, constraints, findings_effects, findings_text, parsers
 from .findings import SEVERITY, WRITE_TOOLS
+from .signer.reconcile import PROVIDER_HOSTS
 from .signer.rpc_schema import FINDING_TITLES as TITLES, RPCError
 
 BUDGET_S = 60.0
@@ -284,8 +285,11 @@ class _Run:
         self.calls, self.carriers, self.groups, self.streams, self.effects = {}, {}, {}, {}, []
         self.synthetic = self.hooked = False   # hooked: the run's hook recorded a prompt (PROMPT_HOOK)
         self.net_effects, self.requests = [], []   # net and connect effects; agent-reported request records
+        self.model_hosts = set()   # the API hosts of the model calls the run recorded: the harness's own traffic
         for r in self.records:
             e, d = r["event"], r["event"]["data"]
+            if e["type"] == "model.exchange" and d.get("upstream") in PROVIDER_HOSTS:
+                self.model_hosts.add(PROVIDER_HOSTS[d["upstream"]])
             if e["type"] == "policy.decision":
                 self.calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
             elif e["type"] == "tool.result" and d.get("tool_use_id") in self.calls:
@@ -749,11 +753,14 @@ def _check(run, out, project, allow, deadline, clock):
             d, eseq = r["event"]["data"], r["event"]["run_seq"]
             run.tier[eseq] = "observer"
             harness = (judged.get(eseq) or {}).get("status") == "agent_process"
-            if run.stated and clock() > deadline:
+            if not run.stated or d.get("explained_by") and d["kind"] == "net":
+                continue   # a connection a call (or the policy's explains for a tool the run called) explains: the
+                #            call's own check covers it
+            if clock() > deadline:
                 note(None, "TK-X204", "budget")
-            elif run.stated and harness:
+            elif harness or d["kind"] == "net" and d.get("host") in run.model_hosts:   # the harness's model calls
                 note(None, "TK-X204", "agent_process")
-            elif run.stated and d.get("tool_call_id") not in found:   # a call's own finding covers what it did
+            elif d.get("tool_call_id") not in found:   # a call's own finding covers what it did
                 file = d["kind"] == "file"
                 _constraint(run, note, None, {"names": [constraints.norm(d["path"])] if file else [], "write": file,
                                               "push": False, "network": not file}, (eseq, 0), [eseq],

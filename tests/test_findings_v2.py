@@ -337,6 +337,21 @@ class AgentClaims(unittest.TestCase):   # what the agent's own process sends is 
                               {"messages": [{"role": "user", "content": self.MORE}]})), "low")
 
 
+class EgressNoNetwork(unittest.TestCase):   # TK-X204 over the egress observer's net effects
+    def test_the_harness_model_traffic_and_explained_hosts_break_nothing_an_unexplained_host_does(self):
+        def net(host, **extra):
+            return ("effect.observed", "signer", {"kind": "net", "host": host, "port": 443, "observer": "egress",
+                                                  **extra}, None)
+        ask = ("model.exchange", "gateway", {"phase": "request", "exchange_id": "q1", "upstream": "anthropic"},
+               {"messages": [{"role": "user", "content": "Fix src/pager.py. No network access."}]})
+        for effect, found in ((net("api.anthropic.com"), False), (net("example.org", explained_by="call"), False),
+                              (net("example.org", explained_by="explains"), False), (net("example.org"), True)):
+            with self.subTest(effect[2]):
+                recs, content = records(ask, effect)
+                out = findings_v2.analyze(recs, content)
+                self.assertEqual([f["verdict"]["rule"] for f in out["findings"]], ["TK-X204"] if found else [])
+
+
 class NothingSaid(Base):   # TK-X201
     def test_a_tool_use_with_nothing_before_it_is_found(self):
         t = self.task()
