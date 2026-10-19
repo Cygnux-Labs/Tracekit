@@ -148,3 +148,4 @@
 {"tool": "Bash", "args": {"command": "echo 'x &'"}, "expect": "allow", "note": "a quoted trailing & is no background job"}
 {"tool": "Bash", "args": {"command": "curl 'https://x.example/?a=1&'"}, "expect": "allow", "note": "a URL ending in & is no background job"}
 {"tool": "Bash", "args": {"command": "npm install", "dangerouslyDisableSandbox": false}, "expect": "allow", "note": "a sandboxed call that names the parameter"}
+{"tool": "run_shell_command", "args": {"command": "npm test", "additional_permissions": {"network": false}}, "expect": "allow", "note": "a sandboxed Gemini CLI call that asks for nothing more"}

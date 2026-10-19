@@ -82,7 +82,9 @@ def collect(config=None, issuer_key=None):
         return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
                                signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
                                client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
-                               sandbox_settings=[p for p in (home, settings, _managed()) if p])
+                               sandbox_settings=[p for p in (home, settings, _managed()) if p],
+                               gemini_settings=_gemini(agent and agent.pw_dir,
+                                                       h.get("settings") if h.get("agent") == "gemini" else None))
     if sc:
         return out
     from .signer.service import dev_content, dev_data_dir
@@ -90,11 +92,24 @@ def collect(config=None, issuer_key=None):
     return v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
                      settings=_dev_settings(), plugin=install.plugin_enabled(),
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
-                                       os.path.join(project, "settings.local.json"), _managed()])
+                                       os.path.join(project, "settings.local.json"), _managed()],
+                     gemini_settings=_gemini(os.path.expanduser("~"),
+                                             os.path.join(os.getcwd(), ".gemini", "settings.json")))
 
 
 def _managed():
     return install.MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+
+
+def _layers(paths, key):
+    """The `key` object of each settings file in `paths` that has one, in order."""
+    for p in paths:
+        try:
+            s = read_json(p).get(key)
+        except (OSError, ValueError, AttributeError, TypeError):   # missing, unreadable, not a settings object, or
+            continue                                                  # client.json's settings not a path
+        if isinstance(s, dict):
+            yield s
 
 
 def _sandbox(paths):
@@ -103,14 +118,16 @@ def _sandbox(paths):
     lean: key by key, not Claude Code's whole precedence (--settings, a user `allowUnsandboxedCommands: false` that a
     project can't undo); doctor reports these files, so a setup that relies on the rest can read differently"""
     out = {"network": {}}
-    for p in paths:
-        try:
-            s = read_json(p).get("sandbox")
-        except (OSError, ValueError, AttributeError, TypeError):   # missing, unreadable, not a settings object, or
-            continue                                                  # client.json's settings not a path
-        if isinstance(s, dict):
-            out.update(s, network={**out["network"], **(s["network"] if isinstance(s.get("network"), dict) else {})})
+    for s in _layers(paths, "sandbox"):
+        out.update(s, network={**out["network"], **(s["network"] if isinstance(s.get("network"), dict) else {})})
     return out
+
+
+def _gemini(home, project):
+    """Gemini CLI's settings files, lowest rank first: system defaults, the user's, the project's, system settings."""
+    d = "/Library/Application Support/GeminiCli" if sys.platform == "darwin" else "/etc/gemini-cli"
+    return [p for p in (os.path.join(d, "system-defaults.json"), home and os.path.join(home, ".gemini", "settings.json"),
+                        project, os.path.join(d, "settings.json")) if p]
 
 
 def _dev_settings():
@@ -224,13 +241,15 @@ def _vault_off(cfg, keys):
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
-              client_json=None, now=None, issuer_key=None, plugin=None, sandbox_settings=()):
+              client_json=None, now=None, issuer_key=None, plugin=None, sandbox_settings=(), gemini_settings=()):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
     issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with; plugin: the
     settings file that enables the Tracekit Claude Code plugin (install.plugin_enabled), whose hooks are init's;
-    sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox)."""
+    sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox);
+    gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini)."""
+    from . import agent_hooks
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
     from .signer import service
@@ -443,6 +462,24 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-CLAUDE-SANDBOX", not why, "; ".join(why) or f"Claude Code's sandbox is on and fails closed; "
             f"unsandboxed retries {retry}",
             "; ".join(fix) + " (docs/integrations/claude-code-sandbox.md)" if fix else "", bad=WARN)
+
+    # lean: the settings files only, a later one winning each key of `tools` and `security`; doctor doesn't see
+    # GEMINI_SANDBOX or -s at launch (they override tools.sandbox), folder trust (Gemini skips an untrusted project's
+    # settings) or Gemini's deeper merge of objects such as tools.sandbox; upgrade if a setup relies on them
+    if any(agent_hooks._version(json.dumps(h)) for h in _layers(gemini_settings, "hooks")):
+        tools, security = ({k: v for s in _layers(gemini_settings, key) for k, v in s.items()}
+                           for key in ("tools", "security"))
+        box = tools.get("sandbox")
+        whole = bool(box.get("enabled")) if isinstance(box, dict) else (
+            isinstance(box, (int, float, str)) and box not in (False, "", "0", "false"))
+        if whole or security.get("toolSandboxing") is True:
+            add("D-GEMINI-SANDBOX", not whole, "Gemini's tools.sandbox runs the whole CLI, Tracekit's hooks with it, in a "
+                "sandbox: in a container the hooks don't run and nothing is recorded; under Seatbelt they can't keep "
+                "their state and block every call" if whole else "Gemini's tool sandbox is on (security.toolSandboxing): "
+                "the shipped coding pack's TK-A004 holds each command that asks it for more; GEMINI_SANDBOX or -s at "
+                "launch, which doctor can't see, would run the whole CLI in a sandbox instead",
+                'remove tools.sandbox and set "toolSandboxing": true under "security" '
+                "(docs/integrations/gemini-sandbox.md)", bad=WARN)
 
     if prod:
         bad = trusted_file(policy)

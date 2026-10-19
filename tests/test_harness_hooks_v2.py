@@ -205,6 +205,17 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual(code, 2)
         self.assertIn("TK-D001", err)
 
+    def test_a_gemini_sandbox_expansion_waits_for_a_person(self):
+        pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
+               "tool_input": {"command": "npm install", "additional_permissions": {"network": True}}}
+        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 1):   # nobody answers
+            code, out, err = self.hook("gemini", pre)
+        self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
+        self.assertIn("waiting for approval", err)
+        self.assertIn("TK-A004", err)
+        pre["tool_input"]["additional_permissions"] = {"network": False}
+        self.assertEqual(self.hook("gemini", pre)[0], 0)
+
 
 class Installer(unittest.TestCase):
     def cli(self, *argv):

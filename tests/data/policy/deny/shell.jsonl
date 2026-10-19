@@ -113,3 +113,5 @@
 {"tool": "Bash", "args": {"command": "C:\\\\Users\\\\u\\\\App''Data\\\\Local\\\\tracekit\\\\x.exe"}, "expect": "deny", "note": "Tracekit's Windows data dir, quoted apart: the directories keep their case"}
 {"tool": "Bash", "args": {"command": "npm install", "dangerouslyDisableSandbox": true}, "expect": "ask", "note": "Claude Code's unsandboxed retry: no filesystem or network limits"}
 {"tool": "Bash", "args": {"command": "gh pr view 12", "dangerouslyDisableSandbox": true}, "expect": "ask", "note": "an unsandboxed retry after a TLS failure under Seatbelt"}
+{"tool": "run_shell_command", "args": {"command": "npm install", "additional_permissions": {"network": true}}, "expect": "ask", "note": "Gemini CLI's sandbox expansion: network for one command"}
+{"tool": "run_shell_command", "args": {"command": "cp build/app ~/bin/app", "additional_permissions": {"fileSystem": {"write": ["/home/dev/bin"]}}}, "expect": "ask", "note": "Gemini CLI's sandbox expansion: writing outside the workspace"}
