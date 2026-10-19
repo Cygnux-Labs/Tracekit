@@ -47,7 +47,7 @@ fields their output names, so each rule's output names all of them:
 
 - rule: Tracekit agent exec
   desc: A program an agent started
-  condition: evt.type in (execve, execveat) and evt.dir = < and tracekit_agent
+  condition: evt.type in (execve, execveat) and evt.dir = < and evt.arg.res = 0 and tracekit_agent
   output: >
     agent exec type=%evt.type pid=%proc.pid exe=%proc.exepath cmdline=%proc.cmdline uid=%user.uid
     container=%container.id ns=%k8s.ns.name pod=%k8s.pod.name call=%proc.env[CODEX_TOOL_CALL_ID]
@@ -56,7 +56,9 @@ fields their output names, so each rule's output names all of them:
 
 - rule: Tracekit agent connect
   desc: An agent opened a network connection
-  condition: evt.type = connect and evt.dir = < and fd.type in (ipv4, ipv6) and tracekit_agent
+  condition: >
+    evt.type = connect and evt.dir = < and fd.type in (ipv4, ipv6) and (evt.rawres >= 0 or evt.res = EINPROGRESS)
+    and tracekit_agent
   output: >
     agent connect type=%evt.type pid=%proc.pid exe=%proc.exepath to=%fd.sip port=%fd.sport uid=%user.uid
     container=%container.id ns=%k8s.ns.name pod=%k8s.pod.name call=%proc.env[CODEX_TOOL_CALL_ID]
@@ -66,7 +68,7 @@ fields their output names, so each rule's output names all of them:
 - rule: Tracekit agent write outside the workspace
   desc: An agent opened a file outside its workspace for writing
   condition: >
-    evt.type in (open, openat, openat2) and evt.dir = < and evt.is_open_write = true and fd.type = file
+    evt.type in (open, openat, openat2) and evt.dir = < and evt.is_open_write = true and fd.num >= 0 and fd.type = file
     and not fd.name startswith /workspace/ and not fd.name startswith /tmp/ and tracekit_agent
   output: >
     agent write type=%evt.type pid=%proc.pid exe=%proc.exepath file=%fd.name uid=%user.uid
@@ -75,10 +77,11 @@ fields their output names, so each rule's output names all of them:
   tags: [tracekit]
 ```
 
-Put your own workspace path in the third rule.
+Put your own workspace path in the third rule. Each rule matches a call that succeeded (an exec that ran, a connect
+under way, an open that returned a descriptor), so an attempt the kernel refused isn't recorded as an effect.
 
-**3. The signer** gives the import its own identity and the `observe_effect` grant, as for
-[Tetragon](tetragon.md#setup).
+**3. The signer** gives each node's import its own identity and the `observe_effect` grant, as for
+[Tetragon](tetragon.md#setup): one identity is one process.
 
 **4. The import**, on each node (`sensor.yaml`):
 
@@ -120,11 +123,12 @@ process's connections and writes are joined to it by `pid` and time.
 
 Falco numbers no alerts. It reports drops between its kernel driver and itself as the alert
 `Falco internal: syscall event drop`, with that second's counts (`n_drops`, `n_evts`): the import sends it as `lost`,
-a signed `capture.gap{observer_lost}` in each run it covers, which ends that coverage
+a signed `capture.gap{observer_lost}` in each run it covers, after which their matrix says processes not observed
 ([Tetragon](tetragon.md#losses) says how). With Falco's defaults it reports a second only when more than 10 % of its
 events were dropped, and at most one second in 30: the settings above report every second with a drop. Alerts Falco
 drops from a full output queue (`outputs_queue.capacity`) show only in its log and its metric
-`falcosecurity_falco_outputs_queue_num_drops_total`: alert on it in your monitoring.
+`falcosecurity_falco_outputs_queue_num_drops_total`: alert on it in your monitoring. A Falco restart writes no alert,
+so what happened while it was down is missing with no gap: alert on its restarts too.
 
 ## What Tracekit sees and doesn't
 

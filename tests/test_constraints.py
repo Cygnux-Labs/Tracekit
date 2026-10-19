@@ -138,7 +138,7 @@ class Grammar(unittest.TestCase):
         n = 1 << 16
         for unit in ("don't ", "leave ", "hands off ", "only ", "it ", '"', "`", "```", "nothing else ", "? ",
                      "a.py is not to be ", "x.py ", "no changes to ", "everything else ", "as is ", "make no changes "
-                     "there. ", "don't touch a.py until ", "stay away from ", "is the only "):
+                     "there. ", "don't touch a.py until ", "stay away from ", "is the only ", " "):
             text = (unit * (n // len(unit) + 1))[:n]
             t0 = time.perf_counter()
             constraints.extract(text)

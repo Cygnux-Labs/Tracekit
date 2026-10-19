@@ -2,8 +2,8 @@
 protobuf from ext_mcp.proto's definitions (not by the processor's hand decoding); the processor decides through an
 in-process v2 signer as source gateway (tier T2)."""
 import json
+import time
 import unittest
-from unittest import mock
 
 from adapter_contract import tmpdir
 from test_executor import InProcess
@@ -83,8 +83,7 @@ class ExtMcp(unittest.TestCase):
         self.closed = False
         self.addCleanup(self.close)
         self.signer = InProcess(self.s, AGW)
-        with mock.patch.object(ext_mcp, "APPROVAL_WAIT_S", 0.2):
-            srv, port = ext_mcp.serve("127.0.0.1:0", self.signer)
+        srv, port = ext_mcp.serve("127.0.0.1:0", self.signer)
         self.addCleanup(srv.stop, None)
         channel = grpc.insecure_channel(f"127.0.0.1:{port}")
         self.addCleanup(channel.close)
@@ -156,7 +155,9 @@ class ExtMcp(unittest.TestCase):
 
     def test_an_ask_is_refused_then_an_approved_retry_with_the_same_arguments_passes(self):
         pay = {"to": "acct-42", "cents": 1500}
+        t = time.monotonic()
         out = self.call("pay", pay)
+        self.assertLess(time.monotonic() - t, 2)   # refused at once: no worker waits on a person, holding up others
         self.assertEqual(out.WhichOneof("result"), "error")
         self.assertIn("R-PAY: approval requested; make the same call again once a person approves it", out.error.reason)
         [a] = self.s.call(AGENT, "approval_list", {"run_id": self.run_id, "state": "requested"})["approvals"]
@@ -171,6 +172,11 @@ class ExtMcp(unittest.TestCase):
         types = [(e["type"], e["source"]) for e in self.events()]
         for t in [("approval.request", "gateway"), ("approval.consumed", "signer"), ("tool.result", "gateway")]:
             self.assertIn(t, types)
+
+    def test_a_result_past_grpcs_default_4_mib_is_recorded(self):
+        tcid = self.call("echo", {"text": "big"}).metadata.fields[ext_mcp.CALL].string_value
+        self.assertEqual(self.respond(tcid, {"content": [{"type": "text", "text": "x" * (5 << 20)}]}), "pass")
+        self.assertEqual(self.gaps_at_run_end(), [])   # completed: no held_call_unresolved
 
     def test_a_passed_call_whose_result_never_comes_ends_its_run_with_a_gap(self):
         # agentgateway skips the response hook for a JSON-RPC error

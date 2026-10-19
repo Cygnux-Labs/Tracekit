@@ -3,6 +3,7 @@ gateway against the middleware, which decides and records through a real signer 
 here field by field from OpenShell's proto/supervisor_middleware.proto, apart from the module's codec."""
 import base64
 import contextlib
+import gzip
 import importlib.util
 import io
 import json
@@ -24,6 +25,7 @@ from tracekit import openshell
 from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
 from tracekit.otlp_wire import _fields, varint
+from tracekit.policy2.compile import build
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
@@ -97,9 +99,9 @@ class Codec(unittest.TestCase):
         self.assertEqual(openshell.args_of(req), {
             "method": "POST", "url": "https://api.example/v1/send", "headers": [["content-type", "application/json"]],
             "body": '{"to": "x"}'})
-        binary = openshell.args_of(openshell.decode(request("h", b"\xff\x00"), openshell._REQUEST))["body"]
-        self.assertEqual(binary["size"], 2)
-        self.assertRegex(binary["digest"], "^sha256:[0-9a-f]{64}$")
+        for body in (b"\xff\x00", b"x" * (openshell.MAX_TEXT + 1)):   # binary, or past half a frame: never decided
+            with self.subTest(size=len(body)), self.assertRaises(openshell.Unreadable):
+                openshell.args_of(openshell.decode(request("h", body), openshell._REQUEST))
 
     def test_packed_body_modes_and_the_manifest(self):
         packed = pb([(1, [(8, varint(1) + varint(3))])])   # how protobuf encoders write a repeated enum
@@ -147,11 +149,12 @@ class Middleware(unittest.TestCase):
     """The middleware on loopback in front of a signer, and a grpcio client playing OpenShell."""
     config = {}   # the middleware's config besides listen and signer
     authorize = {"openshell:*": PER_CALL}
+    policy = POLICY
 
     def setUp(self):
         import grpc
         self.grpc = grpc
-        self.s = SignerService(tmpdir(self), policy=POLICY, gateways=["uid:*"], authorize=self.authorize,
+        self.s = SignerService(tmpdir(self), policy=self.policy, gateways=["uid:*"], authorize=self.authorize,
                                observe_grace_s=0)
         self.addCleanup(self.s.close)
         path, self.signer = serve_signer(self, self.s)
@@ -320,12 +323,40 @@ class Supervisor(Middleware):
             time.sleep(0.05)
         self.assertEqual([e["data"]["ok"] for e in self.events(run, "tool.result")], [False])
 
+    def test_a_request_waiting_for_its_response_keeps_no_arguments(self):
+        for i in range(3):   # responses that may never come (an upstream failure, a WebSocket upgrade)
+            self.assertEqual(self.evaluate(request("allowed.example", b"A" * (60 * 1024), f"r-{i}"))[0], openshell.ALLOW)
+        self.assertLess(len(repr(list(self.mw.inflight.values()))), 8192)
+        self.respond(preflight("r-0"), unit(1, b"ok", end=True), TRAILERS)   # the signer checks the arguments' hash
+        self.assertEqual([e["data"]["ok"] for e in self.events(self.runs()[0], "tool.result")], [True])
+
     def test_a_held_request_is_printed_without_its_query(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.evaluate(request("ask.example", b"{}", query="token=abc123"))
         self.assertIn("POST https://ask.example/v1/send waits for approval", err.getvalue())
         self.assertNotIn("abc123", err.getvalue())
+
+
+class ServerPack(Middleware):
+    """Under the shipped server pack: a body the policy can't read is denied, never decided without it."""
+    policy = Engine(build(os.path.join(os.path.dirname(openshell.__file__), "policy2", "packs", "server.yaml"))[0])
+
+    def test_a_body_the_policy_cannot_read_is_denied(self):
+        secret = b'{"key": "AKIA' + b'IOSFODNN7EXAMPLE"}'
+        self.assertEqual(self.evaluate(request("upload.example.com", b'{"q": 1}')), (openshell.ALLOW, ""))
+        self.assertEqual(self.evaluate(request("upload.example.com", secret)), (openshell.DENY, "tracekit_denied"))
+        decided = len(self.events(self.runs()[0], "policy.decision"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for body in (gzip.compress(secret), secret + b" " * (600 * 1024)):   # binary; past half a frame
+                with self.subTest(size=len(body)):
+                    self.assertEqual(self.evaluate(request("upload.example.com", body)),
+                                     (openshell.DENY, "tracekit_body_unreadable"))
+        self.assertEqual(len(self.events(self.runs()[0], "policy.decision")), decided)   # no decision without it
+        self.assertIn("isn't UTF-8 text", err.getvalue())
+        self.assertIn("over the 512 KiB the signer takes", err.getvalue())
+        self.assertEqual(self.evaluate(request("upload.example.com", secret + b" " * (100 * 1024)))[0], openshell.DENY)
 
 
 class Authenticated(Middleware):
@@ -381,7 +412,7 @@ GATEWAY = {"service.name": "openshell-gateway", "openshell.gateway.name": "opens
 
 def ocsf_event(cls, activity=1, sandbox=SANDBOX, **fields):
     names = {4001: "Network Activity", 4002: "HTTP Activity", 1007: "Process Activity", 5019: "Device Config State "
-             "Change", 4007: "SSH Activity", 3002: "Authentication"}
+             "Change", 4007: "SSH Activity", 3002: "Authentication", 2004: "Detection Finding"}
     return {"class_uid": cls, "class_name": names[cls], "category_uid": cls // 1000, "activity_id": activity,
             "severity_id": 1, "severity": "Informational", "status_id": 1, "status": "Success",
             "time": 1791996125789, "metadata": {"version": "1.8.0", "uid": str(uuid.uuid4()), "product": {
@@ -582,6 +613,44 @@ class Ocsf(Middleware):
         self.mw.tick(time.monotonic() + openshell.STALE_S + 1)
         self.assertEqual(len(self.events(self.run_of(OTHER), "capture.gap")), 2)
 
+    def test_traffic_openshell_let_past_the_middleware_is_a_signed_gap(self):
+        """OpenShell's Detection Findings of a fail_open bypass (openshell-supervisor-network/src/l7/middleware.rs,
+        rest/http_response.rs); its fail-closed ones are no loss."""
+        def finding(uid, evidence=None, **unmapped):
+            return ocsf_event(2004, finding_info={"uid": uid, "title": "t"}, message="m", unmapped=unmapped,
+                              **({"evidences": [{"data": evidence}]} if evidence else {}))
+        bypassed = [finding("openshell.middleware.failure", {"middleware": "tracekit", "implementation": "tracekit"},
+                            middleware="tracekit", implementation="tracekit"),
+                    finding("openshell.middleware.traffic_uninspectable",
+                            {"policy": "p", "host": "upload.example.com", "protocol": "h2", "disposition": "fail_open"}),
+                    finding("openshell.middleware.body_unavailable", {"host": "upload.example.com",
+                                                                      "disposition": "fail_open"}),
+                    finding("openshell.middleware.http_response_fail_open", {"host": "api.example.com"},
+                            middleware_config="tracekit")]
+        closed = [finding("openshell.middleware.failure"),
+                  finding("openshell.middleware.body_unavailable", {"host": "h", "disposition": "denied"})]
+        self.assertEqual(self.export(logs(*[log_record(e) for e in bypassed + closed]), timeout=20), b"")
+        gaps = [e["data"]["reason"] for e in self.events(self.run_of(), "capture.gap")]
+        self.assertEqual(len(gaps), 4, gaps)
+        self.assertIn("OpenShell let a request to upload.example.com through without its middleware "
+                      "(openshell.middleware.traffic_uninspectable, fail_open)", gaps[1])
+        self.assertIn("a request through without middleware tracekit (openshell.middleware.failure", gaps[0])
+        self.assertIn("a response to api.example.com through without middleware tracekit", gaps[3])
+        self.assertEqual(self.mw.unmapped["Detection Finding events of traffic OpenShell denied"], 2)
+
+    def test_after_a_gateway_gap_a_silent_import_is_a_gap_still(self):
+        self.evaluate(request("allowed.example", request_id="r-1", method="GET"))
+        run_id = self.run_of()
+        self.export(logs(gap(), resource=GATEWAY), timeout=20)   # a loss of any sandbox's events: every covered run
+        self.s.idle_s, self.s.grace_s = 0, 0   # then the import goes silent for good, and the run closes long after
+        later = time.monotonic() + 3 * svc.TAILER_LOST_S + 1000
+        self.s.sweep(now=later)
+        self.s.sweep(now=later + 1000)
+        reasons = [e["data"]["reason"] for e in self.events(run_id, "capture.gap") if e["data"]["kind"] == "observer_lost"]
+        self.assertEqual(len(reasons), 2, reasons)
+        self.assertIn("its gateway's gap record", reasons[0])
+        self.assertIn("no observe_effect from the openshell import", reasons[1])
+
     def test_what_is_not_imported_is_counted_and_printed(self):
         self.export(logs(log_record(ocsf_event(4007)), log_record("not json", attrs={"openshell.sandbox.id": SANDBOX}),
                          log_record(connect(firewall_rule={"name": "p", "type": "middleware"}))), timeout=20)
@@ -593,6 +662,13 @@ class Ocsf(Middleware):
         self.assertIn("OpenShell OCSF events not imported so far: 1 x SSH Activity events; 1 x events of no sandbox "
                       "(the gateway's own); 1 x log records that aren't OCSF events OpenShell writes; 1 x the "
                       "middleware's own decisions (recorded as its calls)", err.getvalue())
+
+    def test_kinds_not_imported_are_counted_in_bounded_memory(self):
+        evs = [dict(ocsf_event(4007), class_name=str(i) + "X" * 1000) for i in range(100)]   # the sender names them
+        self.export(logs(*[log_record(e) for e in evs]), timeout=20)
+        self.assertEqual(len(self.mw.unmapped), openshell.MAX_UNMAPPED + 1)
+        self.assertEqual(sum(self.mw.unmapped.values()), 100)
+        self.assertLessEqual(max(map(len, self.mw.unmapped)), 80)
 
     def test_a_batch_the_signer_cannot_take_is_refused_for_openshell_to_send_again(self):
         batch = logs(log_record(connect()))

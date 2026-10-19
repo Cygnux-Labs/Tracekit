@@ -543,5 +543,20 @@ class NoTailer(unittest.TestCase):
         self.assertNotIn("tailer", st)
 
 
+@unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
+class TranscriptRead(unittest.TestCase):
+    def test_a_fifo_in_the_transcripts_place_is_not_read_and_never_blocks(self):
+        fifo = os.path.join(ac.tmpdir(self), "session.jsonl")
+        os.mkfifo(fifo)
+        got = []
+        t = threading.Thread(target=lambda: got.append(harness_hooks._read(fifo, {"offset": 0})), daemon=True)
+        t.start()
+        t.join(5)
+        if t.is_alive():   # blocked opening it: a writer releases it
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            self.fail("the hook blocked on a FIFO transcript")
+        self.assertEqual(got, [[]])
+
+
 if __name__ == "__main__":
     unittest.main()

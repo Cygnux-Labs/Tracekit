@@ -553,6 +553,30 @@ class TestProxy(unittest.TestCase):
             s.sendall(client_hello("localhost"))
             self.assertEqual(self.read(s), b"pong")
 
+    def test_a_uid_holds_at_most_max_tunnels_connections_each_attributed_in_time(self):
+        """In system mode every agent connects from loopback, which the transport limits to 256 connections: one
+        agent's half-open handshakes must not take them all."""
+        held, who, conns = [], [1000], self.srv.observer.conns
+        with mock.patch.object(egress, "MAX_TUNNELS", 3), mock.patch.object(egress, "PRE_AUTH_S", 4), \
+                mock.patch.object(egress, "_peer_uid", lambda client, server: who[0]):
+            t = time.monotonic()
+            for i in range(4):   # SOCKS5's version byte, then nothing
+                s = socket.create_connection(self.srv.server_address[:2], 10)
+                s.sendall(b"\x05")
+                held.append(s)
+                deadline = time.monotonic() + 2
+                while i < 3 and conns.get(1000, 0) <= i and time.monotonic() < deadline:   # counted, in this order
+                    time.sleep(0.01)
+            self.assertEqual(self.read(held[3]), b"")   # uid 1000's fourth: closed at once
+            self.assertLess(time.monotonic() - t, 3)
+            who[0] = 2000
+            other = socket.create_connection(self.srv.server_address[:2], 5)   # another agent's
+            other.sendall(b"\x05\x01\x00")
+            self.assertEqual(other.recv(2), b"\x05\x00")   # attributed by its uid
+            for s in held[:3]:   # none sent its greeting in time: cut, not left to the 30 s deadline
+                self.assertEqual(self.read(s), b"")
+            self.assertLess(time.monotonic() - t, 9)   # cut at PRE_AUTH_S: each read returns before its timeout
+
     def test_an_allowed_host_needs_no_tls(self):
         self.srv.observer.allow.add("127.0.0.1")
         s, status = self.connect(f"127.0.0.1:{self.up.port}")

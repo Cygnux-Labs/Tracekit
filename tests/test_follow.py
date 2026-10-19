@@ -280,6 +280,29 @@ class TestAgentsh(Followed):
                               r"killed; what the log says after that is not recorded: read the log itself for it, and "
                               r"restart `tracekit follow`$")
 
+    def test_a_long_backlog_is_read_in_linear_time_with_heartbeats(self):
+        al, log = self.agentsh()
+        with open(al.path, "ab") as f:   # 24 MB written while the signer was unreachable
+            f.write((b"x" * 300 + b"\n") * 80_000)
+        seen, beats = [], []
+        log.line, log.heartbeat = lambda raw, at: seen.append(at), lambda: beats.append(1)
+        t = time.monotonic()
+        log.lines()
+        self.assertLess(time.monotonic() - t, 5)   # quadratic, it took about 13 s
+        self.assertEqual((len(seen), len(beats), log.buf), (80_000, 80_000, b""))
+        self.assertEqual(seen[-1], log.off - 301)
+
+    def test_a_follower_killed_after_a_gap_it_went_on_from_is_a_gap_too(self):
+        al, log = self.agentsh()
+        al.write(SHADOW)
+        al.seq = 6
+        al.write(NPM)   # a sequence gap: the follower records it and goes on
+        log.step()
+        self.s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)   # then it is killed
+        sequence, killed = self.gaps()
+        self.assertIn("agentsh sequence 6 follows 2", sequence)
+        self.assertIn("the log follower stopped or was killed", killed)
+
     def test_a_follower_killed_across_a_signer_restart_without_a_snapshot_is_a_gap(self):
         al, log = self.agentsh()
         al.write(SHADOW)

@@ -84,6 +84,10 @@ On Linux the uid that runs `msb` goes with the run token too: register the run a
 socket), or the signer attributes the connections by the uid instead of by the token
 ([egress](../egress.md#attribution)).
 
+Every connection `msb` makes is that one uid's, so all the sandboxes of one `msb` user share 64 open connections
+through the observer, with or without run tokens: one more is closed at once, and the observer says so on stderr
+([egress](../egress.md#what-is-refused)).
+
 ## What the run gets
 
 microsandbox sends the observer the address it resolved and checked against its own network policy, never a host name

@@ -203,6 +203,7 @@ middleware's reason code and none of its text:
 | `tracekit_signer_unreachable` | the signer can't be reached: nothing is sent, whatever the run's fail modes |
 | `tracekit_signer_refused` | the signer refused the middleware's call (a missing grant, a quota) |
 | `tracekit_malformed_request` | OpenShell's message didn't decode |
+| `tracekit_body_unreadable` | the request's body isn't UTF-8 text (compressed or binary) or is over 512 KiB: the policy can't read it, so it isn't decided without it |
 | `tracekit_unauthenticated` | with `gateway_jwt`, the call came without a valid token for the request's sandbox |
 
 The middleware prints each refusal and each held request on stderr, with the reason OpenShell doesn't pass on (a
@@ -231,7 +232,7 @@ own gets `tracekit_approval_pending` until someone answers.
   every sandbox. The run token stays in the middleware; the agent never holds it. When the signer closes the run after
   `idle_s` without calls, the sandbox's next request starts a new run, and so does a restart of the middleware.
 - **Each request** as tool `http_request` with arguments `method`, `url`, `headers` (the headers OpenShell passes, in
-  wire order) and `body` (its text; the digest and size of a binary body or one too large for a signer frame). The
+  wire order) and `body` (its text: a body that isn't UTF-8 or is over 512 KiB is denied unrecorded). The
   `policy.decision` is source `gateway`, tier T2, and names the sandbox (`caller: openshell:<sandbox id>`) and the
   middleware (`via`). On `ask`, the `approval.request` and, once answered, the approval and its consume.
 - **Each response** completes the call: a `tool.result`, source `gateway`, tier T2, with the status, headers and body,
@@ -257,6 +258,7 @@ gap OpenShell or the middleware reports names `sensor: openshell`.
 | Process Activity (1007): a launch | `kind: exec`, the process OpenShell started (the sandbox's entrypoint) |
 | Process Activity (1007): a termination | `kind: exit`, with its exit code |
 | Device Config State Change (5019): a policy or configuration change | an `ext` record `openshell.policy`: OpenShell's name for the change (`approved`, `merged`, `loaded`, `failed`, ...), its `policy_hash`, who made it (`by`, its `actor` as OpenShell writes it, which may be a person's email: a signed record can't be edited later), and a commitment to its message, never the message itself |
+| Detection Finding (2004) of traffic OpenShell let past a middleware under `fail_open` (`openshell.middleware.failure` naming the middleware, `.traffic_uninspectable` or `.body_unavailable` with disposition `fail_open`, `.http_response_fail_open`) | a `capture.gap{observer_lost}` in the sandbox's run: a request or response that may have no record |
 | OpenShell's gap record (`openshell.ocsf.gap`: records it dropped before export) | a `capture.gap{observer_lost}` in that sandbox's run, or in every run the import covers when OpenShell's gateway dropped them (they may be of any sandbox) |
 
 OpenShell's own records of the middleware's decisions are skipped: those requests are the run's calls already. An
@@ -285,12 +287,13 @@ and each change as `OPENSHELL POLICY · <change>` on the run's tape.
   closed can't select), and OpenShell's own decisions. WebSocket messages aren't sent to the middleware: it doesn't
   take them, so the upgrade request is decided and recorded and the messages aren't. The middleware's records don't
   name the process that made a request; OpenShell's connection events do.
-- **Doesn't import:** OCSF events of other kinds (SSH, authentication, detection findings, application lifecycle,
-  base events, and network events that neither allow nor deny), events that name no sandbox (the gateway's own), and
-  processes other than the ones OpenShell reports (it reports the entrypoint, not each process the agent starts: a
+- **Doesn't import:** OCSF events of other kinds (SSH, authentication, detection findings other than a `fail_open`
+  bypass, application lifecycle, base events, and network events that neither allow nor deny), events that name no
+  sandbox (the gateway's own), and processes other than the ones OpenShell reports (it reports the entrypoint, not each process the agent starts: a
   [kernel sensor](tetragon.md) sees those). The middleware counts each kind it skips and prints the counts on stderr.
 - **Doesn't read:** a response body OpenShell doesn't offer to middleware (compressed, partial, bodyless or
-  `no-transform`); such a call completes with the digest of its status and headers.
+  `no-transform`); such a call completes with the digest of its status and headers. A request body that isn't UTF-8
+  text or is over 512 KiB isn't read either, so the request is denied (`tracekit_body_unreadable`).
 - **Doesn't check without `gateway_jwt`:** who calls it. Any caller that reaches its address is taken for OpenShell
   ([who may call it](#who-may-call-it)).
 - **Doesn't take more than 64 responses at once:** each response stream holds a thread, and the threads that decide

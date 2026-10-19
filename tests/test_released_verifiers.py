@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -65,7 +66,8 @@ class Released(Signed):
             self.call(SENSOR, "observe_effect", instance="i", sensor="tetragon", callers=[f"uid:{ME.subject}"], **req)
         observe(effects=[])
         run = self.register(ME)
-        proc = {"caller": f"uid:{ME.subject}", "ts": "2026-10-12T10:00:00.000000Z", "pid": 7, "binary": "/usr/bin/curl"}
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(time.time() + 1))   # after the run registered
+        proc = {"caller": f"uid:{ME.subject}", "ts": ts, "pid": 7, "binary": "/usr/bin/curl"}
         if effect:
             observe(effects=[dict(proc, kind="exec")])
         else:

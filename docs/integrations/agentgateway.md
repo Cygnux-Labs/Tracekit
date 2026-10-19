@@ -78,8 +78,8 @@ binds:
   parse. The processor answers `PERMISSION_DENIED` with the reason, which agentgateway returns to the agent as a tool
   error. The MCP server never sees the call.
 - **Ask:** agentgateway gives a processor 10 seconds, so the processor can't hold a call for a person. It asks for
-  approval, waits 5 seconds, then refuses the call with `approval requested; make the same call again once a person
-  approves it`. Approve it (`tracekit approvals approve apr-…`); the same call again, with the same run, caller, tool
+  approval and refuses the call at once with `approval requested; make the same call again once a person approves
+  it`: a worker waiting on a person would hold up the other agents' calls. Approve it (`tracekit approvals approve apr-…`); the same call again, with the same run, caller, tool
   and arguments, then passes and uses up the approval. A call with other arguments asks again.
 - **Other methods** pass undecided. List only `tools/call` in `methods`.
 
@@ -98,7 +98,8 @@ hook.
   The processor takes whoever calls it for agentgateway, with its `caller` and its results.
 - **Doesn't see errors:** agentgateway sends a JSON-RPC error (an upstream failure, a timeout) to the agent without
   calling the response hook. Such a call has a decision and no result; when its run ends the signer waits
-  `gateway_wait_s` and then writes a `held_call_unresolved` gap: the call may have run.
+  `gateway_wait_s` and then writes a `held_call_unresolved` gap: the call may have run. So does a result over 64 MiB,
+  which the processor refuses (`RESOURCE_EXHAUSTED`) and agentgateway's `failClosed` turns into an error.
 - **Doesn't check** how agentgateway authenticated the agent. The signer checks that the run token was issued to
   `caller`.
 - **Decides only tools/call:** `resources/read` and `prompts/get` go through agentgateway unrecorded.
@@ -128,7 +129,9 @@ frontendPolicies:
   named `mcp:<mcp.target>/<gen_ai.tool.name>` like the processor's records. It failed when the span's status is an
   error or it carries `mcp.error.code`. The outbound and guardrail spans under it (`agentgateway.outbound.*`) and
   other methods are skipped, so each call is recorded once.
-- **One run per trace.** Unless the agent sends `traceparent`, each request is its own trace, so its own run.
+- **One run per trace.** Unless the agent sends `traceparent`, each request is its own trace, so its own run,
+  closed as its span arrives. With `traceparent` the request span has a parent agentgateway doesn't export, so the
+  run stays open until `idle_s` and counts against agentgateway's `open_runs` (100 by default) meanwhile.
 - **No arguments or results:** agentgateway's spans carry the tool's name and outcome. Its tracing `attributes` can add
   CEL values (`mcp.tool.arguments`, `mcp.tool.result`) as `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`,
   which the import reads.

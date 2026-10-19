@@ -39,10 +39,11 @@ sandbox. The tokens stay in this process. Once the signer has closed a sandbox's
 registers a new one.
 
 Request: tool `http_request`, args {method, url, headers: [[name, value], ...], body}: `body` is the text of a UTF-8
-body (else, or when the args would not fit a frame, {digest, size}). allow: ALLOW. deny: DENY tracekit_denied. ask: approval_request and DENY
-tracekit_approval_required at once (OpenShell waits at most its registration timeout, 30 s at most); the same request
-again (same run, tool and args) reads the approval: requested, DENY tracekit_approval_pending; approved, consumed and
-ALLOW; else DENY tracekit_approval_<state>, and the request after that is decided anew. The signer unreachable: DENY
+body. A body that isn't UTF-8, or args over half a frame, is never decided on without it: DENY tracekit_body_unreadable.
+allow: ALLOW. deny: DENY tracekit_denied. ask: approval_request and DENY tracekit_approval_required at once
+(OpenShell waits at most its registration timeout, 30 s at most); the same request again (same run, tool and args)
+reads the approval: requested, DENY tracekit_approval_pending; approved, consumed and ALLOW; else DENY
+tracekit_approval_<state>, and the request after that is decided anew. The signer unreachable: DENY
 tracekit_signer_unreachable; a signer refusal: tracekit_signer_refused; a request that doesn't decode:
 tracekit_malformed_request. OpenShell enforces a DENY whatever the entry's on_error, and gives the sandbox the code,
 never the reason; refusals and asks are printed on stderr.
@@ -67,7 +68,8 @@ OpenShell blocked it); OpenShell's records of middleware decisions (firewall_rul
 middleware recorded those as calls. Process activity: exec (launch) and exit (terminate). Device config state change:
 a policy effect, the signer's `ext` record openshell.policy (OpenShell's name for the change, its policy_hash, the
 actor, the message's digest). Losses are signed gaps: OpenShell's gap records (openshell.ocsf.gap, records it dropped)
-in the sandbox's run, or in every covered run when they name no sandbox (the gateway's); and a sandbox the middleware
+in the sandbox's run, or in every covered run when they name no sandbox (the gateway's); its findings of traffic that
+went past a middleware under fail_open (BYPASS), in the sandbox's run; and a sandbox the middleware
 decided a request of whose stream then sends nothing for STALE_S (OpenShell records each middleware decision as an OCSF
 event), once until it sends again. Events delivered twice (OpenShell retries a batch) are dropped by ocsf.metadata.uid.
 Anything else is counted by kind and printed on stderr. A batch the signer can't take is refused UNAVAILABLE, so
@@ -122,11 +124,18 @@ MAX_STREAMS, UNARY_WORKERS = 64, 32
 SIGNER_TIMEOUT_S = 5
 LOGS = "opentelemetry.proto.collector.logs.v1.LogsService"
 GAP_EVENT = "openshell.ocsf.gap"   # OpenShell's record of OCSF records it dropped (openshell-otel/src/ocsf.rs)
+# its Detection Findings of traffic that went past a middleware under fail_open (openshell-supervisor-network/src/l7/
+# middleware.rs, rest/http_response.rs): the response one always, the failure one when it names the middleware (the
+# fail-closed one names none), the others when their disposition is fail_open
+BYPASS_FAILED, BYPASS_RESPONSE = "openshell.middleware.failure", "openshell.middleware.http_response_fail_open"
+BYPASS = {BYPASS_FAILED, BYPASS_RESPONSE, "openshell.middleware.traffic_uninspectable",
+          "openshell.middleware.body_unavailable"}
 STALE_S = 60   # after a request the middleware decided, how long its sandbox's OCSF stream may send nothing
 OCSF_CHECK_S = 5
 OCSF_EXPORTS = 8   # Export calls at once (each waits on the signer); one more is refused and OpenShell retries it
 MAX_SEEN = 100_000   # OCSF event uids kept to drop the events of a batch OpenShell sends again
 MAX_RECORDS = 10_000   # log records per Export (OpenShell sends at most 100 and a gap record)
+MAX_UNMAPPED = 64   # kinds of event not imported, counted each; the sender names them, so past these one more count
 ITEM = REQUESTS["observe_effect"]["properties"]["effects"]["items"]
 SANDBOX = re.compile(r"[A-Za-z0-9._-]{1,100}")
 DEFAULT_PORT = {"http": 80, "ws": 80, "https": 443, "wss": 443}
@@ -254,7 +263,8 @@ def _process(p):
 def ocsf_effect(ev, ts):
     """The observe_effect effect of OCSF event `ev` (OpenShell's JSON record: openshell-ocsf/src/events), or why it
     isn't imported (a str)."""
-    cls, act, name = ev.get("class_uid"), ev.get("action_id"), ev.get("class_name") or f"class {ev.get('class_uid')}"
+    cls, act = ev.get("class_uid"), ev.get("action_id")
+    name = str(ev.get("class_name") or f"class {cls}")[:64]
     denied = {"denied": True} if act == 2 else {}
     if cls in (4001, 4002):   # Network Activity, HTTP Activity
         if (ev.get("firewall_rule") or {}).get("type") == "middleware":
@@ -273,6 +283,18 @@ def ocsf_effect(ev, ts):
         code = ev.get("exit_code")
         return {"kind": "exit", "ts": ts, **_process(ev.get("process")),
                 **({"status": code} if isinstance(code, int) and 0 <= code < 1 << 32 else {})}
+    if cls == 2004 and (ev.get("finding_info") or {}).get("uid") in BYPASS:   # Detection Finding: a fail_open bypass
+        uid, u = ev["finding_info"]["uid"], ev.get("unmapped") if isinstance(ev.get("unmapped"), dict) else {}
+        said = {k: v for e in ev.get("evidences") or () if isinstance(e, dict) and isinstance(e.get("data"), dict)
+                for k, v in e["data"].items()}
+        mw = u.get("middleware") or said.get("middleware") or u.get("middleware_config")
+        if not (uid == BYPASS_RESPONSE or said.get("disposition") == "fail_open" or uid == BYPASS_FAILED and mw):
+            return f"{name} events of traffic OpenShell denied"
+        host = f" to {str(said['host'])[:253]}" if said.get("host") else ""
+        return {"kind": "lost", "reason": (
+            f"OpenShell let {'a response' if uid == BYPASS_RESPONSE else 'a request'}{host} through without "
+            f"{'middleware ' + str(mw)[:100] if mw else 'its middleware'} ({uid}, fail_open): Tracekit may have no "
+            "record of it; keep on_error: fail_closed on the middleware's entry")}
     if cls == 5019:   # Device Config State Change: the sandbox's policy or configuration
         u = ev.get("unmapped") if isinstance(ev.get("unmapped"), dict) else {}
         return {"kind": "policy", "ts": ts,
@@ -327,12 +349,13 @@ def _url(t):
     return f"{t['scheme']}://{host}{port}{t.get('path') or '/'}" + (f"?{t['query']}" if t.get("query") else "")
 
 
-def _digest(data):
-    return {"digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size": len(data)}
+class Unreadable(Exception):
+    """A request whose body the policy can't read: denied, never decided on without it."""
 
 
 def args_of(req):
-    """The decided arguments of HttpRequestEvaluation `req` (decoded)."""
+    """The decided arguments of HttpRequestEvaluation `req` (decoded). Unreadable when its body isn't UTF-8 text or the
+    arguments don't fit a signer frame."""
     t = req.get("target", {})
     if not all(t.get(k) for k in ("scheme", "host", "method")):
         raise WireError("the target has no scheme, host or method")
@@ -343,9 +366,10 @@ def args_of(req):
         try:
             args["body"] = raw.decode("utf-8")
         except UnicodeDecodeError:
-            args["body"] = _digest(raw)
-        if not sendable(args):
-            args["body"] = _digest(raw)
+            raise Unreadable(f"its body ({len(raw)} bytes) isn't UTF-8 text (compressed or binary)") from None
+    if not sendable(args):
+        raise Unreadable(f"its body ({len(raw)} bytes) and headers are over the {MAX_TEXT // 1024} KiB the signer "
+                         "takes")
     return args
 
 
@@ -357,7 +381,9 @@ class Middleware:
         self.lock, self.registering = threading.Lock(), threading.Lock()
         self.runs = collections.OrderedDict()       # sandbox_id -> (run_id, token, caller)
         self.held = collections.OrderedDict()       # (run_id, args digest) -> (tool_call_id, decision, approval_id)
-        self.inflight = collections.OrderedDict()   # (sandbox_id, request_id) -> (key, tool_call_id, decision, args)
+        # (sandbox_id, request_id) -> (key, tool_call_id, decision, the call's event hash): not its arguments, which a
+        # request whose response never comes (an upstream failure, a WebSocket upgrade) would hold
+        self.inflight = collections.OrderedDict()
         # the OCSF import: on or off, this process's instance, its last call, the event uids recorded, each sandbox's
         # first request still waiting for its stream (monotonic time), the sandboxes whose stream stopped, and what
         # wasn't imported (and how much of it was printed)
@@ -405,6 +431,9 @@ class Middleware:
             args = args_of(req)
         except WireError as e:
             return self._deny("tracekit_malformed_request", f"the request doesn't decode: {e}")
+        except Unreadable as e:
+            return self._deny("tracekit_body_unreadable", f"sandbox {ctx['sandbox_id']}: Tracekit's policy can't read "
+                              f"the request, {e}: denied, never decided without its body")
         if sandbox is not None and sandbox != ctx["sandbox_id"]:
             return self._deny("tracekit_unauthenticated", f"a token for sandbox {sandbox[:100]} sent another "
                                                           "sandbox's request")
@@ -430,7 +459,7 @@ class Middleware:
             return self._deny("tracekit_signer_refused", f"the signer refused the call: {e}")
         if code:
             return result(DENY, why, code)
-        self._put(self.inflight, (ctx["sandbox_id"], ctx["request_id"]), (key, *call, args), MAX_INFLIGHT)
+        self._put(self.inflight, (ctx["sandbox_id"], ctx["request_id"]), (key, *call), MAX_INFLIGHT)
         return result(ALLOW)
 
     @staticmethod
@@ -439,7 +468,8 @@ class Middleware:
         return result(DENY, why, code)
 
     def _gate(self, key, args, ctx):
-        """(None, None, (tool_call_id, decision)) when the request may go, else (reason_code, why, None). Raises
+        """(None, None, (tool_call_id, decision, the call's event hash)) when the request may go, else (reason_code,
+        why, None). Raises
         SignerUnavailable or RPCError."""
         run_id, token, caller = key
         base = {"run_id": run_id, "run_token": token, "caller": caller}
@@ -475,7 +505,7 @@ class Middleware:
                                           "args": args, **hint})
         if not c["ok"]:
             return "tracekit_denied", named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), None
-        return None, None, (tcid, d)
+        return None, None, (tcid, d, h[1])
 
     def respond(self, events, abort, sandbox=None):
         """The HttpResponseEventResult of each HttpResponseEvent in `events`; `abort(why)` raises, ending the
@@ -529,14 +559,15 @@ class Middleware:
                     yield TRAILERS
         finally:
             if call is not None:
-                key, tcid, d, args = call[0]
-                self.custody.complete(key, tcid, d, TOOL, args, "error", error="OpenShell ended the response stream "
-                                      "before its last body unit: the sandbox may not have received the whole response")
+                key, tcid, d, h = call[0]
+                self.custody.complete(key, tcid, d, TOOL, None, "error", args_digest=h, error="OpenShell ended the "
+                                      "response stream before its last body unit: the sandbox may not have received "
+                                      "the whole response")
 
     def _complete(self, found, head, body):
         """Complete the call `found` with response `head`, and `body` ((its text or None, its digest); None: not
         read)."""
-        key, tcid, d, args = found
+        key, tcid, d, h = found
         out, send = dict(head), False
         if body is not None:
             text, out["body"] = body
@@ -545,7 +576,7 @@ class Middleware:
                     out["body"], send = bytes(text).decode("utf-8"), d.get("send_result", False)
                 except UnicodeDecodeError:
                     pass
-        self.custody.complete(key, tcid, d, TOOL, args, "ok" if head["status"] < 400 else "error",
+        self.custody.complete(key, tcid, d, TOOL, None, "ok" if head["status"] < 400 else "error", args_digest=h,
                               result=result_field(send, out))
 
     def export(self, body):
@@ -614,6 +645,8 @@ class Middleware:
 
     def _unmapped(self, why):
         with self.lock:
+            if why not in self.unmapped and len(self.unmapped) >= MAX_UNMAPPED:
+                why = "events of other kinds"
             self.unmapped[why] += 1
 
     def _observe(self, effects, lost=None):

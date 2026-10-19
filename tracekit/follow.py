@@ -146,14 +146,16 @@ class Log:
         self.n += 1
 
     def lines(self):
-        """Record each complete line past `off`. An incomplete last line is read again next time: agentsh may still
-        finish it, or take it back (it truncates a write that failed)."""
+        """Record each complete line past `off`, heartbeats going on through a long backlog. An incomplete last line is
+        read again next time: agentsh may still finish it, or take it back (it truncates a write that failed)."""
         self.f.seek(self.off)
         self.buf = self.f.read()
-        while b"\n" in self.buf:
-            raw = self.buf[:self.buf.index(b"\n")]
-            self.line(raw, self.off)
-            self.buf, self.off = self.buf[len(raw) + 1:], self.off + len(raw) + 1
+        start = 0
+        while (end := self.buf.find(b"\n", start)) >= 0:
+            self.line(self.buf[start:end], self.off)
+            self.off, start = self.off + end - start + 1, end + 1
+            self.heartbeat()
+        self.buf = self.buf[start:]
 
     def step(self):
         """Record what the log has new. SignerUnavailable (or a retryable refusal) leaves the rest for the next step."""

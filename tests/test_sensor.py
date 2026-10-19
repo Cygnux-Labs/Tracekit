@@ -2,6 +2,7 @@
 attributed to runs by the configured mapping, joined to the tool call their process's environment names, losses as
 signed gaps, coverage in run.final's matrix and the verifier. The event lines are shaped as each sensor writes them,
 from its own source (cited per builder)."""
+import datetime
 import json
 import os
 import tempfile
@@ -24,7 +25,11 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.verify import v2
 
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
-TIME = "2026-10-12T10:00:01.615123456Z"   # protojson Timestamp: nanoseconds
+# protojson Timestamp, nanoseconds; an hour from now: after the runs the tests register (an event goes to the run open
+# at its time)
+TIME = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%f") \
+    + "456Z"
+TS = TIME[:26] + "Z"   # as the signer takes it: microseconds
 EXEC_ID = "a2luZC1jb250cm9sLXBsYW5lOjExNDI4NjE1NjM2OTAxOjUxNTgz"
 PARENT_EXEC_ID = "a2luZC1jb250cm9sLXBsYW5lOjkwNzkyMjU2MjMy"
 RUNS = [{"match": {"namespace": "agents", "pod": "coder-*"}, "caller": f"uid:{ME.subject}"},
@@ -86,7 +91,7 @@ class TestTetragonLines(unittest.TestCase):
         self.assertEqual(attrs, {"namespace": "agents", "pod": "coder-1", "uid": 1000, "container":
                                  "containerd://1fb931d2f6e5e4cfdbaf30fdb8e2fdd81320bdb3047ded50120a4f82838209ce"})
         self.assertEqual(e, {"kind": "exec", "args_digest": sensor._digest("-s https://example.com/install.sh"),
-                             "ts": "2026-10-12T10:00:01.615123Z", "pid": 51583, "binary": "/usr/bin/curl",
+                             "ts": TS, "pid": 51583, "binary": "/usr/bin/curl",
                              "exec_id": EXEC_ID, "parent_exec_id": PARENT_EXEC_ID, "tool_call_id": "call_7"})
         self.assertEqual({k: self.effect(exit_line())[1][k] for k in ("kind", "status", "signal")},
                          {"kind": "exit", "status": 0, "signal": "SIGKILL"})
@@ -101,7 +106,6 @@ class TestTetragonLines(unittest.TestCase):
                           ("kind", "path")}, {"kind": "file", "path": "/home/agent/.bashrc"})
 
     def test_what_the_import_does_not_record(self):
-        self.assertIsNone(self.effect(exec_line(flags="procFS auid rootcwd"))[1])   # running when Tetragon started
         self.assertIsNone(self.effect(kprobe_line("security_bprm_check", [{"int_arg": 1}]))[1])
         self.assertIsNone(sensor.tetragon(json.loads(line({"process_tracepoint": {"process": process()}}))))
         self.assertIsNone(sensor.tetragon({"process_throttle": {"type": "THROTTLE_STOP", "cgroup": "x"}}))
@@ -113,6 +117,8 @@ class TestTetragonLines(unittest.TestCase):
         throttled = sensor.tetragon(json.loads(line({"process_throttle": {
             "type": "THROTTLE_START", "cgroup": "cri-containerd-1fb931d2.scope"}})))
         self.assertIn("throttled the exec and exit events of cgroup cri-containerd-1fb931d2.scope", throttled)
+        restarted = sensor.tetragon(json.loads(exec_line(flags="procFS auid rootcwd")))   # running when it started
+        self.assertIn("Tetragon (re)started and reported the processes already running", restarted)
 
 
 def falco_line(rule, evt_type, **fields):
@@ -145,7 +151,7 @@ class TestFalcoLines(unittest.TestCase):
         attrs, e = self.effect(falco_line("Tracekit agent exec", "execve"))
         self.assertEqual(attrs, {"namespace": "agents", "pod": "coder-1", "container": "1fb931d2f6e5", "uid": 1000})
         self.assertEqual(e, {"kind": "exec", "args_digest": sensor._digest("curl -s https://example.com/install.sh"),
-                             "ts": "2026-10-12T10:00:01.615123Z", "pid": 51583, "binary": "/usr/bin/curl",
+                             "ts": TS, "pid": 51583, "binary": "/usr/bin/curl",
                              "tool_call_id": "call_7"})
         e = self.effect(falco_line("Tracekit agent connect", "connect", **{"fd.sip": "93.184.215.14",
                                                                           "fd.sport": 443}))[1]
@@ -238,8 +244,42 @@ class TestImport(Sensed):
         self.assertTrue(imp.flush())
         (gap,) = [d for d in self.gaps(self.events("tracekit/signer"), "effect_outside_run")]
         self.assertIn(f"tetragon mtls:spiffe://acme/tetragon saw exec by pid 51583 (/usr/bin/curl) at "
-                      f"2026-10-12T10:00:01.615123Z that no open run holds: uid:{OTHER.subject} has no open run",
+                      f"{TS} that no open run holds: uid:{OTHER.subject} has no open run registered by {TS}",
                       gap["reason"])
+
+    def test_an_event_goes_to_the_run_open_at_its_time(self):
+        imp = self.importer()
+        imp.flush()
+        a = self.register()
+        during_a = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z"
+        self.call("close_run", a)   # in grace
+        b = self.register()   # the identity's next run starts at once
+        imp.add(exec_line().replace(TIME, during_a))   # read, and sent, after b registered
+        imp.add(exec_line().replace(TIME, "2026-10-05T10:00:01.615123456Z"))   # an export read again: a week old
+        self.assertTrue(imp.flush())
+        kinds = [[e["data"]["kind"] for e in self.typed(self.events(r["run_id"]), "effect.observed")] for r in (a, b)]
+        self.assertEqual(kinds, [["exec"], []])
+        (old,) = self.gaps(self.events("tracekit/signer"), "effect_outside_run")
+        self.assertIn(f"uid:{ME.subject} has no open run registered by 2026-10-05T10:00:01.615123Z", old["reason"])
+
+    def test_an_event_a_little_before_its_run_registered_is_the_runs(self):
+        """The sensor's clock a little behind the signer's: no older run is open, so the run just registered takes it."""
+        imp = self.importer()
+        imp.flush()
+        before = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=2)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f") + "000Z"
+        run = self.register()
+        imp.add(exec_line().replace(TIME, before))
+        self.assertTrue(imp.flush())
+        self.assertEqual(len(self.typed(self.events(run["run_id"]), "effect.observed")), 1)
+
+    def test_an_event_the_signer_could_not_frame_is_a_loss_not_the_end_of_the_import(self):
+        imp = self.importer()
+        imp.flush()
+        self.register()
+        imp.add(kprobe_line("security_file_permission", [{"file_arg": {"path": "/home/agent/x\ud800"}}, {"int_arg": 2}]))
+        self.assertEqual((len(imp.pending), dict(imp.lost)), (0, {"tetragon lines the import could not read or record": 1}))
+        self.assertTrue(imp.flush())
 
     def test_a_loss_is_a_signed_gap_and_ends_coverage(self):
         imp = self.importer()
@@ -264,10 +304,11 @@ class TestImport(Sensed):
         # an agent's process connecting to a unix socket: Tetragon's sockaddr of any family but AF_INET(6)
         imp.add(kprobe_line("security_socket_connect", [{"sockaddr_arg": {"family": "AF_UNIX", "addr": "invalid IP"}}]))
         imp.add("\n")   # a blank line: nothing
+        imp.add(exec_line())
         self.assertTrue(imp.flush())
         self.assertEqual(imp.skipped, {sensor.LOCAL: 1})
         es = self.final(run)
-        self.assertEqual((self.typed(es, "effect.observed"), self.gaps(es, "observer_lost")), ([], []))
+        self.assertEqual((len(self.typed(es, "effect.observed")), self.gaps(es, "observer_lost")), (1, []))
         self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"]["status"], "observed")
 
     def test_a_loss_with_no_run_covered_goes_to_the_signer_run(self):
@@ -291,6 +332,51 @@ class TestImport(Sensed):
         imp.flush(time.monotonic() + 2 * svc.HEARTBEAT_S)
         (lost,) = self.gaps(self.events(later["run_id"]), "observer_lost")
         self.assertIn("the tetragon import mtls:spiffe://acme/tetragon restarted", lost["reason"])
+
+    def test_after_a_loss_the_import_is_still_watched(self):
+        imp = self.importer()
+        imp.flush()
+        run = self.register()
+        imp.add(exec_line())
+        imp.add(RATE_LIMITED)
+        self.assertTrue(imp.flush())
+        self.s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)   # then it goes silent
+        reported, silent = self.gaps(self.events(run["run_id"]), "observer_lost")
+        self.assertIn("reported lost events", reported["reason"])
+        self.assertIn("no observe_effect from the tetragon import", silent["reason"])
+
+    def test_two_processes_of_one_identity_are_refused(self):
+        """An import per node under one identity: each would look like the other's restart at every call."""
+        node1, node2 = self.importer(), self.importer()
+        node1.flush()
+        run = self.register()
+        node2.flush()   # takes over: a restart, as far as the signer can tell
+        with self.assertRaises(RPCError) as e:
+            node1.flush(time.monotonic() + svc.HEARTBEAT_S)
+        self.assertEqual(e.exception.code, "conflict")
+        self.assertIn("two processes share one identity", e.exception.message)
+        node2.flush(time.monotonic() + svc.HEARTBEAT_S)
+        self.assertEqual(len(self.gaps(self.events(run["run_id"]), "observer_lost")), 1)
+
+    def test_with_an_import_per_node_only_the_one_that_recorded_a_run_says_it_observed_it(self):
+        def node(n):
+            who = CallerIdentity("mtls", f"spiffe://acme/tetragon/node-{n}", True)
+            self.s.authorize[f"mtls:{who.subject}"] = ["observe_effect"]
+            return sensor.Import(types.SimpleNamespace(observe_effect=lambda req: self.call("observe_effect", req, who)),
+                                 "tetragon", RUNS)
+        node1, node2 = node(1), node(2)
+        node1.flush()
+        node2.flush()
+        here = self.register()   # its pod is on node 2
+        node2.add(exec_line())
+        self.assertTrue(node2.flush())
+        elsewhere = self.register()   # its pod is on a node with no import
+        for run in (here, elsewhere):
+            self.call("close_run", run)
+        self.s.sweep(time.monotonic() + 61)
+        self.assertEqual([self.typed(self.events(r["run_id"]), "run.final")[0]["data"]["matrix"]["processes"]
+                          for r in (here, elsewhere)],
+                         [{"status": "observed", "layers": ["tetragon"]}, {"status": "none", "layers": []}])
 
     def failing_once(self):
         """The signer's storage refusing its next append, as a full disk would, and recovering at once."""
@@ -468,6 +554,52 @@ class TestCommand(unittest.TestCase):
             except InterruptedError:
                 pass
         self.assertEqual(got, [b"a\n", b"b\n", b"c\n", b"d\n"])
+
+    def log(self, name):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        open(os.path.join(d.name, name), "w").close()
+        return os.path.join(d.name, name)
+
+    def follow(self, path, steps, stat_hook=lambda: None):
+        """_follow's lines while `steps` run, one at each of its sleeps; `stat_hook` runs before each of its stats."""
+        got, f, stat = [], open(path, "rb"), os.stat
+        self.addCleanup(f.close)
+
+        def sleep(_):
+            if not steps:
+                raise InterruptedError
+            steps.pop(0)()
+        with mock.patch.object(sensor.time, "sleep", sleep), \
+                mock.patch.object(sensor.os, "stat", lambda p: (stat_hook(), stat(p))[1]):
+            try:
+                for text in sensor._follow(f, path):
+                    got.append(text)
+            except InterruptedError:
+                pass
+        return got
+
+    def test_a_line_written_to_the_old_file_as_it_rotates_is_read(self):
+        path, armed = self.log("tetragon.log"), []
+
+        def sensor_writes():   # between the import's read at the old file's end and its check for a new one
+            if armed == [1]:
+                armed.append(2)
+                _append(path, "b\n")
+                os.rename(path, path + ".1")
+                _append(path, "c\n")
+        self.assertEqual(self.follow(path, [lambda: (_append(path, "a\n"), armed.append(1)), lambda: None, lambda: None],
+                                     sensor_writes), [b"a\n", b"b\n", b"c\n"])
+
+    def test_a_line_cut_by_truncation_is_not_glued_to_the_next(self):
+        path = self.log("falco.json")
+        _append(path, "x" * 50 + "\n")
+
+        def truncate():
+            with open(path, "w") as f:
+                f.write('{"ok": 1}\n')
+        got = self.follow(path, [lambda: _append(path, '{"cut'), truncate, lambda: None, lambda: None])
+        self.assertEqual(got, [b'{"cut', b'{"ok": 1}\n'])   # the cut one unreadable: a loss
 
 
 def _append(path, text):

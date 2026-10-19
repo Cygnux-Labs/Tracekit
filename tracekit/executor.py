@@ -94,15 +94,17 @@ class Custody:
             if d["decision"] == "ask":
                 hint = {"approval_id_hint": self.client.approval_request({**base, "tool_call_id": tcid})["approval_id"]}
                 state, end = "requested", time.monotonic() + self.wait_s
-                while state == "requested" and end > time.monotonic():
+                while state == "requested":   # asked at least once: with no wait, an approval given already counts
                     try:
                         state = self.client.approval_wait({
                             **base, "approval_id": hint["approval_id_hint"],
-                            "timeout_ms": int(min(end - time.monotonic(), 300) * 1000)})["state"]
+                            "timeout_ms": int(max(0, min(end - time.monotonic(), 300)) * 1000)})["state"]
                     except RPCError as e:   # this client's other waits hold every slot: still requested, ask again
                         if e.code != "quota_exceeded":
                             raise
                         time.sleep(max(0, min((e.retry_after_ms or 1000) / 1000, end - time.monotonic())))
+                    if end <= time.monotonic():
+                        break
                 if state != "approved":
                     return (403, f"{', '.join(d['rule_ids'])}: approval {state}"), None, None
             c = self.client.approval_consume({**call, **hint})
@@ -114,13 +116,13 @@ class Custody:
             return (403, named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")), None, None
         return None, d, c.get("args", args)
 
-    def complete(self, key, tcid, d, tool, args, status, **outcome):
+    def complete(self, key, tcid, d, tool, args, status, args_digest=None, **outcome):
         """Record the outcome, trying twice under one request_id; a failure to record warns (the call ran: its result
-        still goes to the client)."""
+        still goes to the client). `args_digest`: event_hash({tool, args}), for a caller that kept only that."""
         run_id, token, caller = key
         req = {"request_id": uuid.uuid4().hex, "run_id": run_id, "run_token": token, "caller": caller,
                "tool_call_id": tcid, "decision_id": d["decision_id"],
-               "args_digest": event_hash({"tool": tool, "args": args}), "status": status, **outcome}
+               "args_digest": args_digest or event_hash({"tool": tool, "args": args}), "status": status, **outcome}
         for attempt in (1, 2):
             try:
                 self.client.complete(req)

@@ -127,10 +127,10 @@ class Server(ThreadingHTTPServer):
             if not self._streams[ip]:
                 del self._streams[ip]
 
-    def restart_deadline(self):
-        """From the handler's thread: the connection is cut `deadline` seconds from now."""
+    def restart_deadline(self, seconds=None):
+        """From the handler's thread: the connection is cut `seconds` (default `deadline`) from now."""
         self.stop_deadline()
-        timer = self._conn.timer = threading.Timer(self.deadline, self._cut, (self._conn.raw,))
+        timer = self._conn.timer = threading.Timer(seconds or self.deadline, self._cut, (self._conn.raw,))
         timer.daemon = True
         timer.start()
 

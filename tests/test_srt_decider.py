@@ -150,6 +150,13 @@ class Deciding(unittest.TestCase):
         self.assertIn("NO-PASTE", v["reason"])
         self.assertIn(("policy.decision", "deny"), [(e["type"], e["data"].get("decision")) for e in self.events()])
 
+    def test_a_target_that_is_not_a_path_is_refused(self):
+        for path in ("https://paste.example/upload", "*", ""):   # the first read as host paste.examplehttps
+            with self.subTest(path=path):
+                v = self.proxy.request("GET", "paste.example", path=path)
+                self.assertEqual((v["action"], v["status"]), ("deny", 400))
+                self.assertIn("origin-form request target", v["reason"])
+
     def test_ask_holds_the_exact_request_and_its_approval_allows_it_once(self):
         body, headers = b'{"title": "hi"}', {"content-type": ["application/json"], "content-length": ["15"]}
 

@@ -350,6 +350,7 @@ GRACE_S, IDLE_S = 5.0, 3600.0
 HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat, and an egress observer observe_effect
 TAILER_LOST_S = 3 * HEARTBEAT_S   # a tailer or observer silent this long while its run is open is lost
 OBSERVE_GRACE_S = 120.0   # an observer reports a minute's traffic once the minute ends, at its next heartbeat
+SENSOR_SKEW_S = 5.0   # how far a kernel sensor's clock may run behind the signer's for an event to find its run
 DECIDED_GAPS_MAX = 100   # decided_not_completed gaps per run, then one gap counting the rest
 GATEWAY_WAIT_S = 600.0   # the MCP gateway's upstream timeout, the longest of the shipped gateways
 FAIL_MODES = {"default": "closed"}
@@ -841,6 +842,11 @@ class SignerService:
         # (tenant, observer) -> (monotonic time of its last observe_effect, its process `instance`, a sensor's name, the
         # identities whose runs a sensor covers), under _beats_lock
         self._observers = {}
+        # (tenant, observer) -> the instances another took over from: one calling again is a second live process
+        self._superseded = collections.defaultdict(lambda: collections.deque(maxlen=64))
+        # (*run key, observer) -> whether a kernel sensor's import may say it observed the run: True once it recorded
+        # an event of it (with an import per node, only the run's node's does), False for good once it reported a loss
+        self._sensed = {}
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.gateway_wait_s = gateway_wait_s
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
@@ -1490,8 +1496,8 @@ class SignerService:
                 self._observer_lost(tx, run, obs, at, now)
             elif self._observers.get((key[0], obs), (0, None, None))[2] is None:
                 observed = True
-            elif self._observers[(key[0], obs)][2] != "openshell":   # OpenShell reports the sandbox's entrypoint only
-                sensors.add(self._observers[(key[0], obs)][2])
+            elif self._observers[(key[0], obs)][2] != "openshell" and self._sensed.get((*key, obs)):
+                sensors.add(self._observers[(key[0], obs)][2])   # OpenShell reports the sandbox's entrypoint only
         coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff,
                                     self.policy.is_structured_output)
         provider = len(reconcile.counted(run["rec"], self.gateway_mandatory, "provider")) if run.get("rec") else 0
@@ -1583,6 +1589,8 @@ class SignerService:
             done = set(finals)
             for k in [k for k in self._beats if k in lost or k[:2] in done]:
                 self._beats.pop(k)
+            for k in [k for k in self._sensed if k[:2] in done]:
+                self._sensed.pop(k)
         if finals:
             self._nudged.set()
         for key in finals if self._exporter else ():
@@ -3625,8 +3633,9 @@ class SignerService:
                           f"reported by {subject(identity)[:256]})"},
                 source="signer", request_id=req["request_id"])}
         out = self.log.submit(identity, "tailer_lost", req, fn, key, late=True)
-        with self._beats_lock:   # reported: its silence from now on is no second loss
-            self._beats.pop(key, None)
+        if self.log.runs[key]["source"] != "import":   # a transcript tailer's last call: its silence is no second loss;
+            with self._beats_lock:                     # a log follower goes on after a gap, so it stays watched
+                self._beats.pop(key, None)
         return out
 
     def _observe_effect(self, identity, req):
@@ -3634,13 +3643,16 @@ class SignerService:
         that run is open or closing, then reconciled (a host nothing explains is one reconcile.unexplained_effect);
         else a capture.gap{effect_outside_run} in the tenant's signer run, which a run-set shows. Every call is the
         observer's heartbeat: the runs of its tenant registered while it is alive are covered by it, until another
-        process of it (`instance`) takes over, which is an observer_lost gap in each. `check`: refused unless this
+        process of it (`instance`) takes over, which is an observer_lost gap in each; the process taken over from is
+        refused from then on (two live processes of one identity). `check`: refused unless this
         signer issued that run token for that run of the observer's tenant (the proxy asks before it connects).
         A kernel sensor's import (tracekit.sensor; `sensor` and `callers` in every call) is an observer the same way, of
         processes rather than network, covering only the runs of the identities its `runs` map processes to
-        (`callers`): its effects (_sensor_effect) are recorded but not reconciled, and `lost` ends its coverage of the
-        runs it covers with an observer_lost gap in each (in the signer run when it covers none); an effect attributed
-        to a run no caller owns is an effect_outside_run gap. OpenShell's import (tracekit.openshell, sensor openshell,
+        (`callers`): its effects (_sensor_effect) are recorded but not reconciled; it says it observed a run only once
+        it recorded an event of it (with an import per node, the run's node's alone), and `lost` is an observer_lost gap
+        in each run it covers (in the signer run when it covers none) after which it says so of none of them, though
+        their watch of its silence goes on; an effect attributed to a run no caller owns is an effect_outside_run
+        gap. OpenShell's import (tracekit.openshell, sensor openshell,
         its own identity its one caller) also sends a sandbox policy change (an `ext` record openshell.policy) and a
         loss of one run's events (an observer_lost gap in that run only). A configured gateway may observe the runs it
         registered for the clients it serves: it is not their agent."""
@@ -3666,18 +3678,24 @@ class SignerService:
         # coverage ends only once the gap that ends it is written: until then the old process stays the one on record,
         # so a call sent again after a failed write still finds the runs it covered
         with self._beats_lock:
+            if req["instance"] in self._superseded.get((tenant, obs), ()):
+                raise RPCError("conflict", f"another process of observer {obs[:256]} took over from this one, which "
+                                           "still sends: two processes share one identity (an import per node under "
+                                           "one identity?); give each its own identity, or run one")
             before = self._observers.get((tenant, obs))
             self._observers[(tenant, obs)] = (now, before[1] if before else req["instance"], sensor, callers)
             covered = [k for k in self._beats if len(k) == 3 and k[0] == tenant and k[2] == obs]
             restarted = covered if before and before[1] != req["instance"] else []
             lost = covered if "lost" in req and not restarted else []
-            for k in [] if restarted or lost else covered:
+            for k in [] if restarted else covered:   # after a loss it stays watched: its silence is a gap still
                 self._beats[k] = now
         if restarted:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])
         with self._beats_lock:
             self._observers[(tenant, obs)] = (now, req["instance"], sensor, callers)
+            if before and before[1] != req["instance"]:
+                self._superseded[(tenant, obs)].append(before[1])
             for k in restarted:
                 self._beats.pop(k, None)
         if not req["effects"] and "lost" not in req:
@@ -3685,6 +3703,7 @@ class SignerService:
         labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}
         explains = self.policy.policy.get("explains", ())
         gateway = lookup(self._gateways, obs, False)
+        sensed = set()
 
         def fn(tx, _):
             if "lost" in req:
@@ -3723,6 +3742,7 @@ class SignerService:
                     continue
                 if sensor:
                     tx.emit(run, "effect.observed", self._sensor_effect(obs, sensor, x, how), source="signer")
+                    sensed.add((*key, obs))
                     continue
                 rec = run.get("rec")
                 by = rec is not None and reconcile.explained(rec, x["host"], explains, labels) or None
@@ -3741,8 +3761,10 @@ class SignerService:
             return {"recorded": len(req["effects"])}
         out = self.log.submit(identity, "observe_effect", req, fn)
         with self._beats_lock:
-            for k in lost:
-                self._beats.pop(k, None)
+            for k in sensed:
+                self._sensed.setdefault(k, True)
+            for k in lost:   # its loss ends what it may say of the run, not the watch of its silence
+                self._sensed[k] = False
         return out
 
     def _sensor_effect(self, obs, sensor, x, how):
@@ -3774,7 +3796,9 @@ class SignerService:
     def _attributed(self, tenant, x):
         """(run key or None, attribution, why there is none) of effect `x` of an observer of `tenant` (on the writer):
         the run its run token names, unless this signer didn't issue that token for that run of `tenant`, or issued it
-        to another identity than the client's (`caller`); else the latest open run of `caller`."""
+        to another identity than the client's (`caller`); else the latest open run of `caller` registered by the
+        effect's `ts` (a kernel sensor's: an event read late goes to the run it happened in, an old one to none), or
+        with none, its first registered up to SENSOR_SKEW_S after `ts`."""
         why = None
         if "run_token" in x:
             try:
@@ -3793,10 +3817,16 @@ class SignerService:
         c = CallerIdentity(*x["caller"].split(":", 1), True)
         if self._tenant_of(c) != tenant:
             return None, "identity", f"{why}{x['caller'][:256]} is of another tenant than the observer"
-        # lean: the owner's latest open run takes it; with concurrent runs of one owner, send the run token instead
-        key = next((k for k in reversed(list(self.log.live)) if k[0] == tenant
-                    and self.log.runs[k]["owner"] == owner(c)), None)
-        return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run"
+        # lean: the owner's latest open run registered by the effect's time takes it, else its first registered within
+        # SENSOR_SKEW_S after (the sensor's clock behind the signer's); with concurrent runs of one owner, send the run
+        # token instead
+        runs = [k for k in self.log.live if k[0] == tenant and self.log.runs[k]["owner"] == owner(c)]
+        at = x.get("ts", "~")
+        key = next((k for k in reversed(runs) if self.log.runs[k].get("registered", "") <= at), None) or next(
+            (k for k in runs if "ts" in x and self.log.runs[k].get("registered", "") <= _iso(
+                epoch(at) + SENSOR_SKEW_S)), None)
+        return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run" + (
+            f" registered by {at}" if "ts" in x else "")
 
     def _finding(self, identity, req, method, type_, data, cites=()):
         """Write a `type_` record of `data` in the caller's findings run (registered with `analyzes`, which only an
@@ -4195,11 +4225,12 @@ class SignerService:
 
     def _import(self, identity, spans):
         """Write decoded spans as the records of their imported runs, all in one writer item (nothing on a refusal):
-        a dict of counts for otlp.handle_traces."""
+        a dict of counts for otlp.handle_traces. A trace's root span closes its run: its spans are all ended."""
         res = {"accepted": 0, "duplicate": 0, "skipped": 0, "rejected": 0, "errors": [], "retryable": False}
         if len(spans) > self.otlp_max_spans:
             return dict(res, rejected=len(spans), errors=[f"more than {self.otlp_max_spans} spans in one request"])
         traces, agents = {}, {}   # trace id -> [[(type, data, span id)] per span]; trace id -> agent name
+        ended = {sp["trace_id"] for sp in spans if sp["parent_span_id"] is None}
         for sp in sorted(spans, key=lambda x: (x["start_ns"], x["end_ns"])):
             kind = otlp.classify(sp)
             if kind not in ("tool", "llm"):
@@ -4251,6 +4282,10 @@ class SignerService:
                     for typ, data, sid in new:
                         tx.emit(run, typ, data, tier=signer_otel.TIER, span_id=sid)
                         tx.set(run["spans"], f"{sid}:{typ}", True)
+            for tid in ended:   # one open run per trace would spend the importer's open_runs (agentgateway: per call)
+                run = self.log.runs.get((tenant, signer_otel.run_id(tid)))
+                if run and run["source"] == "import" and run["owner"] == own and not run["closed"]:
+                    tx.closing(run, "close_run")
             return out
         try:
             # lean: one event-rate token per request (at most max_spans spans); a token per span if imports need a

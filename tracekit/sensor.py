@@ -87,14 +87,14 @@ def tetragon(e):
         return None
     ev = e[typ]
     p = ev.get("process") or {}
+    if typ == "process_exec" and "procFS" in str(p.get("flags", "")).split():   # read from /proc as it started
+        return "Tetragon (re)started and reported the processes already running: events while it was down are missing"
     pod = p.get("pod") or {}
     attrs = {"namespace": pod.get("namespace"), "pod": pod.get("name"),
              "container": (pod.get("container") or {}).get("id") or p.get("docker"), "uid": p.get("uid")}
 
     def effect():
         if typ == "process_exec":
-            if "procFS" in p.get("flags", "").split():   # running when Tetragon started: read from /proc, no exec
-                return None
             out = {"kind": "exec", **({"args_digest": _digest(p["arguments"])} if p.get("arguments") else {}),
                    **({"parent_exec_id": p["parent_exec_id"]} if p.get("parent_exec_id") else {})}
         elif typ == "process_exit":   # protojson leaves out a zero status and an empty signal
@@ -201,6 +201,7 @@ class Import:
                     got = {"caller": rule["caller"], **got}
                     if validate(ITEM, got):   # one the signer would refuse would hold up every event after it
                         raise ValueError(got)
+                    json.dumps(got, ensure_ascii=False).encode("utf-8")   # a lone surrogate, which a frame can't carry
                 else:
                     got, skip = None, got or NOT_RECORDED
             elif got is None:
@@ -285,16 +286,17 @@ def _follow(f, path):
             st = os.stat(path)
         except FileNotFoundError:
             st = None
-        if st and st.st_ino != os.fstat(f.fileno()).st_ino:   # rotated: what the old file still had was read above
+        if st and st.st_ino != os.fstat(f.fileno()).st_ino:   # rotated: the rest of the old file, then the new one
+            part += f.read()
             f.close()
             f = open(path, "rb")
-            if part:
-                yield part   # its last line was cut off: unreadable, a loss
-                part = b""
         elif st and st.st_size < f.tell():   # truncated in place
             f.seek(0)
         else:
             time.sleep(0.2)
+            continue
+        yield from part.splitlines(keepends=True)   # a last line with no end was cut off: unreadable, a loss
+        part = b""
 
 
 def run(imp, lines):
