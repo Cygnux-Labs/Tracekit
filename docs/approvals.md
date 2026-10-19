@@ -124,7 +124,9 @@ one.
 
 `tracekit view` with a `view.signer` ([identity.md](identity.md#viewer-login)) serves approval pages to approvers
 who signed in with OIDC: `/approvals` lists their tenant's pending approvals and shows one from the signer's copy (tool,
-rule, run, requester, expiry, arguments with redaction markers), with approve and reject and a reason. The pages call
+rule, run, requester, expiry, arguments with redaction markers), with approve and reject and a reason. The list
+refreshes every 5 seconds and shows each waiting approval's arguments in one line, when it expires ("in 12 min") and
+a link to its run; an approval already answered offers no approve or reject. The pages call
 the signer as a **bridge**: the viewer's own identity, granted `approval_decide_on_behalf` in `authorize` (never a default),
 passes `on_behalf` (the person's subject, person id, groups and tenant from the login) on `approval_list`,
 `approval_get` and `approval_decide`. The signer applies the rules above to that person, so the requester, the run's
