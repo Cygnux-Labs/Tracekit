@@ -123,7 +123,7 @@ commitment to its name) and holds the limit for the rest of the run.
 
 | Kind | Holds |
 |---|---|
-| `keep_away` | a call that writes the named file |
+| `keep_away` | a call that writes the named file, or under the named directory |
 | `only_change` | a call that writes any other file |
 | `read_only` | any call that writes, commits or installs |
 | `no_push` | a `git push` |
@@ -131,7 +131,8 @@ commitment to its name) and holds the limit for the rest of the run.
 
 After the policy has decided, a call that breaks a constraint is raised to ask (`TK-CONSTRAINT`), and a person answers
 it, never an agent approver. A constraint never lowers a decision, so any client of the run may add one: a made-up
-constraint only makes the agent wait. The agent is told which request it broke, and `tracekit verify` checks that every
+constraint only makes the agent wait (past the 32 file constraints a run takes, a further one is refused and every
+write of the run is held). The agent is told which request it broke, and `tracekit verify` checks that every
 such hold follows a constraint. The grammar reads only some ways of saying a limit; `tracekit analyze --v2` checks the
 same constraints after the run ([what was asked, said and done](provenance-and-why.md#what-was-asked-said-and-done)).
 Live constraints are experimental.

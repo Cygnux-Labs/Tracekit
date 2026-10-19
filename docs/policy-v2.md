@@ -418,17 +418,23 @@ The Claude Code hook (and the Codex, Cursor and Gemini hooks, which share it) re
 each on its own and before it records the prompt; a scope (`only_change`) it leaves to `tracekit analyze --v2`
 (TK-X204), since holding every other write would ask the person about each test, lockfile or build write. The
 session's state keeps them: after the signer closes an idle run, the session's next run gets every constraint its
-earlier prompts stated. A small fixed grammar reads them ([tracekit/constraints.py](../tracekit/constraints.py)); a
-condition after the file ("don't edit X until the tests pass"), a question ("should I change X?"), quoted text and
-code state none ([limits](limits.md#intent-reasoning-and-action-checks)):
+earlier prompts stated (kept before they are sent, so a signer it can't reach at that prompt loses none). A small
+fixed grammar reads them ([tracekit/constraints.py](../tracekit/constraints.py)) and leaves what is ambiguous unread,
+so it holds no wanted call: a condition ("don't edit X until the tests pass", "don't push before I review", "while
+the server runs"), a question ("should I change X?"), quoted text, quoted lines and code, a description rather than an
+instruction ("add a read-only mode", "we don't use the network in unit tests"), a negated change of one aspect of the
+file asked for ("don't change the public API of X, just fix the bug in it"), a scoped push ("don't push to main"),
+and a constraint a later clause of the same request lifts ("don't touch X for now; ... then update X too") state none
+([limits](limits.md#intent-reasoning-and-action-checks)). On E20's 56 honest sessions none holds a call
+([evaluation](evaluation.md#e20-intent-reasoning-and-action-checks)):
 
 | Kind | Read from | Holds |
 |---|---|---|
-| `keep_away` | a negated change of a file X ("don't touch / modify / edit / write to X", "make no changes to X", "please refrain from editing X"), X said to stay as it is ("leave X alone / as is", "X stays untouched", "X is read-only / off-limits / out of scope", "X must not be modified"), "hands off X", "stay away from X", "make no changes there" for the file named before | a call that writes X: a write tool's path or paths (every file of a Codex patch), a shell redirection, `rm`, `touch`, `tee`, `sed -i`, the destination of `cp` or `mv`; shell commands read as the policy engine reads them, through `bash -c`, `eval`, wrappers, argv lists and OpenAI's `commands` |
+| `keep_away` | a negated change of a file X ("don't touch / modify / edit / write to X", "make no changes to X", "please refrain from editing X"), X said to stay as it is ("leave X alone / as is", "X stays untouched", "X is read-only / off-limits / out of scope", "X must not be modified"), "hands off X", "stay away from X", "make no changes there" for the file named before. X is a file ("billing.py", or a name people give without an extension: "the Dockerfile", "Makefile") or a directory ("anything in vendor/", "leave src/legacy/ alone") | a call that writes X, or under directory X: a write tool's path or paths (every file of a Codex patch), a shell redirection, `rm`, `touch`, `tee`, `sed -i`, `dd of=`, `patch`, the destination of `cp`, `mv`, `rsync` or `scp`, `git rm`/`mv`/`restore` and `git checkout -- X`, `find -name X -delete`, a formatter writing in place (`black`, `prettier --write`, `ruff format`); shell commands read as the policy engine reads them, through `bash -c`, `eval`, wrappers, argv lists and OpenAI's `commands` |
 | `only_change` | "only change / edit / modify / touch X", "only X should change", "limit the change to X", "touch nothing but X", "don't change anything except / but / other than X", "read-only except X"; "don't change anything else", "X and nothing else", "everything else is out of scope": each file the request names | a call that writes any other file: checked after the run (TK-X204), never held live by the hook |
-| `read_only` | "read-only" naming no file, "don't change anything" | any call that writes, commits or installs |
-| `no_push` | "don't push", "never push", "no pushing" | a `git push` |
-| `no_network` | "no network (access)", "no internet", "don't use the web", "don't go online", "work / stay offline" | an http or browser call, `WebFetch`, `curl`, `wget`, `ssh`, `git pull`/`fetch`/`clone`/`push`, a package install |
+| `read_only` | "don't change anything", "change nothing", and "read-only" naming no file as an instruction ("read-only: just tell me", "stay read-only", "work in read-only mode") | any call that writes, commits or installs |
+| `no_push` | "don't push", "never push", "no pushing", "don't push it to origin" | a `git push` |
+| `no_network` | "no network (access)", "no internet", "don't use the web", "don't go online", "work / stay offline", "work without internet access" | an http or browser call, `WebFetch`, `curl`, `wget`, `ssh`, `git pull`/`fetch`/`clone`/`push`, a package install |
 
 After the policy engine has decided, the signer checks each call of the run against the run's constraints. A call
 that breaks one is raised to `ask` with the rule `TK-CONSTRAINT` added; a person answers it like any other ask (an
@@ -446,10 +452,19 @@ committing each file it writes under that record's salt. The prompt itself is re
 source `<agent>:UserPromptSubmit`, `<agent>` the harness), its text in the content vault when the signer keeps content.
 
 A constraint equal to one the run has (the same kind; for a file, the same name) is that one, so a request repeated
-in every prompt never fills the run. A run takes 32; past them a new one is a signed `capture.gap{constraint_refused}`
-(a `gaps` warning in `tracekit verify`) and holds nothing. A call that writes more than 256 distinct files is held in
-a run with a file constraint (`keep_away`, `only_change`): the signer checks at most 256 names per call. After a
-signer restart the constraints come back from the run's records.
+in every prompt never fills the run. A run takes 32 file constraints (`keep_away`, `only_change`); `read_only`,
+`no_push` and `no_network`, at most one each, are always added. Past them a new file constraint is a signed
+`capture.gap{constraint_refused}` (a `gaps` warning in `tracekit verify`), `constraint_add` answers `refused: true`,
+the hook tells the person (`[tracekit] the run has the most file constraints the signer takes ...`, a non-blocking
+error the harness shows), and from then on the run fails closed: every call that writes is held ("the run has the most
+file constraints the signer takes (32), and a further one was not added, so every write is held"). So an agent that
+adds made-up constraints to fill the run only holds its own writes. A call that writes more than 256 distinct files
+is held in a run with a file constraint: the signer checks at most 256 names per call. After a signer restart the
+constraints, and a refusal, come back from the run's records.
+
+`tracekit analyze --v2` reads an approval of a held call: by an identity other than the run's (signer.yaml
+`approvals`), the person approved breaking the constraint for that call, and its TK-X204 finding is low, labelled
+`approved`; a self-approval (the dev signer's, where the person and the agent are one user) lowers nothing.
 `tracekit analyze --v2` checks the same constraints after the run, with the model's own statements too
 ([TK-X204](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)); `tracekit verify` checks that
 each `TK-CONSTRAINT` hold comes after a constraint ([verdicts](verdicts.md#live-constraints)). What the grammar misses

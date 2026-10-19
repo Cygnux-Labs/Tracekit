@@ -75,15 +75,21 @@ transcript's start: the hook notes how far the transcript was written while that
 At each prompt (`UserPromptSubmit`; Cursor's `beforeSubmitPrompt`, Gemini CLI's `BeforeAgent`) the hook also records
 the prompt as the harness handed it over (`input.observed`, source `<agent>:UserPromptSubmit`: `claude-code`, `codex`,
 `cursor` or `gemini-cli`; its text in the content vault). `tracekit analyze --v2` takes a prompt line of the transcript as the person's only when the hook
-recorded the same text: a line the agent appended to its own transcript is flagged (TK-X208) and clears nothing.
-Hooks before this release record no prompt, and TK-X208 says `no_hook`.
+recorded the same text: a line the agent appended to its own transcript is flagged (TK-X208) and clears nothing. A
+paste or an image Claude Code writes as a placeholder (`[Pasted text #1 +40 lines]`) pairs with the hook's prompt that
+holds the rest of the line, whose full text is read; a hook prompt with no line (one the tailer missed) is read on its
+own. Hooks before this release record no prompt, and TK-X208 says `no_hook`.
 
 The hook also sends what the prompt says not to do ("don't touch billing.py", "read-only", "don't push", "no network",
 "only change src/pager.py") to the signer as [live constraints](policy-v2.md#live-constraints): a later call that
 breaks one waits for your approval, and the agent reads why on stderr: `[tracekit] waiting for approval apr-…
 (TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the person (TK-CONSTRAINT)`. Answer it from another terminal as any
 held call: `tracekit approvals list`, then `tracekit approvals approve <id>` (or `reject`). `tracekit view --dev` lists
-the run's constraints at the top of its review.
+the run's constraints at the top of its review. The grammar reads instructions, not descriptions: "add a read-only mode
+to client.py", "don't change the public API of client.py, just fix the timeout bug in it", "don't push to main" and
+"we don't use the network in unit tests" hold nothing. If a run already has the most file constraints the signer
+takes (32: an agent can add its own), a further one is refused, the hook says so at that prompt, and every write of the
+run waits for your approval from then on.
 
 ### Hooks name their event (1.2)
 

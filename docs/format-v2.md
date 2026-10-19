@@ -201,9 +201,11 @@ record's `salt_id`) to `"sha256:" + hex(SHA-256(UTF-8 bytes of the file's base n
 in the record. From then on the signer raises each call of the run that breaks a constraint to `ask` and adds the rule
 id `TK-CONSTRAINT` to its `policy.decision`; it never lowers a decision. Every `policy.decision` whose `rule_ids` hold
 `TK-CONSTRAINT` must be an `ask` after a `constraint.added` in its run (`constraints` fails otherwise). A constraint
-equal to one the run has (the same kind; for a file, the same name) adds no record. A run takes 32: past them, a new
-one is a `capture.gap{kind: constraint_refused, reason}` (`source: signer`, a `gaps` warning), so a constraint the
-run had no room for is never dropped unrecorded. A bundle with `constraint.added` or `constraint_refused` needs
+equal to one the run has (the same kind; for a file, the same name) adds no record. A run takes 32 file constraints
+(`keep_away`, `only_change`; the other kinds are always added): past them, a new one is a `capture.gap{kind:
+constraint_refused, reason}` (`source: signer`, a `gaps` warning), so a constraint the run had no room for is never
+dropped unrecorded, and the signer raises every later call of the run that writes to `ask` with `TK-CONSTRAINT`. A
+directory's commitment is to its name and a slash (`legacy/`), and a call breaks it with a write under it. A bundle with `constraint.added` or `constraint_refused` needs
 `verifier_min_version` 1.4.0.
 
 Completeness (format 1.2, [limits](limits.md#signer-and-capture)): gaps for what the signer saw decided or reported
