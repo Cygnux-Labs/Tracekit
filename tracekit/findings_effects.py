@@ -116,7 +116,7 @@ def from_args(a):
 
 def unit(rule, reason):
     """The thing a check's not-checkable count counts."""
-    return "effect" if rule == "TK-X206" and reason != "no_sensor" else "call"
+    return "effect" if rule == "TK-X206" and reason != "no_sensor" or reason == "agent_process" else "call"
 
 
 def _t(ts):
@@ -432,7 +432,7 @@ def _finding(fx, out, rule, seqs, call, what):
 def check(run, out, cov, opts, deadline, clock):
     """TK-X206 and TK-X207 over findings_v2's run, adding to its result `out` (findings, shown details, and
     shown.effects: run_seq -> {call, how, status} of each effect, for the viewer) and coverage `cov`; findings_v2.Budget
-    past `deadline` on `clock`."""
+    past `deadline` on `clock`. -> run_seq -> {call, how, status} of every effect judged (shown.effects, uncut)."""
     from .findings_v2 import Budget
 
     def tick():
@@ -444,3 +444,4 @@ def check(run, out, cov, opts, deadline, clock):
     out["shown"]["effects"] = dict(itertools.islice(shown.items(), MAX_SHOWN))
     out["shown"]["effect_window"] = {"grace_s": fx.grace, "skew_s": fx.skew, "skips": fx.skips,
                                      **({"skew_seen": fx.skew_seen} if fx.skew_seen else {})}
+    return shown

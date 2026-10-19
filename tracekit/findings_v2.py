@@ -22,7 +22,9 @@ Checks, for each call the run allowed or ran:
   TK-X202 (medium) a write tool edited a file whose name neither the person's request nor the model's text before the
           call names. A sentence that names a file to keep away from it ("leave billing.py untouched") is no mention:
           it is a constraint, and a file the request kept away is a finding whatever the model said about it.
-  TK-X203 (high) a write tool, a Bash write target or a kernel sensor's file effect outside the project
+  TK-X203 (high) a write tool, a Bash write target or a kernel sensor's file effect outside the project; an effect of
+          the agent's harness itself (findings_effects' agent_process: its transcript, its model calls) is counted
+          not checkable, for TK-X204 too, never a finding
   TK-X204 (high; medium when the model stated it, low once a later request lifts it) a call or a kernel sensor's
           effect breaks a constraint stated before it (tracekit.constraints: "don't touch X", "leave X alone",
           "read-only", "don't push", "no network", "only change Y"). A later request that names what the constraint
@@ -678,15 +680,6 @@ def _check(run, out, project, allow, deadline, clock):
             run, "TK-X201", [s for s in seqs if s is not None],
             severity="low" if checkable and explained / checkable > 0.5 else "info"),
             f"{call['tool']} (call {tcid}) came with nothing said before it in the model's message")
-    found = {t for t, c in shown["calls"].items() if c["checks"].get("TK-X204") == "found"}
-    for r in sorted(run.effects + run.net_effects, key=lambda r: r["event"]["run_seq"]):   # TK-X204 of each effect
-        d, eseq = r["event"]["data"], r["event"]["run_seq"]
-        run.tier[eseq] = "observer"
-        if run.stated and d.get("tool_call_id") not in found:   # a call's own finding covers what it did
-            file = d["kind"] == "file"
-            _constraint(run, note, None, {"names": [constraints.norm(d["path"])] if file else [], "write": file,
-                                          "push": False, "network": not file}, (eseq, 0), [eseq],
-                        f"the {d.get('sensor') or 'egress'} observer saw {d.get('binary', 'a process')}: it")
     for seq, _, _, _ in run.prompts:   # TK-X208
         if not run.hooked:
             note(None, "TK-X208", "no_hook")
@@ -699,17 +692,37 @@ def _check(run, out, project, allow, deadline, clock):
     for seq in run.requests:   # an agent-reported request whose content is not here: maybe a prompt line
         if seq not in run.content:
             note(None, "TK-X208", "no_content")
-    for r in run.effects:
-        p = posixpath.normpath(r["event"]["data"]["path"])
-        if root_why:
-            note(None, "TK-X203", root_why)
-            continue
-        seqs = [r["event"]["run_seq"], *root_seqs]
-        note(None, "TK-X203", "checked", _tiers(run, seqs, root_tier), not _under(p, root) and not _allowed(
-            p, allow) and _finding(run, "TK-X203", seqs),
-            f"the kernel sensor saw {r['event']['data'].get('binary', 'a process')} write {p}, outside the project "
-            f"{root}")
-    return cov, forms
+
+    def effects(judged):
+        """TK-X204 and TK-X203 of what the observers saw, once findings_effects has `judged` each sensor effect: one of
+        the agent's harness itself (agent_process: a process running from before the run, its own files and model
+        calls, which no call names) is not the agent's doing, and is counted as such, never checked."""
+        found = {t for t, c in shown["calls"].items() if c["checks"].get("TK-X204") == "found"}
+        for r in sorted(run.effects + run.net_effects, key=lambda r: r["event"]["run_seq"]):   # TK-X204 of each
+            d, eseq = r["event"]["data"], r["event"]["run_seq"]
+            run.tier[eseq] = "observer"
+            harness = (judged.get(eseq) or {}).get("status") == "agent_process"
+            if run.stated and harness:
+                note(None, "TK-X204", "agent_process")
+            elif run.stated and d.get("tool_call_id") not in found:   # a call's own finding covers what it did
+                file = d["kind"] == "file"
+                _constraint(run, note, None, {"names": [constraints.norm(d["path"])] if file else [], "write": file,
+                                              "push": False, "network": not file}, (eseq, 0), [eseq],
+                            f"the {d.get('sensor') or 'egress'} observer saw {d.get('binary', 'a process')}: it")
+        for r in run.effects:
+            p, eseq = posixpath.normpath(r["event"]["data"]["path"]), r["event"]["run_seq"]
+            if (judged.get(eseq) or {}).get("status") == "agent_process":
+                note(None, "TK-X203", "agent_process")
+                continue
+            if root_why:
+                note(None, "TK-X203", root_why)
+                continue
+            seqs = [eseq, *root_seqs]
+            note(None, "TK-X203", "checked", _tiers(run, seqs, root_tier), not _under(p, root) and not _allowed(
+                p, allow) and _finding(run, "TK-X203", seqs),
+                f"the kernel sensor saw {r['event']['data'].get('binary', 'a process')} write {p}, outside the "
+                f"project {root}")
+    return cov, forms, effects
 
 
 def analyze(records, content=None, project=None, allow=(), partial=False, budget_s=BUDGET_S, clock=time.monotonic,
@@ -739,9 +752,9 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
             if nxt is not None and nxt[0] == seq:
                 run.feed(r, nxt[1], nxt[2])
         run.confirm()
-        cov, forms = _check(run, out, project, allow, deadline, clock)
+        cov, forms, observed = _check(run, out, project, allow, deadline, clock)
         findings_text.check(run, content, out, cov, deadline, clock)
-        findings_effects.check(run, out, cov, effects, deadline, clock)
+        observed(findings_effects.check(run, out, cov, effects, deadline, clock))
     except Budget:
         budget, out["findings"], out["shown"]["details"] = True, [], []
         out["shown"]["calls"] = {}
