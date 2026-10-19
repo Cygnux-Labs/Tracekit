@@ -119,8 +119,9 @@ gateway, for the identity it decided the call for, alone; a run closed mid-call 
 - A credential an upstream encodes or transforms (base64, a hash) isn't recognised and cut; header values are one line
   of printable ASCII (the gateway refuses to start otherwise, naming the file).
 - One session per upstream, opened when the gateway starts, is shared by every agent and run: run one gateway per
-  tenant when an upstream keeps per-session state. A session that went away isn't reopened: a call answers
-  `upstream error ... restart the MCP gateway`; restart it.
+  tenant when an upstream keeps per-session state. A session that went away (a stdio upstream that exited, a remote
+  one that closed the connection) is opened again by the next call, which starts a stdio upstream's command again; a
+  call in flight when it went away answers `upstream error ...` and may have run.
 - A tools/call has no tool-use id from the model, so the gateway decides under one of its own: with an LLM gateway on
   the same run, each call reconciles as `reconcile.fabricated` (the gateway's decide) plus `reconcile.hook_missing`
   (the model's tool use). Read such a pair as one call through the gateway.
