@@ -456,7 +456,8 @@ class Executor(unittest.TestCase):
                 "observe": {**event, "source": "mail", "trust": "untrusted", "value": "hi"},
                 "model_event": {**event, "provider": "openai", "model": "m", "phase": "request"},
                 "approval_request": {"request_id": "x", **self.run, "tool_call_id": "c"},
-                "approval_wait": {**self.run, "approval_id": "apr-1"}, "close_run": {"request_id": "x", **self.run}}
+                "approval_wait": {**self.run, "approval_id": "apr-1"}, "close_run": {"request_id": "x", **self.run},
+                "register_run": {"request_id": "x", "agent": {"name": "a"}}}
         self.assertEqual(set(reqs), {m for m, r in REQUESTS.items() if "caller" in r["properties"]})
         for method, req in reqs.items():
             with self.subTest(method):
@@ -583,6 +584,66 @@ class Executor(unittest.TestCase):
         with open(path, "w") as f:
             json.dump({"data_dir": ".", "gateways": [f"mtls:{long.subject}"]}, f)
         self.assertRaisesRegex(ValueError, "gateways: an identity is at most 256 characters", svc.load_config, path)
+
+    def test_a_gateways_events_waits_and_runs_count_per_caller(self):
+        self.s.quotas.limits = Limits(events_per_s=0.001, burst=2, concurrent_waits=1, open_runs=1)
+        self.s.authorize["token:other"] = self.s.authorize["token:http"]
+        self.s.authorize[f"mtls:{EX.subject}"] += ["register_run"]
+        other = self.s.call(CallerIdentity("token", "other", True), "register_run",
+                            {"request_id": "r2", "agent": {"name": "b"}})
+        asked = {}
+        for caller, run in (("token:http", self.run), ("token:other", other)):
+            base = {"run_id": run["run_id"], "run_token": run["run_token"], "caller": caller}
+            ex = InProcess(self.s, EX)   # decide and approval_request: both events of that caller's budget
+            ex.decide({**base, "tool_call_id": "c1", "tool": "pay", "args_source": "parsed", "args": PAID})
+            asked[caller] = {**base, "approval_id": ex.approval_request({**base, "tool_call_id": "c1"})["approval_id"]}
+        t = threading.Thread(target=InProcess(self.s, EX).approval_wait, args=({**asked["token:http"],
+                                                                                "timeout_ms": 5000},))
+        t.start()
+        time.sleep(0.2)
+        self.assertEqual(InProcess(self.s, EX).approval_wait({**asked["token:other"], "timeout_ms": 0})["state"],
+                         "requested")   # another caller's wait: a slot of its own
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, EX).approval_wait({**asked["token:http"], "timeout_ms": 0})
+        self.assertIn("concurrent_waits", e.exception.message)
+        self.s.call(AGENT, "approval_decide", {"request_id": "d", "approval_id": asked["token:http"]["approval_id"],
+                                               "decision": "reject"})
+        t.join(10)
+        self.s.quotas.limits = Limits(open_runs=1)
+        for caller in ("token:http", "token:other"):   # a gateway registering a run for a client: its open runs
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": caller})
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:http"})
+        self.assertEqual((e.exception.code, e.exception.message), ("quota_exceeded", "open_runs limit 1"))
+
+    def test_a_gateways_run_for_a_client_closes_from_its_entry_after_a_restart(self):
+        self.s.authorize[f"mtls:{EX.subject}"] = grants = ["register_run", "close_run"]
+        run = InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:http"})
+        entry = json.dumps([f"mtls:{EX.subject}", "token:http"])
+        self.assertEqual(self.s.log.open_runs, {"token:http": 1, entry: 1})   # the agent's own run, and this one
+        self.s.snapshot()
+        self.close()
+        self.s, self.closed = svc.SignerService(self.dir, policy=POLICY, gateways=["mtls:spiffe://acme/*"],
+                                                authorize={f"mtls:{EX.subject}": grants}), False
+        self.s.call(EX, "close_run", {"request_id": "c", "run_id": run["run_id"], "run_token": run["run_token"]})
+        self.assertEqual(self.s.log.open_runs, {"token:http": 1})
+
+    def test_asks_past_the_callers_wait_slots_stay_held(self):
+        self.s.quotas.limits = Limits(concurrent_waits=2)
+        custody = executor.Custody(InProcess(self.s), approval_wait_s=1.5)
+        runs = [self.s.call(AGENT, "register_run", {"request_id": f"r{i}", "agent": {"name": "a"}}) for i in range(6)]
+        out = [None] * len(runs)
+
+        def ask(i):
+            out[i] = custody.gate((runs[i]["run_id"], runs[i]["run_token"], "token:http"), "c1", "pay", PAID)[0]
+        threads = [threading.Thread(target=ask, args=(i,)) for i in range(len(runs))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(20)
+        self.assertEqual(out, [(403, "R-PAY: approval requested")] * len(runs))   # none refused for a wait slot
+        self.assertEqual(sum(len(self.s.call(AGENT, "approval_list", {"run_id": r["run_id"], "state": "requested"})[
+            "approvals"]) for r in runs), len(runs))
 
 
 if __name__ == "__main__":

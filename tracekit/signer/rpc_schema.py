@@ -2,8 +2,8 @@
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
 `tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states),
-model_event's `amended` (the fields an LLM gateway changed in a request) and its `said_only` (a response recorded without
-its calls). Version 18 adds observe_effect's kernel sensor
+model_event's `amended` (the fields an LLM gateway changed in a request), its `said_only` (a response recorded without
+its calls) and register_run's `caller` (a gateway registering the run of a client it serves). Version 18 adds observe_effect's kernel sensor
 events (its `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17 (Tracekit 1.3) adds
 model_event's optional
 `tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
@@ -217,6 +217,8 @@ REQUESTS = {
                          investigation=ID,                 # with replay_of: the investigation it is an arm of
                          # the run that starts this one (a sub-agent's), proven by its token: recorded with the session
                          parent=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
+                         # a gateway registering the run of a client it serves: counted in its open runs for that client
+                         caller=IDENTITY,
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT, caller=IDENTITY,

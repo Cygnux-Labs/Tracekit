@@ -318,7 +318,7 @@ from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, constraint_state,
                                       cooldown_key, degrade, epoch, final_run, owner, person_only_keys, salt_label,
                                       skipped, subject, writer)
-from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
+from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
@@ -2494,10 +2494,15 @@ class SignerService:
             except RPCError as e:
                 raise RPCError(e.code, f"parent: {e.message}; pass the parent run's handle, as the identity it was "
                                        "issued to, for a child run of the same tenant") from None
-        own = owner(identity)
+        own, caller = owner(identity), req.get("caller")
+        # a gateway registering the run of a client it serves (the OpenShell middleware's of a sandbox): the run counts
+        # against the gateway's open runs for that client, as its calls do against its rate for that client
+        if caller is not None and not lookup(self._gateways, sub, False):
+            raise RPCError("forbidden", f"{sub[:256]} is not a configured gateway")
+        count = own if caller is None else json.dumps([own, caller])   # the open_runs entry it counts in
         # another system's log, which tracekit.follow reads: no layer here gates or reports its calls (an OTLP import's)
         imported = sub in self.importers
-        self.quotas.take_event(identity)
+        self.quotas.take_event(*((CallerIdentity(*caller.split(":", 1), True), identity) if caller else (identity,)))
 
         def fn(tx, _):
             if (tenant, run_id) in self.log.runs:
@@ -2511,11 +2516,16 @@ class SignerService:
             if up and up["final"]:
                 raise RPCError("run_closed", f"parent run {parent['run_id']} is final: start the child run from an "
                                              "open run, or without `parent`")
-            n = self.log.open_runs.get(own, 0)
+            n = self.log.open_runs.get(count, 0)
             self.quotas.check_count("open_runs", n)
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", own)
-            tx.set(self.log.open_runs, own, n + 1)
+            if caller is not None:
+                # lean: the entry is run state (memory and snapshot), not in run.registered: a run replayed from the
+                # log after the last snapshot counts in its owner's own entry until it closes; record the caller in
+                # run.registered if gateways' runs must count exactly across restarts
+                tx.set(run, "quota", count)
+            tx.set(self.log.open_runs, count, n + 1)
             tx.set(run, "source", "import" if imported else req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
             tx.set(run, "prov", {"state": "complete", "index": {}})
@@ -2595,7 +2605,7 @@ class SignerService:
     def _decide(self, identity, req):
         identity, gw = self._as_caller(identity, "decide", req)
         key, top, holder = self._authorize(identity, req, gw), T2 if gw else {}, _holder(gw, req)
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         args, digest = self._args(req)
         untrusted, prov = self._provenance(key, args, req)
@@ -2726,7 +2736,7 @@ class SignerService:
         `gw`: the gateway making the call (_as_caller), whose events these are. `check(run)`: on the writer, raises to
         refuse the event. `after(tx, run)`: on the writer, once the event is written: more fields of the response."""
         key = self._authorize(identity, req, gw)
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         sid = secrets.token_hex(16)
         label = salt_label({"type": typ, "data": {"salt_id": sid}})
         data = {**data(lambda digest: self._commit(label, digest)), "salt_id": sid}
@@ -2771,7 +2781,7 @@ class SignerService:
                                                  or isinstance(r, dict) and {"hash", "size"} <= r.keys())
         open_call = self.log.runs[key].get("decisions", {}).get(did)
         if not (gw and open_call and (open_call.get("via"), open_call.get("caller")) == holder):
-            self.quotas.take_event(gw or identity)   # a gateway's result for its own decision: its decide paid
+            self.quotas.take_event(identity, gw)   # a gateway's result for its own decision: its decide paid
         written = []
 
         def fn(tx, run):
@@ -2828,7 +2838,7 @@ class SignerService:
                 "output": {"hash": self._commit(label, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
                            "redacted": manifest["count"] > 0}, **({"via": subject(gw)} if gw else {})}
         keys, overflow = self._keys(req["value"]) if self.log.runs[key].get("prov") else ([], False)   # before redaction
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         written = []
 
         def fn(tx, run):
@@ -2869,7 +2879,7 @@ class SignerService:
     def _as_caller(self, identity, method, req):
         """(the identity a call is made as, the gateway making it or None): a `gateways` identity (an LLM or MCP
         gateway, a tool executor) that names `caller` acts for the client it authenticated, under that client's run
-        token and grants; the events are the gateway's, charged to its own rate."""
+        token and grants; the events are the gateway's, charged to its budget for that client (quotas.key)."""
         if "caller" not in req:
             return identity, None
         if not lookup(self._gateways, subject(identity), False):
@@ -3030,7 +3040,7 @@ class SignerService:
         key, top, holder = self._authorize(identity, req, gw), T2 if gw else {}, _holder(gw, req)
         tcid, sub = req["tool_call_id"], subject(identity)
         attempt = req.get("attempt", 0)
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         aid, sid = f"{self.id_prefix}apr-{secrets.token_hex(16)}", secrets.token_hex(16)
 
         def fn(tx, run):
@@ -3360,8 +3370,7 @@ class SignerService:
         aid = req["approval_id"]   # only waits for a state the run's records show anyway: no hold
         a = self._approval(self._authorize(identity, req, gw), aid)
         # a held run's waits use a budget of the run's own, so they don't starve its owner's healthy runs
-        slot = ("held", "/".join(a["run_key"])) if a.get("incident_id") else ((gw or identity).scheme,
-                                                                              (gw or identity).subject)
+        slot = ("held", "/".join(a["run_key"])) if a.get("incident_id") else quota_key(identity, gw)
 
         def waiting(a, now):   # an agent's approval waits out its veto delay: people may still revoke it
             return a["state"] == "requested" or a["state"] == "approved" and a.get("not_before", "") > _iso(now)
@@ -3385,7 +3394,7 @@ class SignerService:
         holder = _holder(gw, req)
         held = (self.log.runs[key].get("calls", {}).get(tcid) or {}) if gw else {}
         if not (held and (held.get("via"), held.get("caller")) == holder):   # a gateway's consume of its own call:
-            self.quotas.take_event(gw or identity)                         # its decide paid, as for its result
+            self.quotas.take_event(identity, gw)                           # its decide paid, as for its result
         args, digest = self._args(req)
         bound = self.log.approval_index.get((*key, tcid, attempt))
         # read before the writer runs: the copy is deleted once the approval is consumed
@@ -3513,7 +3522,7 @@ class SignerService:
         # it is
         identity, gw = self._as_caller(identity, "model_event", req)
         key = self._authorize(identity, req, gw)
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         who = writer(identity, req)
 
         def fn(tx, run):
