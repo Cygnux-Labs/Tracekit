@@ -20,6 +20,7 @@ import struct
 import sys
 
 from . import peercred
+from .wiki import wiki_url
 
 LINUX = os.path.isdir("/proc/self")
 MAX_REQUEST = 256
@@ -174,7 +175,7 @@ def match(procs, harnesses):
                     return None, f"registered harness file {f} can be replaced by a non-root user: {bad}"
             return {"name": h["name"], "exe": h["exe"], "pid": p["pid"], "start_time": p.get("start_time")}, None
     if ancestors and not any(p.get("exe") for p in ancestors):
-        return None, "cannot read process executables (is the harness helper running? docs/threat-model-laptop.md)"
+        return None, f"cannot read process executables (is the harness helper running? {wiki_url('docs/threat-model-laptop.md')})"
     return None, "no registered harness among the sender's ancestor processes"
 
 

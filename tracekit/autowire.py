@@ -39,6 +39,8 @@ import warnings
 import weakref
 from importlib import metadata
 
+from .wiki import wiki_url
+
 _STATE = {"run": None}
 # True while an adapter that already decided a call runs it (the Pydantic AI capability around an MCP toolset's call):
 # the MCP session wired below then doesn't decide that call a second time
@@ -153,7 +155,7 @@ def _process_client(Client, RPCError, current_run, schemas):
                 self.ids.add(p.run_id)
             logging.getLogger("tracekit").warning(
                 "tracekit: the signer closed run %s (%s); recording in a new run %s. A server should open a run per "
-                "conversation: docs/quickstart-v2.md", old, e.message, p.run_id)
+                "conversation: " + wiki_url("docs/quickstart-v2.md"), old, e.message, p.run_id)
     return Process
 
 
@@ -388,7 +390,8 @@ def instrument(agent=None):
         if not found and not any(map(_version, MODEL_SDKS)):
             warnings.warn("tracekit.instrument(): none of the frameworks or model SDKs it wires is installed (OpenAI "
                           "Agents SDK, LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Pydantic AI, OpenAI, Anthropic, "
-                          "Google Gen AI); nothing is recorded. Record calls yourself: docs/quickstarts/custom.md", stacklevel=2)
+                          "Google Gen AI); nothing is recorded. Record calls yourself: "
+                          + wiki_url("docs/quickstarts/custom.md"), stacklevel=2)
             return None
         script = sys.argv[0] if sys.argv and sys.argv[0] not in ("", "-c") else "python"
         name = agent or os.environ.get("TRACEKIT_AGENT") or os.path.splitext(os.path.basename(script))[0]

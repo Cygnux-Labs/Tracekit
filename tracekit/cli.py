@@ -6,6 +6,7 @@ import os
 import sys
 
 from . import __version__
+from .wiki import wiki_url
 
 NUDGE_WAIT_S = 5.0
 LAST_WAIT_S = 15.0   # `tracekit last`: how long a run that just closed may take to be finalised (the grace window is 5 s)
@@ -22,7 +23,7 @@ def experimental_gate(enabled, what):
 
 def experimental(what):
     """The one line each experimental command or server prints when it starts (docs/support.md)."""
-    print(f"tracekit: {what} is experimental: it works and is tested, but may change (docs/support.md)", file=sys.stderr)
+    print(f"tracekit: {what} is experimental: it works and is tested, but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
 
 
 def _signer_home(a):
@@ -85,7 +86,7 @@ def main(argv=None):
 
     p = sub.add_parser("init", help="install the signer and Claude Code hooks")
     p.add_argument("--remote", metavar="URL", help="agent on another machine: with --v2, send to this signer's HTTPS "
-                                                   "transport; without, to the deprecated ingest gateway (docs/remote-ingest.md)")
+                                                   f"transport; without, to the deprecated ingest gateway ({wiki_url('docs/remote-ingest.md')})")
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN without "
                                         "--v2); with --v2 it is read on every call, so a rotated token needs no restart")
     p.add_argument("--ca", help="with --remote --v2: the CA bundle the signer's certificate must chain to (pinned)")
@@ -97,11 +98,11 @@ def main(argv=None):
                                       "$SUDO_USER, the admin running init)")
     p.add_argument("--policy", help="with --v2, system mode: the signer's policy file (root-owned; default: its own pack)")
     p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
-                                                                 "the signer's logs (docs/witnesses.md; it sees origins, "
+                                                                 f"the signer's logs ({wiki_url('docs/witnesses.md')}; it sees origins, "
                                                                  "sizes, roots and timing, never content)")
     p.add_argument("--egress", action="store_true", help="with --v2, system mode on Linux: the agent user's outside "
                                                          "traffic only through a local egress observer (an owner-match "
-                                                         "firewall rule; undone by uninstall; docs/egress.md)")
+                                                         f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
     p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2: leave Claude Code's "
@@ -139,7 +140,7 @@ def main(argv=None):
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
-    p = sub.add_parser("doctor", help="check this setup (v1/v2 system mode, the dev signer); docs/doctor.md")
+    p = sub.add_parser("doctor", help=f"check this setup (v1/v2 system mode, the dev signer); {wiki_url('docs/doctor.md')}")
     p.add_argument("--json", action="store_true", help="print [{id, status, detail, fix}]")
     p.add_argument("--config", help="check the v2 signer of this signer.yaml")
     p.add_argument("--k8s", action="store_true", help="check the Kubernetes pod doctor runs in (or --manifests)")
@@ -236,7 +237,7 @@ def main(argv=None):
         q = acts.add_parser(name, help=f"{name} a pending approval")
         q.add_argument("approval_id")
         q.add_argument("--reason")
-    q = acts.add_parser("slack", help="the Slack approvals bridge (docs/approvals.md#slack)")
+    q = acts.add_parser("slack", help=f"the Slack approvals bridge ({wiki_url('docs/approvals.md', 'slack')})")
     q.add_argument("slack_action", choices=["serve"])
     q.add_argument("--config", required=True, help="slack.yaml")
 

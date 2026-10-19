@@ -1,16 +1,18 @@
 """Generate Tracekit's GitHub wiki from docs/. The wiki is a view of the docs: edit docs/, never the wiki.
 
     python scripts/wiki.py OUT_DIR [--ref TAG_OR_SHA]
+    python scripts/wiki.py --map      # {docs path: wiki URL} as JSON, for links kept outside this repository
 
 Run it in a checkout of REF (default main). OUT_DIR must be empty or absent. It gets one page per docs page (named by
-page_name), Home.md, _Sidebar.md (SECTIONS), _Footer.md and the images the pages show, under images/. Links between
-docs pages become wiki links with their #anchors, links to anything else in the repository become github.com URLs at
-REF. A link or anchor that resolves to nothing, or a docs page in no section, is an error and nothing is written. The
+tracekit.wiki.page_name, the one mapping), Home.md, _Sidebar.md (SECTIONS), _Footer.md and the images the pages show,
+under images/. Links between docs pages become wiki links with their #anchors, links to anything else in the
+repository become github.com URLs at REF. A link or anchor that resolves to nothing, or a docs page in no section, is an error and nothing is written. The
 same tree and REF give the same bytes. Publishing: docs/RELEASING.md.
 """
 import argparse
 import fnmatch
 import glob
+import json
 import os
 import posixpath
 import re
@@ -18,6 +20,8 @@ import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)   # this checkout's tracekit, not an installed one
+from tracekit.wiki import page_name, wiki_url  # noqa: E402
 REPO = "https://github.com/Cygnux-Labs/Tracekit"
 
 # docs pages that aren't user docs
@@ -51,15 +55,6 @@ SECTIONS = [
     ("Demos", ["demos/README.md", "demos/*/README.md"]),
     ("Help", ["faq.md"]),
 ]
-# page names where the file name reads badly; the rest come from the path and WORDS
-NAMES = {
-    "quickstart-v2.md": "Quickstart", "policy-v2.md": "Policy", "gateway.md": "LLM-Gateway",
-    "otel.md": "OpenTelemetry", "why.md": "Tracekit-Why", "why-architecture.md": "Tracekit-Why-Architecture",
-    "concepts/README.md": "How-Tracekit-Works", "sample/README.md": "Sample-Bundle",
-}
-WORDS = {w.lower(): w for w in [
-    "ADK", "AI", "and", "agentgateway", "agentsh", "CrewAI", "E2B", "EU", "FAQ", "ISO", "LangChain", "LiteLLM",
-    "LlamaIndex", "MCP", "microsandbox", "NIST", "OpenAI", "OpenShell", "OSS", "OWASP", "RMF", "SDK", "v2"]}
 HOME = """# Tracekit
 
 Tracekit records what an AI agent does as evidence that people who weren't there can check.
@@ -127,16 +122,6 @@ def title(text, name):
     return re.sub(r"\s*\([^)]*\)$", "", h1.group(1).replace("`", "")) if h1 else name.replace("-", " ")
 
 
-def page_name(path):
-    """The wiki page name of a docs path: its directory and file name in title case, e.g. Integrations-OpenShell."""
-    if path in NAMES:
-        return NAMES[path]
-    parts = path[:-len(".md")].split("/")
-    if parts[-1] == "README":
-        parts.pop()
-    return "-".join(WORDS.get(w, w.capitalize()) for p in parts for w in p.split("-"))
-
-
 def sidebar_pages(pages):
     """[(section, [docs path, ...])] from SECTIONS, and the errors: a page placed twice, in no section, or missing."""
     sections, placed, errors = [], [], []
@@ -159,16 +144,20 @@ def sidebar_pages(pages):
     return sections, errors
 
 
+def pages(root=ROOT):
+    """The wiki's pages: every page under docs/ but EXCLUDED, as its path under docs/, sorted."""
+    docs = os.path.join(root, "docs")
+    found = (os.path.relpath(p, docs).replace(os.sep, "/")
+             for p in glob.glob(os.path.join(docs, "**", "*.md"), recursive=True))
+    return sorted(p for p in found if p not in EXCLUDED)
+
+
 def build(ref, root=ROOT):
     """The wiki as {path in OUT_DIR: text, or the source file of an image}. Exits listing every error."""
-    docs = os.path.join(root, "docs")
-    found = sorted(os.path.relpath(p, docs).replace(os.sep, "/")
-                   for p in glob.glob(os.path.join(docs, "**", "*.md"), recursive=True))
     texts = {}
-    for p in found:
-        if p not in EXCLUDED:
-            with open(os.path.join(docs, p), encoding="utf-8") as f:
-                texts[p] = f.read()
+    for p in pages(root):
+        with open(os.path.join(root, "docs", p), encoding="utf-8") as f:
+            texts[p] = f.read()
     names = {p: page_name(p) for p in texts}
     sections, errors = sidebar_pages(texts)
     clash = {}
@@ -232,13 +221,19 @@ def write(out, out_dir):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("out_dir")
+    ap.add_argument("out_dir", nargs="?")
     ap.add_argument("--ref", default="main", help="the tag or commit the pages' repository links point at")
+    ap.add_argument("--map", action="store_true", help="print {docs path: wiki URL} as JSON and write nothing")
     args = ap.parse_args(argv)
+    if args.map:
+        print(json.dumps({f"docs/{p}": wiki_url(f"docs/{p}") for p in pages()}, indent=2))
+        return
+    if not args.out_dir:
+        ap.error("OUT_DIR is required without --map")
     out = build(args.ref)
     write(out, args.out_dir)
-    pages = sum(1 for rel in out if rel.endswith(".md") and not rel.startswith("_"))
-    print(f"wiki: {pages} pages, {len(out) - pages - 2} images in {args.out_dir}", file=sys.stderr)
+    n = sum(1 for rel in out if rel.endswith(".md") and not rel.startswith("_"))
+    print(f"wiki: {n} pages, {len(out) - n - 2} images in {args.out_dir}", file=sys.stderr)
 
 
 if __name__ == "__main__":

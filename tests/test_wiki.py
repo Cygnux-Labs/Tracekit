@@ -1,5 +1,7 @@
 import glob
 import importlib.util
+import io
+import json
 import os
 import re
 import shutil
@@ -11,7 +13,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 spec = importlib.util.spec_from_file_location("wiki", os.path.join(ROOT, "scripts", "wiki.py"))
 wiki = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wiki)
+from tracekit.wiki import WIKI  # noqa: E402  (scripts/wiki.py put this checkout first on sys.path)
 REF = "v9.9.9"
+# what sends people to the docs from outside docs/: these files and everything under tracekit/
+OUTSIDE = ["README.md", "plugin/README.md", "pyproject.toml", "plugin/.claude-plugin/plugin.json", "server.json"]
+WIKI_LINK = re.compile(re.escape(WIKI) + r"(?:/([A-Za-z0-9-]+))?(?:#([\w-]+))?")
+WIKI_CALL = re.compile(r"""wiki_url\(\s*['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?\s*\)""")
+DOCS_ON_GITHUB = re.compile(r"github\.com/Cygnux-Labs/Tracekit/(?:blob|tree)/[^/\s]+/docs/[^)\s\"'#]+\.md")
+
+
+def outside_docs():
+    """{path: text} of every file outside docs/ that links to the docs."""
+    paths = OUTSIDE + [os.path.relpath(p, ROOT) for ext in ("py", "html", "yaml", "json")
+                       for p in glob.glob(os.path.join(ROOT, "tracekit", "**", f"*.{ext}"), recursive=True)]
+    texts = {}
+    for p in paths:
+        with open(os.path.join(ROOT, p), encoding="utf-8") as f:
+            texts[p.replace(os.sep, "/")] = f.read()
+    return texts
 
 
 def generate():
@@ -67,6 +86,30 @@ class Wiki(unittest.TestCase):
         self.assertEqual(broken, [])
         self.assertIn(f"/blob/{REF}/", self.pages["Concepts-Evidence-Format"])
         self.assertIn(f" at {REF}.", self.pages["_Footer"])
+
+    def test_links_from_outside_docs_name_wiki_pages_and_anchors(self):
+        bad, seen = [], 0
+        for path, text in outside_docs().items():
+            found = [(page or "Home", anchor) for page, anchor in WIKI_LINK.findall(text)]
+            found += [(wiki.page_name(doc[len("docs/"):]) if doc.startswith("docs/") else doc, anchor)
+                      for doc, anchor in WIKI_CALL.findall(text)]
+            for page, anchor in found:
+                seen += 1
+                if page not in self.pages or (anchor and anchor not in wiki.anchors(self.pages[page])):
+                    bad.append(f"{path}: {page}#{anchor}")
+        self.assertEqual(bad, [])
+        self.assertGreater(seen, 100)
+
+    def test_nothing_outside_docs_links_to_a_docs_page_on_github(self):
+        self.assertEqual([f"{p}: {m}" for p, t in outside_docs().items() for m in DOCS_ON_GITHUB.findall(t)], [])
+
+    def test_map(self):
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            wiki.main(["--map"])
+        mapping = json.loads(out.getvalue())
+        self.assertEqual(len(mapping), len(self.pages) - 3)   # Home, _Sidebar and _Footer aren't docs pages
+        self.assertEqual(mapping["docs/integrations/openshell.md"], wiki.wiki_url("docs/integrations/openshell.md"))
+        self.assertTrue(mapping["docs/integrations/openshell.md"].endswith("/wiki/Integrations-OpenShell"))
 
     def test_output_is_deterministic(self):
         self.assertEqual(generate(), self.out)

@@ -31,6 +31,7 @@ import time
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer.rpc_schema import MAX_EXTERNAL_RECORD, REQUESTS, RPCError, validate
 from tracekit.signer.service import HEARTBEAT_S
+from tracekit.wiki import wiki_url
 
 POLL_S = 1.0
 DECISION = REQUESTS["decision_import"]["properties"]
@@ -207,7 +208,7 @@ def follow(log, stopping):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit follow", description="follow agentsh's audit log into the v2 signer "
-                                 "as it is written (docs/integrations/agentsh.md)")
+                                 f"as it is written ({wiki_url('docs/integrations/agentsh.md')})")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("agentsh", help="agentsh's JSONL audit log, from its end on")
     p.add_argument("--log", required=True, help="the log agentsh writes: `audit.output` in its config")

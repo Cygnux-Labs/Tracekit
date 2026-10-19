@@ -2211,7 +2211,7 @@
         // what a kernel sensor saw this call cause, as the run's analysis joined it; what doesn't fit the call is marked
         const happened = [...S.effects.values()].filter(e => e.call === a.id);
         right += `<div class="sec">HAPPENED · WHAT THE KERNEL SENSOR SAW</div>` + (happened.length ? `<dl class="kv">` + happened.map(e => `<dt>${esc(e.rec.v2.effect.kind)}</dt><dd class="go" data-tkseq="${esc(e.rec.tk_seq)}">${esc(e.rec.v2.effect.target)}<div class="${e.status === "found" ? "s-deny" : "dim"}">${esc(effectHow(e))}</div></dd>`).join("") + `</dl>`
-          : `<div class="dim">${S.effects.size ? "nothing the sensor saw is joined to this call" : "no kernel sensor's records in this view (docs/integrations/tetragon.md)"}</div>`);
+          : `<div class="dim">${S.effects.size ? "nothing the sensor saw is joined to this call" : "no kernel sensor's records in this view (https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Tetragon)"}</div>`);
         $("detsum").textContent = `${a.tool} · seq ${seq}`;
         return cols(left, right + citedHtml([a.pre, a.post]) + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
       }
@@ -2645,7 +2645,7 @@
           <td>` + effectBar(t) + `${t ? `<br>${esc(`${sgn(t.effect)} [${sgn(t.ci[0])}, ${sgn(t.ci[1])}]`)}` : "–"}</td><td>${esc(t ? `${pct(t.p_with)} → ${pct(t.p_without)}` : "–")}${t ? `<br><span class="dim">${esc(`n=${t.n}`)}</span>` : ""}${t && CHAIN[t.chain] ? `<span class="s-flag">${esc(chainMark(t))}</span>` : ""}</td>
           <td class="dim">${esc(c.reuse ? Math.round(c.reuse * 100) + "%" : "–")}</td><td>${rp.allowed ? `<button type="button" data-wtest="${esc(c.intervention)}"${busy ? " disabled" : ""}>${t ? "RE-TEST" : "RUN TEST"}</button>` : ""}</td></tr>`;
       }).join("");
-      const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${prog} to run them here, or run: tracekit why attribute ${path} --system ${prog} --target ${tq} (one cause: tracekit why test ${path} --system ${prog} --remove SPEC --target ${tq})` : "This run names no program, so it cannot be replayed: record it with a System (docs/why.md).")}</p>`;
+      const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${prog} to run them here, or run: tracekit why attribute ${path} --system ${prog} --target ${tq} (one cause: tracekit why test ${path} --system ${prog} --remove SPEC --target ${tq})` : "This run names no program, so it cannot be replayed: record it with a System (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).")}</p>`;
       const args = `<table class="wt"><thead><tr><th>ARGUMENT VALUE</th><th>WHERE THE VALUE CAME FROM</th></tr></thead><tbody>` + (A.provenance.map(p => `<tr><td>${esc(String(p.value).slice(0, 60))}</td><td><span class="${esc((PROV[p.status] || PROV.generated)[0])}">${esc((PROV[p.status] || PROV.generated)[1])}</span> ${esc(p.sources.map(x => x.label).join(", "))}</td></tr>`).join("") || `<tr><td colspan="2" class="dim">No traceable argument values.</td></tr>`) + `</tbody></table>`;
       const head = `<div class="sec">${esc(n.agent || "")} RAN</div><div class="wverdict">${esc(n.label || "")}${A.sensitive ? ` <span class="s-flag">sensitive${A.sensitive === "heuristic" ? " (by name)" : ""}</span>` : ""} <button type="button" data-wopen="${esc(ref.node)}" data-wr="${esc(ref.run)}">DETAILS</button></div>`;
       const left = head + args + `<div class="sec">VERDICT</div><div class="wverdict">${esc(verdict(A))}</div><div class="sec">HOW IT GOT HERE</div>` + lineageHtml(d, A.lineage);
@@ -2658,7 +2658,7 @@
       if (document.activeElement?.classList.contains("wtarget")) return;   // don't wipe the target being typed
       const ref = whyRef(selected);
       $("detsum").textContent = ref ? `why · ${ref.run}` : "select a call";
-      if (!ref) { put("detail", `<div class="empty">${selected ? "No why log covers this record: record the run with the why runtime (docs/why.md), and start the viewer with --why DIR if its logs are elsewhere." : "Select a tool call: why it happened."}</div>`); return; }
+      if (!ref) { put("detail", `<div class="empty">${selected ? "No why log covers this record: record the run with the why runtime (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why), and start the viewer with --why DIR if its logs are elsewhere." : "Select a tool call: why it happened."}</div>`); return; }
       const d = whyDetail(ref.run), A = d && !d.error && d.actions[ref.node];
       if (!A) { put("detail", `<div class="empty">${esc(!d ? "loading…" : d.error || "WHY explains tool calls: select one.")}</div>`); return; }
       const [left, right] = whyBody(ref, d, A);

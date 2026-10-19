@@ -13,6 +13,7 @@ import re
 
 from .. import yamlmini
 from ..policy import PolicyError, _sre_c, _sre_p, check_regex
+from ..wiki import wiki_url
 
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
@@ -253,7 +254,7 @@ def build(path, seen=()):
             and isinstance(x.get("tool", x.get("label")), str) and isinstance(x.get("hosts"), list) and x["hosts"]
             and all(isinstance(h, str) and h for h in x["hosts"]) for x in explains)):
         errors.append(f"{path}: explains must list {{tool or label, hosts: [host globs]}}: the hosts a tool's own "
-                      "dependencies reach (docs/egress.md#explains)")
+                      f"dependencies reach ({wiki_url('docs/egress.md', 'explains')})")
         pol["explains"] = []
     base = pol.pop("extends", None)
     parents = []

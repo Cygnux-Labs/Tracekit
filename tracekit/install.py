@@ -30,6 +30,7 @@ except ImportError:
 from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
+from .wiki import wiki_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -664,7 +665,8 @@ def harness_config(specs, agent="claude"):
             print(f"note: harness binding off: {e}")
             return {"harness_binding": "off"}
     print(f"note: harness binding off: no root-owned `{HARNESS_COMMANDS.get(agent, agent)}` on PATH. Without it, any "
-          "process running as the agent's user can start a run (docs/threat-model-laptop.md). Re-run with --harness PATH.")
+          f"process running as the agent's user can start a run ({wiki_url('docs/threat-model-laptop.md')}). Re-run with "
+          "--harness PATH.")
     return {"harness_binding": "off"}
 
 
@@ -1181,7 +1183,7 @@ def _require_system(experimental_macos):
                          "`tracekit init --dev` to try Tracekit here (same-user, clearly labelled).")
     if darwin and not experimental_macos:
         raise SystemExit("macOS system mode is experimental: it has been written to the platform documentation but not "
-                         "yet validated on hardware (docs/portability.md). Re-run with --experimental-macos to use it, "
+                         f"yet validated on hardware ({wiki_url('docs/portability.md')}). Re-run with --experimental-macos to use it, "
                          "or use `tracekit init --dev`.")
     if os.geteuid() != 0:
         raise SystemExit("system mode needs root: sudo tracekit init   (or tracekit init --dev for a same-user signer)")
@@ -1531,7 +1533,7 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     scfg = _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None, tk)
     if scfg["witnesses"] == [f"git:{os.path.join(SYS_HOME, 'witness')}"]:
         print("note: using a local git witness only. It protects against the agent's user, not against root on this "
-              "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
+              f"machine. Point --witness at a remote repository the security team owns ({wiki_url('docs/witnesses.md')}).")
     policy = _install_venv(requirement)
     # generate the key as the tracekit user so root-only reads are the only other path to it
     subprocess.run(["runuser" if shutil.which("runuser") else "sudo", "-u", tk.pw_name, "--", OPT_PYTHON, "-I", "-c",

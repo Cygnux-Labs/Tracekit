@@ -79,6 +79,7 @@ from . import __version__, constraints, findings_effects, findings_text, parsers
 from .findings import SEVERITY, WRITE_TOOLS
 from .signer.reconcile import PROVIDER_HOSTS
 from .signer.rpc_schema import FINDING_TITLES as TITLES, RPCError
+from .wiki import wiki_url
 
 BUDGET_S = 60.0
 MAX_TEXT = 1 << 16    # lean: characters of one record's text a check reads; past it a long prompt or answer is cut
@@ -115,9 +116,9 @@ WHY = {   # rule -> (why it matters, what to do)
 REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "no_response": ("no model response was recorded for this call",
                     "Claude Code: run `tracekit init --dev --v2` (its transcript tailer records each model message); "
-                    "other agents: send model calls through the Tracekit LLM gateway (docs/gateway.md)"),
+                    f"other agents: send model calls through the Tracekit LLM gateway ({wiki_url('docs/gateway.md')})"),
     "unlinked": ("the call was decided under an id of the adapter's own, which no model response carries",
-                 "use an integration that decides under the provider's tool call id (docs/integrations/)"),
+                 f"use an integration that decides under the provider's tool call id ({wiki_url('docs/integrations.md')})"),
     "no_content": ("the signer kept no content for the records this check reads",
                    "set `content: {retain: true}` in signer.yaml (the dev signer keeps it unless "
                    "TRACEKIT_DEV_CONTENT=0) and grant the analysing identity content_read"),
@@ -126,7 +127,7 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
                  "settings); headless: `claude -p --thinking-display summarized`; API: thinking display "
                  '"summarized", Responses reasoning.summary "auto"'),
     "conflicting_reports": ("two event streams reported the model message this call came from",
-                            "send model calls through the Tracekit LLM gateway (docs/gateway.md): its record is "
+                            f"send model calls through the Tracekit LLM gateway ({wiki_url('docs/gateway.md')}): its record is "
                             "preferred"),
     "no_text": ("neither a request nor anything the model said before the call was recorded",
                 "Claude Code: `tracekit init --dev --v2` with the content vault on (the dev signer keeps it)"),
@@ -1049,7 +1050,7 @@ def main(argv=None):
     findings_effects.arguments(ap.add_argument_group("kernel sensor effects (TK-X206, TK-X207)"))
     g = ap.add_argument_group("the reviewer model (TK-X210, warn only)")
     g.add_argument("--review", action="store_true", help="also ask a reviewer model, which sends the run's text "
-                   "(redacted) to that model (docs/privacy.md#what-leaves-the-machine); not with --dry-run")
+                   f"(redacted) to that model ({wiki_url('docs/privacy.md', 'what-leaves-the-machine')}); not with --dry-run")
     g.add_argument("--review-model", metavar="M", help="the reviewer model (default: of those configured, the first "
                    "of another model family than the agent's: TRACEKIT_REVIEW_MODEL with TRACEKIT_REVIEW_URL, "
                    f"{review_model.reviewer.DEFAULT_MODEL} with ANTHROPIC_API_KEY, {review_model.OPENAI_MODEL} with "
@@ -1061,8 +1062,8 @@ def main(argv=None):
                    "records the call (default: the analyzer records it)")
     g = ap.add_argument_group("output")
     g.add_argument("--dry-run", action="store_true", help="print the findings, sign nothing")
-    g.add_argument("--json", action="store_true", help="print the whole result as JSON (docs/findings.md#the---json-"
-                   "shape), for CI and agents")
+    g.add_argument("--json", action="store_true", help=f"print the whole result as JSON ({wiki_url('docs/findings.md', 'the---json-shape')}), "
+                   "for CI and agents")
     a = ap.parse_args(argv)
     if a.review and a.dry_run:
         print("tracekit analyze: --review records the model call in a findings run and --dry-run signs nothing: "

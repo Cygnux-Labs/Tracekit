@@ -10,6 +10,7 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import cli  # noqa: E402
+from tracekit.wiki import wiki_url  # noqa: E402
 
 
 class Experimental(unittest.TestCase):
@@ -44,8 +45,8 @@ class Experimental(unittest.TestCase):
             with mock.patch(module, return_value=0):
                 code, err = self.run_cli([cmd])
             self.assertEqual(code, 0)
-            self.assertEqual(err.count("is experimental: it works and is tested, but may change (docs/support.md)"),
-                             int(says), cmd)
+            self.assertEqual(err.count("is experimental: it works and is tested, but may change "
+                                       f"({wiki_url('docs/support.md')})"), int(says), cmd)
 
     def test_the_signer_names_the_experimental_settings_it_was_given(self):
         from tracekit.signer import service as svc

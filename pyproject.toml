@@ -64,7 +64,7 @@ tracekit = "tracekit.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Cygnux-Labs/Tracekit"
-Documentation = "https://github.com/Cygnux-Labs/Tracekit#docs"
+Documentation = "https://github.com/Cygnux-Labs/Tracekit/wiki"
 Issues = "https://github.com/Cygnux-Labs/Tracekit/issues"
 Changelog = "https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md"
 Security = "https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md"
