@@ -107,11 +107,11 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return calls
 
 
-def _policy(call: Dict[str, Any], reasons: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+def _policy(call: Dict[str, Any], reasons: Dict[str, Dict[str, Dict[str, str]]]) -> Dict[str, Any]:
     d = call["decision"]["event"]["data"]
     known = reasons.get(d["policy_hash"], {})
     p = {"decision": d["decision"], "rule_ids": d["rule_ids"], "policy_hash": d["policy_hash"],
-         "reasons": [known.get(i, "") for i in d["rule_ids"]]}
+         "reasons": [known.get(i, {}).get("reason", "") for i in d["rule_ids"]]}
     if "approval" in call:
         p["approval"] = call["approval"]
     return p
@@ -188,7 +188,7 @@ class _Writer:
 
 # --------------------------------------------------------------------------- one v2 run
 
-def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[str, str]]) -> str:
+def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[str, Dict[str, str]]]) -> str:
     first = recs[0]["event"]
     w = _Writer(out_dir, first["run_id"], first["tenant"])
     agent = (first["data"].get("agent") or {}).get("name") if first["type"] == "run.registered" else None
@@ -401,7 +401,7 @@ def check(run: Run, records: Dict[str, List[Dict[str, Any]]]):
 
 
 def merge(run: Run, records: Dict[str, List[Dict[str, Any]]], out_dir: str,
-          reasons: Dict[str, Dict[str, str]]) -> str:
+          reasons: Dict[str, Dict[str, Dict[str, str]]]) -> str:
     """The why log `run` with each citation checked against `records` and the signed verdicts filled in."""
     problems, alerts, task = check(run, records)
     w = _Writer(out_dir, run.run_id)
@@ -462,7 +462,7 @@ def recheck(records: Dict[str, List[Dict[str, Any]]], out_dir: str) -> List[tupl
 
 
 def import_records(records: Dict[str, List[Dict[str, Any]]], out_dir: str,
-                   reasons: Optional[Dict[str, Dict[str, str]]] = None) -> List[str]:
+                   reasons: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None) -> List[str]:
     """Merge every why log under out_dir that cites one of these runs; convert the others. Returns the run paths.
     Writes nothing when a run it would write exists (FileExistsError). `reasons`: view.policy_reasons(), computed here
     when not given (it compiles every shipped pack)."""

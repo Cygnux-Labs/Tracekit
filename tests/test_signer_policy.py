@@ -192,6 +192,25 @@ class CodingPack(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "flag")
 
+    def test_a_force_push_is_read_in_its_own_command(self):
+        # TK-D003 matched the normalised line, which joins commands with ` ; `: a later command's `-f`, `--m` or `+`
+        # denied a plain push, a commit message naming a force push was denied, a flag after an argument with a newline
+        # was missed, and 16 KiB of repeated pushes spent the fallback engine's 1 s and denied
+        self.verdicts([(c, "TK-D003") for c in (
+            "git push --force-with-lease", "git push -uf origin main", "git push -4f origin main", "git push origin +main",
+            "git push --mirr origin", "git -c a=b --no-pager push -f", "sudo git push -f", "echo b | xargs git push -f",
+            "bash -c 'git push --force'", "eval 'git push -f'", "bash <<'EOF'\ngit push --force\nEOF",
+            "ssh host 'git push --force'", "echo a\ngit push -f", 'git push --repo="x\ny" origin --force',
+            "git push -fo ci.skip origin")])
+        for command in ("git push origin main && ls -f", "git push origin main\nrm -rf build",
+                        "git push origin main\nnpm test -- --m", "git push origin main && wget --mirror https://x.example",
+                        'git commit -m "git push --force broke main"', "git push -of origin feat",
+                        "git push origin main && gh pr create --body \"$(cat <<'EOF'\n+3 -f\nEOF\n)\"",
+                        "git push x; " * 1400):
+            with self.subTest(command=command[:60]):
+                d = self.e.decide("Bash", {"command": command})
+                self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), d)
+
     def test_command_line_rules_read_program_names_in_any_case(self):
         # the normalised line lower-cases each program name (after wrappers too), as argv does: macOS runs git for `Git`
         self.verdicts([("Git push --force", "TK-D003"), ({"command": ["Git", "push", "--force"]}, "TK-D003"),
@@ -340,6 +359,51 @@ class ServerCorpora(unittest.TestCase):
         self.assertGreaterEqual(sum(r["benign"] for r in out["classes"].values()), 600)
         self.assertTrue(out["ok"], {k: out[k] for k in ("missed", "false_positives", "engine_mismatches", "unmapped")})
 
+    def test_e17_decisions_are_the_recorded_ones(self):
+        """Every case gets the verdict and rule ids eval/results/e17_policy_corpus.json records, from both engines (E17
+        holds them equal): the prefilter, the shared subjects and the linear rewrites of patterns change no decision.
+        A change to a rule or the corpus re-runs eval/e17_policy_corpus.py and commits what it records."""
+        with open(os.path.join(os.path.dirname(e17.CORPUS), "..", "..", "eval", "results", "e17_policy_corpus.json"),
+                  encoding="utf-8") as f:
+            recorded = json.load(f)["decisions"]
+        got = e17.run()["decisions"]
+        self.assertEqual({k: (recorded.get(k), v) for k, v in got.items() if recorded.get(k) != v}, {})
+        self.assertEqual(set(recorded) - set(got), set())
+
+
+class StrictPack(unittest.TestCase):
+    """strict.yaml: server.yaml with existing flag rules held for a person and unreadable commands denied."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pol, errors = pc.build(os.path.join(PACKS, "strict.yaml"))
+        assert not errors and not pc.warnings(cls.pol), errors
+        cls.e = Engine(cls.pol, "regex")
+
+    def test_it_only_re_tiers_the_coding_packs_rules(self):
+        coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
+        mine = {r["id"]: r for r in self.pol["ask"] if r["id"] in coding}
+        self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013"])
+        for rid, r in mine.items():
+            self.assertEqual({k: r[k] for k in ("pattern", "label") + (("field",) if "field" in r else ())},
+                             {k: coding[rid][k] for k in ("pattern", "label") + (("field",) if "field" in r else ())})
+        self.assertNotIn("TK-F004", [r["id"] for r in self.pol["flag"]])
+
+    def test_holds_denies_and_what_stays_a_flag(self):
+        for args, want in (({"command": "git push origin main"}, "ask"), ({"command": "pip install -r req.txt"}, "ask"),
+                           ({"command": "curl -s https://api.example.com/health"}, "ask"),
+                           ({"command": "export PATH=/opt/bin:$PATH"}, "ask"), ({"command": "$EDITOR notes.md"}, "deny"),
+                           ({"command": "echo \"open"}, "deny"), ({"command": "crontab -l"}, "flag"),
+                           ({"command": "sleep 9 &"}, "flag"), ({"command": "git status"}, "allow")):
+            with self.subTest(args=args):
+                self.assertEqual(self.e.decide("Bash", args)["verdict"], want)
+        self.assertEqual(self.e.decide("WebFetch", {"url": "https://example.com/docs"})["verdict"], "flag")
+
+    def test_benign_false_positives_on_e17_are_at_most_five_percent(self):
+        cases = [c for cs in e17.load("benign").values() for c in cs]
+        held = [c for c in cases if self.e.decide(c["tool"], c["args"])["verdict"] in ("deny", "ask")]
+        self.assertLessEqual(len(held) / len(cases), 0.05, len(held))
+
 
 class SignerPolicy(unittest.TestCase):
     def setUp(self):
@@ -452,6 +516,22 @@ class SignerPolicy(unittest.TestCase):
         [rec] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
         self.assertEqual(rec["reasons"], [d["reason"]])
         self.assertTrue(d["reason"].startswith("TK-OVERSIZE: over 64 KiB, so never matched: "), d["reason"])
+
+    def test_a_denial_says_what_to_do(self):
+        # each rule's remedy follows the reasons, once; the signed record names the rules only
+        self.open(Engine({"tools": {"Bash": "shell"}, "deny": [
+            {"id": "X-1", "class": "shell", "pattern": "^rm ", "reason": "deleting", "remedy": "Move it to the trash."},
+            {"id": "X-2", "class": "shell", "pattern": " -rf", "reason": "recursively", "remedy": "Move it to the trash."}],
+            "flag": [{"id": "X-3", "class": "shell", "pattern": "^rm ", "label": "destructive"}]}))
+        d = self.decide("Bash", {"command": "rm -rf build"})
+        self.assertEqual((d["decision"], d["reason"]), ("deny", "deleting; recursively; destructive. Move it to the trash."))
+        [rec] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
+        self.assertNotIn("reasons", rec)
+        self.open(svc.load_policy(os.path.join(PACKS, "coding.yaml")))
+        d = self.decide("Bash", {"command": "git push --force"}, tcid="tc-2")
+        self.assertEqual(d["reason"], "force push; side_effect. Push without --force, --mirror or a + refspec (rebase "
+                                      "onto the remote branch, or push a new branch); a person rewrites shared history "
+                                      "themselves.")
 
     def test_every_decide_gets_a_fresh_decision_id_consumed_once(self):
         args = {"command": "ls"}

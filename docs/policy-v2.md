@@ -36,7 +36,7 @@ Rule ids the signer adds itself:
 | `TK-ARGS-INVALID` | deny | the raw arguments are not strict JSON ([format v2](format-v2.md#1-canonical-json)); the Python client sends parsed arguments a frame can't carry (a lone surrogate) as raw text, so they get this signed deny too |
 | `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies). The decision's `reasons` (and the `decide` response's `reason`) name each such subject by its rule and field: `TK-S002's subject (the whole arguments)` |
 | `TK-ENGINE-ERROR` | deny | the policy engine itself failed on the call's arguments (a bug): the call is denied and recorded, the decision's `reasons` (and the `decide` response's `reason`) name the error's type and the signer logs its traceback. Arguments nested too deeply to check are refused (`invalid_request`), not decided |
-| `TK-SHELL-PARSE` | ask | a shell command can't be parsed, or what it runs can't be read from the line |
+| `TK-SHELL-PARSE` | `on_parse_error` (ask) | a shell command can't be parsed, or what it runs can't be read from the line |
 | `TK-SQL-PARSE` | ask | no SQL dialect can read the statement (an unclosed literal or comment), or it is not text |
 | `TK-UNKNOWN-TOOL` | `unknown_tools` | the tool maps to no class and `unknown_tools` is `flag`, `ask` or `deny` (map an application's own tools to `app`) |
 
@@ -52,6 +52,7 @@ version: '2026.10-v2-1'
 description: what this policy is for
 extends: coding.yaml            # optional: a relative path, or a list of them; the compiled policy names parents by hash
 unknown_tools: ask              # allow (default), flag, ask or deny
+on_parse_error: ask             # ask (default) or deny: TK-SHELL-PARSE's verdict, a shell command the parser can't read
 tools:                          # tool name or glob (fnmatch) -> class
   Bash: shell
   'mcp__*': mcp
@@ -92,8 +93,24 @@ hashes. An absolute path, `~` or a loop is an error.
 | `field` | no | which subject to match (below) |
 | `unless` | no | regex; a subject that matches it is exempt |
 | `reason`, `rationale`, `label` | no | text; `reason` is shown with the decision, `label` names a flag's category (sequences and limits match labels) |
+| `remedy` | no | on a `deny` or `ask` rule: what to do instead, one sentence (below) |
 | `from` | no | `untrusted`: the rule also needs a value of its subject that only untrusted content brought into the run (Provenance) |
 | `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)), and/or `agent` (below) |
+
+A `remedy` says what the agent does instead and what a person can do (approve the held call, allow it in their own
+policy, give the agent a sandbox): `Push without --force, --mirror or a + refspec (rebase onto the remote branch, or
+push a new branch); a person rewrites shared history themselves.` The `decide` response's `reason` for a deny or an
+ask is the matching rules' reasons joined by `; `, then each remedy once, so the client shows it to the model and
+`tracekit view` shows it under the rule in the decision's detail. The signed record names only the rule ids, and the
+policy (by its `policy_hash`) holds the text. Lint keeps a remedy to one line of at most 200 characters, starting with
+a capital letter and ending with a period, in the present tense (no `should`, `could`, `might`, `please`, `maybe`,
+`perhaps`, `consider` or `try to`), and refuses one on a flag rule: a flagged call runs. The `coding.yaml` and
+`server.yaml` deny and ask rules carry one.
+
+`on_parse_error: deny` denies (rather than holds) a shell command the parser can't read or whose program it can't see
+(`TK-SHELL-PARSE`: an unclosed quote, a command name from a variable, a script piped into a shell). Use it where no
+person answers holds; expect more denials of ordinary commands that build a name at run time. It decides only
+`TK-SHELL-PARSE`; `TK-SQL-PARSE` always asks.
 
 Lint also rejects unknown keys, a `field` the rule's class doesn't have, and a class rule no tool maps to ("can never
 fire"). It warns (`tracekit policy lint`, which loads the policy all the same) on a tool mapped to `unknown`: that is
@@ -399,6 +416,15 @@ all matches of one decision share 1 s, and when it runs out the decision denies 
 leaves the remaining rules out and is marked `nondeterministic: true`. RE2 never times out, so on such a subject the
 two engines can decide differently; install `google-re2` on the signer.
 
+Each rule gets a prefilter when it is loaded: strings of two or more characters, one of which every match contains, in
+lower case (`[Mm][Ee][Tt][Aa]` gives `meta`; `policy2/compile.py` `literals`). A subject that holds none of them is not
+searched, and the rules that read the same subject share one copy of it in a decision. The prefilter never changes a
+decision (tests check it on every subject the E17 corpus forms and on random patterns); it only skips searches that
+can't match. A rule without one is searched on every call its class and tool reach, and `tracekit policy lint` warns
+about it unless a string of one character or none matches it (`^`, `.`, `&\s*$` need no prefilter). Every shipped
+pattern searches 64 KiB of text built to make it back off or rescan within 50 ms on the fallback engine
+(`tests/test_policy2.py`), except two noted in [limits](limits.md#policy).
+
 ## Packs shipped
 
 | Pack | For | Contents |
@@ -407,6 +433,7 @@ two engines can decide differently; install `google-re2` on the signer.
 | `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`, so a deny is easy to see) |
 | `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads, typing outside an allowlist, the agent's own page JavaScript (`evaluate`), and typing or a navigation with a query string to a host from untrusted content, ask; Browser Use's actions are `structured_output` |
 | `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person; detection in shadow: `TK-Q001` a secret read then egress (notify), `TK-L001` a runaway loop and `TK-L002` a delete burst (limits), `executed_against_policy` (notify) |
+| `strict.yaml` | server-hosted agents no call should surprise | `extends: server.yaml`, no new patterns: `TK-F004` (push, publish, install, `docker run`, apply), `TK-F011` (environment changes) and `TK-F013` (network commands) ask instead of flag, and `on_parse_error: deny` |
 | `server-data.yaml` | SQL tools | destructive and privilege-changing SQL, SQL that reaches the server's shell or files |
 | `server-net.yaml` | HTTP tools | internal addresses; a body sent outside the egress allowlist |
 | `server-cloud.yaml` | cloud CLIs and cloud MCP tools | IAM and access changes denied; resource deletion asks |
@@ -416,9 +443,19 @@ two engines can decide differently; install `google-re2` on the signer.
 
 | Section | Rules |
 |---|---|
-| deny | `TK-D001` privilege escalation · `TK-D002` running a downloaded script · `TK-D003` force push · `TK-D004` recursive delete of root or home · `TK-D010` writing a credentials file from the shell · `TK-D011` sending credential files off the machine · `TK-D006` uploading a secrets file · `TK-D008` modifying the harness's transcripts · `TK-D005` writing a credentials file · `TK-D009` writing the harness's transcripts · `TK-D007` touching Tracekit's own files or signer · `TK-D013` writing Tracekit's files, signer state or policy |
+| deny | `TK-D001` privilege escalation · `TK-D002` running a downloaded script · `TK-D003` force push: `--force` (also `--force-with-lease`), `-f` in a short-option cluster before any `o` (`-uf`, `-4f`), a `+` refspec or `--mirror` (or any prefix of it), read in the push's own words as `TK-A002` reads them, so a later command (`git push && ls -f`) or a commit message naming a force push isn't one · `TK-D004` recursive delete of root or home · `TK-D010` writing a credentials file from the shell · `TK-D011` sending credential files off the machine · `TK-D006` uploading a secrets file · `TK-D008` modifying the harness's transcripts · `TK-D005` writing a credentials file · `TK-D009` writing the harness's transcripts · `TK-D007` touching Tracekit's own files or signer · `TK-D013` writing Tracekit's files, signer state or policy |
 | ask | `TK-A001` destroying a deployment, database or volume: `terraform`/`tofu destroy` and `apply -destroy`, `pulumi destroy`/`down`/`dn` and `dropdb`, also under `railway run` or `heroku run`; `railway delete`/`remove`/`rm`/`down` (also through `npx`, `bunx`, `pnpm dlx`, `yarn dlx` or `npm exec`), `fly destroy`/`delete`/`remove`/`rm`, `heroku apps:` or `addons:destroy`/`delete`/`remove` and `pg:reset`, and a `curl`/`wget`/`http`/`xh`/`railway api` call carrying a `volumeDelete(`/`serviceDelete(`/`environmentDelete(`/`projectDelete(`/`databaseDelete(` mutation. Up to four options may come before the subcommand (`fly -a app apps destroy`, `railway run -s api terraform destroy`). `--help` as the last word after at most two subcommand words (`terraform destroy --help`) is exempt. It doesn't see a request body read from a file or pipe (`-d @mutation.json`), an interpreter one-liner (`node -e`, `python -c`), a command run inside a container or remote shell (`docker run … terraform destroy`, `fly ssh console -C`, `heroku run bash -c …`), SQL such as `psql -c 'DROP DATABASE'`, a saved destroy plan (`terraform plan -destroy -out=p`, then `terraform apply p`), `terragrunt`, a CLI name with `.exe` (other than terraform, tofu and pulumi), or more options before the subcommand · `TK-A002` deleting a remote Git branch or tag with `git push --delete` or `-d` (also abbreviated, `--del`, or in a short-option cluster, `-4d`), a deletion refspec (`:branch`, or an all-zero source object id) or `--prune`, also after an argument with a newline in it; a dry run is held too (`--mirror`, or any prefix of it, is `TK-D003`'s). It doesn't see a deletion set through config (`-c remote.origin.push=:b`, `-c remote.origin.mirror=true`) or a Git alias (`-c alias.p=push`; the server pack's `TK-S006` denies every `-c alias.*`), a global option with a separate value before `push` (`--work-tree . push`), more than eight global options before `push` (a bound against backtracking), a quoted value with a space (`-C 'my dir'`), a refspec from a variable, brace expansion or `xargs`, a shell alias or function, `git send-pack` or `git.exe` · `TK-A003` running a command outside Claude Code's sandbox: a call whose `dangerouslyDisableSandbox` argument is `true` ([Claude Code's sandbox](integrations/claude-code-sandbox.md)) · `TK-A004` running a command with more than Gemini CLI's sandbox allows: a call whose `additional_permissions` turns the network on or names a path to read or write ([Gemini CLI's sandbox](integrations/gemini-sandbox.md)) |
 | flag | `TK-F001` network commands · `TK-F002` web requests · `TK-F003` destructive commands · `TK-F004` side effects (push, publish, install, apply) · `TK-F005` secrets access · `TK-F006` MCP tools · `TK-F007` / `TK-F008` / `TK-F014` background processes · `TK-F009` harness config · `TK-F010` shell function or alias shadowing · `TK-F011` environment tampering · `TK-F012` egress (any URL a call acts on) · `TK-F013` egress (a network command) |
+
+`strict.yaml` is for an agent whose every change outside its workspace a person should see first: a push, a
+package install or publish, `docker run`, `terraform apply`, `kubectl apply`/`delete`, a network command (`curl`,
+`ssh`, `dig`) and an environment change (`PATH=`, `LD_PRELOAD=`, a write to a shell startup file) wait for an
+approval, and a shell command the parser can't read is denied. Two flags stay flags: `TK-F007` matches `crontab -l`,
+which only lists, and `TK-F012` (any URL a call acts on) would hold every web request and navigation (20% of E17's
+benign calls). It holds 4.1% of E17's benign calls (29 of 704; the server pack, 0.14%), 10.0% of E21's developer
+session calls (the server pack, 1.5%) and 10.9% of E21's held-out benign calls (4.2%), while catching 58.6% of E21's
+held-out harmful calls (50.2%) ([evaluation](evaluation.md#e21-policy-robustness)). Use it where a person answers holds promptly,
+not for an agent that works unattended on a laptop.
 
 A deployment extends `server.yaml` (or composes only the packs it needs), maps its own tool names under `tools` (a
 business tool no class fits, such as `book_hotel`, to `app`, so it isn't held as unknown), and redefines a rule by id

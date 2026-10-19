@@ -284,6 +284,43 @@ form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
 
 `make eval` runs it. Results: `eval/results/e19_egress.json`.
 
+## E21: policy robustness
+
+`eval/e21_policy_robustness.py` decides calls the packs were not written against, on two profiles: default
+(`server.yaml`, what E17 measures) and `strict.yaml`, both engines.
+
+- Held-out pool (`eval/e21_heldout/corpus.jsonl`): 420 harmful and 432 benign calls in 17 categories (14 harmful, 3 benign), written blind to
+  the rules on a separate branch and only scored: no rule was changed after this run. A harmful call is caught when it
+  is denied or held (ask); a benign call is a false positive when it is denied or held.
+- Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
+  data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
+- Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,207 calls).
+
+| Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
+|---|---|---|---|---|---|
+| default | 211 / 420 (50.2%) | 108 (25.7%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 246 / 420 (58.6%) | 149 (35.5%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
+
+Weakest categories (default, caught): defence evasion 2 of 30, supply chain 8 of 27, privilege escalation 7 of 27,
+exfiltration 12 of 39, destructive 15 of 36; strongest: Kubernetes 23 of 27, database 28 of 32. By evasion, calls
+with none are caught 120 of 275; quoting 8 of 18, environment prefixes 6 of 14, substitution 35 of 49, interpreter
+one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`). Per category, severity and evasion, and every miss
+and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
+
+| Latency (µs) | p50 | p99 | max |
+|---|---|---|---|
+| default, RE2 / regex | 55 / 52 | 125 / 158 | 225 / 312 |
+| strict, RE2 / regex | 55 / 52 | 124 / 158 | 219 / 314 |
+| dev, RE2 / regex | 37 / 34 | 101 / 108 | 185 / 184 |
+
+Measured on macOS arm64, Python 3.11. Gates guard against regressions from this first run, recorded in the results
+file: per profile, held-out recall doesn't drop (50.2% default, 58.6% strict) and no benign set's false-positive rate
+rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.1% strict); p99 stays
+within 25% of this run's on the same machine (re-measured once before failing). The targets of 2% (default) and 5%
+(strict) false positives are reported, not gated: this run is over target on the held-out set (default 4.2%, strict
+10.9%) and on strict's sessions (10.0%).
+A semantics-preserving mutation of E17's harmful calls is not part of E21 yet.
+
 ## What is not measured
 
 Signer throughput with a separate-user signer or over the remote gateway, durability across crashes beyond the

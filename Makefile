@@ -74,6 +74,7 @@ eval:
 	$(PY) eval/e17_containment.py
 	$(PY) eval/e18_agent_approvers.py
 	$(PY) eval/e19_egress.py
+	$(PY) eval/e21_policy_robustness.py
 	if [ "$$(uname)" = Linux ]; then $(PY) eval/e9_signer_perf.py --quick; fi
 
 eval-agents:

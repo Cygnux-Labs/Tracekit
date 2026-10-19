@@ -10,7 +10,7 @@
 # grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-6'
+version: '2026.10-server-7'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -29,23 +29,28 @@ deny:
     field: target
     pattern: '://([^/@\s"]*@)?([Mm][Ee][Tt][Aa][Dd][Aa][Tt][Aa]|[Ii][Nn][Ss][Tt][Aa][Nn][Cc][Ee]-[Dd][Aa][Tt][Aa])\.?([:/?#"\s]|$)|169\.254\.169\.254|169\.254\.170\.2|\b2852039166\b|\b0[Xx][Aa]9[Ff][Ee][Aa]9[Ff][Ee]\b|\b0251\.0376\.0251\.0376\b|\[?[Ff][Dd]00:[Ee][Cc]2::254\b|[Mm][Ee][Tt][Aa][Dd][Aa][Tt][Aa]\.[Gg][Oo][Oo][Gg][Ll][Ee]\.[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|100\.100\.100\.200'
     reason: cloud metadata service
+    remedy: Use the credentials the deployment gives the tool; no tool call needs the cloud metadata service.
     rationale: The metadata service hands out the server's own cloud credentials; no tool call of an agent has a reason to reach it.
   - id: TK-S002
     # private keys and the token formats of AWS, GitHub, GitLab, Slack, Stripe, Anthropic, OpenAI, Google, npm, JWTs,
-    # and URLs with a password in them
-    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"]*:[^/\s@"]+@'
+    # and URLs with a password in them (a scheme of at most 64 characters: an unbounded one was rescanned from each
+    # word on the fallback engine)
+    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]{0,63}://[^/\s:@"]*:[^/\s@"]+@'
     reason: a secret in the arguments
+    remedy: Take the credential out of the call; the tool reads it from the deployment's configuration or secret store.
     rationale: A credential in a tool call is on its way somewhere it should not be, and lands in the evidence log too; tools should get their credentials from the deployment, not from the model.
   - id: TK-S003
     class: shell
     field: line
-    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"]*:[^/\s@"]+@'
+    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]{0,63}://[^/\s:@"]*:[^/\s@"]+@'
     reason: a secret in a shell command
+    remedy: Take the secret out of the command and read it from an environment variable the deployment sets.
     rationale: TK-S002 for the whole command line, where a secret can sit in a VAR= prefix, a redirection or a heredoc.
   - id: TK-S004
     field: target
     pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/([Aa]ccess[Tt]okens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9]+($|[^.a-z0-9_])|/proc/(self|[0-9]+)/environ\b'
     reason: reading or touching a credentials file
+    remedy: Leave credential files unread and use the access the deployment gives the tool; a person allows a path by redefining TK-S004 in their policy.
     rationale: Cloud, cluster, registry and database credentials and the service account token on a server are the keys to everything else; the agent's tools get access through the deployment, not these files.
   - id: TK-S006
     class: shell
@@ -53,6 +58,7 @@ deny:
     # `!` alias runs a shell command, any alias can rename a subcommand the shell rules stop)
     pattern: '^tar .*(--to-command|--checkpoint-action=exec|--use-compress-program|-I )|^git .*(-c ([^ =]*\.)?([Ss][Ss][Hh][Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Pp][Aa][Gg][Ee][Rr]|[Ee][Dd][Ii][Tt][Oo][Rr]|[Ff][Ss][Mm][Oo][Nn][Ii][Tt][Oo][Rr]|[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]|[Aa][Ss][Kk][Pp][Aa][Ss][Ss]|[Gg][Ii][Tt][Pp][Rr][Oo][Xx][Yy]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Ee][Xx][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Tt][Ee][Xx][Tt][Cc][Oo][Nn][Vv]|[Dd][Rr][Ii][Vv][Ee][Rr]|[Cc][Ll][Ee][Aa][Nn]|[Ss][Mm][Uu][Dd][Gg][Ee]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss]|[Hh][Ee][Ll][Pp][Ee][Rr]|[Rr][Ee][Cc][Ee][Ii][Vv][Ee][Pp][Aa][Cc][Kk]|[Uu][Pp][Ll][Oo][Aa][Dd][Pp][Aa][Cc][Kk]|[Pp][Aa][Cc][Kk][Oo][Bb][Jj][Ee][Cc][Tt][Ss][Hh][Oo][Oo][Kk]|[Dd][Ii][Ff][Ff][Ff][Ii][Ll][Tt][Ee][Rr])=|-c ([Aa][Ll][Ii][Aa][Ss]|[Pp][Aa][Gg][Ee][Rr])\.|--config-env|--upload-pack|--receive-pack|--exec=|ext::)|^ssh .*(ProxyCommand|LocalCommand|PermitLocalCommand)|^scp .*-S |^zip .*(-TT|--unzip-command)|^rsync .*--rsync-path|^(vim?|nvim|view|ex|less|man) .*(-c ?|\+)[: ]*(([rw][a-z]* *)?!|call +system)'
     reason: running a command through another command's options
+    remedy: Run the program directly, where the shell rules see it, not through a tar, git, ssh, zip, rsync or vim option that starts it.
     rationale: tar, git, ssh, zip, rsync and vim options that run a program are a way to run what the shell rules would stop.
 
 ask:
@@ -60,6 +66,7 @@ ask:
     class: mcp
     pattern: '"(command|cmd|script|shell_command)":["\[]'
     reason: a command through an MCP tool
+    remedy: Wait for a person to approve the held call, or use a tool whose class the policy's rules cover (a shell tool) instead of a command through MCP.
     rationale: An MCP tool that takes a command (exec in a pod or container, a remote shell) runs it outside the shell rules; a person checks it.
 
 # Detection (signer/detect.py), all in shadow: incidents are recorded, nothing is held. The labels come from

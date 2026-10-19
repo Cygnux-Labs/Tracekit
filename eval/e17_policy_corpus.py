@@ -4,8 +4,9 @@ benign/<class>.jsonl hold {tool, args, expect, note} cases; server.yaml (which c
 packs) decides each one with both engines, RE2 and the `regex` fallback. A deny case is caught when the verdict is its
 `expect` (deny, or ask where the pack holds the call for a person); a benign case is a false positive when it is denied
 or held. Every corpus tool must map to a class, so no case is caught by the unknown-tool rule alone. Nothing is
-executed. Writes eval/results/e17_policy_corpus.json; exit 0 only when deny recall is 100%, the
-benign false-positive rate is at most 2% and both engines decide every case identically."""
+executed. Writes eval/results/e17_policy_corpus.json, with every case's verdict and rule ids (`decisions`, which
+tests/test_signer_policy.py holds the engine to); exit 0 only when deny recall is 100%, the benign false-positive rate
+is at most 2% and both engines decide every case identically."""
 import glob
 import json
 import os
@@ -36,18 +37,19 @@ def run():
         raise SystemExit("\n".join(errors))
     engines = [Engine(pol, "re2"), Engine(pol, "regex")]
     out = {"policy_hash": engines[0].policy_hash, "engines": [e.engine for e in engines], "classes": {},
-           "missed": [], "false_positives": [], "engine_mismatches": [], "unmapped": []}
+           "missed": [], "false_positives": [], "engine_mismatches": [], "unmapped": [], "decisions": {}}
     for kind in ("deny", "benign"):
         for cls, cases in load(kind).items():
             row = out["classes"].setdefault(cls, {"deny": 0, "caught": 0, "benign": 0, "fp": 0})
             row[kind] += len(cases)
-            for case in cases:
+            for i, case in enumerate(cases):
                 if engines[0].tool_class(case["tool"]) == "unknown":
                     out["unmapped"].append(case)
                 re2, rx = (e.decide(case["tool"], case["args"]) for e in engines)
                 if {**re2, "engine": None} != {**rx, "engine": None}:
                     out["engine_mismatches"].append({**case, "re2": re2["verdict"], "regex": rx["verdict"]})
                 got = {"verdict": re2["verdict"], "rule_ids": re2["rule_ids"]}
+                out["decisions"][f"{kind}/{cls}:{i + 1}"] = " ".join([re2["verdict"]] + re2["rule_ids"])
                 if kind == "deny" and re2["verdict"] == case["expect"]:
                     row["caught"] += 1
                 elif kind == "deny":

@@ -9,7 +9,7 @@ import re
 import time
 
 from . import classes, shell
-from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, policy_hash, translate
+from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, translate
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
 AGENT_ARGS_MAX = 16 * 1024  # bytes of a call's arguments (as canonical JSON) an agent approval may cover
@@ -53,9 +53,11 @@ class Engine:
         self.policy, self.policy_hash = policy, policy_hash(policy)
         self.tool_class = functools.lru_cache(maxsize=1024)(self.tool_class)   # a glob scan per call otherwise
         self.engine, compile_, self._match = _backend(backend)
+        # each rule's prefilter (compile.literals): a subject holding none of its strings is not searched
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, compile_(r["pattern"]),
-                       compile_(r["unless"]) if "unless" in r else None)
+                       compile_(r["unless"]) if "unless" in r else None, literals(r["pattern"]))
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
+        self._of = {}
         # an ask rule's approval.agent patterns: (rule id, argument name) -> compiled
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
                         for name, b in (r.get("approval") or {}).get("agent", {}).get("allow", {}).get("fields", {}).items()
@@ -137,33 +139,42 @@ class Engine:
                 hits["deny"].append("TK-OVERSIZE")
                 oversize.append("the shell command")
             else:
+                unreadable = hits[self.policy.get("on_parse_error", "ask")]   # TK-SHELL-PARSE's section
                 try:
                     parsed = _shell(args)
                 except shell.ParseError:
-                    hits["ask"].append("TK-SHELL-PARSE")
+                    unreadable.append("TK-SHELL-PARSE")
                     parsed = [], [], [command if isinstance(command, str) else canonical(command)]   # its own target
                 if any(c["opaque"] for c in parsed[0]):
-                    hits["ask"].append("TK-SHELL-PARSE")
-        for sec, rule, tool_re, pat, unless in self.rules:
-            if rule.get("class", cls) != cls:
-                continue
+                    unreadable.append("TK-SHELL-PARSE")
+        name, memo = _text(tool), {}
+        if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
+            self._of[cls] = [x for x in self.rules if x[1].get("class", cls) == cls]
+        for sec, rule, tool_re, pat, unless, lits in self._of[cls]:
             try:
-                if tool_re is not None and not self._match(tool_re, _text(tool), True, deadline):
+                if tool_re is not None and not self._match(tool_re, name, True, deadline):
                     continue
-                for subject in self._subjects(cls, rule.get("field"), args, fields, parsed, "from" in rule):
-                    subject = _text(subject)
-                    if len(subject.encode("utf-8")) > MAX_SUBJECT:
-                        hits[sec].append("TK-OVERSIZE")   # the rule's own verdict: a flag rule cannot block a large call
-                        field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
-                        oversize.append(f"{rule['id']}'s subject ({field})")
-                        break
-                    # `unless`: an exemption checked against the same subject (use it only where the subject is one
-                    # target, e.g. a file path; in a whole command it could exempt a different target)
-                    if self._match(pat, subject, False, deadline) and not (
-                            unless is not None and self._match(unless, subject, False, deadline)) and (
-                            "from" not in rule or untrusted is not None and untrusted(subject, rule.get("field"))):
-                        hits[sec].append(rule["id"])
-                        break
+                key = (rule.get("field"), "from" in rule)   # rules on the same subjects read them once
+                if key not in memo:
+                    memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]))
+                texts, lows, joined, big = memo[key]
+                hit = None
+                if lits is None or any(s in joined for s in lits):
+                    for subject, low in zip(texts, lows):
+                        # `unless`: an exemption checked against the same subject (use it only where the subject is
+                        # one target, e.g. a file path; in a whole command it could exempt a different target)
+                        if (lits is None or len(texts) == 1 or any(s in low for s in lits)) and self._match(
+                                pat, subject, False, deadline) and not (
+                                unless is not None and self._match(unless, subject, False, deadline)) and (
+                                "from" not in rule or untrusted is not None and untrusted(subject, rule.get("field"))):
+                            hit = rule["id"]
+                            break
+                if hit is None and big:   # the rule's own verdict: a flag rule cannot block a large call
+                    hit = "TK-OVERSIZE"
+                    field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
+                    oversize.append(f"{rule['id']}'s subject ({field})")
+                if hit is not None:
+                    hits[sec].append(hit)
             except TimeoutError:   # the time of the whole decision is spent: deny, and leave the other rules out
                 nondeterministic = True
                 hits["deny"].append(rule["id"])
@@ -255,6 +266,20 @@ def _shell(args):
 
 def _flat(values):
     return [x for v in values for x in (_flat(v) if isinstance(v, list) else [v])]
+
+
+def _prepare(subjects):
+    """(the subjects as text, up to the first longer than MAX_SUBJECT; their lower-case forms; those joined by a
+    newline; whether one was longer). A rule matches the subjects before a long one and, matching none, takes
+    TK-OVERSIZE, as one that walked them in order would."""
+    texts = []
+    for s in subjects:
+        b = s.encode("utf-8", "backslashreplace")
+        if len(b) > MAX_SUBJECT:
+            break
+        texts.append(b.decode("utf-8"))
+    lows = [t.lower() for t in texts]
+    return texts, lows, "\n".join(lows), len(texts) < len(subjects)
 
 
 def _text(s):

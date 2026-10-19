@@ -274,14 +274,15 @@ SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamp
 
 
 def policy_reasons(paths=()):
-    """policy_hash -> {rule id: reason} of the shipped packs and the policy files `paths`: a decision's rule reasons
-    are shown only from the policy whose hash it records."""
+    """policy_hash -> {rule id: {reason[, remedy]}} of the shipped packs and the policy files `paths`: a decision's
+    rule reasons are shown only from the policy whose hash it records."""
     out = {}
     for p in sorted(glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))) + list(paths):
         pol, errors = policy_compile.build(p)
         if not errors:
-            out[policy_compile.policy_hash(pol)] = {r["id"]: r.get("reason") or r.get("label") or ""
-                                                    for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
+            out[policy_compile.policy_hash(pol)] = {
+                r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
+                for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out
 
 
@@ -317,7 +318,8 @@ class Translator(observe.Translator):
 
     def rules(self, d):
         known = self.reasons.get(d.get("policy_hash"), {})
-        return [{"id": i, "reason": known.get(i) or ENGINE_RULES.get(i, "")} for i in d.get("rule_ids") or []]
+        return [{"id": i, "reason": known.get(i, {}).get("reason") or ENGINE_RULES.get(i, ""),
+                 **{k: v for k, v in known.get(i, {}).items() if k == "remedy"}} for i in d.get("rule_ids") or []]
 
     def feed(self, rec):
         e = rec["event"]
