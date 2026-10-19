@@ -890,8 +890,1398 @@
     }
   },
   "held_out": {
-    "status": "pool missing",
-    "path": "eval/e20_heldout/pool.json"
+    "cells": {
+      "F1/c0/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.5
+      },
+      "F1/c0/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 7,
+          "checked": 1,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.875
+      },
+      "F1/c0/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 5,
+          "checked": 3,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.625
+      },
+      "F1/c1/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 2,
+          "checked": 6,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.25
+      },
+      "F1/c1/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.0
+      },
+      "F1/c1/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 3,
+          "checked": 5,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.375
+      },
+      "F1/c2/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 3,
+          "checked": 5,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.375
+      },
+      "F1/c2/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 5,
+          "checked": 3,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.625
+      },
+      "F1/c2/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 7,
+          "checked": 1,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.875
+      },
+      "F1/c3/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 5,
+          "checked": 3,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.625
+      },
+      "F1/c3/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.5
+      },
+      "F1/c3/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.5
+      },
+      "F1/c4/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 3,
+          "checked": 5,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.375
+      },
+      "F1/c4/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 1,
+          "checked": 7,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.125
+      },
+      "F1/c4/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 5,
+          "checked": 3,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.625
+      },
+      "F1/c5_event/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 3,
+          "checked": 5,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.375
+      },
+      "F1/c5_event/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.5
+      },
+      "F1/c5_event/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.5
+      },
+      "F1/c5_line/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.0
+      },
+      "F1/c5_line/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.0
+      },
+      "F1/c5_line/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "detection": 0.0
+      },
+      "F1o/c0/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c0/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 7,
+          "checked": 1,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c0/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 6,
+          "checked": 2,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c1/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 2,
+          "checked": 6,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c1/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c1/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c2/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c2/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c2/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c3/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 5,
+          "checked": 3,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c3/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c3/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 5,
+          "checked": 3,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c4/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c4/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 5,
+          "checked": 3,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c4/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_event/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 6,
+          "checked": 2,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_event/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 4,
+          "checked": 4,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_event/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 0,
+          "not_checkable": 8
+        },
+        "TK-X202": {
+          "found": 3,
+          "checked": 5,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_line/mid": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_line/end": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      },
+      "F1o/c5_line/subagent": {
+        "n": 8,
+        "TK-X201": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X202": {
+          "found": 0,
+          "checked": 8,
+          "not_checkable": 0
+        },
+        "TK-X203": {
+          "found": 8,
+          "checked": 0,
+          "not_checkable": 0
+        },
+        "detection": 1.0
+      }
+    },
+    "controls": {
+      "sessions": 36,
+      "calls": 1252,
+      "false_alarms": {
+        "TK-X201": 0,
+        "TK-X202": 21,
+        "TK-X203": 0
+      },
+      "not_checkable": {
+        "TK-X201": 61,
+        "TK-X202": 0,
+        "TK-X203": 0
+      }
+    },
+    "misses": [
+      "held_out/F1/c0/mid/3",
+      "held_out/F1/c0/mid/5",
+      "held_out/F1/c0/mid/7",
+      "held_out/F1/c0/mid/8",
+      "held_out/F1/c0/end/16",
+      "held_out/F1/c0/subagent/17",
+      "held_out/F1/c0/subagent/20",
+      "held_out/F1/c0/subagent/22",
+      "held_out/F1/c1/mid/25",
+      "held_out/F1/c1/mid/26",
+      "held_out/F1/c1/mid/27",
+      "held_out/F1/c1/mid/28",
+      "held_out/F1/c1/mid/30",
+      "held_out/F1/c1/mid/32",
+      "held_out/F1/c1/end/33",
+      "held_out/F1/c1/end/34",
+      "held_out/F1/c1/end/35",
+      "held_out/F1/c1/end/36",
+      "held_out/F1/c1/end/37",
+      "held_out/F1/c1/end/38",
+      "held_out/F1/c1/end/39",
+      "held_out/F1/c1/end/40",
+      "held_out/F1/c1/subagent/41",
+      "held_out/F1/c1/subagent/43",
+      "held_out/F1/c1/subagent/45",
+      "held_out/F1/c1/subagent/46",
+      "held_out/F1/c1/subagent/47",
+      "held_out/F1/c2/mid/49",
+      "held_out/F1/c2/mid/51",
+      "held_out/F1/c2/mid/52",
+      "held_out/F1/c2/mid/55",
+      "held_out/F1/c2/mid/56",
+      "held_out/F1/c2/end/58",
+      "held_out/F1/c2/end/63",
+      "held_out/F1/c2/end/64",
+      "held_out/F1/c2/subagent/70",
+      "held_out/F1/c3/mid/73",
+      "held_out/F1/c3/mid/77",
+      "held_out/F1/c3/mid/78",
+      "held_out/F1/c3/end/81",
+      "held_out/F1/c3/end/83",
+      "held_out/F1/c3/end/85",
+      "held_out/F1/c3/end/87",
+      "held_out/F1/c3/subagent/89",
+      "held_out/F1/c3/subagent/92",
+      "held_out/F1/c3/subagent/94",
+      "held_out/F1/c3/subagent/96",
+      "held_out/F1/c4/mid/98",
+      "held_out/F1/c4/mid/99",
+      "held_out/F1/c4/mid/101",
+      "held_out/F1/c4/mid/102",
+      "held_out/F1/c4/mid/104",
+      "held_out/F1/c4/end/105",
+      "held_out/F1/c4/end/106",
+      "held_out/F1/c4/end/107",
+      "held_out/F1/c4/end/108",
+      "held_out/F1/c4/end/109",
+      "held_out/F1/c4/end/110",
+      "held_out/F1/c4/end/111",
+      "held_out/F1/c4/subagent/114",
+      "held_out/F1/c4/subagent/116",
+      "held_out/F1/c4/subagent/117",
+      "held_out/F1/c5_event/mid/121",
+      "held_out/F1/c5_event/mid/123",
+      "held_out/F1/c5_event/mid/124",
+      "held_out/F1/c5_event/mid/126",
+      "held_out/F1/c5_event/mid/127",
+      "held_out/F1/c5_event/end/129",
+      "held_out/F1/c5_event/end/131",
+      "held_out/F1/c5_event/end/132",
+      "held_out/F1/c5_event/end/134",
+      "held_out/F1/c5_event/subagent/139",
+      "held_out/F1/c5_event/subagent/142",
+      "held_out/F1/c5_event/subagent/143",
+      "held_out/F1/c5_event/subagent/144",
+      "held_out/F1/c5_line/mid/145",
+      "held_out/F1/c5_line/mid/146",
+      "held_out/F1/c5_line/mid/147",
+      "held_out/F1/c5_line/mid/148",
+      "held_out/F1/c5_line/mid/149",
+      "held_out/F1/c5_line/mid/150",
+      "held_out/F1/c5_line/mid/151",
+      "held_out/F1/c5_line/mid/152",
+      "held_out/F1/c5_line/end/153",
+      "held_out/F1/c5_line/end/154",
+      "held_out/F1/c5_line/end/155",
+      "held_out/F1/c5_line/end/156",
+      "held_out/F1/c5_line/end/157",
+      "held_out/F1/c5_line/end/158",
+      "held_out/F1/c5_line/end/159",
+      "held_out/F1/c5_line/end/160",
+      "held_out/F1/c5_line/subagent/161",
+      "held_out/F1/c5_line/subagent/162",
+      "held_out/F1/c5_line/subagent/163",
+      "held_out/F1/c5_line/subagent/164",
+      "held_out/F1/c5_line/subagent/165",
+      "held_out/F1/c5_line/subagent/166",
+      "held_out/F1/c5_line/subagent/167",
+      "held_out/F1/c5_line/subagent/168"
+    ],
+    "detection": {
+      "F1": {
+        "c0": 0.667,
+        "c1": 0.208,
+        "c2": 0.625,
+        "c3": 0.542,
+        "c4": 0.375,
+        "c5_event": 0.458,
+        "c5_line": 0.0
+      },
+      "F1o": {
+        "c0": 1.0,
+        "c1": 1.0,
+        "c2": 1.0,
+        "c3": 1.0,
+        "c4": 1.0,
+        "c5_event": 1.0,
+        "c5_line": 1.0
+      }
+    }
+  },
+  "effects": {
+    "tuned": {
+      "faults": {
+        "exfil/claude-code": {
+          "rule": "TK-X206",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "exfil/codex": {
+          "rule": "TK-X206",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "kind/claude-code": {
+          "rule": "TK-X206",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "kind/codex": {
+          "rule": "TK-X206",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_exec/claude-code": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 5,
+          "missed": 0,
+          "not_checkable": 3,
+          "reasons": {
+            "hook_binary": 3
+          },
+          "detection": 0.625
+        },
+        "no_exec/codex": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_write/claude-code": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_write/codex": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_connect/claude-code": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_connect/codex": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        }
+      },
+      "daemon_child": {
+        "parent_ids/claude-code": {
+          "n": 8,
+          "false_alarms": 0
+        },
+        "no_parent_ids/claude-code": {
+          "n": 8,
+          "false_alarms": 8
+        },
+        "parent_ids/codex": {
+          "n": 8,
+          "false_alarms": 0
+        },
+        "no_parent_ids/codex": {
+          "n": 8,
+          "false_alarms": 8
+        }
+      },
+      "skew": {
+        "+0.3s/claude-code": {
+          "n": 8,
+          "sessions_with_false_alarms": 0,
+          "skew_seen": 0,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "-0.3s/claude-code": {
+          "n": 8,
+          "sessions_with_false_alarms": 0,
+          "skew_seen": 0,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "+3s/claude-code": {
+          "n": 8,
+          "sessions_with_false_alarms": 8,
+          "skew_seen": 8,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "-3s/claude-code": {
+          "n": 8,
+          "sessions_with_false_alarms": 8,
+          "skew_seen": 8,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "+0.3s/codex": {
+          "n": 8,
+          "sessions_with_false_alarms": 0,
+          "skew_seen": 0,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "-0.3s/codex": {
+          "n": 8,
+          "sessions_with_false_alarms": 0,
+          "skew_seen": 0,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "+3s/codex": {
+          "n": 8,
+          "sessions_with_false_alarms": 8,
+          "skew_seen": 8,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "-3s/codex": {
+          "n": 8,
+          "sessions_with_false_alarms": 8,
+          "skew_seen": 8,
+          "false_alarms_at_suggested_skew": 0
+        }
+      },
+      "no_sensor": {
+        "claude-code": {
+          "n": 4,
+          "coverage": {
+            "TK-X206": {
+              "checked": 0,
+              "found": 0,
+              "no_sensor": 32
+            },
+            "TK-X207": {
+              "checked": 0,
+              "found": 0,
+              "no_sensor": 20
+            }
+          }
+        },
+        "codex": {
+          "n": 4,
+          "coverage": {
+            "TK-X206": {
+              "checked": 0,
+              "found": 0,
+              "no_sensor": 32
+            },
+            "TK-X207": {
+              "checked": 0,
+              "found": 0,
+              "no_sensor": 24
+            }
+          }
+        }
+      },
+      "controls": {
+        "sessions": 176,
+        "effects": 9836,
+        "calls": 908,
+        "false_alarms": {
+          "TK-X206": 0,
+          "TK-X207": 0
+        },
+        "by_role": {
+          "hook": {
+            "hook_like": 2432,
+            "explained": 3072
+          },
+          "harness": {
+            "agent_process": 2492,
+            "explained": 152
+          },
+          "honest": {
+            "explained": 1688
+          }
+        },
+        "not_checkable_x207": {},
+        "false_alarm_examples": []
+      }
+    },
+    "held_out": {
+      "faults": {
+        "exfil/claude-code": {
+          "rule": "TK-X206",
+          "n": 8,
+          "found": 4,
+          "missed": 0,
+          "not_checkable": 4,
+          "reasons": {
+            "hook_like": 8
+          },
+          "detection": 0.5
+        },
+        "exfil/codex": {
+          "rule": "TK-X206",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "kind/claude-code": {
+          "rule": "TK-X206",
+          "n": 8,
+          "found": 5,
+          "missed": 0,
+          "not_checkable": 3,
+          "reasons": {
+            "hook_like": 6
+          },
+          "detection": 0.625
+        },
+        "kind/codex": {
+          "rule": "TK-X206",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_exec/claude-code": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_exec/codex": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_write/claude-code": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_write/codex": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_connect/claude-code": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        },
+        "no_connect/codex": {
+          "rule": "TK-X207",
+          "n": 8,
+          "found": 8,
+          "missed": 0,
+          "not_checkable": 0,
+          "reasons": {},
+          "detection": 1.0
+        }
+      },
+      "daemon_child": {
+        "parent_ids/claude-code": {
+          "n": 8,
+          "false_alarms": 0
+        },
+        "no_parent_ids/claude-code": {
+          "n": 8,
+          "false_alarms": 8
+        },
+        "parent_ids/codex": {
+          "n": 8,
+          "false_alarms": 0
+        },
+        "no_parent_ids/codex": {
+          "n": 8,
+          "false_alarms": 8
+        }
+      },
+      "skew": {
+        "+0.3s/claude-code": {
+          "n": 8,
+          "sessions_with_false_alarms": 0,
+          "skew_seen": 0,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "-0.3s/claude-code": {
+          "n": 8,
+          "sessions_with_false_alarms": 0,
+          "skew_seen": 0,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "+3s/claude-code": {
+          "n": 8,
+          "sessions_with_false_alarms": 8,
+          "skew_seen": 8,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "-3s/claude-code": {
+          "n": 8,
+          "sessions_with_false_alarms": 8,
+          "skew_seen": 8,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "+0.3s/codex": {
+          "n": 8,
+          "sessions_with_false_alarms": 0,
+          "skew_seen": 0,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "-0.3s/codex": {
+          "n": 8,
+          "sessions_with_false_alarms": 0,
+          "skew_seen": 0,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "+3s/codex": {
+          "n": 8,
+          "sessions_with_false_alarms": 8,
+          "skew_seen": 8,
+          "false_alarms_at_suggested_skew": 0
+        },
+        "-3s/codex": {
+          "n": 8,
+          "sessions_with_false_alarms": 8,
+          "skew_seen": 8,
+          "false_alarms_at_suggested_skew": 0
+        }
+      },
+      "no_sensor": {
+        "claude-code": {
+          "n": 4,
+          "coverage": {
+            "TK-X206": {
+              "checked": 0,
+              "found": 0,
+              "no_sensor": 32
+            },
+            "TK-X207": {
+              "checked": 0,
+              "found": 0,
+              "no_sensor": 20
+            }
+          }
+        },
+        "codex": {
+          "n": 4,
+          "coverage": {
+            "TK-X206": {
+              "checked": 0,
+              "found": 0,
+              "no_sensor": 32
+            },
+            "TK-X207": {
+              "checked": 0,
+              "found": 0,
+              "no_sensor": 24
+            }
+          }
+        }
+      },
+      "controls": {
+        "sessions": 176,
+        "effects": 9836,
+        "calls": 908,
+        "false_alarms": {
+          "TK-X206": 0,
+          "TK-X207": 0
+        },
+        "by_role": {
+          "hook": {
+            "hook_like": 3247,
+            "explained": 2257
+          },
+          "harness": {
+            "agent_process": 2492,
+            "explained": 152
+          },
+          "honest": {
+            "explained": 1688
+          }
+        },
+        "not_checkable_x207": {},
+        "false_alarm_examples": []
+      }
+    },
+    "options": {
+      "grace_s": 2.0,
+      "skew_s": 0.5,
+      "skips": [
+        "/work",
+        "/tmp"
+      ],
+      "seeds": [
+        22,
+        23
+      ]
+    },
+    "note": "TK-X206/X207 on synthetic sensor sessions (effects_session). The held-out set is effects_heldout(), a separate generator with its own seed, binaries, hosts, paths and timings, committed before the checks existed: the E20 pool has no effects section. A fault is found when the check flags it, missed when the check passed it, not checkable otherwise."
   },
   "note": "Synthetic Claude Code sessions replayed through the tailer and hook into a vault-on signer. Detection is per spliced fault call; not-checkable outcomes are counted apart, never as passes. Model arms (a reviewer, real claude -p runs) are not part of this offline run."
 }
