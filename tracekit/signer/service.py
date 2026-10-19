@@ -3705,7 +3705,7 @@ class SignerService:
                                   "often come this late)" if run else f"there is no run {key[1]}")
                     claimed = x.get("run_id") or key and key[1]
                     target = f" {x['host']}:{x['port']}" if "host" in x else f" {x['path'][:256]}" if "path" in x else ""
-                    saw = (f"a loss: {x['reason']}" if x["kind"] == "lost" else
+                    saw = (f"a loss: {privacy.redact_text(x['reason'])[0]}" if x["kind"] == "lost" else
                            f"a policy change ({x['change']}) at {x['ts']}" if x["kind"] == "policy" else
                            f"{x['kind']}{target} by pid {x['pid']} ({x['binary'][:256]}) at {x['ts']}" if sensor else
                            f"{x['host']}:{x['port']} ({x['bytes_out']} bytes out, {x['bytes_in']} in, "
