@@ -88,7 +88,9 @@ with every heartbeat.
 ## What is refused
 
 - `CONNECT host:port` whose TLS ClientHello names another server (SNI) than `host`: the tunnel is closed before
-  anything reaches the host, and the proxy says so on stderr.
+  anything reaches the host, and the proxy says so on stderr. So is a tunnel whose ClientHello doesn't arrive within
+  30 seconds of its request, and one more tunnel of an attribution (its connection's identity, else its run) that
+  has 64 open already.
 - a raw IP address, in any form the resolver reads as one (`8.8.8.8`, `134744072`, `0x08080808`, `8.8.2056`, `::1`),
   and the public DNS-over-HTTPS endpoints (`dns.google`, `cloudflare-dns.com`, ...): 403, with what to do. List one in
   `allow` to let agents reach it; an allowed host needs no SNI, so any protocol passes.

@@ -32,6 +32,8 @@ CONNECT host:port: the TLS ClientHello's SNI must be the host, else the tunnel i
 a raw IP address, a DNS-over-HTTPS endpoint or a name that resolves to a loopback, private or link-local address is
 refused (403) unless `allow` lists it (the proxy connects to the address it checked), and an allowed host needs no
 SNI (any protocol). A host name observe_effect would not take (HOST) is refused (400). Plain HTTP requests in absolute form (GET http://host/path) are forwarded with Connection: close.
+The ClientHello comes within the connection's deadline (netserver.DEADLINE_S from its request), else the tunnel is
+closed; an attribution (its connection's identity, else its run) has at most MAX_TUNNELS tunnels open at once.
 Per (attribution, host, port, minute): bytes each way, connections opened, first and last activity. Each minute's
 totals go to the signer (observe_effect) at the first heartbeat (every HEARTBEAT_S) after the minute ends, and a
 heartbeat goes out with nothing to report too, so the signer knows the observer is alive. Totals the signer can't take
@@ -79,6 +81,9 @@ DOH = {"dns.google", "dns.google.com", "cloudflare-dns.com", "mozilla.cloudflare
 CONNECT_TIMEOUT_S, IDLE_S = 30, 600
 MAX_BODY = 32 * 1024 * 1024   # a plain HTTP request's body, streamed through in CHUNK pieces, never held whole
 CHUNK = 64 * 1024
+# tunnels open at once per attribution (its connection's identity, else its run), below the transport's per-address
+# limit (256): in system mode every agent reaches the proxy from loopback, so one agent can't hold all of them
+MAX_TUNNELS = 64
 MAX_EFFECTS = 256   # per observe_effect call
 MAX_REFUSED = 10_000   # totals the signer refused, kept to send again; past it the oldest are dropped (and counted)
 
@@ -501,8 +506,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         """Relay the client to host:port at `addresses` once its TLS ClientHello names `host`, unless `allow` lists it.
         `addresses` None: `host` is an address the client resolved itself, and the ClientHello's server name must
         resolve to it here (resolve's checks on a name included); that name is the host recorded."""
-        obs = self.server.observer
-        self.server.stop_deadline()
+        obs, srv = self.server.observer, self.server
+        whose = (who[3] or who[1]) if who[0] == "token" else who[1]
+        with srv.observer.lock:
+            n = srv.tunnels.get(whose, 0)
+            if n < MAX_TUNNELS:
+                srv.tunnels[whose] = n + 1
+        if n >= MAX_TUNNELS:
+            return print(f"tracekit egress: closed a tunnel to {host}:{port} before it reached it: {whose[:256]} has "
+                         f"{MAX_TUNNELS} tunnels open; close some first", file=sys.stderr)
         try:
             hello = b""
             if host not in obs.allow:
@@ -527,12 +539,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     print(f"tracekit egress: closed a tunnel to {host}:{port} before it reached it: its TLS server name "
                           f"is {name!r}, not {host!r}; clients must connect to the host they name", file=sys.stderr)
                     return
+            srv.stop_deadline()   # the ClientHello came in time and names the host: the tunnel may stay open
             with _connect(addresses) as up:
                 obs.add(who, host, port, len(hello), opened=True)
                 up.sendall(hello)
                 _relay(self.connection, up, lambda out, back: obs.add(who, host, port, out, back))
-        except OSError:   # either side went away, or the host can't be reached
+        except OSError:   # either side went away, the host can't be reached, or the deadline cut a slow ClientHello
             pass
+        finally:
+            with srv.observer.lock:
+                srv.tunnels[whose] -= 1
+                if not srv.tunnels[whose]:
+                    del srv.tunnels[whose]
 
     def _forward(self):
         obs, url = self.server.observer, urllib.parse.urlsplit(self.path)
@@ -611,6 +629,7 @@ def serve(cfg, client=None):
         address, auths, tls = (host, int(port)), [], None
     srv = transport.HttpServer(address, auths, tls, None, handler=_Handler)
     srv.observer = Observer(client or Client(cfg["signer"]), cfg.get("allow", ()))
+    srv.tunnels = {}   # attribution -> tunnels open (_tunnel)
     return srv
 
 
