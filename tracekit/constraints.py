@@ -318,11 +318,13 @@ def breaks(kind, f, is_object):
 
 def held(kind, name):
     """What the agent is told when a live constraint holds its call (`name`: from breaks(), out of its own
-    arguments)."""
+    arguments; for "many", the most files of one call the signer checks)."""
     return {"keep_away": f"the person's request in this run said not to modify {name}",
             "only_change": f"the person's request in this run said to change only certain files, and {name} is not "
                            "one of them",
             "read_only": "the person's request in this run said to make no changes (read-only)",
             "no_push": "the person's request in this run said not to push",
-            "no_network": "the person's request in this run said not to use the network"}[kind] + \
+            "no_network": "the person's request in this run said not to use the network",
+            "many": f"the call writes more than {name} files, more than are checked against what the person's request "
+                    "in this run said not to change"}[kind] + \
         "; ask the person (TK-CONSTRAINT)"

@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import test_bundle_v2 as b
 from factories import unverified_bundles
@@ -183,6 +184,34 @@ class Live(Signed):
                            ("shell", {"commands": ["git push origin main"]})):
             with self.subTest(args):
                 self.assertIn("TK-CONSTRAINT", self.decide(run, tool, args)["rule_ids"])
+
+    def test_the_writer_checks_at_most_max_names_files_per_constraint(self):
+        """The salted commitments of a call's files are computed off the writer, once per distinct name and file
+        constraint, and at most MAX_NAMES names: a call writing more is held whenever the run has a file constraint."""
+        run = self.run_()
+        for i in range(svc.MAX_CONSTRAINTS):
+            self.add(run, "keep_away", f"never{i}.py")
+        with mock.patch.object(svc, "_commitment", wraps=svc._commitment) as commit:
+            out = self.decide(run, "Bash", {"command": "tee " + " ".join(f"f{i}" for i in range(9000))})
+            self.assertEqual((out["decision"], out["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
+            self.assertIn(f"more than {svc.MAX_NAMES} files", out["reason"])
+            self.assertLessEqual(commit.call_count, 2)   # the decision's own args commitment
+            commit.reset_mock()
+            out = self.decide(run, "Bash", {"command": "tee " + " ".join(f"f{i % 200}" for i in range(10000))})
+            self.assertEqual(out["decision"], "allow")
+            self.assertLessEqual(commit.call_count, svc.MAX_CONSTRAINTS * 200 + 2)
+        bare = self.run_()
+        self.add(bare, "no_push")
+        self.assertEqual(self.decide(bare, "Bash", {"command": "tee " + " ".join(f"f{i}" for i in range(9000))})[
+            "decision"], "allow")
+
+    def test_a_constraint_added_after_the_request_thread_looked_still_holds(self):
+        run = self.run_()
+        self.add(run, "no_push")
+        key = ("default", run["run_id"])
+        early = self.s._facts(key, "Edit", {"file_path": "/w/billing.py"}, "fs")   # before keep_away billing.py
+        self.add(run, "keep_away", "billing.py")
+        self.assertIn("not to modify billing.py", self.s._constrained(self.s.log.runs[key], early))
 
     def test_the_record_holds_a_commitment_never_the_name(self):
         run = self.run_()
