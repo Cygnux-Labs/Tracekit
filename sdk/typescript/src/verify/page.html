@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="%CSP%">
+<title>Tracekit bundle verifier</title>
+<style>
+:root { color-scheme: light dark; }
+body { font: 16px/1.5 system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+label { display: block; margin: 0.75rem 0; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; border: 1px solid; min-height: 3rem; }
+</style>
+</head>
+<body>
+<h1>Verify a Tracekit bundle</h1>
+<p>The TypeScript verifier of Tracekit <span id="version"></span>, in this page. Choose a <code>.tkb</code> bundle and
+your trust config: the log key and witnesses you pin, never ones the bundle brings. The page reads both files here; its
+Content Security Policy lets it load and send nothing, so they never leave your browser.</p>
+<label>Bundle <input type="file" id="bundle" accept=".tkb,.zip"></label>
+<label>Trust config <input type="file" id="trust" accept=".json"></label>
+<pre id="report"></pre>
+<p>The report and its verdicts are those of <code>npx @cygnuxlabs/tracekit verify</code>. A bundle that relies on a
+check this verifier doesn't implement (SLH-DSA checkpoint signatures, Rekor anchors, record-key certificates, tracekit
+why findings) is UNVERIFIABLE, never VERIFIED: verify it with <code>tracekit verify</code>. What each line means:
+docs/verdicts.md in the Tracekit repository.</p>
+<script type="module">%SCRIPT%</script>
+</body>
+</html>

@@ -4,8 +4,10 @@ with a gap, with an approval, one never completed, a run-set; and mutated copies
 both, which must agree on integrity, assurance, exit code and every check's name and status. Skipped without Node >= 20 or a TypeScript build
 (`make test-ts` builds it; the TypeScript suite runs this file too)."""
 import base64
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +38,7 @@ from tracekit.why import signed  # noqa: E402
 TS = os.path.join(ROOT, "sdk", "typescript")
 CLI = os.path.join(TS, "bin", "tracekit.mjs")
 TSC = os.path.join(TS, "node_modules", "typescript", "bin", "tsc")
+PAGE = os.path.join(TS, "dist", "verify.html")
 ME = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
 
 
@@ -47,8 +50,7 @@ def _node():
     v = subprocess.run([node, "--version"], capture_output=True, text=True).stdout.strip().lstrip("v").split(".")[:2]
     if not all(x.isdigit() for x in v) or tuple(map(int, v)) < (20, 12):   # JSON imports and deflate-raw
         return "needs node >= 20.12"
-    return None if os.path.exists(TSC) or os.path.exists(os.path.join(TS, "dist", "verify", "cli.js")) else \
-        "needs the TypeScript build (make test-ts)"
+    return None if os.path.exists(TSC) or os.path.exists(PAGE) else "needs the TypeScript build (make test-ts)"
 
 
 _BUILT = []
@@ -59,6 +61,7 @@ def _build():
     collection)."""
     if os.path.exists(TSC) and not _BUILT:
         subprocess.run(["node", TSC, "-p", TS], check=True)
+        subprocess.run(["node", os.path.join(TS, "scripts", "verify-page.mjs")], check=True)
         _BUILT.append(True)
 
 
@@ -71,6 +74,40 @@ def ts_verify(bundle, trust):
     out = json.loads(p.stdout)
     assert out["exit_code"] == p.returncode, p
     return out
+
+
+def ts_cli(bundle, trust, *flags):
+    """(exit code, report text) of the TypeScript CLI."""
+    _build()
+    p = subprocess.run(["node", CLI, "verify", bundle, "--trust", trust, *flags], capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+
+# runs verify.html's script in Node on a stand-in for its page: the two file inputs, already chosen, and the report
+PAGE_RUN = r"""
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [page, bundle, trust, tmp] = process.argv.slice(1);
+const file = (p) => ({ name: p.split(/[\\/]/).pop(), arrayBuffer: async () => {
+  const b = readFileSync(p);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+} });
+const on = [], input = (p) => ({ files: [file(p)], addEventListener: (_, f) => on.push(f) });
+const el = { bundle: input(bundle), trust: input(trust), report: {}, version: {} };
+globalThis.document = { getElementById: (id) => el[id] };
+writeFileSync(tmp, readFileSync(page, "utf8").match(/<script type="module">([\s\S]*)<\/script>/)[1]);
+await import(pathToFileURL(tmp));
+await on[0]();
+process.stdout.write(el.report.textContent);
+"""
+
+
+def page_verify(bundle, trust):
+    """The report verify.html shows for `bundle` and `trust` (its script run in Node, the page's DOM stood in for)."""
+    _build()
+    with tempfile.TemporaryDirectory() as d:
+        return subprocess.run(["node", "--input-type=module", "-e", PAGE_RUN, "--", PAGE, bundle, trust,
+                               os.path.join(d, "page.mjs")], capture_output=True, text=True, check=True).stdout
 
 
 @unittest.skipIf(SKIP, SKIP)
@@ -97,7 +134,7 @@ class Agreement(unittest.TestCase):
                     "open": cls.record_run(s, "read_file", close=False),
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
                     "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s),
-                    "constraint": cls.constraint_run(s)}
+                    "constraint": cls.constraint_run(s), "amended": cls.amended_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -233,6 +270,17 @@ class Agreement(unittest.TestCase):
             **ids, "request_id": uuid.uuid4().hex, "caller": f"uid:{ME.subject}", "stream": "gx", "client_seq": 0,
             "provider": "openai", "model": "m", "phase": "request", "tool_results_sent": ["tc-1", "tc-2"],
             "tool_results": [{"id": "tc-1", "forms": gateway.result_forms("HELLO")}]})
+        s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
+    @staticmethod
+    def amended_run(s):
+        """A run whose model request the gateway amended to show reasoning: a format 1.4 ext.amended."""
+        r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        s.call(CallerIdentity("mtls", "spiffe://acme/gateway", True), "model_event", {
+            "request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"],
+            "caller": f"uid:{ME.subject}", "stream": "gx", "client_seq": 0, "provider": "anthropic", "model": "m",
+            "phase": "request", "content_digest": "sha256:" + "a" * 64, "amended": ["/thinking/display"]})
         s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
         return r["run_id"]
 
@@ -375,6 +423,62 @@ class Agreement(unittest.TestCase):
             self.assertEqual(next(c["detail"] for c in ts_verify(bad, self.trusts["witnessed"])["checks"]
                                   if c["check"] == "manifest"), want)
 
+    def test_a_bundle_for_a_newer_verifier_says_how_to_verify_it(self):
+        bundle, trust = self.mutate(edit=lambda files, m: m.update(verifier_min_version="9.0")), self.trusts["witnessed"]
+        py, ts = v2.verify(bundle, trust)[0].checks[0]["problems"], ts_verify(bundle, trust)["checks"][0]["problems"]
+        self.assertEqual(ts, [py[1], py[0], py[2]])   # the same commands, npx first
+        self.assertEqual(ts[0], f"npx -y @cygnuxlabs/tracekit@latest verify {bundle} --trust {trust}")
+        self.assertIn(f"npx -y @cygnuxlabs/tracekit@latest verify {os.path.basename(bundle)} --trust "
+                      f"{os.path.basename(trust)}\n", page_verify(bundle, trust))   # the page knows the files' names
+
+    def test_an_ext_name_neither_verifier_interprets(self):
+        import test_bundle_v2 as b
+        log = b.Log(os.path.join(self.d, f"ext-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        bundle, trust = b.ext_bundle(log, os.path.join(self.d, "ext.tkb")), os.path.join(self.d, "ext-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        _, rep = self.agree(bundle, trust)
+        warned = [c for c in rep.checks if c["status"] == "warn"]
+        self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["status"] == "warn"], warned)
+        self.assertEqual([c["check"] for c in warned], ["not interpreted"])
+        self.assertEqual(ts_cli(bundle, trust, "--strict")[0], 3)
+
+    def test_both_verifiers_read_ext_amended_alike(self):
+        import test_bundle_v2 as b   # and one the signer would never write: a warning in both
+        log = b.Log(os.path.join(self.d, f"amended-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        odd, trust = b.ext_bundle(log, os.path.join(self.d, "odd.tkb"), {"amended": {}}, ("amended", {})), \
+            os.path.join(self.d, "odd-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        for bundle, trust, status in ((self.bundles["amended"], self.trusts["witnessed"], "pass"), (odd, trust, "warn")):
+            with self.subTest(status):
+                _, rep = self.agree(bundle, trust)
+                [line] = [c for c in rep.checks if c["check"] == "gateway amendments"]
+                self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "gateway amendments"],
+                                 [line])
+                self.assertEqual(line["status"], status)
+
+    def test_the_browser_page_reports_what_the_cli_does(self):
+        """verify.html: its one script and its style allowed by hash and nothing else, no network API in the script,
+        and for each bundle the TypeScript CLI's report."""
+        _build()
+        with open(PAGE, encoding="utf-8") as f:
+            page = f.read()
+        script = re.search(r'<script type="module">(.*)</script>', page, re.S)[1]
+        h = lambda s: "'sha256-%s'" % base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()   # noqa: E731
+        self.assertIn(f"content=\"default-src 'none'; script-src {h(script)}; style-src "
+                      f"{h(re.search(r'<style>(.*?)</style>', page, re.S)[1])}; connect-src 'none'\"", page)
+        self.assertEqual(page.count("<script"), 1)
+        self.assertNotRegex(script, r"fetch|XMLHttpRequest|WebSocket|sendBeacon|EventSource|import\(")
+        for name in ("closed", "sensor", "run-set", "gap"):
+            with self.subTest(name):
+                code, text = ts_cli(self.bundles[name], self.trusts["witnessed"])
+                self.assertEqual(code, 0)
+                self.assertTrue(page_verify(self.bundles[name], self.trusts["witnessed"]).startswith(
+                    text + "\nExit code 0"))
+
     def test_tiers_of_calls_whose_records_disagree(self):
         import test_bundle_v2 as b   # a synthetic log: a T2 decision completed by the client, which the signer refuses
         log = b.Log(os.path.join(self.d, f"tiers-{uuid.uuid4().hex}"))
@@ -438,6 +542,9 @@ class Agreement(unittest.TestCase):
         golden = os.path.join(TESTS, "golden", "v2")
         ts = ts_verify(os.path.join(golden, "closed.tkb"), os.path.join(golden, "trust-rekor.json"))
         self.assertEqual((ts["exit_code"], ts["integrity"]), (2, "UNVERIFIABLE (not checked by this verifier: rekor anchor)"))
+        page = page_verify(os.path.join(golden, "closed.tkb"), os.path.join(golden, "trust-rekor.json"))   # the page too
+        self.assertIn("\nIntegrity: UNVERIFIABLE (not checked by this verifier: rekor anchor).\n", page)
+        self.assertTrue(page.endswith("\nExit code 2.\n"))
         # a pinned hybrid SLH-DSA key of the origin: a note without its line fails in both
         with open(os.path.join(TESTS, "vectors", "slh_dsa_note.json"), encoding="utf-8") as f:
             slh = checkpoint.parse_vkey(json.load(f)["slh_vkey"])

@@ -87,6 +87,21 @@ signer closes the run after its idle timeout. `eval/e14_outage.py` checks each o
 Yes. Verifiers are frozen per format version and formats only grow: a v1 bundle verifies with `tracekit verify
 --key`, a v2 bundle with `--trust`, and a v1 ledger bridged into a v2 log with `--v1-ledger` ([migration](migration.md)).
 
+## What does `UNVERIFIABLE (needs tracekit >= x)` mean?
+
+The bundle was written by a newer Tracekit than your verifier; nothing failed. Verify it with a newer verifier, using
+your own paths and the version the message names:
+
+```sh
+uvx --from "tracekit-ai>=1.4.0" tracekit verify run.tkb --trust trust.json
+npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json
+```
+
+or open https://cygnux-labs.github.io/Tracekit/verify/ and choose the bundle and your trust config: the page verifies
+them in your browser and sends nothing ([verdicts](verdicts.md#a-bundle-that-needs-a-newer-verifier)). From 1.4.0,
+what an older verifier can leave unread is non-critical: a 1.4.0 verifier verifies a later bundle and names what it
+didn't interpret on a `not interpreted` warning.
+
 ## Does my data leave the machine?
 
 Only to the places you configure: witnesses get checkpoint notes (hashes and sizes), Rekor gets a hash of a note, a

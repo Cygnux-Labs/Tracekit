@@ -15,6 +15,7 @@ gateway.yaml:
                                            # (as parsers.provider_tools names them; `mcp` covers every mcp:<label>):
                                            # a request declaring a denied one, or with `allow`, one not listed, is
                                            # refused (403): they run mid-response, where no decide can hold them
+    show_reasoning: true                   # ask the provider to show the reasoning a request has it do but hides
 
 Every request carries an identity the authenticators accept and its run, `X-Tracekit-Run: <run_id>.<run token>` or
 that value as `Authorization: Bearer` (then the identity must come from a client certificate). No identity or run: 401.
@@ -44,6 +45,13 @@ When the signer's `status` says its content vault is on (signer.yaml `content.re
 (a stream: as assembled), only when it fits max_record_bytes and half a frame and is strict JSON (else no body: the
 record keeps the raw bytes' digest, as with the vault off). The signer redacts it, commits to it
 and keeps it encrypted (docs/privacy.md).
+
+show_reasoning (on unless false): a request that has the model reason but hides the reasoning is sent amended to show
+it (show_reasoning(): Anthropic thinking display, OpenAI Responses reasoning summary), and its request record says so
+(`amended`: the JSON pointers of the fields changed, signed as the record's ext.amended); the record's digest and body
+are of the request as sent. Nothing else in a request changes, and no request gets reasoning it didn't ask for. A 400 or
+422 to an amended request is recorded as that exchange's response and not passed on: the request goes again, as the
+client sent it, as a new exchange; once that one succeeds, the model's requests are not amended again (until restart).
 """
 import argparse
 import collections
@@ -74,7 +82,7 @@ KINDS = {"/v1/chat/completions": "openai:chat", "/v1/responses": "openai:respons
 TERMINAL = {"response.completed", "response.incomplete", "message_stop"}   # chat completions: data: [DONE]
 FAILED = {"error", "response.failed"}
 DROP = HOP | {"authorization", "x-api-key", "x-tracekit-run", "cookie"}   # never forwarded: the client's credentials
-KEYS = {"http", "upstream", "api_key_file", "api_key_header", "signer", "max_body", "provider_tools"}
+KEYS = {"http", "upstream", "api_key_file", "api_key_header", "signer", "max_body", "provider_tools", "show_reasoning"}
 MAX_BODY = 32 * 1024 * 1024
 MAX_RUNS = 10_000   # runs remembered (stream, counter, fail modes), least recently used dropped first
 MAX_RUN_HEADER = 2048   # X-Tracekit-Run: a run id and its token (well under 1 KB)
@@ -86,6 +94,9 @@ MAX_RESULTS_CHECKED = 512
 # result past it gets no digests, and the signer signs it as unchecked (capture.gap result_unchecked)
 MAX_DIGESTED = MAX_LINE
 UPSTREAM_TIMEOUT_S = 600
+REJECTED = (400, 422)   # what a server answers a request field it doesn't take (422: FastAPI-based servers)
+RETRY = object()   # _forward: the amended request was rejected and recorded; send it again as the client sent it
+MAX_UNAMENDABLE = 1024   # (kind, model) pairs whose provider rejected the amendment, not amended again
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -98,9 +109,9 @@ OPEN = urllib.request.build_opener(_NoRedirect).open
 
 class Gateway:
     def __init__(self, upstream, api_key, api_key_header="authorization", client=None, max_body=MAX_BODY,
-                 provider_tools=None):
+                 provider_tools=None, show_reasoning=True):
         self.upstream, self.max_body, self.client = upstream.rstrip("/"), max_body, client
-        self.provider_tools = provider_tools or {}
+        self.provider_tools, self.show_reasoning, self.unamendable = provider_tools or {}, show_reasoning, set()
         self.auth = (api_key_header, "Bearer " + api_key if api_key_header == "authorization" else api_key)
         self.runs, self.lock = collections.OrderedDict(), threading.Lock()
         self.body = VaultBody(lambda: self.client.status({}))   # body(content, size): what a model_event carries
@@ -210,6 +221,26 @@ class Gateway:
                 out.append({"id": tcid, "forms": f})
         run.forms = forms
         return out[::-1]
+
+
+def show_reasoning(kind, req):
+    """(the request to send, the JSON pointers of the fields changed) for `req`, which the client sent: a request that
+    has the model reason but hides the reasoning is amended to show it, and nothing else is changed. Anthropic Messages
+    `thinking` of type enabled or adaptive with `display` unset or omitted: display summarized (a summary; the API never
+    returns the raw thinking). OpenAI Responses `reasoning` with effort other than none and no `summary` (nor the older
+    `generate_summary`): summary auto. A request that doesn't turn reasoning on itself (no `thinking`, Anthropic type
+    disabled or between_tools, which takes no display) is sent as it is, as is every other kind: chat completions have
+    no field for it."""
+    if kind == "anthropic:messages":
+        t = req.get("thinking")
+        if isinstance(t, dict) and t.get("type") in ("enabled", "adaptive") and t.get("display") in (None, "omitted"):
+            return {**req, "thinking": {**t, "display": "summarized"}}, ["/thinking/display"]
+    if kind == "openai:responses":
+        r = req.get("reasoning")
+        if isinstance(r, dict) and r.get("effort") != "none" and r.get("summary") is None \
+                and r.get("generate_summary") is None:
+            return {**req, "reasoning": {**r, "summary": "auto"}}, ["/reasoning/summary"]
+    return req, []
 
 
 EMPTY = (None, "", [])   # no content, as providers and frameworks send a result with none
@@ -360,23 +391,46 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 "streamed": req.get("stream") is True}
         sent = parsers.parse(kind, None, req)["tool_results_sent"][-MAX_RESULTS_SENT:]
         results = gw.results(key, parsers.tool_results(kind, req)[-MAX_RESULTS_CHECKED:]) if gw.check_results else []
-        try:
-            ok = gw.record(key, xid, phase="request", content_digest="sha256:" + hashlib.sha256(body).hexdigest(),
-                           **base, **({"tool_results_sent": sent} if sent else {}),
-                           **({"tool_results": results} if results else {}), **gw.body(req, len(body)))
-        except RPCError as e:
-            return self._error(429 if e.code == "quota_exceeded" else 403, f"the signer refused the run: {e.message}")
-        if not ok and not gw.fail_open(key):
-            return self._error(503, "the signer is unreachable and the run's fail mode is closed")
-        if ok and ok.get("refused"):
+        # (request, its bytes, the pointers amended): amended, then as the client sent it if the provider rejects that
+        attempts = [(req, body, [])]
+        shown, amended = show_reasoning(kind, req) if gw.show_reasoning and (kind, base["model"]) not in \
+            gw.unamendable else (req, [])
+        if amended:
             try:
-                gw.record(key, xid, phase="response", error=f"not forwarded: {ok['refused']}"[:1024], **base)
-            except RPCError:   # the request record and the signer's reconcile record stand
+                data = json.dumps(shown, separators=(",", ":"), ensure_ascii=False).encode()
+                attempts.insert(0, (shown, data, amended))
+            except UnicodeEncodeError:   # a lone surrogate the client sent escaped: the request goes as it came
                 pass
-            return self._error(403, ok["refused"], close=False)
-        self._forward(gw, kind, key, xid, base, req, body)
+        xids = [xid] + ["gx-" + uuid.uuid4().hex for _ in attempts[1:]]
+        for i, (sent_req, sent_body, pointers) in enumerate(attempts):
+            try:
+                ok = gw.record(key, xids[i], phase="request",
+                               content_digest="sha256:" + hashlib.sha256(sent_body).hexdigest(),
+                               **base, **({"amended": pointers} if pointers else {}),
+                               **({"tool_results_sent": sent} if sent else {}),
+                               **({"tool_results": results} if results else {}),
+                               **gw.body(sent_req, len(sent_body)))
+            except RPCError as e:
+                return self._error(429 if e.code == "quota_exceeded" else 403,
+                                   f"the signer refused the run: {e.message}")
+            if not ok and not gw.fail_open(key):
+                return self._error(503, "the signer is unreachable and the run's fail mode is closed")
+            if ok and ok.get("refused"):
+                try:
+                    gw.record(key, xids[i], phase="response", error=f"not forwarded: {ok['refused']}"[:1024], **base)
+                except RPCError:   # the request record and the signer's reconcile record stand
+                    pass
+                return self._error(403, ok["refused"], close=False)
+            status = self._forward(gw, kind, key, xids[i], base, sent_req, sent_body, (xids[i + 1:] or [None])[0])
+            if status is not RETRY:
+                if i and status and status < 300 and len(gw.unamendable) < MAX_UNAMENDABLE:
+                    gw.unamendable.add((kind, base["model"]))   # lean: per gateway process, until it restarts
+                return
 
-    def _forward(self, gw, kind, key, xid, base, req, body):
+    def _forward(self, gw, kind, key, xid, base, req, body, retry=None):
+        """Send the request upstream and its response to the client, both recorded; the upstream status (None: not
+        reached). `retry`: the exchange id the request goes again under, as the client sent it, if the provider
+        rejects this one, amended (REJECTED): that answer is recorded and not passed on (RETRY)."""
         headers = {k: v for k, v in self.headers.items() if k.lower() not in DROP}
         headers.update({"Accept-Encoding": "identity", gw.auth[0]: gw.auth[1]})
         up = urllib.request.Request(gw.upstream + self.path, data=body, headers=headers, method="POST")
@@ -411,10 +465,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._error(502, err)
         try:
             status, ctype = resp.getcode(), resp.headers.get("content-type", "")
+            # lean: any 400 or 422 to an amended request is taken as a rejection of the amendment, so a request bad for
+            # another reason is sent twice; match the provider's error text if that costs too much
+            if retry and status in REJECTED:
+                try:
+                    h.update(resp.read(gw.max_body))
+                except (http.client.HTTPException, OSError):
+                    pass
+                done(f"upstream status {status} to the request as amended to show reasoning; sent again without the "
+                     f"amendment as exchange {retry}")
+                return RETRY
             if status < 300 and "event-stream" in ctype:
                 self._stream(resp, status, stream, h, done)
             else:
                 self._whole(gw, resp, status, kind, req, h, done)
+            return status
         finally:
             resp.close()
 
@@ -500,6 +565,8 @@ def load_config(path):
     if not (isinstance(pt, dict) and set(pt) <= {"allow", "deny"} and all(
             isinstance(v, list) and all(isinstance(n, str) for n in v) for v in pt.values())):
         raise ValueError(f"{path}: provider_tools takes allow and deny, lists of tool names")
+    if not isinstance(cfg.get("show_reasoning", True), bool):
+        raise ValueError(f"{path}: show_reasoning is true or false")
     base = os.path.dirname(os.path.abspath(path))
     cfg["api_key_file"] = os.path.join(base, cfg["api_key_file"])
     transport.resolve(cfg["http"], base)
@@ -512,7 +579,8 @@ def serve(cfg, client=None):
         key = f.read().strip()
     srv = transport.HttpServer(*transport.configure(cfg["http"]), None, handler=_Handler)
     srv.gateway = Gateway(cfg["upstream"], key, cfg.get("api_key_header", "authorization"),
-                          client or Client(cfg["signer"]), cfg.get("max_body", MAX_BODY), cfg.get("provider_tools"))
+                          client or Client(cfg["signer"]), cfg.get("max_body", MAX_BODY), cfg.get("provider_tools"),
+                          cfg.get("show_reasoning", True))
     return srv
 
 

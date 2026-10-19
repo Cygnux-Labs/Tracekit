@@ -147,7 +147,7 @@ class TestDecisions(Case):
                          [e["run_seq"] for e in s.events(run) if e["type"] == "policy.decision"])
         for e in s.events():
             self.assertEqual(schema.validate(e), [], e["type"])
-        self.assertEqual(bundle_v2.needs(s.events(run)), "1.2.0")
+        self.assertEqual(bundle_v2.needs(s.events(run)), ("1.2.0", "1.2.0"))
 
     def test_a_policy_without_detection_writes_no_detect_field(self):
         s = self.signer({k: v for k, v in POLICY.items() if k not in pc.DETECT})

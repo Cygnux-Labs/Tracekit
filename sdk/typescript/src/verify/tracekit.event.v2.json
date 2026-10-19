@@ -143,7 +143,8 @@
         "incident.response",
         "identity.suspension",
         "effect.observed",
-        "constraint.added"
+        "constraint.added",
+        "ext"
       ]
     },
     "data": {
@@ -285,6 +286,13 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9._-]+@[A-Za-z0-9._+-]+$",
       "description": "Policy engine id@version."
+    },
+    "ext": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/ext_name"
+      },
+      "description": "Non-critical fields (format 1.4), on any record: {name: any strict JSON value}. A verifier that does not interpret a name still checks the record's signature, chain and inclusion, and says it did not interpret the name (docs/format-v2.md section 9)."
     }
   },
   "allOf": [
@@ -1187,6 +1195,22 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/constraint_added"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ext"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ext"
           }
         }
       }
@@ -4791,6 +4815,24 @@
           "description": "the signer's salt id for this record's commitment (salt label <type>:<salt_id>)"
         }
       }
+    },
+    "ext_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$",
+      "maxLength": 64,
+      "description": "The name of a non-critical field or record (format 1.4)."
+    },
+    "ext": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ext_name"
+        }
+      },
+      "description": "A non-critical record (format 1.4): its name and any other strict JSON fields, checked as the ext field is."
     }
   }
 }

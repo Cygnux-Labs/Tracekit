@@ -1,17 +1,17 @@
 /**
  * The JSON Schema 2020-12 subset tracekit.event.v2.json uses (docs/format-v2.md §3): type, const, enum, required,
- * properties, additionalProperties, items, oneOf, allOf, if/then, $ref to #/$defs, pattern (full match, ASCII),
- * minimum, maximum, minLength, maxLength (code points), minItems, maxItems. "integer" excludes number tokens written with a
- * fraction or exponent. Any other keyword throws, so the schema can't silently lose a check.
+ * properties, additionalProperties, propertyNames, items, oneOf, allOf, if/then, $ref to #/$defs, pattern (full match,
+ * ASCII), minimum, maximum, minLength, maxLength (code points), minItems, maxItems. "integer" excludes number tokens
+ * written with a fraction or exponent. Any other keyword throws, so the schema can't silently lose a check.
  */
 import type { Floats } from "./jcs.js";
 import SCHEMA from "./tracekit.event.v2.json" with { type: "json" };
 
 type Schema = { [keyword: string]: any };
 
-const KEYWORDS = new Set(["type", "const", "enum", "required", "properties", "additionalProperties", "items", "oneOf",
-  "allOf", "if", "then", "$ref", "pattern", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "$schema", "$id",
-  "$defs", "title", "description"]);
+const KEYWORDS = new Set(["type", "const", "enum", "required", "properties", "additionalProperties", "propertyNames",
+  "items", "oneOf", "allOf", "if", "then", "$ref", "pattern", "minimum", "maximum", "minLength", "maxLength", "minItems",
+  "maxItems", "$schema", "$id", "$defs", "title", "description"]);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isNumber = (v: unknown): v is number => typeof v === "number";
 const PATTERNS = new Map<string, RegExp>();
@@ -61,6 +61,7 @@ function check(v: unknown, s: Schema, path: string, errs: string[], float: boole
       if (Object.hasOwn(props, k)) check(x, props[k], `${path}.${k}`, errs, f, floats);
       else if (ap === false) errs.push(`${path}: unexpected field '${k}'`);
       else if (isObject(ap)) check(x, ap, `${path}.${k}`, errs, f, floats);
+      if ("propertyNames" in s) check(k, s.propertyNames, `${path}.${k}`, errs, false, floats);
     }
   }
   if (Array.isArray(v) && "items" in s)

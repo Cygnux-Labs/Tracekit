@@ -262,6 +262,17 @@ gap in each run it covers, or in the tenant's run `tracekit/signer` when it cove
 import covered the run throughout; an import's coverage never makes `network` observed. A bundle with these records
 needs `verifier_min_version` 1.4.0.
 
+Non-critical fields and records (format 1.4): any record may carry `ext`, an object of names to strict JSON values,
+and a record of type `ext` holds `data: {name, ...}` with any other fields. They are signed, chained and included like
+every record; a verifier that doesn't interpret a name says so and still verifies the bundle (§9).
+
+`ext.amended` (format 1.4, [gateway](gateway.md#readable-reasoning)): on an LLM gateway's `model.exchange` request
+record, the JSON pointers ([RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)) of the fields the gateway changed in
+the client's request before sending it, to have the provider show the reasoning the request has the model do:
+`["/thinking/display"]` (Anthropic Messages, set to `summarized`) or `["/reasoning/summary"]` (OpenAI Responses, set to
+`auto`). The record's `content_digest` (and its vault body) is of the request as sent. The signer writes it only for a
+gateway (`model_event` with `caller`), on a request record.
+
 ## 4. Records and the signature message
 
 A record is one line of JSON:
@@ -445,7 +456,8 @@ A bundle is a zip. The manifest is an index and is never trusted: every file it 
 bundle may hold nothing else.
 
 ```text
-manifest.json             {"format": "tracekit.bundle.v2", "verifier_min_version": "0.4.0", "files": {name: sha256 hex}}
+manifest.json             {"format": "tracekit.bundle.v2", "verifier_min_version": "1.2.0", "verifier_version": "1.2.0",
+                           "files": {name: sha256 hex}}
 runs/<id>.jsonl           one run's records in run_seq order; id = first 32 hex of SHA-256("<tenant>/<run_id>")
 keys/records.jsonl        every signer.epoch and key.retire record the checkpoint covers
 proofs/records.json       {"checkpoint": "checkpoints/<size>.note", "tree_size": n,
@@ -489,21 +501,48 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 `tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file).
 
 `verifier_min_version` is the newest version in the version table (`VERSIONS` in `tracekit/bundle_v2.py`) whose
-entries a bundled record uses, else `1.0.0`. A row is frozen once its version's first release candidate ships
-(`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists
-what it added: record types, data fields per record type, and enum values per (record type, field), gap and tamper
-`kind`s among them:
+critical entries a bundled record uses, else `1.0.0`, and at least 1.4.0 when a record has an `ext` field or is of type
+`ext`. `verifier_version` (from 1.4.0; advisory, like the whole manifest) is the newest version whose entries, ext names
+among them, the records use: the version that checks everything in the bundle. `tracekit export --v2` prints both, and
+which records raised `verifier_min_version` (`raised_by`). A row is frozen once its version's first release candidate
+ships (`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists what it added:
+record types, data fields per record type, and enum values per (record type, field), gap and tamper `kind`s among
+them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 
-| Version | Record types | Data fields | Enum values |
-|---|---|---|---|
-| 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` |
-| 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` |
-| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites` | — |
+| Version | Record types | Data fields | Enum values | Ext names (non-critical) |
+|---|---|---|---|---|
+| 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — | — |
+| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
+| 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
+| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites` | — | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
-newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never
-FAILED.
+newer critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,
+never FAILED, and from 1.4.0 the `bundle readable` line lists the commands that verify the bundle (§11 step 2).
+
+**Criticality.** From 1.4.0, an addition an older verifier can leave unread goes in the non-critical slot rather than
+a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
+
+- `ext` on any record: `{name: value}`, each name `[a-z][a-z0-9_.-]*` and at most 64 characters, each value any strict
+  JSON (§1) within the 1 MiB line limit; and the record type `ext`, `data: {name, ...}` with any other fields.
+- The signer decides what is critical by where it writes it: a closed field is critical, `ext` is not. That choice is
+  inside the signed record; the manifest, never trusted, only names versions.
+- A verifier from 1.4.0 checks every record's schema, signature, chain and inclusion whatever its `ext` holds, so an
+  ext value edited, added or removed fails `signatures`, and an `ext` record dropped fails `run chain`. It interprets
+  the ext names its own rows list, each on lines of its own; every other name gets a `not interpreted` warning
+  (`n record(s) carry ext.<name>: ...; tracekit >= <verifier_version> checks it`), exit 0 (3 with `--strict`), and the
+  integrity stays `VERIFIED`: every check that verifier implements passed.
+- **The rule.** A name may go in `ext` only if every line an older verifier prints stays true without its
+  interpretation: with it off, the report is the full report minus that name's own lines, plus its `not interpreted`
+  line (`test_an_ext_interpretation_adds_only_its_own_lines` checks each name a row lists).
+- `amended` is non-critical: without it every line stays true (a request record's commitment is to the request as
+  sent either way); a verifier that reads it adds a `gateway amendments` line.
+- `review.cites` and `effect.observed.sensor` stay critical: a verifier that passed over a signed finding's citations
+  would label it `imported`, a false line; and a sensor's effects are records of what the agent's own processes did,
+  in its run, which a verifier must read to verify that run.
+
+`tests/test_released_verifiers.py` runs each released Python verifier (from its git tag) on bundles of today's signer:
+those that declare its version or lower verify there with the same lines as here, the others are `UNVERIFIABLE`.
 
 ## 10. The trust config
 
@@ -535,8 +574,11 @@ line and verdict is in [verdicts](verdicts.md).
 1. **Trust config.** Parse strictly; check the keys and types of §10; parse every vkey. Failure: exit 2.
 2. **Read the zip** under the limits of §9. Parse `manifest.json`; `format` must be `tracekit.bundle.v2` and
    `verifier_min_version` a version number (one to three dot-separated runs of ASCII digits) not above the version of
-   the format the verifier implements, else `UNVERIFIABLE (needs tracekit >= x)`.
-   Failure: `UNUSABLE BUNDLE`, exit 2.
+   the format the verifier implements, else `UNVERIFIABLE (needs tracekit >= x)`, exit 2, the `bundle readable` line
+   listing commands that verify it with the user's paths: `uvx --from "tracekit-ai>=x" tracekit verify <bundle>
+   --trust <trust>`, `npx -y @cygnuxlabs/tracekit@latest verify <bundle> --trust <trust>` (the TypeScript verifier
+   lists it first) and the browser page (§13). `verifier_version` is advisory: it only names the version on `not
+   interpreted` lines (step 10). Failure: `UNUSABLE BUNDLE`, exit 2.
 3. **Manifest.** The listed files and hashes must equal the files present, exactly (`manifest`).
 4. **Checkpoint.** Open the note named by `proofs/records.json` (§6) with the pinned log keys (both lines when a hybrid
    key is pinned) and witness keys; its tree size must equal `tree_size` (`checkpoint`). Count the pinned cosignatures
@@ -587,7 +629,14 @@ line and verdict is in [verdicts](verdicts.md).
    self-approved) with the incident id; no consume under a hold but of such an approval, none under a quarantine; no
    `tool.result` while held or quarantined but of a call `in_flight` then or (held) consumed with such an approval
    (`incidents`).
-10. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED`, `VERIFIED TO HEAD n (open)` for one open
+10. **Ext** (records with an `ext` field or of type `ext`, §9). Each ext name the key and run records carry, in
+    name order: the verifier's own check of it when it interprets it, else a `not interpreted` warning counting the
+    records that carry it. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show
+    reasoning (<pointer>: <count>, ... the first 8 in code-point order); each record commits to the request as sent`,
+    a warning listing the records (the first 20) where it is anything but a non-empty list of JSON pointers of at most
+    256 characters on a `model.exchange` request record of source `gateway`.
+11. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED` (every check this verifier implements
+    passed), `VERIFIED TO HEAD n (open)` for one open
     run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,
     isolation, fail-open classes, key assurance, break-glass approvals) and the assurance level. Exit 0, or 3 with
     `--strict` when any line is a warning ([verdicts](verdicts.md#signed-gaps) lists the gap kinds that warn).
@@ -615,11 +664,16 @@ tell a later v1 record from a genuine one; only this check reports it.
 |---|---|---|
 | Python, the reference | `tracekit/verify/v2.py` (`tracekit verify`) | everything on this page |
 | TypeScript, independent | `sdk/typescript/src/verify` (`@cygnuxlabs/tracekit/verify`, `npx @cygnuxlabs/tracekit verify`) | written from this page; Node ≥ 20.12 and browsers, Web Crypto only |
+| TypeScript, in a browser | `verify.html` (`make verify-page`; a release asset, in the npm package as `dist/verify.html`, hosted at https://cygnux-labs.github.io/Tracekit/verify/) | the TypeScript verifier in one self-contained page: file inputs for the bundle and the trust config, and a Content Security Policy (`default-src 'none'`, its one script and style by hash, `connect-src 'none'`) that lets it load and send nothing |
 
 The TypeScript verifier does not implement SLH-DSA (§6, Web Crypto has none), Rekor anchors (§8) or record-key
 certificates ([issuer.md](issuer.md)), nor `tracekit why` findings (a bundle with a `why.finding` or a replay run): a
 bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`, exit 2, never `VERIFIED`. It checks
-signed findings (`reviews`, and the `Findings:` line) and live constraints (`constraints`) as the reference does. It takes no monitor reports, revocations or v1 ledger.
+signed findings (`reviews`, and the `Findings:` line) and live constraints (`constraints`) as the reference does. It
+takes no monitor reports, revocations or v1 ledger. Both verifiers implement the non-critical slot and the upgrade
+lines alike (§9, §11); the browser page reports exactly what the TypeScript CLI does. For evidence, check the page you
+open against the release first: `gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`
+([releasing](RELEASING.md#verifying-a-release)).
 
 **Agreement.** `tests/test_ts_verifier.py` builds bundles with the real signer (honest runs: dev, witnessed, with a
 gap, with an approval, a run-set; and mutated copies: edited, dropped and reordered records, swapped signatures, a

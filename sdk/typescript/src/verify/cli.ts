@@ -32,7 +32,7 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`tracekit verify: ${(e as Error).message}`);
     return EXIT_BAD;
   }
-  const { report, code: verdict } = await verify(...data);
+  const { report, code: verdict } = await verify(...data, { bundle, trust });
   const code = verdict === EXIT_OK && strict && report.warnings.length ? EXIT_WARN : verdict;
   if (json)
     console.log(JSON.stringify({ exit_code: code, checks: report.checks, failures: report.failures,
