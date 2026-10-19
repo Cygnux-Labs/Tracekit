@@ -482,9 +482,14 @@ class Page(unittest.TestCase):
     def test_no_url_or_code_sink_takes_data(self):
         for page in (self.page, self.approvals, self.runs):
             self.assertEqual([v for v in re.findall(r'\b(?:href|src|action)="([^"]*)"', page) if "${" in v], [])
-            # the one href set: the downloaded bundle's object URL, never data
-            self.assertNotRegex(page, r"\beval\(|new Function|\.href\s*=(?! URL\.createObjectURL\(await r\.blob\(\)\);)"
-                                      r"|window\.open|document\.write|location\.")
+            # the hrefs set: the downloaded bundle's object URL, and a run link that is a fixed page plus an encoded run
+            # id in the fragment, never data as a URL; location.hash is read (a run id to select), never navigated to
+            self.assertNotRegex(page, r"\beval\(|new Function|\.href\s*=(?! URL\.createObjectURL\(await r\.blob\(\)\);"
+                                      r"| page \+ \"#run=\" \+ encodeURIComponent\(id\);)"
+                                      r"|window\.open|document\.write|\blocation\s*=|location\.(?:assign|replace)\(")
+        # the run link's page is one of the viewer's own paths, never data
+        self.assertIn('const page = document.querySelector(\'.nav a[href="/"]\') ? "/" : document.querySelector('
+                      '\'.nav a[href="/runs"]\') ? "/runs" : null;', self.approvals)
 
 
 if __name__ == "__main__":

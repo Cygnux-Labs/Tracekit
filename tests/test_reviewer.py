@@ -382,7 +382,10 @@ class TestAgentLabels(Case):
         call = {"approvals": [x for r in ts.records(self.dir) for x in tr.feed(r)
                               if (x.get("v2") or {}).get("approval") and x["v2"]["tool_use_id"] == "tc-1"]}
         with open(view.observe.UI, encoding="utf-8") as f:
-            helper = re.search(r"^\s*(const lastAnswer = .*;)$", f.read(), re.M).group(1)
+            page = f.read()
+        # lastAnswer reads the ANSWER map of answer kinds, defined just before it
+        helper = (re.search(r"^\s*(const ANSWER = \{.*?\};)$", page, re.M | re.S).group(1) + "\n"
+                  + re.search(r"^\s*(const lastAnswer = .*;)$", page, re.M).group(1))
         out = subprocess.run(["node", "-e", f"{helper} process.stdout.write(String(lastAnswer({json.dumps(call)})))"],
                              capture_output=True, text=True, check=True).stdout
         self.assertEqual(out, "revoked")
