@@ -169,13 +169,14 @@ def corpus(d, large=20000):
                 "checks": {"TK-X201": {"checked": 1, "found": 0, "not_checkable": []}},
                 "reasoning": {"full": 0, "summary": 0, "withheld": 0, "none": 1}}})
         call("close_run", who=analyzer, run_id=f["run_id"], run_token=f["run_token"])
-        call("observe_effect", who=tetragon, instance="i", sensor="tetragon", effects=[])
+        sensed = {"sensor": "tetragon", "callers": [f"uid:{me.subject}"]}   # it covers the runs of `me` alone
+        call("observe_effect", who=tetragon, instance="i", effects=[], **sensed)
         sensor = call("register_run", agent={"name": "agent"})
         call("decide", run_id=sensor["run_id"], run_token=sensor["run_token"], stream="s1", client_seq=0,
              tool_call_id="call_7", tool="read_file", args_source="parsed", args={})
         proc = {"caller": f"uid:{me.subject}", "ts": "2026-10-12T10:00:00.000000Z", "pid": 7, "binary": "/usr/bin/curl",
                 "exec_id": "ZXg6MTo3"}
-        call("observe_effect", who=tetragon, instance="i", sensor="tetragon", effects=[
+        call("observe_effect", who=tetragon, instance="i", **sensed, effects=[
             {**proc, "kind": "exec", "args_digest": "sha256:" + "a" * 64, "tool_call_id": "call_7"},
             {**proc, "kind": "file", "path": "/home/agent/.bashrc"}])
         call("close_run", run_id=sensor["run_id"], run_token=sensor["run_token"])
@@ -308,6 +309,57 @@ def page_report(page, bundle, trust):
     return rep, flat, page.text_content("#verdict-word"), secs, page.evaluate("window.__long || 0")
 
 
+def agree(page, bundle, trust, errors):
+    """`bundle` with `trust` (None: none chosen) in the page, the TypeScript CLI and the Python CLI: (each one's exit
+    code and seconds, the page's integrity line and longest main-thread task, problems): where the page differs from the
+    CLIs, a banner that isn't its exit code's, and the console errors and requests `errors` collected meanwhile. With
+    `page` None, the TypeScript CLI's report stands for the page's."""
+    cwd = os.path.dirname(bundle)
+    rel_b = os.path.basename(bundle)
+    rel_t = trust and os.path.relpath(trust, cwd)
+    if trust and os.path.dirname(trust) != cwd:   # the page knows only file names: so do the CLIs here
+        shutil.copy(bundle, os.path.join(os.path.dirname(trust), rel_b))
+        cwd, rel_t = os.path.dirname(trust), os.path.basename(trust)
+    if page:
+        rep, shown, word, secs, longest = page_report(page, bundle, trust)
+    argv = ["verify", rel_b, *(["--trust", rel_t] if trust else []), "--json"]
+    t0 = time.monotonic()
+    ts = cli(["node", os.path.join(TS, "bin", "tracekit.mjs"), *argv], cwd)
+    t1 = time.monotonic()
+    py = cli([PY, "-m", "tracekit.cli", *argv], cwd)
+    t2 = time.monotonic()
+    if not page:
+        rep, shown, word, secs, longest = ts, lines(ts), {0: "VERIFIED", 1: "FAILED", 2: "UNVERIFIABLE"}.get(
+            ts["exit_code"]), None, None
+    problems = []
+    lacks = any(c["detail"] == "not implemented by this verifier" for c in rep["checks"])
+    v1 = any(p.startswith("a format v1 bundle") for c in rep["checks"] for p in c["problems"])
+    if trust:
+        if rep != ts:
+            problems.append(f"page JSON != TypeScript CLI: {_diff(rep, ts)}")
+        if shown != lines(ts):
+            problems.append(f"page lines != TypeScript CLI: {_diff(shown, lines(ts))}")
+        # Python checks what TypeScript lacks (UNVERIFIABLE here, never VERIFIED), and its CLI hands a zip without a
+        # v2 manifest to the v1 verifier
+        if "stderr" not in py and not lacks and _py_order(rep) != py:
+            problems.append(f"page JSON != Python CLI: {_diff(_py_order(rep), py)}")
+    elif v1:   # the Python CLI verifies v1 bundles; the page names the command that does
+        if rep["exit_code"] != 2:
+            problems.append(f"v1 bundle: page exit {rep['exit_code']}")
+    elif rep["exit_code"] not in (1, 2) or py["exit_code"] != 2:
+        # no trust config: the CLIs refuse (exit 2); the page checks what needs no pinned key, never VERIFIED
+        problems.append(f"no trust config: page {rep['exit_code']}, Python CLI {py['exit_code']}")
+    want = {0: "VERIFIED", 1: "FAILED", 2: "UNVERIFIABLE"}.get(rep["exit_code"])
+    if word != want:
+        problems.append(f"banner {word!r} for exit {rep['exit_code']}")
+    if errors:
+        problems.append(f"console/network: {errors[:3]}")
+        errors.clear()
+    return {"page": rep["exit_code"], "typescript": ts.get("exit_code"), "python": py.get("exit_code"),
+            "integrity": rep.get("integrity"), "page_s": secs, "typescript_s": t1 - t0, "python_s": t2 - t1,
+            "longest_task_ms": longest}, problems
+
+
 def compare(shots=None, large=20000):
     try:
         from playwright.sync_api import sync_playwright
@@ -380,42 +432,8 @@ def _browse(sync_playwright, cases, tmp, shots):
             if order != ["bundle", "trust", "sample-clean"] or page.text_content("#verdict-word") != "VERIFIED":
                 bad.append((how, "keyboard", [f"focus order {order}, verdict {page.text_content('#verdict-word')}"]))
             for name, bundle, trust, what in cases:
-                cwd = os.path.dirname(bundle)
-                rel_b = os.path.basename(bundle)
-                rel_t = trust and os.path.relpath(trust, cwd)
-                if trust and os.path.dirname(trust) != cwd:   # the page knows only file names: so do the CLIs here
-                    shutil.copy(bundle, os.path.join(os.path.dirname(trust), rel_b))
-                    cwd, rel_t = os.path.dirname(trust), os.path.basename(trust)
-                rep, shown, word, secs, longest = page_report(page, bundle, trust)
-                ts = cli(["node", os.path.join(TS, "bin", "tracekit.mjs"), "verify", rel_b, *(
-                    ["--trust", rel_t] if trust else []), "--json"], cwd)
-                py = cli([PY, "-m", "tracekit.cli", "verify", rel_b, *(["--trust", rel_t] if trust else []), "--json"],
-                         cwd)
-                problems = []
-                lacks = any(c["detail"] == "not implemented by this verifier" for c in rep["checks"])
-                v1 = any(p.startswith("a format v1 bundle") for c in rep["checks"] for p in c["problems"])
-                if trust:
-                    if rep != ts:
-                        problems.append(f"page JSON != TypeScript CLI: {_diff(rep, ts)}")
-                    if shown != lines(ts):
-                        problems.append(f"page lines != TypeScript CLI: {_diff(shown, lines(ts))}")
-                    # Python checks what TypeScript lacks (UNVERIFIABLE here, never VERIFIED), and its CLI hands a
-                    # zip without a v2 manifest to the v1 verifier
-                    if "stderr" not in py and not lacks and _py_order(rep) != py:
-                        problems.append(f"page JSON != Python CLI: {_diff(_py_order(rep), py)}")
-                elif v1:   # the Python CLI verifies v1 bundles; the page names the command that does
-                    if rep["exit_code"] != 2:
-                        problems.append(f"v1 bundle: page exit {rep['exit_code']}")
-                elif rep["exit_code"] not in (1, 2) or py["exit_code"] != 2:
-                    # no trust config: the CLIs refuse (exit 2); the page checks what needs no pinned key, never VERIFIED
-                    problems.append(f"no trust config: page {rep['exit_code']}, Python CLI {py['exit_code']}")
-                want = {0: "VERIFIED", 1: "FAILED", 2: "UNVERIFIABLE"}.get(rep["exit_code"])
-                if word != want:
-                    problems.append(f"banner {word!r} for exit {rep['exit_code']}")
-                if errors:
-                    problems.append(f"console/network: {errors[:3]}")
-                    errors.clear()
-                rows.append((how, name, rep["exit_code"], py.get("exit_code"), rep.get("integrity"), secs, longest))
+                row, problems = agree(page, bundle, trust, errors)
+                rows.append((how, name, row))
                 if problems:
                     bad.append((how, name, problems))
             ctx.close()
@@ -423,8 +441,9 @@ def _browse(sync_playwright, cases, tmp, shots):
             bad += [("file", n, ["wider than the screen"]) for n in _screenshots(browser, urls["file"], cases, shots)]
         browser.close()
     server.shutdown()
-    for how, name, code, pycode, integrity, secs, longest in rows:
-        print(f"{how:4} {name:44} page {code} python {pycode}  {secs:6.2f}s  longest task {longest:5.0f}ms  {integrity}")
+    for how, name, r in rows:
+        print(f"{how:4} {name:44} page {r['page']} python {r['python']}  {r['page_s']:6.2f}s  longest task "
+              f"{r['longest_task_ms']:5.0f}ms  {r['integrity']}")
     for how, name, problems in bad:
         print(f"MISMATCH {how} {name}:", *problems, sep="\n    ")
     print(f"{len(rows)} page runs, {len(bad)} mismatched")
@@ -482,7 +501,8 @@ def main():
     ap.add_argument("--corpus", help=argparse.SUPPRESS)
     ap.add_argument("--samples", action="store_true", help="write the page's embedded samples and exit")
     ap.add_argument("--shots", help="also screenshot the page's main states into this directory")
-    ap.add_argument("--large", type=int, default=20000, help="tool calls in the large run (two records each)")
+    ap.add_argument("--large", type=int, default=20000, help="tool calls in the large run (two records each; export "
+                                                            "refuses a run past the bundle limits, about 24,000)")
     a = ap.parse_args()
     if a.samples:
         print(samples())
