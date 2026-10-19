@@ -532,7 +532,8 @@ class Via:
         return self.signer.call(method, req)
 
     def run(self, agent, **fields):
-        return RunHandle(self, self.call("register_run", agent={"name": agent}, **fields))
+        return RunHandle(self, self.call("register_run", agent={"name": agent} if isinstance(agent, str) else agent,
+                                         **fields))
 
     def content_get(self, req):
         return self.signer.content_get(req)
