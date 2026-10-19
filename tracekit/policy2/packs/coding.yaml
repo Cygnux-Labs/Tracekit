@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-15'
+version: '2026.10-v2-16'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -55,11 +55,11 @@ deny:
   - id: TK-D003
     class: shell
     # each command's argv, as TK-A002: a later command (`git push origin main && ls -f`), a heredoc after the push or
-    # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push);
-    # -f may sit in a short-option cluster before any `o` (`-uf`, `-4f`; `-of` is -o's value); --mirror may be
-    # abbreviated (`--m`: push's only option starting with m); a `+` refspec forces too. `[\w\W]*?` crosses a newline
-    # inside an argument; anchored and lazy, so the fallback engine stays linear
-    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
+    # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push,
+    # git --work-tree dir push); -f may sit in a short-option cluster before any `o` (`-uf`, `-4f`; `-of` is -o's
+    # value); --mirror may be abbreviated (`--m`: push's only option starting with m); a `+` refspec forces too.
+    # `[\w\W]*?` crosses a newline inside an argument; anchored and lazy, so the fallback engine stays linear
+    pattern: '^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
     reason: force push
     remedy: Push without --force, --mirror or a + refspec (rebase onto the remote branch, or push a new branch); a person rewrites shared history themselves.
     rationale: Rewrites shared history.
@@ -168,7 +168,7 @@ ask:
     # can't backtrack) and an all-zero source object id (SHA-1 or SHA-256). `[\w\W]*?` crosses a newline inside an
     # argument (`--repo=$'x\ny'`) but never reaches another command, which is its own subject; lazy, so the fallback
     # engine stays linear
-    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
+    pattern: '^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
     remedy: Wait for a person to approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
@@ -225,7 +225,7 @@ ask:
     field: target
     # as TK-A011: each command and redirection target on its own, anchored and lazy; `git config` after at most eight
     # global options, as TK-A002 reads `push`
-    pattern: '^(cp|install|mv|ln|tee|chmod) [\w\W]*?\.git/hooks/|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks/|^[^ =]*?\.git/hooks/|^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config [\w\W]*?\b[Cc][Oo][Rr][Ee]\.[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]\b'
+    pattern: '^(cp|install|mv|ln|tee|chmod) [\w\W]*?\.git/hooks/|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks/|^[^ =]*?\.git/hooks/|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config [\w\W]*?\b[Cc][Oo][Rr][Ee]\.[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]\b'
     reason: writing a Git hook or moving where hooks live
     remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.

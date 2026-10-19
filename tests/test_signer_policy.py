@@ -239,6 +239,15 @@ class CodingPack(unittest.TestCase):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), d)
 
+    def test_git_global_options_with_a_separate_value_come_before_the_subcommand(self):
+        # the global-option prefix read `--work-tree .` as an option and a stray word: the push was allowed
+        self.verdicts([("git --work-tree . push -f origin main", "TK-D003"), ("git --namespace x push --force", "TK-D003"),
+                       ("git --config-env a.b=V push --mirror", "TK-D003"),
+                       ("git --git-dir .git --work-tree . push origin :b", "TK-A002"),
+                       ("git --super-prefix x/ push -d origin b", "TK-A002"),
+                       ("git --git-dir .git config core.hooksPath h", "TK-A013")])
+        self.assertEqual(self.e.decide("Bash", {"command": "git --work-tree . push origin main"})["verdict"], "allow")
+
     def test_command_line_rules_read_program_names_in_any_case(self):
         # the normalised line lower-cases each program name (after wrappers too), as argv does: macOS runs git for `Git`
         self.verdicts([("Git push --force", "TK-D003"), ({"command": ["Git", "push", "--force"]}, "TK-D003"),

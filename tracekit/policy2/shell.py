@@ -136,7 +136,8 @@ def data_words(argv):
     name, i = argv[0], 1
     if name == "git":   # the subcommand, after git's own options
         while i < len(argv) and argv[i].startswith("-"):
-            i += 2 if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+            i += 2 if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+                                  "--config-env") else 1
         name, i = (argv[i] if i < len(argv) else ""), i + 1
         if name in ("commit", "tag", "merge", "stash", "notes"):
             out = set()
