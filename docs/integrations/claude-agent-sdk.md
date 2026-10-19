@@ -49,7 +49,9 @@ the signer's coding packs apply to them as they do to the Claude Code hook.
 
 No hook carries the model's messages: hand each message of `query()` (or `ClaudeSDKClient.receive_response()`)
 to `tracekit_said`. It records each `AssistantMessage`'s thinking (a summary, with its signature), text and tool uses,
-under the `tool_use_id`s the PreToolUse hook decides them by (a tool executor's calls are the executor's).
+under the `tool_use_id`s the PreToolUse hook decides them by. A tool executor's call is recorded under its action's
+name: the hook notes its `tool_use_id` for the executor server's handler, which hands it to the executor, so the
+executor decides the call under the model's id.
 
 ```python
 from tracekit.integrations.claude_agent_sdk import tracekit_said

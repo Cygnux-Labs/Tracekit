@@ -51,7 +51,7 @@ from langgraph.types import interrupt
 from tracekit.format.canon import event_hash
 from tracekit.integrations import said
 from tracekit.integrations.claude_code import _tool_class
-from tracekit.integrations.executor_tools import EXECUTOR
+from tracekit.integrations.executor_tools import CALL_ID, EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules, result_field
 from tracekit.signer.rpc_schema import RPCError
 
@@ -152,8 +152,12 @@ class TracekitMiddleware(AgentMiddleware):
 
     # lean: signer calls are blocking in both paths; use the async client in awrap_tool_call once it exists
     def wrap_tool_call(self, request, handler):
-        if _executor(request):
-            return handler(request)
+        if _executor(request):   # the executor decides it, under the model's id for the call
+            token = CALL_ID.set(request.tool_call["id"])
+            try:
+                return handler(request)
+            finally:
+                CALL_ID.reset(token)
         blocked, d = self._gate(request)
         if blocked is not None:
             return blocked
@@ -171,7 +175,11 @@ class TracekitMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(self, request, handler):
         if _executor(request):
-            return await handler(request)
+            token = CALL_ID.set(request.tool_call["id"])
+            try:
+                return await handler(request)
+            finally:
+                CALL_ID.reset(token)
         blocked, d = self._gate(request)
         if blocked is not None:
             return blocked
@@ -190,10 +198,10 @@ class TracekitMiddleware(AgentMiddleware):
 
 def _said(request, out):
     """(the items of what the model said, its model, its provider) in a model call's response: the calls of the
-    agent's tools, which the gate decides (not a structured-output tool's, nor a tool executor's)."""
+    agent's tools, which the gate or a tool executor decides under their ids (not a structured-output tool's)."""
     msgs = [m for m in getattr(out, "result", [out]) if isinstance(m, AIMessage)]
     meta = msgs[0].response_metadata if msgs else {}
-    tools = {t.name for t in request.tools if isinstance(t, BaseTool) and not (t.metadata or {}).get(EXECUTOR)}
+    tools = {t.name for t in request.tools if isinstance(t, BaseTool)}
 
     def items():
         for m in msgs:

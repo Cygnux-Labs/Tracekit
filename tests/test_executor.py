@@ -431,6 +431,30 @@ class Executor(unittest.TestCase):
         self.assertEqual(json.loads(out)["status"], 201)
         [d] = [e for e in self.events() if e["type"] == "policy.decision"]
         self.assertEqual((d["source"], d["tier"]), ("gateway", "T2"))   # the executor's alone, not also the adapter's
+        self.assertEqual(d["tool_call_id"], "call-lc")   # under the model's id for the call
+
+    def reconciled(self):
+        """The run's reconcile records and decisions, once it is final."""
+        self.close_and_sweep()
+        return [(e["type"], e.get("tool_call_id")) for e in self.events()
+                if e["type"].startswith("reconcile.") or e["type"] == "policy.decision"]
+
+    @unittest.skipUnless(HAVE["langchain_core"], "langchain not installed")
+    def test_an_executor_call_the_model_asked_for_under_langchain_reconciles(self):
+        from langchain.agents import create_agent
+        from langchain_core.messages import HumanMessage
+        from test_contract_langchain import StubModel
+        from tracekit.integrations.langchain import TracekitMiddleware
+        mw = TracekitMiddleware(InProcess(self.s, AGENT), self.run["run_id"], self.run["run_token"])
+        agent = create_agent(StubModel(), [executor_tools.langchain(self.actions()["refund"])], middleware=[mw])
+        ask = lambda tcid: {"messages": [HumanMessage(json.dumps({"name": "refund", "args": PAID, "id": tcid}))]}
+        agent.invoke(ask("call-sync"))
+        asyncio.run(agent.ainvoke(ask("call-async")))
+        self.actions()["refund"](dict(PAID, cents=6))   # the program's own call: no model asked for it
+        got = self.reconciled()
+        own = [tcid for t, tcid in got if t == "reconcile.fabricated"]
+        self.assertEqual([t for t, _ in got if t.startswith("reconcile.")], ["reconcile.fabricated"])
+        self.assertEqual([tcid for t, tcid in got if t == "policy.decision"], ["call-sync", "call-async", *own])
 
     @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
     def test_the_claude_agent_sdk_hooks_leave_executor_tools_to_the_executor(self):
@@ -439,6 +463,23 @@ class Executor(unittest.TestCase):
         inp = {"tool_name": "mcp__tracekit-executor__refund", "tool_use_id": "tu-1", "tool_input": PAID}
         self.assertEqual(asyncio.run(pre(inp, "tu-1", None)), {})
         self.assertNotIn("policy.decision", [e["type"] for e in self.events()])
+
+    @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
+    def test_an_executor_call_the_model_asked_for_under_the_claude_agent_sdk_reconciles(self):
+        from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
+        from tracekit.integrations.claude_agent_sdk import tracekit_hooks, tracekit_said
+        [pre] = tracekit_hooks(InProcess(self.s, AGENT), self.run)["PreToolUse"][0].hooks
+        with mock.patch("claude_agent_sdk.create_sdk_mcp_server", lambda name, tools: tools):
+            [refund] = [t for t in executor_tools.claude_agent_sdk(list(self.actions().values())) if t.name == "refund"]
+        name = f"mcp__{executor_tools.SERVER}__refund"
+        asyncio.run(tracekit_said(InProcess(self.s, AGENT), self.run)(AssistantMessage(
+            content=[TextBlock("refunding"), ToolUseBlock(id="toolu_1", name=name, input=PAID)], model="claude-x")))
+        asyncio.run(pre({"tool_name": name, "tool_use_id": "toolu_1", "tool_input": PAID}, "toolu_1", None))
+        self.assertFalse(asyncio.run(refund.handler(PAID)).get("is_error"))   # the MCP handler gets no id: the hook's
+        self.actions()["refund"](dict(PAID, cents=6))   # the program's own call: no model asked for it
+        got = self.reconciled()
+        self.assertEqual([t for t, _ in got if t.startswith("reconcile.")], ["reconcile.fabricated"])
+        self.assertEqual(got[0], ("policy.decision", "toolu_1"))
 
     @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
     def test_a_claude_agent_sdk_server(self):
