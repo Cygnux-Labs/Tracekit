@@ -638,6 +638,19 @@ class Ocsf(Middleware):
         self.assertIn("a response to api.example.com through without middleware tracekit", gaps[3])
         self.assertEqual(self.mw.unmapped["Detection Finding events of traffic OpenShell denied"], 2)
 
+    def test_after_a_gateway_gap_a_silent_import_is_a_gap_still(self):
+        self.evaluate(request("allowed.example", request_id="r-1", method="GET"))
+        run_id = self.run_of()
+        self.export(logs(gap(), resource=GATEWAY), timeout=20)   # a loss of any sandbox's events: every covered run
+        self.s.idle_s, self.s.grace_s = 0, 0   # then the import goes silent for good, and the run closes long after
+        later = time.monotonic() + 3 * svc.TAILER_LOST_S + 1000
+        self.s.sweep(now=later)
+        self.s.sweep(now=later + 1000)
+        reasons = [e["data"]["reason"] for e in self.events(run_id, "capture.gap") if e["data"]["kind"] == "observer_lost"]
+        self.assertEqual(len(reasons), 2, reasons)
+        self.assertIn("its gateway's gap record", reasons[0])
+        self.assertIn("no observe_effect from the openshell import", reasons[1])
+
     def test_what_is_not_imported_is_counted_and_printed(self):
         self.export(logs(log_record(ocsf_event(4007)), log_record("not json", attrs={"openshell.sandbox.id": SANDBOX}),
                          log_record(connect(firewall_rule={"name": "p", "type": "middleware"}))), timeout=20)

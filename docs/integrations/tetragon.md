@@ -80,13 +80,19 @@ spec:
 
 Three filters on one selector need a 5.3 or later kernel. Put your own workspace path in `NotPrefix`.
 
-**3. The signer.** Give the import its own identity and the `observe_effect` grant, never a default, and keep it out
-of every agent's hands:
+**3. The signer.** Give each node's import its own identity and the `observe_effect` grant, never a default, and keep
+them out of every agent's hands:
 
 ```yaml
-authorize: {"mtls:spiffe://acme.org/tracekit-sensor": [observe_effect]}
-tenants: {"mtls:spiffe://acme.org/tracekit-sensor": acme}   # the tenant whose runs it covers
+authorize: {"mtls:spiffe://acme.org/tracekit-sensor/node-1": [observe_effect],
+            "mtls:spiffe://acme.org/tracekit-sensor/node-2": [observe_effect]}
+tenants: {"mtls:spiffe://acme.org/tracekit-sensor/node-1": acme,   # the tenant whose runs it covers
+          "mtls:spiffe://acme.org/tracekit-sensor/node-2": acme}
 ```
+
+One identity is one process: when a second process of it calls, the signer takes it for a restart of the first and
+refuses the first from then on (`conflict`), so imports on two nodes under one identity stop each other. Run an import
+per node, each with its own identity, or one import for the whole cluster reading every node's export.
 
 **4. The import**, on each node, next to Tetragon's export (`sensor.yaml`):
 
@@ -100,8 +106,10 @@ runs:
 
 ```sh
 tracekit sensor import --config sensor.yaml --follow /var/log/tetragon/tetragon.log
-kubectl logs -n kube-system ds/tetragon -c export-stdout -f | tracekit sensor import --config sensor.yaml
+kubectl logs -n kube-system <the node's tetragon pod> -c export-stdout -f | tracekit sensor import --config sensor.yaml
 ```
+
+`kubectl logs ds/tetragon` reads one pod of the DaemonSet, so one node's events: name each node's pod, as above.
 
 `--follow` reads from the file's end on and keeps reading across Tetragon's rotation. Without `--follow` it reads the
 file once and exits; without a file, stdin.
@@ -131,9 +139,10 @@ Every record also has `observer` (the import's identity), `sensor: tetragon`, `t
 `attribution`. Other events (other kprobes, tracepoints, LSM hooks) aren't recorded, nor are the `procFS` exec events
 of processes already running when Tetragon started.
 
-`run.final`'s coverage matrix says `processes observed (tetragon)` when the import covered the run throughout: the
+`run.final`'s coverage matrix says `processes observed (tetragon)` when an import covered the run throughout: the
 run's identity is a `caller` of its `runs`, and the import was alive when the run registered, sent a heartbeat at least
-every 30 s, and reported no loss.
+every 30 s, reported no loss, and recorded at least one of the run's events. An import per node can't tell which runs
+are its node's: only the one that recorded a run's events says it observed it.
 
 ## Tool calls
 
@@ -178,8 +187,10 @@ The import adds lines it can't read and an agent's events it can't record. It sk
 exits, events it never records: a connect to no IP address (a unix socket: any family but `AF_INET` and `AF_INET6`),
 other kinds of event, and events of no agent; none of these is a loss. It sends the losses to the signer as `lost`,
 which writes a `capture.gap{observer_lost}` in each run the import covers (in the tenant's signer run when it covers
-none) and ends its coverage of those runs: their matrix says processes not covered. An import that stops sending for
-90 s, or restarts, is the same gap, as for the [egress observer](../egress.md#heartbeats-and-coverage).
+none), and their matrix then says processes not observed; they stay watched, so the import's silence after it is a gap
+too. An import that stops sending for 90 s, or restarts, is the same gap, as for the
+[egress observer](../egress.md#heartbeats-and-coverage). With an import per node, each of these is a gap in the open
+runs of every node: an import can't tell which runs are its node's.
 
 Tetragon counts some drops only in its metrics (`--metrics-server`): `tetragon_observer_ringbuf_events_lost_total`,
 `tetragon_observer_ringbuf_queue_events_lost_total`, `tetragon_events_export_failed_total`. Alert on them in your

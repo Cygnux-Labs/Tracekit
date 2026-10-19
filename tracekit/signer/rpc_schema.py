@@ -45,7 +45,7 @@ ERROR_CODES = [
     "unknown_run",
     "run_exists",           # register_run with a run_id that is already registered
     "run_closed",           # close_run already accepted for this run
-    "conflict",             # request_id reused with a different payload
+    "conflict",             # request_id reused with a different payload; an observer process another took over from
     "client_seq_reused",    # client_seq at or below the stream's high-water mark, under a new request_id
     "unknown_tool_call",    # approval_request for a tool_call_id the run never decided
     "unknown_decision",     # complete with a decision_id that is not this call's, or already completed

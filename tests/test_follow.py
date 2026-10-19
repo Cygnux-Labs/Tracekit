@@ -280,6 +280,17 @@ class TestAgentsh(Followed):
                               r"killed; what the log says after that is not recorded: read the log itself for it, and "
                               r"restart `tracekit follow`$")
 
+    def test_a_follower_killed_after_a_gap_it_went_on_from_is_a_gap_too(self):
+        al, log = self.agentsh()
+        al.write(SHADOW)
+        al.seq = 6
+        al.write(NPM)   # a sequence gap: the follower records it and goes on
+        log.step()
+        self.s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)   # then it is killed
+        sequence, killed = self.gaps()
+        self.assertIn("agentsh sequence 6 follows 2", sequence)
+        self.assertIn("the log follower stopped or was killed", killed)
+
     def test_a_follower_killed_across_a_signer_restart_without_a_snapshot_is_a_gap(self):
         al, log = self.agentsh()
         al.write(SHADOW)

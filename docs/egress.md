@@ -153,7 +153,8 @@ Every `observe_effect` call is the observer's heartbeat, on the same machinery a
 [transcript tailer's](coding-agents.md#what-the-signer-records-as-a-gap-12). An observer covers each run of its tenant
 registered while it is alive. When it makes no call for 90 s while a run it covers is open, or another process of
 it takes over (a restart: the old one's unreported totals may be gone), the signer writes a signed
-`capture.gap{kind: observer_lost}` in that run, and the run's network is no longer `observed`.
+`capture.gap{kind: observer_lost}` in that run, and the run's network is no longer `observed`. The process taken over
+from is refused from then on (`conflict`): two proxies under one identity stop each other, so give each its own.
 
 ## Late observations
 

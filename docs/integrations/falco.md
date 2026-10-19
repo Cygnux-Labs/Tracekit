@@ -77,8 +77,8 @@ fields their output names, so each rule's output names all of them:
 
 Put your own workspace path in the third rule.
 
-**3. The signer** gives the import its own identity and the `observe_effect` grant, as for
-[Tetragon](tetragon.md#setup).
+**3. The signer** gives each node's import its own identity and the `observe_effect` grant, as for
+[Tetragon](tetragon.md#setup): one identity is one process.
 
 **4. The import**, on each node (`sensor.yaml`):
 
@@ -120,7 +120,7 @@ process's connections and writes are joined to it by `pid` and time.
 
 Falco numbers no alerts. It reports drops between its kernel driver and itself as the alert
 `Falco internal: syscall event drop`, with that second's counts (`n_drops`, `n_evts`): the import sends it as `lost`,
-a signed `capture.gap{observer_lost}` in each run it covers, which ends that coverage
+a signed `capture.gap{observer_lost}` in each run it covers, after which their matrix says processes not observed
 ([Tetragon](tetragon.md#losses) says how). With Falco's defaults it reports a second only when more than 10 % of its
 events were dropped, and at most one second in 30: the settings above report every second with a drop. Alerts Falco
 drops from a full output queue (`outputs_queue.capacity`) show only in its log and its metric

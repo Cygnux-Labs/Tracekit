@@ -264,10 +264,11 @@ class TestImport(Sensed):
         # an agent's process connecting to a unix socket: Tetragon's sockaddr of any family but AF_INET(6)
         imp.add(kprobe_line("security_socket_connect", [{"sockaddr_arg": {"family": "AF_UNIX", "addr": "invalid IP"}}]))
         imp.add("\n")   # a blank line: nothing
+        imp.add(exec_line())
         self.assertTrue(imp.flush())
         self.assertEqual(imp.skipped, {sensor.LOCAL: 1})
         es = self.final(run)
-        self.assertEqual((self.typed(es, "effect.observed"), self.gaps(es, "observer_lost")), ([], []))
+        self.assertEqual((len(self.typed(es, "effect.observed")), self.gaps(es, "observer_lost")), (1, []))
         self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"]["status"], "observed")
 
     def test_a_loss_with_no_run_covered_goes_to_the_signer_run(self):
@@ -291,6 +292,51 @@ class TestImport(Sensed):
         imp.flush(time.monotonic() + 2 * svc.HEARTBEAT_S)
         (lost,) = self.gaps(self.events(later["run_id"]), "observer_lost")
         self.assertIn("the tetragon import mtls:spiffe://acme/tetragon restarted", lost["reason"])
+
+    def test_after_a_loss_the_import_is_still_watched(self):
+        imp = self.importer()
+        imp.flush()
+        run = self.register()
+        imp.add(exec_line())
+        imp.add(RATE_LIMITED)
+        self.assertTrue(imp.flush())
+        self.s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)   # then it goes silent
+        reported, silent = self.gaps(self.events(run["run_id"]), "observer_lost")
+        self.assertIn("reported lost events", reported["reason"])
+        self.assertIn("no observe_effect from the tetragon import", silent["reason"])
+
+    def test_two_processes_of_one_identity_are_refused(self):
+        """An import per node under one identity: each would look like the other's restart at every call."""
+        node1, node2 = self.importer(), self.importer()
+        node1.flush()
+        run = self.register()
+        node2.flush()   # takes over: a restart, as far as the signer can tell
+        with self.assertRaises(RPCError) as e:
+            node1.flush(time.monotonic() + svc.HEARTBEAT_S)
+        self.assertEqual(e.exception.code, "conflict")
+        self.assertIn("two processes share one identity", e.exception.message)
+        node2.flush(time.monotonic() + svc.HEARTBEAT_S)
+        self.assertEqual(len(self.gaps(self.events(run["run_id"]), "observer_lost")), 1)
+
+    def test_with_an_import_per_node_only_the_one_that_recorded_a_run_says_it_observed_it(self):
+        def node(n):
+            who = CallerIdentity("mtls", f"spiffe://acme/tetragon/node-{n}", True)
+            self.s.authorize[f"mtls:{who.subject}"] = ["observe_effect"]
+            return sensor.Import(types.SimpleNamespace(observe_effect=lambda req: self.call("observe_effect", req, who)),
+                                 "tetragon", RUNS)
+        node1, node2 = node(1), node(2)
+        node1.flush()
+        node2.flush()
+        here = self.register()   # its pod is on node 2
+        node2.add(exec_line())
+        self.assertTrue(node2.flush())
+        elsewhere = self.register()   # its pod is on a node with no import
+        for run in (here, elsewhere):
+            self.call("close_run", run)
+        self.s.sweep(time.monotonic() + 61)
+        self.assertEqual([self.typed(self.events(r["run_id"]), "run.final")[0]["data"]["matrix"]["processes"]
+                          for r in (here, elsewhere)],
+                         [{"status": "observed", "layers": ["tetragon"]}, {"status": "none", "layers": []}])
 
     def failing_once(self):
         """The signer's storage refusing its next append, as a full disk would, and recovering at once."""
