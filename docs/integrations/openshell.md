@@ -258,6 +258,7 @@ gap OpenShell or the middleware reports names `sensor: openshell`.
 | Process Activity (1007): a launch | `kind: exec`, the process OpenShell started (the sandbox's entrypoint) |
 | Process Activity (1007): a termination | `kind: exit`, with its exit code |
 | Device Config State Change (5019): a policy or configuration change | an `ext` record `openshell.policy`: OpenShell's name for the change (`approved`, `merged`, `loaded`, `failed`, ...), its `policy_hash`, who made it (`by`, its `actor` as OpenShell writes it, which may be a person's email: a signed record can't be edited later), and a commitment to its message, never the message itself |
+| Detection Finding (2004) of traffic OpenShell let past a middleware under `fail_open` (`openshell.middleware.failure` naming the middleware, `.traffic_uninspectable` or `.body_unavailable` with disposition `fail_open`, `.http_response_fail_open`) | a `capture.gap{observer_lost}` in the sandbox's run: a request or response that may have no record |
 | OpenShell's gap record (`openshell.ocsf.gap`: records it dropped before export) | a `capture.gap{observer_lost}` in that sandbox's run, or in every run the import covers when OpenShell's gateway dropped them (they may be of any sandbox) |
 
 OpenShell's own records of the middleware's decisions are skipped: those requests are the run's calls already. An
@@ -286,9 +287,9 @@ and each change as `OPENSHELL POLICY · <change>` on the run's tape.
   closed can't select), and OpenShell's own decisions. WebSocket messages aren't sent to the middleware: it doesn't
   take them, so the upgrade request is decided and recorded and the messages aren't. The middleware's records don't
   name the process that made a request; OpenShell's connection events do.
-- **Doesn't import:** OCSF events of other kinds (SSH, authentication, detection findings, application lifecycle,
-  base events, and network events that neither allow nor deny), events that name no sandbox (the gateway's own), and
-  processes other than the ones OpenShell reports (it reports the entrypoint, not each process the agent starts: a
+- **Doesn't import:** OCSF events of other kinds (SSH, authentication, detection findings other than a `fail_open`
+  bypass, application lifecycle, base events, and network events that neither allow nor deny), events that name no
+  sandbox (the gateway's own), and processes other than the ones OpenShell reports (it reports the entrypoint, not each process the agent starts: a
   [kernel sensor](tetragon.md) sees those). The middleware counts each kind it skips and prints the counts on stderr.
 - **Doesn't read:** a response body OpenShell doesn't offer to middleware (compressed, partial, bodyless or
   `no-transform`); such a call completes with the digest of its status and headers. A request body that isn't UTF-8

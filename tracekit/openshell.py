@@ -68,7 +68,8 @@ OpenShell blocked it); OpenShell's records of middleware decisions (firewall_rul
 middleware recorded those as calls. Process activity: exec (launch) and exit (terminate). Device config state change:
 a policy effect, the signer's `ext` record openshell.policy (OpenShell's name for the change, its policy_hash, the
 actor, the message's digest). Losses are signed gaps: OpenShell's gap records (openshell.ocsf.gap, records it dropped)
-in the sandbox's run, or in every covered run when they name no sandbox (the gateway's); and a sandbox the middleware
+in the sandbox's run, or in every covered run when they name no sandbox (the gateway's); its findings of traffic that
+went past a middleware under fail_open (BYPASS), in the sandbox's run; and a sandbox the middleware
 decided a request of whose stream then sends nothing for STALE_S (OpenShell records each middleware decision as an OCSF
 event), once until it sends again. Events delivered twice (OpenShell retries a batch) are dropped by ocsf.metadata.uid.
 Anything else is counted by kind and printed on stderr. A batch the signer can't take is refused UNAVAILABLE, so
@@ -123,6 +124,12 @@ MAX_STREAMS, UNARY_WORKERS = 64, 32
 SIGNER_TIMEOUT_S = 5
 LOGS = "opentelemetry.proto.collector.logs.v1.LogsService"
 GAP_EVENT = "openshell.ocsf.gap"   # OpenShell's record of OCSF records it dropped (openshell-otel/src/ocsf.rs)
+# its Detection Findings of traffic that went past a middleware under fail_open (openshell-supervisor-network/src/l7/
+# middleware.rs, rest/http_response.rs): the response one always, the failure one when it names the middleware (the
+# fail-closed one names none), the others when their disposition is fail_open
+BYPASS_FAILED, BYPASS_RESPONSE = "openshell.middleware.failure", "openshell.middleware.http_response_fail_open"
+BYPASS = {BYPASS_FAILED, BYPASS_RESPONSE, "openshell.middleware.traffic_uninspectable",
+          "openshell.middleware.body_unavailable"}
 STALE_S = 60   # after a request the middleware decided, how long its sandbox's OCSF stream may send nothing
 OCSF_CHECK_S = 5
 OCSF_EXPORTS = 8   # Export calls at once (each waits on the signer); one more is refused and OpenShell retries it
@@ -274,6 +281,18 @@ def ocsf_effect(ev, ts):
         code = ev.get("exit_code")
         return {"kind": "exit", "ts": ts, **_process(ev.get("process")),
                 **({"status": code} if isinstance(code, int) and 0 <= code < 1 << 32 else {})}
+    if cls == 2004 and (ev.get("finding_info") or {}).get("uid") in BYPASS:   # Detection Finding: a fail_open bypass
+        uid, u = ev["finding_info"]["uid"], ev.get("unmapped") if isinstance(ev.get("unmapped"), dict) else {}
+        said = {k: v for e in ev.get("evidences") or () if isinstance(e, dict) and isinstance(e.get("data"), dict)
+                for k, v in e["data"].items()}
+        mw = u.get("middleware") or said.get("middleware") or u.get("middleware_config")
+        if not (uid == BYPASS_RESPONSE or said.get("disposition") == "fail_open" or uid == BYPASS_FAILED and mw):
+            return f"{name} events of traffic OpenShell denied"
+        host = f" to {str(said['host'])[:253]}" if said.get("host") else ""
+        return {"kind": "lost", "reason": (
+            f"OpenShell let {'a response' if uid == BYPASS_RESPONSE else 'a request'}{host} through without "
+            f"{'middleware ' + str(mw)[:100] if mw else 'its middleware'} ({uid}, fail_open): Tracekit may have no "
+            "record of it; keep on_error: fail_closed on the middleware's entry")}
     if cls == 5019:   # Device Config State Change: the sandbox's policy or configuration
         u = ev.get("unmapped") if isinstance(ev.get("unmapped"), dict) else {}
         return {"kind": "policy", "ts": ts,

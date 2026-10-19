@@ -412,7 +412,7 @@ GATEWAY = {"service.name": "openshell-gateway", "openshell.gateway.name": "opens
 
 def ocsf_event(cls, activity=1, sandbox=SANDBOX, **fields):
     names = {4001: "Network Activity", 4002: "HTTP Activity", 1007: "Process Activity", 5019: "Device Config State "
-             "Change", 4007: "SSH Activity", 3002: "Authentication"}
+             "Change", 4007: "SSH Activity", 3002: "Authentication", 2004: "Detection Finding"}
     return {"class_uid": cls, "class_name": names[cls], "category_uid": cls // 1000, "activity_id": activity,
             "severity_id": 1, "severity": "Informational", "status_id": 1, "status": "Success",
             "time": 1791996125789, "metadata": {"version": "1.8.0", "uid": str(uuid.uuid4()), "product": {
@@ -612,6 +612,31 @@ class Ocsf(Middleware):
         self.evaluate(request("allowed.example", method="GET", sandbox=OTHER))
         self.mw.tick(time.monotonic() + openshell.STALE_S + 1)
         self.assertEqual(len(self.events(self.run_of(OTHER), "capture.gap")), 2)
+
+    def test_traffic_openshell_let_past_the_middleware_is_a_signed_gap(self):
+        """OpenShell's Detection Findings of a fail_open bypass (openshell-supervisor-network/src/l7/middleware.rs,
+        rest/http_response.rs); its fail-closed ones are no loss."""
+        def finding(uid, evidence=None, **unmapped):
+            return ocsf_event(2004, finding_info={"uid": uid, "title": "t"}, message="m", unmapped=unmapped,
+                              **({"evidences": [{"data": evidence}]} if evidence else {}))
+        bypassed = [finding("openshell.middleware.failure", {"middleware": "tracekit", "implementation": "tracekit"},
+                            middleware="tracekit", implementation="tracekit"),
+                    finding("openshell.middleware.traffic_uninspectable",
+                            {"policy": "p", "host": "upload.example.com", "protocol": "h2", "disposition": "fail_open"}),
+                    finding("openshell.middleware.body_unavailable", {"host": "upload.example.com",
+                                                                      "disposition": "fail_open"}),
+                    finding("openshell.middleware.http_response_fail_open", {"host": "api.example.com"},
+                            middleware_config="tracekit")]
+        closed = [finding("openshell.middleware.failure"),
+                  finding("openshell.middleware.body_unavailable", {"host": "h", "disposition": "denied"})]
+        self.assertEqual(self.export(logs(*[log_record(e) for e in bypassed + closed]), timeout=20), b"")
+        gaps = [e["data"]["reason"] for e in self.events(self.run_of(), "capture.gap")]
+        self.assertEqual(len(gaps), 4, gaps)
+        self.assertIn("OpenShell let a request to upload.example.com through without its middleware "
+                      "(openshell.middleware.traffic_uninspectable, fail_open)", gaps[1])
+        self.assertIn("a request through without middleware tracekit (openshell.middleware.failure", gaps[0])
+        self.assertIn("a response to api.example.com through without middleware tracekit", gaps[3])
+        self.assertEqual(self.mw.unmapped["Detection Finding events of traffic OpenShell denied"], 2)
 
     def test_what_is_not_imported_is_counted_and_printed(self):
         self.export(logs(log_record(ocsf_event(4007)), log_record("not json", attrs={"openshell.sandbox.id": SANDBOX}),
