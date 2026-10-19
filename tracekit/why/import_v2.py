@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -66,15 +67,18 @@ def store_records(data_dir: str, run: Optional[str] = None) -> Dict[str, List[Di
 
 
 def bundle_records(path: str, trust: str):
-    """(run_id -> records, report, exit code) of a v2 bundle; no records unless it verifies against `trust`."""
+    """(run_id -> records, report, exit code) of a v2 bundle; no records unless it verifies against `trust`. The file
+    is read once, so the records are the ones verified, and they are parsed as the verifier parses them."""
     from ..bundle_v2 import run_files
     from ..verify import v2
-    rep, code = v2.verify(path, trust)
+    with open(path, "rb") as f:
+        mine = io.BytesIO(f.read())
+    rep, code = v2.verify(mine, trust)
     if code:
         return {}, rep, code
-    out, files = {}, v2.read_zip(path)
+    out, files = {}, v2.read_zip(mine)
     for parts in run_files(files).values():
-        recs = [json.loads(line) for n in parts for line in files[n].splitlines() if line.strip()]
+        recs = [r for n in parts for r in v2._jsonl(files[n])]
         out[recs[0]["event"]["run_id"]] = recs
     return out, rep, code
 

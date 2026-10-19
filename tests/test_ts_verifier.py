@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest import mock
 import zipfile
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -983,6 +984,34 @@ class Reviews(test_reviews.Signed):
                 self.assertEqual(ts.get("findings"), rep.findings)   # the Findings line, apart from Integrity
                 self.assertEqual(page_words(bundle, trust)["json"], ts)   # the page's download is the CLI's --json
                 self.assertTrue(rep.findings.endswith("(an opinion of the run, not its integrity)"))
+
+
+@unittest.skipIf(SKIP or os.name == "nt", SKIP or "a shell script stands in for a Python that crashes")
+class AgreementScripts(unittest.TestCase):
+    """scripts/verify_page_check.py's agree() and E22's verdicts(): what says the verifiers agree."""
+
+    def test_a_cli_that_crashes_never_agrees(self):
+        """agree() compared the Python CLI only when it printed a report: one that crashed on a forgery counted as
+        agreeing, and in E22 as expected. The Python CLI's refusal of a file that is no v2 bundle is no crash."""
+        _build()
+        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
+        import e22_verifier_agreement as e22
+        import verify_page_check as vpc
+        sample = os.path.join(TS, "src", "verify", "sample")
+        with tempfile.TemporaryDirectory() as d:
+            crash = os.path.join(d, "python")
+            with open(crash, "w") as f:
+                f.write("#!/bin/sh\necho 'Traceback (most recent call last): KeyError' >&2\nexit 1\n")
+            os.chmod(crash, 0o755)
+            with mock.patch.object(vpc, "PY", crash):
+                row, problems = vpc.agree(None, os.path.join(sample, "sample-tampered.tkb"),
+                                          os.path.join(sample, "sample.trust.json"), [])
+        self.assertEqual(problems, ["Python CLI printed no report (exit 1): Traceback (most recent call last): KeyError"])
+        [r] = e22.verdicts([dict(row, name="sample: tampered", forgery=True, problems=problems)])
+        self.assertFalse(r["agree"])
+        golden = os.path.join(ROOT, "tests", "golden", "negative")
+        self.assertEqual(vpc.agree(None, os.path.join(golden, "zip-no-manifest.tkb"), os.path.join(golden, "trust.json"),
+                                   [])[1], [])
 
 
 if __name__ == "__main__":

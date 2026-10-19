@@ -6,7 +6,7 @@ Run it with a Python that has Playwright (and its Chromium, or Google Chrome ins
 TRACEKIT_PYTHON (default: this Python) runs Tracekit: it exports a fresh corpus from a real signer (clean, tampered,
 wrong trust key, findings, sensor effects, an unknown ext name, a too-new bundle, a large run and a zip of tiny
 lines) and runs `tracekit verify --json` on it. The page is opened over file:// and over a local HTTP server; for every bundle of that
-corpus, tests/golden/ (v2 and negative) and docs/sample/ it must give the TypeScript CLI's report and exit code, line
+corpus, tests/golden/ (v2, negative and parts) and docs/sample/ it must give the TypeScript CLI's report and exit code, line
 for line, and the Python CLI's (except where that CLI hands a non-v2 file to the v1 verifier, and the order of the
 upgrade commands: npx first in TypeScript). It also checks that a worker the page starts can't fetch either, that the
 page works by keyboard, logs no error and makes no request, and (with --shots) that no state is wider than the screen.
@@ -331,9 +331,12 @@ def agree(page, bundle, trust, errors):
     if not page:
         rep, shown, word, secs, longest = ts, lines(ts), {0: "VERIFIED", 1: "FAILED", 2: "UNVERIFIABLE"}.get(
             ts["exit_code"]), None, None
-    problems = []
-    lacks = any(c["detail"] == "not implemented by this verifier" for c in rep["checks"])
-    v1 = any(p.startswith("a format v1 bundle") for c in rep["checks"] for p in c["problems"])
+    # a CLI that printed no report crashed, but for the Python CLI's refusal of --trust for a file that is no v2 bundle
+    problems = [f"{name} CLI printed no report (exit {out['exit_code']}): {out['stderr'][-300:]}"
+                for name, out in (("TypeScript", ts), ("Python", py)) if "stderr" in out
+                and not (name == "Python" and out["exit_code"] == 2 and "this is not a v2 bundle" in out["stderr"])]
+    lacks = any(c["detail"] == "not implemented by this verifier" for c in rep.get("checks", ()))
+    v1 = any(p.startswith("a format v1 bundle") for c in rep.get("checks", ()) for p in c["problems"])
     if trust:
         if rep != ts:
             problems.append(f"page JSON != TypeScript CLI: {_diff(rep, ts)}")
@@ -376,7 +379,7 @@ def compare(shots=None, large=20000):
         if p.returncode:
             sys.exit(f"exporting the corpus failed: {p.stdout}")
         cases = [tuple(c) for c in json.loads(p.stdout)]
-        for d in ("v2", "negative"):
+        for d in ("v2", "negative", "parts"):
             base = os.path.join(ROOT, "tests", "golden", d)
             cases += [(f"golden {d}/{n}", os.path.join(base, n), os.path.join(base, "trust.json"), "golden")
                       for n in sorted(os.listdir(base)) if n.endswith(".tkb")]
