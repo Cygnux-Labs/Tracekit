@@ -112,6 +112,16 @@ class CodingPack(unittest.TestCase):
         for args in ({"command": "npm install", "dangerouslyDisableSandbox": False}, {"command": "npm install"}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
 
+    def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
+        dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
+        d = dev.decide("Bash", {"command": "npm install", "allowed_domains": ["registry.example.org"]})
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-A014"]))
+        self.verdicts([({"command": "npm install", "allowed_domains": ["registry.example.org"]}, "TK-A014"),
+                       ({"command": "npm install", "allowed_domains": "registry.example.org"}, "TK-A014")])
+        for args in ({"command": "npm test", "allowed_domains": []}, {"command": "npm test"},
+                     {"command": "npm test", "blocked_domains": ["example.org"]}):
+            self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
+
     def test_a_command_asking_for_more_than_geminis_sandbox_asks(self):
         self.verdicts([({"command": "npm install", "additional_permissions": {"network": True}}, "TK-A004"),
                        ({"command": "cp a ~/b", "additional_permissions": {"fileSystem": {"write": ["/home/a"]}}}, "TK-A004"),

@@ -154,3 +154,4 @@
 {"tool": "Bash", "args": {"command": "ls ~/Library/LaunchAgents"}, "expect": "allow", "note": "listing login items"}
 {"tool": "Bash", "args": {"command": "ls .git/hooks"}, "expect": "allow", "note": "listing Git hooks"}
 {"tool": "Bash", "args": {"command": "git config user.name dev"}, "expect": "allow", "note": "ordinary Git config"}
+{"tool": "Bash", "args": {"command": "npm test", "allowed_domains": []}, "expect": "allow", "note": "a sandboxed call with an empty per-command allow list"}

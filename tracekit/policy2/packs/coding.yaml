@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-15'
+version: '2026.10-v2-16'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -180,6 +180,15 @@ ask:
     reason: running a command outside Claude Code's sandbox
     remedy: Wait for a person to approve the held call, or run the command inside the sandbox, without dangerouslyDisableSandbox.
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that leaves it.
+  - id: TK-A014
+    # TK-A003's twin for Claude Code's auto mode: a Bash, PowerShell or Monitor call's allowed_domains opens those hosts
+    # to that one command inside the sandbox. Matched as canonical JSON: any list with an entry (or a value that isn't
+    # a list); an empty list opens nothing and isn't held
+    field: allowed_domains
+    pattern: '^(\[[^\]]|[^\[])'
+    reason: opening network hosts beyond Claude Code's sandbox for one command
+    remedy: Wait for a person to approve the held call, or run the command with the sandbox's own network allow list, without allowed_domains.
+    rationale: The sandbox limits which hosts a command can reach; a person confirms each command that asks for more.
   - id: TK-A004
     # Gemini CLI's sandbox expansion: with security.toolSandboxing on, a run_shell_command call's additional_permissions
     # gives the command network access or more paths to read or write, and in YOLO mode Gemini asks nobody

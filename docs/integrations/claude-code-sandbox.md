@@ -62,6 +62,17 @@ retries and who approved each; the command itself is committed to, not stored in
 ([format v2](../format-v2.md#2-hashes-over-agent-content)). To allow retries without asking, override `TK-A003` in your
 own policy ([policy](../policy-v2.md)).
 
+## Per-command allowed domains (TK-A014)
+
+In auto mode with the sandbox on (Claude Code 2.1.271 and later), a Bash, PowerShell or Monitor call can carry an
+`allowed_domains` list: the hosts it names are opened for that one command, still inside the sandbox. Claude is told
+to re-run a command with a denied host listed there, and auto mode's classifier, not you, approves the re-run.
+
+The coding pack's `TK-A014` (an `ask` rule, next to `TK-A003`) holds every call whose `allowed_domains` names a host
+until a person approves it, the same way: bound to the exact command and list, used once, signed with who approved it.
+An empty list opens nothing and isn't held, and neither is `blocked_domains`, which only narrows. To allow a host for
+good, add it to the sandbox's own `network.allowedDomains` in your settings rather than approving each command.
+
 ## What Tracekit sees and doesn't
 
 - **Sees:** every call Claude makes with its arguments (`dangerouslyDisableSandbox` included), the decision, any
