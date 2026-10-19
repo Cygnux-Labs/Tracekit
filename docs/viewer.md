@@ -161,7 +161,8 @@ tests.
 ![GRAPH of a signed run: five tool calls left to right in run order, two Bash calls marked DENIED with their rule ids](viewer/signed-graph.png)
 
 `tracekit view` on a signer store with no why logs (no `--why`, no `why/` in its data dir) still has GRAPH: each run that verifies is imported read-only
-(`why import --store`'s import) into the viewer's own temp dir, and imported again as it grows. Its tool calls read
+(`why import --store`'s import) into the viewer's own temp dir, imported again as it grows, and removed once its rows
+leave the live view (past `TRACEKIT_OBSERVE_MAX_RECORDS`) or it fails. Its tool calls read
 left to right in run order; each node carries its signed decision: **DENIED** (red), **HELD** or **FLAGGED** (amber),
 **APPROVED**, or ALLOWED (muted), with the first rule id. Click a node: NODE shows the decision, every rule with its
 reason, who approved, and the record it cites. A run's arguments are only a salted commitment, so WHY can list the

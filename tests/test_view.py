@@ -1481,6 +1481,29 @@ class LiveRuns(unittest.TestCase):
         mirror([3], advance=view.BACKOFF * 2)
         self.assertTrue(wait_for(lambda: imported == [[1], None, [3]], 5))
 
+    def test_a_runs_graph_goes_when_its_rows_leave_the_live_view(self):
+        """Each verified run's graph (its import, and the why server's analysis of it) stayed for the server's life,
+        some 3.4 KiB a record: a 30k-call run peaked at 1.45 GB. A run whose rows left the live view loses its graph, as
+        a run that fails does, so the why dir and the why server's cache hold the runs on the live view only."""
+        why = os.path.join(self.d, "why")
+        os.makedirs(why)
+        store = Store(why, out=WhyFeed(), ingest=False)
+        feed = self.feed(lambda run_id: VERIFIED, on_run=functools.partial(view.mirror_run, why))
+        feed.max_records = 100
+        for i in range(50):
+            run = f"run{i}"
+            at = {"log_id": "l", "tenant": "default"}   # what an import reads
+            self.recs[run] = [v2rec(0, "run.registered", {"agent": {"name": run}}, run, **at)] + [
+                v2rec(k, "policy.decision", {"tool": "Bash", "decision": "allow", "tool_use_id": f"c{k}",
+                                             "policy_hash": "sha256:p", "rule_ids": []}, run, **at) for k in range(1, 6)]
+            self.refresh(feed)
+            store.scan(announce=False)
+        live = {os.path.basename(_target(why, k[1], k[0])) for k in feed.latest if k[1] != "r1"}
+        self.assertTrue(10 < len(live) < 20, live)
+        self.assertTrue(wait_for(lambda: set(os.listdir(why)) == live, 10), (sorted(os.listdir(why)), sorted(live)))
+        store.scan(announce=False)
+        self.assertEqual(set(store._cache), {os.path.join(why, n) for n in live})
+
     def test_a_run_that_did_not_grow_is_checked_again_and_adds_no_rows_while_unchanged(self):
         """A run was checked only when it grew, so an edit of records already shown stayed VERIFIED until a restart."""
         verdicts = [VERIFIED, VERIFIED, FAILED]
@@ -1586,7 +1609,8 @@ class BoundedState(unittest.TestCase):
             self.assertLessEqual(len(getattr(t2, name)), cap, name)
 
     def test_the_store_feed_keeps_its_newest_records(self):
-        feed = types.SimpleNamespace(records=[], base=0, max_records=100, latest={}, kept=collections.OrderedDict())
+        feed = types.SimpleNamespace(records=[], base=0, max_records=100, latest={}, kept=collections.OrderedDict(),
+                                     on_run=None)
         for i in range(1000):
             feed.records.append({"seq": i})
             view.StoreFeed._trim(feed)

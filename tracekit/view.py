@@ -975,7 +975,9 @@ class StoreFeed:
     def _mirrors(self):
         """The mirror thread: on_run for each run that changed, with its newest records. A run is imported whole each
         time, so a growing run is mirrored again no sooner than BACKOFF times its last mirror's time after it; a run
-        that failed (records None) loses its mirror at once."""
+        that failed or left the live view (records None) loses its mirror at once."""
+        # lean: BACKOFF counts the import, not the why server's analysis of it on its own thread (about as long again);
+        # count both if a growing run's graph costs too much CPU
         due = {}   # (tenant, run_id) -> when it may be mirrored again
         while True:
             with self._mlock:
@@ -1048,7 +1050,8 @@ class StoreFeed:
 
     def _trim(self):
         """Under self.lock: drop the oldest records past max_records, counted in base (what /api/snapshot calls dropped);
-        a run's latest review among them goes to kept, which keeps KEPT_MAX runs' and drops a failed run's last."""
+        a run's latest review among them goes to kept, which keeps KEPT_MAX runs' and drops a failed run's last, and
+        the run's graph goes (on_run), so the graphs too are of the runs on the live view only."""
         over = len(self.records) - self.max_records
         if over > 0:
             for x in self.records[:over]:
@@ -1056,6 +1059,10 @@ class StoreFeed:
                 if key and self.latest.get(key) is x:
                     del self.latest[key]
                     self.kept[key] = x
+                    if self.on_run and key[1] != SIGNER_RUN[1]:
+                        with self._mlock:
+                            self._mirror[key] = None
+                            self._mlock.notify()
             while len(self.kept) > KEPT_MAX:
                 self.kept.pop(next((k for k, x in self.kept.items() if x["review"]["verdict"] != "failed"),
                                    next(iter(self.kept))))
