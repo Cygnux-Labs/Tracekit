@@ -629,9 +629,8 @@ class Executor(unittest.TestCase):
         self.assertEqual(self.s.log.open_runs, {"token:http": 1})
 
     def test_asks_past_the_callers_wait_slots_stay_held(self):
-        self.s.quotas.limits = Limits(concurrent_waits=2)
-        custody = executor.Custody(InProcess(self.s), approval_wait_s=1.5)
-        runs = [self.s.call(AGENT, "register_run", {"request_id": f"r{i}", "agent": {"name": "a"}}) for i in range(6)]
+        custody = executor.Custody(InProcess(self.s), approval_wait_s=1.5)   # 12 asks, 8 wait slots (Limits)
+        runs = [self.s.call(AGENT, "register_run", {"request_id": f"r{i}", "agent": {"name": "a"}}) for i in range(12)]
         out = [None] * len(runs)
 
         def ask(i):
