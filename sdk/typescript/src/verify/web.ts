@@ -25,8 +25,14 @@ async function work(job: Job): Promise<Result> {
   return { report, code, summary };
 }
 
-if (typeof document === "undefined")   // this script, as the page's worker
-  addEventListener("message", async (e) => postMessage(await work((e as MessageEvent).data)));
+if (typeof document === "undefined")   // this script, as the page's worker: a report, or the error that stopped it
+  addEventListener("message", async (e) => {
+    try {
+      postMessage(await work((e as MessageEvent).data));
+    } catch (err) {
+      postMessage({ error: String((err as Error)?.message ?? err) });
+    }
+  });
 else page();
 
 function page() {
@@ -46,10 +52,15 @@ function page() {
   function run(job: Job): Promise<Result> {
     worker?.terminate();
     if (workers) try {
-      url ||= URL.createObjectURL(new Blob([document.querySelector("script")!.textContent!], { type: "text/javascript" }));
+      // this page's own script, by id: a browser extension may add a script element of its own first
+      url ||= URL.createObjectURL(new Blob([$("verifier").textContent!], { type: "text/javascript" }));
       const w = worker = new Worker(url);   // classic: Chrome refuses module workers to file:// pages
-      return new Promise((resolve) => {
-        w.onmessage = (e) => { w.terminate(); resolve(e.data); };
+      return new Promise((resolve, reject) => {
+        w.onmessage = (e) => {
+          w.terminate();
+          if (e.data.error) reject(new Error(e.data.error));
+          else resolve(e.data);
+        };
         w.onerror = (e) => {   // refused (an older browser's policy, or file:// in some): verify here instead
           e.preventDefault();
           workers = false;
@@ -92,10 +103,22 @@ function page() {
     if (!bundle) return;
     const mine = ++turn, names = { bundle: bundle.name, trust: trust?.name ?? null };
     document.body.dataset.state = "verifying";
+    $("busy").textContent = "Verifying...";
     $("busy").hidden = false;
-    const { report, code, summary } = await run({ bundle: bundle.bytes, trust: trust?.bytes ?? null,
-      names: { bundle: names.bundle, trust: names.trust ?? "TRUST.json" } });
+    let result: Result;
+    try {
+      result = await run({ bundle: bundle.bytes, trust: trust?.bytes ?? null,
+        names: { bundle: names.bundle, trust: names.trust ?? "TRUST.json" } });
+    } catch (err) {   // never left at "Verifying...": say what stopped it and where else to check
+      if (mine !== turn) return;
+      $("result").hidden = true;
+      $("busy").textContent = `Couldn't check this file: ${clean(String((err as Error)?.message ?? err))}. The `
+        + `command-line verifier may say more: npx -y @cygnuxlabs/tracekit@latest verify ${names.bundle}`;
+      document.body.dataset.state = "error";
+      return;
+    }
     if (mine !== turn) return;   // a later choice of files: its report wins
+    const { report, code, summary } = result;
     const v = verdict(report, code);
     $("banner").className = `banner ${{ VERIFIED: "ok", FAILED: "bad", UNVERIFIABLE: "warn" }[v.word]}`;
     $("verdict-word").textContent = v.word;

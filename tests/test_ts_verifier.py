@@ -99,11 +99,46 @@ const node = () => ({ dataset: {}, classList: { add() {}, remove() {} }, on: {},
 const el = {};
 globalThis.document = { getElementById: (id) => el[id] ??= node(), createElement: node, body: node(),
   addEventListener() {} };
-writeFileSync(tmp, readFileSync(page, "utf8").match(/<script type="module">([\s\S]*)<\/script>/)[1]);
+writeFileSync(tmp, readFileSync(page, "utf8").match(/<script id="verifier" type="module">([\s\S]*)<\/script>/)[1]);
 await import(pathToFileURL(tmp));
 el.bundle.files = paths.map(file);
 await el.bundle.on.change();
 process.stdout.write(el.report.textContent);
+"""
+
+
+# the same stand-in with a browser extension's script element first in the document and a Worker that either refuses to start
+# (`refused`: the page then verifies in its own thread) or reports an error (`error`); prints the worker's source check,
+# the busy line and the report
+PAGE_WORKER = r"""
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolveObjectURL } from "node:buffer";
+import { pathToFileURL } from "node:url";
+const [page, tmp, mode, ...paths] = process.argv.slice(1);
+const file = (p) => ({ name: p.split(/[\\/]/).pop(), arrayBuffer: async () => {
+  const b = readFileSync(p);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+} });
+const node = () => ({ dataset: {}, classList: { add() {}, remove() {} }, on: {}, textContent: "", append() {},
+  replaceChildren() {}, setAttribute() {}, addEventListener(t, f) { this.on[t] = f; } });
+const script = readFileSync(page, "utf8").match(/<script id="verifier" type="module">([\s\S]*)<\/script>/)[1];
+const el = { verifier: { textContent: script } };
+globalThis.document = { getElementById: (id) => el[id] ??= node(), createElement: node, body: node(),
+  addEventListener() {}, querySelector: () => ({ textContent: "/* a browser extension's script */" }) };
+let source;
+globalThis.Worker = class {
+  constructor(url) { source = resolveObjectURL(url).text(); }
+  postMessage() {
+    setTimeout(() => mode === "error" ? this.onmessage({ data: { error: "boom" } }) : this.onerror({ preventDefault() {} }));
+  }
+  terminate() {}
+};
+writeFileSync(tmp, script);
+await import(pathToFileURL(tmp));
+el.bundle.files = paths.map(file);
+await el.bundle.on.change();
+process.stdout.write(JSON.stringify({ own: (await source) === script, busy: el.busy.textContent,
+  report: el.report?.textContent ?? "" }));
 """
 
 
@@ -599,7 +634,7 @@ class Agreement(unittest.TestCase):
         _build()
         with open(PAGE, encoding="utf-8") as f:
             page = f.read()
-        script = re.search(r'<script type="module">(.*)</script>', page, re.S)[1]
+        script = re.search(r'<script id="verifier" type="module">(.*)</script>', page, re.S)[1]
         h = lambda s: "'sha256-%s'" % base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()   # noqa: E731
         self.assertIn(f"content=\"default-src 'none'; script-src {h(script)}; style-src "
                       f"{h(re.search(r'<style>(.*?)</style>', page, re.S)[1])}; worker-src blob:; connect-src 'none'\"", page)
@@ -622,6 +657,22 @@ class Agreement(unittest.TestCase):
         self.assertIn("\n[FAIL] signatures — ", edited)
         self.assertTrue(edited.endswith("\nIntegrity: FAILED.\nAssurance: none: no trust config pins a log key or "
                                         "witness.\n\nExit code 1.\n"))
+
+    def test_the_page_worker_runs_its_own_script_and_never_hangs(self):
+        """An extension's script element first in the page (Chrome extensions add them): the worker still starts from the
+        verifier's own script, and an error in the worker is shown, never a page left at "Verifying...". """
+        _build()
+        bundle, trust = self.bundles["closed"], self.trusts["witnessed"]
+        with tempfile.TemporaryDirectory() as d:
+            run = lambda mode: json.loads(subprocess.run(   # noqa: E731
+                ["node", "--input-type=module", "-e", PAGE_WORKER, "--", PAGE, os.path.join(d, "page.mjs"), mode,
+                 bundle, trust], capture_output=True, text=True, check=True).stdout)
+            refused, error = run("refused"), run("error")
+        self.assertTrue(refused["own"])
+        self.assertIn("\nIntegrity: VERIFIED.\n", refused["report"])
+        self.assertTrue(error["own"])
+        self.assertTrue(error["busy"].startswith("Couldn't check this file: boom. "), error["busy"])
+        self.assertEqual(error["report"], "")
 
     def test_a_run_of_many_records_under_a_small_stack(self):
         """No record-sized array is spread into a call's arguments, which puts each element on the stack: the CLI and
