@@ -118,8 +118,9 @@ function page() {
       line.append(el("span", `[${c.status.toUpperCase()}]`, `status ${tone}`),
         ` ${c.check}` + (c.detail ? ` — ${clean(c.detail)}` : ""));
       s.append(line);
-      d.append(s, ...c.problems.map((p) => el("span", clean(p), "problem")),
-        el("p", `What this means: ${MEANING[c.check] ?? "see docs/verdicts.md."}`, "means"));
+      d.append(s);
+      for (const p of c.problems) d.append(el("span", clean(p), "problem"));   // one by one: a spread overflows the stack
+      d.append(el("p", `What this means: ${MEANING[c.check] ?? "see docs/verdicts.md."}`, "means"));
       d.open = c.status !== "pass" && c.problems.length > 0;
       return d;
     }));

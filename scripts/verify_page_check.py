@@ -133,7 +133,7 @@ def samples(out=SAMPLES):
     return out
 
 
-def corpus(d, large=5000):
+def corpus(d, large=20000):
     """Export the fresh bundles to `d`; returns [(name, bundle, trust or None, what)]."""
     sys.path.insert(0, os.path.join(ROOT, "tests"))
     import test_bundle_v2 as b
@@ -292,7 +292,7 @@ def page_report(page, bundle, trust):
     return rep, flat, page.text_content("#verdict-word"), secs, page.evaluate("window.__long || 0")
 
 
-def compare(shots=None, large=5000):
+def compare(shots=None, large=20000):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -466,7 +466,7 @@ def main():
     ap.add_argument("--corpus", help=argparse.SUPPRESS)
     ap.add_argument("--samples", action="store_true", help="write the page's embedded samples and exit")
     ap.add_argument("--shots", help="also screenshot the page's main states into this directory")
-    ap.add_argument("--large", type=int, default=5000, help="tool calls in the large run (two records each)")
+    ap.add_argument("--large", type=int, default=20000, help="tool calls in the large run (two records each)")
     a = ap.parse_args()
     if a.samples:
         print(samples())

@@ -127,6 +127,11 @@ const str = (v: unknown): string => v === null ? "None" : v === true ? "True" : 
   : typeof v === "string" ? v : JSON.stringify(v);
 const repr = (v: unknown) => typeof v === "string" ? quoted(v) : str(v);
 const cut = (s: string, n: number) => [...s].slice(0, n).join("");
+/** `xs` appended to `to` one by one: a spread call (`push(...xs)`, `Math.max(...xs)`) puts every element on the stack,
+ * which a bundle of 60k records overflows. */
+const extend = <T>(to: T[], xs: Iterable<T>) => {
+  for (const x of xs) to.push(x);
+};
 const count = (xs: string[]) => {
   const m = new Map<string, number>();
   for (const x of xs) m.set(x, (m.get(x) ?? 0) + 1);
@@ -400,7 +405,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
       origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p), floats);
     const keyed = new Set(keyRecords.map((r) => `${at(at(r, "event"), "seq")} ${at(r, "hash")}`));
-    keyProblems.push(...retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
+    extend(keyProblems, retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
       .map(([seq]) => `seq ${seq}: key.retire withheld (the registry log has it)`));
   }
   rep.check("keys", timeline.size > 0 && !keyProblems.length, `${timeline.size} record key(s) from ${keyRecords.length} key `
@@ -408,7 +413,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const every = [...runs.values()].flat();
   const seqs = [...keyRecords, ...every].map((r) => num(at(at(r, "event"), "seq")));
   if (!seqs.length) throw new ValueError("the bundle holds no key or run records");
-  const relied = Math.max(...seqs);
+  const relied = seqs.reduce((a, b) => b > a ? b : a);
   const rotated = timeline.size > 1 || keyRecords.some((r) => get(r.event, "type") === "key.retire");
   if (provenTo < relied && rotated)   // one key never retired: the assurance line notes it, no warning
     rep.check("keys", false, "retirements not proven complete",
@@ -762,7 +767,7 @@ function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
     const reviews = rs.map((r) => r.event).filter((e) => get(e, "type") === "review");
     const signed = reviews.filter((e) => has(at(e, "data"), "cites"));
     total += reviews.length;
-    labels.push(...Array(reviews.length - signed.length).fill("imported"));
+    extend(labels, Array(reviews.length - signed.length).fill("imported"));
     if (!signed.length) continue;
     for (const e of signed) {
       const why = verdictProblem(get(at(e, "data"), "verdict"));
@@ -770,12 +775,12 @@ function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
     }
     const rid = cut(str(get(rs[0].event, "run_id")), 128), analyzes = about(rs)[0];
     if (analyzes === null) {
-      problems.push(...signed.map((e) => `seq ${e.seq}: a signed finding outside a findings run`));
+      extend(problems, signed.map((e) => `seq ${e.seq}: a signed finding outside a findings run`));
       continue;
     }
     const target = byId.get(analyzes);
     if (!target) {
-      labels.push(...Array(signed.length).fill("author not checked"));
+      extend(labels, Array(signed.length).fill("author not checked"));
       uncounted.push(`findings run ${rid}: run ${cut(str(analyzes), 128)} is not in the bundle`);
       continue;
     }
@@ -793,7 +798,7 @@ function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
         ? `its author ${cut(str(mine), 256)} is the analysed run's identity`
         : "the signer runs as the same user as a client (signer_isolation same-user)"));
     } else label = pinned.includes(mine) ? "independent" : `unpinned author ${cut(str(mine), 256)}`;
-    labels.push(...Array(signed.length).fill(label));
+    extend(labels, Array(signed.length).fill(label));
   }
   if (total) {
     rep.check("reviews", !problems.length && !selfs.length, `${total} review(s): `
@@ -895,7 +900,7 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
         }
       }
     }
-    problems.push(...honoured(events, pointers));
+    extend(problems, honoured(events, pointers));
   }
   const n = opened.size + [...pointers].filter((p) => !opened.has(p)).length;
   rep.check("incidents", !problems.length, `${n} incident(s): ${checked} checked against the bundle, ${n - checked} `
@@ -918,7 +923,7 @@ function honoured(events: J[], pointers: Set<string>): string[] {
   for (const e of events) {
     const t = e.type, d = e.data, where = `seq ${e.seq}`, on = quarantined || held.join(" and ");
     if (t === "policy.decision" && due.size && !quarantined) {   // an enforced response is written before the next call
-      problems.push(...unfollowed());
+      extend(problems, unfollowed());
       due.clear();
     }
     if (t === "incident.opened" && d.scope.kind === "run" && d.scope.id === str(e.run_id).slice(0, 256)
@@ -954,7 +959,7 @@ function honoured(events: J[], pointers: Set<string>): string[] {
       problems.push(`${where}: a result while the run is ${state()} by incident ${on}, of a call neither in flight then nor `
         + "approved by a person for it");
   }
-  if (!quarantined) problems.push(...unfollowed());
+  if (!quarantined) extend(problems, unfollowed());
   return problems;
 }
 
