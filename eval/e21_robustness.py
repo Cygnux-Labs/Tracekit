@@ -68,7 +68,7 @@ def stateful_reason(command):
         return "shell parse failed"
     for cmd in parsed:
         argv = cmd["argv"]
-        name, args = argv[0], argv[1:]
+        name = argv[0]
         if name == "history":
             return "history state belongs to the current shell"
         if name in STATEFUL_BUILTINS:
