@@ -285,7 +285,10 @@ class _Run:
                                                       if first["type"] == "run.registered" else None)
         self.final = any(r["event"]["type"] == "run.final" for r in self.records)
         self.calls, self.carriers, self.groups, self.streams, self.effects = {}, {}, {}, {}, []
-        self.synthetic = self.hooked = False   # hooked: the run's hook recorded a prompt (PROMPT_HOOK)
+        # synthetic: some calls can't be linked to the tool use that asked for them by id (an adapter's synthetic id,
+        # a pairing by arguments, a message recorded said_only: a harness whose hooks name no call); hooked: the run's
+        # hook recorded a prompt (PROMPT_HOOK)
+        self.synthetic = self.hooked = False
         self.net_effects, self.requests = [], []   # net and connect effects; agent-reported request records
         self.model_hosts = set()   # the API hosts of the model calls the run recorded: the harness's own traffic
         for r in self.records:
@@ -300,6 +303,7 @@ class _Run:
                 self.requests.append(e["run_seq"])
             elif e["type"] == "model.exchange" and d.get("phase") == "response":
                 x = d.get("exchange_id")
+                self.synthetic = self.synthetic or bool(d.get("said_only"))
                 if x is not None:
                     self.groups.setdefault(x, []).append(e["run_seq"])
                     self.streams.setdefault(x, set()).add(e.get("stream") or e["source"])

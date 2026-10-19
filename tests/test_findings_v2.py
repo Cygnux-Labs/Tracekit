@@ -400,6 +400,14 @@ class NothingSaid(Base):   # TK-X201
         out = self.run_session(t)
         self.assertEqual(checks(out, tid)["TK-X201"], "no_response")
 
+    def test_a_call_of_a_harness_whose_messages_name_no_call_is_unlinked(self):   # Gemini CLI, Cursor
+        recs, content = records(
+            ("model.exchange", "sdk", {"phase": "response", "exchange_id": "m1", "said_only": True},
+             {"content": [{"type": "text", "text": "Reading src/pager.py."}], "source": "gemini chat"}),
+            ("policy.decision", "signer", {"tool_use_id": "gemini-abc", "tool": "Read", "decision": "allow"},
+             {"file_path": "/w/src/pager.py"}))
+        self.assertEqual(checks(findings_v2.analyze(recs, content), "gemini-abc")["TK-X201"], "unlinked")
+
     def test_the_order_of_a_reasoning_link_is_computed_from_run_seq(self):
         t = self.task()
         tid = t.step("Listing.", "Bash", {"command": "ls"})
