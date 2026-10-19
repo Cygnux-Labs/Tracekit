@@ -506,7 +506,7 @@ class _Run:
                 return prompt and self._keep(self.prompts, seq, *prompt)
             text = _asked(body)
         else:
-            if self.conflicting(d.get("exchange_id")):   # text that may be forged clears nothing
+            if self.conflicting(d.get("exchange_id")) and e["source"] != "gateway":   # may be forged: clears nothing
                 self.segs[seq] = [(s["kind"], s["form"], bool(s["text"].strip()), s["tools"], "")
                                   for s in parsers.said(*_message(body, d))]
                 return

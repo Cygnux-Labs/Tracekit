@@ -343,6 +343,15 @@ class AgentClaims(unittest.TestCase):   # what the agent's own process sends is 
                 self.assertEqual((f["verdict"]["severity"], d["labels"]), ("high", ["keep_away"]))
                 self.assertEqual(out["shown"]["constraints"][0]["tier"], "harness")
 
+    def test_an_agent_report_reusing_the_gateways_exchange_id_leaves_the_gateways_text(self):
+        def response(source, text):
+            return ("model.exchange", source, {"phase": "response", "exchange_id": "m1", "tool_uses": [
+                {"id": "t1", "name": "Edit", "executed_by": "client"}]}, {"content": [
+                    {"type": "text", "text": text}, {"type": "tool_use", "id": "t1", "name": "Edit", "input": {}}]})
+        recs, content = records(response("gateway", "billing.py has the same bug; fixing it there."),
+                                response("sdk", "Nothing to see."), call("t1", "billing.py")[1])
+        self.assertEqual(checks(findings_v2.analyze(recs, content), "t1")["TK-X202"], "checked")
+
     def test_a_lift_counts_only_from_text_as_trusted_as_the_constraint(self):
         def run(lifter):
             recs, content = records(
