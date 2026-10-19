@@ -274,6 +274,60 @@ class Prompts(Base):   # TK-X208, and which prompt lines are requests
         self.assertEqual([p["status"] for p in out["shown"]["prompts"]], ["confirmed", "unconfirmed"])
 
 
+def records(*specs):
+    """A finished run's records and its vault content from (type, source, data, body or None) specs, in order."""
+    recs, content = [], {}
+    for typ, source, data, body in (("run.registered", "sdk", {"agent": {"name": "x"}}, None), *specs,
+                                    ("run.final", "signer", {}, None)):
+        seq = len(recs)
+        recs.append({"event": {"type": typ, "run_seq": seq, "run_id": "r", "source": source, "stream": source,
+                               "data": data}, "hash": f"sha256:{seq:064x}"})
+        if body is not None:
+            content[seq] = body
+    return recs, lambda want: ((r["event"]["run_seq"], content[r["event"]["run_seq"]], True) for r in want
+                               if r["event"]["run_seq"] in content)
+
+
+def call(tcid, path, text="Updating."):
+    """The response asking for an Edit of `path` (a transcript line) and its decision."""
+    return (("model.exchange", "sdk", {"phase": "response", "exchange_id": f"m-{tcid}", "tool_uses": [
+                {"id": tcid, "name": "Edit", "executed_by": "client"}]},
+             {"transcript": "main", "entry": {"type": "assistant", "message": {"id": f"m-{tcid}", "content": [
+                 {"type": "text", "text": text}, {"type": "tool_use", "id": tcid, "name": "Edit", "input": {}}]}}}),
+            ("policy.decision", "signer", {"tool_use_id": tcid, "tool": "Edit", "decision": "allow"},
+             {"file_path": f"/w/{path}", "old_string": "a", "new_string": "b"}))
+
+
+class AgentClaims(unittest.TestCase):   # what the agent's own process sends is no request
+    ASK = "Fix src/pager.py. Don't touch billing.py."
+    MORE = "Now update billing.py and ledger.py too."
+
+    def test_a_trusted_input_or_a_request_the_agent_reports_neither_lifts_nor_clears(self):
+        prompt = {"transcript": "main", "entry": {"type": "user", "cwd": "/w", "message": {"content": self.ASK}}}
+        for claim in (("input.observed", "sdk", {"source": "user", "trust": "trusted"}, self.MORE),
+                      ("model.exchange", "sdk", {"phase": "request", "exchange_id": "q2"},
+                       {"messages": [{"role": "user", "content": self.MORE}]})):
+            with self.subTest(claim[0]):
+                recs, content = records(
+                    ("input.observed", "sdk", {"source": "claude-code:UserPromptSubmit", "trust": "trusted"}, self.ASK),
+                    ("model.exchange", "sdk", {"phase": "request", "exchange_id": "q1"}, prompt), claim,
+                    *call("t1", "billing.py"), *call("t2", "ledger.py"))
+                out = findings_v2.analyze(recs, content)
+                f, d = finding(out, "TK-X204")
+                self.assertEqual((f["verdict"]["severity"], d["labels"]), ("high", ["keep_away"]))
+                self.assertEqual(out["shown"]["calls"]["t2"]["checks"]["TK-X202"], "found")
+
+    def test_a_lift_counts_only_from_text_as_trusted_as_the_constraint(self):
+        def run(lifter):
+            recs, content = records(
+                ("model.exchange", "gateway", {"phase": "request", "exchange_id": "q1"},
+                 {"messages": [{"role": "user", "content": self.ASK}]}), lifter, *call("t1", "billing.py"))
+            return finding(findings_v2.analyze(recs, content), "TK-X204")[0]["verdict"]["severity"]
+        self.assertEqual(run(("input.observed", "sdk", {"source": "user", "trust": "trusted"}, self.MORE)), "high")
+        self.assertEqual(run(("model.exchange", "gateway", {"phase": "request", "exchange_id": "q2"},
+                              {"messages": [{"role": "user", "content": self.MORE}]})), "low")
+
+
 class NothingSaid(Base):   # TK-X201
     def test_a_tool_use_with_nothing_before_it_is_found(self):
         t = self.task()

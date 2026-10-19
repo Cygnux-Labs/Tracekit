@@ -55,8 +55,10 @@ Intent is only what a person typed: a prompt line of the main Claude Code transc
 summary, command output, a tool result or a sub-agent's prompt) whose text a prompt the hook recorded at
 UserPromptSubmit (input.observed, source <agent>:UserPromptSubmit: the harness's payload) matches, each hook prompt
 confirming one line (tier `harness`); in a run whose hook recorded no prompt (hooks before 1.4), the line alone (tier
-`transcript`). Also the newest user message of a recorded model request, and an input observed as trusted. The
-gateway's record of a model message is preferred where an agent's report of it exists too; two reports of one message
+`transcript`). Also the newest user message of a model request the gateway recorded, and an input observed as trusted
+in a run whose hook records no prompts; what else claims a person's request is the agent's claim (claimed()). A later
+request lifts a constraint only from text as trusted as the constraint's (RANK). The gateway's record of a model
+message is preferred where an agent's report of it exists too; two reports of one message
 from different event streams make its reasoning not checkable (conflicting_reports), and their text clears nothing.
 Ordering is computed from run_seq: a reasoning link is `signed_before` the call's decision, in `transcript_order` (a
 transcript line the signer recorded after the decision, before the tool use in the file), or `after`.
@@ -146,6 +148,7 @@ PROMPT_HOOK = ":UserPromptSubmit"   # an input.observed source: <agent>:UserProm
 FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorability classes, best first
 TIERS = ("operator", "observer", "gateway", "decision", "harness", "sdk", "transcript")   # trust, best first
 TEXT_TIERS = ("transcript", "sdk", "harness", "gateway")   # weakest first: a finding names the weakest text it relied on
+RANK = {"transcript": 0, "sdk": 0, "harness": 1, "gateway": 2}   # the agent can write both transcript and sdk text
 COMMAND_OUTPUT = ("<command-", "<local-command-", "<bash-stdout", "<bash-stderr")
 
 
@@ -192,6 +195,14 @@ def _prompt(body):
     if not text or text.lstrip().startswith(COMMAND_OUTPUT):
         return None
     return text, e.get("cwd") if isinstance(e.get("cwd"), str) else None
+
+
+def claimed(e, hooked):
+    """Whether record e (a model request, or an input observed as trusted other than the hook's prompt) only claims
+    to hold a person's request: a request the agent's own process reported (not the gateway's), or a trusted input in
+    a run whose hook records the person's prompts (`hooked`), where they come in through the hook. Its text is no
+    intent: it lifts and clears nothing, and the reviewer model reads it as `claimed`."""
+    return e["source"] != "gateway" if e["type"] == "model.exchange" else hooked
 
 
 def _asked(body):
@@ -311,6 +322,7 @@ class _Run:
         # stated: [(position, run_seq, kind, object, "request" or "model")] of each constraint stated; lifts:
         # [(position, run_seq, constraints.mentions(text), "request" or "model")] of each text after
         self.stated, self.lifts, self.lift_names = [], [], 0
+        self.claimed = []   # run_seqs of records that only claim a person's request (claimed())
 
     def conflicting(self, x):
         return len(self.streams.get(x, ())) > 1
@@ -385,7 +397,9 @@ class _Run:
             name = constraints.breaks(c[2], f, only.__contains__ if c[2] == "only_change" else c[3].__eq__)
             if name is None:
                 continue
+            rank = RANK.get(self.tier.get(c[1]), 0)   # a lift counts only from text as trusted as the constraint's
             lift = next((m for m in self.lifts if c[0] < m[0] < pos and (m[3] == "request" or c[4] == "model")
+                         and RANK.get(self.tier.get(m[1]), 0) >= rank
                          and constraints.lifts(c[2], m[2], (name if c[2] == "only_change" else c[3]).__eq__)), None)
             if best is None or (c[4] != "request", lift is not None) < (best[0][4] != "request", best[2] is not None):
                 best = (c, name, lift)
@@ -440,7 +454,9 @@ class _Run:
                     self._mention(s["text"], (seq, k), seq, tier, "said")
                     self._stated(s["text"], (seq, k), seq, "model")
             return
-        if text:
+        if text and claimed(e, self.hooked):
+            self.claimed.append(seq)
+        elif text:
             self._request(seq, text, tier)
 
     # ----------------------------------------------------------------------- per call

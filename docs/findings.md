@@ -156,8 +156,11 @@ Terms, as the output uses them:
 
 - **Intent** is only what a person typed: a prompt line of the main Claude Code transcript (not a meta line, a
   compaction summary, command output, a tool result or a sub-agent's task prompt) that the hook's own copy of the
-  prompt confirms, the newest user message of a model request the gateway recorded, an input observed as trusted. In a
-  run whose hook recorded no prompt (hooks before this release), each prompt line counts, as the transcript's word.
+  prompt confirms, the newest user message of a model request the gateway recorded, an input observed as trusted in a
+  run whose hook records no prompts. In a run whose hook recorded no prompt (hooks before this release), each prompt
+  line counts, as the transcript's word. A request the agent's own process reported (autotrace, a framework
+  integration) and, where the hook records the prompts, any other input observed as trusted only *claim* a person's
+  words: they lift and clear nothing, and the reviewer model reads them as `claimed`.
 - A **stated constraint** is what the run's own words said not to do, read by a small fixed grammar: from a request
   (and, live, held by the signer) or from the model's text before the call (its own promise).
 - **Reasoning** is what the model said before the call: `full` (an open model's own reasoning), `summary` (Claude's
@@ -170,7 +173,9 @@ Terms, as the output uses them:
   Code transcript line, or what Codex's rollout, Gemini CLI's chat recording or Cursor's hooks said, which the agent
   can write); the printed
   list also names `decision` (the arguments the signer decided on), `observer` (a kernel sensor) and `operator`
-  (`--project`). Text the agent can write is labelled, and the gateway's record of a model message is preferred. Two
+  (`--project`). Text the agent can write is labelled, and the gateway's record of a model message is preferred. A
+  later request lifts a constraint only when its tier is at least the constraint's (`gateway` above `harness` above
+  `sdk` and `transcript`, which rank alike: the agent can write both). Two
   reports of one model message from different event streams make its reasoning not checkable, and clear nothing.
 - **Order**: what was said before a call is `signed_before` it when its record's `run_seq` is lower than the
   decision's; a transcript line the signer recorded after the decision is in `transcript_order` only.
