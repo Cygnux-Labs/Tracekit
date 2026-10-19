@@ -832,7 +832,8 @@ class SignerService:
         # (*run key, observer) -> its observer's
         self._beats = {k: time.monotonic() for k in self.log.live if self.log.runs[k].get("tailed")}
         self._beats_lock = threading.Lock()
-        # (tenant, observer) -> (monotonic time of its last observe_effect, its process `instance`), under _beats_lock
+        # (tenant, observer) -> (monotonic time of its last observe_effect, its process `instance`, a sensor's name, the
+        # identities whose runs a sensor covers), under _beats_lock
         self._observers = {}
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.gateway_wait_s = gateway_wait_s
@@ -2572,11 +2573,13 @@ class SignerService:
                 tx.set(o, "overlapped_by", [*o.get("overlapped_by", ()), run_id])
             return out
         out = self.log.submit(identity, "register_run", req, fn)
-        with self._beats_lock:   # the observers alive now cover the run from its start, a follower its own run
+        # the observers alive now cover the run from its start (a sensor import only a run of an identity its `runs`
+        # map processes to), a follower its own run
+        with self._beats_lock:
             if imported:
                 self._beats.setdefault((out["tenant"], out["run_id"]), time.monotonic())
-            for (t, obs), (at, *_) in self._observers.items():
-                if t == out["tenant"] and time.monotonic() - at < TAILER_LOST_S:
+            for (t, obs), (at, _, sensor, callers) in self._observers.items():
+                if t == out["tenant"] and time.monotonic() - at < TAILER_LOST_S and (not sensor or own in callers):
                     self._beats.setdefault((t, out["run_id"], obs), at)
         return out
 
@@ -3612,15 +3615,18 @@ class SignerService:
         observer's heartbeat: the runs of its tenant registered while it is alive are covered by it, until another
         process of it (`instance`) takes over, which is an observer_lost gap in each. `check`: refused unless this
         signer issued that run token for that run of the observer's tenant (the proxy asks before it connects).
-        A kernel sensor's import (tracekit.sensor; `sensor` in every call) is an observer the same way, of processes
-        rather than network: its effects (_sensor_effect) are recorded but not reconciled, and `lost` ends its coverage
-        of the runs it covers with an observer_lost gap in each (in the signer run when it covers none)."""
+        A kernel sensor's import (tracekit.sensor; `sensor` and `callers` in every call) is an observer the same way, of
+        processes rather than network, covering only the runs of the identities its `runs` map processes to
+        (`callers`): its effects (_sensor_effect) are recorded but not reconciled, and `lost` ends its coverage of the
+        runs it covers with an observer_lost gap in each (in the signer run when it covers none)."""
         obs, tenant, sensor = subject(identity), self._tenant_of(identity), req.get("sensor")
+        callers = frozenset(req.get("callers", ()))
         if len(obs) > 256:   # each record names it in full
             raise RPCError("forbidden", f"{obs[:64]}...: an observer's identity is at most 256 characters")
-        if any((x["kind"] == "net") == bool(sensor) for x in req["effects"]) or "lost" in req and not sensor:
+        if any((x["kind"] == "net") == bool(sensor) for x in req["effects"]) or bool(sensor) != ("callers" in req) \
+                or "lost" in req and not sensor:
             raise RPCError("invalid_request", "net effects go without `sensor`; a kernel sensor's events and `lost` "
-                                              "go with it")
+                                              "go with it, and `callers` with every call of it")
         if "check" in req:   # before anything is charged: a made-up token must not spend the observer's events
             why = self._attributed(tenant, req["check"])[2]
             if why:
@@ -3632,7 +3638,7 @@ class SignerService:
         # so a call sent again after a failed write still finds the runs it covered
         with self._beats_lock:
             before = self._observers.get((tenant, obs))
-            self._observers[(tenant, obs)] = (now, before[1] if before else req["instance"], sensor)
+            self._observers[(tenant, obs)] = (now, before[1] if before else req["instance"], sensor, callers)
             covered = [k for k in self._beats if len(k) == 3 and k[0] == tenant and k[2] == obs]
             restarted = covered if before and before[1] != req["instance"] else []
             lost = covered if "lost" in req and not restarted else []
@@ -3642,7 +3648,7 @@ class SignerService:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])
         with self._beats_lock:
-            self._observers[(tenant, obs)] = (now, req["instance"], sensor)
+            self._observers[(tenant, obs)] = (now, req["instance"], sensor, callers)
             for k in restarted:
                 self._beats.pop(k, None)
         if not req["effects"] and "lost" not in req:

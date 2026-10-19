@@ -363,7 +363,8 @@ class View(unittest.TestCase):
         the call that explains it (the page's Happened column), and one no call explains is a FINDING."""
         def observe(*effects):
             self.service.call(SENSOR, "observe_effect", {"request_id": os.urandom(8).hex(), "instance": "i",
-                                                         "sensor": "tetragon", "effects": list(effects)})
+                                                         "sensor": "tetragon", "callers": [f"uid:{os.getuid()}"],
+                                                         "effects": list(effects)})
 
         def at(dt=0.0):
             t = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=dt)

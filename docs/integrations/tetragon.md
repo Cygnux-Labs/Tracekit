@@ -112,7 +112,8 @@ The first `runs` entry whose `match` fits the event's process (its pod's namespa
 uid) attributes it: the signer gives the event to the latest open run of that entry's `caller`
 (`attribution: identity` in the record). An event of a process no entry matches is not an agent's: the import skips
 it. An event of a matched process whose caller has no open run is a signed `capture.gap{effect_outside_run}` in the
-tenant's signer run.
+tenant's signer run. The import covers the runs of its entries' `caller`s only (it names them in every call), so a run
+of any other identity never says its processes were observed, and the import's losses are no gaps in it.
 
 ## What is recorded
 
@@ -130,8 +131,9 @@ Every record also has `observer` (the import's identity), `sensor: tetragon`, `t
 `attribution`. Other events (other kprobes, tracepoints, LSM hooks) aren't recorded, nor are the `procFS` exec events
 of processes already running when Tetragon started.
 
-`run.final`'s coverage matrix says `processes observed (tetragon)` when the import covered the run throughout: it
-was alive when the run registered, sent a heartbeat at least every 30 s, and reported no loss.
+`run.final`'s coverage matrix says `processes observed (tetragon)` when the import covered the run throughout: the
+run's identity is a `caller` of its `runs`, and the import was alive when the run registered, sent a heartbeat at least
+every 30 s, and reported no loss.
 
 ## Tool calls
 

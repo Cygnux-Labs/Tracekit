@@ -58,7 +58,7 @@ class Released(Signed):
     def sensor_run(self, effect):
         """A run a kernel sensor's import covered: with `effect` an exec it saw, else none and then a loss."""
         def observe(**req):
-            self.call(SENSOR, "observe_effect", instance="i", sensor="tetragon", **req)
+            self.call(SENSOR, "observe_effect", instance="i", sensor="tetragon", callers=[f"uid:{ME.subject}"], **req)
         observe(effects=[])
         run = self.register(ME)
         proc = {"caller": f"uid:{ME.subject}", "ts": "2026-10-12T10:00:00.000000Z", "pid": 7, "binary": "/usr/bin/curl"}

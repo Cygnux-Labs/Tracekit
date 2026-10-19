@@ -825,7 +825,7 @@ def effects_replay(signer, sess, rng):
 
     def observe(effects):
         signer.s.call(SENSOR, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "e20", "sensor": "tetragon",
-                                                 "effects": effects})
+                                                 "callers": [owner], "effects": effects})
 
     def effect(p, kind, t, fields):
         e = {"caller": owner, "kind": kind, "ts": _effect_ts(base, t + sess["skew"]), "pid": p["pid"],

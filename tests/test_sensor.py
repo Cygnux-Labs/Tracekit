@@ -315,12 +315,27 @@ class TestImport(Sensed):
         exec_effect = {"kind": "exec", "ts": "2026-10-12T10:00:00.000000Z", "pid": 1, "binary": "/bin/sh", **run}
         net = {"kind": "net", "host": "a.example", "port": 443, "bytes_out": 1, "bytes_in": 1, "connections": 1,
                "first_ts": "2026-10-12T10:00:00.000000Z", "last_ts": "2026-10-12T10:00:00.000000Z", **run}
-        for req in ({"effects": [exec_effect]}, {"effects": [net], "sensor": "tetragon"}, {"effects": [], "lost": "x"},
-                    {"effects": [dict(exec_effect, kind="file")], "sensor": "tetragon"}):   # a file event needs a path
+        sensed = {"sensor": "tetragon", "callers": [f"uid:{ME.subject}"]}
+        for req in ({"effects": [exec_effect]}, {"effects": [net], **sensed}, {"effects": [], "lost": "x"},
+                    {"effects": [dict(exec_effect, kind="file")], **sensed},   # a file event needs a path
+                    {"effects": [exec_effect], "sensor": "tetragon"},   # whose runs it covers goes in every call
+                    {"effects": [net], "callers": sensed["callers"]}):
             with self.subTest(req):
                 self.refused("invalid_request", "observe_effect", {"instance": "i", **req}, SENSOR)
-        self.refused("forbidden", "observe_effect", {"instance": "i", "sensor": "tetragon",
+        self.refused("forbidden", "observe_effect", {"instance": "i", **sensed,
                                                      "effects": [dict(exec_effect, caller=f"uid:{ME.subject}")]})
+
+    def test_an_import_covers_only_the_runs_of_the_identities_it_maps_processes_to(self):
+        imp = sensor.Import(types.SimpleNamespace(observe_effect=lambda req: self.call("observe_effect", req, SENSOR)),
+                            "tetragon", RUNS[1:])   # only the idle-* pods, OTHER's
+        imp.flush()
+        run = self.register()   # ME's: no runs entry maps a process to it
+        imp.add(RATE_LIMITED)
+        imp.flush()
+        es = self.final(run)
+        self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"], {"status": "none", "layers": []})
+        self.assertEqual(self.gaps(es, "observer_lost"), [])   # its loss is no gap in a run it doesn't cover
+        self.assertEqual(len(self.gaps(self.events("tracekit/signer"), "observer_lost")), 1)
 
 
 class TestFalcoImport(Sensed):
@@ -388,7 +403,8 @@ class TestCommand(unittest.TestCase):
         self.assertEqual(cfg["runs"], [{"match": {"namespace": "agents", "pod": "coder-*"},
                                         "caller": "k8s_sa:system:serviceaccount:agents:coder"}])
         for bad in ("sensor: auditd\nsigner: x\nruns: []\n", "sensor: tetragon\nsigner: x\n",
-                    "sensor: tetragon\nsigner: x\nruns:\n  - match: {cgroup: x}\n    caller: uid:1\n"):
+                    "sensor: tetragon\nsigner: x\nruns:\n  - match: {cgroup: x}\n    caller: uid:1\n",
+                    "sensor: tetragon\nsigner: x\nruns:\n  - match: {uid: 1}\n    caller: UID:1\n"):   # no identity
             with self.subTest(bad), self.assertRaises(ValueError):
                 sensor.load_config(self.config(bad))
         self.assertEqual(sensor.main(["import", "--config", self.config("sensor: x\n")]), 2)

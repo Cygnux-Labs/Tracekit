@@ -15,7 +15,7 @@ sensor.yaml:
         caller: k8s_sa:system:serviceaccount:agents:coder   # that identity's latest open run takes the event
 
 The first `runs` entry that matches an event attributes it; an event none matches is not an agent's and is skipped
-(counted on stderr at exit). Losses go to the signer as `lost`, an observer_lost gap in each run the import covers: the
+(counted on stderr at exit). The import covers only the runs of its `caller`s, which every call names (`callers`). Losses go to the signer as `lost`, an observer_lost gap in each run the import covers: the
 ones the sensor reports in its stream, lines the import can't read, an agent's events it can't record (no binary, a
 field the signer would refuse), and events past MAX_PENDING while the signer can't take them. Every call is the import's
 heartbeat; one goes at least every HEARTBEAT_S. Each call names this process (`instance`), so the signer sees a
@@ -36,7 +36,7 @@ import uuid
 
 from tracekit import yamlmini
 from tracekit.sdk.client import Client, SignerUnavailable
-from tracekit.signer.rpc_schema import ID, REQUESTS, RPCError, validate
+from tracekit.signer.rpc_schema import ID, IDENTITY, MAX_CALLERS, REQUESTS, RPCError, validate
 from tracekit.signer.service import HEARTBEAT_S
 
 KEYS = {"sensor", "signer", "runs"}
@@ -165,6 +165,7 @@ class Import:
 
     def __init__(self, client, sensor, runs):
         self.client, self.parse, self.sensor, self.runs = client, PARSERS[sensor], sensor, runs
+        self.callers = sorted({r["caller"] for r in runs})   # whose runs the import covers
         self.instance = uuid.uuid4().hex
         self.lock = threading.Lock()
         # lean: effects wait in memory (MAX_PENDING) while the signer can't take them, and a killed import loses them
@@ -216,7 +217,8 @@ class Import:
                     if not effects and not lost and now - self.beat < HEARTBEAT_S:
                         return True
                     self.sending = {"request_id": "sn-" + uuid.uuid4().hex, "instance": self.instance,
-                                    "sensor": self.sensor, "effects": effects, **({"lost": lost} if lost else {})}
+                                    "sensor": self.sensor, "callers": self.callers, "effects": effects,
+                                    **({"lost": lost} if lost else {})}
                 req = self.sending
             try:
                 self.client.observe_effect(req)
@@ -243,8 +245,10 @@ def load_config(path):
         raise ValueError(f"{path}: needs sensor (one of {sorted(PARSERS)}), signer and runs")
     for r in cfg["runs"] if isinstance(cfg["runs"], list) else [None]:
         if not (isinstance(r, dict) and set(r) == {"match", "caller"} and isinstance(r["match"], dict) and r["match"]
-                and set(r["match"]) <= MATCH and isinstance(r["caller"], str) and ":" in r["caller"]):
+                and set(r["match"]) <= MATCH and not validate(IDENTITY, r["caller"])):
             raise ValueError(f"{path}: each runs entry is a match (of {sorted(MATCH)}) and a caller (scheme:subject)")
+    if len({r["caller"] for r in cfg["runs"]}) > MAX_CALLERS:
+        raise ValueError(f"{path}: the runs entries name more than {MAX_CALLERS} callers: split them across imports")
     return cfg
 
 

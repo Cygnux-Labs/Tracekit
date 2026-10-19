@@ -218,14 +218,14 @@ class Agreement(unittest.TestCase):
         """A run a kernel sensor's import covered: a format 1.4 exec joined to its call, and a file write."""
         obs, ts = CallerIdentity("mtls", "spiffe://acme/tetragon", True), "2026-10-12T10:00:00.000000Z"
         s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "sensor": "tetragon",
-                                       "effects": []})
+                                       "callers": [f"uid:{ME.subject}"], "effects": []})
         r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
         s.call(ME, "decide", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"],
                               "stream": "s1", "client_seq": 0, "tool_call_id": "call_7", "tool": "read_file",
                               "args_source": "parsed", "args": {}})
         proc = {"caller": f"uid:{ME.subject}", "ts": ts, "pid": 7, "binary": "/usr/bin/curl", "exec_id": "ZXg6MTo3"}
         s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "sensor": "tetragon",
-                                       "effects": [{**proc, "kind": "exec", "args_digest": "sha256:" + "a" * 64,
+                                       "callers": [f"uid:{ME.subject}"], "effects": [{**proc, "kind": "exec", "args_digest": "sha256:" + "a" * 64,
                                                     "tool_call_id": "call_7"},
                                                    {**proc, "kind": "file", "path": "/home/agent/.bashrc"}]})
         s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
