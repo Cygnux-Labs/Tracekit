@@ -59,7 +59,10 @@ The signer classifies the tool and computes the args digest itself; nothing the 
 Under `create_agent` the middleware records each model response (`wrap_model_call`): its reasoning blocks (a
 summary, with the provider's signature or encrypted content), an open model's `reasoning_content` or inline `<think>`
 (its full reasoning), its text, and the calls of the agent's tools under the ids they are decided by (not a
-structured-output tool's). A tool executor's tool gets the model's id for its call from the middleware, and the
+structured-output tool's), each added to its response only once it reaches the middleware: a call another middleware
+stops first (a person's reject in `HumanInTheLoopMiddleware`, `ToolCallLimitMiddleware`, the recursion limit) is not
+recorded. A call a person edited there is recorded as the model asked for it and decided as edited, so it reads as
+`reconcile.args_mismatch`. A tool executor's tool gets the model's id for its call from the middleware, and the
 executor decides it under that id. A `tracekit_tool_node` graph has no model hook: record its model
 calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
 

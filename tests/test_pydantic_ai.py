@@ -351,8 +351,8 @@ class Setup(unittest.TestCase):
 
 @unittest.skipUnless(HAVE, "pydantic_ai not installed")
 class Said(unittest.TestCase):
-    """Each model response is recorded: its thinking, text and the calls of the agent's function tools, under the ids
-    they are decided by; the response itself only with the vault; a failure to record changes nothing for the agent."""
+    """Each model response is recorded: its thinking and text, and each call under the id it is decided by, once it is
+    decided; the response itself only with the vault; a failure to record changes nothing for the agent."""
 
     def agent(self, r, output_type=str):
         def close_account(account: str) -> str:
@@ -370,11 +370,12 @@ class Said(unittest.TestCase):
     def test_the_reasoning_before_a_call_is_linked_to_it(self):
         r = ts.vault(run())
         self.assertEqual(self.agent(r).run_sync("close it").output, "done")
-        first, last = ts.recorded(r)
-        self.assertEqual([t["id"] for t in first["tool_uses"]], ["call-1"])   # the id the call was decided under
+        first, call, last = ts.recorded(r)
+        self.assertNotIn("tool_uses", first)   # the call is its response's once it is decided, under that id
+        self.assertEqual(([t["id"] for t in call["tool_uses"]], call["exchange_id"]), (["call-1"], first["exchange_id"]))
         self.assertEqual(r.decide.call_args.args[0], "call-1")
         self.assertEqual(ts.segments(first), [("reasoning", "summary", "the user asked to close it", []),
-                                              ("text", "full", "Closing ACC-9.", ["call-1"])])
+                                              ("text", "full", "Closing ACC-9.", [])])
         self.assertEqual(first["body"]["output"][0]["encrypted_content"], "sig-1")
         self.assertEqual(ts.segments(last), [("text", "full", "done", [])])
 
@@ -430,6 +431,48 @@ class Said(unittest.TestCase):
         call = ts.recorded(r)[0]
         self.assertEqual([t["id"] for t in call["tool_uses"]], ["call-1"])
         self.assertEqual(r.decide.call_args.args[0], "call-1")
+
+    def test_a_call_that_fails_validation_is_not_recorded(self):
+        """Pydantic AI asks the model again without running it or any hook: recorded, it would read as a call that
+        ran with no decision (reconcile.hook_missing)."""
+        def model(messages, info):
+            if any(isinstance(p, RetryPromptPart) for m in messages for p in m.parts):
+                return ModelResponse(parts=[TextPart("done")])
+            return ModelResponse(parts=[TextPart("Closing."), ToolCallPart("close_account", {"acct": 1}, "c-2")])
+
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return account
+        r = ts.vault(run())
+        Agent(FunctionModel(model), tools=[close_account], capabilities=[Tracekit(r)]).run_sync("x")
+        self.assertEqual([f.get("tool_uses") for f in ts.recorded(r)], [None, None])
+        r.decide.assert_not_called()
+
+    def test_an_approved_call_resumed_by_another_capability_is_recorded_before_its_decision(self):
+        """The capability that saw the response may be gone (another process): the call comes from the history, so
+        the decision is never a call the model didn't ask for (reconcile.fabricated)."""
+        def model(messages, info):
+            back = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+            if back:
+                return ModelResponse(parts=[TextPart(str(back[-1].content))])
+            return ModelResponse(parts=[ToolCallPart("close_account", {"account": "ACC-9"}, "call-1")])
+
+        def agent(r):
+            a = Agent(FunctionModel(model), output_type=[str, DeferredToolRequests], capabilities=[Tracekit(r)])
+
+            @a.tool_plain(requires_approval=True)
+            def close_account(account: str) -> str:
+                """Close an account."""
+                return f"closed {account}"
+            return a
+        first = agent(ts.vault(run())).run_sync("close it")
+        r = ts.vault(run())
+        agent(r).run_sync(message_history=first.all_messages(),
+                          deferred_tool_results=DeferredToolResults(approvals={"call-1": True}))
+        call = ts.recorded(r)[0]
+        self.assertEqual([(t["id"], t["name"]) for t in call["tool_uses"]], [("call-1", "close_account")])
+        names = [c[0] for c in r.mock_calls]
+        self.assertLess(r.mock_calls.index(mock.call.call("model_event", **call)), names.index("decide"))
 
     def test_a_failure_to_record_changes_nothing_for_the_agent(self):
         r = ts.failing(run())

@@ -23,9 +23,13 @@ the error handling or the fallbacks. Any other wrapper that catches the interrup
 the call does not run and its approval expires.
 `TracekitCheckpointer(saver, signer, run)` commits every checkpoint the saver writes to the signer (L1).
 Each model response under `create_agent` is recorded too (tracekit.integrations.said): its reasoning blocks (with the
-provider's signature or encrypted content), an open model's `reasoning_content`, text and the calls of the agent's
-tools, under the ids they are decided by. A response that can't be recorded only warns. A `tracekit_tool_node` graph
-has no model hook: its model calls are recorded by `tracekit.instrument()` or the LLM gateway.
+provider's signature or encrypted content), an open model's `reasoning_content` and text, and each call of the agent's
+tools, under the id it is decided by, as a call of that response only once it reaches the gate (or a tool executor's
+tool): a call another middleware stops first (a person's reject in HumanInTheLoopMiddleware, ToolCallLimitMiddleware,
+the graph's recursion limit) is not recorded, so the signer never reads it as one that ran with no decision. A call a
+person edited there is recorded as the model asked for it and decided as edited: reconcile reads it as args_mismatch.
+A response that can't be recorded only warns. A `tracekit_tool_node` graph has no model hook: its model calls are
+recorded by `tracekit.instrument()` or the LLM gateway.
 """
 import asyncio
 import copy
@@ -93,6 +97,7 @@ class TracekitMiddleware(AgentMiddleware):
         """(the error ToolMessage that replaces a refused call or None when it may run, the decision or None)"""
         call, hint = request.tool_call, None
         attempt = self._attempts.get(call["id"], 0)
+        self.said.decided(call["id"])   # the call its recorded response left for now
         try:   # LangChain hands over JSON-decoded args, never the model's raw string
             d = self._event("decide", call, tool=call["name"], args_source="parsed", args=call["args"])
         except SignerUnavailable as e:   # the run's fail mode for the tool's class
@@ -153,6 +158,7 @@ class TracekitMiddleware(AgentMiddleware):
     # lean: signer calls are blocking in both paths; use the async client in awrap_tool_call once it exists
     def wrap_tool_call(self, request, handler):
         if _executor(request):   # the executor decides it, under the model's id for the call
+            self.said.decided(request.tool_call["id"])
             token = CALL_ID.set(request.tool_call["id"])
             try:
                 return handler(request)
@@ -175,6 +181,7 @@ class TracekitMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(self, request, handler):
         if _executor(request):
+            self.said.decided(request.tool_call["id"])
             token = CALL_ID.set(request.tool_call["id"])
             try:
                 return await handler(request)
@@ -198,7 +205,8 @@ class TracekitMiddleware(AgentMiddleware):
 
 def _said(request, out):
     """(the items of what the model said, its model, its provider) in a model call's response: the calls of the
-    agent's tools, which the gate or a tool executor decides under their ids (not a structured-output tool's)."""
+    agent's tools, which the gate or a tool executor decides under their ids (not a structured-output tool's), as
+    `later`: recorded once they reach it."""
     msgs = [m for m in getattr(out, "result", [out]) if isinstance(m, AIMessage)]
     meta = msgs[0].response_metadata if msgs else {}
     tools = {t.name for t in request.tools if isinstance(t, BaseTool)}
@@ -220,7 +228,7 @@ def _said(request, out):
                     yield said.text(b.get("text"))
             for c in m.tool_calls:   # the calls ToolNode runs (content_blocks shows them only for some providers)
                 if c["name"] in tools:
-                    yield said.call(c.get("id"), c["name"], c.get("args") or {})
+                    yield said.later(said.call(c.get("id"), c["name"], c.get("args") or {}))
     return items(), meta.get("model_name"), meta.get("model_provider")
 
 
