@@ -34,6 +34,7 @@ experimental.
 | The signer's HTTPS transport and its OIDC, Kubernetes service-account and mTLS identities | [identity](identity.md), [remote clients](remote-ingest.md) |
 | Postgres storage and multi-tenant signers | [deployment](deploy.md) |
 | LLM gateway, tool executor, MCP gateway, egress observer | [gateway](gateway.md), [executor](executor.md), [MCP gateway](mcp-gateway.md), [egress](egress.md) |
+| agentgateway: the `ext_mcp` processor (`tracekit ext-mcp`) and the import of its MCP spans (tested against the protocol and span attributes in agentgateway's source, not a running agentgateway) | [agentgateway](integrations/agentgateway.md) |
 | Verified tool results (signer.yaml `verify_tool_results`) | [gateway](gateway.md#verified-tool-results) |
 | OTLP import and export, the v1 OTLP receiver, ingest gateway and model proxy (these three need `--experimental`) | [OpenTelemetry](otel.md) |
 | Witnesses, the public witness, Rekor and RFC 3161 anchors, `tracekit monitor`, the record-key issuer, external and KMS log keys, SLH-DSA hybrid checkpoints | [witnesses](witnesses.md), [monitor](monitor.md), [issuer](issuer.md) |

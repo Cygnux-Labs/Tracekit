@@ -157,6 +157,33 @@ class TestImport(Signer):
         self.assertEqual(self.post(s, request(otlp_wire.MAX_ATTRS + 1), "application/x-protobuf")[0], 400)
         self.assertEqual(len(self.events()), n)
 
+    def test_agentgateway_mcp_request_spans_import_as_tool_calls(self):
+        # what agentgateway emits per MCP request (crates/agentgateway/src/telemetry/{log,trc}.rs, mcp/upstream/mod.rs,
+        # httpproxy.rs start_grpc_span): a SERVER span named for the method, with CLIENT children under it
+        call = {"mcp.method.name": "tools/call", "mcp.target": "everything", "gen_ai.tool.name": "echo"}
+        req = {"gateway": "bind/3000", "listener": "listener0", "http.method": "POST", "http.host": "localhost:3000",
+               "http.path": "/mcp", "http.status": 200, "mcp.session.id": "4f6c1c7e-1d4e-4d0a-9a43-0b7c0e3c2b11"}
+        spans = [span("aaaaaaaaaaaaaaaa", "tools/call", {**req, **call}, parent=None, end=12),
+                 span("bbbbbbbbbbbbbbbb", "Guardrail", {**call, "agentgateway.outbound.kind": "Policy",
+                                                        "agentgateway.outbound.subtype": "Guardrail", "http.method": "POST",
+                                                        "http.host": "127.0.0.1",
+                                                        "http.path": "/agentgateway.dev.ext_mcp.ExtMcp/CheckRequest",
+                                                        "grpc.status": 0}, parent="aaaaaaaaaaaaaaaa", start=1, end=2),
+                 span("cccccccccccccccc", "tools/call everything_echo", {**call, "agentgateway.outbound.kind": "Primary",
+                                                                         "agentgateway.outbound.subtype": "Mcp"},
+                      parent="aaaaaaaaaaaaaaaa", start=3, end=11),
+                 span("dddddddddddddddd", "tools/call", {**req, **call, "mcp.error.code": -32001,
+                                                         "mcp.error.message": "denied by policy: R-WIPE"},
+                      parent=None, start=20, end=21, trace="7" * 32),
+                 span("eeeeeeeeeeeeeeee", "tools/list", {**req, "mcp.method.name": "tools/list"}, parent=None)]
+        for sp in spans:
+            sp["kind"] = 3 if sp["name"] in ("Guardrail", "tools/call everything_echo") else 2
+        status, out = self.post(self.open(), body(*spans, service="agentgateway"))
+        self.assertEqual((status, out), (200, {}))
+        self.assertEqual([(e["span_id"], e["data"]["name"], e["tier"]) for e in self.events("tool.call")],
+                         [("aaaaaaaaaaaaaaaa", "mcp:everything/echo", "T3"), ("dddddddddddddddd", "mcp:everything/echo", "T3")])
+        self.assertEqual([e["data"]["ok"] for e in self.events("tool.result")], [True, False])
+
     def test_span_count_cap(self):
         s = self.open(otlp={"max_spans": 1})
         status, out = self.post(s, json.dumps(agent_trace()).encode())
