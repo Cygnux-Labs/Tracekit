@@ -16,6 +16,7 @@ from unittest import mock
 from factories import wait_for
 from tracekit import __version__, cli
 from tracekit.format.canon import event_hash
+from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service
@@ -94,6 +95,45 @@ class DevSignerEndToEnd(unittest.TestCase):
         third.close()
         self.cli("down")
         self.assertEqual(service.fsck(data_dir), [])   # one chain across all three signers, every signature valid
+
+    def test_two_homes_sharing_a_runtime_dir_never_share_a_signer(self):
+        """macOS falls back to /tmp/tk-<uid> for a long HOME, Linux keeps $XDG_RUNTIME_DIR per user: two HOMEs of one
+        user share the runtime dir, while each has its own data dir."""
+        a = Client()
+        self.addCleanup(a.close)
+        pid_a = self.one_run(a)
+        home_b = {"HOME": os.path.join(self.dir, "home-b"), "XDG_DATA_HOME": os.path.join(self.dir, "data-b")}
+        with mock.patch.dict(os.environ, home_b):
+            self.addCleanup(lambda: mock.patch.dict(os.environ, home_b)(autospawn.down)())
+            b = Client()
+            self.addCleanup(b.close)
+            pid_b = self.one_run(b)
+            self.assertNotEqual(pid_b, pid_a)   # its own signer, of its own data dir, in a sibling runtime dir
+            self.assertEqual(os.path.realpath(b.hello["data_dir"]), os.path.realpath(service.dev_data_dir()))
+            self.assertTrue(autospawn.signer_dir().startswith(self.run_dir + "-"))
+            self.assertLess(len(os.path.join(autospawn.signer_dir(), autospawn.SOCK).encode()), 104)
+        self.assertEqual(os.path.realpath(a.hello["data_dir"]), os.path.realpath(service.dev_data_dir()))
+        again = Client()
+        self.addCleanup(again.close)
+        self.assertEqual(self.one_run(again), pid_a)   # HOME A still finds its own, in the runtime dir itself
+        self.assertEqual(autospawn.signer_dir(), self.run_dir)
+        with mock.patch.dict(os.environ, home_b):
+            self.assertEqual(autospawn.down(), pid_b)   # `tracekit down` in HOME B stops B's alone
+        self.assertTrue(self.held())
+
+    def test_a_signer_from_before_1_4_is_this_homes_when_this_data_dirs_store_is_held(self):
+        os.makedirs(self.run_dir, 0o700)
+        with open(self.path(autospawn.ENDPOINT), "w") as f:   # as a 1.3 dev signer published it: no data_dir
+            json.dump({"proto": [15, 17], "version": "1.3.0", "pid": 1}, f)
+        locks = []
+        for path in (self.path(autospawn.LOCK), os.path.join(service.dev_data_dir(), "store", "lock")):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            locks.append(open(path, "a"))
+            self.addCleanup(locks[-1].close)
+        lock_file(locks[0], blocking=False)   # it is alive
+        self.assertTrue(autospawn._theirs(self.run_dir))   # and doesn't hold this HOME's store: another HOME's
+        lock_file(locks[1], blocking=False)
+        self.assertFalse(autospawn._theirs(self.run_dir))   # this HOME's: replaced as before
 
     def test_the_dev_signer_keeps_each_calls_arguments_for_its_user(self):
         """`tracekit view --dev` showed "no rule matched" for every allowed call: the dev signer kept no content. It

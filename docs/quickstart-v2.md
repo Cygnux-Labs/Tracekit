@@ -84,7 +84,9 @@ refuses the call. An unanswered approval expires after an hour.
 
 You don't start anything yourself. The first client that needs a signer starts one in the background and later
 clients reuse it (`tracekit up` / `tracekit down` do the same by hand). The signer's keys and store live in your user's
-data dir. It listens on a Unix socket in a private runtime dir. On Windows it listens on a loopback TCP port instead,
+data dir, one per `HOME`. It listens on a Unix socket in a private runtime dir; where two of your `HOME`s share that
+dir (macOS's `/tmp` fallback for a long `HOME`, Linux's `$XDG_RUNTIME_DIR`), each gets its own signer, the second in a
+sibling dir named after its data dir. On Windows it listens on a loopback TCP port instead,
 and publishes the port and a token in `%LOCALAPPDATA%\tracekit\run\endpoint.json`, which only you can read. Each side
 proves it holds the token before any request is answered.
 

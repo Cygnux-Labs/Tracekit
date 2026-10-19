@@ -4248,8 +4248,8 @@ def signer_config(path=None):
     """The config at `path`, or the same-user dev signer's (data_dir and socket)."""
     if path:
         return load_config(path)
-    from tracekit.sdk.autospawn import SOCK, runtime_dir
-    return {"data_dir": dev_data_dir(), "socket": os.path.join(runtime_dir(), SOCK)}
+    from tracekit.sdk.autospawn import SOCK, signer_dir
+    return {"data_dir": dev_data_dir(), "socket": os.path.join(signer_dir(), SOCK)}
 
 
 def reader(cfg):
@@ -4372,24 +4372,20 @@ def _dev_token():
 
 def dev_data_dir():
     """The dev signer's per-user data dir (keys and store), created 0700."""
-    if os.name == "nt":
-        d = os.path.join(os.environ["LOCALAPPDATA"], "tracekit")
-    elif sys.platform == "darwin":
-        d = os.path.expanduser("~/Library/Application Support/tracekit/data")
-    else:
-        d = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "tracekit")
+    from tracekit.sdk.autospawn import data_dir
+    d = data_dir()
     os.makedirs(d, 0o700, exist_ok=True)
     os.chmod(d, 0o700)
     return d
 
 
 def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.RPC_VERSION), version=__version__,
-              idle_s=900):
+              idle_s=900, data_dir=None):
     """Serve as the dev signer of `runtime_dir` (decision S3) until SIGTERM, or until `idle_s` seconds (0: never) pass
     with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life; then
     `open_handler()` -> (handle_frame, close); then binds the socket (loopback TCP without Unix sockets) and publishes
-    endpoint.json; before returning, unpublishes both, then calls close(). Call it from the main thread; returns an
-    exit code."""
+    endpoint.json, which names `data_dir` as hello does (autospawn takes only its own HOME's); before returning,
+    unpublishes both, then calls close(). Call it from the main thread; returns an exit code."""
     from tracekit.deploy import files
     from tracekit.sdk import autospawn
 
@@ -4410,7 +4406,7 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
     for p in (sock, endpoint):
         pathlib.Path(p).unlink(missing_ok=True)
     handle_frame, close = open_handler()
-    info = hello(proto, version)
+    info = {**hello(proto, version), **({"data_dir": data_dir} if data_dir else {})}
     handle = answering_hello(handle_frame, info)
     if hasattr(socket, "AF_UNIX"):
         from tracekit.transport.unix import UnixServer
@@ -4473,7 +4469,8 @@ def _serve_dev():
                                 grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
         return service.handle_frame, service.close
     try:
-        return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))
+        return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)),
+                         data_dir=dev_data_dir())
     except BlockingIOError:
         print(f"tracekit signer: another signer holds {dev_data_dir()}", file=sys.stderr)
     except Exception as e:

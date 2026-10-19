@@ -350,7 +350,8 @@ def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_MIN, rpc_schema.R
             raise RPCError("invalid_request", f"unknown method {str(method)[:64]}")
         with mutex:
             return getattr(signer, method)(frame)
-    return serve_dev(runtime_dir, lambda: (handle, lambda: None), proto, version, idle_s)
+    from tracekit.sdk.autospawn import data_dir
+    return serve_dev(runtime_dir, lambda: (handle, lambda: None), proto, version, idle_s, data_dir())
 
 
 if __name__ == "__main__":
