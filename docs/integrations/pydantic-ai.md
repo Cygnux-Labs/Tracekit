@@ -73,8 +73,10 @@ without `Tracekit(run)` runs its tools ungated. To gate one run of an agent you 
 ## What the model said
 
 The capability records each model response (`after_model_request`): its `ThinkingPart`s (a summary, with the
-provider's signature), its text, and the calls of the agent's function tools under the `tool_call_id`s they are decided
-by. An output function's call and an approval-required tool's are left out of it ([limits](../limits.md#intent-reasoning-and-action-checks)).
+provider's signature) and its text, and each of its calls under the `tool_call_id` it is decided by, added to the
+response only once the capability decides it: a call Pydantic AI never runs (arguments that failed validation, a
+data-only output, a tool still waiting for approval) is left out. An approval resumed by another `Tracekit` capability
+(after a restart) adds the call from the history just before its decision ([limits](../limits.md#intent-reasoning-and-action-checks)).
 The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
 
 ## Not covered

@@ -308,12 +308,13 @@ class Said(unittest.TestCase):
         self.said(self.MESSAGE, ResultMessage("success", 0, 0, False, 1, "s1"))
         asyncio.run(pre({"tool_use_id": "toolu_1", "tool_name": "echo", "tool_input": {"text": "hi"}}, "toolu_1", None))
         (f,) = self.sent
-        self.assertEqual([t["id"] for t in f["tool_uses"]], ["toolu_1"])   # the executor's call is the executor's
+        # the executor's call under its action's name, as the executor decides it
+        self.assertEqual([(t["id"], t["name"]) for t in f["tool_uses"]], [("toolu_1", "echo"), ("toolu_2", "run")])
         run = {"run_id": self.run["run_id"], "run_token": self.run["run_token"], "limit": 100}
         self.assertEqual([e["data"]["tool_call_id"] for e in self.signer.read(run)["events"]
                           if e["type"] == "policy.decision"], ["toolu_1"])
         self.assertEqual(ts.segments(f), [("reasoning", "summary", "the user asked for an echo", []),
-                                          ("text", "full", "Echoing.", ["toolu_1"])])
+                                          ("text", "full", "Echoing.", ["toolu_1", "toolu_2"])])
         self.assertEqual((f["model"], f["body"]["output"][0]["encrypted_content"]), ("claude-x", "sig-1"))
 
     def test_without_the_vault_only_the_commitment(self):
