@@ -585,6 +585,21 @@ class CodingPack(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertNotIn(self.e.decide("Bash", {"command": command})["verdict"], ("deny", "ask"))
 
+    def test_package_sources_set_by_a_variable_or_through_other_clients_ask(self):
+        self.verdicts([(c, "TK-A025") for c in (
+            "PIP_INDEX_URL=https://packages.example.test/simple pip install x",
+            "env PIP_INDEX_URL=https://packages.example.test/simple pip install x",
+            "npm_config_registry=https://packages.example.test npm install x",
+            "export NPM_CONFIG_REGISTRY=https://packages.example.test",
+            "pip install --find-links https://packages.example.test/ x",
+            "uv pip install -i https://packages.example.test/simple x",
+            "uvx --index-url https://packages.example.test/simple x", "npx --registry https://packages.example.test x",
+            "pip3.12 install -i https://packages.example.test/simple x")])
+        for command in ("PIP_INDEX_URL=https://pypi.org/simple pip install x", "pip3.12 install -r requirements.txt",
+                        "npx --registry https://registry.npmjs.org x"):
+            with self.subTest(command=command):
+                self.assertNotIn("TK-A025", self.e.decide("Bash", {"command": command})["rule_ids"])
+
 
 class PackReading(unittest.TestCase):
     """How the shipped packs read SQL, hosts, paths and commands an agent can spell more than one way."""

@@ -230,6 +230,14 @@ ask:
     reason: clearing shell history or system logs
     remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
     rationale: Clearing the history, turning it off or vacuuming the journal can hide earlier activity; a person confirms it.
+  - id: TK-A030
+    class: shell
+    field: effects
+    # TK-A024 for the shell: a file a command writes (a redirection, cp, mv, install, ln, tee, dd, sed -i …)
+    pattern: '^WRITE_TARGET:(?:[^\n]*?/)?(?:\.npmrc|pip\.conf|\.pypirc)$|^WRITE_TARGET:(?:[^\n]*?/)?etc/apt/sources\.list(?:\.d/[^/]+\.(?:list|sources))?$|^WRITE_TARGET:(?:[^\n]*?/)?etc/yum\.repos\.d/[^/]+\.repo$'
+    reason: changing a package manager's source configuration
+    remedy: Wait for a person to approve the held call, or install from the package source already configured.
+    rationale: Package source settings can redirect future installs to an untrusted index; reading configuration is allowed.
   - id: TK-A028
     class: shell
     field: argv

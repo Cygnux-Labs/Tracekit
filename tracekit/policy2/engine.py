@@ -204,7 +204,7 @@ class Engine:
         if cls == "shell" and field == "effects":
             return _effects(parsed)
         if cls == "shell" and field == "package_index":
-            return _package_indexes(parsed[0])
+            return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
             return _container_host_access(parsed[0])
         if cls == "sql" and field == "code":
@@ -276,9 +276,17 @@ def _shell(args):
     raise shell.ParseError("the command is neither a string nor a list of strings")
 
 
-def _package_indexes(commands):
-    """Return only explicitly selected non-default package sources, one subject per effective option."""
-    out = []
+# variables that set a package source: before a command (`PIP_INDEX_URL=… pip install`), or through env or export
+_SOURCE_VARIABLES = dict.fromkeys(("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "UV_INDEX_URL", "UV_INDEX",
+                                   "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_FIND_LINKS"), "pypi.org")
+_SOURCE_VARIABLES["NPM_CONFIG_REGISTRY"] = "registry.npmjs.org"
+
+
+def _package_indexes(commands, refs=()):
+    """Return only explicitly selected non-default package sources, one subject per effective option or variable."""
+    words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
+    out = [value for name, eq, value in (w.partition("=") for w in words)
+           if eq and name.upper() in _SOURCE_VARIABLES and _non_default_source(value, _SOURCE_VARIABLES[name.upper()])]
     for command in commands:
         argv = command["argv"]
         if not argv:
@@ -287,10 +295,12 @@ def _package_indexes(commands):
         args = argv[1:]
         if exe.startswith("python") and len(args) >= 2 and args[:2] == ["-m", "pip"]:
             exe, args = "pip", args[2:]
-        if exe in ("pip", "pip3"):
-            default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url"}
+        exe = "pip" if re.fullmatch(r"pip[0-9.]*", exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
+        if exe == "pip":
+            default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url", "-f", "--find-links"}
         elif exe == "uv":
-            default, options = "pypi.org", {"--index-url", "--extra-index-url", "--default-index", "--index"}
+            default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url", "--default-index", "--index",
+                                            "-f", "--find-links"}
             if args[:1] == ["pip"]:
                 args = args[1:]
         elif exe in ("npm", "pnpm", "yarn", "bun"):
@@ -309,7 +319,7 @@ def _package_indexes(commands):
                 key, eq, value = word.partition("=")
                 value = value if eq else words[i + 1] if i + 1 < len(words) else None
                 if value is not None and (
-                        (exe in ("pip", "pip3") and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url"})
+                        (exe == "pip" and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url", "find-links"})
                         or (exe in ("npm", "pnpm", "yarn", "bun") and (key == "registry" or key.endswith(":registry")))):
                     if _non_default_source(value, default):
                         out.append(value)
@@ -328,7 +338,7 @@ def _package_indexes(commands):
                     if exe == "uv" and name == "--index" and "=" in value:
                         value = value.split("=", 1)[1]
                     selected.append(value)
-            elif exe in ("pip", "pip3") and arg.startswith("-i") and arg != "-i":
+            elif exe == "pip" and arg.startswith("-i") and arg != "-i":
                 selected.append(arg[2:])
             i += 1
         for value in selected:
