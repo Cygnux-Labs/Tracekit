@@ -155,6 +155,60 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
         self.assertEqual((d["verdict"], "TK-A002" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
+    def test_new_credential_container_package_and_track_rules(self):
+        packs = os.path.join(os.path.dirname(svc.DEFAULT_POLICY), "coding.yaml")
+        policy, errors = pc.build(packs)
+        self.assertEqual(errors, [])
+        cases = [
+            ("Read", {"file_path": "/home/app/.mozilla/firefox/p1/logins.json"}, "ask", "TK-A020"),
+            ("Grep", {"path": "/home/app/.password-store", "pattern": "secret"}, "ask", "TK-A020"),
+            ("Bash", {"command": "security find-generic-password -s example"}, "ask", "TK-A021"),
+            ("Bash", {"command": "security dump-keychain"}, "deny", "TK-D020"),
+            ("Bash", {"command": "pip install https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
+            ("Bash", {"command": "uv pip install --no-deps https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
+            ("Write", {"file_path": "/var/run/docker.sock"}, "ask", "TK-A022"),
+            ("Bash", {"command": "docker run --pid=host alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "docker run --mount type=bind,source=/,target=/host alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "podman run -v /proc:/host/proc alpine"}, "ask", "TK-A023"),
+            ("Write", {"file_path": "/etc/apt/sources.list.d/example.list"}, "ask", "TK-A024"),
+            ("Bash", {"command": "pip install --index-url https://packages.example.test/simple demo"}, "ask", "TK-A025"),
+            ("Bash", {"command": "npm config set registry https://packages.example.test/"}, "ask", "TK-A025"),
+            ("Write", {"file_path": "/home/app/.zsh_history"}, "ask", "TK-A026"),
+            ("Bash", {"command": "unset HISTFILE"}, "ask", "TK-A027"),
+            ("Bash", {"command": "echo x > ~/.bash_history"}, "ask", "TK-A027"),
+            ("Bash", {"command": "rm /var/log"}, "ask", "TK-A027"),
+            ("Bash", {"command": "find /var/log -type f -delete"}, "ask", "TK-A027"),
+        ]
+        engines = [Engine(policy, "re2"), Engine(policy, "regex")]
+        for tool, args, verdict, rule_id in cases:
+            with self.subTest(tool=tool, args=args):
+                decisions = [engine.decide(tool, args) for engine in engines]
+                self.assertEqual({d["verdict"] for d in decisions}, {verdict})
+                self.assertTrue(all(rule_id in d["rule_ids"] for d in decisions))
+                self.assertEqual(decisions[0]["rule_ids"], decisions[1]["rule_ids"])
+
+        lookalikes = [
+            ("Write", {"file_path": "/repo/compose.yaml", "content": "services: {}"}),
+            ("Write", {"file_path": "/repo/packages.list", "content": "ordinary"}),
+            ("Read", {"file_path": "/home/app/.bash_history"}),
+            ("Bash", {"command": "docker run alpine"}),
+            ("Bash", {"command": "docker run --mount type=bind,source=/data,target=/host alpine"}),
+            ("Bash", {"command": "find /var/log -type f -print"}),
+            ("Bash", {"command": "pip install requests"}),
+            ("Bash", {"command": "history"}),
+            ("Bash", {"command": "echo 'security dump-keychain'"}),
+            ("Bash", {"command": "printf 'pip install https://packages.example.test/pkg.whl'"}),
+            ("Bash", {"command": "echo 'docker run --privileged alpine'"}),
+        ]
+        for tool, args in lookalikes:
+            with self.subTest(lookalike=tool, args=args):
+                decisions = [engine.decide(tool, args) for engine in engines]
+                self.assertEqual(decisions[0]["verdict"], decisions[1]["verdict"])
+                self.assertNotIn(decisions[0]["verdict"], ("deny", "ask"))
+                self.assertFalse(set(decisions[0]["rule_ids"]) & {
+                    "TK-D020", "TK-D021", "TK-A020", "TK-A021", "TK-A022", "TK-A023",
+                    "TK-A024", "TK-A025", "TK-A026", "TK-A027"})
+
 
 class PackReading(unittest.TestCase):
     """How the shipped packs read SQL, hosts, paths and commands an agent can spell more than one way."""

@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:60581aaad1ad2cba17c48e8771952c56e241faa72a18f1c40365264020e0d0dc",
+  "policy_hash": "sha256:12748f301d1a6121bd6a62fde64853722d1102c17fc81182255fa19fc44e928a",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -24,9 +24,9 @@
       "fp": 1
     },
     "fs": {
-      "deny": 28,
-      "caught": 28,
-      "benign": 48,
+      "deny": 32,
+      "caught": 32,
+      "benign": 52,
       "fp": 0
     },
     "http": {
@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 102,
-      "caught": 102,
-      "benign": 142,
+      "deny": 108,
+      "caught": 108,
+      "benign": 148,
       "fp": 0
     },
     "sql": {
@@ -94,6 +94,6 @@
   "engine_mismatches": [],
   "unmapped": [],
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0014388489208633094,
+  "benign_fp_rate": 0.0014184397163120568,
   "ok": true
 }

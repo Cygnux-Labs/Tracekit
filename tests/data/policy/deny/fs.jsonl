@@ -26,3 +26,7 @@
 {"tool": "Write", "args": {"file_path": "/Users/u/proj/.ENV", "content": "k"}, "expect": "deny", "note": "case-insensitive file system"}
 {"tool": "Edit", "args": {"file_path": "/ETC/tracekit/policy.yaml", "old_string": "a", "new_string": "b"}, "expect": "deny", "note": "case-insensitive file system"}
 {"tool": "Write", "args": {"file_path": "/Users/u/.Claude/projects/x.jsonl", "content": "k"}, "expect": "deny", "note": "case-insensitive file system"}
+{"tool": "Read", "args": {"file_path": "/home/app/.local/share/keyrings/login.keyring"}, "expect": "ask", "note": "OS credential store"}
+{"tool": "Write", "args": {"file_path": "/etc/docker/daemon.json", "content": "{}"}, "expect": "ask", "note": "Docker host configuration"}
+{"tool": "Write", "args": {"file_path": "/etc/apt/sources.list.d/example.list", "content": "deb https://packages.example.test stable main"}, "expect": "ask", "note": "package source configuration"}
+{"tool": "Write", "args": {"file_path": "/home/app/.bash_history", "content": ""}, "expect": "ask", "note": "shell history"}
