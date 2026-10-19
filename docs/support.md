@@ -55,6 +55,7 @@ experimental.
 | Microsoft Agent Framework (tested against the real library with a scripted chat client; not yet run through `tests/adapter_contract.py`; its MCP tools need `mcp` 1.x) | [Microsoft Agent Framework](integrations/microsoft-agent-framework.md) |
 | Strands Agents (tested against the real library in a CI job of its own, as strands-agents needs `mcp` below 2.2; not yet run through `tests/adapter_contract.py`) | [Strands Agents](integrations/strands.md) |
 | The NVIDIA OpenShell supervisor middleware, `tracekit openshell-middleware` (tested with a gRPC client playing OpenShell's supervisor, not a live OpenShell) | [OpenShell](integrations/openshell.md) |
+| The LiteLLM guardrail for LiteLLM's MCP gateway (tested against LiteLLM's guardrail interface as its source defines it, not a running proxy) | [LiteLLM](integrations/litellm.md) |
 | The TypeScript SDK client and its Vercel AI SDK integration (`@cygnuxlabs/tracekit` on npm) | [TypeScript SDK](../sdk/typescript/README.md), [Vercel AI SDK](integrations/vercel-ai.md) |
 | `contrib/` packages | [contrib](../contrib) |
 | The v1 signer path: `tracekitd`, `tracekit init` without `--v2`, `tracekit observe`, v1 adapters. Verifying v1 bundles stays stable. | [coding agents](coding-agents.md), [signing](signing.md) |
