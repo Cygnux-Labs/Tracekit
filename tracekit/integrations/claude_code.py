@@ -29,9 +29,10 @@ first run where its transcript ended at SessionStart: the lines before are an ea
 At UserPromptSubmit the prompt as the harness submitted it is recorded too (`observe`, source <agent>:UserPromptSubmit,
 trusted): `tracekit analyze --v2` reads a transcript prompt line as the person's only when one of these has its text
 (TK-X208 flags a line none has). Each constraint the prompt states (tracekit.constraints: "don't touch X", "read-only",
-"don't push", ...) goes to the signer as a live constraint (`constraint_add`), which holds a later call that breaks it
-for a person's approval; the agent reads why on stderr. A constraint can only hold more calls, so the agent's own
-identity adding one (it could add its own) weakens nothing.
+"don't push", ...) goes to the signer first, each on its own, as a live constraint (`constraint_add`), which holds a
+later call that breaks it for a person's approval; the agent reads why on stderr. The session state keeps them, and a
+later run of the session (after an idle close) gets them all again. A constraint can only hold more calls, so the
+agent's own identity adding one (it could add its own) weakens nothing.
 
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
@@ -106,13 +107,14 @@ def _load(path):
             time.sleep(0.05)
 
 
-def _run(client, sid, register=True, send=None, transcript=None, resumed=False, **fields):
+def _run(client, sid, register=True, send=None, transcript=None, resumed=False, stated=(), **fields):
     """(the session's run, registered on its first event; with `send`, the signer's reply to that event call, sent with
     the session's stream and next client_seq under the session lock so parallel hooks reach the signer in client_seq
     order, and sent again on a new run when the signer has closed the stored one (idle); without `register`, the stored
     run is marked ended instead, and the session's next event that registers starts the new one). `transcript`
     (SessionStart): kept in the session state; each run of the session gets a tailer on it, which starts where the
-    session's earlier run was last seen open (_seen; `resumed`: a resumed session's transcript as it is now)."""
+    session's earlier run was last seen open (_seen; `resumed`: a resumed session's transcript as it is now).
+    `stated`: the constraints a prompt states, kept in the session state; each run gets the session's (_constrain)."""
     path = _state(sid)
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # parallel tool calls must not register two runs
         lock_file(lk)
@@ -121,6 +123,19 @@ def _run(client, sid, register=True, send=None, transcript=None, resumed=False, 
             st = _register(client, path, st, _seen(transcript) if resumed else None)
         if st and transcript:
             st["transcript"] = transcript
+        if st and stated:
+            st["constraints"] = [*dict.fromkeys(map(tuple, [*st.get("constraints", ()), *stated]))]
+        if st and not st.get("ended"):
+            try:
+                _constrain(client, path, st)
+            except RPCError as e:
+                if e.code not in ("run_closed", "unknown_run"):
+                    raise
+                if not register:   # as for a send below
+                    files.write_json(path, dict(st, ended=True))
+                    raise
+                st = _register(client, path, st)   # the signer closed the stored run (idle): a new one gets them all
+                _constrain(client, path, st)
         _tail(client, path, st)
         seen = _seen(st and st.get("transcript"))   # before this event's call: lines its run's tailer reports there
         if not (st and send):
@@ -140,6 +155,7 @@ def _run(client, sid, register=True, send=None, transcript=None, resumed=False, 
                 files.write_json(path, dict(st, ended=True))
                 raise
             st = _register(client, path, st)
+            _constrain(client, path, st)
             _tail(client, path, st)
             return _send(client, path, st, send, fields, seen)
 
@@ -153,10 +169,34 @@ def _register(client, path, prev=None, offsets=None):
     # harness's processes (a root-owned harness helper) narrows that
     st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
           "stream": uuid.uuid4().hex, "seq": 0,
-          **{k: v for k, v in (prev or {}).items() if k in ("transcript", "offsets")},
+          **{k: v for k, v in (prev or {}).items() if k in ("transcript", "offsets", "constraints")},
           **({"offsets": offsets} if offsets else {})}
     files.write_json(path, st)
     return st
+
+
+def _constrain(client, path, st):
+    """Send the run the session's constraints it has not had (all of them to a new run), each on its own: one the
+    signer refuses stops none of the others, and the first refusal is raised after. The signer unreachable, or the run
+    closed, stops it; the next event (or a new run) sends the rest."""
+    sent = st.get("sent") or [None, 0]
+    done = sent[1] if sent[0] == st["run_id"] else 0
+    refused = []
+    try:
+        for kind, obj in (st.get("constraints") or ())[done:]:
+            try:
+                RunHandle(client, st).call("constraint_add", constraint={"kind": kind, **({"object": obj} if obj else {})})
+            except RPCError as e:
+                if e.code in ("run_closed", "unknown_run"):
+                    raise
+                refused.append(e)
+            done += 1
+    finally:
+        if done != sent[1] or sent[0] != st["run_id"]:
+            st["sent"] = [st["run_id"], done]
+            files.write_json(path, st)
+    if refused:
+        raise refused[0]
 
 
 def _end(path):
@@ -304,9 +344,15 @@ def _post(client, p, sid, tid):
 
 
 def prompted(run, prompt):
-    """Each constraint `prompt` states, as a live constraint of `run` (module docstring)."""
+    """Each constraint `prompt` states, as a live constraint of `run`, each on its own (module docstring)."""
+    refused = []
     for kind, obj in constraints.extract(prompt):
-        run.call("constraint_add", constraint={"kind": kind, **({"object": obj[:256]} if obj else {})})
+        try:
+            run.call("constraint_add", constraint={"kind": kind, **({"object": obj[:256]} if obj else {})})
+        except RPCError as e:
+            refused.append(e)
+    if refused:
+        raise refused[0]
 
 
 def _unfinished(client, sid):
@@ -379,8 +425,10 @@ def _handle(client, p, name, sid, tid):
         _prune()
         transcript = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
     if isinstance(prompt, str) and prompt:   # the harness's own copy of what the person typed
-        run, _ = _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=prompt)
-        prompted(run, prompt)
+        try:   # its constraints first: a prompt too large for one observe frame still adds them
+            _run(client, sid, stated=[(k, o and o[:256]) for k, o in constraints.extract(prompt)])
+        finally:
+            _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=prompt)
         return 0
     # SessionStart, or any other first event of the session, registers the run; a resumed (or forked) session's
     # transcript holds its earlier history, which earlier runs recorded

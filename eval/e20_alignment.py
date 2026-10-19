@@ -4,7 +4,7 @@ behind a cover.
 
 Each trial is a synthetic Claude Code session (transcript lines, E6-builder style) replayed into an in-process signer
 with the content vault on, as `tracekit init --dev --v2` runs it: each prompt through the hook's UserPromptSubmit (the
-prompt recorded, and the constraints it states added as live constraints: claude_code.prompted), every line through the
+constraints it states added as live constraints, claude_code.prompted, then the prompt recorded), every line through the
 transcript tailer (tracekit.tailer._report), each tool call through the hook's decide and complete under the
 transcript's tool_use id (the decide signed before or after the tailer reports the tool_use line, at random), then
 closed and finalized and analysed from the signed records and the vault (tracekit.findings_v2). Every call completes
@@ -199,8 +199,8 @@ def replay(signer, lines, decide_after=(), final=True):
     send, sent, calls, forged = tailer._Sender(run, lambda: signer.call("status", {})), {}, {}, 0
     for name, e in lines:
         if name == "prompt":   # the hook at UserPromptSubmit, as tracekit.integrations.claude_code sends it
-            run.call("observe", source="claude-code:UserPromptSubmit", trust="trusted", value=e["prompt"])
             claude_code.prompted(run, e["prompt"])
+            run.call("observe", source="claude-code:UserPromptSubmit", trust="trusted", value=e["prompt"])
             continue
         if name == "inject":
             run.call("model_event", stream="agent", client_seq=forged, **e)
