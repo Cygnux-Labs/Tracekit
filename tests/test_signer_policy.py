@@ -135,6 +135,19 @@ class CodingPack(unittest.TestCase):
                            ("Write", {"file_path": "/repo/docs/hooks.md"})):
             self.assertEqual(self.e.decide(tool, args)["verdict"], "allow", args)
 
+    def test_shell_writes_into_protected_paths_are_read_per_command(self):
+        # each command on its own, a wrapper's and a nested shell's too, and each redirection target
+        self.verdicts([("find . -name k -exec cp {} ~/.ssh/id_rsa \\;", "TK-D010"), ("env A=1 cp a .env", "TK-D010"),
+                       ("cat a | tee -a x .env", "TK-D010"), ("echo x 2>>prod.env", "TK-D010"),
+                       ("nohup ln -s /x ~/.config/autostart/a.desktop", "TK-A011"),
+                       ("echo x > /etc/systemd/system/a.service", "TK-A011"), ("dd if=a of=/etc/rc.local", "TK-A011"),
+                       ("bash -c 'git -C repo config --local core.hooksPath h'", "TK-A013"),
+                       ("echo x > .git/hooks/pre-commit", "TK-A013")])
+        for command in ("cp .env /tmp/notes.txt", "cat /etc/systemd/system/nginx.service > /tmp/n",
+                        "git commit -m 'set core.hooksPath'", "systemctl restart nginx"):
+            ids = self.e.decide("Bash", {"command": command})["rule_ids"]
+            self.assertFalse({"TK-D010", "TK-A011", "TK-A013"} & set(ids), command)
+
     def test_argv_lists_and_command_fields(self):
         self.verdicts([({"command": ["sudo", "id"]}, "TK-D001"), ({"command": ["bash", "-lc", "sudo id"]}, "TK-D001"),
                        ({"commands": ["ls", "sudo id"]}, "TK-D001"), ({"command": 42}, "TK-SHELL-PARSE"),

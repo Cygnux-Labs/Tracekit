@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-14'
+version: '2026.10-v2-15'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -71,9 +71,13 @@ deny:
     rationale: Irrecoverable data loss.
   - id: TK-D010
     class: shell
-    field: line
-    # every .env variant, templates included: a whole command can name several files, so no `unless` here
-    pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
+    field: target
+    # each command (a wrapper's or a nested shell's too) and each redirection target on its own, anchored and lazy, so
+    # the fallback engine stays linear: cp, mv or install with a credentials file last, tee with one among its files,
+    # or a redirection into one (a read redirected from one, `< .env`, too: the target doesn't say which way it goes).
+    # Every .env variant, templates included: a whole command can name several files, so no `unless` here. A suffix
+    # after `.env` (`.env.local`) only on a file named so: after any prefix too (`a.env.env…`), it would rescan
+    pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$'
     reason: writing to a credentials file from the shell
     remedy: Write a template with placeholders (.env.example) and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
@@ -197,10 +201,12 @@ ask:
     rationale: Startup items and service definitions outlive the agent's session; a person confirms each one.
   - id: TK-A011
     class: shell
-    field: line
-    # the TK-A010 locations behind a command that writes, copies or links into them; listing and reading them stay
-    # unheld, and so does managing an existing service (`systemctl restart`)
-    pattern: '(\bcp\b|\binstall\b|\bmv\b|\bln\b|\btee\b|>|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bdd\b[^\n]*\bof=)[^\n]*([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|\b(launchctl\s+(load|bootstrap|enable)|systemctl\s+(--user\s+)?enable)\b'
+    field: target
+    # the TK-A010 locations in a command that writes, copies or links into them (cp, install, mv, ln, tee, sed -i, dd
+    # of=) or as a redirection target, and turning a startup item on; each command and target on its own, anchored
+    # and lazy, as TK-D010. Listing and reading them stay unheld (but for a read redirected with `<`), and so does
+    # managing an existing service (`systemctl restart`)
+    pattern: '^(cp|install|mv|ln|tee) [\w\W]*?([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^dd ([\w\W]*? )?of=[^ ]*?([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^[^ =]*?([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^launchctl (load|bootstrap|enable)\b|^systemctl (--user )?enable\b'
     reason: adding something that runs at every login or boot
     remedy: Wait for a person to approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
@@ -216,9 +222,10 @@ ask:
     rationale: A hook runs on every developer's commit or push in this clone; a person confirms it.
   - id: TK-A013
     class: shell
-    field: line
-    # `git\s`: the `git` of each `.git/hooks/` on a long line would start another scan of it on the fallback engine
-    pattern: '(\bcp\b|\binstall\b|\bmv\b|\bln\b|\btee\b|>|\bchmod\b|\bsed\s+(-[a-zA-Z]*\s+)*-i)[^\n]*\.git/hooks/|\bgit\s[^\n]*\bconfig\b[^\n]*\b[Cc][Oo][Rr][Ee]\.[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]\b'
+    field: target
+    # as TK-A011: each command and redirection target on its own, anchored and lazy; `git config` after at most eight
+    # global options, as TK-A002 reads `push`
+    pattern: '^(cp|install|mv|ln|tee|chmod) [\w\W]*?\.git/hooks/|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks/|^[^ =]*?\.git/hooks/|^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config [\w\W]*?\b[Cc][Oo][Rr][Ee]\.[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]\b'
     reason: writing a Git hook or moving where hooks live
     remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.

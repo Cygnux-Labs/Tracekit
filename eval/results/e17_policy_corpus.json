@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:cf9be50bd45b583a2a2a8992d08ec88ae8161fb0363e5c862cc26746480f8105",
+  "policy_hash": "sha256:3c31b49d422d69065806d9a3f8f9f9cfa338a89137ed632990f11ded112a04ad",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -462,7 +462,7 @@
     "deny/shell:23": "deny TK-S004",
     "deny/shell:24": "deny TK-S004",
     "deny/shell:25": "deny TK-S004",
-    "deny/shell:26": "deny TK-S004 TK-F005",
+    "deny/shell:26": "deny TK-D010 TK-S004 TK-F005",
     "deny/shell:27": "deny TK-S004 TK-F005",
     "deny/shell:28": "deny TK-S004",
     "deny/shell:29": "deny TK-S004 TK-F001 TK-F005",

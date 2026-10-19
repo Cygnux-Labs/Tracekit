@@ -514,6 +514,18 @@ class Speed(unittest.TestCase):
             pass
         return time.perf_counter() - start
 
+    def test_writes_into_protected_paths_read_each_command_on_its_own(self):
+        """TK-D010, TK-A011 and TK-A013 matched a writing command anywhere on the line and the path anywhere after it:
+        64 KiB repeating the command rescanned the line from each one on the fallback engine (`cp cp …`: over 1 s)."""
+        patterns = {rid: p for rid, key, p in pack_patterns() if key == "pattern"}
+        for rid, fillers in (("TK-D010", ("cp ", "mv x", "tee ", "/.", "a.env")),
+                             ("TK-A011", ("cp ", "ln ", "tee ", "sed -i ", "dd of=", "/etc/init.")),
+                             ("TK-A013", ("cp ", "chmod ", "git ", "git config ", "sed -i "))):
+            rx = regex.compile(pc.translate(patterns[rid]), regex.ASCII | regex.V0)
+            for f in fillers:
+                with self.subTest(rule=rid, filler=f):
+                    self.assertLess(self.search(rx, f * ((MAX_SUBJECT - 4) // len(f)) + "://"), self.BUDGET_S)
+
     def test_adversarial_calls_decide_before_the_fallback_deadline(self):
         """TK-S002's URL scheme rescanned to the end from each word: 64 KiB of `--x` spent the 1 s and denied."""
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
