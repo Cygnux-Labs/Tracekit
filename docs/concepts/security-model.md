@@ -16,7 +16,7 @@ rather than preventing it ([overview](overview.md#what-a-verified-run-proves)).
 | Adversary | Can | Stopped or detected by |
 |---|---|---|
 | The agent itself (prompt-injected or misaligned) | Run tools as its OS user, call the signer with its run token | The signer's isolation; signer-side policy; signed gaps; reconciliation against layers outside its process |
-| Compromised code in the agent's process | Skip the adapter, report false results | Reconciliation against the LLM gateway; custody through the executor and MCP gateway |
+| Compromised code in the agent's process | Skip the adapter, report false results, edit a tool's result before the model reads it | Reconciliation against the LLM gateway, which also compares tool results with the recorded ones; custody through the executor and MCP gateway |
 | Another local user or tenant | Connect to the signer, guess run ids | Run tokens bound to identity and tenant; per-tenant registries; refused and recorded writes |
 | An insider with database or deploy rights | Edit or roll back the store | Background fsck (`trace.tamper{edited}`), witness rollback checks (`trace.tamper{rollback}`) |
 | The operator running the signer | Rewrite or fork the log with its own key | Independent witnesses and a monitor; run-sets for omitted runs. Not detectable without them |
@@ -51,13 +51,16 @@ exist. Without them, an operator rewriting its own log is expected behaviour, no
 can't tell them from real ones. Only a record kept outside the agent's process catches them (`reconcile.fabricated` from
 the LLM gateway).
 
-**What if the agent never calls the hook?** Nothing records it. The answer is a layer it must go through: a mandatory LLM
-gateway, the executor or MCP gateway holding credentials, or the egress observer
-([capture and completeness](capture-and-completeness.md)).
+**What if the agent never calls the hook?** Nothing records the call. The answer is a layer it must go through: a
+mandatory LLM gateway, the executor or MCP gateway holding credentials, or the egress observer
+([capture and completeness](capture-and-completeness.md)). A kernel sensor import records what the hidden action did
+on the machine, and `tracekit analyze --v2` reports effects no call explains; the sensor's records are its word, and
+a root user on the node can change the sensor.
 
-**Isn't a regex gate weak?** As prevention, yes: a determined agent can reword a command. It is deterministic, so a
-verifier can recompute every decision, which a model-based judge doesn't allow. Tracekit's contribution is evidence that
-the gate ran and what it saw. Pair it with a sandbox to prevent effects.
+**Isn't a regex gate weak?** As prevention, yes: a determined agent can reword a command. On calls written blind to the
+rules (E21), the server pack stops or holds about half the harmful ones. It is deterministic, so a verifier can
+recompute every decision, which a model-based judge doesn't allow. Tracekit's contribution is evidence that the gate ran
+and what it saw. Pair it with a sandbox to prevent effects.
 
 **Can the timestamps be trusted?** Record times come from the signer host's clock. Independent time comes from witness
 cosignatures and the RFC 3161 timestamps on Rekor anchors. Clock skew is a signed gap.
@@ -87,13 +90,15 @@ synthetic and written by the project.
 | Experiment | Result |
 |---|---|
 | Tamper detection, 8 attacks × 60 trials (E1) | 6 of 8 caught by the signed log alone; truncation and re-signing with the key need a witness; 8 of 8 with one |
-| Insider attacks as real users against Linux system mode (E8) | 8 of 8 caught; runs on every pull request |
+| Insider attacks as real users against Linux system mode (E8) | 8 of 8 caught on the v1 signer, 6 of 6 on the v2 signer (including self-approval); both run on every pull request |
 | Reconciliation (E10) | 12 of 12 seeded discrepancies flagged, 0 false positives |
 | Saved-state tampering (E11) | 21 of 21 caught |
 | Tenant isolation (E12) | Every attack refused, no leaks under concurrency |
-| Policy packs on the project's corpus (E17) | 462 of 462 harmful calls stopped, 1 false alarm in 668 |
+| Policy packs on the project's corpus (E17) | 536 of 536 harmful calls stopped, 1 false alarm in 712 |
+| Policy packs on calls written blind to the rules (E21) | Server pack: about half of 420 harmful calls stopped or held, 18 false alarms in 432 |
 | Agent approvers (E18) | 7 of 7 attacks caught |
-| The v1 regex gate on a rougher set (E3) | 12 of 16 caught: rules are tripwires |
+| Unrequested edits behind cover text, checked by `tracekit analyze --v2` (E20, synthetic, held-out phrases) | Caught under every cover but one (the file named innocently: 0 of 24); after a "don't touch X", 25 to 71% by cover |
+| The v1 regex gate on a rougher set (E3) | 11 of 16 caught: rules are tripwires |
 
 Every experiment and what isn't measured: [evaluation](../evaluation.md).
 
@@ -101,7 +106,8 @@ Every experiment and what isn't measured: [evaluation](../evaluation.md).
 
 - An external review of the threat models.
 - A deployed public witness, so independent witnessing needs no setup.
-- Capture of processes and services (layers L4 and L5).
+- Capture of services, and of processes beyond the experimental kernel sensor import (Linux, tested against events
+  shaped as Tetragon's and Falco's source writes them, not a live sensor).
 - Adversarial evaluation with real models, beyond the scripted attacks.
 - System mode validated on macOS and Windows, and performance numbers for separate-user and HTTPS signers on Linux.
 

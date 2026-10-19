@@ -31,14 +31,15 @@ flowchart LR
 | Laptop dev (`tracekit up`, or started by `tracekit.instrument()`) | The agent's own user | `same-user` | macOS, Linux, Windows |
 | Laptop system mode (`sudo tracekit init --v2 --user AGENT`) | Root and the signer's OS user | `separate-user` | Linux; macOS experimental |
 | Container or Kubernetes sidecar | The signer's uid and the node's administrator | `separate-user` | Linux |
-| Central signer over HTTPS (or Docker Compose) | The signer host's administrators | `remote` | Linux containers |
+| Docker Compose stack | The Docker host's administrators | `separate-user` (the agent shares the signer's socket) | Linux containers |
+| Central signer over HTTPS | The signer host's administrators | `remote` | Linux containers |
 
 ### Dev mode
 
 The signer runs as you, which is also who the agent runs as. An agent that runs commands as you can read the signer's
 key, stop it and re-sign the log, so dev mode protects nothing against the agent itself. It is for trying Tracekit and
 for catching honest mistakes. Dev runs say `isolation: same-user`, self-approvals are allowed and recorded, and assurance
-stays `dev`.
+stays `dev`. Each `HOME` gets its own dev signer and store, even where two share a runtime directory.
 
 ### Linux system mode
 
@@ -56,14 +57,17 @@ groups. Optional extras:
 The signer runs in its own container in the agent's pod, sharing only its socket directory, read-only. Both containers
 run as non-root with a read-only filesystem and no capabilities, and the agent is identified by its uid. Cloud
 credentials don't belong in the pod (workload identity hands them to every container); use a central signer for a KMS
-log key. Helm chart and manifests: [Kubernetes](../deploy-kubernetes.md).
+log key. Helm chart and manifests: [Kubernetes](../deploy-kubernetes.md). For agents in a Kubernetes agent-sandbox
+`Sandbox`, put the signer outside it, in its own namespace, so deleting the Sandbox doesn't take the record along
+([agent-sandbox](../integrations/agent-sandbox.md)).
 
 ### Central signer
 
 One signer per log on its own host, reached over HTTPS, with Postgres storage and optionally a KMS log key. Callers
 authenticate with service-account tokens, mTLS, OIDC or named tokens; HTTPS is required off loopback. A Docker Compose
-stack bundles a signer, a witness, the viewer and Postgres ([compose](../deploy-compose.md)); its in-stack witness is
-the operator's, so it reaches `local` assurance unless you add an independent one.
+stack bundles a signer, a witness, the viewer and Postgres on one host ([compose](../deploy-compose.md)); its agent
+reaches the signer through a shared Unix socket, as its own uid. Its in-stack witness is the operator's, so it reaches
+`local` assurance unless you add an independent one.
 
 ## Isolation and assurance are different
 
@@ -77,7 +81,8 @@ verifies at `dev`: the agent can't touch the log, but nothing outside vouches ag
 agent's user and tries to reach the keys and store, checks key file permissions and that keys are distinct, checks a
 Postgres role can't update or delete records, warns on fast-but-weaker durability in production, checks witnesses are
 configured and fresh, and checks clock skew. For Kubernetes it checks security contexts, shared volumes and workload
-identity. Its output is advice, not evidence: nothing it prints is signed. Every check: [doctor](../doctor.md).
+identity. For coding agents it checks their sandbox settings and whether their reasoning will be readable. Its output is
+advice, not evidence: nothing it prints is signed. Every check: [doctor](../doctor.md).
 
 ## Reference
 

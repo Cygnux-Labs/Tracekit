@@ -3,9 +3,9 @@
 Capture inside the agent's process records what the agent says it did. Custody moves the action itself out of the
 agent's process: a service the signer trusts holds the credentials, runs the call, and records what actually crossed
 the boundary. These services are tier T2 evidence ([capture and completeness](capture-and-completeness.md)). All four
-are experimental in 1.2.
+are experimental ([what's stable](../support.md)).
 
-| Service | Holds | Records | Default port |
+| Service | Holds | Records | Example port |
 |---|---|---|---|
 | [Tool executor](#the-tool-executor) | API credentials for your tools | Every call it runs | 8090 |
 | [MCP gateway](#the-mcp-gateway) | Credentials for MCP servers | Every MCP tool call, prompt and resource | 8091 |
@@ -32,10 +32,10 @@ Setup: [executor](../executor.md).
 
 ## The MCP gateway
 
-The MCP gateway sits in front of MCP servers whose credentials stay in the gateway. Tool calls are decided as
-`mcp:<server>/<tool>`. Resources, prompts and list pages the agent reads are recorded as observed content, untrusted
-unless the server is marked trusted, which feeds [provenance](provenance-and-why.md). It always fails closed. Setup:
-[MCP gateway](../mcp-gateway.md).
+The MCP gateway sits in front of MCP servers (stdio or Streamable HTTP) whose credentials stay in the gateway. Tool
+calls are decided as `mcp:<server>/<tool>`. Resources, prompts and list pages the agent reads are recorded as observed
+content, untrusted unless the server is marked trusted, which feeds [provenance](provenance-and-why.md). It always
+fails closed. Docker's MCP Gateway and Wassette can sit behind it as upstreams. Setup: [MCP gateway](../mcp-gateway.md).
 
 ## The LLM gateway
 
@@ -49,8 +49,19 @@ With `gateway_mandatory: true` and network rules that stop the agent reaching th
 - a tool use the model asked for, with no decision requested, is `reconcile.hook_missing`;
 - a decision no model call asked for is `reconcile.fabricated`.
 
-The gateway can refuse requests that declare provider-run tools, and it stops forwarding a quarantined run's requests.
-If the signer is down, the run's fail mode for model calls decides. Setup: [gateway](../gateway.md).
+**Verified tool results** (experimental). An agent can change what a tool returned before the model reads it. With
+`verify_tool_results: record` (or `refuse`) in the signer's config, the gateway sends digests of each tool result in a
+model request, the signer compares them with the results it recorded, and an edited result, or one sent before its call
+completed, becomes a signed `reconcile.result_mismatch`. `refuse` also answers the agent 403 for an edited result and
+doesn't send the request. A result past the newest 512, or past 1 MiB of results, isn't compared and is a
+`result_unchecked` gap. Some integrations record a result in a form the model isn't sent, so run `record` on honest
+runs before `refuse` ([verified tool results](../gateway.md#verified-tool-results)).
+
+The gateway can also ask the provider for a readable summary of the model's reasoning when the request turned reasoning
+on without one, and records which fields it changed (format 1.4's `ext.amended`;
+[readable reasoning](../gateway.md#readable-reasoning)). It can refuse requests that declare provider-run tools, and it
+stops forwarding a quarantined run's requests. If the signer is down, the run's fail mode for model calls decides.
+Setup: [gateway](../gateway.md).
 
 ## The egress observer
 
@@ -62,7 +73,9 @@ connection to a run (by the run's token, or by the caller's identity) and refuse
 - public DNS-over-HTTPS endpoints;
 - names that resolve to private addresses.
 
-Every minute it reports the hosts each run reached, and the signer records them. A host no recorded call explains
+It also takes SOCKS5 on the same port, which is how [E2B](../integrations/e2b.md) and
+[microsandbox](../integrations/microsandbox.md) send a sandbox's outbound traffic to it from the host. Every minute it
+reports the hosts each run reached, and the signer records them. A host no recorded call explains
 becomes `reconcile.unexplained_effect`. A policy's `explains` entries list hosts a tool's own dependencies reach (a
 package index for an install command, for example). If the observer stops reporting for 90 seconds, the signer writes
 `observer_lost`. On Linux system mode, `sudo tracekit init --v2 --user AGENT --egress` adds a firewall rule so the
@@ -76,7 +89,13 @@ agent's user can only reach the network through the observer. Setup: [egress](..
 | The same for MCP servers | MCP gateway |
 | To catch an agent that skips its hook or invents calls | LLM gateway with `gateway_mandatory: true` |
 | To see where an agent's traffic goes | Egress observer |
+| To catch an agent that edits a tool's result before the model reads it | LLM gateway with `verify_tool_results` |
 | Model calls, tool calls and network all marked `enforced` in the coverage matrix | LLM gateway and egress observer together, with the matching posture |
+| To see the processes, connections and file writes beneath each call | A kernel sensor import ([capture](capture-and-completeness.md#kernel-sensors-and-sandboxes)) |
+
+Third-party gateways and sandbox proxies can ask the signer the same way, so the calls they pass are decided and
+recorded outside the agent: agentgateway, LiteLLM, NVIDIA OpenShell and sandbox-runtime's proxy
+([integrations](integrations.md#sandboxes-gateways-and-sensors)).
 
 ## Reference
 

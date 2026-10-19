@@ -3,7 +3,8 @@
 Prompt injection works by getting text the agent read (a web page, an email, a support ticket) to steer what it does
 next. Tracekit has two tools for this. **Provenance** notices, at decision time, when a value in a call came only from
 untrusted content, so a policy can hold that call for a person. **`tracekit why`** answers, after the fact, which input
-actually caused an action, by replaying the run without it. Both are experimental in 1.2.
+actually caused an action, by replaying the run without it. A third, `tracekit analyze --v2`, checks after a run
+whether what the person asked, what the model said and what the agent did agree. All three are experimental.
 
 ## Argument provenance
 
@@ -81,11 +82,49 @@ narrows it to the cause.
 `tracekit why` began as a separate project, Causeway, and joined Tracekit in 1.1. Commands and the viewer's why views:
 [tracekit why](../why.md); design: [its architecture](../why-architecture.md).
 
+## What was asked, said and done
+
+`tracekit analyze --v2` reads a finished run's signed records and, from the content vault, the text they commit to
+(each piece must open its record's commitment, or the analysis stops). It then runs fixed checks that compare the
+person's request, what the model said before each call, and what the calls did:
+
+| Rule | Finds |
+|---|---|
+| TK-X201, TK-X202, TK-X203 | An action with no reasoning before it, an edit of a file nobody named, a write outside the project |
+| TK-X204 | A call that broke something the person (or the model itself) said not to do |
+| TK-X205, and v1's text checks | Success claimed after a failed check, a test run, commit or push claimed that never ran, a denied action that ran |
+| TK-X206, TK-X207 | With a kernel sensor's records: an effect no call explains, or a call that reported success with no effect |
+| TK-X208 | A "request" in the agent's transcript that the person never typed |
+| TK-X210 (`--review`) | A second model's opinion of the run, preferably from another model family. Warn only: it never changes the exit code and holds nothing |
+
+Each finding names the text it relied on and who could have written it: the LLM gateway's record ranks above the hook's
+copy of a prompt, and both above the agent's own transcript. A check that can't run says why and what would make it
+checkable; it never counts as a pass. Reasoning is the model's own account of itself, and providers often return it
+sealed: [reasoning](../reasoning.md) says what each agent, framework and provider hands over, and how to turn it on.
+
+**Signed findings.** The analyzer sends each finding through the signer (`review_finding`, RPC 19) into a findings run
+of its own about the run. Each is a `review` record that cites the analysed records by `run_seq` and hash and holds no
+text of the run. `tracekit export --v2 --run R --with-findings` bundles them with the run, and `tracekit verify` fails
+a citation that doesn't match. The findings get their own `Findings:` line, after integrity and assurance, saying whose
+opinion they are: on a laptop the analyzer is the agent's own user, so they read `self-asserted`; run it as an operator
+identity the verifier pins to get findings it reads as independent.
+
+**Live constraints.** TK-X204 reads the same small grammar the signer uses during the run: what a prompt says not to do
+is held live by the signer ([live constraints](policy.md#live-constraints)) and checked again afterwards, together
+with the model's own promises.
+
+**Where it stops.** The checks read names and order, not meaning. A file named innocently in the model's text clears
+TK-X202, and the constraint grammar reads 4 of the 12 ways of saying "don't touch X" in E20's held-out pool v2
+([evaluation](../evaluation.md#e20-intent-reasoning-and-action-checks),
+[limits](../limits.md#intent-reasoning-and-action-checks)). Commands, every rule and the `--json` shape:
+[findings](../findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2).
+
 ## Reference
 
 [Provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted) · [tracekit why](../why.md) ·
-[why architecture](../why-architecture.md) · code: [`tracekit/provenance.py`](../../tracekit/provenance.py),
-[`tracekit/why/`](../../tracekit/why)
+[why architecture](../why-architecture.md) · [findings](../findings.md) · code:
+[`tracekit/provenance.py`](../../tracekit/provenance.py), [`tracekit/why/`](../../tracekit/why),
+[`tracekit/findings_v2.py`](../../tracekit/findings_v2.py)
 
 ---
 

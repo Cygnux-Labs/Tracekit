@@ -53,7 +53,10 @@ The signer then:
 2. classifies the tool from its own policy; a hint can only make the decision stricter, and a disagreement is a signed
    `class_mismatch` gap;
 3. evaluates the policy over the raw arguments ([policy](policy.md));
-4. signs a `policy.decision` with a fresh `decision_id`, every matching rule id, the policy hash, the regex engine and a
+4. applies the run's own state, which can only make the answer stricter: a call that breaks a live constraint the
+   person stated becomes ask `TK-CONSTRAINT` ([live constraints](../policy-v2.md#live-constraints)), and a held or
+   quarantined run turns it into ask `TK-HOLD` or deny `TK-QUARANTINE` ([containment](containment.md));
+5. signs a `policy.decision` with a fresh `decision_id`, every matching rule id, the policy hash, the regex engine and a
    commitment to the arguments ([commitments](evidence-format.md#commitments)).
 
 It answers `allow`, `deny` or `ask`. A `flag` rule lets the call run and marks it only in the signed record. A deny or
@@ -72,8 +75,9 @@ result, commits to it, and writes `tool.result`. If the call ran against a deny,
 approval, the signer also writes `capture.gap{executed_against_policy}`.
 
 Other events a client can record: `observe` (content the agent read, such as a page or a ticket), `state_write`
-(digests of saved agent state, to detect tampering with it) and `model_event` (model calls, when no gateway records
-them).
+(digests of saved agent state, to detect tampering with it), `model_event` (model calls, when no gateway records
+them) and `constraint_add` (what the person's request says not to do for the rest of the run: the Claude Code hook
+sends it from the prompt).
 
 ## Closing a run
 
@@ -115,17 +119,23 @@ What the verifier checks: [verification and assurance](verification.md).
 
 ## The RPC surface
 
-Clients and services talk to the signer over a Unix socket, loopback TCP (Windows dev mode) or HTTPS, as
-newline-delimited JSON. The protocol is versioned (16; the 1.2 signer also accepts 15), and a client newer than its
-signer is refused.
+Clients and services talk to the signer over a Unix socket, loopback TCP (Windows dev mode) or HTTPS, in JSON frames:
+one per line on a socket, one per request over HTTPS. The protocol is versioned: Tracekit 1.4 speaks version 19 and
+its signer serves clients from version 15 up, so older clients keep working. A client refuses a signer that can't
+serve its version, so upgrade the signer before its clients ([deploy](../deploy.md#upgrading)).
 
 | Group | Calls |
 |---|---|
-| Runs and events | `register_run`, `decide`, `complete`, `observe`, `state_write`, `model_event`, `close_run`, `status` |
-| Approvals | `approval_request`, `approval_wait`, `approval_decide`, `approval_consume`, `approval_list`, `approval_abandon`, `approval_review`, `approval_revoke`, `approval_agents` |
-| Services | `delegate_run`, `tailer_heartbeat`, `observe_effect`, `decision_import` |
-| Content and why | `content_get`, `content_erase`, `why_finding` |
-| Operators | `incident_list`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `suspend` |
+| Runs and events | `register_run`, `decide`, `complete`, `observe`, `state_write`, `model_event`, `constraint_add`, `close_run`, `status`, `read`, `checkpoint_nudge` |
+| Approvals | `approval_request`, `approval_wait`, `approval_decide`, `approval_decide_on_behalf`, `approval_get`, `approval_consume`, `approval_list`, `approval_abandon`, `approval_review`, `approval_revoke`, `approval_agents`, `passkey_register` |
+| Services | `delegate_run`, `tailer_heartbeat`, `tailer_lost`, `observe_effect`, `decision_import` |
+| Content and findings | `content_get`, `content_erase`, `why_finding`, `review_finding` |
+| Operators | `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend` |
+
+What the newer versions added: 17 (Tracekit 1.3) the gateway's tool-result digests for
+[verified tool results](custody.md#the-llm-gateway); 18 kernel sensor effects on `observe_effect`; 19 `review_finding`
+(signed findings of `tracekit analyze --v2`), `constraint_add`, OpenShell's imported events and the gateway's
+`amended` fields.
 
 State-changing calls carry a `request_id`. A retry with the same id and payload returns the original answer; the same id
 with a different payload is a `conflict`.

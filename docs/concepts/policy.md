@@ -53,19 +53,27 @@ aren't allowed: see determinism below.)
 | `browser` | `action`, `url`, `scheme`, `host`, `internal`, `sends_to` | Browser Use actions |
 | `app` | none | your business tools: known, so not held as unknown |
 
+Every class also has `target`: what the call acts on rather than what it carries (a command's words without its data,
+its redirection targets, a path, a URL).
+
 ## How commands, SQL and addresses are read
 
 Matching a regex against raw text is easy to fool, so each class parses its subject first.
 
 - **Shell.** Tracekit's own tokenizer follows `bash -c`, `eval`, `ssh host '…'`, `find -exec`, `python -c`, heredocs and
-  wrappers such as `sudo`, `env` and `xargs`, and matches each command it finds. A line it can't read becomes
-  ask `TK-SHELL-PARSE`: when in doubt, a person decides.
+  wrappers such as `sudo`, `env` and `xargs`, and matches each command it finds. Program names are read in any case
+  and without `.exe`. A line it can't read becomes ask `TK-SHELL-PARSE` (deny, with `on_parse_error: deny`): when in
+  doubt, a person decides.
+- **One command at a time.** Rules on what a command does read each command on its own: its words and its redirection
+  targets, also inside a wrapper, `find -exec` or a nested shell. So `git push && ls -f` isn't a force push, and a
+  commit message or a `grep` pattern that names one isn't either.
 - **SQL.** The `code` field blanks comments and string literals for PostgreSQL, MySQL, SQLite and SQL Server, so
   `SELECT 'DROP TABLE x'` isn't mistaken for a drop. Unparseable SQL becomes ask `TK-SQL-PARSE`.
 - **URLs and hosts.** Hosts are read the way a browser reads them (Unicode-normalised, with odd IP notations
   canonicalised), so `0xa9.0xfe.0xa9.0xfe` is recognised as the cloud metadata address `169.254.169.254`.
 - **Size and validity.** Arguments that aren't strict JSON are denied (`TK-ARGS-INVALID`); a subject over 64 KiB is
-  decided by `TK-OVERSIZE`.
+  decided by `TK-OVERSIZE`, in its rule's own section. If the engine itself fails on a call, the call is denied and
+  recorded (`TK-ENGINE-ERROR`).
 
 ## Determinism
 
@@ -79,6 +87,8 @@ Every decision must be recomputable from the record: the same policy, engine and
   installed. The linter only allows patterns both engines read identically (no lookaround, backreferences, inline flags
   or super-linear nesting). The fallback gets one second per decision; on timeout it denies and marks the decision
   `nondeterministic`.
+- Each rule gets a prefilter: a few strings one of which every match contains. A subject that holds none of them isn't
+  searched. It only skips searches that can't match, so it never changes a decision.
 
 ## Why the signer decides
 
@@ -92,37 +102,76 @@ disagreement as signed gaps:
 | `decision_flip` | An allow after a deny for the same arguments |
 | `class_mismatch` | The client's class hint disagrees with the policy |
 
+## Remedies
+
+A deny or ask rule can carry a `remedy`: one sentence saying what to do instead, and what a person can do. The signer
+sends it to the agent with the rule's reason, so the model can change course rather than retry, and `tracekit view`
+shows it under the rule. The signed record names only the rule ids; the text lives in the policy, under its hash. The
+deny and ask rules of the coding pack, and those the server and strict packs add, carry one:
+
+```text
+Push without --force, --mirror or a + refspec (rebase onto the remote branch, or push a new branch); a person rewrites
+shared history themselves.
+```
+
+## Live constraints
+
+A policy is written ahead of time, but a person's request often adds a limit for one task: "don't touch billing.py",
+"read-only", "don't push". The coding-agent hooks read such limits from each prompt with a small fixed grammar and send
+them to the signer (`constraint_add`), which signs a `constraint.added` record (the kind, and for a file only a
+commitment to its name) and holds the limit for the rest of the run.
+
+| Kind | Holds |
+|---|---|
+| `keep_away` | a call that writes the named file |
+| `only_change` | a call that writes any other file |
+| `read_only` | any call that writes, commits or installs |
+| `no_push` | a `git push` |
+| `no_network` | an http or browser call, a network command, a package install |
+
+After the policy has decided, a call that breaks a constraint is raised to ask (`TK-CONSTRAINT`), and a person answers
+it, never an agent approver. A constraint never lowers a decision, so any client of the run may add one: a made-up
+constraint only makes the agent wait. The agent is told which request it broke, and `tracekit verify` checks that every
+such hold follows a constraint. The grammar reads only some ways of saying a limit; `tracekit analyze --v2` checks the
+same constraints after the run ([what was asked, said and done](provenance-and-why.md#what-was-asked-said-and-done)).
+Live constraints are experimental.
+
 ## Shipped packs
 
 | Pack | For | Examples |
 |---|---|---|
-| `coding` | Coding agents on a laptop | Deny privilege escalation, force pushes, recursive deletes of root or home, touching Tracekit's own files. Unknown tools are flagged |
-| `browser` | Browser agents | Deny `file:` URLs and internal addresses; ask before uploads |
-| `server` | Server agents (extends the others) | Deny cloud metadata access and secrets in arguments; unknown tools are held for a person |
-| `server-data` | SQL tools | Deny DROP, TRUNCATE, DELETE without WHERE, privilege changes |
+| `coding` | Coding agents on a laptop | Deny privilege escalation, force pushes, recursive deletes of root or home, writing credential files, touching Tracekit's own files. Ask before destroying a deployment or database, deleting a remote Git branch, leaving the agent's sandbox, and adding autostart entries or Git hooks. Unknown tools are flagged |
+| `browser` | Browser agents | Deny `file:` URLs and internal addresses; ask before uploads, typing on sites off the allowlist and running the agent's own page JavaScript |
+| `server` | Server agents (extends the others) | Deny cloud metadata access, secrets in arguments and credential files; unknown tools are held for a person; detection in shadow mode |
+| `strict` | Server agents where a person sees every change first | `server`, plus: pushes, installs, publishes, `docker run`, applies, network commands and environment changes ask, and a shell command the parser can't read is denied |
+| `server-data` | SQL tools | Deny DROP, TRUNCATE, DELETE without WHERE, privilege changes, SQL that reaches the server's shell or files |
 | `server-net` | HTTP tools | Deny internal addresses and data sent to hosts off the allowlist |
 | `server-cloud` | Cloud CLIs | Deny IAM changes; ask before deleting resources |
 | `server-comms` | Payments and messaging | Ask before payments, mass email and @channel |
 | `dev` | The default | `coding` plus a demo deny and a demo ask |
 
-Extend a pack with `extends:` and add your own rules; a rule with the same id replaces the pack's.
+Extend a pack with `extends:` and add your own rules; a rule with the same id replaces the pack's. The strict pack adds
+no patterns: it raises three of the server pack's flags to asks, so it holds more ordinary work (10% of developer
+session calls in E21, against 1.5% for `server`). Use it where a person answers holds promptly.
 
 ## Commands
 
 ```sh
 tracekit policy lint policy.yaml        # every error at once
 tracekit policy compile policy.yaml     # the canonical form and its hash
-tracekit policy backtest --policy policy.yaml --store DATA_DIR   # replay detection over stored decisions
+tracekit policy backtest --policy policy.yaml --store DATA_DIR/store   # replay detection over stored decisions
 ```
 
 ## Where rules stop
 
 Rules are tripwires, not a sandbox. A determined agent can phrase a command so no rule matches: the
 [evaluation](../evaluation.md#e3-policy-gate) lists misses such as `X=rm; $X -rf ~` and a base64 payload piped to a
-shell. On the shipped packs' own test corpus (462 harmful and 668 benign calls across 11 classes, written by the
-project) every harmful call is denied or held, with one false alarm. The protection that doesn't depend on wording is
-the signer's isolation and the witnesses: a call that slips past the rules is still recorded, and the record can't be
-hidden.
+shell. On the shipped packs' own test corpus (536 harmful and 712 benign calls across 11 classes, written by the
+project) every harmful call is denied or held, with one false alarm. On calls written blind to the rules (E21's
+held-out pool: 420 harmful, 432 benign), the server pack catches about half of the harmful ones and the strict pack
+about 60%, while holding 4% and 11% of the benign ones ([evaluation](../evaluation.md#e21-policy-robustness)). The protection that
+doesn't depend on wording is the signer's isolation and the witnesses: a call that slips past the rules is still
+recorded, and the record can't be hidden.
 
 ## Reference
 

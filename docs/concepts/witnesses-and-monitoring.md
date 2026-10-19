@@ -3,7 +3,7 @@
 A signed log can prove a lot about itself, but not everything. Two attacks can't be seen from inside: cutting off the
 end of the log, and rewriting it with the signing key. Both need someone outside who saw an earlier state. Tracekit
 uses the same design as Certificate Transparency for this: independent **witnesses** that cosign checkpoints, and a
-**monitor** that reads the log. Both are experimental in 1.2.
+**monitor** that reads the log. Both are experimental.
 
 ## Why a log needs outside help
 

@@ -26,7 +26,7 @@ may answer, and how agent approvers answer routine requests inside hard bounds. 
 | Refusal | Reason |
 |---|---|
 | `TK-APPROVAL-MISMATCH` | The arguments differ from the approved ones |
-| `TK-APPROVAL-REJECTED`, `-EXPIRED`, `-CONSUMED` | Rejected, expired, or already used |
+| `TK-APPROVAL-REQUESTED`, `-REJECTED`, `-EXPIRED`, `-CONSUMED` | Not answered yet, rejected, expired, or already used |
 | `TK-APPROVAL-REQUIRED`, `-UNBOUND` | No approval for this call, or one for another call |
 | `TK-APPROVAL-VETO` | An agent's approval is still inside its veto window |
 
@@ -69,6 +69,7 @@ the report says `approvals: self`, and the run's assurance stays `dev`.
 | LangGraph / LangChain | `interrupt()`, resumed with `Command(resume=...)`; denied at once without a checkpointer |
 | Claude Agent SDK and coding-agent hooks | Waits up to 9 minutes, under the hook's 10-minute timeout |
 | MCP client, CrewAI | Waits up to 5 minutes |
+| Pydantic AI, Google ADK, Strands Agents, LlamaIndex, Haystack, Microsoft Agent Framework | Waits up to 5 minutes in the framework's tool hook; an approval left unanswered, or whose run is cancelled while it waits, is withdrawn |
 | Browser Use | Waits up to 150 seconds |
 | Vercel AI SDK | The SDK's own tool-approval flow |
 
@@ -81,8 +82,10 @@ A reviewer agent may answer routine requests, inside bounds the policy sets. Peo
 - **Bounds.** A rule's `approval.agent.allow` names every argument the call may have and the values each may take.
   Types are exact (the string `"100"` is not the integer 100), an argument the bounds don't name fails, and so does a
   call over 16 KiB.
-- **The floor.** People answer whenever the bounds fail, an argument's value came only from untrusted content, the
-  hold came from a synthetic rule (an unknown tool, an unreadable command), the run is a replay, or a budget is spent.
+- **The floor.** People answer whenever the bounds fail, the policy doesn't name the tool exactly, an argument's value
+  came only from untrusted content, the hold came from a synthetic rule (an unknown tool, an unreadable command), a
+  containment hold (`TK-HOLD`) or a [live constraint](policy.md#live-constraints) (`TK-CONSTRAINT`), the run is a
+  replay or findings run, or a budget is spent.
 - **Budgets.** A count and a sum (for example, 5 approvals and 300 in total) per window, rebuilt from signed records
   after a restart.
 - **No shopping.** Once a call is rejected or escalated, the same tool and arguments go to a person for the rest of

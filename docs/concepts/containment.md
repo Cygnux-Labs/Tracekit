@@ -2,7 +2,7 @@
 
 Some dangers only show as a pattern across calls: reading secrets and then sending data out, or deleting things very
 fast. Detection lets a policy describe such patterns, and containment decides what happens when one trips: an alert, a
-hold that hands every next step to a person, or a quarantine that stops the run. This is experimental in 1.2.
+hold that hands every next step to a person, or a quarantine that stops the run. This is experimental.
 Configuration and operator commands: [incidents](../incidents.md).
 
 ## What a policy can describe
@@ -31,7 +31,9 @@ respond:
 - **Counts and sums** fire when calls matching a rule or label pass a maximum in a window, such as more than 300 calls
   a minute or a total payment amount.
 - **Built-in triggers** include `executed_against_policy`, repeated denials, provenance holds and network traffic no
-  call explains.
+  call explains (from the [egress observer](custody.md#the-egress-observer)). What a kernel sensor reports
+  (processes, file writes, connections) opens no incident: `tracekit analyze --v2` checks it against the calls after
+  the run ([what was asked, said and done](provenance-and-why.md#what-was-asked-said-and-done)).
 - **Scopes** are the run, the session (a run and its sub-agents), the owner or the principal.
 - **Modes** are `off`, `shadow` (record what would have happened) and `enforce`. The server pack ships its detections
   in shadow mode.
@@ -45,12 +47,15 @@ backtesting a policy, and the verifier therefore all reach the same incidents.
 Only calls that actually ran count: allowed calls, flagged calls, and asks whose approval was consumed. Denied calls
 and unused asks don't. A tool of unknown class matches every step, so an unmapped tool can't slip between steps.
 
+If the signer can't vouch for what came before (a restart that lost the detector's state) and the policy enforces a
+hold or quarantine, the decision's run is held under a `detector_unavailable` incident: detection fails closed.
+
 ## Responses
 
 | Action | What happens |
 |---|---|
 | `notify` | An alert goes to the incident webhook. Nothing is blocked |
-| `hold` | The run's live approvals expire, and every later call becomes ask `TK-HOLD`, answerable only by a person (never an agent approver, the owner or the requester). The call that triggered the hold is decided again, held. With no person approvers configured, a hold becomes a quarantine |
+| `hold` | The run's live approvals expire, and every later call becomes ask `TK-HOLD`, answerable only by a person (never an agent approver, the run's owner, principal or requester). The call that triggered the hold is decided again, held. With no person approvers configured, a hold becomes a quarantine |
 | `quarantine` | Permanent. Calls are denied (`TK-QUARANTINE`), approvals can't be consumed, the LLM gateway stops forwarding the run's model requests, and the run closes |
 | `suspend` | An operator action only (`tracekit signer incidents suspend`): blocks an identity entirely. A policy can't trigger it |
 
@@ -66,9 +71,10 @@ per-tenant caps stop a noisy pattern from flooding the log.
 
 ## Alerts
 
-The webhook outbox sends incidents as OCSF 1.3 findings or Slack messages, with an HMAC signature on every body so a
-receiver can tell real alerts from forged ones. Incident alerts are delivered at least once: the outbox only moves past
-an alert after a successful response, and retries with backoff indefinitely. Setup: [webhooks](../webhooks.md).
+The webhook outbox sends incidents as OCSF 1.3 findings or Slack messages. Each OCSF body carries an HMAC signature,
+so a receiver can tell real alerts from forged ones (a Slack webhook's URL is its secret). Incident alerts are
+delivered at least once: the outbox only moves past an alert after a successful response, and retries with backoff for
+as long as it takes (a 4xx refusal other than 408 or 429 skips the batch). Setup: [webhooks](../webhooks.md).
 
 ## Verifying containment
 

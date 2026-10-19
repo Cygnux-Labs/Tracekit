@@ -19,7 +19,8 @@ the whole batch rolls back and callers get `unavailable`; when storage recovers,
 | File store | `records.jsonl`, the registry, checkpoints, Merkle tiles and periodic snapshots in the signer's data directory | A lock file |
 | Postgres (14 or newer) | Tables for records, registry, notes, tiles and snapshots, written by a role that can only insert | A session advisory lock; each batch is one transaction |
 
-Network filesystems (NFS, SMB, FUSE) aren't supported for the data directory; `tracekit doctor` refuses them.
+Network filesystems (NFS, SMB, FUSE and the like) aren't supported for the data directory, because file locking and
+fsync can't be trusted there; `tracekit doctor` flags one (`D-DATA-FS`).
 
 ## Durability modes
 
@@ -62,7 +63,10 @@ The signer figures are a short run on one macOS machine and are informational. T
 per call, at least 1,000 events a second) are enforced on Linux in CI; on that run Postgres's p99 is just over the
 target. Full tables: [evaluation](../evaluation.md) and the [technical report](../../report/tracekit-v2.md).
 
-Default quotas per caller: 200 events a second (bursts of 400), 100 open runs, and 64 event streams per run.
+Default quotas per caller identity: 200 events a second (bursts of 400), 100 open runs, 100 pending approvals, 8
+approval waits at once, and 64 event streams per run. Calls a gateway makes for its clients count per gateway and
+client, so one agent behind a shared gateway can't use up every other agent's budget. A refusal is
+`quota_exceeded` with a retry time, and the refusals of a window are folded into one signed `refusal.summary`.
 
 ## Reference
 

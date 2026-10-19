@@ -24,7 +24,8 @@ A record is one line of JSON with exactly six keys:
 ```
 
 - `event` is the content: a decision, a result, an approval, a gap. Its fields follow a closed JSON Schema
-  ([`tracekit.event.v2.json`](../../tracekit/schema/tracekit.event.v2.json)).
+  ([`tracekit.event.v2.json`](../../tracekit/schema/tracekit.event.v2.json)), apart from one deliberately open slot,
+  `ext` ([compatibility](#compatibility)).
 - `hash` is SHA-256 over the event in canonical JSON.
 - `kid` identifies the signing key: the SHA-256 of its public key, which also binds the algorithm.
 - `sig` is the Ed25519 signature described below.
@@ -139,8 +140,8 @@ deleted run, a second `run.final` or a hidden key retirement shows.
 
 A `.tkb` file is a zip in one strict layout: the run's records, the key records, inclusion proofs, checkpoints,
 optional Rekor and timestamp anchors, the policy snapshots its records cite, and registry files for a run-set. A
-manifest lists every file's SHA-256 but is only an index. Anything outside the layout (comments, zip64, extra fields,
-symlinks, sizes over the limits) makes the bundle `UNUSABLE BUNDLE`.
+manifest lists every file's SHA-256 and the verifier version the records need, but is only an index. Anything outside
+the layout (comments, zip64, extra fields, symlinks, sizes over the limits) makes the bundle `UNUSABLE BUNDLE`.
 
 Two things are deliberately missing: **verification code** (the party being checked must not supply the checker) and
 the **trust configuration** (the person verifying brings their own).
@@ -150,7 +151,26 @@ the **trust configuration** (the person verifying brings their own).
 Evidence has to stay checkable for years. Formats only grow, each format's verifier is frozen, and the test bundles
 for old formats are never regenerated. Schemas are closed, so an older verifier would otherwise reject a record type
 it has never seen; instead each bundle names the minimum verifier version it needs, and an older verifier reports
-`UNVERIFIABLE (needs tracekit >= x)`, never `FAILED`.
+`UNVERIFIABLE (needs tracekit >= x)`, never `FAILED`. From 1.4.0 that report also prints the commands that verify the
+bundle: `uvx`, `npx` or the [browser page](verification.md#verifying-in-a-browser).
+
+What each version added:
+
+| Version | Added |
+|---|---|
+| 1.1.0 | `tracekit why` findings, content vault records, observed inputs, provenance on decisions |
+| 1.2.0 | Agent approvers, containment (incidents, holds, quarantine, suspensions), `effect.observed`, the coverage matrix, more gap kinds |
+| 1.3.0 | `reconcile.result_mismatch` and the `result_unchecked` gap ([verified tool results](custody.md#the-llm-gateway)) |
+| 1.4.0 | `constraint.added` and the `constraint_refused` gap (live constraints), `review` records with `cites` (signed findings), kernel sensor and OpenShell fields on `effect.observed` and `capture.gap`, `said_only` on model exchanges, and the `ext` slot |
+
+**The `ext` slot.** From format 1.4.0, an addition an older verifier can leave unread doesn't need a new version. Any
+record may carry `ext`, an object of names to strict JSON values, and a record of type `ext` holds `data: {name, ...}`.
+They are signed, chained and included like every other record, so editing one still fails verification. A verifier
+from 1.4.0 interprets the names it knows (today `amended`, the fields an LLM gateway changed in a request, and
+`openshell.policy`, OpenShell's sandbox policy changes); for any other it prints a `not interpreted` warning, and the
+bundle stays `VERIFIED`. A name may go in `ext` only if every line an older verifier prints stays true without it;
+anything a verifier must read to judge a run stays critical. The full table:
+[format v2 §9](../format-v2.md#9-bundle-layout).
 
 ## Reference
 

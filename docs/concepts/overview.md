@@ -33,7 +33,7 @@ flowchart LR
 | Store | Files or Postgres holding records and the Merkle tree | You |
 | Witness | Cosigns checkpoints after checking the log only grew. Never sees records | Someone you don't control |
 | Monitor | Reads the log, checks it makes sense (one start and one end per run, no surprise keys) and signs a report | Someone you don't control |
-| Verifier | `tracekit verify` (Python) or the independent TypeScript verifier. Checks a bundle offline | Whoever needs to trust the run |
+| Verifier | `tracekit verify` (Python) or the independent TypeScript verifier, also a page that runs in a browser. Checks a bundle offline | Whoever needs to trust the run |
 | Viewer | `tracekit view`: runs, decisions, approvals, gaps, replay, why | You (its verdicts are operator-side) |
 
 The idea underneath is simple: **who can rewrite the log decides what a run is worth.** The agent never holds a
@@ -49,8 +49,10 @@ assurance line says who else vouches for that checkpoint.
 
 It does not prove:
 
-- **Intent.** A record says a call was made, not why. ([Provenance and `tracekit why`](provenance-and-why.md) helps
-  with why.)
+- **Intent.** A record says a call was made, not why. `tracekit analyze --v2` compares what the person asked, what
+  the model said and what the agent did, and signs what it finds as an opinion of the run
+  ([what was asked, said and done](provenance-and-why.md#what-was-asked-said-and-done)); `tracekit why` tests which
+  input caused an action ([provenance and `tracekit why`](provenance-and-why.md)).
 - **That everything was captured.** An action that crosses no capture layer leaves no record. Completeness is
   reported, never claimed ([capture and completeness](capture-and-completeness.md)).
 - **That a reported result is true.** Capture inside the agent's process proves what the agent *reported*; capture
@@ -62,10 +64,10 @@ the first is proven, the second is measured and reported.
 
 ## Two generations
 
-Tracekit 1.2 contains two signers:
+Tracekit contains two signers:
 
 - **v1**, the original laptop path: `tracekitd`, a JSONL ledger, Claude Code and other coding-agent hooks. It keeps
-  working, and its bundles keep verifying with a frozen verifier.
+  working (now experimental), and its bundles keep verifying with a frozen verifier, which stays stable.
 - **v2**, the signer service these pages describe: signer-side policy, per-run chains in a Merkle log, C2SP witnesses,
   argument-bound approvals, gateways and executors, reconciliation, Postgres and HTTPS. New work is on v2.
 
@@ -78,7 +80,8 @@ The stable core is tested end to end on every pull request and hardened first: t
 system mode with file storage, `tracekit.instrument()` and the OpenAI Agents, LangChain / LangGraph, Claude Agent SDK
 and MCP integrations, the Claude Code hooks, policy v2 and its packs, approvals from the command line, bundle export,
 both verifiers, `tracekit view` and `tracekit doctor`. Everything else (witnesses, the monitor, gateways, containment,
-agent approvers, `tracekit why` and more) is experimental and says so when it starts. The full list:
+agent approvers, `tracekit why`, `tracekit analyze --v2`, verified tool results, the kernel sensor and OpenShell
+imports, the six frameworks added in 1.3 and more) is experimental and says so when it starts. The full list:
 [what's stable](../support.md).
 
 ## How it relates to other tools
@@ -87,7 +90,7 @@ agent approvers, `tracekit why` and more) is experimental and says so when it st
 |---|---|---|
 | Observability (Langfuse, LangSmith, Phoenix, OpenTelemetry) | Traces for debugging and evaluation | Their traces are kept by whoever runs the agent and aren't signed or witnessed. Tracekit imports OpenTelemetry and exports spans that carry record hashes: debug with them, prove with Tracekit |
 | Guardrails and classifiers | Judge content inside the agent's process | Tracekit's gate is simpler (deterministic rules) but runs outside the agent, and every decision is signed and recomputable |
-| Sandboxes | Prevent effects, see system calls | Tracekit doesn't do either; it records what happened in a form a third party can check. Use both |
+| Sandboxes and kernel sensors | Prevent effects, see system calls | Tracekit prevents neither. It imports what a kernel sensor (Tetragon, Falco) or an OpenShell sandbox reports as signed effects in the agent's run, next to its tool calls, in a form a third party can check ([kernel sensors and sandboxes](capture-and-completeness.md#kernel-sensors-and-sandboxes)). Use both |
 | Cloud audit logs | Record API calls to a provider | Kept by the operator, and unaware of agent tool calls, approvals or policy |
 
 ---
