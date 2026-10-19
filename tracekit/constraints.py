@@ -25,14 +25,15 @@ lean: a fixed phrase list, English only; a phrasing outside it ("X is frozen", "
 "don't forget to update X" reads as one. Grow the lists from real misses, never from the held-out pool.
 """
 import hashlib
-import posixpath
 import re
-import shlex
 
 from .findings import WRITE_TOOLS
+from .policy2.classes import PATH_KEYS, SHELL_KEYS
+from .policy2.engine import _shell as _parse
+from .policy2.shell import ParseError
 
 OBJECT_KINDS = ("keep_away", "only_change")
-MAX_TEXT = 1 << 16   # lean: characters of one text the grammar reads, and of one shell command; past it, cut
+MAX_TEXT = 1 << 16   # lean: characters of one text the grammar reads; past it, cut
 WINDOW = 4
 CLAUSE = re.compile(r"(?<=[.!?])\s+|\n+|[,;:()\[\]]\s*|\s+(?:but|except|though)\s+", re.I)
 TOKEN = re.compile(r"[\w.~/\\'-]+")
@@ -52,10 +53,8 @@ NETWORK = frozenset(("network", "internet", "online", "web"))
 ASKS_CHANGE = VERBS | {"fix", "add", "create", "implement", "apply"}   # a later request that asks for a change
 LIFT = {"no_push": PUSH, "no_network": NETWORK | {"download", "fetch", "curl", "install"}, "read_only": ASKS_CHANGE}
 LIFT_WORDS = frozenset().union(*LIFT.values())
-SEPARATORS = (";", ";;", "&&", "||", "|", "|&", "&", "(", ")")
 WRITERS = {"tee": "all", "touch": "all", "mkdir": "all", "rm": "all", "rmdir": "all", "truncate": "all",
            "cp": "last", "mv": "last", "install": "last", "ln": "last"}
-PREFIXES = ("sudo", "env", "command", "nohup", "time", "exec", "xargs")
 NET_COMMANDS = frozenset(("curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
                           "http", "https"))
 NET_GIT = frozenset(("push", "pull", "fetch", "clone", "ls-remote"))
@@ -66,7 +65,6 @@ GIT_WRITES = frozenset(("commit", "push", "reset", "checkout", "merge", "rebase"
                         "clean", "stash", "switch", "cherry-pick", "revert"))
 NET_TOOLS = frozenset(("WebFetch", "WebSearch", "web_fetch", "web_search"))
 READ_TOOLS = frozenset(("Read", "Grep", "Glob", "LS", "read_file", "list_files", "list_directory"))
-PATH_KEYS = ("file_path", "notebook_path", "path")
 
 
 def norm(name):
@@ -152,75 +150,60 @@ def lifts(kind, mention, is_object):
 
 
 def shell(cmd):
-    """What a shell command does: {"paths": what it writes as far as a lexer can tell, "cd": it changes directory,
-    "push": a git push, "network": a command that reaches the network, "writes": it writes or commits}.
+    """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "cd": it
+    changes directory, "push": a git push, "network": a command that reaches the network, "writes": it writes or
+    commits}. `cmd`: a command line, or a shell call's arguments (`command` or `cmd` a line or an argv list,
+    `commands` a list of lines), read as the policy engine reads them (policy2/shell.py: wrappers, `bash -c`, `eval`,
+    substitutions and pipelines included).
     lean: redirections, tee/touch/mkdir/rm/rmdir/truncate arguments, cp/mv/install/ln destinations and sed/perl -i
-    files; a word with a variable, a glob or a command substitution is skipped. Parse the shell properly if it misses
-    real writes."""
+    files; a word with a variable, a glob or a command substitution is no path; a line the parser can't read (`case`,
+    over its size) does nothing, and the policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real
+    writes hide there."""
     out = {"paths": [], "cd": False, "push": False, "network": False, "writes": False}
     try:
-        lex = shlex.shlex(cmd[:MAX_TEXT] if isinstance(cmd, str) else "", posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        words = list(lex)
-    except ValueError:
+        cmds, _, _, written = _parse(cmd if isinstance(cmd, dict) else {"command": cmd if isinstance(cmd, str) else ""})
+    except ParseError:
         return out
-    cur, skip = [], None
-
-    def flush():
-        while cur and (cur[0] in PREFIXES or "=" in cur[0] and not cur[0].startswith("=")):
-            cur.pop(0)
-        if cur:
-            name, rest = posixpath.basename(cur[0]), cur[1:]
-            args = [w for w in rest if not w.startswith("-")]
-            out["cd"] = out["cd"] or name in ("cd", "pushd")
-            mode = WRITERS.get(name)
-            if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
-                                               for w in rest):
-                mode = "files"
-            out["paths"] += (args if mode == "all" else args[-1:] if mode == "last" and len(args) > 1
-                             else args[1:] if mode == "files" else [])
-            sub = next((a for a in args[:2] if a in GIT_WRITES | NET_GIT), None) if name == "git" else \
-                args[0] if args else None
-            out["push"] = out["push"] or name == "git" and "push" in args
-            out["network"] = out["network"] or name in NET_COMMANDS or name == "git" and sub in NET_GIT or (
-                name in INSTALLERS and sub in INSTALL)
-            out["writes"] = out["writes"] or name == "git" and sub in GIT_WRITES or name in INSTALLERS and sub in INSTALL
-        cur.clear()
-    for w in words:
-        if skip is not None:
-            if skip and not w.isdigit() and w != "-":
-                out["paths"].append(w)
-            skip = None
-        elif w in SEPARATORS:
-            flush()
-        elif set(w) <= set("<>&|") and ">" in w:   # a redirection: its target is the next word
-            if cur and cur[-1].isdigit():
-                cur.pop()
-            skip = True
-        elif set(w) <= set("<&|") and "<" in w:   # input: the next word is read, not written
-            skip = False
-        else:
-            cur.append(w)
-    flush()
-    out["paths"] = [t for t in out["paths"] if not set(t) & set("$`*?[")]
-    out["writes"] = out["writes"] or bool(out["paths"])
+    for c in cmds:
+        name, rest = c["argv"][0], c["argv"][1:]
+        args = [w for w in rest if not w.startswith("-")]
+        out["cd"] = out["cd"] or name in ("cd", "pushd")
+        mode = WRITERS.get(name)
+        if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
+                                           for w in rest):
+            mode = "files"
+        targets = (args if mode == "all" else args[-1:] if mode == "last" and len(args) > 1
+                   else args[1:] if mode == "files" else [])
+        sub = next((a for a in args[:2] if a in GIT_WRITES | NET_GIT), None) if name == "git" else \
+            args[0] if args else None
+        out["paths"] += targets
+        out["push"] = out["push"] or name == "git" and "push" in args
+        out["network"] = out["network"] or name in NET_COMMANDS or name == "git" and sub in NET_GIT or (
+            name in INSTALLERS and sub in INSTALL)
+        out["writes"] = out["writes"] or bool(targets) or name == "git" and sub in GIT_WRITES or (
+            name in INSTALLERS and sub in INSTALL)
+    written = [t for t in written if not t.startswith("/dev/")]   # /dev/null, a terminal, a descriptor: no file
+    out["writes"] = out["writes"] or bool(written)
+    out["paths"] = [t for t in out["paths"] + written if not set(t) & set("$`*?[")]
     return out
 
 
 def facts(tool, args, cls=None):
     """What call (`tool`, `args`) does, as far as a constraint cares: {"names": the basenames of what it writes,
     "write": it writes at all, "push": a git push, "network": it reaches the network}. `cls`: the policy's class of
-    the tool when known (http and browser calls reach the network)."""
+    the tool when known (http and browser calls reach the network). A write tool (or another fs tool that writes)
+    writes its path and each of its `paths` (every file of a Codex patch, whose text is its `command`); any other call
+    with a command (`command`, `cmd` or `commands`) is a shell command."""
     args = args if isinstance(args, dict) else {}
-    cmd = args.get("command", args.get("cmd"))
-    if isinstance(cmd, str):
-        s = shell(cmd)
+    write = tool in WRITE_TOOLS or cls == "fs" and tool not in READ_TOOLS and args.get("op") != "read"
+    if not write and any(args.get(k) is not None for k in SHELL_KEYS):
+        s = shell(args)
         return {"names": [norm(p) for p in s["paths"] if norm(p)], "write": s["writes"], "push": s["push"],
                 "network": s["network"]}
-    path = next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), None)
-    write = tool in WRITE_TOOLS or cls == "fs" and tool not in READ_TOOLS and args.get("op") != "read"
-    return {"names": [norm(path)] if write and path and norm(path) else [], "write": write, "push": False,
-            "network": cls in ("http", "browser") or tool in NET_TOOLS}
+    paths = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), None),
+             *(args["paths"] if isinstance(args.get("paths"), list) else ())]
+    return {"names": list(dict.fromkeys(norm(p) for p in paths if isinstance(p, str) and norm(p))) if write else [],
+            "write": write, "push": False, "network": cls in ("http", "browser") or tool in NET_TOOLS}
 
 
 def breaks(kind, f, is_object):

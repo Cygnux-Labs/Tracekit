@@ -11,8 +11,9 @@ Variables are not expanded and encodings are not decoded. A line it cannot parse
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
 redirections kept, and again with its program names in lower case when that differs, for rules that match a whole
-command line; and the words that name something besides the commands' argv: redirection targets, `VAR=` assignments
-and the program an interpreter reads from a heredoc or herestring.
+command line; the words that name something besides the commands' argv: redirection targets, `VAR=` assignments
+and the program an interpreter reads from a heredoc or herestring; and the targets of the redirections that write a
+file (`>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&` to a name rather than a descriptor).
 """
 import re
 
@@ -87,18 +88,18 @@ def parse(command):
 
 
 def analyse(command):
-    """(the commands, the normalised lines, the other words that name something)."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "pipes": 0, "depth": 0, "work": 0, "exp": 0}
+    """(the commands, the normalised lines, the other words that name something, the files redirections write)."""
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "pipes": 0, "depth": 0, "work": 0, "exp": 0}
     _Parser(command, ctx, []).script()
-    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"]
+    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"], ctx["written"]
 
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
-    return ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"]
+    return ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"]
 
 
 def data_words(argv):
@@ -456,6 +457,8 @@ class _Parser:
                 else:
                     self.ctx["refs"].append(target[0])
                     stdin_redirect |= m.group(2) in ("<", "<&", "<>")
+                    if m.group(2) not in ("<", "<&") and not (m.group(2) == ">&" and re.fullmatch(r"\d*-?", target[0])):
+                        self.ctx["written"].append(target[0])
                 continue
             start = self.i
             text, raw, g, expanded = self.word()

@@ -11,7 +11,7 @@ import unittest
 import test_bundle_v2 as b
 from factories import unverified_bundles
 from test_reviews import ME, Signed
-from tracekit import constraints
+from tracekit import agent_hooks, constraints
 from tracekit.bundle_v2 import export
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
@@ -64,6 +64,30 @@ class Grammar(unittest.TestCase):
         self.assertEqual(constraints.facts("Read", {"file_path": "/w/billing.py"}, "fs")["write"], False)
         self.assertTrue(constraints.facts("WebFetch", {"url": "https://example.org"})["network"])
         self.assertTrue(constraints.facts("fetch_page", {"url": "https://example.org"}, "http")["network"])
+
+    def test_a_call_is_read_as_the_policy_engine_reads_it(self):
+        """A shell call through the policy engine's parser: an argv list, OpenAI's `commands`, a nested shell, eval and
+        wrappers; a write tool's path and `paths` (every file of a Codex patch, whose text is in `command`) before any
+        command."""
+        sh = lambda **a: constraints.facts("Bash", a, "shell")   # noqa: E731
+        for args in ({"command": "bash -c 'git push origin main'"}, {"command": ["git", "push", "origin", "main"]},
+                     {"commands": ["ls", "git push origin main"]}, {"command": "eval git push origin main"},
+                     {"cmd": "env A=1 sudo git push origin main"},
+                     {"command": ["bash", "-lc", "sh -c 'git push origin main'"]},
+                     {"command": "echo $(git push origin main)"}):
+            with self.subTest(args):
+                self.assertTrue(sh(**args)["push"] and sh(**args)["network"])
+        self.assertEqual(sh(command="sh -c 'echo x > Billing.py'")["names"], ["billing.py"])
+        self.assertEqual(sh(command="bash -c 'tee -a billing.py < in.txt'")["names"], ["billing.py"])
+        self.assertTrue(sh(command=["bash", "-lc", "curl https://example.org"])["network"])
+        self.assertEqual(sh(command="wc -l < billing.py 2>/dev/null >&2"), {"names": [], "write": False, "push": False,
+                                                                            "network": False})
+        self.assertTrue(sh(command="rm *.pyc")["write"])   # no name to compare, but a write
+        patch = ("*** Begin Patch\n*** Update File: src/config.py\n@@\n-a\n+b\n*** Add File: docs/new.md\n+x\n"
+                 "*** End Patch")
+        tool, ti = agent_hooks.tool("codex", "apply_patch", {"command": patch})
+        self.assertEqual(constraints.facts(tool, ti, "fs")["names"], ["config.py", "new.md"])
+        self.assertEqual(constraints.facts(tool, ti)["names"], ["config.py", "new.md"])   # as the analysis reads it
 
     def test_breaks(self):
         f = constraints.facts("Edit", {"file_path": "/w/billing.py"})
@@ -119,6 +143,18 @@ class Live(Signed):
             with self.subTest(tool=tool, args=args):
                 self.assertEqual(self.decide(run, tool, args)["decision"], "allow")
         self.assertEqual(self.decide(run, "Bash", {"command": "sed -i s/a/b/ billing.py"})["decision"], "ask")
+
+    def test_a_codex_patch_and_a_nested_push_are_held(self):
+        run = self.run_()
+        self.add(run, "keep_away", "config.py")
+        self.add(run, "no_push")
+        tool, ti = agent_hooks.tool("codex", "apply_patch", {
+            "command": "*** Begin Patch\n*** Update File: src/config.py\n@@\n-a\n+b\n*** End Patch"})
+        for tool, args in ((tool, ti), ("Bash", {"command": "bash -c 'git push origin main'"}),
+                           ("shell", {"command": ["git", "push", "origin", "main"]}),
+                           ("shell", {"commands": ["git push origin main"]})):
+            with self.subTest(args):
+                self.assertIn("TK-CONSTRAINT", self.decide(run, tool, args)["rule_ids"])
 
     def test_the_record_holds_a_commitment_never_the_name(self):
         run = self.run_()
