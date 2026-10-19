@@ -109,10 +109,12 @@ Terms, as the output uses them:
   request the gateway recorded, an input observed as trusted.
 - **Reasoning** is what the model said before the call: `full` (an open model's own reasoning), `summary` (Claude's
   thinking, an OpenAI reasoning summary, Gemini's thought summaries), `withheld` (the provider returned it sealed,
-  encrypted, or not at all), `none`. It is the model's account of itself: self-reported, not proof.
+  encrypted, or not at all), `none`. It is the model's account of itself: self-reported, not proof. Which agents,
+  frameworks and providers return which, and how to turn it on: [reasoning](reasoning.md).
 - **Monitorability** is the share of actions whose reasoning can be read (`full` or `summary`).
 - **Trust tier** is where the text a finding relied on came from: `gateway` (the LLM gateway's record), `sdk` (an
-  in-process adapter's report), `transcript` (a Claude Code transcript line, which the agent can write); the printed
+  in-process adapter's report), `transcript` (a Claude Code transcript line, or what Codex's rollout, Gemini CLI's
+  chat recording or Cursor's hooks said, which the agent can write); the printed
   list also names `decision` (the arguments the signer decided on), `observer` (a kernel sensor) and `operator`
   (`--project`). Text the agent can write is labelled, and the gateway's record of a model message is preferred. Two
   reports of one model message from different event streams make its reasoning not checkable, and clear nothing.
@@ -123,10 +125,10 @@ Not checkable is never a pass. Each reason, and the change that makes it checkab
 
 | Reason | Why | Fix |
 |---|---|---|
-| `no_response` | no model response was recorded for the call | Claude Code: `tracekit init --dev --v2` (its transcript tailer); other agents: the [LLM gateway](gateway.md) |
+| `no_response` | no model response was recorded for the call | Claude Code, Codex: `tracekit init --dev --v2`; a framework: its integration ([reasoning](reasoning.md)); other agents: the [LLM gateway](gateway.md) |
 | `unlinked` | the call was decided under an id of the adapter's own | an integration that decides under the provider's tool call id |
 | `no_content` | the signer kept no content for the records the check reads | `content: {retain: true}` in signer.yaml (the dev signer keeps it), and the `content_read` grant |
-| `withheld` | the model's reasoning was withheld or sealed | `"showThinkingSummaries": true` in Claude Code's settings (`tracekit init --dev --v2` sets it); headless: `claude -p --thinking-display summarized`; API: thinking display `summarized`, Responses `reasoning.summary: "auto"` |
+| `withheld` | the model's reasoning was withheld or sealed | `"showThinkingSummaries": true` in Claude Code's settings (`tracekit init --dev --v2` sets it); headless: `claude -p --thinking-display summarized`; Codex: `model_reasoning_summary = "auto"`; API: thinking display `summarized`, Responses `reasoning.summary: "auto"`; every agent and framework: [reasoning](reasoning.md) |
 | `conflicting_reports` | two event streams reported the call's model message | the LLM gateway, whose record is preferred |
 | `no_text` | neither a request nor anything the model said before the call was recorded | the transcript tailer or the gateway, with the vault on |
 | `no_root`, `root_too_broad` | the project is unknown, or `/` or a home directory | `--project DIR` |

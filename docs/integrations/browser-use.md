@@ -191,6 +191,12 @@ structured_output: [AgentOutput]
 
 `examples/browser_use_agent.py` runs offline: a stand-in registry and `FakeSigner` deciding with the browser pack.
 
+## What the model said
+
+Not recorded by the integration: `trace_tools` wraps the Tools, which never see the model's output (its `thinking`
+and `next_goal`). Record the model calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md); an action
+carries no model call id, so they are not linked to the actions. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - Browser Use actions carry no call id, so every action is a call of its own (attempt 0); a retry is a new decision.

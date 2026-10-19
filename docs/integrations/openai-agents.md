@@ -78,6 +78,11 @@ state (the arguments, the call id, the hint, or approving the call in the state 
 the signer records why. Exceptions raised by a tool are recorded, then handled by the tool's own failure policy as
 without Tracekit.
 
+## What the model said
+
+`hooks=tk` records each model response in `on_llm_end`, its reasoning items included, linked to the calls by
+`call_id`. Ask for readable reasoning with `ModelSettings(reasoning=Reasoning(summary="auto"))`. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - **Hosted tools** (web search, file search, code interpreter, image generation, hosted MCP, a hosted `ShellTool`),
