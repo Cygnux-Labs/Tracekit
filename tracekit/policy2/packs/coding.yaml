@@ -162,7 +162,8 @@ ask:
     class: fs
     tool: Read|Grep
     field: path
-    pattern: '(^|/)\.password-store(/.+)?$|(^|/)Library/Keychains/[^/]+$|(^|/)\.local/share/keyrings/[^/]+$|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|(^|/)Library/Application Support/(Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|^[A-Za-z]:/Users/[^/]+/AppData/Local/(Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$'
+    # in lower case: the path is also matched casefolded, and macOS and Windows ignore case
+    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(login data|cookies|web data|network/cookies)$'
     reason: reading an operating-system or browser credential store
     remedy: Wait for a person to approve the held read, or ask the person for the one credential the task needs.
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
@@ -245,7 +246,7 @@ ask:
     # options (with a value) may come before it for pulumi and `railway`/`heroku run`, up to four for terraform, fly
     # and the npx-style launchers; a mutation needs its call parenthesis, so a URL or file named serviceDelete.json
     # doesn't.
-    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.* )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) .*\b(volume|service|environment|project|database)Delete\s*\()'
+    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.*? )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) .*?\b(volume|service|environment|project|database)Delete\s*\()'
     # each of these CLIs prints its help and exits on --help (-h is dropdb's host). Only a last `--help` after at most
     # two short lower-case words counts: the subject joins argv with spaces, so `-m ' --help'` must not read as one
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
@@ -331,7 +332,7 @@ ask:
     # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
     # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
     # held
-    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
+    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
     remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
@@ -371,7 +372,9 @@ flag:
   - id: TK-F007
     class: shell
     field: line
-    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]*-d|\bdaemonize\b|\bwhile\s+(true|:)'
+    # lean: tmux's -d within 200 characters of `new`, so each tmux on a long line scans a bounded stretch on the
+    # fallback engine; widen it if a real command puts more before -d
+    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]{0,200}?-d|\bdaemonize\b|\bwhile\s+(true|:)'
     label: background_spawn
   - id: TK-F014
     class: shell
@@ -396,7 +399,7 @@ flag:
   - id: TK-F011
     class: shell
     field: command
-    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s>]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|bash_profile)\b'
     label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with

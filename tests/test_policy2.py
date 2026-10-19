@@ -489,11 +489,12 @@ class Speed(unittest.TestCase):
     # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
     # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
     # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-D008 a writer, then a
-    # transcript path) or in an SQL statement (TK-DB003 DELETE FROM, then an always-true WHERE): a backtracking engine
-    # rescans that text from each occurrence of their first word, so 64 KiB repeating it in one command or statement
-    # spends the fallback's 1 s and denies (nondeterministic). RE2, the default engine, is linear; they are held to the
-    # generic fillers here. Upgrade: structural pipeline and argv rules
-    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D008", "TK-D011", "TK-DB003"}
+    # transcript path; TK-C010 kubectl delete, then --all, or aws s3 rm, then --recursive) or in an SQL statement
+    # (TK-DB003 DELETE FROM, then an always-true WHERE): a backtracking engine rescans that text from each occurrence of
+    # their first word, so 64 KiB repeating it in one command or statement spends the fallback's 1 s and denies
+    # (nondeterministic). RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade:
+    # structural pipeline and argv rules
+    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D008", "TK-D011", "TK-DB003", "TK-C010"}
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4
@@ -504,17 +505,23 @@ class Speed(unittest.TestCase):
                 for sep in ("", " "):
                     out.append("".join("".join(rnd.choice((c, c.upper())) for c in lit) + sep
                                        for _ in range(n // (len(lit) + len(sep)))))
-            # the rule's literal once, then what it starts with over and over (`echo @.env; nc nc nc …`): a
-            # backtracking engine retries the rest of the pattern from every copy
+            # what each branch starts with over and over, from the first character (an anchored branch only starts
+            # there) and after the rule's literal once (`echo @.env; nc nc nc …`): a backtracking engine retries the
+            # rest of the pattern from every copy; and each opening once, then a filler (`history -a -a …`), which an
+            # anchored branch's repeat backs off over
             lit = (pc.literals(pattern) or ("",))[0]
-            out += [lit + "; " + (o + sep) * (n // (len(o) + len(sep))) for o in self.openings(pattern)
-                    for sep in ("", " ", "/")]
-        return [s[:n] for s in out] + [s[:n - 3] + "://" for s in out]
+            openings = self.openings(pattern)
+            out += [head + (o + sep) * (n // (len(o) + len(sep))) for o in openings
+                    for sep in ("", " ", "/") for head in ("", lit + "; ")]
+            out += [o + f * (n // len(f)) for o in openings for f in self.FILLERS]
+        # each also ends in `://` and in a newline, which `.` and `[^\n]` don't cross and `$` doesn't match before
+        return [s[:n] for s in out] + [s[:n - 3] + "://" for s in out] + [s[:n - 1] + "\n" for s in out]
 
     @staticmethod
     def openings(pattern):
-        """What each top-level branch of `pattern` matches up to each of its first three unbounded repeats (`curl`
-        before `[^\\n]*`, `<!channel|` before `[^>]*`), a class read as one character it holds."""
+        """What each branch of `pattern`, a nested one too (`^(…|curl .*Delete)`), matches up to each of its first three
+        unbounded repeats (`curl ` before `[^\\n]*`, `<!channel|` before `[^>]*`), a class read as one character it
+        holds."""
         def char(items):
             if items[0][0] == _sre_c.NEGATE:
                 return next(c for c in "a-1 /" if not any(
@@ -536,7 +543,10 @@ class Speed(unittest.TestCase):
                     text += char(av)
                 elif op == _sre_c.SUBPATTERN:
                     text = walk(av[-1], text, found)
-                elif op == _sre_c.BRANCH:
+                elif op == _sre_c.BRANCH:   # each other alternative with three of its own, then on with the first
+                    for alt in av[1][1:]:
+                        more.append([])
+                        walk(alt, text, more[-1])
                     text = walk(av[1][0], text, found)
                 elif op in (_sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT):
                     if av[1] == _sre_c.MAXREPEAT and text.strip():
@@ -545,14 +555,9 @@ class Speed(unittest.TestCase):
                         text = walk(av[2], text, found)
             return text
 
-        tree = list(_sre_p.parse(pattern))
-        branches = tree[0][1][1] if len(tree) == 1 and tree[0][0] == _sre_c.BRANCH else [tree]
-        out = []
-        for b in branches:
-            found = []
-            walk(b, "", found)
-            out += found
-        return list(dict.fromkeys(out))
+        found, more = [], []
+        walk(list(_sre_p.parse(pattern)), "", found)
+        return list(dict.fromkeys(found + [o for m in more for o in m]))
 
     def test_every_pack_pattern_searches_64_kib_within_budget(self):
         slow = []
