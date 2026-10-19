@@ -88,7 +88,7 @@ function page() {
   }
 
   function command(text: string) {
-    const row = el("div", "", "cmd"), copy = el("button", "Copy");
+    const row = el("div", "", "cmd"), copy = el("button", "copy");
     copy.setAttribute("type", "button");
     copy.setAttribute("aria-label", `Copy: ${text}`);
     copy.addEventListener("click", () => navigator.clipboard?.writeText(text));
@@ -132,8 +132,8 @@ function page() {
       return li;
     }));
     $("summary-box").hidden = !summary.length;
-    $("summary-title").textContent = code === 0 ? "What the bundle holds"
-      : "What the bundle says it holds (not verified: see above)";
+    $("summary-title").textContent = code === 0 ? "what the bundle holds"
+      : "what the bundle says it holds (not verified: see above)";
     $("summary").replaceChildren(...summary.flatMap(([k, val]) => [el("dt", k), el("dd", val)]));
     $("checks").replaceChildren(...report.checks.map((c) => {
       const d = el("details") as HTMLDetailsElement, s = el("summary"), line = el("span", "", "line");

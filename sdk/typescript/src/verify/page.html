@@ -4,109 +4,97 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="%CSP%">
-<title>Tracekit bundle verifier</title>
+<title>tracekit verify</title>
 <style>
-:root {
-  color-scheme: light dark;
-  --bg: #fbfbf9; --fg: #1c1d1f; --muted: #5d6066; --line: #d9dad6; --card: #ffffff; --accent: #1f5fbf;
-  --ok: #17663a; --ok-bg: #e5f4ea; --bad: #a3221b; --bad-bg: #fbe8e6; --warn: #8a5a00; --warn-bg: #fdf1d8;
-  --code: #f1f1ee;
-}
-@media (prefers-color-scheme: dark) {
-  :root { --bg: #151618; --fg: #e8e8e6; --muted: #a2a5ab; --line: #34363a; --card: #1d1f22; --accent: #7fb0ff;
-    --ok: #7fd69f; --ok-bg: #16301f; --bad: #ff9a90; --bad-bg: #3a1a17; --warn: #f2c46b; --warn-bg: #352a12;
-    --code: #26282c; }
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 52rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; overflow-wrap: anywhere; }
-h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
-h2 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; }
-p { margin: 0.5rem 0; }
-.muted, .privacy { color: var(--muted); }
-.privacy { font-size: 0.95rem; }
-code, pre, .cmd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.875rem; }
-code { background: var(--code); padding: 0.05rem 0.3rem; border-radius: 4px; overflow-wrap: anywhere; }
-button, .button { font: inherit; font-size: 0.95rem; color: var(--fg); background: var(--card); border: 1px solid var(--line);
-  border-radius: 8px; padding: 0.45rem 0.85rem; cursor: pointer; }
-button:hover, .button:hover { border-color: var(--accent); }
-:focus-visible, .drop:focus-within, .button:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+:root { color-scheme: light dark; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700; }
+@media (prefers-color-scheme: dark) { :root { --ok: #3fb950; --bad: #ff7b72; --warn: #d29922; } }
+body { margin: 0; background: Canvas; color: CanvasText;
+  font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+main { max-width: 88ch; padding: 1.5rem 2ch 3rem; overflow-wrap: anywhere; }
+h1, h2 { font-size: 1em; margin: 1.6em 0 0.4em; }
+h1 { margin-top: 0; }
+h2::before { content: "## "; color: GrayText; }
+p { margin: 0.35em 0; }
+.muted, .privacy { color: GrayText; }
+code, pre { font: inherit; }
+button, .button { font: inherit; color: LinkText; background: none; border: 0; padding: 0; cursor: pointer;
+  text-decoration: underline; }
+button::before, .button::before { content: "["; display: inline-block; }
+button::after, .button::after { content: "]"; display: inline-block; }
+:focus-visible, .drop:focus-within, .button:focus-within { outline: 2px solid LinkText; outline-offset: 2px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.drop { display: block; margin: 1.25rem 0 0.75rem; padding: 2rem 1rem; text-align: center; border: 2px dashed var(--line);
-  border-radius: 12px; background: var(--card); cursor: pointer; }
-.drop.over { border-color: var(--accent); }
-.drop strong { display: block; font-size: 1.2rem; }
-.row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.5rem 0; }
-.chosen { font-weight: 600; overflow-wrap: anywhere; }
-.banner { margin: 1.5rem 0 1rem; padding: 1rem 1.1rem; border-radius: 12px; border: 2px solid; }
-.banner .word { font-size: 1.6rem; font-weight: 800; letter-spacing: 0.04em; }
-.banner p { margin: 0.35rem 0 0; }
-.ok { color: var(--ok); background: var(--ok-bg); }
-.bad { color: var(--bad); background: var(--bad-bg); }
-.warn { color: var(--warn); background: var(--warn-bg); }
-.banner .not { color: var(--fg); }
-.steps li { margin: 0.5rem 0; }
-.cmd { display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 0.3rem; }
-.cmd code { flex: 1; display: block; padding: 0.5rem 0.6rem; white-space: pre-wrap; }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
-dt { color: var(--muted); }
+.drop { display: block; margin: 1em 0; padding: 1em 2ch; border: 1px dashed GrayText; cursor: pointer; }
+.drop.over { border-style: solid; border-color: LinkText; }
+.row { display: flex; flex-wrap: wrap; gap: 0 1ch; align-items: baseline; margin: 0.25em 0; }
+.chosen { font-weight: bold; }
+.banner { margin: 1.5em 0 1em; }
+.banner .word { font-weight: bold; }
+.banner p { margin: 0.2em 0 0; }
+.ok { color: var(--ok); }
+.bad { color: var(--bad); }
+.warn { color: var(--warn); }
+.banner .not { color: CanvasText; }
+.steps { padding-left: 3ch; }
+.steps li { margin: 0.4em 0; }
+.cmd { display: flex; gap: 1ch; align-items: baseline; }
+.cmd code { flex: 1; white-space: pre-wrap; }
+.cmd code::before { content: "$ "; color: GrayText; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 0 2ch; margin: 0; }
+dt { color: GrayText; }
 dd { margin: 0; overflow-wrap: anywhere; }
-#checks details { border-top: 1px solid var(--line); padding: 0.35rem 0; }
-#checks summary { cursor: pointer; overflow-wrap: anywhere; }
-#checks .status { padding: 0 0.2rem; border-radius: 4px; font-weight: 700; }
-.problem { display: block; margin: 0.2rem 0 0 1.5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-.means { margin: 0.35rem 0 0 1.5rem; color: var(--muted); }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0.75rem; background: var(--code); border-radius: 8px; }
-.final { margin-top: 0.75rem; }
+#checks summary { cursor: pointer; }
+#checks .status { font-weight: bold; }
+.problem { display: block; margin-left: 4ch; white-space: pre-wrap; }
+.means { margin: 0.2em 0 0.4em 4ch; color: GrayText; }
+pre { white-space: pre-wrap; margin: 0.5em 0; padding-left: 2ch; border-left: 1px solid GrayText; }
+.final { margin-top: 1em; }
 @media (max-width: 30rem) {
-  dl { grid-template-columns: 1fr; gap: 0; }
-  dd { margin-bottom: 0.5rem; }
-  .drop { padding: 1.5rem 0.75rem; }
+  dl { grid-template-columns: 1fr; }
+  dd { margin-bottom: 0.4em; }
 }
 </style>
 </head>
 <body>
 <main>
-<h1>Verify a Tracekit bundle</h1>
-<p>Check that an AI agent's evidence bundle (<code>.tkb</code>) is intact and signed by the signer you trust. It runs in
+<h1>tracekit verify</h1>
+<p>Checks that an AI agent's evidence bundle (<code>.tkb</code>) is intact and signed by the signer you trust. Runs in
 this page: nothing to install.</p>
 <p class="privacy">Your file never leaves this page (the browser blocks all network access for it).</p>
 
 <label class="drop" id="drop" for="bundle">
-  <strong>Drop a .tkb bundle here</strong>
-  <span class="muted">or click to choose one (you can drop the trust file with it)</span>
+  <strong>drop a .tkb bundle here</strong> <span class="muted">or click to choose one (drop trust.json with it)</span>
   <input class="sr" type="file" id="bundle" accept=".tkb,.zip,.json" multiple>
 </label>
-<p class="row"><span class="muted">Bundle:</span> <span class="chosen" id="bundle-name">none chosen</span></p>
+<p class="row"><span class="muted">bundle:</span> <span class="chosen" id="bundle-name">none chosen</span></p>
 <div class="row">
-  <span class="muted">Trust file (optional):</span> <span class="chosen" id="trust-name">none</span>
-  <label class="button" for="trust">Choose trust file<input class="sr" type="file" id="trust" accept=".json"></label>
-  <button type="button" id="clear-trust" hidden>Remove</button>
+  <span class="muted">trust (optional):</span> <span class="chosen" id="trust-name">none</span>
+  <label class="button" for="trust">choose trust file<input class="sr" type="file" id="trust" accept=".json"></label>
+  <button type="button" id="clear-trust" hidden>remove</button>
 </div>
 <p class="muted">The trust file (<code>trust.json</code>, from the sender) names the signer key and witnesses you trust.
 Without it the page still finds changed or missing records, but can't tell whose signer made the bundle.</p>
-<div class="row"><span class="muted">Try a sample:</span>
-  <button type="button" id="sample-clean">Clean bundle</button>
-  <button type="button" id="sample-tampered">Tampered copy</button></div>
+<div class="row"><span class="muted">try a sample:</span>
+  <button type="button" id="sample-clean">clean bundle</button>
+  <button type="button" id="sample-tampered">tampered copy</button></div>
 
 <section id="result" hidden aria-live="polite">
   <div class="banner" id="banner"><div class="word" id="verdict-word"></div><p id="verdict-means"></p>
     <p class="not" id="verdict-not"></p></div>
-  <div id="next" hidden><h2>What to do next</h2><ol class="steps" id="steps"></ol></div>
+  <div id="next" hidden><h2>what to do next</h2><ol class="steps" id="steps"></ol></div>
   <div id="summary-box" hidden><h2 id="summary-title"></h2><dl id="summary"></dl></div>
-  <h2>Every check</h2>
+  <h2>every check</h2>
   <p class="muted">Exactly as <code>tracekit verify</code> prints them. Open a line for what it means.</p>
   <div id="checks"></div>
   <p class="final" id="integrity"></p>
   <p id="assurance"></p>
   <p class="muted" id="exit"></p>
-  <div class="row"><button type="button" id="copy">Copy report</button>
-    <button type="button" id="download">Download report (JSON)</button><span class="muted" id="copied"></span></div>
-  <details><summary>The report as text</summary><pre id="report"></pre></details>
+  <div class="row"><button type="button" id="copy">copy report</button>
+    <button type="button" id="download">download report (JSON)</button><span class="muted" id="copied"></span></div>
+  <details><summary>the report as text</summary><pre id="report"></pre></details>
 </section>
 <p class="muted" id="busy" hidden>Verifying...</p>
 
-<h2>About this page</h2>
+<h2>about this page</h2>
 <p class="muted">The TypeScript verifier of Tracekit <span id="version"></span>, the same checks as
 <code>npx @cygnuxlabs/tracekit verify</code> and <code>tracekit verify</code>. Its Content Security Policy lets it load
 and send nothing. A bundle relying on a check this page lacks (SLH-DSA checkpoint signatures, Rekor anchors, record-key
