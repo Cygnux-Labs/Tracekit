@@ -139,13 +139,13 @@ ask:
     class: fs
     tool: Read|Grep
     field: path
-    pattern: '(^|/)\.password-store(/.+)?$|(^|/)Library/Keychains/[^/]+$|(^|/)\.local/share/keyrings/[^/]+$|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|(^|/)Library/Application Support/(Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|^[A-Za-z]:/Users/[^/]+/AppData/Local/(Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/Network/Cookies$'
+    pattern: '(^|/)\.password-store(/.+)?$|(^|/)Library/Keychains/[^/]+$|(^|/)\.local/share/keyrings/[^/]+$|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|(^|/)Library/Application Support/(Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$|^[A-Za-z]:/Users/[^/]+/AppData/Local/(Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/(Login Data|Cookies|Web Data|Network/Cookies)$'
     reason: reading an operating-system or browser credential store
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
   - id: TK-A021
     class: shell
     field: target
-    pattern: '^(security\s+(find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|pass\s+show|ssh-add\s+-L)\b|^(cat|sqlite3)\b.*(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|Library/Application Support/(?:Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|[A-Za-z]:/Users/[^/]+/AppData/Local/(?:Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/Network/Cookies)'
+    pattern: '^(security\s+(find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|pass\s+show|ssh-add\s+-L)\b|^(cat|sqlite3)\b.*(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|BraveSoftware/Brave-Browser|microsoft-edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|Library/Application Support/(?:Google/Chrome|Chromium|BraveSoftware/Brave-Browser|Microsoft Edge)/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies)|[A-Za-z]:/Users/[^/]+/AppData/Local/(?:Google/Chrome|Microsoft/Edge|BraveSoftware/Brave-Browser)/User Data/[^/]+/(?:Login Data|Cookies|Web Data|Network/Cookies))'
     reason: reading credentials from an operating-system or browser store
     rationale: These commands can read saved credentials or enumerate an SSH agent; a person confirms the access.
   - id: TK-A022
@@ -184,7 +184,7 @@ ask:
   - id: TK-A027
     class: shell
     field: target
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):/var/log(?:/.*)?$|^history\s+-c(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^export\s+HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*--vacuum-[^\s=]+(?:=|\s|$)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):/var/log(?:/.*)?$|^history\s[^\n]*?-[A-Za-z]*c|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*--vacuum-[^\s=]+(?:=|\s|$)'
     reason: clearing shell history or system logs
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
   - id: TK-A028

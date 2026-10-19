@@ -156,3 +156,8 @@
 {"tool": "Bash", "args": {"command": "echo 'security dump-keychain'"}, "expect": "allow", "note": "mention a risky command as text"}
 {"tool": "Bash", "args": {"command": "printf 'pip install https://packages.example.test/demo.whl'"}, "expect": "allow", "note": "mention a package URL as text"}
 {"tool": "Bash", "args": {"command": "echo 'docker run --privileged alpine'"}, "expect": "allow", "note": "mention a container option as text"}
+{"tool": "Bash", "args": {"command": "npm publish --registry=https://npm.pkg.github.com/"}, "expect": "allow", "note": "publishing to a chosen registry"}
+{"tool": "Bash", "args": {"command": "docker run alpine ls --privileged"}, "expect": "allow", "note": "an option of the container's command"}
+{"tool": "Bash", "args": {"command": "find /var/log -type f -exec cat {} +"}, "expect": "allow", "note": "read system logs through find"}
+{"tool": "Bash", "args": {"command": "cp -r /var/log /tmp/logs"}, "expect": "allow", "note": "copy system logs out"}
+{"tool": "Bash", "args": {"command": "history -w"}, "expect": "allow", "note": "write shell history to its file"}

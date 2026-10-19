@@ -130,7 +130,7 @@ class Engine:
         if cls == "sql" and fields.get("statement") is not None and not fields.get("code"):
             hits["ask"].append("TK-SQL-PARSE")   # no dialect reads it: an unclosed literal or comment, or not text
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
-        parsed, oversize = ([], [], []), []
+        parsed, oversize = ([], [], [], []), []
         if cls == "shell":
             command = fields.get("command", "")
             if len(_text(command if isinstance(command, str) else canonical(command)).encode()) > MAX_SUBJECT:
@@ -284,12 +284,19 @@ def _package_indexes(commands):
                 "poetry": {"--source"}, "cargo": {"--index", "--registry"}, "gem": {"--source"}}[exe]
         else:
             continue
-        if args[:2] == ["config", "set"] and len(args) >= 4:
-            key, value = args[-2:]
-            if ((exe in ("pip", "pip3") and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url"})
-                    or (exe in ("npm", "pnpm", "yarn", "bun") and key == "registry")):
-                if _non_default_source(value, default):
-                    out.append(value)
+        if next((a for a in args if not a.startswith("-")), None) in ("publish", "unpublish"):
+            continue   # publishing doesn't change where installs come from
+        if args[:1] == ["config"] and "set" in args or exe == "npm" and args[:1] == ["set"]:
+            # `set key value` or `set key=value ...`, options anywhere
+            words = [a for a in args[args.index("set") + 1:] if not a.startswith("-")]
+            for i, word in enumerate(words):
+                key, eq, value = word.partition("=")
+                value = value if eq else words[i + 1] if i + 1 < len(words) else None
+                if value is not None and (
+                        (exe in ("pip", "pip3") and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url"})
+                        or (exe in ("npm", "pnpm", "yarn", "bun") and (key == "registry" or key.endswith(":registry")))):
+                    if _non_default_source(value, default):
+                        out.append(value)
             continue
         selected, i = [], 0
         while i < len(args):
@@ -319,41 +326,41 @@ def _non_default_source(value, default):
     return host != default
 
 
+# docker/podman run options that take no value; any other long option without `=` takes the next word
+_RUN_FLAGS = {"--detach", "--interactive", "--tty", "--rm", "--init", "--privileged", "--read-only", "--publish-all",
+              "--no-healthcheck", "--oom-kill-disable", "--disable-content-trust", "--quiet", "--sig-proxy", "--help",
+              "--use-api-socket", "--replace", "--rmi", "--http-proxy", "--env-host", "--no-hosts", "--passwd",
+              "--read-only-tmpfs", "--tls-verify"}
+_HOST_PATH = re.compile(r"/|/proc(/.*)?")   # a mount source that hands the container the host's root or /proc
+
+
 def _container_host_access(commands):
-    """Extract risky docker/podman run options without matching across option boundaries."""
+    """A docker/podman run whose own options (those before the image: later words are the container's command) give
+    it host privileges, the host's process space, or the host's root or /proc."""
     for command in commands:
         argv = command["argv"]
-        if not argv or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman") or len(argv) < 2 or argv[1] != "run":
+        if len(argv) < 2 or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman") or argv[1] != "run":
             continue
         args, i = argv[2:], 0
-        while i < len(args):
+        while i < len(args) and args[i].startswith("-"):
             arg = args[i]
-            if arg in ("--privileged", "--privileged=true", "--pid=host"):
-                return ["host-access"]
-            if arg == "--pid" and i + 1 < len(args) and args[i + 1] == "host":
-                return ["host-access"]
-            value = None
-            if (arg in ("-v", "--volume", "--mount") and i + 1 < len(args)
-                    and not args[i + 1].startswith("-")):
-                value = args[i + 1]
+            if arg.startswith("--"):
+                name, eq, value = arg.partition("=")
+                takes = not eq and name not in _RUN_FLAGS
+            else:   # a short cluster: flags, then at most one option, valued by the rest or the next word
+                j = next((j for j, c in enumerate(arg[1:], 1) if c not in "ditPq"), len(arg))
+                name, value = "-" + arg[j:j + 1], arg[j + 1:].removeprefix("=")
+                takes = j < len(arg) and not value
+            if takes and i + 1 < len(args):
                 i += 1
-            elif arg.startswith("--volume=") or arg.startswith("--mount="):
-                value = arg.split("=", 1)[1]
-            elif arg.startswith("-v="):
-                value = arg[3:]
-            elif arg.startswith("-v") and not arg.startswith("--") and len(arg) > 2:
-                value = arg[2:]
-            if value is not None:
-                if arg.startswith("--mount"):
-                    for item in value.split(","):
-                        key, sep, source = item.partition("=")
-                        if sep and key in ("src", "source") and (source == "/" or source == "/proc" or source.startswith("/proc/")):
-                            return ["host-access"]
-                else:
-                    source = value.partition(":")[0]
-                    if source in ("/", "/proc") or source.startswith("/proc/"):
-                        return ["host-access"]
+                value = args[i]
             i += 1
+            if (name == "--privileged" and value.lower() not in ("0", "f", "false")
+                    or name == "--pid" and value == "host"
+                    or name in ("-v", "--volume") and _HOST_PATH.fullmatch(value.partition(":")[0])
+                    or name == "--mount" and any(k in ("src", "source") and _HOST_PATH.fullmatch(v)
+                                                 for k, _, v in (item.partition("=") for item in value.split(",")))):
+                return ["host-access"]
     return []
 
 
@@ -366,7 +373,9 @@ def _shell_action_targets(commands):
             continue
         exe = argv[0].rsplit("/", 1)[-1]
         args = argv[1:]
-        if exe == "find" and "-delete" in args:
+        if exe == "find" and ("-delete" in args or any(
+                a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args)
+                and args[i + 1].rsplit("/", 1)[-1] in ("rm", "unlink", "shred", "truncate") for i, a in enumerate(args))):
             paths = []
             for arg in args:
                 if arg.startswith("-"):
@@ -383,23 +392,31 @@ def _shell_action_targets(commands):
                     paths.append(arg)
             out.extend("DELETE_TARGET:" + path for path in dict.fromkeys(paths))
         elif exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install"):
-            operands, skip = [], False
+            valued = ("-s", "--size", "-r", "--reference") if exe == "truncate" else (
+                "-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix")
+            operands, directory, skip = [], None, None
             for arg in args:
                 if skip:
-                    skip = False
-                    continue
-                if arg in ("-s", "--size", "-r", "--reference", "-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group"):
-                    skip = True
-                elif arg.startswith("-") and arg != "-":
-                    continue
-                else:
+                    directory = arg if skip in ("-t", "--target-directory") else directory
+                    skip = None
+                elif arg in valued:
+                    skip = arg
+                elif arg.startswith("--target-directory="):
+                    directory = arg.split("=", 1)[1]
+                elif not arg.startswith("-") or arg == "-":
                     operands.append(arg)
-            targets = operands if exe in ("rm", "unlink", "shred", "truncate", "tee") else operands[-1:]
-            out.extend("DELETE_TARGET:" + path if exe in ("rm", "unlink", "shred") else "WRITE_TARGET:" + path
-                       for path in targets)
+            if exe in ("rm", "unlink", "shred"):
+                deleted, written = operands, []
+            elif exe in ("truncate", "tee"):
+                deleted, written = [], operands
+            else:   # cp, mv, install write the last operand (or -t's directory); mv also removes its sources
+                written = [directory] if directory is not None else operands[-1:]
+                deleted = (operands if directory is not None else operands[:-1]) if exe == "mv" else []
+            out.extend(["DELETE_TARGET:" + path for path in deleted] + ["WRITE_TARGET:" + path for path in written])
         elif exe == "dd":
             out.extend("WRITE_TARGET:" + arg[3:] for arg in args if arg.startswith("of="))
-        elif exe in ("sed", "perl") and any(arg == "-i" or arg.startswith("-i") for arg in args):
+        elif exe in ("sed", "perl") and any(re.match(r"-[nrsuzE]*i|--in-place" if exe == "sed" else r"-[0-9alnpw]*i", a)
+                                            for a in args):
             if exe == "sed":
                 files, script_seen, skip = [], False, False
                 for arg in args:

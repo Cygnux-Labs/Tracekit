@@ -30,3 +30,4 @@
 {"tool": "Write", "args": {"file_path": "/etc/docker/daemon.json", "content": "{}"}, "expect": "ask", "note": "Docker host configuration"}
 {"tool": "Write", "args": {"file_path": "/etc/apt/sources.list.d/example.list", "content": "deb https://packages.example.test stable main"}, "expect": "ask", "note": "package source configuration"}
 {"tool": "Write", "args": {"file_path": "/home/app/.bash_history", "content": ""}, "expect": "ask", "note": "shell history"}
+{"tool": "Read", "args": {"file_path": "C:\\Users\\u\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data"}, "expect": "ask", "note": "Windows Chrome saved logins"}
