@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-9'
+version: '2026.10-v2-10'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -154,6 +154,13 @@ ask:
     pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
+  - id: TK-A003
+    # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
+    # in bypassPermissions mode or under a matching allow rule nobody is asked (docs/integrations/claude-code-sandbox.md)
+    field: dangerouslyDisableSandbox
+    pattern: '^true$'
+    reason: running a command outside Claude Code's sandbox
+    rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that leaves it.
 
 flag:
   - id: TK-F001

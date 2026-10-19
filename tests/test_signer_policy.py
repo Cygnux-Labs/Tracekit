@@ -98,6 +98,12 @@ class CodingPack(unittest.TestCase):
                 self.assertEqual((d["verdict"], want in d["rule_ids"]), ("deny" if want.startswith("TK-D") else "ask", True),
                                  d)
 
+    def test_a_command_run_outside_claude_codes_sandbox_asks(self):
+        self.verdicts([({"command": "npm install", "dangerouslyDisableSandbox": True}, "TK-A003"),
+                       ({"command": "npm install", "dangerouslyDisableSandbox": "true"}, "TK-A003")])
+        for args in ({"command": "npm install", "dangerouslyDisableSandbox": False}, {"command": "npm install"}):
+            self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
+
     def test_argv_lists_and_command_fields(self):
         self.verdicts([({"command": ["sudo", "id"]}, "TK-D001"), ({"command": ["bash", "-lc", "sudo id"]}, "TK-D001"),
                        ({"commands": ["ls", "sudo id"]}, "TK-D001"), ({"command": 42}, "TK-SHELL-PARSE"),
