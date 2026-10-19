@@ -36,6 +36,7 @@ access.
 | `class` | Your judgement of who runs each witness: `public` (a witness network), `customer` (you or another customer), `tracekit`, or `operator` (the party being audited). Only non-`operator` witnesses count toward `witnessed`. |
 | `witnesses_required` | How many pinned cosignatures a checkpoint must carry. Set it to at least 1 for an audit. |
 | `rekor` (optional) | Sigstore's `trusted_root` from Sigstore's TUF repository, the signer's Rekor publishing key (`rekor.pub`) from the operator, and its class. See [witnesses](witnesses.md#v2-rekor-v2-anchors-and-rfc-3161-timestamps). |
+| `analyzers` (optional) | The identities (`scheme:subject`, such as `uid:1004` or `mtls:spiffe://acme/analyzer`) whose signed findings you take as independent: the operator's analyzer, never the agent's identity. Only a finding by a pinned author reads `independent`; see [verdicts](verdicts.md#reviews). |
 
 `tracekit signer trust -o trust.json` writes a trust config from a signer's own config. It is a convenience for the
 operator; as an auditor, check every key in it against your own sources before using it.

@@ -2014,6 +2014,29 @@
         },
         "verdict": {
           "type": "object"
+        },
+        "cites": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_seq",
+              "hash"
+            ],
+            "properties": {
+              "run_seq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "hash": {
+                "$ref": "#/$defs/hash"
+              }
+            }
+          },
+          "description": "A signed finding (format 1.4; review_finding), in a findings run: the records of the analysed run it rests on, by run_seq and record hash. A review without cites (a migrated v1 judge verdict) is imported, not checked."
         }
       }
     },

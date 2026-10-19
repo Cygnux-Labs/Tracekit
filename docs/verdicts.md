@@ -136,6 +136,32 @@ The argument bounds themselves are not checkable offline: the records hold the a
 line says so in its detail. To audit one approval, `tracekit signer reveal --record <seq>` prints the salt of that
 record and an auditor holding the arguments recomputes the commitment ([privacy](privacy.md#the-v2-signer)).
 
+## Reviews
+
+A signed finding is what `tracekit analyze --v2` found in a run, signed by the signer in a findings run of the
+analyzer's own ([findings](findings.md), [format v2](format-v2.md#3-events)). It holds a rule, a severity, the rule's
+fixed title and citations of the records it rests on, never text of the run. When a bundle holds `review` records,
+both verifiers add:
+
+| Line | Pass means | Warning / failure |
+|---|---|---|
+| `reviews` | `n review(s): 2 independent, 1 imported`: the reviews counted by label (below), and each citation of a signed finding is a record of the analysed run, in the bundle, with that `run_seq` and hash | **warn** when a finding is `self-asserted`, naming its findings run and why. **fail** when a citation names a record the analysed run doesn't have, or one with another hash (the records are intact; the finding misstates them), or a signed finding is outside a findings run |
+| `reviews counted` | — | **warn**: a findings run is in the bundle without the run it analyses, so its citations are not counted. Export the analysed run with `tracekit export --v2 --run <run> --with-findings` |
+
+The label says who wrote a finding: its author, the identity the signer measured when the findings run registered.
+Only `independent` vouches for the author; read every other label as the analyzer's word:
+
+| Label | Means |
+|---|---|
+| `independent` | your trust config's `analyzers` lists the author ([format v2](format-v2.md#10-the-trust-config)), and the author is not the analysed run's identity |
+| `unpinned author <id>` | the author is not the analysed run's identity, but your trust config doesn't list it. If you trust that identity to analyse runs, add it to `analyzers` |
+| `self-asserted` | the agent could have written the finding about itself: the author is the analysed run's own identity, or a run's `signer_isolation` is `same-user` (the signer runs as its client's user, which can then use its keys). Every finding of the dev signer reads this |
+| `author not checked` | the analysed run is not in the bundle |
+| `imported` | a review without citations, such as a v1 judge verdict carried over; never checked |
+
+A finding says that a check fired on these records, not that the agent did wrong. A bundle with signed findings needs
+`verifier_min_version` 1.4.0: an older verifier reports `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
+
 ## Signed gaps
 
 Gaps inside a run (`capture.gap`, written by the signer only) are signed records of the run, visible in the bundle.

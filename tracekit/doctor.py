@@ -234,6 +234,12 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         why = install._privileges(agent) if agent else ["no agent user is known (client.json names none)"]
         add("D-AGENT-PRIV", not why, f"{agent.pw_name} is unprivileged" if not why else "; ".join(why),
             "trace an unprivileged user: remove it from admin, docker and tracekit groups", bad=FAIL if agent else WARN)
+    if agent:   # a findings run of the agent's own identity: its findings about its runs read self-asserted
+        listed = f"uid:{agent.pw_uid}" in (cfg.get("analyzers") or ())
+        add("D-ANALYZER-AGENT", not listed, f"{agent.pw_name} is in analyzers: it can sign findings about its own "
+            "runs" if listed else f"{agent.pw_name} is not in analyzers",
+            "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity",
+            bad=WARN)
     try:
         owner = os.stat(data).st_uid
     except OSError as e:

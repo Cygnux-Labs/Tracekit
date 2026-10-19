@@ -289,6 +289,16 @@ What Tracekit guarantees and doesn't, per deployment, on one page: [guarantees](
 | With Falco, only alerts of rules tagged `tracekit` are recorded, and none of a process's exits; records have no `exec_id`. | Other rules' alerts would record the same system call twice; the sample rules match no exit, and Falco names no process across executions. | Use the sample rules; join a process's records by `pid` and time. | [Falco](integrations/falco.md#what-is-recorded) |
 | A bundle with kernel sensor records needs verifier 1.4.0 or later. | Older verifiers don't know the records' fields. | Upgrade the verifier. | [format v2](format-v2.md#3-events) |
 
+## Signed findings
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| A signed finding reads `independent` only when your trust config pins its author in `analyzers`; otherwise `unpinned author <id>`, and `self-asserted` when the author is the analysed run's identity or a run's signer runs as its client's user. Every finding of the dev signer is `self-asserted`. | The signer measures who wrote a finding; only you can say whom you trust to analyse runs. | Run `tracekit analyze --v2` as an operator identity, never the agent's (`tracekit doctor` warns: `D-ANALYZER-AGENT`), and pin it in your trust config: `"analyzers": ["uid:1004"]`. | [verdicts](verdicts.md#reviews) |
+| A signed finding is the analyzer's word. The verifiers check that its citations are records of the analysed run with those hashes, not that the check was right, ran on every record, or found everything; a missing finding proves nothing. | A finding holds no text of the run, so a verifier can't run the checks again from a bundle. | Read the cited records (`tracekit view`), or run `tracekit analyze --v2` again with access to the content vault. | [format v2](format-v2.md#3-events) |
+| A bundle of a findings run without the run it analyses verifies with its findings not counted (`reviews counted` warning) and their author not checked. | The citations and the author's comparison need the analysed run's records. | Export the analysed run with `tracekit export --v2 --run R --with-findings`. | [verdicts](verdicts.md#reviews) |
+| The verdict of a signed finding is a closed schema: a check whose finding needs another rule, field or reason code needs a new RPC version, in the signer and the analyzer. | The schema is how the signer keeps text of the run (excerpts, paths, reasons) out of records that can't be erased. | Upgrade the signer with the analyzer. | [format v2](format-v2.md#3-events) |
+| A bundle with signed findings needs verifier 1.4.0 or later. A v1 judge verdict carried into a v2 run (a `review` without citations) is counted as `imported`, never checked. | Older verifiers don't know `cites`; an imported verdict cites nothing to check. | Upgrade the verifier. | [format v2](format-v2.md#3-events) |
+
 ## Witnesses and monitor
 
 | Limit | Why it is so | What to do | Details |

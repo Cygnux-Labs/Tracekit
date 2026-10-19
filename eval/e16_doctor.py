@@ -193,6 +193,7 @@ CASES = [
     ("signer.yaml does not load", "D-CONFIG", lambda L: L.signer_yaml(bogus=1)),
     ("signer.yaml world-writable", "D-CONFIG", _chmod("etc/signer.yaml", 0o666)),
     ("agent is root", "D-AGENT-PRIV", lambda L: L.kw.update(agent=types.SimpleNamespace(**dict(vars(AGENT), pw_uid=0)))),
+    ("agent may sign findings", "D-ANALYZER-AGENT", lambda L: L.signer_yaml(analyzers=[f"uid:{AGENT.pw_uid}"])),
     ("keys readable by the agent", "D-AGENT-PROBE", _probe_keys),
     ("client.json writable by the agent", "D-AGENT-PROBE", _chmod("etc/client.json", 0o666)),
     ("policy writable by others", "D-POLICY-TRUST", _chmod("etc/policy.json", 0o666)),

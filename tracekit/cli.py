@@ -237,8 +237,8 @@ def main(argv=None):
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
     p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
-    p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's `tracekit why` "
-                   "findings and their replay runs, which the verifier counts")
+    p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's findings runs "
+                   "(`tracekit analyze --v2`, `tracekit why`) and replay runs, which the verifier checks")
 
     p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
                                     "and verify it")

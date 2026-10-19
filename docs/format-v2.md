@@ -172,6 +172,20 @@ investigation with findings is named by one (`findings`, FAILED otherwise). Repl
 finding are a `replay runs` warning. In any other bundle (a findings run alone, a run-set) a finding whose replay runs
 are absent is not counted (`findings counted`, a warning). A bundle with either needs `verifier_min_version` 1.1.0.
 
+Signed findings (format 1.4, [findings](findings.md)): `tracekit analyze --v2`, run by an operator identity signer.yaml
+`analyzers` lists, writes each finding through the `review_finding` RPC in a findings run (`run.registered`
+`analyzes`; refused in any other run) as `review{reviewer, verdict, cites: [{run_seq, hash}]}`. `cites` are records of
+the analysed run, by `run_seq` and record `hash`. The verdict holds no text of the run, only `{kind: finding, rule,
+title, severity: info|low|medium|high|critical, tier?: gateway|transcript|sdk (the text it relied on), order?:
+signed_before|transcript_order|after (that text against the call), redacted?, digests?: [sha256:...]}`, or once per
+pass `{kind: coverage, rule: TK-X200, title, severity: info, checks: {<rule>: {checked, found, not_checkable?:
+[{reason, n}]}}, partial?, reasoning?: {full, summary, withheld, none}}`. `title` is the rule's fixed title
+(`rpc_schema.FINDING_TITLES`), written by the signer; `digests` are copied from the cited records, never a hash of
+plaintext. The finding's author is the findings run's `run.registered` `identity`, as the signer measured it;
+`reviewer` (the tool and its version) is the analyzer's claim. Excerpts, paths and reasons are shown when a person
+reads the cited records (`content_get`), never signed. A `review` without `cites` (a v1 judge verdict carried over,
+format 1.0) is imported, and never checked. A bundle with `cites` needs `verifier_min_version` 1.4.0.
+
 Completeness (format 1.2, [limits](limits.md#signer-and-capture)): gaps for what the signer saw decided or reported
 and then never heard about. All are `capture.gap` records with `source: signer`.
 
@@ -473,7 +487,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` |
-| 1.4.0 | — | `effect.observed`: `sensor` | — |
+| 1.4.0 | — | `effect.observed`: `sensor`; `review`: `cites` | — |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never
@@ -490,12 +504,15 @@ The verifier pins its own trust, never the bundle's (`verify.v2.load_trust`):
  "witnesses_required": 0,
  "rekor": {"trusted_root": {}, "publishing_key": "<base64 SPKI>", "class": "public"},
  "monitors": [{"vkey": "<monitor vkey>", "class": "public|customer|tracekit|operator", "max_age_s": 3600}],
- "issuers": [{"vkey": "<issuer vkey>", "issuance_log_vkey": "<issuance log vkey>"}]}
+ "issuers": [{"vkey": "<issuer vkey>", "issuance_log_vkey": "<issuance log vkey>"}],
+ "analyzers": ["<scheme:subject>"]}
 ```
 
 `logs` and `algs` are required and non-empty; `witnesses`, `witnesses_required` (default 0, an integer token),
-`rekor`, `monitors` ([monitor](monitor.md) reports the verifier is given) and `issuers` (record-key issuers,
-[issuer.md](issuer.md)) are optional. No other key is allowed. `tracekit signer trust -o trust.json` writes one for a signer; an auditor should build theirs
+`rekor`, `monitors` ([monitor](monitor.md) reports the verifier is given), `issuers` (record-key issuers,
+[issuer.md](issuer.md)) and `analyzers` (the identities, `scheme:subject` as `run.registered` records them, whose
+signed findings you take as independent: your operator's `tracekit analyze --v2`, never the agent's) are optional. No
+other key is allowed. `tracekit signer trust -o trust.json` writes one for a signer; an auditor should build theirs
 from independent sources ([auditor guide](auditor-guide.md)).
 
 ## 11. Verification algorithm
@@ -533,6 +550,13 @@ line and verdict is in [verdicts](verdicts.md).
    `key.retire` leaf in the range must be among the key records. A `log.closed` in the range must be
    the checkpoint's last record, or later records were added after the log closed.
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
+   **Signed findings** (with `review` records): a `review` with `cites` must be in a findings run; when the run it
+   analyses is in the bundle, each cite must be a record of that run with that `run_seq` and `hash` (`reviews` fails
+   otherwise), and each finding is labelled by its author, the findings run's `run.registered` `identity`:
+   `self-asserted` (a warning) when that is the analysed run's identity or either run's `signer_isolation` is
+   `same-user`; else `independent` when the trust config's `analyzers` lists it, else `unpinned author <id>`. Without
+   the analysed run, the findings are `author not checked` and their cites not counted (`reviews counted`, a warning).
+   A `review` without `cites` is `imported`.
 9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256 (else `policy snapshot` fails and neither
    check below reads it). `tracekit export --v2` bundles, from the signer's `<data_dir>/policies`, the compiled policy
    (canonical JSON, so its SHA-256 is its `policy_hash`) of each `policy_hash` a verifier checks against, once: the
@@ -578,8 +602,9 @@ tell a later v1 record from a genuine one; only this check reports it.
 | TypeScript, independent | `sdk/typescript/src/verify` (`@cygnuxlabs/tracekit/verify`, `npx @cygnuxlabs/tracekit verify`) | written from this page; Node ≥ 20.12 and browsers, Web Crypto only |
 
 The TypeScript verifier does not implement SLH-DSA (§6, Web Crypto has none), Rekor anchors (§8) or record-key
-certificates ([issuer.md](issuer.md)): a bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`,
-exit 2, never `VERIFIED`. It takes no monitor reports, revocations or v1 ledger.
+certificates ([issuer.md](issuer.md)), nor `tracekit why` findings (a bundle with a `why.finding` or a replay run): a
+bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`, exit 2, never `VERIFIED`. It checks
+signed findings (`reviews`) as the reference does. It takes no monitor reports, revocations or v1 ledger.
 
 **Agreement.** `tests/test_ts_verifier.py` builds bundles with the real signer (honest runs: dev, witnessed, with a
 gap, with an approval, a run-set; and mutated copies: edited, dropped and reordered records, swapped signatures, a

@@ -925,6 +925,8 @@ ENTRIES = {
     "effect.observed.sensor": [registered(), ("effect.observed", {
         "observer": "uid:7", "sensor": "tetragon", "kind": "exec", "ts": TS_, "pid": 7, "binary": "/usr/bin/curl",
         "attribution": "identity"}, "run-a")],
+    "review.cites": [registered(), registered("run-f", analyzes="run-a"), ("review", {
+        "reviewer": "tracekit-analyze/1.4.0", "verdict": {"kind": "coverage", "rule": "TK-X200"}, "cites": []}, "run-f")],
 }
 
 

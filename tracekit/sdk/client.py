@@ -636,6 +636,13 @@ class RunHandle:
         records a commitment, never the value."""
         return self.call("observe", value=value, source=source, trust=trust, **fields)
 
+    def review_finding(self, reviewer, verdict, cites):
+        """Sign a finding in this findings run (`client.run(name, analyzes=<run id>)`, as an identity signer.yaml
+        `analyzers` lists): `reviewer` the tool and version ("tracekit-analyze/1.4.0"), `verdict` {kind, rule,
+        severity, ...} and `cites` [{run_seq, hash}] of records of the analysed run (rpc_schema.REVIEW: no text of the
+        run; the signer adds the rule's fixed title). Returns {"run_seq"}."""
+        return self.call("review_finding", review={"reviewer": reviewer, "verdict": verdict, "cites": cites})
+
     def approval_consume(self, tool_call_id, tool, args, approval_id_hint=None, **fields):
         """Call right before running a call that was not denied: {"ok": True} when it may run now. `args` as for
         `decide`; `approval_id_hint` is the approval id the framework saved, if any. Never raises: a signer that

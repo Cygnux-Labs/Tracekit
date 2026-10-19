@@ -43,8 +43,9 @@ signer.yaml:
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested), or a
                                              # bridge's on_behalf person's tenant
     migrators: ["uid:1003"]                  # may register `migrated` runs
-    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses, and
-                                             # `tracekit why` replay runs of it (replay_of)
+    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses (for
+                                             # `tracekit analyze --v2` and `tracekit why` findings), and `tracekit
+                                             # why` replay runs of it (replay_of); never the agent's identity
     gateways: ["mtls:spiffe://acme/gateway"]  # LLM and MCP gateways, tool executors (tracekit.gateway, .mcp_gateway,
                                              # .executor): their calls name the client they authenticated (`caller`):
                                              # model_event, decide, complete, approval_request and observe are
@@ -373,7 +374,7 @@ DEFAULT_GRANTS = frozenset({
     "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
-    "passkey_register", "why_finding"})
+    "passkey_register", "why_finding", "review_finding"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
@@ -3668,20 +3669,31 @@ class SignerService:
                     and self.log.runs[k]["owner"] == owner(c)), None)
         return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run"
 
-    def _why_finding(self, identity, req):
+    def _finding(self, identity, req, method, type_, data):
+        """Write a `type_` record of `data` in the caller's findings run (registered with `analyzes`, which only an
+        identity signer.yaml `analyzers` lists may do); refused in any other run."""
         key = self._authorize(identity, req)
         try:
             first = next(iter(self.log.storage.iter_run(*key)))["event"]
         except (OSError, StorageUnavailable) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         if "analyzes" not in first["data"]:
-            raise RPCError("forbidden", "a why.finding goes in a findings run: register_run with `analyzes` (signer.yaml "
+            raise RPCError("forbidden", f"a {type_} goes in a findings run: register_run with `analyzes` (signer.yaml "
                                         "`analyzers` lists who may)")
         self.quotas.take_event(identity)
 
         def fn(tx, run):
-            return {"run_seq": tx.emit(run, "why.finding", req["finding"], request_id=req["request_id"])}
-        return self.log.submit(identity, "why_finding", req, fn, key)
+            return {"run_seq": tx.emit(run, type_, data, request_id=req["request_id"])}
+        return self.log.submit(identity, method, req, fn, key)
+
+    def _why_finding(self, identity, req):
+        return self._finding(identity, req, "why_finding", "why.finding", req["finding"])
+
+    def _review_finding(self, identity, req):
+        """A review record: the signed finding, with its rule's fixed title (format-v2.md §3: no text of the run)."""
+        v = req["review"]["verdict"]
+        return self._finding(identity, req, "review_finding", "review",
+                             {**req["review"], "verdict": {**v, "title": rpc_schema.FINDING_TITLES[v["rule"]]}})
 
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},
@@ -4327,9 +4339,13 @@ def dev_content():
     of every dev key) `content_read`. TRACEKIT_DEV_CONTENT=0 keeps nothing."""
     if os.environ.get("TRACEKIT_DEV_CONTENT", "1") == "0":
         return {}
-    me = "token:dev" if os.name == "nt" else f"uid:{os.getuid()}"
     return {"content": {**CONTENT, "retain": True, "retention_days": DEV_RETENTION_DAYS},
-            "authorize": {me: sorted(DEFAULT_GRANTS | {CONTENT_READ})}}
+            "authorize": {_dev_identity(): sorted(DEFAULT_GRANTS | {CONTENT_READ})}}
+
+
+def _dev_identity():
+    """The identity the dev signer sees its user as."""
+    return "token:dev" if os.name == "nt" else f"uid:{os.getuid()}"
 
 
 def _serve_dev():
@@ -4337,8 +4353,8 @@ def _serve_dev():
 
     logkey.harden()
 
-    def open_handler():
-        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0,
+    def open_handler():   # the user may sign findings about their own runs: they read self-asserted (docs/verdicts.md)
+        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
                                 grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
         return service.handle_frame, service.close
     try:
