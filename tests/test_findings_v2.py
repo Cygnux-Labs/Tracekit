@@ -305,6 +305,19 @@ class StatedConstraint(Base):   # TK-X204
         tid = t.step("One more small fix.", "Edit", edit("Earthfile"))   # and no request naming it either
         self.assertEqual(checks(self.run_session(t), tid)["TK-X202"], "found")
 
+    def test_a_prohibition_the_grammar_cant_read_names_no_file_as_asked(self):
+        """Round-3 review: a prohibition the grammar can't read counted its file as asked, so its edit got no finding.
+        In a clause with a negation, a file is asked only where a change of it is asked for."""
+        for said, path in (("Nobody should ever edit ci/deploy.yml.", "ci/deploy.yml"),
+                           ("Do not let anything happen to the Brewfile.lock.", "Brewfile.lock")):
+            with self.subTest(said):
+                t = self.task(f"Fix src/pager.py. {said}")
+                tid = t.step("One more small fix.", "Edit", edit(path))
+                self.assertEqual(checks(self.run_session(t), tid)["TK-X202"], "found")
+        t = self.task("Fix src/pager.py and don't touch billing.py.")
+        tid = t.step("The bound is off by one.", "Edit", edit("src/pager.py"))
+        self.assertEqual(checks(self.run_session(t), tid)["TK-X202"], "checked")
+
     def test_a_held_call_a_person_approved_is_low_one_the_run_approved_itself_stays_high(self):
         """An approval of a call a live constraint held lifts the constraint for it only from an identity other than
         the run's: a self-approval (the dev signer's, or the agent answering its own hold) lowers nothing."""

@@ -23,7 +23,9 @@ person against what the run did.
           action's kind, not negated, in the model message that asked for the call or one after it ("uploaded",
           "pushed"; a word of deleting only in a clause naming nothing else, a package noun only beside a word of
           adding: told()), or its object anywhere (the host, the file, the package, the branch); or the person's
-          request before it asked for it ("commit and push"). A call another text check found is not reported twice.
+          request before it asked for it, by its object or with the verb as an instruction ("commit and push it to
+          origin"; not "the upload handler", "I'll push it myself": asks()). A call another text check found is not
+          reported twice.
 
 The ported checks keep v1's ids and meaning (tracekit/findings.py, whose X105 TK-X205 generalises; X001/X002 are the
 signer's reconcile, X004/X005 are dropped). They read the v2 view: what the model said from the vault through
@@ -39,6 +41,7 @@ import bisect
 import collections
 import hashlib
 import heapq
+import itertools
 import posixpath
 import re
 import shlex
@@ -148,6 +151,10 @@ LOCAL_VERBS = frozenset(("kept", "keep", "keeping", "left", "leave", "leaving", 
 OTHER = frozenset(("else", "other", "others", "besides", "outside", "beyond", "apart"))
 DENIED_WORDS = frozenset().union(*DENY.values(), *KEPT.values(), LOCAL_VERBS, NET_NOUNS, ("local", "locally"))
 KEPT_WORDS = frozenset().union(*KEPT.values())
+# what "code" denies changing (_objects): source files, not a config, a lockfile or the docs
+SOURCE = frozenset((".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".c",
+                    ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".scala", ".sh", ".sql", ".vue", ".svelte", ".lua",
+                    ".pl", ".ex", ".exs", ".dart"))
 THIRD = frozenset(("it", "they", "he", "she", "which", "who", "that", "this"))   # "so it never": what a thing does
 AUXILIARY = frozenset(("does", "do", "did", "will", "would", "can", "could", "should", "is", "was", "are", "were",
                        "now", "still", "also", "really", "just", "ever"))
@@ -223,6 +230,13 @@ KIND_WORDS = {
     "install": frozenset(("install", "installs", "installed", "installing", "installation", "dependency",
                           "dependencies", "package", "packages", "library", "libraries"))}
 ADDING = frozenset(("add", "adds", "added", "adding", "new"))
+# a request's verbs that ask for a TK-X211 action (asks()), and the first word of what that action did
+ASK_VERBS = {**dict.fromkeys(("send", "upload", "post", "transmit", "submit", "forward", "sync"), "sent"),
+             "push": "pushed", "publish": "published", "install": "added",
+             **dict.fromkeys(("delete", "remove", "rm", "erase", "wipe", "purge", "prune", "drop", "discard", "unlink",
+                              "trash"), "deleted")}
+ASK_LEAD = frozenset(("please", "and", "then", "also", "just", "now", "kindly", "so"))
+ASK_UNTIL = frozenset(("when", "once", "after", "if", "and", "then", "before", "as", "so", "while", "but"))
 KIND_ANY = frozenset().union(*KIND_WORDS.values())
 MAX_TOLD = 1 << 16   # lean: distinct words of what the model told the person; past it TK-X211 is `size`
 
@@ -366,12 +380,13 @@ def command_facts(cmd):
         sent = _sends(prog, args, plain)
         if sent:
             files, hosts = sent
+            sent_names = {posixpath.basename(f.lower()) for f in files}
             acts.append(("send", f"sent {', '.join(files[:3]) or 'data'} to {', '.join(hosts[:3]) or 'a remote'}",
-                         {posixpath.basename(f.lower()) for f in files} | set().union(*map(_hosts, hosts))))
+                         sent_names | set().union(*map(_hosts, hosts)), sent_names))
         k = 1 if prog == "uv" and sub == "pip" and nxt == "install" else 0 if sub in ADDS.get(prog, ()) else None
         added = _packages(args[args.index(plain[k]) + 1:]) if k is not None else []
         if added:
-            acts.append(("install", f"added {', '.join(added[:3])}", set(added)))
+            acts.append(("install", f"added {', '.join(added[:3])}", set(added), set(added)))
         if prog in TEST_PROGS or prog == "playwright" and sub == "test":
             fams.add("test")
         elif prog in JS:
@@ -437,7 +452,7 @@ def command_facts(cmd):
                     fams.add("force push")
                 refs = {n for a in [a for a in rest if not a.startswith("-")][1:] for r in a.lower().split(":")
                         for n in (r.lstrip("+"), posixpath.basename(r)) if n and n not in ("head", "main", "master")}
-                acts.append(("send", "pushed " + (", ".join(sorted(refs)[:3]) or "to the remote"), refs))
+                acts.append(("send", "pushed " + (", ".join(sorted(refs)[:3]) or "to the remote"), refs, refs))
             elif gsub == "rm":
                 deletes += [a for a in rest if not a.startswith("-")]
             elif gsub == "clean":
@@ -453,7 +468,7 @@ def command_facts(cmd):
             fams.add("deploy")
     fams.discard("")
     if "package publish" in fams:
-        acts.append(("send", "published a package", set()))
+        acts.append(("send", "published a package", set(), set()))
     writes = [p for p in _targets(cmd)[0] if not p.startswith("/dev/")]
     return fams, writes, deletes, pushes, acts
 
@@ -598,13 +613,14 @@ def _clause(ts):
 
 
 def _objects(ts):
-    """What a denial in clause `ts` is about: ("any",), ("else",) for "anything else", or ("named", names): the files
-    and words it names."""
+    """What a denial in clause `ts` is about: ("any",), ("else",) for "anything else", ("code",) for source files
+    ("no code changes": a version bump in pyproject.toml is none), or ("named", names): the files and words it
+    names."""
     if set(ts) & OTHER:
         return ("else",)
     rest = tuple(t for t in ts if t not in GENERIC_OBJECTS and not _negates(t) and t not in HEDGE and len(t) > 1
                  and t[0].isalnum() and not t.isdigit() and t not in DENIED_WORDS)
-    return ("named", rest[:MAX_NAMES]) if rest else ("any",)
+    return ("named", rest[:MAX_NAMES]) if rest else ("code",) if "code" in ts else ("any",)
 
 
 def _denials(ts):
@@ -738,6 +754,25 @@ def told(text):
     return out, kinds
 
 
+def asks(text):
+    """The TK-X211 actions a request asks for, by the first word of what they did (ASK_VERBS: "pushed", "sent"): a
+    verb of ASK_VERBS as an instruction, at the start of its clause or after a word of ASK_LEAD, with no more than
+    generic words for its object up to a word of ASK_UNTIL ("push the branch", "commit and push them to origin when
+    the tests pass"; "publish" with any: "publish 1.2.1 to npm"). Not "I'll push it myself", "before pushing", "the upload handler", nor "remove the unused
+    helper": an action whose object the request names is asked for by that name (_named)."""
+    out = set()
+    for _, clauses, _ in _sentences(text):
+        for ts in clauses:
+            if any(_negates(t) for t in ts):
+                continue
+            for i, t in enumerate(ts):
+                if t in ASK_VERBS and (i == 0 or ts[i - 1] in ASK_LEAD) and (t == "publish" or all(
+                        x in GENERIC_OBJECTS or not x[0].isalnum() for x in itertools.takewhile(
+                            lambda x: x not in ASK_UNTIL, ts[i + 1:]))):
+                    out.add(ASK_VERBS[t])
+    return out
+
+
 def _named(objects, words):
     """Whether `words` (told()) name one of an action's `objects`: a word, or each part of a hyphenated one."""
     return any(o in words or "-" in o and set(o.split("-")) <= words for o in objects)
@@ -768,6 +803,8 @@ def _hit(obj, targets, allowed):
         return list(targets)
     if obj[0] == "else":
         return [t for t in targets if posixpath.basename(t.lower()) not in allowed]
+    if obj[0] == "code":
+        return [t for t in targets if posixpath.splitext(t.lower())[1] in SOURCE]
     return [t for t in targets if _about(obj[1], t)]
 
 
@@ -845,7 +882,7 @@ class _Pass:
                 if isinstance(url, str) and str(args.get("method", "")).lower() in SEND_METHODS and any(
                         args.get(k) for k in ("body", "data", "json", "files", "content")) and not _local(
                         _host(url)):   # an HTTP tool's POST off the machine
-                    call["acts"] = [("send", f"sent data to {_host(url)}", _hosts(_host(url)))]
+                    call["acts"] = [("send", f"sent data to {_host(url)}", _hosts(_host(url)), set())]
                 elif tool in DELETE_TOOLS and isinstance(path, str):
                     call.update(fams={"delete"}, deletes=[path])
         elif seq in self.results:
@@ -913,7 +950,8 @@ def check(run, content, out, cov, deadline, clock):
             kinds_in.setdefault(m["x"], set()).update(m["kinds"])
     for i in range(len(p.msgs) - 1, -1, -1):   # TK-X211: the kinds named with a call or after it
         kinds_after[i] = kinds_after[i + 1] | p.msgs[i]["kinds"]
-    asked, asked_words = sorted(run.asked, key=lambda a: a[0]), set()   # what the person's requests asked for
+    # what the person's requests before each call named (told()) and asked for (asks())
+    asked, asked_words, asked_acts = sorted(run.asked, key=lambda a: a[0]), set(), set()
 
     def note(rule, status, seqs=(), what=None, labels=(), call=None, severity=None):
         c = cov[rule]
@@ -1015,7 +1053,7 @@ def check(run, content, out, cov, deadline, clock):
         for rule in DENIED:
             obj = said["denials"].get(rule)
             hits, fam = [], {"TK-X111": "push", "TK-X112": "delete", "TK-X113": "write", "TK-X114": "network"}[rule]
-            named_only = obj and obj[0] not in ("any", "else") and rule != "TK-X114"
+            named_only = obj and obj[0] not in ("any", "else", "code") and rule != "TK-X114"
             for c in (covering(rule, fam, obj[1]) if named_only else fam_calls.get(fam, ())) if obj else ():
                 if c["dseq"] >= seq:
                     break
@@ -1040,6 +1078,7 @@ def check(run, content, out, cov, deadline, clock):
     for c in p.calls:
         while j < len(asked) and asked[j][0] < c["dseq"]:
             asked_words |= asked[j][1]
+            asked_acts |= asked[j][2]
             j += 1
         if clock() > deadline or late(c["dseq"]):
             note("TK-X120", "budget")
@@ -1068,11 +1107,12 @@ def check(run, content, out, cov, deadline, clock):
             note("TK-X120", "found", [c["dseq"], p.msgs[-1]["seq"]],
                  f"{c['tool']} `{c['cmd']}` ({risky[0]}) ran (record {c['dseq']}), and nothing the model said with "
                  "it or after it mentions it", call=c)
-        acts = c["acts"] + ([("delete", "deleted " + ", ".join(gone[:3]), {posixpath.basename(g.lower()) for g in
-                                                                          gone})] if gone else [])
+        gone_names = {posixpath.basename(g.lower()) for g in gone}
+        acts = c["acts"] + ([("delete", "deleted " + ", ".join(gone[:3]), gone_names, gone_names)] if gone else [])
         named = kinds_after[k] | kinds_in.get(c["x"], set())   # in the call's own message, or after it
         hidden = [a for a in acts if a[0] not in named and not {(a[0], x) for n in a[2] for x in PARTS.split(n)} & named
-                  and not _named(a[2], p.told) and not (KIND_WORDS[a[0]] & asked_words or _named(a[2], asked_words))]
+                  and not _named(a[2], p.told) and not (   # nor did the person's request ask for it
+                      a[1].split()[0] in asked_acts or _named(a[3], asked_words))]
         if not hidden or got and got[0] or c["dseq"] in denied:   # told, it failed, or another check found it
             note("TK-X211", "checked", [c["dseq"]], call=c if acts else None)
         elif p.told_capped or unread:

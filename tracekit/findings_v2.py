@@ -255,15 +255,26 @@ def _message(body, data):
 def _names(read):
     """[(name, kept away)] of the words of a request (its constraints._read()), each a basename as constraints compare
     them (constraints.norm). A file a clause keeps away ("leave billing.py untouched", "don't modify billing.py") is
-    marked kept away, and the other words of a clause that keeps a file away or refuses a change ("don't touch the
-    Brewfile"), its other files aside, are no mention."""
+    marked kept away; the other words of a clause that keeps a file away are no mention, its other files aside. In a
+    clause with a negation (constraints._negating) a file is a mention only where a change of it is asked for ("fix
+    pager.py and don't touch billing.py") or it is where a negated change of something else would be ("don't change
+    the signature in utils.py"): a prohibition the grammar can't read ("nobody should ever edit X", "don't let
+    anything happen to X") names nothing as asked."""
     out = []
     for tokens, _, kept in read:
-        whole = not kept and not constraints._refusing(tokens)
-        for t in tokens:
-            if (whole or constraints._file(t)) and constraints.norm(t):
-                out.append((constraints.norm(t), constraints.norm(t) in kept))
+        negating = constraints._negating(tokens)
+        for i, t in enumerate(tokens):
+            name = constraints.norm(t)
+            if name and (name in kept or not kept and not negating or constraints._file(t) and (
+                    not negating or constraints._said(tokens, i) == "changed" or _aspect(tokens, i))):
+                out.append((name, name in kept))
     return out
+
+
+def _aspect(tokens, i):
+    """Whether the file at tokens[i] is where a change word's own object is ("the signature in utils.py")."""
+    c = constraints._tied(tokens, i)
+    return c is not None and constraints._where(tokens, c, i)
 
 
 def _targets(cmd):
@@ -366,7 +377,9 @@ class _Run:
         # [(position, run_seq, constraints.mentions(text), "request" or "model")] of each text after
         self.stated, self.lifts, self.lift_names = [], [], 0
         self.claimed = []   # run_seqs of records that only claim a person's request (claimed())
-        self.asked = []   # [(run_seq, findings_text.told() of its text)] of each request: what TK-X211 counts as asked
+        # [(run_seq, the words findings_text.told() reads in it, what findings_text.asks() reads)] of each request:
+        # what TK-X211 counts as asked for
+        self.asked = []
         # where the analysis stopped reading: `stopped` the first run_seq whose content its time budget left unread,
         # `capped` the first position whose text its size caps left unread, `over` prompt lines they left unread
         self.stopped = self.capped = None
@@ -417,7 +430,7 @@ class _Run:
 
     def _request(self, seq, text, tier):
         self.intent.append(seq)
-        self.asked.append((seq, findings_text.told(_text(text))[0]))
+        self.asked.append((seq, findings_text.told(_text(text))[0], findings_text.asks(_text(text))))
         self._read(text, (seq, -1), seq, tier, "asked")
 
     def _keep(self, into, seq, text, cwd=None):

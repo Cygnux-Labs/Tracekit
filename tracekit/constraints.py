@@ -11,14 +11,16 @@ person's approval (live constraints, docs/policy-v2.md#live-constraints).
 Kinds (rpc_schema.CONSTRAINT_KINDS):
   keep_away X    a negated change of X ("don't touch / edit / modify / write to / mess with X", "please refrain from
                  editing X", "make no changes to X", "I'd rather you didn't touch X", "I don't want X changed"), X
-                 said to stay as it is ("leave / keep X alone / as is / out of this", "X must stay unchanged", "X must
-                 not be modified", "X is off-limits / read-only / frozen / out of scope / not part of this /
-                 maintained elsewhere", "X belongs to another team", "nothing in X should change"), "hands off X",
-                 "stay away from X", "read-only on X"; "make no changes there" or "don't change it" for the file
+                 said to stay as it is ("leave / keep X alone / as is / exactly as it is / out of this", "X must stay
+                 unchanged", "the X file must not change", "X is off-limits / read-only / frozen / out of scope / not
+                 part of this / maintained elsewhere", "X belongs to another team", "nothing in X should change"),
+                 "hands off X", "stay away from / out of (the) X", "keep your changes out of X", "under no
+                 circumstances touch X", "read-only on X"; "make no changes there" or "don't change it" for the file
                  named last before ("X is generated; make no changes there"), "them" for each: a call that writes X
                  breaks it. X is a file ("billing.py", a name of EXTENSIONLESS: "the Dockerfile") or a directory
-                 ("src/legacy/", "anything in vendor/": a write under it breaks it). Not a change of one aspect of X
-                 ("don't change the public API of X", "the signature in X", "nothing in X changes its behaviour")
+                 ("src/legacy/", "anything in vendor/", "the vendor folder": a write under it breaks it). Not a change
+                 of one aspect of X ("don't change the public API of X", "the signature in X", "nothing in X changes
+                 its behaviour")
   only_change X  "only change / edit / touch X", "only X should change", "X is the only file to edit", "limit / restrict
                  / confine the change to X", "touch nothing but X", "don't change anything (any file) except / but /
                  other than X", "everything outside X is off-limits", "read-only except X", and each file the text
@@ -45,13 +47,14 @@ a kept one ("don't touch a.py or b.py") are kept too. A negation followed by a w
 to", "don't hesitate to", "you don't need to", "I don't mind if") negates nothing. A condition after the file (or the
 push, the network, "anything") states none: "don't edit X until the tests pass", "without checking Y first", "unless",
 "before", "if", "while the server runs", "when DEBUG is set" (the change is allowed once it holds, which the grammar
-can't check; "while you work", "while fixing Y" are the task itself, no condition). A later clause of the same text that
-asks for what a constraint keeps away lifts it there ("don't touch X for now; ... after that, update X too"; "don't
-change anything, then fix it"). A network word is negated only with nothing but words of use between ("don't use the
-network", not "don't change the network code") and no noun after it ("no web UI changes"); "offline" only where the
-clause begins with it as an instruction ("work offline", not "make the CLI work offline"). An object is a file name,
-lower-cased, compared by basename (norm). Each pass is linear in the text: word sets, short fixed sequences, one suffix
-scan per clause; the regular expressions have no nested quantifiers.
+can't check; "while you work", "while fixing Y" are the task itself, no condition; the person's own go-ahead, "before I
+review", "without asking me first", keeps the constraint). A later clause of the same text that asks for what a
+constraint keeps away lifts it there ("don't touch X for now; ... after that, update X too"; "don't change anything,
+then fix it"). A network word is negated only with nothing but words of use between ("don't use the network", not "don't
+change the network code") and no noun after it ("no web UI changes"); "offline" only where the clause begins with it as
+an instruction ("work offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by
+basename (norm). Each pass is linear in the text: word sets, short fixed sequences, one suffix scan per clause; the
+regular expressions have no nested quantifiers.
 lean: fixed word lists, English only; a phrasing outside them ("keep the diff to X", a constraint on a file named two
 clauses back) states no constraint. Grow the lists from real misses, never from the held-out pool.
 """
@@ -71,6 +74,8 @@ SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 CLAUSE = re.compile(r"[,;:()\[\]—–]\s*|(?<!\s)\s+(?=(?:but|except|though)\s)", re.I)
 TOKEN = re.compile(r"[\w.~/\\'-]+")
 READ_ONLY = re.compile(r"\bread[\s_-]*only\b", re.I)
+NO_CASE = re.compile(r"\b(?:under|in) no (?:circumstances|case)\b")
+FOLDERS = frozenset(("directory", "folder", "dir"))
 OFF_LIMITS = re.compile(r"\boff[\s_-]*limits\b", re.I)
 FILE_LIKE = re.compile(r"\w\.\w|/|^\.\w")
 # files people name without an extension: each is a file name too ("don't touch the Dockerfile")
@@ -107,7 +112,8 @@ STATES = tuple(tuple(s.split()) for s in (
 FILLER = frozenset(("is", "are", "be", "been", "being", "was", "stays", "stay", "stayed", "remains", "remain",
                     "remained", "should", "must", "shall", "can", "may", "needs", "need", "has", "have", "to", "as",
                     "kept", "left", "considered", "treated", "completely", "fully", "entirely", "strictly", "totally",
-                    "please", "so", "too", "also", "still", "really", "always", "absolutely", "ever", "get", "gets"))
+                    "please", "so", "too", "also", "still", "really", "always", "absolutely", "ever", "get", "gets",
+                    "exactly", "file", "folder", "directory", "dir"))   # "leave X exactly as it is", "the X file must"
 AFTER_NEG = frozenset(("not", "never", "mustn't", "mustnt", "shouldn't", "shouldnt", "can't", "cant", "cannot",
                        "shan't"))   # "X must not be changed", "X shouldn't change"
 AWAY = tuple(tuple(s.split()) for s in ("hands off", "stay away from", "keep away from",
@@ -124,6 +130,12 @@ DETERMINERS = frozenset(("the", "a", "an", "any", "this", "that", "these", "thos
 CONDITIONAL = frozenset(("unless", "until", "before", "if", "without", "first"))
 WHILE = frozenset(("while", "when", "whenever", "after", "once"))
 YOU = frozenset(("you", "you're", "youre", "we", "we're", "i", "i'm"))
+# a condition that is the person's own go-ahead keeps the constraint: holding the call for them is what they ask
+# ("don't push before I review", "without asking me first", "until I say so", "unless I confirm")
+PERSON = frozenset(("i", "me", "us", "we", "my", "our"))
+GO_AHEAD = frozenset(("say", "says", "said", "approve", "approves", "approved", "approval", "confirm", "confirms",
+                      "confirmed", "confirmation", "review", "reviews", "reviewed", "ask", "asking", "asked", "ok",
+                      "okay", "sign", "signs", "signed", "permission", "go-ahead"))
 # between a change word and the file, a word of WHERE makes the file only where the change would be: "don't change the
 # public API of X", "the signature in X" keep nothing away; "anything in X", "the code in X" do (WHOLE)
 WHERE = frozenset(("of", "in", "inside", "within", "under"))
@@ -182,7 +194,7 @@ SAID_CHANGE = VERBS | frozenset((
     "simplifying", "simplified", "harden", "hardening", "hardened", "regenerate", "regenerating", "regenerated",
     "trim", "trimming", "trimmed"))
 SAID_NEG = NEGATIONS | {"no", "didn't", "didnt", "doesn't", "doesnt", "haven't", "hasn't", "isn't", "aren't", "wasn't",
-                        "nothing", "neither", "nor"}
+                        "nothing", "neither", "nor", "nobody"}
 TURNED = frozenset(("forget", "forgetting", "hesitate", "fail", "neglect", "omit", "skip", "miss"))
 BUG = frozenset(("bug", "bugs", "issue", "problem", "error", "defect", "fault", "regression", "typo", "culprit"))
 AT = frozenset(("is", "was", "are", "lives", "sits", "really", "actually", "still", "also", "in", "inside", "within",
@@ -235,6 +247,8 @@ def digest(name):
 
 def _tokens(clause):
     low = OFF_LIMITS.sub("off-limits", READ_ONLY.sub("read-only", clause.lower().replace("’", "'")))
+    if " no c" in low:   # "under no circumstances touch X", "under no circumstances should X be edited"
+        low = NO_CASE.sub("never", low)
     return [t.rstrip(".-") or t for t in TOKEN.findall(low)]
 
 
@@ -275,9 +289,13 @@ def _where(tokens, c, i):
 
 def _conditions(tokens):
     """[i]: whether a condition follows tokens[i] in the clause: a word of CONDITIONAL, or of WHILE before anyone but
-    YOU ("while the server runs", not "while you work" or "while fixing Y")."""
+    YOU ("while the server runs", not "while you work" or "while fixing Y"); none from the person's own go-ahead on
+    (a condition word with PERSON and GO_AHEAD in the four words after it: "before I review", "without asking me
+    first"), which keeps the constraint."""
     out, seen = [False] * (len(tokens) + 1), False
-    for i in range(len(tokens) - 1, -1, -1):
+    mine = next((k for k, t in enumerate(tokens) if (t in CONDITIONAL or t in WHILE)
+                 and set(tokens[k + 1:k + 5]) & PERSON and set(tokens[k + 1:k + 5]) & GO_AHEAD), len(tokens))
+    for i in range(min(mine, len(tokens)) - 1, -1, -1):
         out[i] = seen
         nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
         seen = seen or tokens[i] in CONDITIONAL or tokens[i] in WHILE and nxt not in YOU and not (
@@ -305,9 +323,11 @@ def _refused(tokens, c):
                 and {"rather", "prefer"} & set(tokens[max(0, c - 5):c]))
 
 
-def _refusing(tokens):
-    """Whether a clause refuses a change: a change word in it is negated (_refused)."""
-    return any(t in VERBS and _refused(tokens, k) for k, t in enumerate(tokens))
+def _negating(tokens):
+    """Whether a clause holds a negation that is not turned around (UNNEGATE: "don't forget to")."""
+    return any((t in NEGATIONS or t in ("no", "nothing", "nobody", "none", "neither", "nor"))
+               and not set(tokens[k + 1:k + 3]) & UNNEGATE
+               for k, t in enumerate(tokens))
 
 
 def _phrase(tokens, k, phrases):
@@ -343,8 +363,12 @@ def _kept(tokens, i, end, cond):
     if cond[i]:
         return False
     c = _tied(tokens, i)
+    j = i   # past determiners: "stay out of the infra/ folder"
+    while j > 0 and tokens[j - 1] in DETERMINERS:
+        j -= 1
     if c is not None and _refused(tokens, c) and not _where(tokens, c, i) or any(
-            tokens[max(0, i - len(p)):i] == list(p) for p in AWAY):
+            tokens[max(0, j - len(p)):j] == list(p) for p in AWAY) or tokens[max(0, j - 2):j] == ["out", "of"] and set(
+            tokens[max(0, j - 2 - WINDOW):j - 2]) & LEAVE:   # "keep your changes out of X"
         return True
     if tokens[max(0, i - 2):i] in (["read-only", "on"], ["read-only", "for"], ["read-only", "to"]):
         return True
@@ -372,8 +396,8 @@ def _anything(tokens):
         elif t == "nothing" and (verb is not None and tokens[verb] in BASE
                                  or nxt in (["else"], ["should"], ["must"], ["may"], ["shall"])):
             return k
-        elif (t == "anything" or t == "any" and nxt in (["file"], ["files"], ["other"])) and neg is not None and (
-                verb is not None or set(tokens[k + 1:k + 1 + WINDOW]) & VERBS):
+        elif (t == "anything" or t == "any" and (nxt in (["file"], ["files"], ["other"]) or set(nxt) & NOUNS)) \
+                and neg is not None and (verb is not None or set(tokens[k + 1:k + 1 + WINDOW]) & VERBS):
             return k
     return None
 
@@ -413,6 +437,9 @@ def _clause(tokens, prev=()):
     no changes there", _referent), unless that clause asks for a change or sets a condition ("fix X; don't rewrite
     it")."""
     files = {i: t for i, t in enumerate(tokens) if _file(t)}
+    if FOLDERS & set(tokens):   # "the vendor folder": a directory
+        files = {**files, **{i: t + "/" for i, t in enumerate(tokens[:-1]) if tokens[i + 1] in FOLDERS
+                             and t.isalpha() and t not in DETERMINERS}}
     if not files and not STATING & set(tokens):
         return [], set()
     cond, later = _conditions(tokens), _suffix(tokens, VERBS)
@@ -466,11 +493,12 @@ def _read_only(tokens, i):
 
 
 def _bare(tokens, i):
-    """Whether the push at tokens[i] is every push: up to the next "or", "and" or "nor", only words of PUSHED follow
-    it, and "to" or "into" only before a word of REMOTES ("don't push it to origin", not "to main")."""
+    """Whether the push at tokens[i] is every push: up to the next "or", "and" or "nor" (or a condition, which
+    _conditions reads), only words of PUSHED follow it, and "to" or "into" only before a word of REMOTES ("don't push
+    it to origin", not "to main")."""
     for k in range(i + 1, len(tokens)):
         t = tokens[k]
-        if t in LIST:
+        if t in LIST or t in CONDITIONAL or t in WHILE:
             return True
         if t in ("to", "into", "onto"):
             return next((x for x in tokens[k + 1:] if x not in DETERMINERS), None) in REMOTES
@@ -559,7 +587,9 @@ def extract(text, read=None):
     """The constraints `text` states (or its _read(), `read`): [(kind, object or None)], each once, in order. "Don't
     change anything else" keeps the text to the files it names (only_change each; nothing when it names none)."""
     read = _read(text) if read is None else read
-    asked = {}   # what a clause asks for, not negated -> the last such clause: a file it changes (_said), a LIFT word
+    asked, prev = {}, ()   # what a clause asks for, not negated -> the last such clause: a file it changes (_said;
+    #                        "it" for the file named before: "X is frozen in production, but you can edit it locally"),
+    #                        a LIFT word
     for j, (tokens, _, _) in enumerate(read if any(found for _, found, _ in read) else ()):
         if tokens[:1] and tokens[0] in SEQUENCE:
             asked["then"] = j
@@ -568,6 +598,10 @@ def extract(text, read=None):
                 asked[norm(t)] = j
             elif t in LIFT_WORDS and not _negated(tokens, i, NEGATIONS | {"no"}) and not BLOCK & set(tokens[:i]):
                 asked[t] = j   # not "tell me what you'd change"
+        k, before = _referent(tokens, prev)
+        if k is not None and _said(tokens, k) == "changed":
+            asked.update(dict.fromkeys(before, j))
+        prev = tokens if any(map(_file, tokens)) else prev
     out = [c for j, (_, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
         (c[1],) if c[0] in OBJECT_KINDS else (*LIFT[c[0]], "then") if c[0] == "read_only" else LIFT.get(c[0], ())))]
     if ("else", None) in out:
