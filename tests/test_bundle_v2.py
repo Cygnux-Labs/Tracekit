@@ -940,6 +940,8 @@ ENTRIES = {
     "effect.observed.sensor": [registered(), ("effect.observed", {
         "observer": "uid:7", "sensor": "tetragon", "kind": "exec", "ts": TS_, "pid": 7, "binary": "/usr/bin/curl",
         "attribution": "identity"}, "run-a")],
+    "capture.gap.sensor": [registered(), ("capture.gap", {"kind": "observer_lost", "sensor": "falco", "reason": "r"},
+                                          "run-a")],
     "constraint.added": [registered(), ("constraint.added", {"kind": "no_push"}, "run-a")],
     "model.exchange.said_only": [registered(), ("model.exchange", {
         "exchange_id": "x1", "phase": "response", "streamed": False, "model": "m", "said_only": True}, "run-a")],

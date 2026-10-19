@@ -1678,7 +1678,7 @@ class SignerService:
                    if at is None else f"no observe_effect from {name} for {t - at:.0f}s while the run was open: it "
                    "stopped or was killed, so the run's processes, connections and file writes from then on are not "
                    "in the run")
-            tx.emit(run, "capture.gap", {"kind": "observer_lost", "reason": (
+            tx.emit(run, "capture.gap", {"kind": "observer_lost", "sensor": sensor, "reason": (
                 f"{why}; its coverage says processes not observed. Check `tracekit sensor import`, the sensor and that "
                 "the import's identity has the observe_effect grant")[:1024]}, source="signer")
             return

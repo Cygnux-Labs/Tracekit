@@ -2224,6 +2224,13 @@
             "null"
           ],
           "maxLength": 4096
+        },
+        "sensor": {
+          "enum": [
+            "tetragon",
+            "falco"
+          ],
+          "description": "format 1.4: the kernel sensor whose import an observer_lost gap is about"
         }
       }
     },

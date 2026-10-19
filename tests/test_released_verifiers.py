@@ -74,7 +74,9 @@ class Released(Signed):
         cases = {"an agent run": (self.export(run), "1.2.0")}
         self.findings(ANALYZER, run)
         cases["the run, with a findings run not exported"] = (self.export(run), "1.2.0")
-        cases["a sensor covered it, then lost events"] = (self.export(self.sensor_run(effect=False)), "1.2.0")
+        # a sensor's loss names its sensor: an older verifier says it can't verify it rather than print a line about
+        # an egress observer
+        cases["a sensor covered it, then lost events"] = (self.export(self.sensor_run(effect=False)), "1.4.0")
         cases["a sensor's effect"] = (self.export(self.sensor_run(effect=True)), "1.4.0")
         log = Log(os.path.join(self.dir, "ext"))
         self.addCleanup(log.store.close)
