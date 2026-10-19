@@ -529,7 +529,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/verify":
                 n, problems, head = feed.verify() if scope is ALL else feed.verify(scope)
-                return self._send(200, json.dumps({"records": n, "ok": not problems, "problems": problems, "head": head}))
+                return self._send(200, json.dumps({"records": n, "ok": not problems, "problems": problems, "head": head,
+                                                   "stopped": getattr(feed, "stopped", None)}))
             if u.path == "/api/stream":
                 try:
                     start = max(0, int(parse_qs(u.query).get("from", ["0"])[0]))

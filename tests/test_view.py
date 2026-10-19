@@ -7,6 +7,7 @@ import http.client
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -53,6 +54,14 @@ def store_feed(test, cfg, **kw):
     return feed
 
 
+def page_js(names, script):
+    """What `script` prints, run in Node after terminal.html's own definitions `names` (functions or one-line consts)."""
+    page = observe.read_text(observe.UI)
+    code = "".join(re.search(rf"^    (?:function {n}\(.*?^    }}|const {n} = .*?;)$", page, re.M | re.S).group(0) + "\n"
+                   for n in names)
+    return subprocess.run(["node", "-e", code + script], capture_output=True, text=True, check=True).stdout
+
+
 def v2rec(seq, typ, data, run="r1", **top):
     return {"event": {"seq": seq, "run_seq": seq, "run_id": run, "agent_id": "main", "type": typ, "data": data,
                       "ts": f"2026-10-10T17:00:{seq:02d}.000000Z", "prev_hash": "sha256:p", **top},
@@ -93,6 +102,29 @@ class Translate(unittest.TestCase):
                                                          "rule_ids": ["TK-S001"], "policy_hash": "sha256:unknown"}))
         # a decision of a policy the viewer does not have: its rule ids only
         self.assertEqual((other["target"], other["policy"]["flags"]), ("TK-S001", ["held_for_approval"]))
+
+    def test_a_model_message_of_any_shape_reads_as_what_it_says(self):
+        """{"output": [{"type": ["x"]}]}, an agent's own words the dev vault keeps, raised TypeError in the parser and
+        ended the viewer's checks of every run; an item whose type is no name is no item."""
+        tr = view.Translator()
+        tr.content[("r1", 1)] = {"output": [{"type": ["x"]}, {"type": {"a": 1}}]}
+        self.assertEqual(tr.feed(v2rec(1, "model.exchange", {"phase": "response", "exchange_id": "x1",
+                                                             "content_digest": "sha256:c"})), [])
+
+    def test_the_analysis_reads_content_it_cannot_parse_as_unread(self):
+        """findings_v2.analyze raised on the same body: an agent could make its own run unanalysable."""
+        recs = [v2rec(0, "run.registered", {"agent": {"name": "a"}}, source="sdk"),
+                v2rec(1, "model.exchange", {"phase": "response", "exchange_id": "x", "content_digest": "sha256:c",
+                                            "tool_uses": [{"id": "c1", "name": "read_file"}]}, source="sdk"),
+                v2rec(2, "policy.decision", {"tool": "read_file", "tool_use_id": "c1", "decision": "allow"},
+                      source="sdk")]
+
+        def vault(want):
+            return ((r["event"]["run_seq"], {"output": [{"type": ["x"]}]}, True) for r in want
+                    if r["event"]["type"] == "model.exchange")
+        self.assertIn("no problems found", findings_v2.analyze(recs, vault)["summary"])
+        with mock.patch.object(findings_v2._Run, "feed", side_effect=RecursionError("too deep")):   # any reader error
+            self.assertIn("no problems found", findings_v2.analyze(recs, vault)["summary"])
 
     def test_openshells_blocks_and_policy_changes_are_rows_in_words(self):
         seen = {"observer": "mtls:spiffe://acme.example/tracekit-openshell", "sensor": "openshell",
@@ -338,6 +370,33 @@ class View(unittest.TestCase):
         self.assertEqual([(r["tool_input"], r["target"]) for r in rows],
                          [({"command": f"at {r['v2']['run_seq']}"}, None) for r in rows])
         self.assertEqual(asked, [(run_id, [r["v2"]["run_seq"] for r in rows])])
+
+    def test_an_agents_odd_model_message_never_stops_the_viewer_checking_runs(self):
+        """A model message {"output": [{"type": ["x"]}]} (the agent's own words, kept by the dev vault) raised in the
+        viewer's parser and ended its watch thread: no run, earlier or later, was checked again while the page said
+        LIVE. The message reads as nothing said, and the watch goes on to the next run."""
+        bodies, storage = {}, self.service.log.storage
+
+        def a_run(name, body):
+            run = self.client.run(agent=name)
+            seq = run.call("model_event", provider="openai", model="m", phase="response", exchange_id="x1",
+                           content_digest=canon_hash(body))["run_seq"]
+            bodies[(run.run_id, seq)] = body
+            run.decide("c1", "Bash", {"command": "ls"})
+            run.complete("c1")
+            run.close()
+            self.assertTrue(wait_for(lambda: list(storage.iter_run("default", run.run_id))[-1]["event"]["type"] ==
+                                     "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+            return run.run_id
+        odd = a_run("odd", {"output": [{"type": ["x"]}]})
+        feed = store_feed(self, {"data_dir": self.d}, content=lambda rid, recs: {
+            r["event"]["run_seq"]: bodies[(rid, r["event"]["run_seq"])] for r in recs
+            if (rid, r["event"]["run_seq"]) in bodies})
+        self.assertEqual([r["review"]["verdict"] for r in self.report(feed, odd)], ["verified"])
+        later = a_run("later", {"output": []})
+        self.assertEqual([r["review"]["verdict"] for r in self.report(feed, later)], ["verified"])
+        self.assertTrue(feed.threads[-1].is_alive())
+        self.assertIsNone(feed.stopped)
 
     def test_vault_content_that_does_not_open_its_record_is_not_shown(self):
         run_id = self.finished_run()
@@ -1390,6 +1449,70 @@ class LiveRuns(unittest.TestCase):
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
             self.assertEqual([r for r in feed.records if not r.get("analysis")], [observe.RETRACTED] * 2)
+
+    def test_a_run_whose_check_raises_says_not_checked_and_every_other_run_is_still_checked(self):
+        """An error checking one run escaped the watch thread and ended it: no run was checked again. That run gets a
+        "not checked" row and is tried again as a run that did not grow; the others are checked as before. A pending
+        run whose unverified first record names no agent object (a store edit) raised AttributeError the same way."""
+        self.recs["bad"] = [v2rec(0, "run.registered", {"agent": {"name": "bad"}}, "bad")]
+        self.recs["edited"] = [v2rec(10 ** 7, "run.registered", {"agent": "x"}, "edited")]   # no note covers it yet
+        feed = self.feed(lambda run_id: VERIFIED)
+        real = feed.tr.feed
+
+        def translate(rec):
+            if rec["event"]["run_id"] == "bad":
+                raise TypeError("unhashable type: 'list'")
+            return real(rec)
+        with mock.patch.object(feed.tr, "feed", side_effect=translate):
+            self.refresh(feed)
+        reviews = {r["session_id"]: r["review"] for r in feed.records if r.get("review")}
+        self.assertEqual({k: (v["verdict"], v["agent"]) for k, v in reviews.items()},
+                         {"r1": ("verified", "a"), "bad": ("error", None), "edited": ("pending", None)})
+        [row] = [r for r in feed.records if r.get("session_id") == "bad"]
+        self.assertEqual(row["title"], "RUN bad · NOT CHECKED: error")
+        self.assertIn("TypeError: unhashable type: 'list'", row["text"])
+        self.assertEqual(feed.verify()[1], ["run bad of tenant default: NOT CHECKED (error)"])
+        self.refresh(feed)
+        self.assertEqual(self.checks, ["r1", "bad"])   # not tried again at once
+        self.now[0] += view.RECHECK_S
+        self.refresh(feed)
+        self.refresh(feed)
+        self.assertEqual(self.checks[2:], ["r1", "bad"])   # one run a pass, the one checked longest ago first
+        self.assertEqual(feed.latest[("default", "bad")]["review"]["verdict"], "verified")
+        self.assertEqual(feed.verify()[1], [])
+
+    def test_a_watch_that_ends_stops_the_page_saying_live(self):
+        """Had the watch thread ended, no run would be checked again while the page went on saying LIVE: the viewer
+        says verification stopped (/api/verify's `stopped`, and a problem), and the page shows STOPPED, not LIVE."""
+        class Ended(BaseException):
+            pass
+        with mock.patch.object(view, "read_vkeys", return_value=[]), \
+                mock.patch.object(view.StoreFeed, "refresh", side_effect=Ended("out of memory")), \
+                mock.patch.object(threading, "excepthook", lambda args: None):
+            feed = store_feed(self, self.cfg)
+            self.assertTrue(wait_for(lambda: not feed.threads[-1].is_alive(), 5))
+        self.assertEqual(feed.stopped, "verification stopped (Ended: out of memory): no run is checked until tracekit "
+                                       "view restarts")
+        self.assertEqual(feed.verify()[1], [feed.stopped])
+        srv = view.server(feed, "127.0.0.1", 0, "t0k")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+        c.request("GET", "/api/verify", headers={"Authorization": "Bearer t0k"})
+        self.assertEqual(json.loads(c.getresponse().read())["stopped"], feed.stopped)
+        if not shutil.which("node"):
+            self.skipTest("needs node to run the page's renderTop()")
+        top = json.loads(page_js(["renderTop"], f"""
+            const el = {{}}, $ = id => el[id] ??= {{ classList: {{ toggle() {{}} }} }};
+            const document = {{ URL: "http://127.0.0.1/", body: {{ classList: {{ toggle() {{}} }} }} }};
+            let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = {json.dumps(feed.stopped)};
+            const BOOT = null, V2 = true, scope = null, RUNS = new Map(), F = {{}}, TZ = "UTC", nowTs = () => 0;
+            const chainState = {{ ok: false, n: 0, detail: "" }}, esc = s => s;
+            renderTop();
+            process.stdout.write(JSON.stringify([el.mode.textContent, el.lost.hidden, el.lost.textContent,
+                                                 el.chain.textContent]));"""))
+        self.assertEqual(top, ["STOPPED", False, feed.stopped, "✗ VERIFICATION STOPPED"])
 
 
 class BoundedState(unittest.TestCase):

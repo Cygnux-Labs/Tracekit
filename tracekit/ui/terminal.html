@@ -709,7 +709,8 @@
       color: var(--green)
     }
 
-    .vchip.failed {
+    .vchip.failed,
+    .vchip.error {
       color: #000;
       background: var(--red);
       border-color: var(--red)
@@ -1900,26 +1901,26 @@
       if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
     }
     function renderTop() {
-      const m = $("mode");
-      m.className = "mode " + (mode === "live" ? (liveOk ? "live" : "off") : "replay");
-      m.textContent = mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : SOURCE === "bundle" ? "BUNDLE" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
-      m.title = mode === "live" && !liveOk ? liveErr : "";
-      // a page that lost its viewer says so where it can't be missed: what it shows may be out of date
-      $("lost").hidden = liveOk || !!BOOT || document.URL.startsWith("file:");
-      $("lost").textContent = liveErr || "Connection to the viewer lost; reconnecting…";
+      const m = $("mode"), live = liveOk && !STOPPED;   // a viewer that stopped checking runs is not live, connected or not
+      m.className = "mode " + (mode === "live" ? (live ? "live" : "off") : "replay");
+      m.textContent = mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : SOURCE === "bundle" ? "BUNDLE" : STOPPED ? "STOPPED" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
+      m.title = mode === "live" && !live ? STOPPED || liveErr : "";
+      // a page that lost its viewer, or whose viewer stopped checking, says so where it can't be missed
+      $("lost").hidden = live || !!BOOT || document.URL.startsWith("file:");
+      $("lost").textContent = STOPPED || liveErr || "Connection to the viewer lost; reconnecting…";
       document.body.classList.toggle("scoped", !!(V2 && scope));
       const c = $("chain");
       const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
       const failed = V2 && !run ? [...RUNS.values()].filter(r => r.verdict === "failed").length : 0;
       if (run) {
-        c.className = "chain" + (run.verdict === "verified" ? " ok" : run.verdict === "failed" ? " bad" : "");
-        c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" : run.verdict === "failed" ? "RUN ✗ FAILED" : "RUN … PENDING";
+        c.className = "chain" + (run.verdict === "verified" ? " ok" : run.verdict === "pending" ? "" : " bad");
+        c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" : run.verdict === "failed" ? "RUN ✗ FAILED" : run.verdict === "error" ? "RUN ✗ NOT CHECKED" : "RUN … PENDING";
         c.title = (run.integrity || "") + " · " + (run.label || "");
       } else {
         c.className = "chain" + (chainState.ok === true && chainState.n ? " ok" : chainState.ok === false ? " bad" : "");
         // why logs alone have no signed records: nothing to check, which is not a passed check
         c.textContent = chainState.ok === true ? (chainState.n ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS` : "NO SIGNED RECORDS")
-          : chainState.ok === false ? (failed ? `✗ ${failed} OF ${RUNS.size} RUNS FAILED` : `CHAIN ✗ BROKEN`)
+          : chainState.ok === false ? (STOPPED ? "✗ VERIFICATION STOPPED" : failed ? `✗ ${failed} OF ${RUNS.size} RUNS FAILED` : `CHAIN ✗ BROKEN`)
           : chainState.detail ? "CHAIN n/a" : "CHAIN …";
         c.title = chainState.detail || "";
       }
@@ -1963,7 +1964,7 @@
     function renderRuns() {
       const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
       const n = v => list.filter(r => r.verdict === v).length;
-      let html = `<div class="run${scope ? "" : " sel"}" data-run=""><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}</span></div>`;
+      let html = `<div class="run${scope ? "" : " sel"}" data-run=""><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
       for (const r of list) {
         const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
@@ -2408,7 +2409,7 @@
     }
 
     /* ---------------- live mode ---------------- */
-    let liveOk = false, liveErr = "", SOURCE = "";   // SOURCE: "bundle" when the server shows a file, not a live log
+    let liveOk = false, liveErr = "", SOURCE = "", STOPPED = "";   // SOURCE: "bundle" when the server shows a file, not a live log; STOPPED: why the viewer stopped checking runs
     async function getJSON(path) {
       const r = await fetch(path, { credentials: "same-origin" });
       if (r.status === 401) throw Object.assign(new Error("This viewer needs a token: open the URL it printed (?token=…; TRACEKIT_VIEW_TOKEN, or TRACEKIT_OBSERVE_TOKEN for tracekit observe)."), { fatal: true });
@@ -2430,7 +2431,7 @@
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
         es.onerror = () => { es.close(); liveOk = false; liveErr = "Connection to the viewer lost; reconnecting…"; schedule(); setTimeout(startLive, 2000); };
-        const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { if (document.URL.startsWith("file:")) { chainState = { ok: null, n: 0, detail: "A static report: nothing here verifies it. Check the why logs with `tracekit why verify`." }; schedule(); } } };
+        const check = async () => { try { const v = await getJSON("api/verify"); STOPPED = v.stopped || ""; chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { if (document.URL.startsWith("file:")) { chainState = { ok: null, n: 0, detail: "A static report: nothing here verifies it. Check the why logs with `tracekit why verify`." }; schedule(); } } };
         check(); if (!checking) checking = setInterval(check, 10000);
       } catch (e) {
         liveOk = false; liveErr = e.message || String(e); schedule();

@@ -781,6 +781,7 @@ class StoreFeed:
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
+        self.stopped = None   # why the watch thread ended, when it did: the page then says verification stopped
         self.on_run, self.content, self.analyze = on_run, content, analyze
         # (tenant, run_id) -> the newest records of a run to mirror (on_run), off the watch thread: the tape never
         # waits for a graph, and a run that grew twice meanwhile is mirrored once
@@ -806,22 +807,27 @@ class StoreFeed:
 
     def _watch(self):
         seen = None
-        while not self._stop.is_set():
-            stamp = []
-            for name in () if self.pg else ("records.jsonl", NOTE):
-                try:
-                    st = os.stat(os.path.join(self.store, name))
-                    stamp.append((st.st_size, st.st_mtime_ns))
-                except FileNotFoundError:
-                    stamp.append(None)
-            # lean: a Postgres store is read again every POLL_S; compare its latest note first if that loads the server
-            if stamp != seen or self.pg or time.time() >= self.due:
-                seen = stamp
-                try:
-                    self.refresh()
-                except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
-                    print(f"tracekit view: cannot read {self.store}: {e}", file=sys.stderr, flush=True)
-            self._stop.wait(POLL_S)
+        try:
+            while not self._stop.is_set():
+                stamp = []
+                for name in () if self.pg else ("records.jsonl", NOTE):
+                    try:
+                        st = os.stat(os.path.join(self.store, name))
+                        stamp.append((st.st_size, st.st_mtime_ns))
+                    except FileNotFoundError:
+                        stamp.append(None)
+                # lean: a Postgres store is read again every POLL_S; compare its latest note first if that loads it
+                if stamp != seen or self.pg or time.time() >= self.due:
+                    seen = stamp
+                    try:
+                        self.refresh()
+                    except Exception as e:   # the store unreadable, or a bug: said, and tried again
+                        print(f"tracekit view: cannot check {self.store}: {e!r}", file=sys.stderr, flush=True)
+                self._stop.wait(POLL_S)
+        except BaseException as e:   # whatever ends the watch but close(): the page stops saying LIVE
+            self.stopped = f"verification stopped ({type(e).__name__}: {e}): no run is checked until tracekit view " \
+                           "restarts"
+            raise
 
     def refresh(self):
         """Verify every run with records a checkpoint covers that were not verified yet: a run still being written is
@@ -845,24 +851,43 @@ class StoreFeed:
                     if at > now:
                         due.append(at)
                     else:
-                        self._verify(r, note[1], key, covered)
+                        self._check(r, note[1], key, covered)
                 elif covered:
                     due.append(state["checked"] + RECHECK_S)
                     if state["checked"] + RECHECK_S <= now and (stale is None or state["checked"] < stale[1]):
                         stale = key, state["checked"], covered
                 elif key not in self.runs and key[1] != SIGNER_RUN[1]:   # no checkpoint covers it yet: listed as pending
-                    first = next(iter(r.iter_run(*key)), None)
-                    name = first and ((first["event"].get("data") or {}).get("agent") or {}).get("name")
+                    # its first record, unverified: the agent's name only if it is one
+                    name = parsers._get(next(iter(r.iter_run(*key)), None), "event", "data", "agent", "name")
+                    name = name if isinstance(name, str) else None
                     with self.lock:
                         self.runs[key] = {"count": 0, "shown": 0, "failed": None}
                         self._append([{**self.tr._base({"run_id": key[1]}, {}, "tk_run"), "tenant": key[0],
                                        "analysis": True, "review": {"verdict": "pending", "agent": name,
                                                                     "label": OPERATOR_SIDE}}], key)
             if stale:
-                self._verify(r, note[1], stale[0], stale[2])
+                self._check(r, note[1], stale[0], stale[2])
         finally:
             r.close()
         self.due = min(due)
+
+    def _check(self, reader, note, key, count):
+        """_verify, where an error gives the run a "not checked" row and is tried again as a run that did not grow
+        is: one run never stops the others being checked."""
+        try:
+            self._verify(reader, note, key, count)
+        except Exception as x:
+            why = f"{type(x).__name__}: {x}"[:1024]
+            print(f"tracekit view: run {key[1]} not checked: {why}", file=sys.stderr, flush=True)
+            row = self._own({"run_id": key[1]}, "high", f"RUN {key[1]} · NOT CHECKED: error",
+                            f"{OPERATOR_SIDE}\n\nThe viewer could not check this run ({why}); it tries again in "
+                            f"{RECHECK_S // 60} minutes or when the run grows.", "VERIFY")
+            row["review"] = {"verdict": "error", "integrity": "NOT CHECKED", "assurance": "none",
+                             "label": OPERATOR_SIDE, "agent": None}
+            with self.lock:
+                self.runs[key] = dict(self.runs.get(key) or {"count": 0, "shown": 0}, count=count,
+                                      failed="NOT CHECKED (error)", checked=time.time())
+                self._append([dict(row, tenant=key[0])], key)
 
     def _verify(self, reader, note, key, count):
         tenant, run_id = key
@@ -1036,7 +1061,8 @@ class StoreFeed:
         with self.lock:
             runs = {k: s for k, s in self.runs.items() if tenant is None or k[0] == tenant}
             return (sum(s["shown"] for s in runs.values() if not s["failed"]),
-                    [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]], None)
+                    [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]]
+                    + [self.stopped] * bool(self.stopped), None)
 
 
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):
