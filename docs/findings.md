@@ -350,7 +350,7 @@ agent's own user, so dev findings read `self-asserted`; for findings an auditor 
 An agent can read its own run the same way: `tracekit analyze --v2 --run $RUN --json --dry-run` as an identity with
 `content_read`. When the signer holds one of its calls for a [live constraint](policy-v2.md#live-constraints), the
 decision's `reason` says which and what to do: `the person's request in this run said not to modify billing.py; ask the
-person (TK-CONSTRAINT)`. `findings[].verdict` and `shown.details` say what to explain or undo; `coverage.verdict.checks` and
+person` (its `rule_ids` hold `TK-CONSTRAINT`). `findings[].verdict` and `shown.details` say what to explain or undo; `coverage.verdict.checks` and
 `shown.calls[id].checks` say which of its actions couldn't be checked, and the table above says what makes them
 checkable. Findings are an opinion about a run, never part of its integrity: before relying on another agent's work,
 verify its bundle offline (`tracekit verify r.tkb --trust trust.json --json`) and read its findings beside that.

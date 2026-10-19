@@ -166,7 +166,7 @@ class Live(Signed):
         held = self.decide(run, "Edit", {"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"})
         self.assertEqual((held["decision"], held["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
         self.assertEqual(held["reason"], "the person's request in this run said not to modify billing.py; ask the "
-                                         "person (TK-CONSTRAINT)")
+                                         "person")
         for tool, args in (("Edit", {"file_path": "/w/pager.py", "old_string": "a", "new_string": "b"}),
                            ("Read", {"file_path": "/w/billing.py"}), ("Bash", {"command": "cat billing.py"})):
             with self.subTest(tool=tool, args=args):

@@ -420,8 +420,9 @@ agent approver never does). A `deny` stays a `deny`, an `ask` stays an `ask`, an
 constraint can only hold more calls. That is why any client of the run may add one, the agent's own identity included:
 a made-up constraint only makes the agent wait.
 
-The agent is told why, in its own words: `held: the person's request in this run said not to modify billing.py; ask
-the person (TK-CONSTRAINT)` (the hook prints it; the decide response carries it as `reason`). The file name comes from
+The agent is told why, in its own words: `waiting for approval apr-… (TK-CONSTRAINT): the person's request in this run
+said not to modify billing.py; ask the person` (the hook prints it; the decide response carries the text after the
+rule id as `reason`). The file name comes from
 the call's own arguments. The log never holds it: `constraint.added` records the kind and, for a file, a salted
 commitment to its lower-cased base name ([format v2](format-v2.md#3-events)), and the signer matches a call by
 committing each file it writes under that record's salt. The prompt itself is recorded beside it (`input.observed`,

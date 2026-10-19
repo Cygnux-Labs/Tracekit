@@ -327,4 +327,4 @@ def held(kind, name):
             "no_network": "the person's request in this run said not to use the network",
             "many": f"the call writes more than {name} files, more than are checked against what the person's request "
                     "in this run said not to change"}[kind] + \
-        "; ask the person (TK-CONSTRAINT)"
+        "; ask the person"
