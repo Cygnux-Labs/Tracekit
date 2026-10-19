@@ -708,7 +708,7 @@ def dev_content_source():
     """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
     model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
     service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
-    doesn't, and nothing is shown). Each read is one signed content.accessed record. A refusal
+    doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed record. A refusal
     (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the signer is down it
     reads nothing."""
     from .why.signed import vault_content
@@ -720,7 +720,9 @@ def dev_content_source():
         out = {}
         try:
             state["client"] = state["client"] or Client()
-            out = {seq: content for seq, content, _ in vault_content(state["client"], records, "tracekit view")}
+            # content redaction changed opens no commitment: not shown as what the record holds
+            out = {seq: content for seq, content, opened in vault_content(state["client"], records, "tracekit view")
+                   if opened}
         except RPCError as e:
             state["off"] = True
             print(f"tracekit view: calls show their rules, not their arguments: the dev signer keeps none for this "

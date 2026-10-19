@@ -152,6 +152,15 @@ class Translate(unittest.TestCase):
                                 ["EARLIER RECORD", "BEFORE", "AFTER", "COMMITTED"],
                                 ["EARLIER RECORD", "COMMITTED"]])
 
+    def test_content_redaction_changed_is_not_shown_as_the_records(self):
+        """The dev content source dropped `opened`: content that opens no commitment (redacted) showed as the call's
+        arguments, as content that does."""
+        recs = [v2rec(1, "policy.decision", {"tool": "Bash", "args_commitment": "hmac-sha256:a"}),
+                v2rec(2, "policy.decision", {"tool": "Bash", "args_commitment": "hmac-sha256:b"})]
+        with mock.patch.object(view, "Client"), mock.patch("tracekit.why.signed.vault_content", return_value=iter(
+                [(1, {"command": "ls"}, True), (2, {"command": "[REDACTED]"}, False)])):
+            self.assertEqual(view.dev_content_source()("r1", recs), {1: {"command": "ls"}})
+
     def test_openshells_blocks_and_policy_changes_are_rows_in_words(self):
         seen = {"observer": "mtls:spiffe://acme.example/tracekit-openshell", "sensor": "openshell",
                 "ts": "2026-10-15T00:00:00.000000Z", "pid": 2187, "binary": "/usr/bin/curl", "attribution": "token"}
