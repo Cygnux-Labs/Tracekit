@@ -94,8 +94,10 @@ def cite(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """tool_call_id -> {"decision", "result": records, "approval": {decision, approver, self_approved}}."""
+    """tool_call_id -> {"decision", "result": records, "approval": {decision, approver, self_approved}}; an approval
+    that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...)."""
     calls: Dict[str, Dict[str, Any]] = {}
+    asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
     for r in recs:
         t, d = r["event"]["type"], r["event"]["data"]
         if t == "policy.decision":
@@ -104,6 +106,12 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             calls[d["tool_use_id"]]["result"] = r
         elif t == "approval" and d.get("tool_use_id") in calls:
             calls[d["tool_use_id"]]["approval"] = {k: d.get(k) for k in ("decision", "approver", "self_approved")}
+        elif t == "approval.request":
+            asked[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
+        elif t in ("approval.expired", "approval.abandoned", "approval.revoked"):
+            call = calls.get(r["event"].get("tool_call_id") or asked.get(d.get("approval_id")))
+            if call is not None and (call.get("approval") or {}).get("decision") in (None, "approve"):
+                call["approval"] = {"decision": t.split(".")[1], "approver": None, "self_approved": False}
     return calls
 
 
@@ -217,7 +225,10 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                         source=d["source"], trust=d["trust"], kind=kind)
             seen.append({"ref": ev["ref"], "kind": kind, "source": d["source"], "trust": d["trust"],
                          "from_event": ev["id"]})
-        elif t == "model.exchange" and exchanges[d["exchange_id"]][0] is r:
+        # a model call: an exchange with a response (a transcript's prompt line is a request alone, no model call;
+        # the prompt itself is the run's observed input)
+        elif t == "model.exchange" and exchanges[d["exchange_id"]][0] is r and \
+                any(x["event"]["data"].get("phase") != "request" for x in exchanges[d["exchange_id"]]):
             ex = [x["event"]["data"] for x in exchanges[d["exchange_id"]]]
             uses = [u for x in ex for u in x.get("tool_uses") or []]
             ev = w.emit(agent, "decision", e["ts"], r, model=d["model"], purpose="", params={}, seed=None,

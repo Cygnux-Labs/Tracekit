@@ -135,8 +135,9 @@ class Translate(unittest.TestCase):
                 "layers": ["L2"], "reconciled": 0, "unreconciled": {"hook_missing": 1}}}))
         self.assertEqual((child["title"], child["text"]), ("CHILD RUN", "run run-c registered from this run's harness "
                                                                         "process with this run as its parent"))
+        # the kind in words; the code stays on the row (its tooltip and DETAIL)
         self.assertEqual((gap["tape"], gap["title"], gap["text"], gap["v2"]["kind"]),
-                         ("GAP", "GAP · client_counter_gap", "stream s skipped · 3 events missed",
+                         ("GAP", "GAP · events the client sent never arrived", "stream s skipped · 3 events missed",
                           "client_counter_gap"))
         self.assertEqual(final["reason"], "final · head run_seq 2 · coverage L2 · reconciled 0 · unreconciled "
                                           "hook_missing 1 · provider-run tools 2")
@@ -151,6 +152,51 @@ class Translate(unittest.TestCase):
         self.assertEqual(epoch["text"], "1 signing key(s): ed25519 6cb1e807d627")
         self.assertEqual((refused["title"], refused["text"]),
                          ("SIGNER REFUSED 2 · forbidden", "from uid:501 · 17:00:34 UTC–17:00:35 UTC"))
+
+    def test_inputs_reads_and_signed_findings_are_rows_in_words(self):
+        """An observed input, the viewer's own content reads and a findings run's signed findings were ALERT rows of
+        raw record JSON."""
+        signer = view.SIGNER_RUN[1]
+        start, finding, coverage, seen, read = self.feed(
+            v2rec(1, "run.registered", {"agent": {"name": "tracekit-analyze"}, "analyzes": "r1"}, run="f1"),
+            v2rec(2, "review", {"reviewer": "tracekit-analyze/1.4.0", "cites": [{"run_seq": 5, "hash": "sha256:5"}],
+                                "verdict": {"kind": "finding", "rule": "TK-X208", "severity": "high"}}, run="f1"),
+            v2rec(3, "review", {"reviewer": "tracekit-analyze/1.4.0", "cites": [], "verdict": {
+                "kind": "coverage", "rule": "TK-X200", "severity": "info", "checks": {"TK-X201": {
+                    "checked": 2, "found": 0, "not_checkable": [{"reason": "withheld", "n": 1}]}}}}, run="f1"),
+            v2rec(4, "input.observed", {"source": "claude:UserPromptSubmit", "trust": "trusted",
+                                        "output": {"hash": "hmac-sha256:aa"}}),
+            v2rec(5, "content.accessed", {"principal": "uid:501", "run_id": "r1", "seqs": [1, 2],
+                                          "purpose": "tracekit view"}, run=signer))
+        self.assertIn("findings about run r1", start["source"])
+        self.assertEqual((finding["tape"], finding["severity"], finding["title"], finding["v2"]["about"]),
+                         ("FINDING", "high", "FINDING TK-X208 · " + findings_v2.TITLES["TK-X208"], "r1"))
+        self.assertEqual(finding["v2"]["cites"], [{"run_seq": 5, "hash": "sha256:5"}])
+        self.assertEqual(coverage["title"], "FINDINGS COVERAGE · 2 checks ran")
+        self.assertIn("TK-X201: not checkable for 1: " + findings_v2.REASONS["withheld"][0], coverage["text"])
+        self.assertEqual((seen["event"], seen["tape"], seen["title"]),
+                         ("tk_note", "INPUT", "INPUT · claude:UserPromptSubmit"))
+        self.assertEqual((read["event"], read["tape"], read["signer"], read["text"]),
+                         ("tk_note", "SIGNER", True, "uid:501 read the kept content of 2 records of run r1 · "
+                                                     "“tracekit view”"))
+        self.assertNotIn("{", "".join(r["text"] for r in (finding, coverage, seen, read)))
+
+    def test_a_rejection_is_never_a_self_approval_and_signer_rules_have_reasons(self):
+        who = {"scheme": "uid", "subject": "501", "attested": True}
+        rejected, approved, held = self.feed(
+            v2rec(1, "approval", {"decision": "reject", "self_approved": True, "approver_identity": who}),
+            v2rec(2, "approval", {"decision": "approve", "self_approved": True, "approver_identity": who}),
+            v2rec(3, "policy.decision", {"tool_use_id": "c1", "tool": "Edit", "decision": "ask",
+                                         "rule_ids": ["TK-CONSTRAINT"], "policy_hash": SERVER_HASH}))
+        self.assertEqual((rejected["severity"], rejected["text"]), ("info", "by uid:501 (attested) · by the requester"))
+        self.assertEqual((approved["severity"], approved["text"]), ("med", "by uid:501 (attested) · SELF-APPROVED"))
+        self.assertEqual(held["v2"]["rules"], [{"id": "TK-CONSTRAINT", "reason": view.ENGINE_RULES["TK-CONSTRAINT"]}])
+
+    def test_a_model_line_shows_only_what_was_recorded(self):
+        [line] = [r for r in self.feed(v2rec(1, "model.exchange", {
+            "phase": "response", "model": "m", "exchange_id": "x", "tool_uses": [{"id": "t1", "name": "Bash"}]}))
+            if r["event"] == "tk_model"]
+        self.assertEqual(line["text"], "model m · Bash")   # it read "model m → None  · Bash · None ms"
 
     def test_review_counts_a_run_and_points_at_its_first_records(self):
         recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}),
@@ -388,6 +434,75 @@ class View(unittest.TestCase):
         self.assertEqual((r["event"], r["session_id"], r["tenant"], r["review"]),
                          ("tk_run", "r9", "default",
                           {"verdict": "pending", "agent": "late", "label": view.OPERATOR_SIDE}))
+
+    def test_the_viewers_own_rows_carry_no_record_and_a_findings_run_is_not_analysed_again(self):
+        """A verifier report and a finding of the viewer's analysis showed as SIGNED with a made-up seq and the run's
+        last record hash; a findings run was analysed again ("0 of 0 actions"); a run whose checks could not run said
+        "no problems found"."""
+        recs = {"r1": [v2rec(0, "run.registered", {"agent": {"name": "a"}}, "r1"), v2rec(1, "run.final", {}, "r1")],
+                "f1": [v2rec(2, "run.registered", {"agent": {"name": "tracekit-analyze"}, "analyzes": "r1"}, "f1"),
+                       v2rec(3, "run.final", {}, "f1")]}
+        fake = mock.Mock(runs={("default", k): {"seqs": [r["event"]["seq"] for r in v]} for k, v in recs.items()})
+        fake.checkpoint_latest.return_value = None
+        fake.iter_run.side_effect = lambda tenant, rid: iter(recs[rid])
+        analysed = []
+
+        def analyze(records):
+            analysed.append(records[0]["event"]["run_id"])
+            return {"findings": [], "shown": {"details": []},
+                    "summary": "Findings for run r1: no problems found · reasoning readable before 0 of 1 actions (0%)",
+                    "coverage": {"verdict": {"reasoning": {"full": 0, "summary": 0, "withheld": 0, "none": 1},
+                                             "checks": {"TK-X201": {"checked": 0, "found": 0, "not_checkable": [
+                                                 {"reason": "no_response", "n": 1}]}}}}}
+        verified = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")
+        with mock.patch.object(view, "reader", return_value=fake), mock.patch.object(view, "check",
+                                                                                      return_value=verified):
+            feed = view.StoreFeed({"data_dir": self.d}, analyze=analyze)
+            for rid in recs:
+                feed._verify(fake, "note", ("default", rid), 2)
+        with feed.lock:
+            own = [r for r in feed.records if r.get("tape") in ("VERIFY", "FINDING")]
+            reviews = {r["session_id"]: r["review"] for r in feed.records if r.get("tape") == "VERIFY"}
+        self.assertEqual(analysed, ["r1"])
+        self.assertEqual(reviews["f1"]["analyzes"], "r1")
+        self.assertEqual([(r["session_id"], r["tape"]) for r in own], [("r1", "FINDING"), ("r1", "VERIFY"),
+                                                                       ("f1", "VERIFY")])
+        self.assertEqual({(r["hash"], r["tk_seq"], r["analysis"]) for r in own}, {(None, None, True)})
+        self.assertEqual(reviews["r1"]["findings"]["line"], "nothing found in what could be checked · reasoning "
+                                                            "readable before 0 of 1 actions (0%)")
+        self.assertEqual(reviews["r1"]["findings"]["not_checkable"], [
+            {"rule": "TK-X201", "code": "no_response", "n": 1, "text": findings_v2.REASONS["no_response"][0]}])
+
+    def test_a_run_still_being_written_shows_up_to_each_checkpoint(self):
+        """A large run reached the page only once it stopped (~50 s late): a run whose records kept arriving was never
+        fully covered by a checkpoint, so it was never verified. It is shown up to each checkpoint now; the verifier's
+        report is a row when the run first shows and when it is final, its review updated in between."""
+        recs = [v2rec(0, "run.registered", {"agent": {"name": "bulk"}}, "r1")] + [
+            v2rec(i, "policy.decision", {"tool_use_id": f"c{i}", "tool": "Bash", "decision": "allow"}, "r1")
+            for i in range(1, 5)] + [v2rec(5, "run.final", {}, "r1")]
+        fake = mock.Mock(runs={("default", "r1"): {"seqs": list(range(6))}}, tree=mock.Mock(size=6))
+        fake.iter_run.side_effect = lambda tenant, rid: iter(recs)
+        verified = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")
+
+        def rows():
+            with feed.lock:
+                return [(r["event"], r.get("tape")) for r in feed.records if r["session_id"] == "r1"]
+        with mock.patch.object(view, "reader", return_value=fake), \
+                mock.patch.object(view, "check", return_value=verified) as check:
+            fake.checkpoint_latest.return_value = (3, "note at 3")
+            feed = view.StoreFeed({"data_dir": self.d})
+            self.assertTrue(wait_for(lambda: rows(), 5))
+            self.assertEqual(rows(), [("SessionStart", None), ("PreToolUse", None), ("PreToolUse", None),
+                                      ("tk_alert", "VERIFY")])
+            fake.checkpoint_latest.return_value = (5, "note at 5")
+            feed.refresh()
+            self.assertEqual(rows()[4:], [("PreToolUse", None), ("PreToolUse", None), ("tk_run", None)])
+            fake.checkpoint_latest.return_value = (6, "note at 6")
+            feed.refresh()
+            self.assertEqual(rows()[7:], [("SessionEnd", None), ("tk_alert", "VERIFY")])
+        self.assertEqual([c.args[3] for c in check.call_args_list], ["note at 3", "note at 5", "note at 6"])
+        with feed.lock:
+            self.assertEqual([r["review"]["records"] for r in feed.records if r.get("review")], [3, 5, 6])
 
     def test_a_tenants_signer_run_is_the_signer_never_an_agent_run(self):
         signer = ("acme", view.SIGNER_RUN[1])   # content.accessed and content.erased go in each tenant's own
@@ -744,6 +859,11 @@ class WhyData(WhyServer):
         self.assertNotIn("signed-run|10", ws["calls"])
         self.assertEqual(ws["calls"]["signed-run|11"], [run.run_id, "ev:" + acts[1]["id"]])
         self.assertEqual(len(ws["calls"]), len(acts) - 1)
+        with self.store.out.lock:   # a call that ran cites its result record, which names no tool: its decision's
+            self.store.out.records[-len(acts)] = {"session_id": "signed-run", "tool_use_id": "c0", "v2": {"run_seq": 10}}
+            self.store.out.records.append({"session_id": "signed-run", "tool_use_id": "c0", "tool_name": acts[0]["tool"],
+                                           "v2": {"run_seq": 9}})
+        self.assertEqual(self.get("/api/why/workspace")["calls"]["signed-run|10"], [run.run_id, "ev:" + acts[0]["id"]])
         high = [a for a in ws["alerts"] if a["severity"] == "high"]
         self.assertTrue(high and high[0]["run_id"] == run.run_id and "send_email" in high[0]["title"])
         node = next(n for n in self.get(f"/api/why/runs/{run.run_id}")["nodes"] if n["id"] == "ev:" + acts[0]["id"])
@@ -938,7 +1058,9 @@ class OneViewer(unittest.TestCase):
         feed, token = args[0], args[3]
         self.assertEqual(code, 0)
         self.assertIsInstance(feed, observe.Feed)
-        self.assertIn(f"(ledger: {feed.path}, read-only)", out)
+        # the bundle it shows, not the temp ledger it was unpacked to
+        self.assertIn(f"(bundle: {os.path.join(self.SAMPLE, 'demo-run.tkb')}, verified, read-only)", out)
+        self.assertNotIn(feed.path, out)
         srv = view.server(feed, "127.0.0.1", 0, token)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
@@ -1006,6 +1128,28 @@ class OneViewer(unittest.TestCase):
         self.assertTrue(server.called)
         self.assertEqual(err.getvalue().splitlines(), ["tracekit why serve is now part of tracekit view: "
                                                        "`tracekit view --why ROOT`; this command keeps working"])
+
+class Pages(unittest.TestCase):
+    def test_the_runs_page_takes_the_token_and_a_page_without_it_says_so_in_words(self):
+        """/runs?token= answered raw 401 JSON; a person at a page without the token got JSON too."""
+        srv = view.server(None, "127.0.0.1", 0, "t0k", runs=mock.Mock())
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+        c.request("GET", "/runs")
+        r = c.getresponse()
+        self.assertEqual((r.status, r.getheader("Content-Type")), (401, "text/html; charset=utf-8"))
+        self.assertIn("needs its token", r.read().decode())
+        c.request("GET", "/api/runs")
+        r = c.getresponse()
+        self.assertEqual((r.status, json.loads(r.read())), (401, {"error": "missing or wrong token"}))
+        c.request("GET", "/runs?token=t0k")
+        r = c.getresponse()
+        r.read()
+        self.assertEqual((r.status, r.getheader("Location")), (303, "/runs"))
+        self.assertTrue(r.getheader("Set-Cookie").startswith("tracekit_observe="))
+
 
 class BoundedState(unittest.TestCase):
     """What a long-running viewer keeps per run, approval or session stays bounded however many it sees."""

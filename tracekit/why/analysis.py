@@ -11,7 +11,7 @@ from collections import deque
 from itertools import takewhile
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .core import UNFINISHED, Run, glob_escape, load_run, ts_seconds, verify
+from .core import COMMITTED, UNFINISHED, Run, glob_escape, load_run, ts_seconds, verify
 from .graph import Graph, _text, build_graph, nodes_matching, target_hits
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -76,8 +76,14 @@ def arg_provenance(run: Run, g: Graph, action_ev: Dict[str, Any], texts: Optiona
     return value_provenance(run, run.value(action_ev["args_ref"]), action_ev["seq"], texts)
 
 
+def _committed(v: Any) -> bool:
+    """A signed run's content, imported as only its commitment: the same placeholder everywhere, no value to trace."""
+    return isinstance(v, dict) and v.get("content") == COMMITTED
+
+
 def _texts(run: Run) -> List[Tuple]:
-    """(event, its text lowercased, trust, label) of each input and each result of a call that ran, in log order."""
+    """(event, its text lowercased, trust, label) of each input and each result of a call that ran, in log order; a
+    committed one has no text."""
     untrusted_refs = {e["ref"] for e in run.of_type("input") if e.get("trust") == "untrusted"}
     # a tool result is untrusted when its content was also recorded as untrusted input, or when the
     # action itself is marked untrusted (e.g. a subagent's answer after it read untrusted content).
@@ -85,12 +91,14 @@ def _texts(run: Run) -> List[Tuple]:
     texts = []
     for ev in run.events:
         if ev["type"] == "input":
-            texts.append((ev, _text(run.value(ev["ref"])).lower(), ev.get("trust", "trusted"),
+            v = run.value(ev["ref"])
+            texts.append((ev, "" if _committed(v) else _text(v).lower(), ev.get("trust", "trusted"),
                           "task" if ev.get("kind") == "task" else ev.get("source", "input")))
         elif ev["type"] == "action" and ev.get("status") != "blocked":
             # a tool result counts as untrusted if the same content was also recorded as untrusted input
             untrusted = ev["result_ref"] in untrusted_refs or ev.get("trust") == "untrusted"
-            texts.append((ev, _text(run.value(ev["result_ref"])).lower(),
+            v = run.value(ev["result_ref"])
+            texts.append((ev, "" if _committed(v) else _text(v).lower(),
                           "untrusted" if untrusted else "trusted", ev["tool"]))
     return texts
 
@@ -100,6 +108,8 @@ def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[
     """arg_provenance for argument values that need not be recorded yet: the live guard calls this
     before a tool runs, with before_seq past the end of the log. texts: _texts(run), read once for many calls."""
     rows = []
+    if _committed(args):   # a signed run's arguments: only their commitment, which is no argument value
+        return rows
     hashed = (run.start.get("meta") or {}).get("content_capture") == "hashed"
     texts = list(takewhile(lambda t: t[0]["seq"] < before_seq, _texts(run) if texts is None else texts))
     for a in atoms(args):
@@ -279,8 +289,15 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "title": f"Sensitive action {ev['tool']} is downstream of untrusted input",
                         "detail": "Reached from " + ", ".join(untrusted_up) + ". Reach is not cause; test it."})
         if ev.get("status") == "blocked":
-            by = "Tracekit policy" if (ev.get("policy") or {}).get("decision") in ("deny", "ask") else "the guard"
-            out.append({**base, "severity": "high", "title": f"{ev['tool']} was blocked by {by}",
+            pol = ev.get("policy") or {}
+            # a held call that no one approved never ran: it was held, not blocked
+            answer = (pol.get("approval") or {}).get("decision")
+            title = (f"{ev['tool']} was held for approval and " + {
+                "reject": "rejected", "timeout": "timed out", "expired": "the approval expired", "abandoned":
+                "the approval was abandoned", "revoked": "the approval was revoked"}.get(answer, "not approved")
+                if pol.get("decision") == "ask" else
+                f"{ev['tool']} was blocked by " + ("Tracekit policy" if pol.get("decision") == "deny" else "the guard"))
+            out.append({**base, "severity": "high", "title": title,
                         "detail": (ev.get("guard") or {}).get("reason", "")})
         elif ev.get("status") == "error":
             out.append({**base, "severity": "review", "title": f"{ev['tool']} failed",
@@ -322,7 +339,8 @@ def timeline(run: Run) -> List[Dict[str, Any]]:
             srcs = [c["source"] or c["kind"] for c in ev["context"]]
             text = f"{ev['agent']} called {ev['model']} to {ev.get('purpose') or 'decide'} using {len(srcs)} inputs"
         elif t == "action":
-            text = f"{ev['agent']} ran {ev['tool']}({_short(run.value(ev['args_ref']), 70)})"
+            args = run.value(ev["args_ref"])
+            text = f"{ev['agent']} ran {ev['tool']}" + ("" if _committed(args) else f"({_short(args, 70)})")
         elif t == "message":
             text = f"{ev['agent']} sent a message to {ev['to']}"
         elif t == "run.end":

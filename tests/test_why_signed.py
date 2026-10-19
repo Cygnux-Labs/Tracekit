@@ -478,6 +478,32 @@ class ImportWithoutWhyLog(unittest.TestCase):
         self.assertIn(("ev:" + page["id"], "argument to (email), untrusted", "observed"),
                       [(e["src"], e["kind"], e["evidence"]) for e in g.edges if e["dst"] == "ev:" + held["id"]])
 
+    def test_committed_arguments_trace_to_nothing(self):
+        """The why view of a signed run grew with the square of its calls: each call's committed arguments (the same
+        placeholder text and a commitment) were traced as values to every earlier result. They are no values."""
+        from tracekit.why.analysis import _texts, arg_provenance
+        g, texts = build_graph(self.imported), _texts(self.imported)
+        self.assertEqual({str(arg_provenance(self.imported, g, e, texts)) for e in self.imported.of_type("action")},
+                         {"[]"})
+        self.assertEqual({t for _, t, _, _ in texts}, {""})
+
+    def test_a_held_call_nobody_approved_is_held_not_blocked(self):
+        titles = [a["title"] for a in alerts(self.imported, build_graph(self.imported))]
+        # the runtime gave up waiting (approval_wait_s=0) and abandoned the approval: held, never blocked
+        self.assertIn("send_email was held for approval and the approval was abandoned", titles)
+        self.assertIn("Bash was blocked by Tracekit policy", titles)
+        self.assertNotIn("send_email was blocked by Tracekit policy", titles)
+
+    def test_a_prompt_line_is_no_model_call(self):
+        """A transcript's prompt line is a request alone (model "unknown"): it imported as a model call."""
+        recs = import_v2.store_records(os.path.join(self.dir, "data"))[self.tk_run]
+        line = json.loads(json.dumps(recs[-1]))
+        line["event"].update(type="model.exchange", run_seq=len(recs), data={
+            "provider": "anthropic", "model": "unknown", "phase": "request", "exchange_id": "u-1"})
+        run = load_run(import_v2.convert(recs + [line], tempfile.mkdtemp(dir=self.dir), {}))
+        self.assertEqual([e["model"] for e in run.of_type("decision")], [e["model"] for e in
+                                                                          self.imported.of_type("decision")])
+
     def test_a_capture_gap_is_a_high_alert(self):
         recs = import_v2.store_records(os.path.join(self.dir, "data"))[self.tk_run]
         gap = json.loads(json.dumps(recs[-1]))

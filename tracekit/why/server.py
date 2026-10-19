@@ -281,8 +281,11 @@ class Store:
         out = workspace(paths, items)
         out["alerts"], out["calls"] = [], {}
         with self.out.lock:
-            signed = {f"{r.get('session_id')}|{r['v2'].get('run_seq')}": r.get("tool_name")
-                      for r in self.out.records if isinstance(r.get("v2"), dict)}
+            rows = [r for r in self.out.records if isinstance(r.get("v2"), dict)]
+        # a call's result record names no tool: it is its decision's (a call that ran cites its result)
+        tools = {(r.get("session_id"), r.get("tool_use_id")): r["tool_name"] for r in rows if r.get("tool_name")}
+        signed = {f"{r.get('session_id')}|{r['v2'].get('run_seq')}": r.get("tool_name")
+                  or tools.get((r.get("session_id"), r.get("tool_use_id"))) for r in rows}
         for a in items:
             run = a.get("run")
             if run is None:
