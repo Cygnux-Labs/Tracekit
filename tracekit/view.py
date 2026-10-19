@@ -770,16 +770,28 @@ class StoreFeed:
         # (tenant, run_id) -> the newest records of a run to mirror (on_run), off the watch thread: the tape never
         # waits for a graph, and a run that grew twice meanwhile is mirrored once
         self._mirror, self._mlock = {}, threading.Condition()
+        self._stop, self.threads = threading.Event(), []   # close()
         if on_run:
-            threading.Thread(target=self._mirrors, daemon=True).start()
+            self.threads.append(threading.Thread(target=self._mirrors, daemon=True))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
-        threading.Thread(target=self._watch, daemon=True).start()
+        self.threads.append(threading.Thread(target=self._watch, daemon=True))
+        for t in self.threads:
+            t.start()
+
+    def close(self):
+        """Stop the watch and mirror threads, once a refresh or mirror under way ends: a feed over a store that goes
+        away (a test's) then never reports it."""
+        self._stop.set()
+        with self._mlock:
+            self._mlock.notify_all()
+        for t in self.threads:
+            t.join()
 
     def _watch(self):
         seen = None
-        while True:
+        while not self._stop.is_set():
             stamp = []
             for name in () if self.pg else ("records.jsonl", NOTE):
                 try:
@@ -794,7 +806,7 @@ class StoreFeed:
                     self.refresh()
                 except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
                     print(f"tracekit view: cannot read {self.store}: {e}", file=sys.stderr, flush=True)
-            time.sleep(POLL_S)
+            self._stop.wait(POLL_S)
 
     def refresh(self):
         """Verify every run with records a checkpoint covers that were not verified yet: a run still being written is
@@ -922,6 +934,8 @@ class StoreFeed:
         while True:
             with self._mlock:
                 while True:
+                    if self._stop.is_set():
+                        return
                     now = time.time()
                     ready = next((k for k, v in self._mirror.items() if v is None or due.get(k, 0) <= now), None)
                     if ready:
