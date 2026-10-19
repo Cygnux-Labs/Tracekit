@@ -17,7 +17,8 @@ A tool use the provider sent without an id gets `<provider>:<response id>:<index
 nonce in place of a missing response id, so two such responses never share one).
 
 `Stream(kind)` accumulates a streamed response, chunk by chunk, into the shape `parse` reads, keeping what the model
-said (text, reasoning and the provider's sealed reasoning) within MAX_TEXT characters.
+said (text, reasoning and the provider's sealed reasoning) within MAX_TEXT characters and MAX_INDEX parts of a Gemini
+candidate, as JSON: the SDK objects of autotrace's chunks as the SDK dumps them, so the response hashes.
 
     said(kind, response) -> [{"kind": "reasoning" | "text", "form": "full" | "summary" | "encrypted" | "withheld",
                               "text": str, "tools": [ids of the tool uses right after it, before the next segment]}]
@@ -53,6 +54,13 @@ def _get(obj, *path, default=None):
         else:
             obj = getattr(obj, p, None)
     return default if obj is None else obj
+
+
+def _plain(x):
+    """What a stream keeps of an SDK object (autotrace's chunks: a Responses item, a Gemini part, usage) as JSON, as
+    the gateway's chunks are, so the response can be hashed and kept: the SDK's own JSON dump (bytes as base64)."""
+    f = getattr(x, "model_dump", None)
+    return f(mode="json") if callable(f) else x
 
 
 def _list(obj, *path):
@@ -163,7 +171,7 @@ def _joined(node):
 def _openai_chat_chunk(acc, chunk):
     for k in ("id", "model", "usage"):
         if _get(chunk, k) is not None:
-            acc[k] = _get(chunk, k)
+            acc[k] = _plain(_get(chunk, k))
     for c in _list(chunk, "choices"):
         choice = _at(acc.setdefault("choices", []), _get(c, "index", default=0))
         if _get(c, "finish_reason"):
@@ -226,11 +234,11 @@ def openai_responses(resp, request=None):
 def _openai_responses_event(acc, ev):
     typ = _get(ev, "type") or ""
     if typ == "response.output_item.done":   # kept for a stream that never completes
-        acc.setdefault("output", []).append(_get(ev, "item"))
+        acc.setdefault("output", []).append(_plain(_get(ev, "item")))
     elif _get(ev, "response") is not None:
         acc.update(id=_get(ev, "response", "id"), model=_get(ev, "response", "model"))
         if typ in ("response.completed", "response.incomplete", "response.failed"):
-            acc["final"] = _get(ev, "response")
+            acc["final"] = _plain(_get(ev, "response"))
 
 
 # ------------------------------------------------------------------ Anthropic Messages
@@ -307,23 +315,29 @@ def gemini(resp, request=None):
 def _gemini_chunk(acc, chunk):
     for k in ("response_id", "model_version", "usage_metadata"):
         if _get(chunk, k) is not None:
-            acc[k] = _get(chunk, k)
+            acc[k] = _plain(_get(chunk, k))
     for i, c in enumerate(_list(chunk, "candidates")):
         cand = _at(acc.setdefault("candidates", []), i)
         if _get(c, "finish_reason") is not None:
-            cand["finish_reason"] = _get(c, "finish_reason")
+            fr = _get(c, "finish_reason")
+            cand["finish_reason"] = getattr(fr, "value", fr)   # the SDK's enum: its JSON value
         parts = cand.setdefault("content", {"parts": []})["parts"]
         for p in _list(c, "content", "parts"):
             sig = _get(p, "thought_signature")
             if isinstance(sig, bytes):   # the SDK's object; its JSON dump is base64
                 sig = base64.b64encode(sig).decode()
-            if _get(p, "function_call") is not None:
-                parts.append(p)
-            elif isinstance(_get(p, "text"), str) or sig:   # text and thought parts, a run of one kind joined
-                last = parts[-1] if parts and isinstance(parts[-1], dict) and "\0text" in parts[-1] else None
-                if last is None or sig or bool(last.get("thought")) != bool(_get(p, "thought")):
-                    last = {"text": "", "\0text": [], **({"thought": True} if _get(p, "thought") else {})}
-                    parts.append(last)
+            fc = _get(p, "function_call") is not None
+            if not (fc or isinstance(_get(p, "text"), str) or sig):
+                continue
+            # text and thought parts: a run of one kind joined
+            last = None if fc else parts[-1] if parts and isinstance(parts[-1], dict) and "\0text" in parts[-1] else None
+            if last is None or sig or bool(last.get("thought")) != bool(_get(p, "thought")):
+                if len(parts) >= MAX_INDEX:   # a part per chunk (one flipping `thought`): past this, dropped
+                    acc["truncated"] = True
+                    continue
+                last = _plain(p) if fc else {"text": "", "\0text": [], **({"thought": True} if _get(p, "thought") else {})}
+                parts.append(last)
+            if not fc:
                 if isinstance(sig, str):
                     last["thought_signature"] = sig
                 _text(acc, last, "text", _get(p, "text"))

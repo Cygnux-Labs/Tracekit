@@ -108,6 +108,13 @@ class HostileStreams(unittest.TestCase):
             a.add(ev)
         self.assertLessEqual(len(a.acc.get("content", [])), 1)
 
+    def test_a_gemini_stream_flipping_thought_every_chunk_keeps_a_bounded_number_of_parts(self):
+        g = parsers.Stream("gemini:generate_content")
+        for i in range(5000):   # each flip starts a part
+            g.add({"candidates": [{"content": {"parts": [{"text": "g", "thought": bool(i % 2)}]}}]})
+        body = g.content()
+        self.assertEqual((len(body["candidates"][0]["content"]["parts"]), body["truncated"]), (parsers.MAX_INDEX, True))
+
     def test_streamed_arguments_accumulate_in_linear_time(self):
         import time
         piece = '"abcdefghijklmn",'
