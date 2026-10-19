@@ -266,7 +266,7 @@ def negative(out):
     Every case verifies against negative/trust.json (the log key and one pinned witness, one cosignature required)."""
     import test_bundle_v2 as tb
     from factories import rewrite_bundle
-    from tracekit.bundle_v2 import export
+    from tracekit.bundle_v2 import export, run_name
     from tracekit.format import checkpoint, registry
     from tracekit.storage.base import registry_tree
     d = tempfile.mkdtemp()
@@ -302,16 +302,17 @@ def negative(out):
         rewrite_bundle(good, os.path.join(out, file), apply)
         cases.append((name, file))
 
-    def run_set(name, file, foreign=False, witnesses=()):
+    def run_set(name, file, foreign=False, witnesses=(), close=False):
         """A run-set of acme's run.registered leaves, its registry note cosigned by `witnesses`; `foreign`: the registry
-        stored under tenant beta, so the export bundles beta's run with it."""
-        lg = log(close=False)
+        stored under tenant beta, so the export bundles beta's run with it; `close`: run-a final (its run.final a leaf
+        too, so the run-set bundles it)."""
+        lg = log(close=close)
         tsalt, tenant = registry.tenant_salt(b"\x01" * 32, "acme"), "beta" if foreign else "acme"
         if foreign:
             lg.add("run.registered", {"agent": {"name": "agent"}, "identity": {"scheme": "token", "subject": "svc",
                                                                                  "attested": True}}, "run-c", tenant="beta")
         for r in lg.store.iter_range(0, lg.store.tree.size):
-            if (r["event"]["type"], r["event"]["tenant"]) == ("run.registered", "acme"):
+            if r["event"]["type"] in ("run.registered", "run.final") and r["event"]["tenant"] == "acme":
                 lg.store.registry_append(tenant, registry.leaf(r, tsalt))
         reg, origin = lg.store.registry_merkle(tenant), registry.origin(tb.ORIGIN, tsalt)
         text = checkpoint.body(origin, reg.size, reg.root_at(reg.size))
@@ -486,6 +487,26 @@ def negative(out):
         bound = os.path.join(out, "run-set-float-bound.tkb")
         rewrite_bundle(bound, bound, lambda f, m: f.update({"registry/run-set.json": re.sub(
             rb'"to": (\d+)', rb'"to": \1.0', f["registry/run-set.json"])}))
+
+        def again(run_file):   # one run's file under a second name too
+            return lambda f, m: (f.update({"runs/" + "d" * 32 + ".jsonl": f[run_file(f)]}),
+                                 m["files"].update({"runs/" + "d" * 32 + ".jsonl": ""}))
+        run_set("run-set with a run's file twice", "run-set-run-twice.tkb", witnesses=((tb.WITNESS, tb.WIT_SECRET),),
+                close=True)
+        twice = os.path.join(out, "run-set-run-twice.tkb")
+        rewrite_bundle(twice, twice, again(lambda f: min(k for k in f if k.startswith("runs/"))))
+        lg = log()
+        cite = next(iter(lg.store.iter_run("acme", "run-a")))
+        lg.add(*tb.registered("run-f", analyzes="run-a"))
+        lg.add("review", {"reviewer": "tracekit-analyze/1", "verdict": {
+            "kind": "finding", "rule": "TK-X201", "severity": "high", "title": "Action with no reasoning before it"},
+            "cites": [{"run_seq": 0, "hash": cite["hash"]}]}, run="run-f")
+        lg.final("run-f")
+        export(lg.store, "acme", "run-a", lg.note(), os.path.join(out, "findings-run-twice.tkb"), with_runs=["run-f"])
+        lg.store.close()
+        rewrite_bundle(os.path.join(out, "findings-run-twice.tkb"), os.path.join(out, "findings-run-twice.tkb"),
+                       again(lambda f: run_name("acme", "run-f")))
+        cases.append(("findings run's file twice", "findings-run-twice.tkb"))
         trust = {"logs": [checkpoint.vkey(tb.ORIGIN, checkpoint.ED25519, tb.pub(tb.LOG_SECRET))],
                  "witnesses": [{"vkey": checkpoint.vkey(tb.WITNESS, checkpoint.COSIGNATURE, tb.pub(tb.WIT_SECRET)),
                                 "class": "customer"}], "algs": ["ed25519"], "witnesses_required": 1}

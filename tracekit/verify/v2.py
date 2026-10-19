@@ -606,7 +606,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     # the runs: one, or with a run-set any number; each in one file or in parts
     names = run_files(files)
     run_set = "registry/run-set.json" in files
-    runs, problems, chain, outside, layout = {}, [], [], [], []
+    runs, problems, chain, outside, layout, seen = {}, [], [], [], [], set()
     for name, parts in names.items():
         pieces = [_jsonl(files[n]) for n in parts]
         records = runs[name] = [r for p in pieces for r in p]
@@ -614,6 +614,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         if not records:
             raise ValueError("a run has no records")
         head = records[0]["event"]
+        key = (head.get("tenant"), head.get("run_id"))
+        if all(isinstance(k, str) for k in key):   # a second file of one run would count its records twice
+            if key in seen:
+                chain.append(f"run {key[1][:200]!r} of tenant {key[0][:64]!r} again in {name}")
+            seen.add(key)
         for i, r in enumerate(records):
             check_record(r, keys_at(r["event"]["seq"]), problems)
             e = r["event"]
