@@ -169,6 +169,25 @@ class CodingPack(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "flag")
 
+    def test_a_force_push_is_read_in_its_own_command(self):
+        # TK-D003 matched the normalised line, which joins commands with ` ; `: a later command's `-f`, `--m` or `+`
+        # denied a plain push, a commit message naming a force push was denied, a flag after an argument with a newline
+        # was missed, and 16 KiB of repeated pushes spent the fallback engine's 1 s and denied
+        self.verdicts([(c, "TK-D003") for c in (
+            "git push --force-with-lease", "git push -uf origin main", "git push -4f origin main", "git push origin +main",
+            "git push --mirr origin", "git -c a=b --no-pager push -f", "sudo git push -f", "echo b | xargs git push -f",
+            "bash -c 'git push --force'", "eval 'git push -f'", "bash <<'EOF'\ngit push --force\nEOF",
+            "ssh host 'git push --force'", "echo a\ngit push -f", 'git push --repo="x\ny" origin --force',
+            "git push -fo ci.skip origin")])
+        for command in ("git push origin main && ls -f", "git push origin main\nrm -rf build",
+                        "git push origin main\nnpm test -- --m", "git push origin main && wget --mirror https://x.example",
+                        'git commit -m "git push --force broke main"', "git push -of origin feat",
+                        "git push origin main && gh pr create --body \"$(cat <<'EOF'\n+3 -f\nEOF\n)\"",
+                        "git push x; " * 1400):
+            with self.subTest(command=command[:60]):
+                d = self.e.decide("Bash", {"command": command})
+                self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), d)
+
     def test_command_line_rules_read_program_names_in_any_case(self):
         # the normalised line lower-cases each program name (after wrappers too), as argv does: macOS runs git for `Git`
         self.verdicts([("Git push --force", "TK-D003"), ({"command": ["Git", "push", "--force"]}, "TK-D003"),

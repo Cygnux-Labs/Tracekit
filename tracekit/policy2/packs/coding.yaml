@@ -51,13 +51,12 @@ deny:
     rationale: Remote code execution without review.
   - id: TK-D003
     class: shell
-    field: line
-    # global options may come before `push` (git -C dir push); -f may be bundled (-uf); --mirror may be abbreviated
-    # (`--m`: push's only option starting with m). `.` doesn't cross a newline in the raw line, so a heredoc after a push
-    # (`gh pr create --body "$(cat <<EOF`) isn't read as its arguments; the normalised line joins commands with ` ; `,
-    # so a later command on that line still is. Lazy: one push stays linear on the fallback engine, many in one long
-    # command don't (the pattern isn't anchored)
-    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*?(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|--m(i|ir|irr|irro|irror)?\b|\s\+\S)'
+    # each command's argv, as TK-A002: a later command (`git push origin main && ls -f`), a heredoc after the push or
+    # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push);
+    # -f may sit in a short-option cluster before any `o` (`-uf`, `-4f`; `-of` is -o's value); --mirror may be
+    # abbreviated (`--m`: push's only option starting with m); a `+` refspec forces too. `[\w\W]*?` crosses a newline
+    # inside an argument; anchored and lazy, so the fallback engine stays linear
+    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
     reason: force push
     rationale: Rewrites shared history.
   - id: TK-D004
