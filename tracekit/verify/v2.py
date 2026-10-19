@@ -182,7 +182,8 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _MODEL = re.compile(r"[A-Za-z0-9._:/@+-]{1,128}")
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
 _VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# control characters, and the bidirectional and zero-width format characters that would reorder or hide report text
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 _IDENTITY = re.compile(r"[a-z0-9_]+:.+")   # scheme:subject, as run.registered's identity reads
 _EOCD, _CEN, _LOC = struct.Struct("<IHHHHIIH"), struct.Struct("<IHHHHHHIIIHHHHHII"), struct.Struct("<IHHHHHIIIHH")
 PAGE = "https://cygnux-labs.github.io/Tracekit/verify/"   # the browser verifier of the latest release (RELEASING.md)
@@ -1432,7 +1433,8 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
 
 
 def print_report(rep, code, stream=None):
-    """The report as text; control characters in bundle-derived strings are dropped so they reach no terminal."""
+    """The report as text; control and bidirectional format characters in bundle-derived strings are dropped, so they
+    reach no terminal and can't reorder the signer's words around them."""
     s, clean = stream or sys.stdout, lambda x: _CONTROL.sub("", str(x))
     for c in rep.checks:
         s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(c['detail'])}" if c["detail"] else "") + "\n")

@@ -1134,10 +1134,11 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
     + (capped ? `; capped by the run-set's registry notes (${capped})` : "") + (selfApproved ? "; approvals: self" : "");
 }
 
-/** `x` without control characters, as the report prints bundle-derived strings. */
-export const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+/** `x` without control characters and the bidirectional and zero-width format characters that would reorder or hide
+ * the text around them, as the report prints bundle-derived strings. */
+export const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "");
 
-/** The report as text, as the reference CLI prints it; control characters in bundle-derived strings are dropped. */
+/** The report as text, as the reference CLI prints it; `clean` drops characters from bundle-derived strings. */
 export function formatReport(rep: Report): string {
   let s = "";
   for (const c of rep.checks) {

@@ -3,7 +3,7 @@
  * mean, what to do next, a line per check on what it means (docs/verdicts.md, shortened), and a summary of the bundle's
  * runs. The report itself is the CLI's, unchanged: this module only reads it. No DOM, so Node tests it.
  */
-import { EXIT_FAIL, EXIT_OK, type Report, VERSION, formatReport } from "./index.js";
+import { EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatReport } from "./index.js";
 
 type J = any;
 export type Names = { bundle: string; trust: string | null };
@@ -159,7 +159,8 @@ export const MEANING: Record<string, string> = {
 
 const day = (ts: string) => ts.slice(0, 19).replace("T", " ") + " UTC";
 
-/** A few plain facts about the bundle's runs, from their records ({name: bytes}, the runs/*.jsonl files). */
+/** A few plain facts about the bundle's runs, from their records ({name: bytes}, the runs/*.jsonl files), cleaned as the
+ * report is; names an agent chose are quoted, so they can't read as the signer's words around them. */
 export function summarize(files: Map<string, Uint8Array>, rep: Report): [string, string][] {
   const text = new TextDecoder();
   const runs = [...files].filter(([n]) => n.startsWith("runs/")).map(([, b]) => text.decode(b).split("\n")
@@ -181,7 +182,7 @@ export function summarize(files: Map<string, Uint8Array>, rep: Report): [string,
         : level]);
   const agents = runs.map((rs) => rs[0]).filter((e) => e?.type === "run.registered").map((e) => {
     const id = e.data?.identity;
-    return `${e.data?.agent?.name ?? "agent"}` + (id ? ` (${id.scheme}:${id.subject})` : "");
+    return `${JSON.stringify(String(e.data?.agent?.name ?? "agent"))}` + (id ? ` (${id.scheme}:${id.subject})` : "");
   });
   const named = [...new Set(agents)];
   if (named.length) out.push(["Agents", named.slice(0, 5).join(", ") + (named.length > 5 ? ", ..." : "")]);
@@ -194,7 +195,8 @@ export function summarize(files: Map<string, Uint8Array>, rep: Report): [string,
     const who = a ? `${a.decision === "approve" ? "approved" : a.decision === "reject" ? "rejected" : a.decision} by `
       + `${a.person ?? a.approver}` + (a.approver_kind === "agent" ? " (an agent)" : "")
       + (a.self_approved ? " (self-approved)" : "") + (a.break_glass ? " (break-glass)" : "") : "no answer recorded";
-    return `${e.data?.binding?.tool ?? e.tool_call_id ?? "a call"}: ${who}`;
+    const tool = e.data?.binding?.tool ?? e.tool_call_id;
+    return `${tool == null ? "a call" : JSON.stringify(String(tool))}: ${who}`;
   });
   out.push(["Held for approval", held.length ? held.slice(0, 10).join("; ") + (held.length > 10 ? "; ..." : "") : "none"]);
   const gaps = new Map<string, number>();
@@ -202,5 +204,5 @@ export function summarize(files: Map<string, Uint8Array>, rep: Report): [string,
   out.push(["Gaps", gaps.size ? [...gaps].map(([k, n]) => `${k} ${n}`).join(", ") : "none recorded"]);
   const findings = ["reviews", "incidents"].map((n) => rep.checks.find((c) => c.check === n)?.detail).filter(Boolean);
   out.push(["Findings", findings.length ? findings.join("; ") : "none recorded"]);
-  return out;
+  return out.map(([k, v]) => [k, clean(v)]);
 }

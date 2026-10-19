@@ -293,7 +293,7 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   const facts = Object.fromEntries(summarize(await readZip(sample("sample.tkb")), ok.report));
   assert.match(facts.Records, /^12 signed record\(s\) in 1 run\(s\), 2026-/);
   assert.deepEqual([facts["Tool calls"], facts["Held for approval"], facts.Gaps, facts.Agents],
-    ["3 decided: 2 allow, 0 deny, 1 ask", "pay: approved by alice", "none recorded", "support-bot (uid:1000)"]);
+    ["3 decided: 2 allow, 0 deny, 1 ask", '"pay": approved by alice', "none recorded", '"support-bot" (uid:1000)']);
 });
 
 test("agreement with the reference verifier (tests/test_ts_verifier.py)", { skip: NO_SIGNER }, () => {

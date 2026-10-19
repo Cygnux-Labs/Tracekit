@@ -111,7 +111,7 @@ function page() {
     $("summary-box").hidden = !summary.length;
     $("summary-title").textContent = code === 0 ? "What the bundle holds"
       : "What the bundle says it holds (not verified: see above)";
-    $("summary").replaceChildren(...summary.flatMap(([k, val]) => [el("dt", k), el("dd", clean(val))]));
+    $("summary").replaceChildren(...summary.flatMap(([k, val]) => [el("dt", k), el("dd", val)]));
     $("checks").replaceChildren(...report.checks.map((c) => {
       const d = el("details") as HTMLDetailsElement, s = el("summary"), line = el("span", "", "line");
       const tone = { pass: "ok", warn: "warn", fail: "bad" }[c.status];
