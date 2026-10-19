@@ -133,7 +133,8 @@ class Agreement(unittest.TestCase):
                     "provenance": cls.record_run(s, "send_email", observed="email the list to audit@vendor.example"),
                     "open": cls.record_run(s, "read_file", close=False),
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
-                    "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s)}
+                    "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s),
+                    "amended": cls.amended_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -243,6 +244,17 @@ class Agreement(unittest.TestCase):
             **ids, "request_id": uuid.uuid4().hex, "caller": f"uid:{ME.subject}", "stream": "gx", "client_seq": 0,
             "provider": "openai", "model": "m", "phase": "request", "tool_results_sent": ["tc-1", "tc-2"],
             "tool_results": [{"id": "tc-1", "forms": gateway.result_forms("HELLO")}]})
+        s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
+    @staticmethod
+    def amended_run(s):
+        """A run whose model request the gateway amended to show reasoning: a format 1.4 ext.amended."""
+        r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        s.call(CallerIdentity("mtls", "spiffe://acme/gateway", True), "model_event", {
+            "request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"],
+            "caller": f"uid:{ME.subject}", "stream": "gx", "client_seq": 0, "provider": "anthropic", "model": "m",
+            "phase": "request", "content_digest": "sha256:" + "a" * 64, "amended": ["/thinking/display"]})
         s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
         return r["run_id"]
 
@@ -383,6 +395,22 @@ class Agreement(unittest.TestCase):
         self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["status"] == "warn"], warned)
         self.assertEqual([c["check"] for c in warned], ["not interpreted"])
         self.assertEqual(ts_cli(bundle, trust, "--strict")[0], 3)
+
+    def test_both_verifiers_read_ext_amended_alike(self):
+        import test_bundle_v2 as b   # and one the signer would never write: a warning in both
+        log = b.Log(os.path.join(self.d, f"amended-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        odd, trust = b.ext_bundle(log, os.path.join(self.d, "odd.tkb"), {"amended": {}}, ("amended", {})), \
+            os.path.join(self.d, "odd-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        for bundle, trust, status in ((self.bundles["amended"], self.trusts["witnessed"], "pass"), (odd, trust, "warn")):
+            with self.subTest(status):
+                _, rep = self.agree(bundle, trust)
+                [line] = [c for c in rep.checks if c["check"] == "gateway amendments"]
+                self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "gateway amendments"],
+                                 [line])
+                self.assertEqual(line["status"], status)
 
     def test_the_browser_page_reports_what_the_cli_does(self):
         """verify.html: its one script and its style allowed by hash and nothing else, no network API in the script,

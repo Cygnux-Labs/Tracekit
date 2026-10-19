@@ -254,6 +254,13 @@ Non-critical fields and records (format 1.4): any record may carry `ext`, an obj
 and a record of type `ext` holds `data: {name, ...}` with any other fields. They are signed, chained and included like
 every record; a verifier that doesn't interpret a name says so and still verifies the bundle (§9).
 
+`ext.amended` (format 1.4, [gateway](gateway.md#readable-reasoning)): on an LLM gateway's `model.exchange` request
+record, the JSON pointers ([RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)) of the fields the gateway changed in
+the client's request before sending it, to have the provider show the reasoning the request has the model do:
+`["/thinking/display"]` (Anthropic Messages, set to `summarized`) or `["/reasoning/summary"]` (OpenAI Responses, set to
+`auto`). The record's `content_digest` (and its vault body) is of the request as sent. The signer writes it only for a
+gateway (`model_event` with `caller`), on a request record.
+
 ## 4. Records and the signature message
 
 A record is one line of JSON:
@@ -495,7 +502,7 @@ them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — | — |
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
-| 1.4.0 | — | `effect.observed`: `sensor`; `review`: `cites` | — | the slot itself (`ext` fields, `ext` records: critical); no names yet |
+| 1.4.0 | — | `effect.observed`: `sensor`; `review`: `cites` | — | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,
@@ -516,6 +523,8 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
 - **The rule.** A name may go in `ext` only if every line an older verifier prints stays true without its
   interpretation: with it off, the report is the full report minus that name's own lines, plus its `not interpreted`
   line (`test_an_ext_interpretation_adds_only_its_own_lines` checks each name a row lists).
+- `amended` is non-critical: without it every line stays true (a request record's commitment is to the request as
+  sent either way); a verifier that reads it adds a `gateway amendments` line.
 - `review.cites` and `effect.observed.sensor` stay critical: a verifier that passed over a signed finding's citations
   would label it `imported`, a false line; and a sensor's effects are records of what the agent's own processes did,
   in its run, which a verifier must read to verify that run.
@@ -607,7 +616,10 @@ line and verdict is in [verdicts](verdicts.md).
    (`incidents`).
 10. **Ext** (records with an `ext` field or of type `ext`, §9). Each ext name the key and run records carry, in
     name order: the verifier's own check of it when it interprets it, else a `not interpreted` warning counting the
-    records that carry it.
+    records that carry it. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show
+    reasoning (<pointer>: <count>, ... the first 8 in code-point order); each record commits to the request as sent`,
+    a warning listing the records (the first 20) where it is anything but a non-empty list of JSON pointers of at most
+    256 characters on a `model.exchange` request record of source `gateway`.
 11. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED` (every check this verifier implements
     passed), `VERIFIED TO HEAD n (open)` for one open
     run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,

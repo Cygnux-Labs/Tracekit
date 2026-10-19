@@ -157,6 +157,11 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   commitment. The sealed forms of reasoning (a thinking block's signature, `redacted_thinking`, OpenAI's
   `encrypted_content`) are kept byte for byte in the body, so a run recorded now can be checked if a provider later
   lets an auditor read them.
+- **Reasoning summaries through the LLM gateway.** The gateway asks the provider to show the reasoning a request has
+  the model do but hides ([gateway](gateway.md#readable-reasoning); `show_reasoning: false` turns it off), so its
+  responses carry the provider's summaries of the reasoning, to the agent and, with the vault on, into the response's
+  `body`: kept, redacted, encrypted and erasable like the rest of it. With the vault off, the record holds only the
+  commitment. A summary can restate what the model read, in words the redaction patterns may not match.
 - **Findings carry no content.** `tracekit analyze --v2` reads content through `content_get` (a `content.accessed`
   record each), and a finding names only its rule, severity, trust tier and the records it cites by `run_seq` and
   hash. The paths and excerpts it prints come from the content it read and are never signed.

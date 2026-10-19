@@ -12,7 +12,8 @@
  * Monitor reports, revocations and the v1 format bridge are inputs of the reference's CLI that this one doesn't take.
  * A bundle that needs a newer verifier is UNVERIFIABLE, with the commands that verify it; one whose records carry ext
  * names this verifier doesn't interpret (format 1.4's non-critical slot) verifies, with a `not interpreted` warning
- * per name. web.ts is this verifier as a browser page (verify.html).
+ * per name; it interprets `amended` (the fields an LLM gateway changed in a request to show reasoning). web.ts is this
+ * verifier as a browser page (verify.html).
  */
 import { type Floats, canonicalize, strictParseBytes } from "./jcs.js";
 import {
@@ -540,10 +541,33 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
 }
 
 /**
+ * ext.amended: the JSON pointers of the fields an LLM gateway changed in a model request before sending it, to show the
+ * reasoning the request has the model do. The signer writes it on a gateway's request record only, whose content digest
+ * is of the request as sent; anywhere else, or not a list of pointers, it is a warning.
+ */
+function checkAmended(rep: Report, events: J[]) {
+  const fields = (e: J): string[] | null => {
+    const v = isObj(get(e, "ext")) ? get(e.ext, "amended") : null;
+    const data = get(e, "data", {});
+    return get(e, "type") === "model.exchange" && get(e, "source") === "gateway" && isObj(data)
+      && get(data, "phase") === "request" && Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string"
+        && p.length <= 256 && /^(\/([^~/]|~[01])*)+$/u.test(p)) ? v : null;
+  };
+  const good = events.filter((e) => fields(e)), bad = events.filter((e) => !fields(e));
+  const n = new Map<string, number>();
+  for (const e of good) for (const p of fields(e)!) n.set(p, (n.get(p) ?? 0) + 1);
+  const shown = [...n].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, 8).map(([p, c]) => `${p}: ${c}`);
+  rep.check("gateway amendments", bad.length === 0, `gateway amended ${good.length} request(s) to show reasoning`
+    + (shown.length ? ` (${shown.join(", ")})` : "") + "; each record commits to the request as sent",
+  bad.map((e) => `seq ${str(get(e, "seq"))}: ext.amended is not a list of JSON pointers on a gateway's model request`)
+    .slice(0, 20), true);
+}
+
+/**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
  */
-const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>();
+const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended]]);
 
 /** The ext names an event carries: its `ext` field's keys, and an `ext` record's name. */
 const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {}),

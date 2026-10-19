@@ -2836,10 +2836,14 @@ class SignerService:
 
     def _model_event(self, identity, req):
         top, out, gw = {}, None, None
+        if "amended" in req and not ("caller" in req and req["phase"] == "request"):
+            raise RPCError("invalid_request", "amended is an LLM gateway's, on a request it changed before sending it")
         if "caller" in req:   # an LLM gateway reports the exchange of the client it authenticated, under its run token
             identity, gw = self._as_caller(identity, "model_event", req)
             top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes,
                                                "check_results": self.verify_tool_results is not None}
+            if "amended" in req:   # non-critical (format-v2.md §9): an older verifier's lines stay true without it
+                top["ext"] = {"amended": req["amended"]}
         keep, content_digest = None, req.get("content_digest")
         if "body" in req:   # committed to after redaction, as a result is; kept when the vault is on
             try:

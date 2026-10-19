@@ -93,6 +93,7 @@ tracekit >= x)` (exit 2), the `bundle readable` line listing the commands that v
 (`upgrade`). Format 1.4's non-critical slot: an `ext` field on any record and the `ext` record type, whose names a
 verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) and otherwise reports on a `not
 interpreted` warning each; the records are signed, chained and included like any other, and the bundle stays VERIFIED.
+This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`).
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -169,9 +170,30 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _IDENTITY = re.compile(r"[a-z0-9_]+:.+")   # scheme:subject, as run.registered's identity reads
 _EOCD, _CEN, _LOC = struct.Struct("<IHHHHIIH"), struct.Struct("<IHHHHHHIIIHHHHHII"), struct.Struct("<IHHHHHIIIHH")
 PAGE = "https://cygnux-labs.github.io/Tracekit/verify/"   # the browser verifier of the latest release (RELEASING.md)
+_POINTER = re.compile(r"(/([^~/]|~[01])*)+")   # a JSON pointer (RFC 6901) to a field
+
+
+def _amended(rep, events):
+    """ext.amended: the JSON pointers of the fields an LLM gateway changed in a model request before sending it, to show
+    the reasoning the request has the model do. The signer writes it on a gateway's request record only, whose content
+    digest is of the request as sent; anywhere else, or not a list of pointers, it is a warning."""
+    def fields(e):
+        v, d = e["ext"].get("amended") if isinstance(e.get("ext"), dict) else None, e.get("data")
+        return v if (e.get("type"), e.get("source")) == ("model.exchange", "gateway") and isinstance(d, dict) and \
+            d.get("phase") == "request" and isinstance(v, list) and v and all(
+                isinstance(p, str) and len(p) <= 256 and _POINTER.fullmatch(p) for p in v) else None
+    good, bad = [e for e in events if fields(e)], [e for e in events if not fields(e)]
+    n = collections.Counter(p for e in good for p in fields(e))
+    rep.check("gateway amendments", not bad, f"gateway amended {len(good)} request(s) to show reasoning"
+              + (f" ({', '.join(f'{p}: {c}' for p, c in sorted(n.items())[:8])})" if n else "")
+              + "; each record commits to the request as sent",
+              [f"seq {e.get('seq')}: ext.amended is not a list of JSON pointers on a gateway's model request"
+               for e in bad][:20], warn=True)
+
+
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
 # whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
-EXT_CHECKS = {}
+EXT_CHECKS = {"amended": _amended}
 
 
 class Unusable(ValueError):

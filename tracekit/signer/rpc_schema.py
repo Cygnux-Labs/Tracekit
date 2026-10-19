@@ -1,8 +1,9 @@
 """The signer RPC contract, version 19: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
-`tracekit analyze --v2`, in a findings run). Version 18 adds observe_effect's kernel sensor events (its
-`sensor`, `lost`, and the exec, exit, connect and file effects). Version 17 (Tracekit 1.3) adds model_event's optional
+`tracekit analyze --v2`, in a findings run) and model_event's `amended` (the fields an LLM gateway changed in a
+request). Version 18 adds observe_effect's kernel sensor events (its `sensor`, `lost`, and the exec, exit, connect and
+file effects). Version 17 (Tracekit 1.3) adds model_event's optional
 `tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
 Version 16 (all of Tracekit 1.2) adds register_run's optional
 `parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
@@ -219,6 +220,10 @@ REQUESTS = {
                             ["id", "forms"], id=ID, forms={"type": "array", "minItems": 1, "maxItems": 3, "items": _obj(
                                 ["digest", "result_digest"], digest=DIGEST, result_digest=DIGEST)})},
                         caller=IDENTITY,   # from a `gateways` identity only: the client it authenticated (source gateway)
+                        # with caller, on a request: the JSON pointers of the fields the gateway changed before sending
+                        # it (to show reasoning), signed as the record's ext.amended
+                        amended={"type": "array", "minItems": 1, "maxItems": 16,
+                                 "items": _str(256, pattern=r"^(/([^~/]|~[01])*)+" + _END)},
                         body=ANY),   # the exchange's body, for the content vault when status says it is on
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, caller=IDENTITY, tool_call_id=ID, attempt=SEQ,
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args

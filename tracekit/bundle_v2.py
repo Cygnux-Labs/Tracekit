@@ -71,7 +71,8 @@ VERSIONS = {
                          "run.closing": {"reason": ["quarantine"]}}},
     "1.3.0": {"types": ["reconcile.result_mismatch"], "fields": {},
               "values": {"capture.gap": {"kind": ["result_unchecked"]}}},
-    "1.4.0": {"types": [], "fields": {"effect.observed": ["sensor"], "review": ["cites"]}, "values": {}, "ext": []},
+    "1.4.0": {"types": [], "fields": {"effect.observed": ["sensor"], "review": ["cites"]}, "values": {},
+              "ext": ["amended"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
 # uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain
