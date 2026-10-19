@@ -234,8 +234,8 @@ def salt_label(e):
 
 def constraint_state(e):
     """A live constraint as a run's state keeps it (SignerService._constrained), from its constraint.added `e`:
-    [kind, the salt label of its object's commitment, that commitment or None]."""
-    return [e["data"]["kind"], salt_label(e), e["data"].get("object_commitment")]
+    [kind, the salt label of its object's commitment, that commitment or None, its run_seq]."""
+    return [e["data"]["kind"], salt_label(e), e["data"].get("object_commitment"), e["run_seq"]]
 
 
 def writer(identity, req):

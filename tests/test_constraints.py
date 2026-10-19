@@ -291,11 +291,34 @@ class Live(Signed):
             with self.subTest(bad), self.assertRaises(RPCError) as e:
                 self.call(ME, "constraint_add", **run, constraint=bad)
             self.assertEqual(e.exception.code, "invalid_request")
+
+    def test_an_equal_constraint_is_the_one_the_run_has(self):
+        """The hook sends what each prompt states: the same constraint again is the one the run has (for a file, by
+        its commitment), so repeats never fill the run and the person's next constraint still holds."""
+        run = self.run_()
+        first = [self.add(run, kind, obj)["run_seq"] for kind, obj in (("no_push", None), ("keep_away", "a.py"))]
+        for _ in range(svc.MAX_CONSTRAINTS + 1):
+            self.assertEqual(self.add(run, "no_push")["run_seq"], first[0])
+            self.assertEqual(self.add(run, "keep_away", "src/A.py")["run_seq"], first[1])
+        self.add(run, "keep_away", "billing.py")
+        held = self.decide(run, "Edit", {"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"})
+        self.assertEqual((held["decision"], held["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
+        self.assertEqual([e["type"] for e in self.records(run)].count("constraint.added"), 3)
+
+    def test_past_the_cap_a_constraint_is_a_signed_gap(self):
+        run = self.run_()
         for i in range(svc.MAX_CONSTRAINTS):
             self.add(run, "keep_away", f"f{i}.py")
-        with self.assertRaises(RPCError) as e:
-            self.add(run, "no_push")
-        self.assertIn("the most a run takes", e.exception.message)
+        seq = self.add(run, "no_push")["run_seq"]
+        gap = next(e for e in self.records(run) if e["run_seq"] == seq)
+        self.assertEqual((gap["type"], gap["source"], gap["data"]["kind"]), ("capture.gap", "signer",
+                                                                              "constraint_refused"))
+        self.assertIn("a further no_push constraint was not added", gap["data"]["reason"])
+        self.assertEqual(self.add(run, "keep_away", "f3.py")["run_seq"], 4)   # an equal one is still the one it has
+        self.call(ME, "close_run", **run)
+        rep, code = v2.verify(*self.export(run))
+        self.assertEqual(code, 0, rep.checks)
+        self.assertIn("constraint_refused 1", next(c for c in rep.checks if c["check"] == "gaps")["detail"])
 
     def test_a_run_with_live_constraints_verifies(self):
         run = self.run_()

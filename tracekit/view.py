@@ -318,7 +318,8 @@ GAP_WORDS = {
     "held_call_unresolved": "a held call was never resolved",
     "observer_lost": "the network or process observer stopped reporting",
     "effect_outside_run": "an effect that no open run holds",
-    "result_unchecked": "a tool result nothing compared"}
+    "result_unchecked": "a tool result nothing compared",
+    "constraint_refused": "a constraint from the person's request the run had no room for"}
 SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamper", "rollback", "key_revoked",
                "decision_flip", "executed_against_denial", "concurrent_run"}
 

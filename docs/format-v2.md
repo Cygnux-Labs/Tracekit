@@ -199,8 +199,11 @@ salt_id?}` (`source`: the run's). `object_commitment`, for `keep_away` and `only
 record's `salt_id`) to `"sha256:" + hex(SHA-256(UTF-8 bytes of the file's base name, lower-cased))`; the name is never
 in the record. From then on the signer raises each call of the run that breaks a constraint to `ask` and adds the rule
 id `TK-CONSTRAINT` to its `policy.decision`; it never lowers a decision. Every `policy.decision` whose `rule_ids` hold
-`TK-CONSTRAINT` must be an `ask` after a `constraint.added` in its run (`constraints` fails otherwise). A bundle with
-`constraint.added` needs `verifier_min_version` 1.4.0.
+`TK-CONSTRAINT` must be an `ask` after a `constraint.added` in its run (`constraints` fails otherwise). A constraint
+equal to one the run has (the same kind; for a file, the same name) adds no record. A run takes 32: past them, a new
+one is a `capture.gap{kind: constraint_refused, reason}` (`source: signer`, a `gaps` warning), so a constraint the
+run had no room for is never dropped unrecorded. A bundle with `constraint.added` or `constraint_refused` needs
+`verifier_min_version` 1.4.0.
 
 Completeness (format 1.2, [limits](limits.md#signer-and-capture)): gaps for what the signer saw decided or reported
 and then never heard about. All are `capture.gap` records with `source: signer`.
@@ -521,7 +524,7 @@ them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — | — |
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
-| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites`; `model.exchange`: `said_only` | — | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
+| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites`; `model.exchange`: `said_only` | `capture.gap` `kind`: `constraint_refused` | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,

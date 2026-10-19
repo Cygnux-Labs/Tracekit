@@ -2210,7 +2210,8 @@
             "held_call_unresolved",
             "observer_lost",
             "effect_outside_run",
-            "result_unchecked"
+            "result_unchecked",
+            "constraint_refused"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },

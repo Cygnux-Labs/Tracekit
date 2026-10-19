@@ -3764,26 +3764,35 @@ class SignerService:
 
     def _constraint_add(self, identity, req):
         """A live constraint of the caller's run (module docstring): constraint.added, with the commitment of its file
-        name under the record's own salt, never the name; tighten-only, so any client of the run may add one."""
+        name under the record's own salt, never the name; tighten-only, so any client of the run may add one. One
+        equal to a live constraint of the run (the same kind, and for a file the same name: its commitment opens) is
+        that one: its run_seq, nothing written. Past MAX_CONSTRAINTS a new one is a signed capture.gap
+        constraint_refused (its run_seq), never dropped unrecorded."""
         key, c = self._authorize(identity, req), req["constraint"]
         if (c["kind"] in constraints.OBJECT_KINDS) != ("object" in c) or "object" in c and not constraints.norm(
                 c["object"]):
             raise RPCError("invalid_request", "keep_away and only_change name the file (`object`); the other kinds "
                                               "name none")
         self.quotas.take_event(identity)
-        data = {"kind": c["kind"]}
-        if "object" in c:
+        data, name = {"kind": c["kind"]}, constraints.digest(c["object"]) if "object" in c else None
+        if name:
             data["salt_id"] = secrets.token_hex(16)
-            data["object_commitment"] = self._commit(salt_label({"type": "constraint.added", "data": data}),
-                                                     constraints.digest(c["object"]))
+            data["object_commitment"] = self._commit(salt_label({"type": "constraint.added", "data": data}), name)
 
         def fn(tx, run):
             have = run.get("constraints") or []
+            same = next((seq for kind, label, commitment, seq in have if kind == c["kind"] and (
+                not name or self._opens(commitment, label, name))), None)
+            if same is not None:
+                return {"run_seq": same}
             if len(have) >= MAX_CONSTRAINTS:
-                raise RPCError("invalid_request", f"run {run['run_id'][:128]} has {MAX_CONSTRAINTS} live constraints, "
-                                                  "the most a run takes")
+                return {"run_seq": tx.emit(run, "capture.gap", {"kind": "constraint_refused", "reason": (
+                    f"the run has {MAX_CONSTRAINTS} live constraints, the most it takes: a further {c['kind']} "
+                    "constraint was not added, so calls that break it are not held")},
+                    source="signer")}
             seq = tx.emit(run, "constraint.added", data, request_id=req["request_id"])
-            tx.set(run, "constraints", [*have, constraint_state({"type": "constraint.added", "data": data})])
+            tx.set(run, "constraints", [*have, constraint_state({"type": "constraint.added", "data": data,
+                                                                 "run_seq": seq})])
             return {"run_seq": seq}
         return self.log.submit(identity, "constraint_add", req, fn, key)
 
@@ -3798,7 +3807,7 @@ class SignerService:
         f = constraints.facts(tool, args, cls)
         names = list(dict.fromkeys(f["names"]))
         f.update(names=names[:MAX_NAMES], many=len(names) > MAX_NAMES, digests=None, opens={})
-        for _, label, commitment in live:
+        for _, label, commitment, _ in live:
             if commitment and not f["many"]:
                 f["opens"][label] = self._opened(f, label, commitment)
         return f
@@ -3818,11 +3827,11 @@ class SignerService:
         if facts["many"] and any(kind in constraints.OBJECT_KINDS for kind, *_ in live):
             return constraints.held("many", MAX_NAMES)
         opens = facts["opens"]
-        for _, label, commitment in live:   # one added after _facts looked
+        for _, label, commitment, _ in live:   # one added after _facts looked
             if commitment and label not in opens:
                 opens[label] = self._opened(facts, label, commitment)
-        only = [label for kind, label, _ in live if kind == "only_change"]
-        for kind, label, _ in live:
+        only = [label for kind, label, *_ in live if kind == "only_change"]
+        for kind, label, *_ in live:
             name = constraints.breaks(kind, facts, (lambda n: any(n in opens[lb] for lb in only))
                                       if kind == "only_change" else opens.get(label, ()).__contains__)
             if name is not None:
