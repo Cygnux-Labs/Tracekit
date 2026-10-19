@@ -1087,8 +1087,8 @@ class WhyIngest(WhyServer):
             "/v1/ingest", {"events": events, "blobs": blobs},
             {"Authorization": f"Bearer {token}", "Content-Type": "application/json"})[0]
         self.assertEqual(ingest(evs, blobs, "wrong"), 401)
-        self.assertEqual(self.request("POST", "/v1/ingest", {"Cookie": f"tracekit_observe={_session(TOKEN)}"},
-                                      b"{}")[0], 401)
+        cookie = _session(self.httpd.RequestHandlerClass.session_key, int(time.time()) + 60)   # the token's session
+        self.assertEqual(self.request("POST", "/v1/ingest", {"Cookie": f"tracekit_observe={cookie}"}, b"{}")[0], 401)
         bad = json.loads(json.dumps(evs[:3]))
         bad[2]["agent"] = "mallory"
         self.assertEqual(ingest(bad, blobs), 422)

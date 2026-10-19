@@ -364,6 +364,7 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 WILDCARD_HOSTS = {"0.0.0.0", "::", ""}
 COOKIE = "tracekit_observe"
 LOGIN_COOKIE = "tracekit_login"
+SESSION_S = 8 * 3600   # how long a session cookie the token was exchanged for lasts
 ALL = object()   # a session's scope: every tenant
 RETRACTED = {}   # a feed's row taken back (view.StoreFeed: a run that failed verification): kept for its position only
 CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; "
@@ -378,9 +379,16 @@ def _host_only(value):
     return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
 
 
-def _session(token):
-    """The cookie value a browser gets in exchange for the token: derived from it, so the token itself is never stored."""
-    return hmac.new(token.encode(), b"tracekit-observe-session", hashlib.sha256).hexdigest()
+def _session(key, until):
+    """The cookie value a browser gets in exchange for the token: when it expires (`until`) and its MAC under `key`, a
+    server's own random key, so it holds nothing of the token and is void once that server stops or `until` passes."""
+    return f"{until}.{hmac.new(key, str(until).encode(), hashlib.sha256).hexdigest()}"
+
+
+def _session_ok(key, cookie):
+    until = cookie.partition(".")[0]
+    return until.isdigit() and int(until) > time.time() and hmac.compare_digest(cookie.encode(),
+                                                                              _session(key, int(until)).encode())
 
 
 def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, approvals=None, runs=None, why=None):
@@ -407,6 +415,7 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tracekit-observe"
+        session_key = secrets.token_bytes(32)   # this server's: its session cookies die with it
 
         def log_message(self, *a):
             pass
@@ -443,7 +452,7 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 return ALL
             bearer = self.headers.get("Authorization", "")
             if hmac.compare_digest(bearer.encode(), f"Bearer {token}".encode()) or \
-                    hmac.compare_digest(self._cookie().encode(), _session(token).encode()):
+                    _session_ok(self.session_key, self._cookie()):
                 return ALL
             return login and login.tenant(self._cookie())
 
@@ -499,8 +508,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
             if exchange:
                 return self._send(303, "", "text/plain", headers=[
                     ("Location", "/runs" if u.path == "/runs" else "/"),
-                    ("Set-Cookie", f"{COOKIE}={_session(token)}; HttpOnly; SameSite=Strict; Path=/"
-                                   + ("; Secure" if secure else ""))])
+                    ("Set-Cookie", f"{COOKIE}={_session(self.session_key, int(time.time()) + SESSION_S)}; HttpOnly; "
+                                   f"SameSite=Strict; Path=/; Max-Age={SESSION_S}" + ("; Secure" if secure else ""))])
             if runs and u.path in ("/runs", "/api/runs", "/api/run", "/api/bundle"):
                 return self._runs(u, scope)
             if why and u.path.startswith("/api/why/"):

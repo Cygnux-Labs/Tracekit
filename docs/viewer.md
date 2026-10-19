@@ -242,7 +242,8 @@ checklist ([security-checklist.md](security-checklist.md)).
 
 Every request needs the token: `$TRACEKIT_VIEW_TOKEN`, else a random one that `tracekit view` prints in its URL (with
 `$TRACEKIT_VIEW_TOKEN` set the printed URL carries none: add `?token=…` yourself). Open `/?token=…` once: the page
-exchanges it for an `HttpOnly` session cookie and reloads without it. A script sends `Authorization: Bearer <token>`
+exchanges it for an `HttpOnly` session cookie and reloads without it; the cookie holds nothing of the token and lasts
+8 hours, and only while this viewer runs (open the URL again after that). A script sends `Authorization: Bearer <token>`
 instead; `?token=` on an `/api/` path is refused (401), so the token never sits in an API URL. These requests are
 `GET`s; with `--why` the replays and ingest are `POST`s ([below](#why)):
 

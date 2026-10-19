@@ -11,8 +11,10 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -241,6 +243,19 @@ class ObserverHttp(unittest.TestCase):
         self.assertEqual(self.get(port, "/api/snapshot", jar)[0], 200)
         self.assertEqual(self.get(port, "/api/snapshot", {"Cookie": "tracekit_observe=forged"})[0], 401)
         self.assertEqual(self.get(port, "/api/snapshot", {"Authorization": "Bearer s3cret"})[0], 200)
+
+    def test_a_session_cookie_expires_and_dies_with_its_server(self):
+        """The cookie was an HMAC of the token: it never expired and every later viewer with that token took it, and a
+        cookie reaches every port of its host (any local server the person opens gets it). It is now this server's
+        alone, with a Max-Age, and refused once that has passed."""
+        port = self.serve("s3cret")
+        cookie = dict(self.get(port, "/?token=s3cret")[1])["Set-Cookie"]
+        self.assertIn(f"Max-Age={observe.SESSION_S}", cookie)
+        jar = {"Cookie": cookie.split(";", 1)[0]}
+        self.assertEqual(self.get(port, "/api/snapshot", jar)[0], 200)
+        self.assertEqual(self.get(self.serve("s3cret"), "/api/snapshot", jar)[0], 401)   # the same token, restarted
+        with mock.patch.object(observe.time, "time", return_value=time.time() + observe.SESSION_S + 1):
+            self.assertEqual(self.get(port, "/api/snapshot", jar)[0], 401)
 
     def test_wildcard_bind_accepts_its_own_host_only_with_the_token(self):
         port = self.serve("s3cret", ["0.0.0.0"])
