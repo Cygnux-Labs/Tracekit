@@ -137,9 +137,10 @@ was alive when the run registered, sent a heartbeat at least every 30 s, and rep
 
 Codex puts the id of the tool call that started a command into its environment as `CODEX_TOOL_CALL_ID`, the id Tracekit
 records as the call's `tool_call_id` ([coding agents](../coding-agents.md)). With Tetragon keeping that variable
-(step 1), each record of the command's processes carries it as `tool_call_id`, and `explained_by: call` when the run
-decided that call and didn't deny it. The id is the agent's claim: the process can change or remove it. A record with
-no `explained_by` is activity no decided call accounts for.
+(step 1), each record of the command's processes carries it as `tool_call_id`. The id is the agent's claim: the
+process can change, remove or reuse it, so the signer records it as it came and never takes it as explaining the
+record. `tracekit analyze --v2` checks it (TK-X206, below): the call ran, the record falls in its window, and its tool
+causes that kind of effect.
 
 Claude Code puts no such id into the commands it runs, so its runs' records carry none.
 

@@ -186,7 +186,7 @@ class Sensed(Lifecycle):
 
 
 class TestImport(Sensed):
-    def test_events_go_to_the_mapped_run_joined_to_the_call_and_verify(self):
+    def test_events_go_to_the_mapped_run_with_their_claimed_call_and_verify(self):
         imp = self.importer()
         self.assertTrue(imp.flush())   # its first heartbeat: it covers the runs registered from now on
         run = self.register()
@@ -201,8 +201,11 @@ class TestImport(Sensed):
         self.assertEqual(imp.skipped, 1)
         es = self.final(run)
         effects = [e["data"] for e in self.typed(es, "effect.observed")]
-        self.assertEqual([(d["kind"], d.get("explained_by")) for d in effects],
-                         [("exec", "call"), ("connect", None), ("file", None), ("exit", None)])   # call_9: no decide
+        # the call a process's environment names is the agent's claim: recorded, never signed as explaining the
+        # effect, whether the run decided that call (call_7) or not (call_9); TK-X206 checks it
+        self.assertEqual([(d["kind"], d.get("tool_call_id"), "explained_by" in d) for d in effects],
+                         [("exec", "call_7", False), ("connect", "call_9", False), ("file", None, False),
+                          ("exit", None, False)])
         x = effects[0]
         self.assertEqual({k: x[k] for k in ("observer", "sensor", "attribution", "tool_call_id", "binary", "pid",
                                             "parent_exec_id")},
@@ -211,7 +214,6 @@ class TestImport(Sensed):
                           "parent_exec_id": PARENT_EXEC_ID})   # the process that started it: TK-X206's ancestry
         self.assertRegex(x["args_commitment"], "^hmac-sha256:")   # the arguments' digest never in the clear
         self.assertNotIn("args_digest", x)
-        self.assertEqual(effects[1]["tool_call_id"], "call_9")   # the claim is kept, unexplained
         matrix = self.typed(es, "run.final")[0]["data"]["matrix"]
         self.assertEqual((matrix["processes"], matrix["network"]),
                          ({"status": "observed", "layers": ["tetragon"]}, {"status": "none", "layers": []}))
@@ -300,8 +302,8 @@ class TestFalcoImport(Sensed):
         self.assertTrue(imp.flush())
         es = self.final(run)
         [x] = [e["data"] for e in self.typed(es, "effect.observed")]
-        self.assertEqual({k: x[k] for k in ("sensor", "kind", "explained_by", "observer")},
-                         {"sensor": "falco", "kind": "exec", "explained_by": "call",
+        self.assertEqual({k: x.get(k) for k in ("sensor", "kind", "tool_call_id", "explained_by", "observer")},
+                         {"sensor": "falco", "kind": "exec", "tool_call_id": "call_7", "explained_by": None,
                           "observer": "mtls:spiffe://acme/falco"})
         (lost,) = self.gaps(es, "observer_lost")
         self.assertIn("the falco import mtls:spiffe://acme/falco reported lost events: 1 x Falco reported dropping "

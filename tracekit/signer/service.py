@@ -3673,7 +3673,7 @@ class SignerService:
                                   f"{why}"}, source="signer")
                     continue
                 if sensor:
-                    tx.emit(run, "effect.observed", self._sensor_effect(run, obs, sensor, x, how), source="signer")
+                    tx.emit(run, "effect.observed", self._sensor_effect(obs, sensor, x, how), source="signer")
                     continue
                 rec = run.get("rec")
                 by = rec is not None and reconcile.explained(rec, x["host"], explains, labels) or None
@@ -3692,9 +3692,10 @@ class SignerService:
             return {"recorded": len(req["effects"])}
         return self.log.submit(identity, "observe_effect", req, fn)
 
-    def _sensor_effect(self, run, obs, sensor, x, how):
-        """effect.observed of kernel sensor event `x` in `run`: the arguments' digest as a commitment, and
-        explained_by call when the run decided the tool call the process's environment names and didn't deny it."""
+    def _sensor_effect(self, obs, sensor, x, how):
+        """effect.observed of kernel sensor event `x`: the arguments' digest as a commitment. The tool call id the
+        process's environment carried is the agent's claim, recorded as such: the agent sets that environment, so the
+        signer never takes it as explaining the effect (tracekit analyze --v2's TK-X206 checks it against the call)."""
         # lean: an effect nothing explains is not reconciled (no reconcile.unexplained_effect, no count in run.final);
         # add it once runs carry a tool call id into every process (Codex does, Claude Code doesn't)
         d = {"observer": obs, "sensor": sensor, **{k: x[k] for k in (
@@ -3705,8 +3706,7 @@ class SignerService:
             sid = secrets.token_hex(16)
             d.update(args_commitment=self._commit(salt_label({"type": "effect.observed", "data": {"salt_id": sid}}),
                                                   x["args_digest"]), salt_id=sid)
-        call = (run.get("rec") or {}).get("l2", {}).get(x.get("tool_call_id"))
-        return {**d, "explained_by": "call"} if call and call["decision"] != "deny" else d
+        return d
 
     def _attributed(self, tenant, x):
         """(run key or None, attribution, why there is none) of effect `x` of an observer of `tenant` (on the writer):

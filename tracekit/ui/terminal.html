@@ -1830,9 +1830,9 @@
         // a verifier report of a run with no record shown (it failed) is no agent: no lane, not counted
         const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" }, act = r.v2?.approval && S.actions.get(tuid(r));
         if (act) act.approvals.push(r);
-        // v2: an effect is the call's its process names until the run's analysis joins it (TK-X206), which may say otherwise
+        // v2: an effect is shown under the call its process names, unchecked (the agent's claim), until the run's analysis joins it (TK-X206), which may say otherwise
         const ef = r.v2?.effect;
-        if (ef) S.effects.set(r.session_id + "|" + r.v2.run_seq, { rec: r, call: ef.by_claim ? r.session_id + "|" + ef.claim : null, how: ef.by_claim ? "claim" : null, status: null });
+        if (ef) S.effects.set(r.session_id + "|" + r.v2.run_seq, { rec: r, call: ef.claim ? r.session_id + "|" + ef.claim : null, how: null, status: null });
         for (const [seq, j] of Object.entries(r.v2?.effects || {})) {
           const e = S.effects.get(r.session_id + "|" + seq);
           if (e) Object.assign(e, { call: j.call == null ? null : r.session_id + "|" + j.call, how: j.how, status: j.status });

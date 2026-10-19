@@ -259,10 +259,11 @@ Kernel sensor events (format 1.4, experimental, [Tetragon](integrations/tetragon
 an import of a kernel sensor's export (`observe_effect` with `sensor`, the same grant) reports what an agent's
 processes did; the signer writes
 `effect.observed{observer, sensor, kind: exec|exit|connect|file, ts, pid, binary, exec_id?, args_commitment?,
-salt_id?, status?, signal?, host?, port?, path?, tool_call_id?, attribution, explained_by?: call}` (`source: signer`,
+salt_id?, status?, signal?, host?, port?, path?, tool_call_id?, attribution}` (`source: signer`,
 one per event) in the run it is attributed to. `args_commitment` commits to `"sha256:" + hex(SHA-256(UTF-8 bytes of
 the arguments string as the sensor reported it))` (§2). `tool_call_id` is the id the process's environment carried,
-the agent's claim; `explained_by: call` when the run decided that call and didn't deny it. An event no open run holds
+the agent's claim, recorded as it came: the signer never takes it as explaining the effect (`tracekit analyze --v2`'s
+TK-X206 checks it). An event no open run holds
 is an `effect_outside_run` gap, as for the egress observer. A loss the import reports (`lost`) is an `observer_lost`
 gap in each run it covers, or in the tenant's run `tracekit/signer` when it covers none, and ends that coverage; so do
 90 s of silence and a restart. `run.final`'s `matrix` says `processes: observed` with the sensor as its layer when an

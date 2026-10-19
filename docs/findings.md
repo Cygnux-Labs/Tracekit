@@ -270,7 +270,7 @@ when:
 1. its environment names the call (`tool_call_id`: Codex's `CODEX_TOOL_CALL_ID`, the agent's claim), and that call
    ran, the effect is in its window, and its tool causes that kind of effect: a shell any; a search tool (Grep, Glob)
    processes; a write tool a file; a fetch tool a connection; Read, LS, WebSearch, Task none; an MCP or unknown tool
-   any. The signer's `explained_by: call` is this claim, re-checked;
+   any. The signer records the claim as it came and never checks it: this is the check;
 2. the process that started it is the call's (`parent_exec_id`, from Tetragon): a server a Bash call left running, and
    what it starts later, are that call's, whatever the time;
 3. or it started in the window of a call whose tool runs processes.
