@@ -157,6 +157,11 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   commitment. The sealed forms of reasoning (a thinking block's signature, `redacted_thinking`, OpenAI's
   `encrypted_content`) are kept byte for byte in the body, so a run recorded now can be checked if a provider later
   lets an auditor read them.
+- **Model responses (`tracekit.instrument()` model calls, OpenAI Agents).** Each recorded model response commits to
+  what the model returned: autotrace to the SDK's message (or the stream as it accumulated), the OpenAI Agents
+  integration to the response's output items. With the vault on, that is the record's `body` too, so the model's
+  reasoning and text before each tool call can be read by `tracekit analyze --v2`; with it off, the record holds only
+  the commitment.
 - **Findings carry no content.** `tracekit analyze --v2` reads content through `content_get` (a `content.accessed`
   record each), and a finding names only its rule, severity, trust tier and the records it cites by `run_seq` and
   hash. The paths and excerpts it prints come from the content it read and are never signed.

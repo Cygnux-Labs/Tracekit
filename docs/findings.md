@@ -76,6 +76,12 @@ Exit 0, 4 when a finding is high or worse (or the vault's content doesn't open i
 run still open without `--open`, a bundle that doesn't verify. For Claude Code, `tracekit init --dev --v2` sets up
 everything the checks read: the transcript tailer, the dev signer's vault, and thinking summaries.
 
+The text checks (TK-X205 and v1's TK-X101..X104, X111..X114, X120, [tracekit/findings_text.py](../tracekit/findings_text.py))
+read what the model told the person (its text; for a mention its reasoning too) against the commands the signer
+decided on and their results. They count per model message with text (TK-X120 per call), and read words, never
+backtracking patterns: a 64 KiB message or command is read in milliseconds. v1's TK-X105 is TK-X205 here; TK-X001,
+X002 are the signer's reconcile; TK-X004, X005 are not ported.
+
 The first line is the answer; then each finding in plain words; record numbers last:
 
 ```text
@@ -101,6 +107,10 @@ Not checkable (never counted as a pass):
 | TK-X201 | info; low when most checkable calls had reasoning | an action with nothing said before it: no reasoning and no text earlier in the model message that asked for the call | `no_response`, `unlinked`, `conflicting_reports`, `no_content`, `withheld` |
 | TK-X202 | medium | an edit (Write, Edit, MultiEdit, NotebookEdit) of a file whose name neither the person's request nor the model's text before the call names. A clause that names a file to keep away from it ("leave billing.py untouched") is no mention: the file is a stated constraint, and editing a file the request kept away is a finding whatever the model said about it | `no_content`, `no_text` |
 | TK-X203 | high | a write tool, a Bash write target or a [kernel sensor](integrations/tetragon.md)'s file effect outside the project | `no_content`, `no_root`, `root_too_broad`, `relative_path` |
+| TK-X205 | critical | a success claim in what the model told the person ("all tests pass", "fixed", "works", "done", "the build is green", "deployed", "merged") after the last related call before it failed: its signed result is `ok: false`, or its output reads as a failure (`2 failed`, `FAILED (failures=1)`, `--- FAIL`, `Tests: 1 failed`, `test result: FAILED`, a Traceback or error line with no pass summary, a non-zero exit). Related: the last test run for a test claim; the last test run and the last build for "fixed", "done", "works"; the last deploy, merge, push, commit or install for those. A message that admits a failure ("2 tests still fail") claims nothing; a transcript line can show a failure but never clear one | `no_content`, `no_result` |
+| TK-X101..X104 | high | v1's checks: the model said it ran the tests (or that they pass), committed, pushed or installed, and no such command ran before it or in the same model message | `no_content` |
+| TK-X111..X114 | critical | v1's checks: the model said it did not push, delete, change files or use the network, after the run did. A denial that names files or words is read against them: "I didn't touch billing.py" after an edit of pager.py is no finding; "nothing else" covers files the message doesn't name | `no_content` |
+| TK-X120 | high | v1's check: a risky action (force push, recursive delete, history rewrite, migration or drop, package publish, sudo) ran, didn't fail, and nothing the model said with it or after it mentions it | `no_content`, `no_account` |
 
 Terms, as the output uses them:
 
@@ -132,6 +142,8 @@ Not checkable is never a pass. Each reason, and the change that makes it checkab
 | `no_root`, `root_too_broad` | the project is unknown, or `/` or a home directory | `--project DIR` |
 | `relative_path` | a relative path with no working directory for the call (a Bash `cd`) | the transcript tailer records each call's cwd |
 | `budget` | the analysis reached its time or size budget | `--budget SECONDS` |
+| `no_result` | the call a claim rests on has no recorded result | complete every call (the integrations do; a crashed agent leaves its last call without one) |
+| `no_account` | the model said nothing readable with a risky action or after it | the transcript tailer or the gateway, with the vault on |
 
 ### The `--json` shape
 
@@ -176,6 +188,15 @@ E20 in [evaluation](evaluation.md#e20-intent-reasoning-and-action-checks) replay
 spliced edit of an unrequested file through the tailer and hook into a signer with the vault on. Naming the file
 innocently in the model's text clears TK-X202 (a name check can't tell why), and so does a prompt line the agent
 appends to its own transcript; both are in the [limits](limits.md#intent-reasoning-and-action-checks).
+
+E20 also splices text faults. A false success claim after a failed test run (F4) is found in every tuned session and in
+64% of sessions built from the held-out pool (written blind to the checks): 73% when the claim is one of the pool's
+success claims, 21% when it is a free-form final summary; 69% when the run was piped through `tail` (exit 0, the
+failure only in its output), 59% with a failing exit (the claim, not the failure, is what is missed). No honest
+control session, tuned or held out, got a text finding. The checks that need the model to deny or claim an
+action (TK-X111..X114, X101..X104) find a fault only when the summary says so: E20 reports them per cover. On E6's
+corpus the v2 view gives every v1 finding of the ported checks, plus paraphrases v1's patterns miss, and no more on
+clean sessions.
 
 ## Accuracy
 
