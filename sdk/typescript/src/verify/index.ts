@@ -328,8 +328,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const included = async (r: J) => {
     const seq = at(at(r, "event"), "seq");
     const path = get(at(proofs, "inclusion"), str(seq));
-    return path !== null && verifyInclusion(num(seq), size, await leafHash(unhex(text(at(r, "hash")).slice(7))),
-      list(path).map(b64decode), root);
+    return Array.isArray(path) && verifyInclusion(num(seq), size, await leafHash(unhex(text(at(r, "hash")).slice(7))),
+      path.map(b64decode), root);
   };
 
   // keys: declared and retired by records the checkpointed tree includes, so the log key vouches for them

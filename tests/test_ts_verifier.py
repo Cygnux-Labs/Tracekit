@@ -453,9 +453,12 @@ class Agreement(unittest.TestCase):
             text, sigs = files[k].split(b"\n\n")
             files[k] = text + b"\n\n" + sigs.split(b"\n")[0] + b"\n"
 
-        def forge_proof(files, m):
+        def forge_proof(files, m, path=None):
             p = json.loads(files["proofs/records.json"])
-            p["inclusion"][max(p["inclusion"], key=int)][0] = base64.b64encode(bytes(32)).decode()
+            if path is None:
+                p["inclusion"][max(p["inclusion"], key=int)][0] = base64.b64encode(bytes(32)).decode()
+            else:   # a path that is no list fails inclusion in both, never the bundle's structure
+                p["inclusion"][max(p["inclusion"], key=int)] = path
             files["proofs/records.json"] = json.dumps(p).encode()
         other = os.urandom(32)
         cases = {
@@ -468,6 +471,8 @@ class Agreement(unittest.TestCase):
             "integer written as a float": (1, dict(edit_run=lambda rs: rs[1]["event"].update(run_seq=1.0))),
             "missing witness cosignature": (1, dict(edit=drop_cosignatures)),
             "forged inclusion proof": (1, dict(edit=forge_proof)),
+            "inclusion proof an empty string": (1, dict(edit=lambda f, m: forge_proof(f, m, ""))),
+            "inclusion proof an object": (1, dict(edit=lambda f, m: forge_proof(f, m, {"AAAA": 1}))),
             "newer verifier_min_version": (2, dict(edit=manifest(lambda m: m.update(verifier_min_version="9.0")))),
             "older verifier_min_version": (0, dict(edit=manifest(lambda m: m.update(verifier_min_version="0.4")))),
         }
@@ -596,6 +601,21 @@ class Agreement(unittest.TestCase):
                 self.assertEqual(ts.get("findings"), getattr(rep, "findings", None))
         self.assertEqual(len(mine), v2.MAX_UNREAD + 1)   # the 30 names: 20 lines, and one for the other 10
         self.assertTrue(mine[-1]["detail"].startswith("10 more ext name(s)"))
+        decision = ("policy.decision", {"tool_use_id": "t1", "decision": "allow", "rule_ids": []})
+        for name, (record, fields, line) in {   # a value no set or dict key can hold: the same lines, no structure
+                "a gap's kind a list": (("capture.gap", {"kind": ["x"], "reason": "r"}), {}, "gaps"),
+                "a tool_call_id a list": (decision, {"tool_call_id": ["t1"]}, "tiers"),
+                "an args_source a list": (decision, {"tool_call_id": "t1", "args_source": ["raw"]}, "args source")}.items():
+            with self.subTest(name):
+                log = b.Log(os.path.join(self.d, f"edge-{uuid.uuid4().hex}"))
+                self.addCleanup(log.store.close)
+                log.epoch(b.KEY1)
+                log.add(*b.registered())
+                log.add(*record, **fields)
+                log.final()
+                bundle = os.path.join(self.d, f"edge-{uuid.uuid4().hex}.tkb")
+                export(log.store, "acme", "run-a", log.note(), bundle)
+                self.assertIn(line, [c["check"] for c in self.agree(bundle, trust)[1].checks])
 
     def test_a_report_past_a_pipes_64_kib_reaches_it_whole(self):
         def policies(files, manifest):   # a `policy snapshot` line each

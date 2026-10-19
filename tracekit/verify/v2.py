@@ -144,6 +144,7 @@ import collections
 import contextlib
 import datetime
 import hashlib
+import json
 import os
 import re
 import struct
@@ -518,8 +519,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         seq = record["event"]["seq"]
         seq = int(seq) if isinstance(seq, float) and seq.is_integer() else seq   # as JSON reads it, and the TS verifier
         path = proofs["inclusion"].get(str(seq))
-        return path is not None and verify_inclusion(seq, size, leaf_hash(bytes.fromhex(record["hash"][7:])),
-                                                     [base64.b64decode(p, validate=True) for p in path], root)
+        return isinstance(path, list) and verify_inclusion(seq, size, leaf_hash(bytes.fromhex(record["hash"][7:])),
+                                                           [base64.b64decode(p, validate=True) for p in path], root)
 
     def check_record(r, keys, problems):
         """Signature, schema and log membership of one record; `keys`: the SPKIs the log allows at its position. A
@@ -694,7 +695,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("held calls", False, f"{len(unresolved)} tool call(s) a gateway or executor decided have no result",
                   unresolved[:20], warn=True)
     alarms = [r["event"] for r in every if r["event"].get("type") in ("approval.binding_mismatch", "trace.tamper") or (
-        r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") not in INFO_GAPS | OWN_LINE)]
+        r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") not in (*INFO_GAPS, *OWN_LINE))]
     if alarms:
         kind = lambda e: str(e["data"].get("kind"))[:64] if e["type"] == "capture.gap" else e["type"]
         rep.check("gaps", False, f"{len(alarms)} signed gap, tamper or mismatch record(s): "
@@ -762,25 +763,26 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         e = r["event"]
         if e.get("tool_call_id") is None:
             continue
-        k, decided = (e.get("run_id"), e["tool_call_id"]), e.get("type") in ("policy.decision", "tool.result")
+        # a JSON key: a schema-invalid record's id may be a list or an object, which the TS verifier counts too
+        k, decided = json.dumps([e.get("run_id"), e["tool_call_id"]]), e.get("type") in ("policy.decision", "tool.result")
         tier, tiers[k] = e.get("tier") if e.get("tier") in order else None, None
         if tier is not None or decided:
             claims[k] = min(claims.get(k, tier), tier, key=order.index)
         if decided:
             paths.setdefault(k, set()).add((str(e.get("source"))[:64], tier))
     tiers.update(claims)
-    split = [f"{str(k[0])[:200]} {str(k[1])[:200]}: " + ", ".join(sorted(f"{s} {t or 'untiered'}" for s, t in p))
-             for k, p in paths.items() if len(p) > 1]
+    split = [f"{str(run)[:200]} {str(tcid)[:200]}: " + ", ".join(sorted(f"{s} {t or 'untiered'}" for s, t in p))
+             for (run, tcid), p in ((json.loads(k), p) for k, p in paths.items()) if len(p) > 1]
     if tiers:
         n = collections.Counter(tiers.values())
         rep.check("tiers", not split, f"{len(tiers)} tool call(s): "
                   + ", ".join(f"{t} {n[t]}" for t in ("T1", "T2", "T3")) + (f", untiered {n[None]}" if n[None] else "")
                   + (f"; {len(split)} decided and completed by different capture paths" if split else ""),
                   split[:20], warn=True)
-    sources = collections.Counter(r["event"]["args_source"] for r in every if "args_source" in r["event"])
+    sources = [r["event"]["args_source"] for r in every if "args_source" in r["event"]]   # schema-invalid: any value
     if sources:
-        rep.check("args source", True, f"{sum(sources.values())} record(s): "
-                  + ", ".join(f"{s} {sources[s]}" for s in ("raw", "parsed", "coerced")))
+        rep.check("args source", True, f"{len(sources)} record(s): "
+                  + ", ".join(f"{s} {sources.count(s)}" for s in ("raw", "parsed", "coerced")))
     registered = [rs[0]["event"]["data"] if rs[0]["event"].get("type") == "run.registered" else {} for rs in runs.values()]
     isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64] for d in registered)
     rep.check("isolation", True, "signer-reported: " + ", ".join(f"{k} {n} run(s)" for k, n in sorted(isolation.items())))
