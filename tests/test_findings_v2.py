@@ -783,6 +783,27 @@ class Via:
         pass
 
 
+class Linear(Base):
+    def test_content_and_cites_are_read_by_run_seq_never_by_a_scan_of_the_run(self):
+        """Round-2 review: content_get scanned the whole run per batch and review_finding's cite check per finding, so
+        analysing and signing a long run grew with its square. Each reads the records it needs by run_seq."""
+        t = self.task()
+        for i in range(30):
+            t.step(None, "Read", {"file_path": f"{CWD}/src/m{i}.py"}, result="x")
+        t.final("Done.")
+        run_id, records, content = replay(self.signer, t.lines)
+        storage = self.signer.s.log.storage
+        scan = storage.iter_run
+
+        def no_scan(tenant, run):
+            self.assertNotEqual(run, run_id, "a scan of the analysed run")
+            return scan(tenant, run)
+        with mock.patch.object(storage, "iter_run", no_scan):
+            out = findings_v2.analyze(records, content)
+            findings_v2.sign(Via(self.signer), run_id, out)
+        self.assertEqual(out["signed"]["records"], 31)   # the coverage review and a TK-X201 per call
+
+
 class Docs(unittest.TestCase):
     def test_every_rule_has_its_title_and_a_plain_line_in_the_docs(self):
         with open(os.path.join(ROOT, "docs", "findings.md"), encoding="utf-8") as f:

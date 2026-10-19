@@ -3915,14 +3915,9 @@ class SignerService:
         want = {}
         for c in cites:
             want.setdefault(c["run_seq"], set()).add(c["hash"])
-        last = max(want, default=-1)
-        # lean: reads the analysed run up to its last cited record on each call; read by run_seq if findings about
-        # long runs come often
-        for r in self.log.storage.iter_run(tenant, run_id) if want else ():
+        for r in self.log.storage.run_records(tenant, run_id, want) if want else ():   # by run_seq: no scan
             seq = r["event"]["run_seq"]
-            if seq > last:
-                break
-            if want.pop(seq, {r["hash"]}) != {r["hash"]}:
+            if want.pop(seq) != {r["hash"]}:
                 return f"run_seq {seq} of run {run_id[:128]}, whose hash differs"
         return f"run_seq {min(want)}, which run {run_id[:128]} does not have" if want else None
 
@@ -4072,8 +4067,7 @@ class SignerService:
         self.quotas.take_event(identity)
         wanted = set(req["seqs"])
         try:
-            records = {r["event"]["run_seq"]: r["event"] for r in self.log.storage.iter_run(*key)
-                       if r["event"]["run_seq"] in wanted}
+            records = {r["event"]["run_seq"]: r["event"] for r in self.log.storage.run_records(*key, wanted)}
         except (OSError, StorageUnavailable) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         purpose = privacy.redact_text(req["purpose"])[0][:512]
