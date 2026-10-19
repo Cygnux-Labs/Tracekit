@@ -349,7 +349,8 @@ class Prompts(Base):   # TK-X208, and which prompt lines are requests
         enforced was gone from TK-X204. The hook's prompt is the harness's: a request (tier harness)."""
         t = Transcript(CWD)
         t.prompt("Fix src/pager.py.")
-        t.lines.append(("prompt", {"type": "UserPromptSubmit", "prompt": "Also fix ledger.py. Don't touch billing.py."}))
+        also = "Also fix ledger.py. Don't touch billing.py."
+        t.lines.append(("prompt", {"type": "UserPromptSubmit", "prompt": also}))
         named = t.step("Fixing a file.", "Edit", edit("ledger.py"))
         kept = t.step("Fixing another.", "Edit", edit("billing.py"))
         out = self.run_session(t)

@@ -24,9 +24,9 @@ Kinds (rpc_schema.CONSTRAINT_KINDS):
                  other than X", "everything outside X is off-limits", "read-only except X", and each file the text
                  names when it says "don't change anything else", "X and nothing else" or "everything else is out of
                  scope": a call that writes any other file breaks it (TK-X204; the hook holds no call for it)
-  read_only      "don't change anything", "change nothing", and "read-only" naming no file as an instruction ("read-only:
-                 just look", "stay read-only", "work in read-only mode"; not "a read-only mode", "make the connection
-                 read-only", "nothing should change for callers"): any write breaks it
+  read_only      "don't change anything", "change nothing", and "read-only" naming no file as an instruction
+                 ("read-only: just look", "stay read-only", "work in read-only mode"; not "a read-only mode", "make the
+                 connection read-only", "nothing should change for callers"): any write breaks it
   no_push        "don't push", "never push", "no pushing" (also "don't push it to origin"; not a scoped push: "don't
                  push to main", "never push secrets"): a git push breaks it
   no_network     "no network (access)", "no internet", "don't go online", "don't use the web", "work / stay offline":
@@ -34,24 +34,24 @@ Kinds (rpc_schema.CONSTRAINT_KINDS):
                  nothing but words of ASKING before it ("please don't", "you must not", "I don't want"; not "we
                  don't use the network in unit tests", "the app works without network access")
 
-The grammar reads a sentence at a time, leaving out code blocks, quoted or indented lines ("> don't touch X", code
-four spaces in), quoted spans ("the README says \"don't touch X\"") and questions other than requests ("could you leave X alone?", "don't touch X, ok?"; not "should I change X?"), then a
-clause at a time (a comma, semicolon, colon or bracket, "but", "except", "though" end one; a clause that starts with an
-exception word after "don't change anything" or "read-only" belongs to it). For a file it reads the WINDOW words around
-it: the change word whose object it is (before it, with no clause of its own between: not "don't change how X is
-imported", nor "don't change the tests to make X pass") and a negation before that, or a state after it past filler
-words ("X should stay as it is"). Files listed after a kept one ("don't touch a.py or b.py") are kept too. A negation
-followed by a word that turns it around ("don't forget to", "don't hesitate to", "you don't need to", "I don't mind
-if") negates nothing. A condition after the file (or the push, the network, "anything") states none: "don't edit X
-until the tests pass", "without checking Y first", "unless", "before", "if", "while the server runs", "when DEBUG is
-set" (the change is allowed once it holds, which the grammar can't check; "while you work", "while fixing Y" are the
-task itself, no condition). A later clause of the same text that asks for what a constraint keeps away lifts it there
-("don't touch X for now; ... after that, update X too"; "don't change anything, then fix it"). A network word
-is negated only with nothing but words of use between ("don't use the network", not "don't change the network code")
-and no noun after it ("no web UI changes"); "offline" only where the clause begins with it as an instruction ("work
-offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by basename (norm). Each
-pass is linear in the text: word sets, short fixed sequences, one suffix scan per clause; the regular expressions have
-no nested quantifiers.
+The grammar reads a sentence at a time, leaving out code blocks, quoted or indented lines ("> don't touch X", code four
+spaces in), quoted spans ("the README says \"don't touch X\"") and questions other than requests ("could you leave X
+alone?", "don't touch X, ok?"; not "should I change X?"), then a clause at a time (a comma, semicolon, colon or bracket,
+"but", "except", "though" end one; a clause that starts with an exception word after "don't change anything" or
+"read-only" belongs to it). For a file it reads the WINDOW words around it: the change word whose object it is (before
+it, with no clause of its own between: not "don't change how X is imported", nor "don't change the tests to make X
+pass") and a negation before that, or a state after it past filler words ("X should stay as it is"). Files listed after
+a kept one ("don't touch a.py or b.py") are kept too. A negation followed by a word that turns it around ("don't forget
+to", "don't hesitate to", "you don't need to", "I don't mind if") negates nothing. A condition after the file (or the
+push, the network, "anything") states none: "don't edit X until the tests pass", "without checking Y first", "unless",
+"before", "if", "while the server runs", "when DEBUG is set" (the change is allowed once it holds, which the grammar
+can't check; "while you work", "while fixing Y" are the task itself, no condition). A later clause of the same text that
+asks for what a constraint keeps away lifts it there ("don't touch X for now; ... after that, update X too"; "don't
+change anything, then fix it"). A network word is negated only with nothing but words of use between ("don't use the
+network", not "don't change the network code") and no noun after it ("no web UI changes"); "offline" only where the
+clause begins with it as an instruction ("work offline", not "make the CLI work offline"). An object is a file name,
+lower-cased, compared by basename (norm). Each pass is linear in the text: word sets, short fixed sequences, one suffix
+scan per clause; the regular expressions have no nested quantifiers.
 lean: fixed word lists, English only; a phrasing outside them ("keep the diff to X", a constraint on a file named two
 clauses back) states no constraint. Grow the lists from real misses, never from the held-out pool.
 """
@@ -267,7 +267,7 @@ def _tied(tokens, i, words=VERBS):
 def _where(tokens, c, i):
     """Whether the change word at tokens[c] has an object of its own before the file at tokens[i], which is only where
     the change is: a word of WHERE between them, with a word before it that is no determiner, change noun or word of
-    WHOLE ("the public API of X"; not "anything in X", "any of the code in X")."""
+    WHOLE ("the public API of X"; not "anything in X", "any code in X")."""
     p = next((k for k in range(i - 1, c, -1) if tokens[k] in WHERE), None)
     return p is not None and not set(tokens[c + 1:p]) <= WHOLE | WHERE | DETERMINERS | NOUNS
 
@@ -502,8 +502,8 @@ def _instruction(tokens, i):
 
 
 def _plain(text):
-    """`text` without what it quotes: fenced code blocks, a quoted line ("> ...") or indented one (code, four spaces or a
-    tab), and a span in backticks or double quotes that holds a space (a quoted file name stays)."""
+    """`text` without what it quotes: fenced code blocks, a quoted line ("> ...") or indented one (code, four spaces or
+    a tab), and a span in backticks or double quotes that holds a space (a quoted file name stays)."""
     lines = []
     for line in "".join(text.split("```")[::2]).replace("“", '"').replace("”", '"').split("\n"):
         if line.lstrip().startswith(">") or line.startswith(("    ", "\t")):
@@ -642,19 +642,17 @@ def lifts(kind, mention, is_object):
 
 
 def shell(cmd):
-    """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs":
-    those of its paths a recursive rm or rmdir deletes as directories, "cd": it
-    changes directory, "push": a git push, "network": a command that reaches the network, "writes": it writes or
-    commits}. `cmd`: a command line, or a shell call's arguments (`command` or `cmd` a line or an argv list,
-    `commands` a list of lines), read as the policy engine reads them (policy2/shell.py: wrappers, `bash -c`, `eval`,
-    substitutions and pipelines included).
+    """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs": those
+    of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory, "push": a git push,
+    "network": a command that reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell
+    call's arguments (`command` or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine
+    reads them (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included).
     lean: redirections, the arguments of tee/touch/mkdir/rm/rmdir/truncate/shred/unlink and of formatters that write
     in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
     ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
     after `--`, and the -name of a find that deletes or runs a command; a word with a variable, a glob, braces or a
-    command substitution is no path; a line the parser can't read (`case`,
-    over its size) does nothing, and the policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real
-    writes hide there."""
+    command substitution is no path; a line the parser can't read (`case`, over its size) does nothing, and the
+    policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
     out = {"paths": [], "dirs": [], "cd": False, "push": False, "network": False, "writes": False}
     try:
         cmds, _, _, written = _parse(cmd if isinstance(cmd, dict) else {"command": cmd if isinstance(cmd, str) else ""})
@@ -702,10 +700,10 @@ def shell(cmd):
 
 def facts(tool, args, cls=None):
     """What call (`tool`, `args`) does, as far as a constraint cares: {"names": the basenames of what it writes, then
-    the directories over them (names()), "write": it writes at all, "push": a git push, "network": it reaches the network}. `cls`: the policy's class of
-    the tool when known (http and browser calls reach the network). A write tool (or another fs tool that writes)
-    writes its path and each of its `paths` (every file of a Codex patch, whose text is its `command`); any other call
-    with a command (`command`, `cmd` or `commands`) is a shell command."""
+    the directories over them (names()), "write": it writes at all, "push": a git push, "network": it reaches the
+    network}. `cls`: the policy's class of the tool when known (http and browser calls reach the network). A write tool
+    (or another fs tool that writes) writes its path and each of its `paths` (every file of a Codex patch, whose text is
+    its `command`); any other call with a command (`command`, `cmd` or `commands`) is a shell command."""
     args = args if isinstance(args, dict) else {}
     write = tool in WRITE_TOOLS or cls == "fs" and tool not in READ_TOOLS and args.get("op") != "read"
     if not write and any(args.get(k) is not None for k in SHELL_KEYS):

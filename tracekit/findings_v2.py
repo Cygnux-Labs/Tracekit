@@ -47,15 +47,15 @@ For each prompt line of the main transcript:
           score: how many actions had full, summarized, withheld (sealed or absent) or no reasoning before them, from
           which the share of actions each check could check follows.
 
-A finding is what review_finding signs (#309 phase 2), with no text of the run: {verdict: {kind, rule, severity,
-tier: the weakest trust tier of the text it relied on (transcript: a Claude Code transcript line, or what a coding
-agent's transcript or hook payload said (a body with a `source`), which the agent can write; sdk: what an in-process
-adapter reported, or a model request, whose body the agent wrote; gateway: the LLM gateway's record of a model's
-answer), order: where the call's reasoning sits against its decision, redacted: content redaction changed}, cites: [{run_seq, hash}] of the records it relied on};
-the signer adds the rule's fixed title. What happened (the file, the root), the labels (kept_away, reasoning_absent)
-and the tiers of everything a check relied on (also decision: the arguments the signer decided on; observer: a kernel
-sensor; operator: --project) are in `shown`: printed, never signed. `--json` prints the whole result
-(docs/findings.md).
+A finding is what review_finding signs (#309 phase 2), with no text of the run: {verdict: {kind, rule, severity, tier:
+the weakest trust tier of the text it relied on (transcript: a Claude Code transcript line, or what a coding agent's
+transcript or hook payload said (a body with a `source`), which the agent can write; sdk: what an in-process adapter
+reported, or a model request, whose body the agent wrote; gateway: the LLM gateway's record of a model's answer), order:
+where the call's reasoning sits against its decision, redacted: content redaction changed}, cites: [{run_seq, hash}] of
+the records it relied on}; the signer adds the rule's fixed title. What happened (the file, the root), the labels
+(kept_away, reasoning_absent) and the tiers of everything a check relied on (also decision: the arguments the signer
+decided on; observer: a kernel sensor; operator: --project) are in `shown`: printed, never signed. `--json` prints the
+whole result (docs/findings.md).
 
 Intent is only what a person typed: a prompt line of the main Claude Code transcript (not isMeta, a compaction
 summary, command output, a tool result or a sub-agent's prompt) whose text a prompt the hook recorded at

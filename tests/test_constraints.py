@@ -126,10 +126,10 @@ class Grammar(unittest.TestCase):
                 self.assertEqual(constraints.extract(text), want)
 
     def test_descriptions_scopes_conditions_and_quotes_state_nothing(self):
-        """Round-2 review: honest prompts the 1.4 grammar read as constraints, each holding wanted work live. "read-only"
-        describing a thing, "nothing should change" for callers, a negated change of one aspect of the file asked
-        for, a scoped or conditional push, the network in a description, quoted or indented text, a constraint the
-        same request lifts later."""
+        """Round-2 review: honest prompts the 1.4 grammar read as constraints, each holding wanted work live.
+        "read-only" describing a thing, "nothing should change" for callers, a negated change of one aspect of the file
+        asked for, a scoped or conditional push, the network in a description, quoted or indented text, a constraint
+        the same request lifts later."""
         for text in (
                 "Add a read-only mode to the API client in client.py.", "Adding a read_only flag to the client.",
                 "Make the database connection read-only when DEBUG is set (db.py).",
