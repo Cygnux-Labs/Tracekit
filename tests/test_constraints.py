@@ -4,6 +4,7 @@ a person's approval and no decision is ever lowered; both verifiers check where 
 (docs/policy-v2.md#live-constraints). tests/test_ts_verifier.py runs a run with live constraints through both."""
 import os
 import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -12,11 +13,17 @@ from unittest import mock
 import test_bundle_v2 as b
 from factories import unverified_bundles
 from test_reviews import ME, Signed
-from tracekit import agent_hooks, constraints
-from tracekit.bundle_v2 import export
-from tracekit.signer import service as svc
-from tracekit.signer.rpc_schema import RPCError
-from tracekit.verify import v2
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from eval.e20_alignment import TUNED, fill  # noqa: E402
+from tracekit import agent_hooks, constraints  # noqa: E402
+from tracekit.bundle_v2 import export  # noqa: E402
+from tracekit.integrations import claude_code  # noqa: E402
+from tracekit.signer import service as svc  # noqa: E402
+from tracekit.signer.rpc_schema import RPCError  # noqa: E402
+from tracekit.verify import v2  # noqa: E402
+
+TARGET, TASK, ASKED = "config/settings.yaml", "src/pager.py", "Fix the off-by-one error in src/pager.py. "
 
 
 class Grammar(unittest.TestCase):
@@ -70,6 +77,65 @@ class Grammar(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [])
         self.assertEqual(constraints.extract("Fix the online checkout, don't push."), [("no_push", None)])
+
+    def test_how_people_say_keep_it_away(self):
+        """E20's tuned phrasings (written from how people put it, never from a pool): each keeps the file away, after
+        a request that names the task file; each scope keeps the task file to itself."""
+        for said in TUNED["constraints"]:
+            with self.subTest(said):
+                self.assertIn(("keep_away", "settings.yaml"), constraints.extract(ASKED + fill(said, target=TARGET)))
+        missed = {s for s in TUNED["scope_constraints"]
+                  if ("only_change", "pager.py") not in constraints.extract(ASKED + fill(s, task_file=TASK))}
+        self.assertEqual(missed, {"Please keep the diff to {task_file}."})   # "keep the changes to X small" says go
+
+    def test_requests_that_state_no_constraint_hold_nothing(self):
+        """Permission, reminders, questions, quoted text and code, a condition, "don't" in another clause: no
+        constraint, so nothing the hook would hold live."""
+        for said in TUNED["constraint_negatives"]:
+            with self.subTest(said):
+                text = ASKED + fill(said, target=TARGET)
+                self.assertEqual((constraints.extract(text), claude_code._live(text)), ([], []))
+
+    def test_conditions_questions_quotes_and_what_it_refers_to(self):
+        for text, want in (
+                ("Don't edit billing.py without checking the tests first.", []),   # allowed once checked
+                ("Don't touch billing.py until the release.", []),
+                ("Could you leave billing.py alone?", [("keep_away", "billing.py")]),
+                ("Don't touch billing.py, ok?", [("keep_away", "billing.py")]),
+                ("Should I leave billing.py alone?", []),
+                ('The old note says "never edit billing.py".', []),
+                ("Don't touch `billing.py`.", [("keep_away", "billing.py")]),
+                ("billing.py is generated; make no changes there.", [("keep_away", "billing.py")]),
+                ("Here is billing.py. Don't change it.", [("keep_away", "billing.py")]),
+                ("Fix billing.py; don't rewrite it from scratch.", []),
+                ("If billing.py is generated, don't touch it.", []),
+                ("Don't change how billing.py is imported.", []),
+                ("Don't change the tests to make billing.py pass.", []),
+                ("I didn't change billing.py yet.", []),   # a report, not an instruction
+                ("Everything outside src/pager.py is off-limits.", [("only_change", "pager.py")]),
+                ("Fix src/pager.py; everything else is out of scope.", [("only_change", "pager.py")])):
+            with self.subTest(text):
+                self.assertEqual(constraints.extract(text), want)
+
+    def test_a_scope_is_checked_after_the_run_and_never_held_live(self):
+        """"Only change X" holds no call (every test or lockfile write would ask the person): TK-X204 reads it after."""
+        text = "Only change src/pager.py and don't touch billing.py."
+        self.assertEqual(constraints.extract(text), [("only_change", "pager.py"), ("keep_away", "billing.py")])
+        self.assertEqual(claude_code._live(text), [("keep_away", "billing.py")])
+        sent = []
+        claude_code.prompted(mock.Mock(call=lambda m, **kw: sent.append(kw["constraint"])), text)
+        self.assertEqual(sent, [{"kind": "keep_away", "object": "billing.py"}])
+
+    def test_a_64_kib_prompt_is_read_in_bounded_time(self):
+        n = 1 << 16
+        for unit in ("don't ", "leave ", "hands off ", "only ", "it ", '"', "`", "```", "nothing else ", "? ",
+                     "a.py is not to be ", "x.py ", "no changes to ", "everything else ", "as is ", "make no changes "
+                     "there. ", "don't touch a.py until ", "stay away from ", "is the only "):
+            text = (unit * (n // len(unit) + 1))[:n]
+            t0 = time.perf_counter()
+            constraints.extract(text)
+            constraints.mentions(text)
+            self.assertLess(time.perf_counter() - t0, 2, unit)
 
     def test_a_later_request_lifts_what_it_names(self):
         keep = "billing.py".__eq__
