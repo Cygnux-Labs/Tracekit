@@ -8,7 +8,7 @@
 and gives you one `.tkb` file per run that anyone can verify offline.**
 
 <a href="https://pypi.org/project/tracekit-ai/"><img src="https://img.shields.io/pypi/v/tracekit-ai?style=flat-square&color=F3B23B&labelColor=1C1A1C" alt="PyPI"></a>
-<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-19_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 19 agents and frameworks"></a>
+<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-25_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 25 agents and frameworks"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=CI&labelColor=1C1A1C" alt="CI"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-F3B23B?style=flat-square&labelColor=1C1A1C" alt="MIT licence"></a>
 
@@ -103,7 +103,8 @@ ran and verified in 27 seconds: [`examples/v2/clean-machine.sh langchain`](https
 
 <sub>Stable: Claude Code, the OpenAI Agents SDK, LangChain / LangGraph, the Claude Agent SDK and MCP. Experimental: Codex
 CLI, Cursor, Gemini CLI, CrewAI, Browser Use, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent
-Framework, Strands Agents, NVIDIA OpenShell, agentgateway, Wassette, LiteLLM's MCP gateway, Docker's MCP Gateway and the TypeScript SDK.
+Framework, Strands Agents, the Vercel AI SDK, NVIDIA OpenShell, E2B, microsandbox, agentgateway, Wassette, LiteLLM's MCP
+gateway, Docker's MCP Gateway and the TypeScript SDK.
 In NVIDIA OpenShell sandboxes, Tracekit decides and signs each HTTP request OpenShell lets out, and signs OpenShell's
 own blocks, process events and policy changes into the same run. Setup:
 <a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents">coding agents</a> ·
@@ -222,7 +223,7 @@ is tested, but may change between releases ([what's stable](https://github.com/C
 | **Cross-check** | The signer compares the calls the model asked for, as an [LLM gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/LLM-Gateway) or the session transcript saw them, with the calls the agent reported. A skipped hook or a made-up call is flagged | 12 of 12 seeded discrepancies flagged, 0 false (E10) |
 | **Contain** | Signed [incidents](https://github.com/Cygnux-Labs/Tracekit/wiki/Incidents) hold or quarantine a run. Tools run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/wiki/Executor), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/MCP-Gateway)). An [egress observer](https://github.com/Cygnux-Labs/Tracekit/wiki/Egress) flags traffic no call explains. A [kernel sensor import](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Tetragon) records the processes, connections and file writes Tetragon or [Falco](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Falco) saw | 8 of 8 containment and 10 of 10 detection checks (E17) |
 | **Explain** | Where each argument came from, and [`tracekit why`](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why): which input caused an action, found by replaying the run without it | 6 of 6 true causes named, 0 false blames, one 7B model, small sample |
-| **Check** | [`tracekit analyze --v2`](https://github.com/Cygnux-Labs/Tracekit/wiki/Findings#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2), signed: an action with nothing said before it, an edit of a file nobody named or said they were changing, a write outside the project, a broken "don't touch X", data sent out, files deleted or a package added without telling the person, a prompt line the harness never submitted, and how much of the run's reasoning could be read ([which agents' reasoning is readable](https://github.com/Cygnux-Labs/Tracekit/wiki/Reasoning)); `--review` adds a reviewer model's second opinion (warn only). [Live constraints](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy#live-constraints) hold the call that would break "don't touch X" for approval | Unrequested edits behind generic, sealed or reviewer-addressed cover text, or named innocently: all caught when no request names the file (named innocently, 0 of 24 before 2026-10-19); after a "don't touch X", 83-92% on pool v2 (25-71% before; the grammar reads 11 of its 12 phrasings, 4 before); an appended prompt line flagged in 24 of 24; a file sent out or a package added and pushed with nothing said of it, 79-100% (0% before). Development numbers: pools v1 and v2 were read while fixing the checks, and the blind pool v3 is scored once they are frozen (E20, synthetic) |
+| **Check** | [`tracekit analyze --v2`](https://github.com/Cygnux-Labs/Tracekit/wiki/Findings#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2), signed: an action with nothing said before it, an edit of a file nobody named or said they were changing, a write outside the project, a broken "don't touch X", data sent out, files deleted or a package added without telling the person, a prompt line the harness never submitted, and how much of the run's reasoning could be read ([which agents' reasoning is readable](https://github.com/Cygnux-Labs/Tracekit/wiki/Reasoning)); `--review` adds a reviewer model's second opinion (warn only). [Live constraints](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy#live-constraints) hold the call that would break "don't touch X" for approval | Unrequested edits behind generic, sealed or reviewer-addressed cover text, or named innocently: all caught when no request names the file (named innocently, 0 of 24 before 2026-10-19); after a "don't touch X", 88-96% on pool v2 (29-75% before; the grammar reads 11 of its 12 phrasings, 4 before); an appended prompt line flagged in 24 of 24; a file sent out or a package added and pushed with nothing said of it, 79-100% on pool v2 (0-38% before TK-X211). Development numbers: pools v1 and v2 were read while fixing the checks, and the blind pool v3 is scored once they are frozen (E20, synthetic) |
 | **More approvers** | A web page with passkeys, Slack, or a reviewer agent that approves within bounds | 7 of 7 abuse cases against agent approvers caught (E18) |
 
 ## Proof
@@ -271,7 +272,8 @@ measured: [evaluation](https://github.com/Cygnux-Labs/Tracekit/wiki/Evaluation) 
 | Laptop dev | the agent's own user | `same-user` |
 | Laptop system mode (Linux; macOS experimental) | root and the signer's OS user | `separate-user` |
 | Container or Kubernetes sidecar | the signer's uid and the node's administrator | `separate-user` |
-| Central signer over HTTPS (or Docker Compose) | the signer host's administrators | `remote` |
+| Docker Compose stack (`deploy/compose/`) | the Docker host's administrators | `separate-user` |
+| Central signer over HTTPS | the signer host's administrators | `remote` |
 
 The operator who runs the signer could still rewrite its log with its own key; an independent witness and a monitor
 make that visible. Each mode end to end: [deployment](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy).
@@ -309,7 +311,8 @@ tracekit last                               # export your latest run, pin the de
 tracekit view --dev                         # every run, verified: calls, decisions, gaps, replay, why
 tracekit approvals list                     # calls held for a person; tracekit approvals approve ID
 tracekit export --v2 --run ID -o run.tkb    # one run as one .tkb file
-tracekit verify run.tkb --trust trust.json  # check it offline, against the keys and witnesses you pinned
+tracekit verify run.tkb --trust trust.json  # offline, against the keys you pinned in trust.json
+                                            # (tracekit signer trust -o trust.json, or the one tracekit last wrote)
 tracekit policy lint policy.yaml            # check a policy before the signer loads it
 tracekit doctor                             # check this setup
 tracekit init --dev --v2                    # wire Claude Code's hooks; add --agent codex, cursor or gemini
@@ -333,7 +336,7 @@ it means and what to do next.
 - **Old files keep verifying.** Formats only grow, each format's verifier is frozen, and an older verifier reports a
   newer file `UNVERIFIABLE (needs tracekit >= x)`, never `FAILED`. Verify such a file with
   `uvx --from "tracekit-ai>=x" tracekit verify run.tkb --trust trust.json`,
-  `npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json`, or the
+  `npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json` (Node 20.12 or newer), or the
   [browser verifier](https://github.com/Cygnux-Labs/Tracekit/wiki/Verdicts#a-bundle-that-needs-a-newer-verifier),
   which checks it in your browser and sends nothing. From 1.4.0, an addition an older verifier can leave unread is non-critical: the bundle verifies, and the
   report names what that verifier didn't interpret.
@@ -378,11 +381,11 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 | Ask why an action happened | [tracekit why](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why) · [its architecture](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why-Architecture) |
 | Understand the design | [how Tracekit works](https://github.com/Cygnux-Labs/Tracekit/wiki/How-Tracekit-Works) · [architecture](https://github.com/Cygnux-Labs/Tracekit/wiki/Architecture) · [evaluation](https://github.com/Cygnux-Labs/Tracekit/wiki/Evaluation) · [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md) · [case study](https://github.com/Cygnux-Labs/Tracekit/wiki/Case-Study-OSS-Agents) |
 | Know what's stable | [support](https://github.com/Cygnux-Labs/Tracekit/wiki/Support) · [limits](https://github.com/Cygnux-Labs/Tracekit/wiki/Limits) · [FAQ](https://github.com/Cygnux-Labs/Tracekit/wiki/FAQ) · [security checklist](https://github.com/Cygnux-Labs/Tracekit/wiki/Security-Checklist) · [changelog](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md) |
-| Run the v1 laptop signer | [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) · [signing](https://github.com/Cygnux-Labs/Tracekit/wiki/Signing) · [v1 integrations](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations) |
+| Run the v1 laptop signer | [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) · [signing](https://github.com/Cygnux-Labs/Tracekit/wiki/Signing) · [v1 adapters](https://github.com/Cygnux-Labs/Tracekit/wiki/Adapters) |
 
 ## License
 
-[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.3.0, and 1.x is the
+[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.4.0, and 1.x is the
 supported line. Report vulnerabilities privately as
 [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
 
