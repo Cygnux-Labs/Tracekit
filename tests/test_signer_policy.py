@@ -611,6 +611,18 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual([(r["decision"], r["rule_ids"]) for r in rec], [("deny", ["TK-ENGINE-ERROR"])])
         self.assertIn("IndexError", rec[0]["reasons"][0])
 
+    def test_a_long_digit_run_is_decided_and_an_engine_error_on_a_url_is_signed(self):
+        # int() refuses over 4,300 digits: a URL host of 5,000 digits raised again where decide read the host outside
+        # the engine's guard (the connection dropped, nothing signed), and a shell word of them was TK-ENGINE-ERROR
+        digits = "1" * 5000
+        self.assertNotIn("TK-ENGINE-ERROR", self.decide("WebFetch", {"url": f"http://{digits}/"})["rule_ids"])
+        self.assertNotIn("TK-ENGINE-ERROR", self.decide("Bash", {"command": "echo " + digits}, tcid="tc-2")["rule_ids"])
+        with mock.patch.object(classes, "url_info", side_effect=ValueError), \
+                self.assertLogs("tracekit.signer.service", "ERROR"):
+            d = self.decide("WebFetch", {"url": "http://example.com/"}, tcid="tc-3")
+        self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-ENGINE-ERROR"]))
+        self.assertEqual(sum(e["type"] == "policy.decision" for e in self.events()), 3)
+
     def test_nesting_too_deep_for_the_engine_or_a_record_is_refused_not_dropped(self):
         # TK-ENGINE-ERROR swallowed the engine's RecursionError, and an MCP alias digest the writer could not
         # canonicalize escaped call(): the connection dropped and nothing was signed

@@ -2606,8 +2606,9 @@ class SignerService:
         agent = self._eligibility(key, identity, tool, args, digest, ruled[0], prov) if ruled and \
             ruled[0]["verdict"] == "ask" else None
         cls = self.policy.tool_class(tool)
-        host = classes.extract(cls, tool, args).get("host") if cls in ("http", "browser") and isinstance(
-            args, dict) else None
+        # read only where the engine read these arguments without failing (a host matters to no deny)
+        host = classes.extract(cls, tool, args).get("host") if ruled and "error" not in ruled[0] and cls in (
+            "http", "browser") and isinstance(args, dict) else None
         facts = constraints.facts(tool, args, cls) if digest else None   # what a live constraint looks at
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running

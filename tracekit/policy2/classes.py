@@ -72,13 +72,14 @@ def _whatwg_host(url):
 
 
 def _number(part):
-    """An IPv4 part in decimal, 0x hex or 0 octal, None for a name, -1 for a malformed number (08)."""
+    """An IPv4 part in decimal, 0x hex or 0 octal, None for a name, -1 for a malformed number (08) or a decimal of more
+    than 10 digits (over 2**32, and past Python's 4,300 digits int() refuses)."""
     if re.fullmatch(r"0[xX][0-9A-Fa-f]*", part):
         return int(part[2:] or "0", 16)
     if re.fullmatch(r"0[0-7]+", part):
         return int(part, 8)
     if re.fullmatch(r"[0-9]+", part):
-        return -1 if len(part) > 1 and part[0] == "0" else int(part)
+        return -1 if len(part) > 1 and part[0] == "0" or len(part) > 10 else int(part)
     return None
 
 
