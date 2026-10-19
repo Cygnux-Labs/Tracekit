@@ -71,7 +71,8 @@ VERSIONS = {
                          "run.closing": {"reason": ["quarantine"]}}},
     "1.3.0": {"types": ["reconcile.result_mismatch"], "fields": {},
               "values": {"capture.gap": {"kind": ["result_unchecked"]}}},
-    "1.4.0": {"types": ["constraint.added"], "fields": {"effect.observed": ["sensor"], "review": ["cites"]},
+    "1.4.0": {"types": ["constraint.added"], "fields": {"effect.observed": ["sensor"], "review": ["cites"],
+                                                        "model.exchange": ["said_only"]},
               "values": {}, "ext": ["amended"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that

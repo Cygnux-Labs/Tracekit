@@ -2411,6 +2411,10 @@
           },
           "maxItems": 1024
         },
+        "said_only": {
+          "const": true,
+          "description": "format 1.4: a response recorded with what the model said and without the calls it asked for (a harness whose hooks name no call); reconciliation reads no call from it"
+        },
         "tool_results_sent": {
           "type": "array",
           "items": {

@@ -1,8 +1,9 @@
 """The signer RPC contract, version 19: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
-`tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states) and
-model_event's `amended` (the fields an LLM gateway changed in a request). Version 18 adds observe_effect's kernel sensor
+`tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states),
+model_event's `amended` (the fields an LLM gateway changed in a request) and its `said_only` (a response recorded without
+its calls). Version 18 adds observe_effect's kernel sensor
 events (its `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17 (Tracekit 1.3) adds
 model_event's optional
 `tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
@@ -223,6 +224,9 @@ REQUESTS = {
                         usage=_obj([], input_tokens=SEQ, output_tokens=SEQ, cache_read_tokens=SEQ,
                                    cache_write_tokens=SEQ, reasoning_tokens=SEQ),
                         tool_uses={"type": "array", "maxItems": 128, "items": _TOOL_USE},
+                        # what the model said, without the calls it asked for (a harness whose hooks name no call, or
+                        # report a message's text apart from its calls): reconciliation reads no call from it
+                        said_only={"const": True},
                         tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID},
                         # a gateway's: each tool result the request sends, as the values it may have been recorded as
                         # (`digest` event_hash(value), `result_digest` sha256(JCS({"result": value})))

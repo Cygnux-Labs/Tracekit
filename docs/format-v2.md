@@ -235,7 +235,10 @@ carries an `args_commitment` when the provider returned its input; `run.final` c
 of such tool uses, which no decide covers and which are never `reconcile.fabricated` (with `gateway_mandatory`, only
 those the gateway reported), and `paired_by_args`, the number of calls reconciled by pairing a decide with a tool use
 of the same model turn by their arguments when the adapter had no tool-call id (never across turns, never when two
-could match). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version` 1.2.0.
+could match). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version` 1.2.0. A
+`model.exchange` response with `said_only: true` (format 1.4) holds what the model said without the calls it asked for
+(a harness whose hooks name no call: Gemini CLI, Cursor); reconciliation reads no call from it, so it never makes a
+decide `reconcile.fabricated`.
 
 Verified tool results (format 1.3, [gateway](gateway.md#verified-tool-results)): when signer.yaml sets
 `verify_tool_results`, an LLM gateway's request record is checked against the run's tool results. For each tool result
@@ -514,7 +517,7 @@ them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — | — |
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
-| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites` | — | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
+| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites`; `model.exchange`: `said_only` | — | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,

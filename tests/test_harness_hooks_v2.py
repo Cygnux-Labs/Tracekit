@@ -412,6 +412,32 @@ class WhatTheModelSaid(HarnessCase):
                          [("reasoning", "summary", "**Listing** list the files first"), ("text", "full", "Listing.")])
         self.assertEqual((self.frames[0]["provider"], self.frames[0]["model"]), ("google", "gemini-3-pro"))
 
+    def test_a_harness_that_names_no_call_is_never_accused_of_fabricating_one(self):
+        """Gemini CLI's and Cursor's messages are recorded without their calls (neither gives a call an id): the
+        signer must not read each decided call as one no model message asked for (reconcile.fabricated)."""
+        self.serve()
+        msg = {"id": "m1", "timestamp": "t", "type": "gemini", "content": "Listing.", "model": "gemini-3-pro",
+               "thoughts": [{"subject": "Listing", "description": "list the files first", "timestamp": "t"}]}
+        path = self.transcript({"sessionId": "g-f", "projectHash": "h"}, msg)
+        pre = {"session_id": "g-f", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
+               "tool_input": {"command": "ls"}, "transcript_path": path}
+        self.assertEqual(self.hook("gemini", pre)[0], 0)
+        self.assertEqual(self.hook("gemini", dict(pre, hook_event_name="AfterTool", tool_response="a.txt"))[0], 0)
+        self.hook("cursor", {"conversation_id": "cu-f", "hook_event_name": "afterAgentThought", "text": "list first"})
+        cur = {"conversation_id": "cu-f", "hook_event_name": "preToolUse", "tool_name": "Shell", "tool_use_id": "tu_1",
+               "tool_input": {"command": "ls"}, "cwd": self.d}
+        self.assertEqual(self.hook("cursor", cur)[0], 0)
+        self.hook("cursor", dict(cur, hook_event_name="postToolUse", tool_output="a.txt"))
+        runs = {sid: self.events(sid)[0]["run_id"] for sid in ("g-f", "cu-f")}
+        self.hook("gemini", dict(pre, hook_event_name="SessionEnd", reason="exit"))
+        self.hook("cursor", {"conversation_id": "cu-f", "hook_event_name": "sessionEnd", "reason": "exit"})
+        self.service.sweep()
+        for sid, run_id in runs.items():
+            recs = [r["event"]["type"] for r in self.service.log.storage.iter_run("default", run_id)]
+            self.assertIn("run.final", recs)
+            self.assertEqual((recs.count("model.exchange") > 0, recs.count("policy.decision")), (True, 1), sid)
+            self.assertEqual([t for t in recs if t.startswith("reconcile.")], [], sid)
+
     def test_cursor_thinking_is_recorded(self):
         self.serve()
         out = self.hook("cursor", {"conversation_id": "cu-s", "generation_id": "g1", "model": "claude-x",

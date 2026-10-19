@@ -18,7 +18,9 @@ Gemini CLI's thoughts and text from its chat recording (the transcript the paylo
 written since the session's last one), and the text of Cursor's afterAgentThought and afterAgentResponse events. Each
 Codex tool call in the rollout is a tool use under its call_id, named as its PreToolUse hook is decided (agent_hooks.tool)
 with its arguments `coerced` (Codex rewrites them for the hook), so the model's reasoning before it is linked to the
-decision and reconciliation pairs the two; Gemini CLI and Cursor give a call no id, so theirs is not linked. Recording
+decision and reconciliation pairs the two; Gemini CLI and Cursor give a call no id, so theirs is not linked, and their
+messages are sent `said_only`: the signer reads no call from them, so it never takes the calls their hooks decide for
+calls no model asked for. Recording
 never changes a hook's answer: a failure prints a line and the hook goes on.
 """
 import contextlib
@@ -111,8 +113,8 @@ def said_since(harness, p, stderr):
                     for args in said_items:
                         if harness == "codex":
                             _send(s, *args, stderr)
-                        else:
-                            s(*args)
+                        else:   # their messages name no call the hooks decide: none to reconcile against
+                            s(*args, said_only=True)
                     st["vault"] = s.vault.limit
                 finally:
                     client.close()

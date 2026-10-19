@@ -32,6 +32,10 @@ the fix (`D-THINKING-SUMMARIES`, `D-CODEX-REASONING`, `D-GEMINI-THOUGHTS`; [doct
 | Gemini CLI | summary (its thought summaries) | on by default; don't set `includeThoughts: false` in `modelConfigs` | its chat recording, read at each hook | no: Gemini CLI gives a call no id, and writes the thoughts after the calls run |
 | Cursor | the thinking text Cursor reports (recorded as a summary) | nothing: `tracekit init --v2 --agent cursor` installs its `afterAgentThought` and `afterAgentResponse` hooks | those hooks | no: they carry no call id |
 
+Gemini CLI's and Cursor's messages are recorded `said_only`: what the model said, without the calls it asked for, which
+their hooks can't name. The signer reconciles no call against them, so an honest session never reads as one whose calls
+no model asked for (`reconcile.fabricated`); it also gets no such cross-check.
+
 ## Frameworks
 
 | Framework | Recorded | How to turn it on | Where it comes from | Linked |
@@ -40,7 +44,7 @@ the fix (`D-THINKING-SUMMARIES`, `D-CODEX-REASONING`, `D-GEMINI-THOUGHTS`; [doct
 | Claude Agent SDK | summary, and the thinking's signature | `thinking={"type": "adaptive", "display": "summarized"}` (Opus 4.7 and later omit the text by default) | the integration: hand each message to `tracekit_said` | yes, by `tool_use_id` |
 | LangChain / LangGraph `create_agent` | summary (reasoning blocks, with their signature or encrypted content); full for an open model's `reasoning_content` or inline `<think>` | the model's own reasoning settings | the middleware (each model call) | yes, by tool call id |
 | LangGraph with `tracekit_tool_node` | none from the integration | use `tracekit.instrument()` or the LLM gateway | - | - |
-| Pydantic AI | summary (`ThinkingPart`), and its signature | the model's own thinking settings | the capability (each model response) | yes, by `tool_call_id` |
+| Pydantic AI | summary (`ThinkingPart`), and its signature | the model's own thinking settings | the capability (each model response; an output function's call or an approved tool's is added to its response when it is decided) | yes, by `tool_call_id` |
 | Google ADK | summary (thought parts), and each `thought_signature` | `include_thoughts=True` in the agent's thinking config | the plugin (each model response event) | yes, by ADK's call ids |
 | Strands Agents | summary (`reasoningContent`), and its signature or redacted content | the model provider's reasoning settings | the hook provider (each model message) | yes, by `toolUseId` |
 | Haystack | summary (the message's reasoning), and OpenAI's `encrypted_content` | the chat generator's reasoning settings | the `before_tool` hook | yes, by the call id (one Tracekit gives a call that has none) |
