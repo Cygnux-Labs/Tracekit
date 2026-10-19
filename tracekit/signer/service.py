@@ -38,8 +38,10 @@ signer.yaml:
     tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix:* -> tenant (attested)
                                              # (identities, here and in authorize and approvals, also match as
                                              # person:<id> and group:<alias>/<name> when OIDC: tracekit.identity.oidc)
-    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix:* ->
-                                             # methods; uid and token:dev default to all, the rest to none
+    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, approval_consume, complete, close_run, model_event,
+                                             approval_request, approval_wait]}   # identity or prefix:* -> methods
+                                             # (docs/limits.md#deployment); uid and token:dev default to all, the
+                                             # rest to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested), or a
                                              # bridge's on_behalf person's tenant
     migrators: ["uid:1003"]                  # may register `migrated` runs

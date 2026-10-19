@@ -160,7 +160,8 @@ http:
     token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
     ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 tenants: {"k8s_sa:system:serviceaccount:acme:*": acme}
-authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, complete, close_run]}
+authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, approval_consume, complete, close_run,
+                                                    model_event, approval_request, approval_wait]}
 metrics: {listen: 0.0.0.0:9464, allow_remote: true}
 ```
 
@@ -203,7 +204,8 @@ http:
   authenticators: [token]
   tokens: /var/lib/tracekit-signer/tokens.json
 tenants: {"token:*": default}
-authorize: {"token:*": [register_run, decide, complete, state_write, model_event, close_run, status]}
+authorize: {"token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
+                       state_write, status]}
 metrics: {listen: 127.0.0.1:9464}
 ```
 

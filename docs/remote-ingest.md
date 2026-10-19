@@ -18,7 +18,8 @@ http:
   authenticators: [token]      # also k8s_sa, mtls
   tokens: tokens.json          # named tokens, managed below
 authorize:
-  "token:*": [register_run, decide, complete, state_write, model_event, close_run, status, read]
+  "token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
+              state_write, status, read]
 tenants:
   "token:build-agent": acme    # or give the token a tenant with --tenant
 ```
