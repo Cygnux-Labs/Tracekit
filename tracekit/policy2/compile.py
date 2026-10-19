@@ -17,8 +17,12 @@ from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", *SECTIONS, *DETECT}
-RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from"}
+            "explains", "on_parse_error", *SECTIONS, *DETECT}
+RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
+             "remedy"}
+MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
+# a remedy says what to do, in the present tense: not what one might, could or should do
+_HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
 # agent: a reviewer agent may answer calls within its bounds (_lint_agent)
 APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
@@ -301,6 +305,8 @@ def _lint(pol, path):
             errors.append(f"{path}: tool {tool!r} has unknown class {cls!r}")
     if pol.get("unknown_tools", "allow") not in SECTIONS + ("allow",):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
+    if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
+        errors.append(f"{path}: on_parse_error must be ask or deny")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):
@@ -312,6 +318,8 @@ def _lint(pol, path):
                        if not isinstance(r[k], str)]
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
+            if isinstance(r.get("remedy"), str):
+                errors += [f"{where}: remedy {e}" for e in _lint_remedy(r["remedy"], sec)]
             if "approval" in r and (sec != "ask" or not isinstance(r["approval"], dict) or not r["approval"]
                                     or any(v not in APPROVAL.get(k, ()) for k, v in r["approval"].items()
                                            if k != "agent")):
@@ -345,6 +353,18 @@ def _lint(pol, path):
                    "labels (*.pythonhosted.org, not *.com or *pypi.org); or name the hosts" for h in x["hosts"]
                    if _loose_host(h)]
     return errors + _lint_detect(pol, path)
+
+
+def _lint_remedy(text, sec):
+    """The errors of a rule's `remedy`: on a deny or ask rule, one plain sentence of at most MAX_REMEDY characters
+    that says what to do, in the present tense."""
+    return [e for bad, e in (
+        (sec == "flag", "is for a deny or ask rule: a flagged call runs"),
+        (len(text) > MAX_REMEDY, f"is over {MAX_REMEDY} characters: say what to do in one sentence"),
+        (not re.fullmatch(r"[A-Z][^\x00-\x1f\x7f]*\.", text), "is one line that starts with a capital letter and ends "
+                                                             "with a period"),
+        (bool(_HEDGE.search(text)), "says what to do, in the present tense (`Push without --force.`), not what one "
+                                    "should, could or might do")) if bad]
 
 
 def _loose_host(glob):

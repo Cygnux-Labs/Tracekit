@@ -139,13 +139,14 @@ class Engine:
                 hits["deny"].append("TK-OVERSIZE")
                 oversize.append("the shell command")
             else:
+                unreadable = hits[self.policy.get("on_parse_error", "ask")]   # TK-SHELL-PARSE's section
                 try:
                     parsed = _shell(args)
                 except shell.ParseError:
-                    hits["ask"].append("TK-SHELL-PARSE")
+                    unreadable.append("TK-SHELL-PARSE")
                     parsed = [], [], [command if isinstance(command, str) else canonical(command)]   # its own target
                 if any(c["opaque"] for c in parsed[0]):
-                    hits["ask"].append("TK-SHELL-PARSE")
+                    unreadable.append("TK-SHELL-PARSE")
         name, memo = _text(tool), {}
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
             self._of[cls] = [x for x in self.rules if x[1].get("class", cls) == cls]

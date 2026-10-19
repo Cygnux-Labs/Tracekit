@@ -42,12 +42,14 @@ deny:
     class: shell
     pattern: '^(sudo|sudoedit|doas|pkexec)( |$)|^su (.*? )?(-c|root)( |$)'
     reason: privilege escalation
+    remedy: Run the command as the agent's own user, without sudo; a person runs what needs root, or gives the agent a sandbox where it is root.
     rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
   - id: TK-D002
     class: shell
     field: line
     pattern: '(curl|wget)[^|;&]*\|\s*(sudo\s+)?(\S*/)?((ba|z|da)?sh|python3?|perl|ruby|node)\b|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(curl|wget)\b[^\n]*(&&|;)\s*(sudo\s+)?((ba|z|da)?sh\s+\S|\./\S|chmod\s+\+x[^\n]*(&&|;)\s*\./)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
     reason: running a downloaded script
+    remedy: Download the script to a file and show it for review instead of piping it into a shell; a person runs it once they have read it.
     rationale: Remote code execution without review.
   - id: TK-D003
     class: shell
@@ -58,11 +60,13 @@ deny:
     # inside an argument; anchored and lazy, so the fallback engine stays linear
     pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
     reason: force push
+    remedy: Push without --force, --mirror or a + refspec (rebase onto the remote branch, or push a new branch); a person rewrites shared history themselves.
     rationale: Rewrites shared history.
   - id: TK-D004
     class: shell
     pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find / .*-delete( |$)'
     reason: recursive delete of root or home
+    remedy: Delete only the project's own paths, named in full; a person deletes anything at / or the home directory themselves.
     rationale: Irrecoverable data loss.
   - id: TK-D010
     class: shell
@@ -70,24 +74,28 @@ deny:
     # every .env variant, templates included: a whole command can name several files, so no `unless` here
     pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
     reason: writing to a credentials file from the shell
+    remedy: Write a template with placeholders (.env.example) and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011
     class: shell
     field: line
     pattern: '\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
     reason: sending credential files off the machine
+    remedy: Keep keys and cloud credentials on the machine; a person shares access through the deployment's secret store.
     rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
   - id: TK-D006
     class: shell
     field: line
     pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
     reason: uploading a secrets file
+    remedy: Send only the values the request needs, never the .env file; a person shares secrets through the deployment's secret store.
     rationale: Sending .env off the machine is exfiltration.
   - id: TK-D008
     class: shell
     field: line
     pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
     reason: modifying the agent harness's transcripts
+    remedy: Leave the harness's transcripts as they are (reading them is fine); a person removes them once the run's evidence is exported.
     rationale: Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
 
   # --- files ---
@@ -98,6 +106,7 @@ deny:
     pattern: '(^|/)(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|credentials)$|(^|/)\.ssh/|(^|/)\.aws/'
     unless: '(^|/)\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     reason: writing to a credentials file
+    remedy: Write a template with placeholders (.env.example) instead; a person fills in the real credentials file.
     rationale: Credential files are high-value and rarely a legitimate agent target.
   - id: TK-D009
     class: fs
@@ -107,6 +116,7 @@ deny:
     # Claude Code keeps the agent's own memory notes beside its transcripts: those it may write
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     reason: writing to the agent harness's transcripts
+    remedy: Write notes in the project or the agent's memory folder; the harness's transcripts stay as it wrote them.
     rationale: Same as TK-D008, for the file-editing tools.
 
   # --- harness self-protection ---
@@ -117,6 +127,7 @@ deny:
     # installed packs too
     pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|AppData[/\\]Local[/\\]tracekit|LOCALAPPDATA%?[/\\]tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
     reason: touching Tracekit's own files or signer
+    remedy: Leave Tracekit's files, signer and policy alone; a person changes them through the signer's own configuration.
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
   - id: TK-D013
     class: fs
@@ -124,6 +135,7 @@ deny:
     field: path
     pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit|tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
     reason: writing Tracekit's own files, signer state or policy
+    remedy: Leave Tracekit's files, signer state and policy alone; a person changes them through the signer's own configuration.
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
 
 ask:
@@ -141,6 +153,7 @@ ask:
     # two short lower-case words counts: the subject joins argv with spaces, so `-m ' --help'` must not read as one
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
     reason: destroying a deployment, database or volume
+    remedy: Wait for a person to approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
     rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
   - id: TK-A002
     class: shell
@@ -152,6 +165,7 @@ ask:
     # engine stays linear
     pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
+    remedy: Wait for a person to approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
 
 flag:

@@ -460,6 +460,22 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual(rec["reasons"], [d["reason"]])
         self.assertTrue(d["reason"].startswith("TK-OVERSIZE: over 64 KiB, so never matched: "), d["reason"])
 
+    def test_a_denial_says_what_to_do(self):
+        # each rule's remedy follows the reasons, once; the signed record names the rules only
+        self.open(Engine({"tools": {"Bash": "shell"}, "deny": [
+            {"id": "X-1", "class": "shell", "pattern": "^rm ", "reason": "deleting", "remedy": "Move it to the trash."},
+            {"id": "X-2", "class": "shell", "pattern": " -rf", "reason": "recursively", "remedy": "Move it to the trash."}],
+            "flag": [{"id": "X-3", "class": "shell", "pattern": "^rm ", "label": "destructive"}]}))
+        d = self.decide("Bash", {"command": "rm -rf build"})
+        self.assertEqual((d["decision"], d["reason"]), ("deny", "deleting; recursively; destructive. Move it to the trash."))
+        [rec] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
+        self.assertNotIn("reasons", rec)
+        self.open(svc.load_policy(os.path.join(PACKS, "coding.yaml")))
+        d = self.decide("Bash", {"command": "git push --force"}, tcid="tc-2")
+        self.assertEqual(d["reason"], "force push; side_effect. Push without --force, --mirror or a + refspec (rebase "
+                                      "onto the remote branch, or push a new branch); a person rewrites shared history "
+                                      "themselves.")
+
     def test_every_decide_gets_a_fresh_decision_id_consumed_once(self):
         args = {"command": "ls"}
         first, second = self.decide("Bash", args), self.decide("Bash", args)

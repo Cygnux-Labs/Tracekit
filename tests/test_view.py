@@ -73,7 +73,9 @@ class Translate(unittest.TestCase):
                                       "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
                                       "decision_id": "dec-1", "rules": [
                                           {"id": "TK-N001", "reason": "request to an internal address"},
-                                          {"id": "TK-S001", "reason": "cloud metadata service"},
+                                          {"id": "TK-S001", "reason": "cloud metadata service",
+                                           "remedy": "Use the credentials the deployment gives the tool; no tool call "
+                                                     "needs the cloud metadata service."},
                                           {"id": "TK-NEW", "reason": ""}]})
         [other] = self.feed(v2rec(2, "policy.decision", {"tool_use_id": "c3", "tool": "x", "decision": "ask",
                                                          "rule_ids": ["TK-S001"], "policy_hash": "sha256:unknown"}))
@@ -161,11 +163,12 @@ class Translate(unittest.TestCase):
     def test_policy_reasons_of_a_configured_policy_by_its_hash(self):
         path = os.path.join(ts.tmpdir(self), "p.yaml")
         with open(path, "w", encoding="utf-8") as f:
-            f.write("deny:\n  - id: X-1\n    pattern: 'rm'\n    reason: removing files\n"
+            f.write("deny:\n  - id: X-1\n    pattern: 'rm'\n    reason: removing files\n    remedy: Move it aside.\n"
                     "flag:\n  - id: X-2\n    pattern: 'ls'\n    label: listing\n")
         h = policy_compile.policy_hash(policy_compile.build(path)[0])
-        self.assertEqual(view.policy_reasons([path])[h], {"X-1": "removing files", "X-2": "listing"})
-        self.assertEqual(SERVER[SERVER_HASH]["TK-DB001"], "dropping a database object")
+        self.assertEqual(view.policy_reasons([path])[h], {"X-1": {"reason": "removing files", "remedy": "Move it aside."},
+                                                          "X-2": {"reason": "listing"}})
+        self.assertEqual(SERVER[SERVER_HASH]["TK-DB001"], {"reason": "dropping a database object"})
 
     def test_a_calls_signed_provenance_rides_on_its_row(self):
         src = {"run_seq": 4, "tool": "fetch_page", "tool_call_id": "c2"}

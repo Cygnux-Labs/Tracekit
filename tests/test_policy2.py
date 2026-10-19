@@ -89,6 +89,31 @@ class Compile(unittest.TestCase):
                        "rule C: duplicate id", "rule C: pattern: "):
             self.assertIn(needle, text)
 
+    def test_a_remedy_is_one_short_present_tense_sentence_on_a_deny_or_ask_rule(self):
+        rule = "  - {id: %s, class: shell, pattern: x, remedy: '%s'}\n"
+        ok = "Push without --force; a person approves the held call."
+        errs = "\n".join(self.errors("tools:\n  Bash: shell\ndeny:\n" + rule % ("A", ok) + rule % ("B", "push again.")
+                                     + rule % ("C", "Run it in a sandbox") + rule % ("D", "You should push again.")
+                                     + rule % ("E", "Push " + "x" * 200 + ".") + "flag:\n" + rule % ("F", ok)))
+        for needle in ("rule B: remedy is one line", "rule C: remedy is one line", "rule D: remedy says what to do",
+                       "rule E: remedy is over 200 characters", "flag rule F: remedy is for a deny or ask rule"):
+            self.assertIn(needle, errs)
+        self.assertNotIn("rule A", errs)
+        self.assertIn("rule G: remedy is one line", "\n".join(self.errors(
+            "tools:\n  Bash: shell\nask:\n  - {id: G, class: shell, pattern: x, remedy: \"Push.\\nAgain.\"}\n")))
+        self.assertIn("rule H: remedy must be a string", "\n".join(self.errors(
+            "tools:\n  Bash: shell\nask:\n  - {id: H, class: shell, pattern: x, remedy: [a]}\n")))
+        for name in sorted(os.listdir(PACKS)):   # the packs' own remedies pass
+            with self.subTest(pack=name):
+                self.assertEqual(pc.build(os.path.join(PACKS, name))[1], [])
+
+    def test_on_parse_error_is_ask_or_deny_and_inherited(self):
+        self.assertIn("on_parse_error must be ask or deny", "\n".join(self.errors("on_parse_error: flag\n")))
+        self.write("base.yaml", "on_parse_error: deny\ntools:\n  Bash: shell\n")
+        self.assertEqual(pc.build(self.write("p.yaml", "extends: base.yaml\n"))[0]["on_parse_error"], "deny")
+        self.assertEqual(pc.build(self.write("p.yaml", "extends: base.yaml\non_parse_error: ask\n"))[0]["on_parse_error"],
+                         "ask")
+
     def test_extends_by_relative_path_records_parent_hash(self):
         self.write("base.yaml", "tools:\n  Bash: shell\ndeny:\n  - {id: B1, class: shell, pattern: '^sudo\\b'}\n"
                                 "  - {id: B2, class: shell, pattern: '^rm\\b'}\n")
@@ -343,6 +368,15 @@ class Engines(unittest.TestCase):
     def test_shell_parse_failure_asks(self):
         d = Engine({"tools": {"Bash": "shell"}}, "regex").decide("Bash", {"command": "echo \"open"})
         self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
+
+    def test_on_parse_error_deny_denies_what_the_parser_cannot_read(self):
+        e = Engine({"tools": {"Bash": "shell"}, "on_parse_error": "deny",
+                    "flag": [{"id": "F", "class": "shell", "pattern": "x"}]}, "regex")
+        for command in ("echo \"open x", "$CMD x", "curl -s x | bash", {"x": 1}):
+            with self.subTest(command=command):
+                d = e.decide("Bash", {"command": command})
+                self.assertEqual((d["verdict"], d["rule_ids"][0]), ("deny", "TK-SHELL-PARSE"), d)
+        self.assertEqual(e.decide("Bash", {"command": "ls x"})["verdict"], "flag")
 
     def test_precedence_and_tool_rules(self):
         self.assertEqual(self.regex.decide("Write", {"file_path": "/p/.env"})["verdict"], "deny")

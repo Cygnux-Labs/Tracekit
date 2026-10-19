@@ -35,7 +35,7 @@ Rule ids the signer adds itself:
 |---|---|---|
 | `TK-ARGS-INVALID` | deny | the raw arguments are not strict JSON ([format v2](format-v2.md#1-canonical-json)); the Python client sends parsed arguments a frame can't carry (a lone surrogate) as raw text, so they get this signed deny too |
 | `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies). The decision's `reasons` (and the `decide` response's `reason`) name each such subject by its rule and field: `TK-S002's subject (the whole arguments)` |
-| `TK-SHELL-PARSE` | ask | a shell command can't be parsed, or what it runs can't be read from the line |
+| `TK-SHELL-PARSE` | `on_parse_error` (ask) | a shell command can't be parsed, or what it runs can't be read from the line |
 | `TK-SQL-PARSE` | ask | no SQL dialect can read the statement (an unclosed literal or comment), or it is not text |
 | `TK-UNKNOWN-TOOL` | `unknown_tools` | the tool maps to no class and `unknown_tools` is `flag`, `ask` or `deny` (map an application's own tools to `app`) |
 
@@ -51,6 +51,7 @@ version: '2026.10-v2-1'
 description: what this policy is for
 extends: coding.yaml            # optional: a relative path, or a list of them; the compiled policy names parents by hash
 unknown_tools: ask              # allow (default), flag, ask or deny
+on_parse_error: ask             # ask (default) or deny: TK-SHELL-PARSE's verdict, a shell command the parser can't read
 tools:                          # tool name or glob (fnmatch) -> class
   Bash: shell
   'mcp__*': mcp
@@ -91,8 +92,24 @@ hashes. An absolute path, `~` or a loop is an error.
 | `field` | no | which subject to match (below) |
 | `unless` | no | regex; a subject that matches it is exempt |
 | `reason`, `rationale`, `label` | no | text; `reason` is shown with the decision, `label` names a flag's category (sequences and limits match labels) |
+| `remedy` | no | on a `deny` or `ask` rule: what to do instead, one sentence (below) |
 | `from` | no | `untrusted`: the rule also needs a value of its subject that only untrusted content brought into the run (Provenance) |
 | `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)), and/or `agent` (below) |
+
+A `remedy` says what the agent does instead and what a person can do (approve the held call, allow it in their own
+policy, give the agent a sandbox): `Push without --force, --mirror or a + refspec (rebase onto the remote branch, or
+push a new branch); a person rewrites shared history themselves.` The `decide` response's `reason` for a deny or an
+ask is the matching rules' reasons joined by `; `, then each remedy once, so the client shows it to the model and
+`tracekit view` shows it under the rule in the decision's detail. The signed record names only the rule ids, and the
+policy (by its `policy_hash`) holds the text. Lint keeps a remedy to one line of at most 200 characters, starting with
+a capital letter and ending with a period, in the present tense (no `should`, `could`, `might`, `please`, `maybe`,
+`perhaps`, `consider` or `try to`), and refuses one on a flag rule: a flagged call runs. The `coding.yaml` and
+`server.yaml` deny and ask rules carry one.
+
+`on_parse_error: deny` denies (rather than holds) a shell command the parser can't read or whose program it can't see
+(`TK-SHELL-PARSE`: an unclosed quote, a command name from a variable, a script piped into a shell). Use it where no
+person answers holds; expect more denials of ordinary commands that build a name at run time. It decides only
+`TK-SHELL-PARSE`; `TK-SQL-PARSE` always asks.
 
 Lint also rejects unknown keys, a `field` the rule's class doesn't have, and a class rule no tool maps to ("can never
 fire"). It warns (`tracekit policy lint`, which loads the policy all the same) on a tool mapped to `unknown`: that is

@@ -1936,7 +1936,7 @@
       return v ? `<dt>VERDICT</dt><dd><span class="vchip ${esc(v.verdict)}">${esc(String(v.verdict).toUpperCase())}</span> ${esc(v.integrity ? "Integrity " + v.integrity + " · Assurance " + v.assurance : "")}<div class="dim">${esc(v.label)}</div></dd>` : "";
     }
     function rulesHtml(rules) {
-      return (rules || []).map(x => `<div><span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(not in a policy this viewer has)")}</div>`).join("") || "none matched";
+      return (rules || []).map(x => `<div><span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(not in a policy this viewer has)")}</div>` + (x.remedy ? `<div style="color:var(--muted)">what to do: ${esc(x.remedy)}</div>` : "")).join("") || "none matched";
     }
     const cols = (l, r) => `<div>` + l + `</div><div>` + r + `</div>`;  // the detail card's two columns
     function detailV2(sel) {
