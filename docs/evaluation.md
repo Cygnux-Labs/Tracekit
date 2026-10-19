@@ -455,7 +455,14 @@ strict); p99 stays within 25% of the first run's on the same machine (re-measure
 `TK-A010` to `TK-A013` (autostart locations and Git hooks) were added after this run: with them the held-out pool is
 caught 215 of 420 (51.2%) by default and 250 of 420 (59.5%) strict, with the same false positives; the gates still
 compare with the first run.
-A semantics-preserving mutation of E17's harmful calls is not part of E21 yet.
+
+Shell rewrites (`eval/e21_robustness.py`): E17's 536 harmful calls are decided as they are, and each of the 232 shell
+commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
+builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 536
+originals and all 1,133 rewrites are, and both engines decide each the same. The run gates against a recorded
+baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
+`eval/results/e21_robustness.json`.
 
 ## E22: verifier agreement on real bundles
 
