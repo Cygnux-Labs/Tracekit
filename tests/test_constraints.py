@@ -234,6 +234,20 @@ class Grammar(unittest.TestCase):
         self.assertTrue(constraints.facts("WebFetch", {"url": "https://example.org"})["network"])
         self.assertTrue(constraints.facts("fetch_page", {"url": "https://example.org"}, "http")["network"])
 
+    def test_git_dd_patch_rsync_find_and_formatters_write_their_files(self):
+        """Round-2 review: ordinary commands that write a file the constraint names, each held (keep_away)."""
+        for cmd in ("git rm billing.py", "git checkout -- billing.py", "git -C src restore billing.py",
+                    "git mv billing.py old.py", "dd if=/tmp/x of=billing.py", "patch billing.py < fix.diff",
+                    "rsync /tmp/x billing.py", "scp host:x billing.py", "find . -name billing.py -delete",
+                    "find . -name billing.py -exec rm {} \\;", "npx prettier --write billing.py", "black billing.py",
+                    "ruff format billing.py", "ruff check --fix billing.py", "gofmt -w billing.py", "shred billing.py"):
+            with self.subTest(cmd):
+                f = constraints.facts("Bash", {"command": cmd})
+                self.assertTrue(f["write"])
+                self.assertEqual(f["names"][0], "billing.py")
+        self.assertEqual(constraints.facts("Bash", {"command": "git checkout -b fix"})["names"], [])   # a branch
+        self.assertTrue(constraints.facts("Bash", {"command": "patch -p1 < fix.diff"})["write"])   # files unnamed
+
     def test_a_call_is_read_as_the_policy_engine_reads_it(self):
         """A shell call through the policy engine's parser: an argv list, OpenAI's `commands`, a nested shell, eval and
         wrappers; a write tool's path and `paths` (every file of a Codex patch, whose text is in `command`) before any

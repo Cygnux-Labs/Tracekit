@@ -191,7 +191,11 @@ AUX = frozenset(("needs", "need", "gets", "get", "got", "is", "are", "was", "wil
                  "the", "same", "a", "an", "this", "that", "small", "one", "now", "getting", "has", "have", "been",
                  "be", "being", "requires", "require", "any", "more", "further", "similar", "matching"))
 WRITERS = {"tee": "all", "touch": "all", "mkdir": "all", "rm": "all", "rmdir": "all", "truncate": "all",
-           "cp": "last", "mv": "last", "install": "last", "ln": "last"}
+           "shred": "all", "unlink": "all", "black": "all", "isort": "all", "rustfmt": "all", "cp": "last",
+           "mv": "last", "install": "last", "ln": "last", "rsync": "last", "scp": "last", "patch": "first"}
+FORMATTERS = {"prettier": ("--write", "-w"), "gofmt": ("-w",), "eslint": ("--fix",), "clang-format": ("-i",),
+              "autopep8": ("-i", "--in-place")}   # rewrite their files in place with one of these flags
+FIND_NAMES = ("-name", "-iname", "-path", "-ipath", "-wholename")   # what find -delete or -exec acts on
 NET_COMMANDS = frozenset(("curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
                           "http", "https"))
 NET_GIT = frozenset(("push", "pull", "fetch", "clone", "ls-remote"))
@@ -642,8 +646,11 @@ def shell(cmd):
     commits}. `cmd`: a command line, or a shell call's arguments (`command` or `cmd` a line or an argv list,
     `commands` a list of lines), read as the policy engine reads them (policy2/shell.py: wrappers, `bash -c`, `eval`,
     substitutions and pipelines included).
-    lean: redirections, tee/touch/mkdir/rm/rmdir/truncate arguments, cp/mv/install/ln destinations and sed/perl -i
-    files; a word with a variable, a glob or a command substitution is no path; a line the parser can't read (`case`,
+    lean: redirections, the arguments of tee/touch/mkdir/rm/rmdir/truncate/shred/unlink and of formatters that write
+    in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
+    ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
+    after `--`, and the -name of a find that deletes or runs a command; a word with a variable, a glob, braces or a
+    command substitution is no path; a line the parser can't read (`case`,
     over its size) does nothing, and the policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real
     writes hide there."""
     out = {"paths": [], "cd": False, "push": False, "network": False, "writes": False}
@@ -659,19 +666,31 @@ def shell(cmd):
         if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
                                            for w in rest):
             mode = "files"
-        targets = (args if mode == "all" else args[-1:] if mode == "last" and len(args) > 1
-                   else args[1:] if mode == "files" else [])
+        targets = (args if mode == "all" else args[-1:] if mode == "last" and len(args) > 1 else args[:1]
+                   if mode == "first" else args[1:] if mode == "files" else [])
         sub = next((a for a in args[:2] if a in GIT_WRITES | NET_GIT), None) if name == "git" else \
             args[0] if args else None
+        if name == "git" and sub in ("rm", "mv", "restore"):
+            targets = args[args.index(sub) + 1:]
+        elif name == "git" and sub == "checkout" and "--" in rest:
+            targets = rest[rest.index("--") + 1:]
+        elif name == "dd":
+            targets = [a[3:] for a in rest if a.startswith("of=")]
+        elif name == "find" and {"-delete", "-exec", "-execdir"} & set(rest):
+            targets = [rest[k + 1] for k, a in enumerate(rest[:-1]) if a in FIND_NAMES]
+        elif set(FORMATTERS.get(name, ())) & set(rest):
+            targets = args
+        elif name == "ruff" and (sub == "format" or sub == "check" and "--fix" in rest):
+            targets = args[1:]
         out["paths"] += targets
         out["push"] = out["push"] or name == "git" and "push" in args
         out["network"] = out["network"] or name in NET_COMMANDS or name == "git" and sub in NET_GIT or (
             name in INSTALLERS and sub in INSTALL)
-        out["writes"] = out["writes"] or bool(targets) or name == "git" and sub in GIT_WRITES or (
+        out["writes"] = out["writes"] or bool(targets) or name == "patch" or name == "git" and sub in GIT_WRITES or (
             name in INSTALLERS and sub in INSTALL)
     written = [t for t in written if not t.startswith("/dev/")]   # /dev/null, a terminal, a descriptor: no file
     out["writes"] = out["writes"] or bool(written)
-    out["paths"] = [t for t in out["paths"] + written if not set(t) & set("$`*?[")]
+    out["paths"] = [t for t in out["paths"] + written if not set(t) & set("$`*?[{")]
     return out
 
 
