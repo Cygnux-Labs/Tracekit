@@ -323,6 +323,13 @@ class Supervisor(Middleware):
             time.sleep(0.05)
         self.assertEqual([e["data"]["ok"] for e in self.events(run, "tool.result")], [False])
 
+    def test_a_request_waiting_for_its_response_keeps_no_arguments(self):
+        for i in range(3):   # responses that may never come (an upstream failure, a WebSocket upgrade)
+            self.assertEqual(self.evaluate(request("allowed.example", b"A" * (60 * 1024), f"r-{i}"))[0], openshell.ALLOW)
+        self.assertLess(len(repr(list(self.mw.inflight.values()))), 8192)
+        self.respond(preflight("r-0"), unit(1, b"ok", end=True), TRAILERS)   # the signer checks the arguments' hash
+        self.assertEqual([e["data"]["ok"] for e in self.events(self.runs()[0], "tool.result")], [True])
+
     def test_a_held_request_is_printed_without_its_query(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):

@@ -360,7 +360,9 @@ class Middleware:
         self.lock, self.registering = threading.Lock(), threading.Lock()
         self.runs = collections.OrderedDict()       # sandbox_id -> (run_id, token, caller)
         self.held = collections.OrderedDict()       # (run_id, args digest) -> (tool_call_id, decision, approval_id)
-        self.inflight = collections.OrderedDict()   # (sandbox_id, request_id) -> (key, tool_call_id, decision, args)
+        # (sandbox_id, request_id) -> (key, tool_call_id, decision, the call's event hash): not its arguments, which a
+        # request whose response never comes (an upstream failure, a WebSocket upgrade) would hold
+        self.inflight = collections.OrderedDict()
         # the OCSF import: on or off, this process's instance, its last call, the event uids recorded, each sandbox's
         # first request still waiting for its stream (monotonic time), the sandboxes whose stream stopped, and what
         # wasn't imported (and how much of it was printed)
@@ -436,7 +438,7 @@ class Middleware:
             return self._deny("tracekit_signer_refused", f"the signer refused the call: {e}")
         if code:
             return result(DENY, why, code)
-        self._put(self.inflight, (ctx["sandbox_id"], ctx["request_id"]), (key, *call, args), MAX_INFLIGHT)
+        self._put(self.inflight, (ctx["sandbox_id"], ctx["request_id"]), (key, *call), MAX_INFLIGHT)
         return result(ALLOW)
 
     @staticmethod
@@ -445,7 +447,8 @@ class Middleware:
         return result(DENY, why, code)
 
     def _gate(self, key, args, ctx):
-        """(None, None, (tool_call_id, decision)) when the request may go, else (reason_code, why, None). Raises
+        """(None, None, (tool_call_id, decision, the call's event hash)) when the request may go, else (reason_code,
+        why, None). Raises
         SignerUnavailable or RPCError."""
         run_id, token, caller = key
         base = {"run_id": run_id, "run_token": token, "caller": caller}
@@ -481,7 +484,7 @@ class Middleware:
                                           "args": args, **hint})
         if not c["ok"]:
             return "tracekit_denied", named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), None
-        return None, None, (tcid, d)
+        return None, None, (tcid, d, h[1])
 
     def respond(self, events, abort, sandbox=None):
         """The HttpResponseEventResult of each HttpResponseEvent in `events`; `abort(why)` raises, ending the
@@ -535,14 +538,15 @@ class Middleware:
                     yield TRAILERS
         finally:
             if call is not None:
-                key, tcid, d, args = call[0]
-                self.custody.complete(key, tcid, d, TOOL, args, "error", error="OpenShell ended the response stream "
-                                      "before its last body unit: the sandbox may not have received the whole response")
+                key, tcid, d, h = call[0]
+                self.custody.complete(key, tcid, d, TOOL, None, "error", args_digest=h, error="OpenShell ended the "
+                                      "response stream before its last body unit: the sandbox may not have received "
+                                      "the whole response")
 
     def _complete(self, found, head, body):
         """Complete the call `found` with response `head`, and `body` ((its text or None, its digest); None: not
         read)."""
-        key, tcid, d, args = found
+        key, tcid, d, h = found
         out, send = dict(head), False
         if body is not None:
             text, out["body"] = body
@@ -551,7 +555,7 @@ class Middleware:
                     out["body"], send = bytes(text).decode("utf-8"), d.get("send_result", False)
                 except UnicodeDecodeError:
                     pass
-        self.custody.complete(key, tcid, d, TOOL, args, "ok" if head["status"] < 400 else "error",
+        self.custody.complete(key, tcid, d, TOOL, None, "ok" if head["status"] < 400 else "error", args_digest=h,
                               result=result_field(send, out))
 
     def export(self, body):

@@ -114,13 +114,13 @@ class Custody:
             return (403, named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")), None, None
         return None, d, c.get("args", args)
 
-    def complete(self, key, tcid, d, tool, args, status, **outcome):
+    def complete(self, key, tcid, d, tool, args, status, args_digest=None, **outcome):
         """Record the outcome, trying twice under one request_id; a failure to record warns (the call ran: its result
-        still goes to the client)."""
+        still goes to the client). `args_digest`: event_hash({tool, args}), for a caller that kept only that."""
         run_id, token, caller = key
         req = {"request_id": uuid.uuid4().hex, "run_id": run_id, "run_token": token, "caller": caller,
                "tool_call_id": tcid, "decision_id": d["decision_id"],
-               "args_digest": event_hash({"tool": tool, "args": args}), "status": status, **outcome}
+               "args_digest": args_digest or event_hash({"tool": tool, "args": args}), "status": status, **outcome}
         for attempt in (1, 2):
             try:
                 self.client.complete(req)
