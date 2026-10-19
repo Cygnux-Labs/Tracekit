@@ -195,6 +195,7 @@ WRITERS = {"tee": "all", "touch": "all", "mkdir": "all", "rm": "all", "rmdir": "
            "mv": "last", "install": "last", "ln": "last", "rsync": "last", "scp": "last", "patch": "first"}
 FORMATTERS = {"prettier": ("--write", "-w"), "gofmt": ("-w",), "eslint": ("--fix",), "clang-format": ("-i",),
               "autopep8": ("-i", "--in-place")}   # rewrite their files in place with one of these flags
+UNREAD = frozenset("$`*?[{")   # a word with one of these (a variable, a glob, a substitution) is no path
 FIND_NAMES = ("-name", "-iname", "-path", "-ipath", "-wholename")   # what find -delete or -exec acts on
 NET_COMMANDS = frozenset(("curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
                           "http", "https"))
@@ -641,7 +642,8 @@ def lifts(kind, mention, is_object):
 
 
 def shell(cmd):
-    """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "cd": it
+    """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs":
+    those of its paths a recursive rm or rmdir deletes as directories, "cd": it
     changes directory, "push": a git push, "network": a command that reaches the network, "writes": it writes or
     commits}. `cmd`: a command line, or a shell call's arguments (`command` or `cmd` a line or an argv list,
     `commands` a list of lines), read as the policy engine reads them (policy2/shell.py: wrappers, `bash -c`, `eval`,
@@ -653,7 +655,7 @@ def shell(cmd):
     command substitution is no path; a line the parser can't read (`case`,
     over its size) does nothing, and the policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real
     writes hide there."""
-    out = {"paths": [], "cd": False, "push": False, "network": False, "writes": False}
+    out = {"paths": [], "dirs": [], "cd": False, "push": False, "network": False, "writes": False}
     try:
         cmds, _, _, written = _parse(cmd if isinstance(cmd, dict) else {"command": cmd if isinstance(cmd, str) else ""})
     except ParseError:
@@ -670,7 +672,10 @@ def shell(cmd):
                    if mode == "first" else args[1:] if mode == "files" else [])
         sub = next((a for a in args[:2] if a in GIT_WRITES | NET_GIT), None) if name == "git" else \
             args[0] if args else None
-        if name == "git" and sub in ("rm", "mv", "restore"):
+        if name == "rmdir" or name == "rm" and ("--recursive" in rest or any(
+                w[:1] == "-" and w[1:2] != "-" and set(w) & {"r", "R"} for w in rest)):
+            out["dirs"] += targets   # "rm -r vendor" deletes vendor/ too
+        elif name == "git" and sub in ("rm", "mv", "restore"):
             targets = args[args.index(sub) + 1:]
         elif name == "git" and sub == "checkout" and "--" in rest:
             targets = rest[rest.index("--") + 1:]
@@ -690,7 +695,8 @@ def shell(cmd):
             name in INSTALLERS and sub in INSTALL)
     written = [t for t in written if not t.startswith("/dev/")]   # /dev/null, a terminal, a descriptor: no file
     out["writes"] = out["writes"] or bool(written)
-    out["paths"] = [t for t in out["paths"] + written if not set(t) & set("$`*?[{")]
+    out["paths"] = [t for t in out["paths"] + written if not set(t) & UNREAD]
+    out["dirs"] = [t for t in out["dirs"] if not set(t) & UNREAD]
     return out
 
 
@@ -704,7 +710,8 @@ def facts(tool, args, cls=None):
     write = tool in WRITE_TOOLS or cls == "fs" and tool not in READ_TOOLS and args.get("op") != "read"
     if not write and any(args.get(k) is not None for k in SHELL_KEYS):
         s = shell(args)
-        return {"names": names(s["paths"]), "write": s["writes"], "push": s["push"], "network": s["network"]}
+        return {"names": names(s["paths"] + [d.rstrip("/") + "/" for d in s["dirs"] if d.rstrip("/")]),
+                "write": s["writes"], "push": s["push"], "network": s["network"]}
     paths = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), None),
              *(args["paths"] if isinstance(args.get("paths"), list) else ())]
     return {"names": names([p for p in paths if isinstance(p, str)]) if write else [],

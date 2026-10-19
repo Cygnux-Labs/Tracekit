@@ -902,7 +902,7 @@ class Command(Base):
         t = self.task()
         t.step("Fixing.", "Edit", edit("src/pager.py"))
         replay(self.signer, t.lines)
-        code, out, err = self.cli("--dry-run", "--budget=-1")
+        code, out, err = self.cli("--dry-run", "--budget=0")
         self.assertEqual(code, 3)
         self.assertIn("INCOMPLETE", out.splitlines()[0])
         self.assertIn("INCOMPLETE", err)

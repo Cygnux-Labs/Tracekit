@@ -205,6 +205,8 @@ class Grammar(unittest.TestCase):
         self.assertIsNone(constraints.breaks("only_change", f, "old.py".__eq__))   # its directories are no file
         self.assertEqual(constraints.facts("Bash", {"command": "echo x > src/legacy/a.py"})["names"],
                          ["a.py", "src/", "legacy/"])
+        self.assertEqual(constraints.breaks("keep_away", constraints.facts("Bash", {"command": "rm -r src/legacy"}),
+                                            "legacy/".__eq__), "legacy/")   # the directory itself
 
     def test_a_scope_is_checked_after_the_run_and_never_held_live(self):
         """"Only change X" holds no call (every test or lockfile write would ask the person): TK-X204 reads it after."""
