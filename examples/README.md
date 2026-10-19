@@ -22,6 +22,7 @@ approves held calls from a second process; without it, you approve them from ano
 | [v2/llama_index/](v2/llama_index/) | A LlamaIndex `AgentWorkflow` with a handoff (`Tracekit(run).gate(...)`) |
 | [v2/agent_framework/](v2/agent_framework/) | A Microsoft Agent Framework agent (the `Tracekit` function middleware) |
 | [v2/strands/](v2/strands/) | A Strands Agents agent (the `Tracekit` hook provider) |
+| [v2/agent_sandbox/](v2/agent_sandbox/) | An agent in a Kubernetes agent-sandbox `Sandbox`, the signer in its own namespace: the run verifies after the pod is deleted ([docs](../docs/integrations/agent-sandbox.md); `e2e.sh` runs it on kind) |
 | [v2/demos/](v2/demos/) | The scenarios behind [docs/demos/](../docs/demos/): containment, prompt injection, agent approvers, completeness, egress |
 
 `v2/story.py` holds what these examples share; `v2/clean-machine.sh` (`.ps1` on Windows) runs one in a fresh venv.
