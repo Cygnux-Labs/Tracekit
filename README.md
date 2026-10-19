@@ -131,6 +131,8 @@ Coding agents: `tracekit init --dev --v2` wires Claude Code's hooks to a dev sig
 `gemini` for the others (experimental). With Claude Code's sandbox on, Tracekit holds each unsandboxed retry for a
 person
 ([Claude Code's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/claude-code-sandbox.md)).
+Running sandbox-runtime's proxy on its own, Tracekit decides each request it forwards (experimental,
+[sandbox-runtime](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/sandbox-runtime.md)).
 Without uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why`
 (experimental) shows a held
 email whose cause is found by replay and cited by its signed record:

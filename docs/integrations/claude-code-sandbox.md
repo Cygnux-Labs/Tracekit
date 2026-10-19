@@ -11,6 +11,9 @@ Tracekit records and gates every call Claude makes, sandboxed or not. They do di
 | Where | Inside Claude Code, around each command | A signer outside the agent ([dev or system mode](../limits.md#dev-mode-vs-system-mode)) |
 | What a third party can check later | Nothing: it keeps no record | A signed, hash-chained bundle, verified offline |
 
+Using sandbox-runtime without Claude Code? Its proxy can ask Tracekit about every request it forwards:
+[sandbox-runtime's proxy on its own](sandbox-runtime.md).
+
 ## Setup
 
 Turn both on. Tracekit first (`tracekit init --dev --v2`, or the [plugin](../../plugin/README.md)), then the sandbox in
