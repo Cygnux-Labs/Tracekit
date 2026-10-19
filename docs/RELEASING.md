@@ -51,6 +51,9 @@ Both verifiers' UNVERIFIABLE line sends a person whose verifier is too old for a
    `verify/<v>/` for good: check the downloaded file (`gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`),
    then on the `gh-pages` branch (the repository's Pages source, one-time setup step 4) copy it to
    `verify/<v>/index.html` and `verify/index.html`, commit and push. The release workflow doesn't run this step.
+9. Publish the wiki, a generated view of `docs/`: from the tagged checkout run `python scripts/wiki.py /tmp/wiki --ref
+   v<v>`, replace everything but `.git` in a clone of `Cygnux-Labs/Tracekit.wiki.git` with `/tmp/wiki`, commit and push
+   (the first time, save any page in the Wiki tab: GitHub creates the wiki repository only then).
 
 ### What gets built, signed and published
 
