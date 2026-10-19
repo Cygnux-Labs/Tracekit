@@ -479,28 +479,30 @@ and check lines (the rules of `scripts/verify_page_check.py`); an honest bundle 
 
 | Source | Bundles |
 |---|---|
-| Every offline example of `examples/v2`: 11 frameworks, 5 demos and the LangGraph injection replay, scripted models, no API key | 17, and the completeness demo's tampered copy |
+| Every offline example of `examples/v2`: 11 frameworks, 5 demos and the LangGraph injection replay, scripted models, no API key | 11 of the 17 in the run recorded (Google ADK, Haystack, LlamaIndex, Pydantic AI, Strands and Microsoft Agent Framework were not installed: skipped), and the completeness demo's tampered copy |
 | `tracekit demo --server` | a witness-cosigned run and its tampered copy |
 | The Claude Code hook of `tracekit init --dev --v2`: an allowed call, a denied one and one held until a person ran `tracekit approvals approve` | the run, and the run with the findings `tracekit analyze --v2` signed (`--with-findings`) |
 | Tetragon and Falco imports, OpenShell's middleware with its OCSF import, an agentsh follower | 4 |
 | A run exported while open, and again once closed | 2 |
-| 50,000 tool calls of a scripted client through `tracekit signer serve` (server pack), exported open at each tenth | the largest export accepts, 20,000 calls; at 25,000 calls and once closed (130 MiB of records) export refuses: over the format's 64 MiB a file |
+| 50,000 tool calls of a scripted client through `tracekit signer serve` (server pack), exported open at each tenth | the largest open one, 45,000 calls, and the run once closed (130 MiB of records, in three parts); every export from 25,000 calls on is a run in parts |
 | The released 1.2.3 and 1.3.0 signers (`git archive` of their tags); `docs/sample/demo-run.tkb` (v1) | 3 |
 | Forgeries of five of them, the manifest refreshed: a record edited and re-hashed, one deleted, two swapped, the run truncated, another signer's trust config, and every record and the checkpoint re-signed with a forger's keys; the closed run under the open run's older checkpoint | 31, and 5 controls: each re-signed copy against the forger's own trust config |
 
-All 68 bundles agree in all three passes. The 30 honest bundles and the 5 controls verify; none of the 33 forgeries
+All 63 bundles agree in all three passes. The 25 honest bundles and the 5 controls verify; none of the 33 forgeries
 (the 31 above and the two tampered copies) does, in any verifier. The page names the Python command for the v1 bundle, which only
-that verifier reads. Timings for the largest bundle, from `eval/results/e22_verifier_agreement.json`:
+that verifier reads. Timings for the largest bundles, from `eval/results/e22_verifier_agreement.json`:
 
 | Bundle | Records | Size | Page (Chrome, headless) | TypeScript CLI | Python CLI |
 |---|---|---|---|---|---|
-| 20,000 calls, open | 40,002 | 11.0 MB (52 MiB unzipped) | 5.3 s | 8.1 s | 21.1 s |
+| 45,000 calls, open | 90,002 | 24.8 MB (117 MiB unzipped, two parts) | 12.8 s | 18.6 s | 47.6 s |
+| 50,000 calls, closed | 100,002 | 27.6 MB (130 MiB unzipped, three parts) | 13.9 s | 20.1 s | 53.9 s |
 
-The client made 2,197 calls a second (a decide and a complete each). The page verifies in a worker: its main thread
-had no long task. Measured on macOS arm64, Python 3.11, Node 25, Chrome.
+The client made 1,921 calls a second (a decide and a complete each). The page verifies in a worker: its main thread
+had no long task. On the closed run the TypeScript CLI peaked at 1.0 GB of memory and the Python CLI at 0.95 GB
+(`/usr/bin/time -l`), about 8 times the bundle unzipped. Measured on macOS arm64, Python 3.11, Node 25, Chrome.
 E22 found two bugs, fixed in 1.4: `tracekit export` wrote a bundle every verifier called `UNUSABLE BUNDLE` once a run's
-records passed 64 MiB (it now refuses and says why, [limits](limits.md)), and the page's rewrite let a log origin widen
-it past a phone's screen. Not in `make eval`: it takes minutes and needs node, the TypeScript build, Playwright with
+records passed 64 MiB (it now writes the run in parts, [format v2](format-v2.md#9-bundle-layout)), and the page's
+rewrite let a log origin widen it past a phone's screen. Not in `make eval`: it takes minutes and needs node, the TypeScript build, Playwright with
 Chrome and each framework (`--python NAME=PY` runs an example with an interpreter that has it; an example that can't
 run is listed as skipped). Firefox and Safari are not run.
 

@@ -25,6 +25,12 @@ first and last records and every key record included in the checkpointed tree. A
 to its head. The bundle's manifest is an index, never trusted.
 A record signed by a key after that key's key.retire fails `signatures`, naming the retired key (keys are valid by
 position only). A record after a run's run.final breaks the run chain.
+A run in parts (format 1.4, runs/<id>.part-0001.jsonl, ...: bundle_v2.run_files) is checked as the one file its parts
+read in order make. A `run parts` line says what is wrong with them: a part missing from part-0001 to the last, a name
+outside that numbering, a part with no records, a part whose first record does not follow the last of the part before
+it (parts out of order, an extra or repeated part), or the run in one file and in parts. A missing last part shows on
+the `inclusion` line: the record now last is not one the proofs include. A part over the format's per-file limit, as
+any file, is an UNUSABLE BUNDLE.
 The assurance line names the algorithms each conclusion rests on (records; the checkpoint: "Ed25519 only" or
 "Ed25519 + SLH-DSA-SHA2-128s"; cosignatures; anchors) and the earliest independent anchor time (a cosignature or a
 TSA time of a witness or anchor not classed operator).
@@ -145,7 +151,7 @@ import zipfile
 
 from tracekit import __version__, crypto
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, Report, _load_trusted_key
-from tracekit.bundle_v2 import FORMAT, KEY_TYPES, ext_names, run_name
+from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, ext_names, run_files, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
@@ -596,12 +602,14 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                 timeline[e["data"]["kid"]]["until"] = e["data"]["last_seq"]
         timeline.update(declared)
 
-    # the runs: one, or with a run-set any number
-    names = sorted(n for n in files if n.startswith("runs/"))
+    # the runs: one, or with a run-set any number; each in one file or in parts
+    names = run_files(files)
     run_set = "registry/run-set.json" in files
-    runs, problems, chain, outside = {}, [], [], []
-    for name in names:
-        records = runs[name] = _jsonl(files[name])
+    runs, problems, chain, outside, layout = {}, [], [], [], []
+    for name, parts in names.items():
+        pieces = [_jsonl(files[n]) for n in parts]
+        records = runs[name] = [r for p in pieces for r in p]
+        layout += _parted(name, parts, pieces)
         if not records:
             raise ValueError("a run has no records")
         head = records[0]["event"]
@@ -615,7 +623,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                 chain.append(f"run {str(head.get('run_id'))[:200]!r} run_seq {i} (seq {e.get('seq')!r}) does not "
                              "continue the run")
         if not (included(records[0]) and included(records[-1])):
-            outside.append(f"run {str(head.get('run_id'))[:200]!r}")
+            outside.append(f"run {str(head.get('run_id'))[:200]!r}" + (
+                f": the last record of {parts[-1]} is not in the checkpointed tree, so a later part may be missing"
+                if parts != [name] and included(records[0]) else ""))
     if len(runs) != 1 and not run_set and not _about_one(runs):
         raise ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set")
     retired, proven_to, reg_cosigs = [], -1, []
@@ -637,6 +647,10 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"no run-set from registry size 0 reaches seq {relied}, so a withheld key.retire would not show"],
                   warn=True)
     _bridge(rep, key_records, v1_ledger, v1_key)
+    parted = [ps for n, ps in names.items() if ps != [n]]
+    if parted:
+        rep.check("run parts", not layout, f"{len(parted)} run(s) in {sum(map(len, parted))} parts, each part "
+                                           "continuing the one before it", layout)
     count = sum(map(len, runs.values()))
     rep.check("signatures", not problems, f"{count} record(s), keys valid at their position", problems)
     only = len(runs) == 1 and next(iter(runs.values()))[0]["event"]
@@ -1013,6 +1027,26 @@ def _honoured(events, pointers):
         problems += [f"seq {seq}: incident {i} enforces {a} on this run, which no run.held or run.quarantined follows"
                      for i, (seq, a) in due.items()]
     return problems
+
+
+def _parted(run, names, pieces):
+    """What is wrong with the parts of `run` (bundle_v2.run_files): `names`, its files in order, and `pieces`, their
+    records. A run in one file has none; one in parts has part-0001 to part-n and no other file, each holding records,
+    each one's first record the successor of the last of the part before it."""
+    if names == [run]:
+        return []
+    stem, digits = run[:-len(".jsonl")], {n: PART.fullmatch(n)[2] for n in names if n != run}
+    numbered = {int(d) for d in digits.values() if len(d) == 4 and d != "0000"}
+    gaps = [i for i in range(1, max(numbered, default=0)) if i not in numbered]
+    held = [(n, p) for n, p in zip(names, pieces) if p]
+    return ([f"{run} and {names[1]}: one run in one file and in parts"] if run in names else []) \
+        + [f"{n}: not a part's name (part-0001, part-0002, ...)" for n, d in digits.items()
+           if len(d) != 4 or d == "0000"] \
+        + ([f"{stem}.part-{gaps[0]:04d}.jsonl is missing" + (f", and {len(gaps) - 1} more part(s)" if gaps[1:] else "")]
+           if gaps else []) \
+        + [f"{n} holds no records" for n, p in zip(names, pieces) if not p] \
+        + [f"{b} does not continue {a}" for (a, x), (b, y) in zip(held, held[1:])
+           if y[0]["event"].get("run_prev_hash") != x[-1]["hash"]]
 
 
 def _about(records):

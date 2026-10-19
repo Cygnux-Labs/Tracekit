@@ -19,7 +19,7 @@ from unittest import mock
 
 from factories import rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
-from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export, needs
+from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export, needs, run_name
 from tracekit.format import checkpoint
 from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
@@ -320,19 +320,16 @@ class TestVerifyV2(Case):
 
     def test_a_bundle_over_the_format_limits_is_refused_and_not_written(self):
         """docs/format-v2.md §9: a bundle over its limits is UNUSABLE to every verifier (a run of 40,000 tool calls
-        exported one), so export refuses it and says why."""
+        exported one), so export refuses it and says why. A run over the per-file limit goes in parts (TestRunParts);
+        any other file over it is refused."""
         log, out = self.honest()
         files, big = v2.read_zip(out), os.path.join(self.d, "big.tkb")
-        run = max((n for n in files if n.startswith("runs/")), key=lambda n: len(files[n]))
-        for limit, value in (("MAX_ENTRY", len(files[run]) - 1), ("MAX_ENTRIES", len(files) - 1),
+        for limit, value in (("MAX_ENTRY", len(files["keys/records.jsonl"]) - 1), ("MAX_ENTRIES", len(files) - 1),
                              ("MAX_TOTAL", sum(map(len, files.values())) - 1)):
             with self.subTest(limit), mock.patch.object(v2, limit, value), \
                     self.assertRaisesRegex(ValueError, "over the format's limits .* so no verifier could read it"):
                 export(log.store, "acme", "run-a", log.note(), big)
             self.assertFalse(os.path.exists(big))
-        with mock.patch.object(v2, "MAX_ENTRY", len(files[run])):   # at the limit: written
-            export(log.store, "acme", "run-a", log.note(), big)
-        self.assertEqual(self.verify(big)[1], 0)
 
     def test_run_written_after_the_checkpoint_exports_to_it(self):
         log, _ = self.honest(close=False)
@@ -660,6 +657,94 @@ class TestVerifyV2(Case):
                                    cwd=os.path.dirname(TESTS))
                 self.assertEqual(p.returncode, want, p.stdout + p.stderr)
                 self.assertIn(verdict, p.stdout)
+
+
+class TestRunParts(Case):
+    """Format 1.4: a run whose records don't fit one file of a bundle is written in parts, split at records, which a
+    verifier reads in order as that one file; anything else about the parts fails `run parts` (format-v2.md §9)."""
+
+    def parted(self, cap=4096):
+        """(log, bundle) of a closed run of 20 calls, exported with the per-file limit lowered to `cap` bytes."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        for _ in range(20):
+            log.call()
+        log.final()
+        out = os.path.join(self.d, "parts.tkb")
+        with mock.patch.object(v2, "MAX_ENTRY", cap):
+            self.info = export(log.store, "acme", "run-a", log.note(), out)
+        return log, out
+
+    def test_a_run_past_the_file_limit_is_in_parts_that_verify_as_its_one_file(self):
+        log, out = self.parted()
+        whole = os.path.join(self.d, "whole.tkb")
+        one = export(log.store, "acme", "run-a", log.note(), whole)
+        files, name = v2.read_zip(out), run_name("acme", "run-a")
+        parts = [n for n in files if n.startswith("runs/")]
+        self.assertEqual(parts, [f"{name[:-len('.jsonl')]}.part-{i:04d}.jsonl" for i in range(1, len(parts) + 1)])
+        self.assertGreater(len(parts), 2)
+        self.assertTrue(all(len(files[n]) <= 4096 for n in parts))
+        self.assertEqual(b"".join(files[n] for n in parts), v2.read_zip(whole)[name])   # split only between records
+        self.assertEqual(sorted(json.loads(files.pop("manifest.json"))["files"]), sorted(files))
+        self.assertEqual([(i["verifier_min_version"], i["raised_by"]) for i in (self.info, one)],
+                         [("1.4.0", ["run parts"]), ("1.0.0", [])])
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+        self.assertEqual([c for c in rep.checks if c["check"] != "run parts"], self.verify(whole)[0].checks)
+        self.assertIn({"check": "run parts", "status": "pass", "problems": [],
+                       "detail": f"1 run(s) in {len(parts)} parts, each part continuing the one before it"}, rep.checks)
+        with mock.patch.object(v2, "__version__", "1.3.0"):   # a verifier before parts: says it can't, never FAILED
+            rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
+        self.assertEqual(needs([], ["run parts"]), ("1.4.0", "1.4.0"))
+
+    def test_a_run_that_fits_is_one_file_as_before(self):
+        log, out = self.parted(cap=64 << 20)
+        self.assertEqual([n for n in v2.read_zip(out) if n.startswith("runs/")], [run_name("acme", "run-a")])
+        self.assertEqual(self.info["verifier_min_version"], "1.0.0")
+        with mock.patch.object(v2, "MAX_ENTRY", len(v2.read_zip(out)[run_name("acme", "run-a")])):   # at the limit
+            export(log.store, "acme", "run-a", log.note(), out)
+        self.assertEqual([n for n in v2.read_zip(out) if n.startswith("runs/")], [run_name("acme", "run-a")])
+
+    @unverified_bundles
+    def test_a_part_missing_out_of_order_extra_misnamed_or_doubled_fails_naming_it(self):
+        _, out = self.parted()
+        p = [n for n in v2.read_zip(out) if n.startswith("runs/")]
+        one = run_name("acme", "run-a")
+        last, misnamed, zero = (f"{one[:-len('.jsonl')]}.part-{n}.jsonl" for n in (f"{len(p) + 1:04d}", "002", "0000"))
+
+        def copy(name, to):
+            return lambda f, m: (f.update({to: f[name]}), m["files"].update({to: ""}))
+        later = "is not in the checkpointed tree, so a later part may be missing"
+        for case, edit, check, first in [
+                ("a part missing", lambda f, m: f.pop(p[1]), "run parts", f"{p[1]} is missing"),
+                ("the first part missing", lambda f, m: f.pop(p[0]), "run parts", f"{p[0]} is missing"),
+                ("the last part missing", lambda f, m: f.pop(p[-1]), "inclusion",
+                 f"run 'run-a': the last record of {p[-2]} {later}"),
+                ("parts out of order", lambda f, m: f.update({p[0]: f[p[1]], p[1]: f[p[0]]}), "run parts",
+                 f"{p[1]} does not continue {p[0]}"),
+                ("an extra part", copy(p[0], last), "run parts", f"{last} does not continue {p[-1]}"),
+                ("a part under two names", copy(p[1], misnamed), "run parts",
+                 f"{misnamed}: not a part's name (part-0001, part-0002, ...)"),
+                ("a part numbered 0", copy(p[0], zero), "run parts", f"{zero}: not a part's name (part-0001, part-0002, "
+                                                                     "...)"),
+                ("an empty part", lambda f, m: f.update({p[1]: b""}), "run parts", f"{p[1]} holds no records"),
+                ("the run in one file and in parts", lambda f, m: (
+                    f.update({one: b"".join(f[n] for n in p)}), m["files"].update({one: ""})), "run parts",
+                 f"{one} and {p[0]}: one run in one file and in parts")]:
+            with self.subTest(case):
+                bad = os.path.join(self.d, "bad.tkb")
+                rewrite_bundle(out, bad, edit)
+                rep, code = self.verify(bad)
+                failed = [c for c in rep.checks if c["status"] == "fail"]
+                self.assertEqual((code, rep.integrity, failed[0]["check"], failed[0]["problems"][0]),
+                                 (1, "FAILED", check, first), rep.checks)
+        with zipfile.ZipFile(out) as z, zipfile.ZipFile(bad, "w", zipfile.ZIP_DEFLATED) as w:
+            for i in z.infolist():
+                w.writestr(i.filename, bytes((64 << 20) + 1) if i.filename == p[1] else z.read(i))
+        self.assertEqual(self.verify(bad)[0].checks[0]["detail"], f"cannot read bundle: Unusable: {p[1]} is larger "
+                                                                   "than the bundle limits")   # as any file over it
 
 
 class TestMalformedInput(Case):

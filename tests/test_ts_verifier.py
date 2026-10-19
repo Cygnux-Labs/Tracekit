@@ -780,10 +780,11 @@ class Agreement(unittest.TestCase):
 
     def test_golden_corpus(self):
         """Both verifiers agree on every golden bundle, and on each negative one give its recorded verdict."""
-        golden = os.path.join(TESTS, "golden")
-        with open(os.path.join(golden, "negative", "expected.json"), encoding="utf-8") as f:
-            negative = {c["bundle"]: c["expected"] for c in json.load(f)["cases"]}
-        for d in ("v2", "negative"):
+        golden, recorded = os.path.join(TESTS, "golden"), {}
+        for d in ("negative", "parts"):
+            with open(os.path.join(golden, d, "expected.json"), encoding="utf-8") as f:
+                recorded.update({f"{d}/{c['bundle']}": c["expected"] for c in json.load(f)["cases"]})
+        for d in ("v2", "negative", "parts"):
             trust = os.path.join(golden, d, "trust.json")
             for name in sorted(os.listdir(os.path.join(golden, d))):
                 if name.endswith(".tkb"):
@@ -797,9 +798,20 @@ class Agreement(unittest.TestCase):
                         if name == "manifest-format-v1.tkb":
                             self.assertIn("uvx --from tracekit-ai tracekit verify", ts[0]["problems"].pop())
                         self.assertEqual(ts, rep.checks)
-                        if d == "negative":
+                        if d != "v2":
                             self.assertEqual({"exit_code": code, "integrity": rep.integrity, "first_failure": next(
-                                (c["check"] for c in rep.checks if c["status"] == "fail"), None)}, negative[name])
+                                (c["check"] for c in rep.checks if c["status"] == "fail"), None)},
+                                recorded[f"{d}/{name}"])
+
+    def test_the_page_reads_a_run_in_parts_as_one_run(self):
+        golden = os.path.join(TESTS, "golden", "parts")
+        bundle, trust = os.path.join(golden, "parts.tkb"), os.path.join(golden, "trust.json")
+        page = page_verify(bundle, trust)
+        self.assertIn("\nIntegrity: VERIFIED.\n", page)
+        self.assertTrue(page.endswith("\nExit code 0.\n"))
+        words = page_words(bundle, trust)
+        self.assertEqual(words["json"], ts_verify(bundle, trust))
+        self.assertTrue(dict(words["summary"])["Records"].startswith("6 signed record(s) in 1 run(s), "), words)
 
     def test_unimplemented_checks_are_unverifiable(self):
         golden = os.path.join(TESTS, "golden", "v2")

@@ -3,7 +3,7 @@
  * mean, what to do next, a line per check on what it means (docs/verdicts.md, shortened), and a summary of the bundle's
  * runs. The report itself is the CLI's, unchanged: this module only reads it. No DOM, so Node tests it.
  */
-import { EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatReport } from "./index.js";
+import { EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatReport, runFiles } from "./index.js";
 
 type J = any;
 export type Names = { bundle: string; trust: string | null };
@@ -129,6 +129,7 @@ export const MEANING: Record<string, string> = {
   "checkpoint": "The log's checkpoint (the signed root of every record) is signed by the log key your trust file pins.",
   "witness quorum": "Enough witnesses your trust file pins cosigned the checkpoint: they vouch it was not rolled back.",
   "keys": "The record keys were declared by records the checkpoint includes, in order, and retired keys stop signing.",
+  "run parts": "A long run comes in numbered parts: none is missing, extra or out of order, so they read as one run.",
   "signatures": "Every record's signature verifies under a key valid at its position: no record was edited after signing.",
   "run chain": "Each run's records follow one another without a gap from the first: none deleted, swapped or added.",
   "inclusion": "Each run's first and last records are in the checkpointed tree: the run wasn't rebuilt.",
@@ -172,12 +173,12 @@ export const MEANING: Record<string, string> = {
 
 const day = (ts: string) => ts.slice(0, 19).replace("T", " ") + " UTC";
 
-/** A few plain facts about the bundle's runs, from their records ({name: bytes}, the runs/*.jsonl files), cleaned as the
- * report is; names an agent chose are quoted, so they can't read as the signer's words around them. */
+/** A few plain facts about the bundle's runs, from their records ({name: bytes}, the runs/ files, a run's parts read as
+ * one), cleaned as the report is; names an agent chose are quoted, so they can't read as the signer's words around them. */
 export function summarize(files: Map<string, Uint8Array>, rep: Report): [string, string][] {
   const text = new TextDecoder();
-  const runs = [...files].filter(([n]) => n.startsWith("runs/")).map(([, b]) => text.decode(b).split("\n")
-    .filter(Boolean).map((l) => JSON.parse(l).event as J));
+  const runs = [...runFiles(files.keys()).values()].map((parts) => parts.flatMap((n) => text.decode(files.get(n))
+    .split("\n").filter(Boolean).map((l) => JSON.parse(l).event as J)));
   const events = runs.flat(), of = (t: string) => events.filter((e) => e.type === t);
   const times: string[] = events.map((e) => e.ts).filter((t) => typeof t === "string").sort();
   const out: [string, string][] = [];

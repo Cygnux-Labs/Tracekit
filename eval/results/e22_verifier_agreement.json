@@ -1,7 +1,7 @@
 {
-  "agree": 68,
-  "as_expected": 68,
-  "bundles": 68,
+  "agree": 63,
+  "as_expected": 63,
+  "bundles": 63,
   "cases": [
     {
       "agree": true,
@@ -57,78 +57,6 @@
       "forgery": false,
       "integrity": "VERIFIED",
       "name": "example mcp",
-      "page": 0,
-      "problems": [],
-      "python": 0,
-      "source": "examples/v2",
-      "typescript": 0
-    },
-    {
-      "agree": true,
-      "expected": true,
-      "forgery": false,
-      "integrity": "VERIFIED",
-      "name": "example google_adk",
-      "page": 0,
-      "problems": [],
-      "python": 0,
-      "source": "examples/v2",
-      "typescript": 0
-    },
-    {
-      "agree": true,
-      "expected": true,
-      "forgery": false,
-      "integrity": "VERIFIED",
-      "name": "example haystack",
-      "page": 0,
-      "problems": [],
-      "python": 0,
-      "source": "examples/v2",
-      "typescript": 0
-    },
-    {
-      "agree": true,
-      "expected": true,
-      "forgery": false,
-      "integrity": "VERIFIED",
-      "name": "example llama_index",
-      "page": 0,
-      "problems": [],
-      "python": 0,
-      "source": "examples/v2",
-      "typescript": 0
-    },
-    {
-      "agree": true,
-      "expected": true,
-      "forgery": false,
-      "integrity": "VERIFIED",
-      "name": "example pydantic_ai",
-      "page": 0,
-      "problems": [],
-      "python": 0,
-      "source": "examples/v2",
-      "typescript": 0
-    },
-    {
-      "agree": true,
-      "expected": true,
-      "forgery": false,
-      "integrity": "VERIFIED",
-      "name": "example strands",
-      "page": 0,
-      "problems": [],
-      "python": 0,
-      "source": "examples/v2",
-      "typescript": 0
-    },
-    {
-      "agree": true,
-      "expected": true,
-      "forgery": false,
-      "integrity": "VERIFIED",
-      "name": "example agent_framework",
       "page": 0,
       "problems": [],
       "python": 0,
@@ -307,8 +235,20 @@
       "agree": true,
       "expected": true,
       "forgery": false,
-      "integrity": "VERIFIED TO HEAD 40001 (open)",
-      "name": "large, open at 20000 calls",
+      "integrity": "VERIFIED TO HEAD 90001 (open)",
+      "name": "large, open at 45000 calls",
+      "page": 0,
+      "problems": [],
+      "python": 0,
+      "source": "tracekit signer serve",
+      "typescript": 0
+    },
+    {
+      "agree": true,
+      "expected": true,
+      "forgery": false,
+      "integrity": "VERIFIED",
+      "name": "large, 50000 calls",
       "page": 0,
       "problems": [],
       "python": 0,
@@ -825,21 +765,54 @@
     "bundles": [
       {
         "longest_task_ms": 0,
-        "name": "large, open at 20000 calls",
+        "name": "large, open at 45000 calls",
         "page": 0,
-        "page_s": 5.3,
+        "page_s": 12.84,
         "python": 0,
-        "python_s": 21.11,
+        "python_s": 47.58,
         "typescript": 0,
-        "typescript_s": 8.12
+        "typescript_s": 18.55
+      },
+      {
+        "longest_task_ms": 0,
+        "name": "large, 50000 calls",
+        "page": 0,
+        "page_s": 13.86,
+        "python": 0,
+        "python_s": 53.91,
+        "typescript": 0,
+        "typescript_s": 20.14
       }
     ],
     "calls": 50000,
-    "calls_per_s": 2197,
-    "closed": "tracekit export exited 1: tracekit export: the bundle is over the format's limits (64 MiB a file, 10,000 files, 512 MiB in all; docs/format-v2.md#9-bundle-layout): runs/3d075b4b80653eae483cce4050fc9fd4.jsonl would be 130 MiB, so no verifier could read it. Start a new run for each task or session so each stays under the limits",
-    "open_bundle_mb": 11.0,
-    "refused": "open at 25000 calls: tracekit export exited 1: tracekit export: the bundle is over the format's limits (64 MiB a file, 10,000 files, 512 MiB in all; docs/format-v2.md#9-bundle-layout): runs/3d075b4b80653eae483cce4050fc9fd4.jsonl would be 65 MiB, so no verifier could read it. Start a new run for each task or session so each stays under the limits"
+    "calls_per_s": 1921,
+    "open_bundle_mb": 24.8
   },
   "platform": "darwin",
-  "skipped": []
+  "skipped": [
+    {
+      "name": "example google_adk",
+      "why": "ModuleNotFoundError: No module named 'google.adk'"
+    },
+    {
+      "name": "example haystack",
+      "why": "ModuleNotFoundError: No module named 'haystack.components'"
+    },
+    {
+      "name": "example llama_index",
+      "why": "ModuleNotFoundError: No module named 'llama_index.core'"
+    },
+    {
+      "name": "example pydantic_ai",
+      "why": "ImportError: cannot import name 'Agent' from 'pydantic_ai' (unknown location)"
+    },
+    {
+      "name": "example strands",
+      "why": "ImportError: cannot import name 'Agent' from 'strands' (unknown location)"
+    },
+    {
+      "name": "example agent_framework",
+      "why": "ImportError: cannot import name 'Agent' from 'agent_framework' (unknown location)"
+    }
+  ]
 }
