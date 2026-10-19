@@ -197,8 +197,10 @@ Live constraints (format 1.4, experimental, [policy](policy-v2.md#live-constrain
 to do in the rest of a run, as a client of the run reported it (`constraint_add`; the Claude Code hook at
 UserPromptSubmit): `constraint.added{kind: keep_away|only_change|read_only|no_push|no_network, object_commitment?,
 salt_id?}` (`source`: the run's). `object_commitment`, for `keep_away` and `only_change` only, commits (§2, under the
-record's `salt_id`) to `"sha256:" + hex(SHA-256(UTF-8 bytes of the file's base name, lower-cased))`; the name is never
-in the record. From then on the signer raises each call of the run that breaks a constraint to `ask` and adds the rule
+record's `salt_id`) to `"sha256:" + hex(SHA-256(UTF-8 bytes of the file's name as constraints compare it))`: quotes
+(`'`, `"`, `` ` ``) around it dropped, its base name (after the last `/` or `\`), trailing dots dropped, lower-cased
+(`tracekit.constraints.norm`); the name is never in the record. From then on the signer raises each call of the run
+that breaks a constraint to `ask` and adds the rule
 id `TK-CONSTRAINT` to its `policy.decision`; it never lowers a decision. Every `policy.decision` whose `rule_ids` hold
 `TK-CONSTRAINT` must be an `ask` after a `constraint.added` in its run (`constraints` fails otherwise). A constraint
 equal to one the run has (the same kind; for a file, the same name) adds no record. A run takes 32: past them, a new
@@ -263,10 +265,10 @@ Kernel sensor events (format 1.4, experimental, [Tetragon](integrations/tetragon
 an import of a kernel sensor's export (`observe_effect` with `sensor`, the same grant) reports what an agent's
 processes did, and names in every call the identities its configuration maps processes to (`callers`): it covers the
 runs of those identities registered while it is alive, and no other run. The signer writes
-`effect.observed{observer, sensor, kind: exec|exit|connect|file, ts, pid, binary, exec_id?, args_commitment?, salt_id?,
-status?, signal?, host?, port?, path?, tool_call_id?, attribution}` (`source: signer`, one per event) in the run it is
-attributed to. `args_commitment` commits to `"sha256:" + hex(SHA-256(UTF-8 bytes of the arguments string as the sensor
-reported it))` (§2). `tool_call_id` is the id the process's environment carried, the agent's claim, recorded as it
+`effect.observed{observer, sensor, kind: exec|exit|connect|file, ts, pid, binary, exec_id?, parent_exec_id?,
+args_commitment?, salt_id?, status?, signal?, host?, port?, path?, tool_call_id?, attribution}` (`source: signer`,
+one per event) in the run it is attributed to. `args_commitment` commits to `"sha256:" + hex(SHA-256(UTF-8 bytes of
+the arguments string as the sensor reported it))` (§2). `tool_call_id` is the id the process's environment carried, the agent's claim, recorded as it
 came: the signer never takes it as explaining the effect (`tracekit analyze --v2`'s TK-X206 checks it). An event no
 open run of its callers holds is an `effect_outside_run` gap, as for the egress observer. A loss the import reports (`lost`) is an
 `observer_lost` gap with `sensor` in each run it covers, or in the tenant's run `tracekit/signer` when it covers none,
@@ -562,14 +564,15 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
-Every v2 definition but `review`'s and `error`'s data (open since format 1.0) and the `ext` record's (open by
-design) is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a newer
-critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,
-never FAILED, and from 1.4.0 the `bundle readable` line lists the commands that verify the bundle (§11 step 2). The
-open definitions are why the manifest's version matters for `review.cites`: a 1.3 verifier given a signed finding
-under a manifest edited down to 1.3.0 passes its record's schema and checks neither its citations nor its author,
-and prints no `Findings:` line. What it prints stays true, the records being signed and included as any; the
-findings are left out, unchecked, so verify a bundle with signed findings with 1.4.0 or later.
+Every v2 definition but `review`'s data and its `verdict`, `error`'s data, `run.start`'s `agent` and `trace.tamper`'s
+`before` and `after` (open since format 1.0) and the `ext` record's (open by design) is closed (`additionalProperties:
+false`), so an older verifier would fail a record that uses a newer critical entry; the version the manifest declares
+makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never FAILED, and from 1.4.0 the `bundle readable` line
+lists the commands that verify the bundle (§11 step 2). The open definitions are why the manifest's version matters
+for `review.cites`: a 1.3 verifier given a signed finding under a manifest edited down to 1.3.0 passes its record's
+schema and checks neither its citations nor its author, and prints no `Findings:` line. What it prints stays true, the
+records being signed and included as any; the findings are left out, unchecked, so verify a bundle with signed
+findings with 1.4.0 or later.
 
 **Criticality.** From 1.4.0, an addition an older verifier can leave unread goes in the non-critical slot rather than
 a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
@@ -581,7 +584,8 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
 - A verifier from 1.4.0 checks every record's schema, signature, chain and inclusion whatever its `ext` holds, so an
   ext value edited, added or removed fails `signatures`, and an `ext` record dropped fails `run chain`. It interprets
   the ext names its own rows list, each on lines of its own; every other name gets a `not interpreted` warning
-  (`n record(s) carry ext.<name>: ...; tracekit >= <verifier_version> checks it`; the first 20 names in code-point
+  (`n record(s) carry ext.<name>: ...`, and `; tracekit >= <verifier_version> checks it` when the manifest's
+  `verifier_version` is newer than the verifier; the first 20 names in code-point
   order, and one more line, `n more ext name(s), ...`, for the rest), exit 0 (3 with `--strict`), and the integrity
   stays `VERIFIED`: every check that verifier implements passed.
 - **The rule.** A name may go in `ext` only if every line an older verifier prints stays true without its
@@ -646,12 +650,14 @@ line and verdict is in [verdicts](verdicts.md).
    under the keys valid at its seq; a `key.retire` must name a declared key and sets its `last_seq`. All records must
    share the first key record's `log_id`. A key with `cert` is declared only if its certificate verifies under a
    pinned issuer, for that key and `log_id`, in the issuer's cosigned issuance log ([issuer.md](issuer.md)).
-6. **Runs.** A bundle holds exactly one run, or any number with a run-set; a run is its `runs/<id>.jsonl` file or
-   its parts read in order (§9), whose layout the `run parts` line checks when there are parts. For each run, every
-   record must: verify under the keys valid at its seq (§4); be a schema-valid `tracekit.event.v2` event of this
-   `log_id`; have `run_seq` = its index, `run_prev_hash` = the previous record's `hash` (zeros first), the first
-   record's tenant and run_id, a seq above the previous record's; and follow no `run.final`. The run's first and last
-   records must be included in the checkpointed tree.
+6. **Runs.** A bundle holds exactly one run, one run with its findings and replay runs (`--with-findings`), or any
+   number with a run-set; a run is its `runs/<id>.jsonl` file or its parts read in order (§9), whose layout the `run
+   parts` line checks when there are parts, and no two runs share a tenant and run_id (`run chain` fails otherwise:
+   a run's records under a second name would count twice). For each run, every record must: verify under the keys
+   valid at its seq (§4); be a schema-valid `tracekit.event.v2` event of this `log_id`; have `run_seq` = its index,
+   `run_prev_hash` = the previous record's `hash` (zeros first), the first record's tenant and run_id, a seq above the
+   previous record's; and follow no `run.final`. The run's first and last records must be included in the
+   checkpointed tree.
 7. **Run-set** (with `registry/run-set.json`). Open the registry notes at `a` and `b` with the pinned log key renamed
    to the registry origin of §7 and the pinned witnesses; each needs `witnesses_required` cosignatures, and caps the
    assurance level by the same rule as the checkpoint; check consistency `a → b`; require `b > 0` and exactly `b − a`
@@ -662,10 +668,11 @@ line and verdict is in [verdicts](verdicts.md).
    `key.retire` leaf in the range must be among the key records. A `log.closed` in the range must be
    the checkpoint's last record, or later records were added after the log closed.
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
-   **Signed findings** (with `review` records): a `review` with `cites` must be in a findings run; when the run it
-   analyses is in the bundle, each cite must be a record of that run with that `run_seq` and `hash`, and its verdict
+   **Signed findings** (with `review` records): a `review` with `cites` must be in a findings run, and its verdict
    must have a signed finding's shape: a kind, a `TK-` rule and a severity, and each closed field above of the values
-   it allows (other fields pass) (`reviews` fails otherwise); each finding is labelled by its author, the findings run's `run.registered` `identity`:
+   it allows (other fields pass), whether or not the run it analyses is in the bundle; when that run is, each cite must
+   be a record of it with that `run_seq` and `hash` (`reviews` fails otherwise); each finding is labelled by its
+   author, the findings run's `run.registered` `identity`:
    `self-asserted` (a warning) when that is the analysed run's identity or either run's `signer_isolation` is
    `same-user`; else `independent` when the trust config's `analyzers` lists it, else `unpinned author <id>`. Without
    the analysed run, the findings are `author not checked` and their cites not counted (`reviews counted`, a warning).

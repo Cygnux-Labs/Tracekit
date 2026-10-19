@@ -1,7 +1,7 @@
 # Reading a v2 verify report
 
 `tracekit verify bundle.tkb --trust trust.json` prints one line per check, then two summary lines, and a third when
-the bundle holds signed findings:
+the bundle holds `review` records (signed findings, or reviews imported with no citations):
 
 ```text
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
@@ -202,7 +202,7 @@ both verifiers add:
 
 | Line | Pass means | Warning / failure |
 |---|---|---|
-| `reviews` | `n review(s): 2 independent, 1 imported`: the reviews counted by label (below), and each citation of a signed finding is a record of the analysed run, in the bundle, with that `run_seq` and hash, and its verdict has a signed finding's shape | **warn** when a finding is `self-asserted`, naming its findings run and why. **fail** when a citation names a record the analysed run doesn't have, or one with another hash (the records are intact; the finding misstates them), a signed finding is outside a findings run, or its verdict holds a value no signer of its format signs (an alignment, reason code, model family or window outside what `review_finding` allows) |
+| `reviews` | `n review(s): 1 imported, 2 independent`, labels in alphabetical order: the reviews counted by label (below), and each citation of a signed finding is a record of the analysed run, in the bundle, with that `run_seq` and hash, and its verdict has a signed finding's shape | **warn** when a finding is `self-asserted`, naming its findings run and why. **fail** when a citation names a record the analysed run doesn't have, or one with another hash (the records are intact; the finding misstates them), a signed finding is outside a findings run, or its verdict holds a value no signer of its format signs (an alignment, reason code, model family or window outside what `review_finding` allows) |
 | `reviews counted` | — | **warn**: a findings run is in the bundle without the run it analyses, so its citations are not counted. Export the analysed run with `tracekit export --v2 --run <run> --with-findings` |
 
 The label says who wrote a finding: its author, the identity the signer measured when the findings run registered.
