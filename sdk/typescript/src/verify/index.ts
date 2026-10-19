@@ -127,10 +127,19 @@ const str = (v: unknown): string => v === null ? "None" : v === true ? "True" : 
   : typeof v === "string" ? v : JSON.stringify(v);
 const repr = (v: unknown) => typeof v === "string" ? quoted(v) : str(v);
 const cut = (s: string, n: number) => [...s].slice(0, n).join("");
+/** Python's order of strings, by code point (JavaScript's `<` and sort() compare UTF-16 code units, which put a
+ * character above U+FFFF before one in U+E000..U+FFFF). */
+const byCodePoint = (a: string, b: string) => {
+  const unit = (u: number) => u >= 0xd800 && u < 0xe000 ? u + 0x2000 : u >= 0xe000 ? u - 0x800 : u;
+  for (let i = 0; i < Math.min(a.length, b.length); i++)
+    if (a.charCodeAt(i) !== b.charCodeAt(i)) return unit(a.charCodeAt(i)) - unit(b.charCodeAt(i));
+  return a.length - b.length;
+};
+const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => byCodePoint(a, b);
 const count = (xs: string[]) => {
   const m = new Map<string, number>();
   for (const x of xs) m.set(x, (m.get(x) ?? 0) + 1);
-  return [...m].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return [...m].sort(byKey);
 };
 const fmt = (ts: bigint | number) => {
   if (ts > 253402300799) throw new RangeError("year is out of range");
@@ -491,7 +500,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       + MATRIX.map((k) => {
         const cs = matrices.map((m) => at(m, k));
         const status = cs.map((c) => str(at(c, "status"))).reduce((a, b) => COVERED.indexOf(b) < COVERED.indexOf(a) ? b : a);
-        const layers = [...new Set(cs.flatMap((c) => list(at(c, "layers")).map(str)))].sort()
+        const layers = [...new Set(cs.flatMap((c) => list(at(c, "layers")).map(str)))].sort(byCodePoint)
           .concat(cs.some((c) => get(c, "asserted") === true) ? ["asserted"] : []);
         return `${k.replace("_", " ")} ` + (status === "none" ? "not covered"
           : status + (layers.length ? ` (${layers.join(", ")})` : ""));
@@ -526,7 +535,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   for (const [k, t] of claims) tiers.set(k, t);
   const split = [...paths].filter(([, p]) => p.size > 1).map(([k, p]) => {
     const [run, tcid] = JSON.parse(k);
-    return `${cut(str(run), 200)} ${cut(str(tcid), 200)}: ${[...p].sort().join(", ")}`;
+    return `${cut(str(run), 200)} ${cut(str(tcid), 200)}: ${[...p].sort(byCodePoint).join(", ")}`;
   });
   if (tiers.size) {
     const n = (t: J) => [...tiers.values()].filter((x) => x === t).length;
@@ -556,7 +565,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     if (!truthy(modes)) return [];
     if (!isObj(modes)) throw new TypeError("fail_modes is not an object");
     return Object.entries(modes).filter(([, m]) => m === "open").map(([c]) => cut(c, 64));
-  }))].sort();
+  }))].sort(byCodePoint);
   rep.check("fail-open classes", !failOpen.length, failOpen.join(", ") || "none",
     failOpen.length ? ["calls the agent classed as one of these may have run unrecorded while the signer was down"] : [],
     true);
@@ -587,12 +596,12 @@ function checkAmended(rep: Report, events: J[]) {
     const data = get(e, "data", {});
     return get(e, "type") === "model.exchange" && get(e, "source") === "gateway" && isObj(data)
       && get(data, "phase") === "request" && Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string"
-        && p.length <= 256 && /^(\/([^~/]|~[01])*)+$/u.test(p)) ? v : null;
+        && [...p].length <= 256 && /^(\/([^~/]|~[01])*)+$/u.test(p)) ? v : null;
   };
   const good = events.filter((e) => fields(e)), bad = events.filter((e) => !fields(e));
   const n = new Map<string, number>();
   for (const e of good) for (const p of fields(e)!) n.set(p, (n.get(p) ?? 0) + 1);
-  const shown = [...n].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, 8).map(([p, c]) => `${p}: ${c}`);
+  const shown = [...n].sort(byKey).slice(0, 8).map(([p, c]) => `${p}: ${c}`);
   rep.check("gateway amendments", bad.length === 0, `gateway amended ${good.length} request(s) to show reasoning`
     + (shown.length ? ` (${shown.join(", ")})` : "") + "; each record commits to the request as sent",
   bad.map((e) => `seq ${str(get(e, "seq"))}: ext.amended is not a list of JSON pointers on a gateway's model request`)
@@ -604,6 +613,7 @@ function checkAmended(rep: Report, events: J[]) {
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
  */
 const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended]]);
+const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
 
 /** The ext names an event carries: its `ext` field's keys, and an `ext` record's name. */
 const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {}),
@@ -622,12 +632,19 @@ function checkExt(rep: Report, events: J[], full: J) {
     }
   const later = typeof full === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(full) && newer(full, VERSION)
     ? `; tracekit >= ${full} checks it` : "";
-  for (const [n, es] of [...carry].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+  let shown = 0, more = 0;
+  for (const [n, es] of [...carry].sort(byKey)) {
     const interpret = EXT_CHECKS.get(n);
     if (interpret) interpret(rep, es);
-    else rep.check("not interpreted", false, `${es.length} record(s) carry ext.${n}: their signatures, chain and `
-      + `inclusion are checked above; what ext.${n} means is not checked${later}`, [], true);
+    else if (shown < MAX_UNREAD) {
+      shown++;
+      rep.check("not interpreted", false, `${es.length} record(s) carry ext.${n}: their signatures, chain and `
+        + `inclusion are checked above; what ext.${n} means is not checked${later}`, [], true);
+    } else more++;   // a line each would bury the report
   }
+  if (more)
+    rep.check("not interpreted", false, `${more} more ext name(s), on records whose signatures, chain and inclusion `
+      + `are checked above; what they mean is not checked${later}`, [], true);
 }
 
 /** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
@@ -757,6 +774,7 @@ function verdictProblem(v: J): string | null {
 function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
   const byId = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs]));
   const labels: string[] = [], problems: string[] = [], selfs: string[] = [], uncounted: string[] = [];
+  const hashesOf = new Map<J, Map<J, J>>();   // analysed run id -> {run_seq: record hash}, built once
   let total = 0;
   for (const rs of runs.values()) {
     const reviews = rs.map((r) => r.event).filter((e) => get(e, "type") === "review");
@@ -779,11 +797,12 @@ function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
       uncounted.push(`findings run ${rid}: run ${cut(str(analyzes), 128)} is not in the bundle`);
       continue;
     }
-    const hashes = new Map<J, J>(target.map((r) => [get(r.event, "run_seq"), r.hash]));
+    if (!hashesOf.has(analyzes)) hashesOf.set(analyzes, new Map(target.map((r) => [get(r.event, "run_seq"), r.hash])));
+    const hashes = hashesOf.get(analyzes)!;
     for (const e of signed)
       for (const c of list(at(e.data, "cites")))
         if (hashes.get(at(c, "run_seq")) !== at(c, "hash"))
-          problems.push(`seq ${e.seq}: cites run_seq ${c.run_seq} of run ${cut(str(analyzes), 128)}, `
+          problems.push(`seq ${e.seq}: cites run_seq ${str(c.run_seq)} of run ${cut(str(analyzes), 128)}, `
             + (hashes.has(c.run_seq) ? "whose hash differs" : "which it does not have"));
     const [mine, isolation] = author(rs), [theirs, theirIsolation] = author(target);
     let label;
@@ -799,8 +818,8 @@ function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
     rep.check("reviews", !problems.length && !selfs.length, `${total} review(s): `
       + count(labels).map(([k, n]) => `${n} ${k}`).join(", "), (problems.length ? problems : selfs).slice(0, 20),
     !problems.length);
-    const verdicts = [...runs.values()].flatMap((rs) => rs.map((r) => r.event))
-      .filter((e) => get(e, "type") === "review").map((e) => get(at(e, "data"), "verdict"));
+    const verdicts = [...runs.values()].flatMap((rs) => rs.map((r) => r.event))   // signed findings only
+      .filter((e) => get(e, "type") === "review" && has(at(e, "data"), "cites")).map((e) => get(e.data, "verdict"));
     const sev = count(verdicts.filter((v) => isObj(v) && get(v, "kind") === "finding")
       .map((v) => cut(str(get(v, "severity")), 16)));
     const n = sev.reduce((a, [, k]) => a + k, 0), cov = verdicts.filter((v) => isObj(v) && get(v, "kind") === "coverage").length;
@@ -826,7 +845,8 @@ function checkConstraints(rep: Report, runs: Map<string, J[]>) {
       if (get(e, "type") === "constraint.added") {
         added++;
         seen = true;
-      } else if (get(e, "type") === "policy.decision" && list(get(at(e, "data"), "rule_ids", [])).includes("TK-CONSTRAINT")) {
+      } else if (get(e, "type") === "policy.decision" && Array.isArray(get(at(e, "data"), "rule_ids"))
+        && get(e.data, "rule_ids").includes("TK-CONSTRAINT")) {
         held++;
         const decision = get(e.data, "decision");
         if (!seen || decision !== "ask")
@@ -904,7 +924,7 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
   if (unbundled.size)
     rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
       + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
-      + "records cite)", [...unbundled].sort().slice(0, 20), true);
+      + "records cite)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
 }
 
 /** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */
@@ -1084,7 +1104,7 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   if (untargeted > 1) problems.push(`${untargeted} runs in the bundle, but only the selected run may be in no leaf of the range`);
   if (truthy(closed) && size > num(at(at(closed, "data"), "final_seq")) + 1)
     problems.push(`records after log.closed at seq ${str(at(closed, "seq"))}`);
-  const counted = [...gaps].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, n]) => `${k} ${n}`).join(", ");
+  const counted = [...gaps].sort(byKey).map(([k, n]) => `${k} ${n}`).join(", ");
   const named = tenant === null ? "" : ` of tenant ${repr(cut(tenant, 64))}`;
   const open = [...registered.keys()].filter((k) => !finals.has(k)).length;
   rep.check("run-set", !problems.length, !problems.length ? `COMPLETE, ${span}${named} (${registered.size} runs registered, `
@@ -1123,7 +1143,7 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
   else capped = null;
   const cosigned = [...cosigs].sort((a, b) => a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)
     .map(([k, ts]) => `${k.split("+")[0]} (${witnesses.get(k)}) at ${fmt(ts)}`).join(", ");
-  return `${lvl}; records ${[...algs].sort().join("+")}; checkpoint ${hybrid ? "Ed25519 + SLH-DSA-SHA2-128s" : "Ed25519 only"} `
+  return `${lvl}; records ${[...algs].sort(byCodePoint).join("+")}; checkpoint ${hybrid ? "Ed25519 + SLH-DSA-SHA2-128s" : "Ed25519 only"} `
     + `(${origin})` + (cosigned ? `; cosigned ed25519 by ${cosigned}` : "; no witness cosignature")
     + (times.length ? `; earliest independent anchor ${fmt(times.reduce((a, b) => b < a ? b : a))}` : "")
     + (capped ? `; capped by the run-set's registry notes (${capped})` : "") + (selfApproved ? "; approvals: self" : "");

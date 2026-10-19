@@ -525,9 +525,14 @@ them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | — | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
 
-Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
-newer critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,
-never FAILED, and from 1.4.0 the `bundle readable` line lists the commands that verify the bundle (§11 step 2).
+Every v2 definition but `review`'s and `error`'s data (open since format 1.0) and the `ext` record's (open by
+design) is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a newer
+critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,
+never FAILED, and from 1.4.0 the `bundle readable` line lists the commands that verify the bundle (§11 step 2). The
+open definitions are why the manifest's version matters for `review.cites`: a 1.3 verifier given a signed finding
+under a manifest edited down to 1.3.0 passes its record's schema and checks neither its citations nor its author,
+and prints no `Findings:` line. What it prints stays true, the records being signed and included as any; the
+findings are left out, unchecked, so verify a bundle with signed findings with 1.4.0 or later.
 
 **Criticality.** From 1.4.0, an addition an older verifier can leave unread goes in the non-critical slot rather than
 a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
@@ -539,8 +544,9 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
 - A verifier from 1.4.0 checks every record's schema, signature, chain and inclusion whatever its `ext` holds, so an
   ext value edited, added or removed fails `signatures`, and an `ext` record dropped fails `run chain`. It interprets
   the ext names its own rows list, each on lines of its own; every other name gets a `not interpreted` warning
-  (`n record(s) carry ext.<name>: ...; tracekit >= <verifier_version> checks it`), exit 0 (3 with `--strict`), and the
-  integrity stays `VERIFIED`: every check that verifier implements passed.
+  (`n record(s) carry ext.<name>: ...; tracekit >= <verifier_version> checks it`; the first 20 names in code-point
+  order, and one more line, `n more ext name(s), ...`, for the rest), exit 0 (3 with `--strict`), and the integrity
+  stays `VERIFIED`: every check that verifier implements passed.
 - **The rule.** A name may go in `ext` only if every line an older verifier prints stays true without its
   interpretation: with it off, the report is the full report minus that name's own lines, plus its `not interpreted`
   line (`test_an_ext_interpretation_adds_only_its_own_lines` checks each name a row lists).
@@ -622,8 +628,9 @@ line and verdict is in [verdicts](verdicts.md).
    `self-asserted` (a warning) when that is the analysed run's identity or either run's `signer_isolation` is
    `same-user`; else `independent` when the trust config's `analyzers` lists it, else `unpinned author <id>`. Without
    the analysed run, the findings are `author not checked` and their cites not counted (`reviews counted`, a warning).
-   A `review` without `cites` is `imported`. The findings themselves are summed up on a `Findings:` line after
-   `Integrity` and `Assurance`, never in them.
+   A `review` without `cites` is `imported`. The signed findings themselves are summed up on a `Findings:` line after
+   `Integrity` and `Assurance`, never in them: by severity, the coverage reviews, and every review's label (an
+   imported review's severity is not counted).
    **Live constraints**: each `policy.decision` whose `rule_ids` hold `TK-CONSTRAINT` is an `ask` after a
    `constraint.added` in its run, else `constraints` fails.
 9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256 (else `policy snapshot` fails and neither
@@ -643,7 +650,7 @@ line and verdict is in [verdicts](verdicts.md).
    (`incidents`).
 10. **Ext** (records with an `ext` field or of type `ext`, §9). Each ext name the key and run records carry, in
     name order: the verifier's own check of it when it interprets it, else a `not interpreted` warning counting the
-    records that carry it. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show
+    records that carry it, for the first 20 such names; one more `not interpreted` warning counts the others. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show
     reasoning (<pointer>: <count>, ... the first 8 in code-point order); each record commits to the request as sent`,
     a warning listing the records (the first 20) where it is anything but a non-empty list of JSON pointers of at most
     256 characters on a `model.exchange` request record of source `gateway`.

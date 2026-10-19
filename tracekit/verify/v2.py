@@ -99,7 +99,7 @@ Versions (format-v2.md §9): a bundle whose verifier_min_version is above this v
 tracekit >= x)` (exit 2), the `bundle readable` line listing the commands that verify it with the user's paths
 (`upgrade`). Format 1.4's non-critical slot: an `ext` field on any record and the `ext` record type, whose names a
 verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) and otherwise reports on a `not
-interpreted` warning each; the records are signed, chained and included like any other, and the bundle stays VERIFIED.
+interpreted` warning each (MAX_UNREAD of them; one more counts the rest); the records are signed, chained and included like any other, and the bundle stays VERIFIED.
 This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`).
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
@@ -210,6 +210,7 @@ def _amended(rep, events):
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
 # whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
 EXT_CHECKS = {"amended": _amended}
+MAX_UNREAD = 20   # `not interpreted` lines, one per ext name; the rest on one line
 
 
 class Unusable(ValueError):
@@ -401,12 +402,19 @@ def _ext(rep, events, full):
             carry.setdefault(n, []).append(e)
     later = f"; tracekit >= {full} checks it" if isinstance(full, str) and _VERSION.fullmatch(full) \
         and _version(full) > _version(__version__) else ""
+    shown, more = 0, 0
     for n, es in sorted(carry.items()):
         if n in EXT_CHECKS:
             EXT_CHECKS[n](rep, es)
-        else:
+        elif shown < MAX_UNREAD:
+            shown += 1
             rep.check("not interpreted", False, f"{len(es)} record(s) carry ext.{n}: their signatures, chain and "
                       f"inclusion are checked above; what ext.{n} means is not checked{later}", warn=True)
+        else:   # a line each would bury the report
+            more += 1
+    if more:
+        rep.check("not interpreted", False, f"{more} more ext name(s), on records whose signatures, chain and inclusion "
+                  f"are checked above; what they mean is not checked{later}", warn=True)
 
 
 def _revocations(rep, trust, paths):
@@ -1088,6 +1096,11 @@ def _findings(rep, runs):
                   [rid[:128] for rid in orphans[:20]], warn=True)
 
 
+def _seq_hashes(records):
+    """{run_seq: record hash} of a run's records."""
+    return {r["event"].get("run_seq"): r["hash"] for r in records}
+
+
 def _author(records):
     """('scheme:subject', signer_isolation) of a run's run.registered (Nones when it is not one)."""
     e = records[0]["event"]
@@ -1118,6 +1131,7 @@ def _reviews(rep, runs, pinned):
     docstring: Signed findings). `pinned`: the trust config's `analyzers`."""
     by_id = {rs[0]["event"].get("run_id"): rs for rs in runs.values()}
     total, labels, problems, selfs, uncounted = 0, collections.Counter(), [], [], []
+    hashes_of = {}   # analysed run id -> {run_seq: record hash}, built once however many findings runs cite it
     for rs in runs.values():
         reviews = [r["event"] for r in rs if r["event"].get("type") == "review"]
         signed = [e for e in reviews if "cites" in e["data"]]
@@ -1134,10 +1148,15 @@ def _reviews(rep, runs, pinned):
             labels["author not checked"] += len(signed)
             uncounted.append(f"findings run {rid}: run {str(analyzes)[:128]} is not in the bundle")
             continue
-        hashes = {r["event"].get("run_seq"): r["hash"] for r in target}
+        if analyzes not in hashes_of:
+            hashes_of[analyzes] = _seq_hashes(target)
+        hashes = hashes_of[analyzes]
+        # a run_seq of a schema-invalid cite that is no number names no record (as in JavaScript's Map)
+        cited = [(e, c, hashes.get(c["run_seq"]) if type(c["run_seq"]) in (int, float) else None)
+                 for e in signed for c in e["data"]["cites"]]
         problems += [f"seq {e['seq']}: cites run_seq {c['run_seq']} of run {str(analyzes)[:128]}, "
-                     + ("which it does not have" if c["run_seq"] not in hashes else "whose hash differs")
-                     for e in signed for c in e["data"]["cites"] if hashes.get(c["run_seq"]) != c["hash"]]
+                     + ("which it does not have" if h is None else "whose hash differs")
+                     for e, c, h in cited if h != c["hash"]]
         (author, isolation), (theirs, their_isolation) = _author(rs), _author(target)
         if author == theirs or "same-user" in (isolation, their_isolation):
             label = "self-asserted"
@@ -1150,8 +1169,8 @@ def _reviews(rep, runs, pinned):
     if total:
         rep.check("reviews", not problems and not selfs, f"{total} review(s): " + ", ".join(
             f"{n} {k}" for k, n in sorted(labels.items()) if n), (problems or selfs)[:20], warn=not problems)
-        verdicts = [r["event"]["data"].get("verdict") for rs in runs.values() for r in rs
-                    if r["event"].get("type") == "review"]
+        verdicts = [r["event"]["data"].get("verdict") for rs in runs.values() for r in rs   # signed findings only: an
+                    if r["event"].get("type") == "review" and "cites" in r["event"]["data"]]   # imported one is a label
         sev = collections.Counter(str(v.get("severity"))[:16] for v in verdicts
                                   if isinstance(v, dict) and v.get("kind") == "finding")
         cov = sum(isinstance(v, dict) and v.get("kind") == "coverage" for v in verdicts)
@@ -1175,7 +1194,8 @@ def _constraints(rep, runs):
             e = r["event"]
             if e.get("type") == "constraint.added":
                 added, seen = added + 1, True
-            elif e.get("type") == "policy.decision" and "TK-CONSTRAINT" in (e["data"].get("rule_ids") or ()):
+            elif e.get("type") == "policy.decision" and isinstance(e["data"].get("rule_ids"), list) \
+                    and "TK-CONSTRAINT" in e["data"]["rule_ids"]:   # a schema-invalid string is no list of ids
                 held += 1
                 if not seen or e["data"].get("decision") != "ask":
                     problems.append(f"seq {e['seq']}: a {str(e['data'].get('decision'))[:16]} held by TK-CONSTRAINT "

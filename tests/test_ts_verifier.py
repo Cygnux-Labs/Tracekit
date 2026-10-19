@@ -465,6 +465,79 @@ class Agreement(unittest.TestCase):
                                  [line])
                 self.assertEqual(line["status"], status)
 
+    @unverified_bundles   # records no signer writes (schema-invalid ones among them), on purpose
+    def test_strings_past_utf16_and_schema_invalid_records_read_alike(self):
+        """Python counts and sorts strings by code point, JavaScript by UTF-16 unit, and a schema-invalid record must
+        not stop either verifier: each such line reads the same in both."""
+        import test_bundle_v2 as b
+        trust, pinned = os.path.join(self.d, "edge-trust.json"), os.path.join(self.d, "edge-pinned.json")
+        for path, extra in ((trust, {}), (pinned, {"analyzers": ["token:ana"]})):
+            with open(path, "w") as f:
+                json.dump({**b.trust_config(), **extra}, f)
+        finding = {"kind": "finding", "rule": "TK-X202", "severity": "medium"}
+
+        def findings_run(log, run, who, cites=()):
+            log.add(*b.registered(run, analyzes="run-a", identity={"scheme": "token", "subject": who, "attested": True}))
+            log.add("review", {"reviewer": "r", "verdict": finding, "cites": list(cites)}, run)
+            log.final(run)
+
+        def authors(log):   # U+1F600 is two UTF-16 units above U+FF21, one code point past it
+            for run, who in (("run-f1", "a\U0001F600"), ("run-f2", "aＡ")):
+                findings_run(log, run, who)
+
+        def amended(log):   # 201 code points, 401 UTF-16 units
+            log.add("model.exchange", {"exchange_id": "x", "phase": "request", "streamed": False, "model": "m",
+                                       "upstream": "openai", "content_digest": "sha256:" + "a" * 64, "salt_id": "a" * 32},
+                    source="gateway", tier="T2", ext={"amended": ["/" + "\U0001F600" * 200]})
+
+        def rule_ids(value):
+            return lambda log: [log.add("constraint.added", {"kind": "no_push"}), log.add(
+                "policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": value}, tool_call_id="t1")]
+
+        def ext_names(log):
+            log.add("tool.call", {"tool_use_id": "t1", "name": "Bash", "input": {}}, ext={f"n{i}": 0 for i in range(30)})
+        cases = {"authors past U+FFFF": (authors, ["run-f1", "run-f2"], trust, "reviews"),
+                 "a pointer past U+FFFF": (amended, [], trust, "gateway amendments"),
+                 "rule_ids a string": (rule_ids("xTK-CONSTRAINTx"), [], trust, "constraints"),
+                 "rule_ids null": (rule_ids(None), [], trust, "constraints"),
+                 "a cite's run_seq a list": (lambda log: findings_run(log, "run-f1", "ana", [
+                     {"run_seq": [1], "hash": "sha256:" + "0" * 64}]), ["run-f1"], pinned, "reviews"),
+                 "30 ext names": (ext_names, [], trust, "not interpreted")}
+        for name, (build, with_runs, trust_path, line) in cases.items():
+            with self.subTest(name):
+                log = b.Log(os.path.join(self.d, f"edge-{uuid.uuid4().hex}"))
+                self.addCleanup(log.store.close)
+                log.epoch(b.KEY1)
+                log.add(*b.registered())
+                if with_runs:
+                    log.final()
+                build(log)
+                if not with_runs:
+                    log.final()
+                bundle = os.path.join(self.d, f"edge-{uuid.uuid4().hex}.tkb")
+                export(log.store, "acme", "run-a", log.note(), bundle, with_runs=with_runs)
+                _, rep = self.agree(bundle, trust_path)
+                ts = ts_verify(bundle, trust_path)
+                mine = [c for c in rep.checks if c["check"] == line]
+                self.assertTrue(mine)
+                self.assertEqual([c for c in ts["checks"] if c["check"] == line], mine)
+                self.assertEqual(ts.get("findings"), getattr(rep, "findings", None))
+        self.assertEqual(len(mine), v2.MAX_UNREAD + 1)   # the 30 names: 20 lines, and one for the other 10
+        self.assertTrue(mine[-1]["detail"].startswith("10 more ext name(s)"))
+
+    def test_a_report_past_a_pipes_64_kib_reaches_it_whole(self):
+        def policies(files, manifest):   # a `policy snapshot` line each
+            for i in range(800):
+                body = json.dumps({"n": i}).encode()
+                name = f"policies/{hashlib.sha256(body).hexdigest()}.json"
+                files[name], manifest["files"][name] = body, ""
+        bundle = self.mutate(edit=policies)
+        _build()
+        p = subprocess.run(["node", CLI, "verify", bundle, "--trust", self.trusts["witnessed"], "--json"],
+                           capture_output=True, text=True)
+        self.assertGreater(len(p.stdout), 1 << 16)
+        self.assertEqual(json.loads(p.stdout)["exit_code"], p.returncode)
+
     def test_the_browser_page_reports_what_the_cli_does(self):
         """verify.html: its one script and its style allowed by hash, workers only from blob: URLs (its own script, which
         inherits the policy), nothing else, no network API in the script, and for each bundle the TypeScript CLI's

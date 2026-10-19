@@ -158,7 +158,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `held calls` | the signer wrote a `held_call_unresolved` gap: a call the executor or a gateway decided and may have run got no result before its run ended (after `gateway_wait_s`) | that the call ran, or did harm |
 | `tiers` (`decided and completed by different capture paths`) | a tool call's decision and result records name different `source` or `tier`, for example a call a gateway decided (T2) completed by the agent, which a current signer refuses; each such call is listed and counted at the weaker tier | which record is false, or that the call didn't run |
 | `gateway amendments` | `ext.amended` is on a record other than an LLM gateway's model request, or isn't a list of JSON pointers: the signer never writes that. It passes otherwise: `gateway amended n request(s) to show reasoning (/thinking/display: n)`, the requests the [gateway](gateway.md#readable-reasoning) sent with a field changed so the provider shows reasoning, each record committing to the request as sent | that the records are false: they verified like every other |
-| `not interpreted` | records carry an ext name (format 1.4's non-critical slot) this verifier doesn't check, one line per name: `n record(s) carry ext.<name>`. They verified like every record (signature, chain, inclusion); what the name says is not checked. `tracekit >= x checks it` names a verifier that does (from the manifest, advisory) | that anything is wrong: a later Tracekit wrote something this verifier doesn't read |
+| `not interpreted` | records carry an ext name (format 1.4's non-critical slot) this verifier doesn't check, one line per name for the first 20 (`n record(s) carry ext.<name>`), then one line for the rest (`n more ext name(s)`). They verified like every record (signature, chain, inclusion); what the name says is not checked. `tracekit >= x checks it` names a verifier that does (from the manifest, advisory) | that anything is wrong: a later Tracekit wrote something this verifier doesn't read |
 | `external decisions` | another policy system's imported decision (`policy.external`) disagreed with the signer's for the same call (or named another tool, or a call the signer never decided), recorded as `capture.gap{decision_mismatch}`; the line also counts imports by system and by verified signature | that either decision was wrong: the signer's decision is the one that applied |
 
 ### Informational lines (always `PASS`)
@@ -217,8 +217,8 @@ Only `independent` vouches for the author; read every other label as the analyze
 A finding says that a check fired on these records, not that the agent did wrong. A bundle with signed findings needs
 `verifier_min_version` 1.4.0: an older verifier reports `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
 
-The `Findings:` line, after `Integrity` and `Assurance`, sums them up: how many findings by severity, the coverage
-reviews, and the author labels. It is kept apart on purpose. Integrity depends only on the cryptographic and structural
+The `Findings:` line, after `Integrity` and `Assurance`, sums them up: how many signed findings by severity, the
+coverage reviews, and the author labels (an imported review is counted as `imported`, its severity not at all). It is kept apart on purpose. Integrity depends only on the cryptographic and structural
 checks; a finding is someone's opinion of the run and never changes it. Only a citation that doesn't match fails the
 bundle (`reviews`), because then the analyzer misstated the evidence or the evidence changed.
 

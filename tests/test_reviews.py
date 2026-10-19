@@ -259,6 +259,28 @@ class TestVerify(Signed):
                           f"cites run_seq 99 of run {rep_run(b['independent'][0], analysed=True)}, which it does not "
                           "have"])
 
+    def test_an_analysed_run_is_read_once_however_many_findings_runs_cite_it(self):
+        run = self.agent_run()
+        bundle, trust = self.export(run, *[self.findings(ANALYZER, run) for _ in range(3)])
+        with mock.patch.object(v2, "_seq_hashes", wraps=v2._seq_hashes) as built:
+            rep, code = v2.verify(bundle, trust)
+        self.assertEqual((code, reviews(rep)["reviews"]["detail"], built.call_count),
+                         (0, f"3 review(s): 3 unpinned author uid:{ANALYZER.subject}", 1))
+
+    def test_the_findings_line_counts_signed_findings_not_imported_reviews(self):
+        log = Log(os.path.join(self.dir, "imported"))
+        self.addCleanup(log.store.close)
+        log.epoch(KEY1)
+        log.register()
+        log.add("review", {"reviewer": "judge", "verdict": {"kind": "finding", "severity": "critical"}})   # a v1 verdict
+        log.final()
+        bundle, trust = os.path.join(self.dir, "imported.tkb"), os.path.join(self.dir, "imported.trust.json")
+        export(log.store, "acme", "run-a", log.note(), bundle)
+        with open(trust, "w") as f:
+            json.dump(trust_config(), f)
+        rep, code = v2.verify(bundle, trust)
+        self.assertEqual((code, rep.findings), (0, "0 finding(s); 1 imported (an opinion of the run, not its integrity)"))
+
     def test_a_signed_finding_needs_format_1_4_and_older_verifiers_say_unverifiable(self):
         run = self.agent_run()
         bundle, trust = self.export(run, self.findings(ANALYZER, run))
