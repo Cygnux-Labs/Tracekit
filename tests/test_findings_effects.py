@@ -298,3 +298,37 @@ class Parts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Bounded(unittest.TestCase):
+    def test_a_call_with_no_result_does_not_make_each_effect_scan_every_call(self):
+        import datetime
+        import time
+
+        def iso(t):
+            return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        recs, content, t = [], {}, 1_700_000_000.0
+
+        def rec(typ, data, ts, body=None):
+            recs.append({"event": {"type": typ, "run_seq": len(recs), "run_id": "r", "source": "sdk", "stream": "s",
+                                   "ts": iso(ts), "data": data}, "hash": f"sha256:{len(recs):064x}"})
+            if body is not None:
+                content[len(recs) - 1] = body
+        rec("run.registered", {"agent": {"name": "x"}}, t)
+        for i in range(3000):   # the first call never returns
+            t += 1
+            rec("policy.decision", {"tool_use_id": f"t{i}", "tool": "Edit", "decision": "allow"}, t,
+                {"file_path": f"/w/f{i}.py"})
+            if i:
+                rec("tool.result", {"tool_use_id": f"t{i}", "ok": True}, t + 0.5)
+        for j in range(12000):   # the harness's own writes after the calls
+            t += 0.01
+            rec("effect.observed", {"kind": "file", "path": f"/home/u/.claude/x{j}.jsonl", "op": "write", "pid": 7,
+                                    "binary": "/usr/bin/node", "sensor": "tetragon", "ts": iso(t)}, t + 0.1)
+        rec("run.final", {"matrix": {"processes": {"status": "observed"}}}, t + 1)
+        t0 = time.perf_counter()
+        out = findings_v2.analyze(recs, lambda want: ((r["event"]["run_seq"], content[r["event"]["run_seq"]], True)
+                                                      for r in want if r["event"]["run_seq"] in content))
+        self.assertLess(time.perf_counter() - t0, 3)   # was ~10 s: each effect scanned every call before it
+        self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X206"]["not_checkable"],
+                         [{"reason": "agent_process", "n": 12000}])

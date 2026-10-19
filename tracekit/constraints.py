@@ -87,11 +87,11 @@ def _negated(tokens, i, words=NEGATIONS):
     return bool(set(tokens[max(0, i - WINDOW):i]) & words)
 
 
-def _kept(tokens, i, files):
+def _kept(tokens, i, nxt):
     """Whether the file at tokens[i] is kept away: a negation and a change verb before it, a keep word after it (before
-    the next file: `files` holds their indexes), "leave ... X ... alone", or "read-only" either side."""
+    the next file, at tokens[nxt]), "leave ... X ... alone", or "read-only" either side."""
     before = tokens[max(0, i - WINDOW):i]
-    end = min([j for j in files if j > i] + [i + 1 + WINDOW])
+    end = min(nxt, i + 1 + WINDOW)
     after = tokens[i + 1:end]
     return bool(set(before) & NEGATIONS and set(before) & VERBS or set(after) & KEEP or "read-only" in before
                 or "alone" in after and set(before) & LEAVE)
@@ -100,9 +100,9 @@ def _kept(tokens, i, files):
 def _clause(tokens):
     """[(kind, object or None)] of one clause's tokens; also the clause's files kept away (for mentions)."""
     files = {i: t for i, t in enumerate(tokens) if FILE_LIKE.search(t) and norm(t)}
-    out, kept, last = [], set(), None
-    for i, t in files.items():
-        if _kept(tokens, i, files) or last in kept and set(tokens[last + 1:i]) <= LIST:
+    out, kept, last, at = [], set(), None, [*files, len(tokens)] if files else ()
+    for n, (i, t) in enumerate(files.items()):
+        if _kept(tokens, i, at[n + 1]) or last in kept and set(tokens[last + 1:i]) <= LIST:
             kept.add(i)
             out.append(("keep_away", norm(t)))
         elif "only" in tokens[max(0, i - WINDOW):i] and set(tokens[max(0, i - WINDOW):i]) & VERBS \

@@ -184,10 +184,14 @@ class _Effects:
                                 "dseq": d["run_seq"], "rseq": r and r["run_seq"],
                                 "ran": tcid in run.ran and t0 is not None}
         self.ran = sorted((c for c in self.calls.values() if c["ran"]), key=lambda c: c["t0"])
-        self.starts = [c["t0"] - self.skew for c in self.ran]
+        # the finished calls by start, each with the latest window end up to it; the unfinished ones (no result: their
+        # window never ends) apart, so one of them doesn't make every effect scan every call before it
+        self.done = [c for c in self.ran if c["t1"] is not None]
+        self.unfinished = [c for c in self.ran if c["t1"] is None]
+        self.starts = [c["t0"] - self.skew for c in self.done]
         self.ends, top = [], float("-inf")
-        for c in self.ran:
-            top = max(top, float("inf") if c["t1"] is None else c["t1"] + self.grace + self.skew)
+        for c in self.done:
+            top = max(top, c["t1"] + self.grace + self.skew)
             self.ends.append(top)
         self.ts = {r["event"]["run_seq"]: _t(r["event"]["data"].get("ts")) for r in run.records   # sensor times
                    if r["event"]["type"] == "effect.observed" and r["event"]["data"].get("sensor")}
@@ -215,16 +219,15 @@ class _Effects:
     def window(self, ts, fits):
         """(the latest call that ran whose window holds `ts` and `fits(call)`, whether only a call with no result yet
         could)."""
-        unfinished = False
         for j in range(bisect.bisect_right(self.starts, ts) - 1, -1, -1):
             if self.ends[j] < ts:
                 break
-            c = self.ran[j]
+            c = self.done[j]
             if fits(c) and self.in_window(c, ts):
-                if c["t1"] is not None:
-                    return c, False
-                unfinished = True
-        return None, unfinished
+                return c, False
+        # lean: scans the calls with no result, a few in a run (a crash leaves its last call); index them by kind and
+        # path if runs leave many
+        return None, any(c["t0"] - self.skew <= ts and fits(c) for c in self.unfinished)
 
     def between(self, kind, c):
         """The effects of `kind` in call c's window."""

@@ -556,8 +556,9 @@ class Bounded(unittest.TestCase):
     """Huge runs and hostile text: the analysis stays within its time and memory budget."""
 
     @staticmethod
-    def synthetic(n, text):
-        """A finished run of n calls, each asked for by a response saying `text`, as records and vault content."""
+    def synthetic(n, text, one_message=False):
+        """A finished run of n calls, each asked for by a response saying `text` (or text(i)), as records and vault
+        content; `one_message`: every response a line of one model message."""
         recs, content = [], {}
 
         def rec(typ, data, body=None):
@@ -570,10 +571,12 @@ class Bounded(unittest.TestCase):
         rec("model.exchange", {"phase": "request", "exchange_id": "q"},
             {"transcript": "main", "entry": {"type": "user", "cwd": "/w", "message": {"content": "fix src/a.py"}}})
         for i in range(n):
-            rec("model.exchange", {"phase": "response", "exchange_id": f"m{i}", "tool_uses": [
+            mid = "m" if one_message else f"m{i}"
+            rec("model.exchange", {"phase": "response", "exchange_id": mid, "tool_uses": [
                 {"id": f"t{i}", "name": "Edit", "executed_by": "client"}]},
-                {"transcript": "main", "entry": {"type": "assistant", "message": {"id": f"m{i}", "content": [
-                    {"type": "text", "text": text}, {"type": "tool_use", "id": f"t{i}", "name": "Edit", "input": {}}]}}})
+                {"transcript": "main", "entry": {"type": "assistant", "message": {"id": mid, "content": [
+                    {"type": "text", "text": text(i) if callable(text) else text},
+                    {"type": "tool_use", "id": f"t{i}", "name": "Edit", "input": {}}]}}})
             rec("policy.decision", {"tool_use_id": f"t{i}", "tool": "Edit", "decision": "allow"},
                 {"file_path": f"/w/src/f{i}.py"})
         rec("run.final", {})
@@ -615,6 +618,15 @@ class Bounded(unittest.TestCase):
         checks = out["coverage"]["verdict"]["checks"]
         self.assertEqual(checks["TK-X202"]["not_checkable"], [{"reason": "size", "n": 4}])
         self.assertIn("INCOMPLETE", out["summary"])
+
+    def test_a_constraint_or_a_denial_in_each_message_and_one_long_message_stay_linear(self):
+        for label, run in (("a constraint and a denial in each message", self.synthetic(
+                               4000, lambda i: f"I won't touch g{i}.py. Editing f{i}.py now.")),
+                           ("one message over every line", self.synthetic(4000, "ok.", one_message=True))):
+            t0 = time.perf_counter()
+            out = findings_v2.analyze(*run)
+            self.assertLess(time.perf_counter() - t0, 5, label)   # was 13 s and more: each call read all before it
+            self.assertLessEqual(max(len(c["seqs"]) for c in out["shown"]["calls"].values()), findings_v2.MAX_GROUP)
 
     def test_hostile_text_is_read_in_linear_time(self):
         for text in ("a/" * 300_000, "." * 600_000, "don't " * 100_000 + "billing.py", "‮" * 100_000,

@@ -86,6 +86,7 @@ MAX_NAMES = 1 << 17   # distinct words the mention index holds; past it later te
 MAX_PROMPTS = 1 << 23   # characters of prompt text held until the hook's prompts and the transcript's are paired; past
 #                         it later prompt lines are not read (size)
 MAX_CITES = 8
+MAX_GROUP = 64   # lean: lines of one model message read back from a call; past it, nothing readable is `size`
 EXCERPT = 600
 SHELL_TOOLS = ("Bash", "bash", "shell")
 
@@ -408,26 +409,62 @@ class _Run:
         self.intent.sort()
         self.stated.sort(key=lambda c: c[:2])
         self.lifts.sort(key=lambda m: m[:2])
+        self._index()
+
+    def _index(self):
+        """Index the constraints stated and the texts that could lift one, so broken() reads only what a call can
+        break: by kind (keep_away by file) and by (source, tier rank), each in position order."""
+        def lists():
+            return collections.defaultdict(lambda: ([], []))
+        self.by_stated, self.by_lift = collections.defaultdict(lists), collections.defaultdict(lists)
+        for i, c in enumerate(self.stated):
+            ps, cs = self.by_stated[c[2], c[3] if c[2] == "keep_away" else None][c[4], RANK.get(self.tier.get(c[1]), 0)]
+            ps.append(c[0])
+            cs.append((i, c))
+        self.only = [c for c in self.stated if c[2] == "only_change"]
+        self.only_pos = [c[0] for c in self.only]
+        for m in self.lifts:
+            by = (m[3], RANK.get(self.tier.get(m[1]), 0))
+            for key in [*(("name", n) for n in m[2][0]), *(("kind", k) for k in ("read_only", "no_push", "no_network")
+                                                          if constraints.lifts(k, m[2], None))]:
+                ps, ms = self.by_lift[key][by]
+                ps.append(m[0])
+                ms.append(m)
+
+    def only_before(self, pos):
+        """The files only_change constraints stated before `pos` name."""
+        return {c[3] for c in self.only[:bisect.bisect_left(self.only_pos, pos)]}
 
     def broken(self, f, pos):
         """The constraint stated before position `pos` that a call's or effect's facts `f` (constraints.facts) break,
-        a request's before the model's and one no later text lifts first: (stated, what breaks it, the lifting
-        entry or None), or None."""
-        only = {c[3] for c in self.stated if c[2] == "only_change" and c[0] < pos}
-        best = None
-        for c in self.stated:
-            if c[0] >= pos:
-                break
-            name = constraints.breaks(c[2], f, only.__contains__ if c[2] == "only_change" else c[3].__eq__)
-            if name is None:
+        a request's before the model's and one no later text lifts first, else the first stated: (stated, what breaks
+        it, the lifting entry or None), or None. A lift counts only from a request (or, for the model's own
+        constraint, its text) whose tier ranks at least the constraint's (RANK)."""
+        only, best = self.only_before(pos), None
+        for kind, obj in [*(("keep_away", n) for n in dict.fromkeys(f["names"])), ("only_change", None),
+                          ("read_only", None), ("no_push", None), ("no_network", None)]:
+            groups = self.by_stated.get((kind, obj))
+            name = groups and constraints.breaks(kind, f, only.__contains__ if kind == "only_change" else obj.__eq__
+                                                 if obj else None)
+            if not name:
                 continue
-            rank = RANK.get(self.tier.get(c[1]), 0)   # a lift counts only from text as trusted as the constraint's
-            lift = next((m for m in self.lifts if c[0] < m[0] < pos and (m[3] == "request" or c[4] == "model")
-                         and RANK.get(self.tier.get(m[1]), 0) >= rank
-                         and constraints.lifts(c[2], m[2], (name if c[2] == "only_change" else c[3]).__eq__)), None)
-            if best is None or (c[4] != "request", lift is not None) < (best[0][4] != "request", best[2] is not None):
-                best = (c, name, lift)
-        return best
+            lkey = ("name", name) if kind in constraints.OBJECT_KINDS else ("kind", kind)
+            for (src, rank), (ps, cs) in groups.items():
+                j = bisect.bisect_left(ps, pos)
+                if not j:
+                    continue
+                lifts = [v for (s, r), v in self.by_lift.get(lkey, {}).items()
+                         if (s == "request" or src == "model") and r >= rank]
+                last = max((v[0][k - 1] for v in lifts if (k := bisect.bisect_left(v[0], pos))), default=None)
+                i = 0 if last is None else bisect.bisect_left(ps, last, 0, j)   # the first no lift comes after
+                n, c = cs[i] if i < j else cs[0]
+                lift = None if i < j else min(
+                    (v[1][k] for v in lifts if (k := bisect.bisect_right(v[0], c[0])) < len(v[0]) and v[0][k] < pos),
+                    key=lambda m: m[:2])
+                key = (src != "request", lift is not None, n)
+                if best is None or key < best[0]:
+                    best = (key, c, name, lift)
+        return best and best[1:]
 
     def first(self, index, name, pos):
         """(position, run_seq, tier) of `name`'s first mention in `index` before position `pos`, or None."""
@@ -505,9 +542,10 @@ class _Run:
             return [], (cs, 0), "conflicting_reports"
         before, k = [], -1
         group = self.groups.get(x, [cs]) if x is not None and e["source"] != "gateway" else [cs]
-        for s in group:   # a transcript writes a line per content block, each its own record
-            if s > cs:
-                break
+        end = bisect.bisect_right(group, cs)
+        if end > MAX_GROUP:   # the message's lines before these are not read
+            before.append((group[end - MAX_GROUP - 1], None, "cut", False, ""))
+        for s in group[max(0, end - MAX_GROUP):end]:   # a transcript writes a line per content block, its own record
             if s not in self.content:
                 before.append((s, None, "missing", False, ""))
                 continue
@@ -533,11 +571,13 @@ class _Run:
         readable = [b for b in before if b[3]]
         form = ("full" if any(b[2] == "full" and b[3] for b in thought) else "summary" if any(b[3] for b in thought)
                 else "withheld" if thought else "none")
-        seqs = sorted({b[0] for b in before if b[2] != "missing"})
+        seqs = sorted({b[0] for b in before if b[2] not in ("missing", "cut")})
         if readable:
             return form, "checked", seqs, readable[-1][4]
         if thought:
             return form, "withheld", seqs, ""
+        if before and before[0][2] == "cut":
+            return "unknown", "size", [], ""
         if any(b[2] == "missing" for b in before) or self.carrier(tcid) not in self.content:
             return "unknown", "no_content", [], ""
         return form, "none", seqs, ""
@@ -586,7 +626,7 @@ def _constraint(run, note, call, f, pos, seqs, who):
         return note(call, "TK-X204", "size" if capped else "checked", _tiers(run, seqs))
     (_, cseq, kind, obj, source), name, lift = hit
     seqs = [*seqs, cseq, *([lift[1]] if lift else [])]
-    only = sorted({c[3] for c in run.stated if c[2] == "only_change" and c[0] < pos})
+    only = sorted(run.only_before(pos))
     note(call, "TK-X204", "checked", _tiers(run, seqs), _finding(
         run, "TK-X204", seqs, "low" if lift else "high" if source == "request" else "medium",
         call and call["order"], bool(lift)),

@@ -80,6 +80,11 @@ class Grammar(unittest.TestCase):
             constraints.mentions(text)
             constraints.facts("Bash", {"command": text})
             self.assertLess(time.perf_counter() - t0, 5, text[:20])
+        many = "Don't touch " + " or ".join(f"a{k}.py" for k in range(9000))   # one clause naming 9,000 files
+        t0 = time.perf_counter()
+        self.assertGreater(len(constraints.extract(many)), 5000)
+        constraints.mentions(many)
+        self.assertLess(time.perf_counter() - t0, 0.2)   # each file looked only at the next, not at every other
 
 
 class Live(Signed):

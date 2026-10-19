@@ -23,7 +23,9 @@ each text is cut at MAX_TEXT characters, so the pass is linear in what it reads 
 64 KiB hostile inputs) and stays within the analysis's time budget (past it, what is left is not checkable: budget).
 """
 import bisect
+import collections
 import hashlib
+import heapq
 import posixpath
 import re
 import shlex
@@ -545,6 +547,10 @@ def _about(names, path):
                for n in names)
 
 
+TARGETS = {"TK-X111": lambda c: c["pushes"], "TK-X112": lambda c: c["deletes"], "TK-X113": lambda c: c["writes"],
+           "TK-X114": lambda c: []}
+
+
 def _hit(obj, targets, allowed):
     """The targets of a call (paths, push words) a denial's objects cover."""
     if obj[0] == "any":
@@ -694,6 +700,25 @@ def check(run, content, out, cov, deadline, clock):
         if call is not None:
             shown["calls"][call["tcid"]]["checks"][rule] = status
 
+    named = {}   # rule -> (basename, part of a path) -> the calls with such a target, in dseq order
+
+    def covering(rule, fam, names):
+        """The calls of `fam` whose targets a denial naming `names` is about (_about), in dseq order, each once: from
+        an index, so a message denying a file nothing wrote reads no call."""
+        if rule not in named:
+            named[rule] = index = collections.defaultdict(list)
+            for c in fam_calls.get(fam, ()):
+                for key in {k for t in TARGETS[rule](c) for k in (("base", posixpath.basename(t.lower())),
+                                                                  *(("part", x) for x in PARTS.split(t.lower())))}:
+                    index[key].append(c)
+        seen = set()
+        for c in heapq.merge(*(named[rule].get(k, ()) for n in names for k in (
+                [("base", posixpath.basename(n))] if "." in n[1:-1] or "/" in n else
+                [("part", n), ("part", n.rstrip("s"))])), key=lambda c: c["dseq"]):
+            if c["dseq"] not in seen:
+                seen.add(c["dseq"])
+                yield c
+
     def last(fam, seq):
         k = bisect.bisect_left(fam_seqs.get(fam, ()), seq)
         return fam_calls[fam][k - 1] if k else None
@@ -758,15 +783,13 @@ def check(run, content, out, cov, deadline, clock):
         # TK-X111..X114: a denial of what the run did before it
         for rule in DENIED:
             obj = said["denials"].get(rule)
-            hits = []
-            for c in fam_calls.get({"TK-X111": "push", "TK-X112": "delete", "TK-X113": "write",
-                                    "TK-X114": "network"}[rule], ()) if obj else ():
+            hits, fam = [], {"TK-X111": "push", "TK-X112": "delete", "TK-X113": "write", "TK-X114": "network"}[rule]
+            named_only = obj and obj[0] not in ("any", "else") and rule != "TK-X114"
+            for c in (covering(rule, fam, obj[1]) if named_only else fam_calls.get(fam, ())) if obj else ():
                 if c["dseq"] >= seq:
                     break
-                targets = {"TK-X111": c["pushes"], "TK-X112": c["deletes"], "TK-X113": c["writes"],
-                           "TK-X114": []}[rule]
                 if obj[0] == "any" or rule == "TK-X114" or obj[0] == "else" and rule == "TK-X111" \
-                        or _hit(obj, targets, said["files"]):   # "didn't push to main": a push to main
+                        or _hit(obj, TARGETS[rule](c), said["files"]):   # "didn't push to main": a push to main
                     hits.append(c)
                     if len(hits) == 5:
                         break
