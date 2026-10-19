@@ -155,6 +155,38 @@ ask:
     reason: deleting a remote Git ref
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
 
+  # --- autostart locations: what runs at every login or boot ---
+  - id: TK-A010
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)[Ll]ibrary/Launch(Agents|Daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init\.d|rc\.local|xdg/autostart)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
+    reason: adding something that runs at every login or boot
+    rationale: Startup items and service definitions outlive the agent's session; a person confirms each one.
+  - id: TK-A011
+    class: shell
+    field: line
+    # the TK-A010 locations behind a command that writes, copies or links into them; listing and reading them stay
+    # unheld, and so does managing an existing service (`systemctl restart`)
+    pattern: '(\bcp\b|\binstall\b|\bmv\b|\bln\b|\btee\b|>|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bdd\b[^\n]*\bof=)[^\n]*([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|\b(launchctl\s+(load|bootstrap|enable)|systemctl\s+(--user\s+)?enable)\b'
+    reason: adding something that runs at every login or boot
+    rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
+
+  # --- Git hooks: code that runs on every commit, checkout or push in the repository ---
+  - id: TK-A012
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)\.git/hooks/'
+    reason: writing a Git hook
+    rationale: A hook runs on every developer's commit or push in this clone; a person confirms it.
+  - id: TK-A013
+    class: shell
+    field: line
+    pattern: '(\bcp\b|\binstall\b|\bmv\b|\bln\b|\btee\b|>|\bchmod\b|\bsed\s+(-[a-zA-Z]*\s+)*-i)[^\n]*\.git/hooks/|\bgit\b[^\n]*\bconfig\b[^\n]*\b[Cc][Oo][Rr][Ee]\.[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]\b'
+    reason: writing a Git hook or moving where hooks live
+    rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
+
 flag:
   - id: TK-F001
     class: shell
