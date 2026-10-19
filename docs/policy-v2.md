@@ -529,7 +529,8 @@ approval, and a shell command the parser can't read is denied. Two flags stay fl
 which only lists, and `TK-F012` (any URL a call acts on) would hold every web request and navigation (20% of E17's
 benign calls). It holds 4.9% of E17's benign calls (36 of 738; the server pack, 0.14%), 10.0% of E21's developer
 session calls (the server pack, 1.5%) and 10.9% of E21's held-out benign calls (4.2%), while catching 63.3% of E21's
-held-out harmful calls (56.2%) ([evaluation](evaluation.md#e21-policy-robustness)). Use it where a person answers holds promptly,
+held-out harmful calls (56.4%; both measured after rule changes, on a pool no longer blind:
+[evaluation](evaluation.md#e21-policy-robustness)). Use it where a person answers holds promptly,
 not for an agent that works unattended on a laptop.
 
 A deployment extends `server.yaml` (or composes only the packs it needs), maps its own tool names under `tools` (a

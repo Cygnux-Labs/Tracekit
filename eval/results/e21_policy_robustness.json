@@ -4817,37 +4817,37 @@
   "latency": {
     "default/re2": {
       "p50_us": 69,
-      "p99_us": 148,
-      "max_us": 259,
+      "p99_us": 150,
+      "max_us": 255,
       "calls": 2290
     },
     "default/regex": {
-      "p50_us": 64,
-      "p99_us": 179,
-      "max_us": 343,
+      "p50_us": 65,
+      "p99_us": 180,
+      "max_us": 360,
       "calls": 2290
     },
     "strict/re2": {
       "p50_us": 68,
-      "p99_us": 144,
-      "max_us": 258,
+      "p99_us": 146,
+      "max_us": 259,
       "calls": 2290
     },
     "strict/regex": {
       "p50_us": 63,
-      "p99_us": 176,
-      "max_us": 344,
+      "p99_us": 181,
+      "max_us": 350,
       "calls": 2290
     },
     "dev/re2": {
       "p50_us": 52,
       "p99_us": 125,
-      "max_us": 219,
+      "max_us": 223,
       "calls": 2290
     },
     "dev/regex": {
-      "p50_us": 48,
-      "p99_us": 129,
+      "p50_us": 49,
+      "p99_us": 131,
       "max_us": 215,
       "calls": 2290
     }
@@ -4872,12 +4872,12 @@
       }
     },
     "max_p99_us": {
-      "default/re2": 185,
-      "default/regex": 224,
-      "strict/re2": 180,
-      "strict/regex": 220,
+      "default/re2": 188,
+      "default/regex": 225,
+      "strict/re2": 182,
+      "strict/regex": 226,
       "dev/re2": 156,
-      "dev/regex": 161
+      "dev/regex": 164
     }
   },
   "over_target": [
