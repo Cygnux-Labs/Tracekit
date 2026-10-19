@@ -216,8 +216,12 @@ class Translator:
                             "usage": {"input_tokens": u.get("input_tokens") or 0, "output_tokens": u.get("output_tokens") or 0,
                                       "cache_read_input_tokens": u.get("cache_read_tokens") or 0,
                                       "cache_creation_input_tokens": u.get("cache_write_tokens") or 0} if u else None,
-                            "text": f"model {d.get('model') or ''} → {d.get('status')} {d.get('stop_reason') or ''} · {tools} · "
-                                    f"{d.get('duration_ms')} ms" + (f" (+{d.get('added_latency_ms')} ms proxy)" if d.get("added_latency_ms") is not None else "") + usage_txt})
+                            # a v2 exchange records no status or duration: only what was recorded is shown
+                            "text": f"model {d.get('model') or '?'}"
+                                    + "".join(f" → {d[k]}" if k == "status" else f" {d[k]}" for k in ("status", "stop_reason")
+                                              if d.get(k) not in (None, "")) + f" · {tools}"
+                                    + (f" · {d['duration_ms']} ms" if d.get("duration_ms") is not None else "")
+                                    + (f" (+{d.get('added_latency_ms')} ms proxy)" if d.get("added_latency_ms") is not None else "") + usage_txt})
         elif t == "model.message":
             kind = {"thinking": "thinking", "thinking_withheld": "thinking_redacted"}.get(d.get("kind"), "text")
             out.append({**self._base(e, rec, "model_turn"), "blocks": [{"kind": kind, "text": str(_show(d.get("content")))}]})
@@ -462,9 +466,10 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 ("Set-Cookie", f"{COOKIE}={sid}; SameSite=Strict{self._cookie_attrs()}")])
 
         def _exchange(self, u):
-            """`/?token=…` once: the token becomes an HttpOnly cookie and the browser is sent to a URL without it."""
+            """`/?token=…` (or `/runs?token=…`) once: the token becomes an HttpOnly cookie and the browser is sent to the
+            same page without it."""
             supplied = parse_qs(u.query).get("token", [""])[0]
-            return bool(token and supplied and u.path in ("/", "/index.html")
+            return bool(token and supplied and u.path in ("/", "/index.html", "/runs")
                         and hmac.compare_digest(supplied.encode(), token.encode()))
 
         def do_GET(self):
@@ -482,10 +487,14 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
             if approvals and (u.path == "/approvals" or u.path.startswith(("/api/approvals", "/api/session"))):
                 return self._desk(u.path)
             if not authorized:
+                if u.path in ("/", "/index.html", "/runs"):   # a person at a page: words, not JSON
+                    return self._send(401, "<!doctype html><title>Tracekit view</title><p>This viewer needs its token: "
+                                           "open the URL <code>tracekit view</code> printed (it ends in "
+                                           "<code>?token=…</code>).", "text/html")
                 return self._send(401, '{"error":"missing or wrong token"}')
             if exchange:
                 return self._send(303, "", "text/plain", headers=[
-                    ("Location", "/"),
+                    ("Location", "/runs" if u.path == "/runs" else "/"),
                     ("Set-Cookie", f"{COOKIE}={_session(token)}; HttpOnly; SameSite=Strict; Path=/"
                                    + ("; Secure" if secure else ""))])
             if runs and u.path in ("/runs", "/api/runs", "/api/run", "/api/bundle"):
@@ -539,8 +548,9 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
             if out is None:
                 return self._send(404, '{"error":"no such run"}')
             if u.path == "/api/bundle":
+                name = re.sub(r"[^A-Za-z0-9._-]", "_", q["run"])[:120]   # the run's own name, safe in a header
                 return self._send(200, out, "application/octet-stream",
-                                  headers=[("Content-Disposition", 'attachment; filename="run.tkb"')])
+                                  headers=[("Content-Disposition", f'attachment; filename="{name}.tkb"')])
             return self._send(200, json.dumps(out, ensure_ascii=False))
 
         def _desk(self, path, post=False):

@@ -22,7 +22,7 @@ dt { font-weight: bold; } dd { margin: 0 0 .4em 0; overflow-wrap: anywhere; }
 <p><label>Show <select id="filter"><option value="">all</option><option value="person">for people</option>
 <option value="agent">with an agent approver</option><option value="escalated">escalated to people</option></select></label></p>
 <table>
-<thead><tr><th>Approval</th><th>State</th><th>Tool</th><th>Rules</th><th>Run</th><th>Expires</th><th>Answered by</th></tr></thead>
+<thead><tr><th>Approval</th><th>State</th><th>Tool</th><th>Arguments</th><th>Rules</th><th>Run</th><th>Expires</th><th>Answered by</th></tr></thead>
 <tbody id="list"></tbody>
 </table>
 <section id="detail" hidden>
@@ -30,9 +30,10 @@ dt { font-weight: bold; } dd { margin: 0 0 .4em 0; overflow-wrap: anywhere; }
 <dl id="facts"></dl>
 <h3>Arguments (the signer's copy)</h3>
 <pre id="args"></pre>
-<p><label>Reason <input id="reason" maxlength="1024" size="60"></label></p>
+<p id="answer"><label>Reason <input id="reason" maxlength="1024" size="60"></label></p>
 <p><button id="approve">Approve</button> <button id="reject">Reject</button>
 <button id="revoke" hidden>Revoke the agent's approval</button></p>
+<p id="answered" hidden></p>
 </section>
 <script>
 "use strict";
@@ -43,6 +44,33 @@ const $ = id => document.getElementById(id);
 const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
 let session = null, current = null;
+const REFRESH_MS = 5000;   // the list (and the approval shown) refresh on their own: another approver may answer first
+const argsOf = new Map();   // approval id -> its arguments in one line, read once (the list carries none)
+
+// "in 12 min", "3 min ago": when an approval expires, from this browser's clock
+function relative(ts) {
+  const s = Math.round((Date.parse(ts) - Date.now()) / 1000), a = Math.abs(s);
+  const t = a < 90 ? a + " s" : a < 5400 ? Math.round(a / 60) + " min" : Math.round(a / 3600) + " h";
+  return isNaN(s) ? ts : s >= 0 ? "in " + t : t + " ago";
+}
+
+// a call's arguments in one line: each field's value, shortened
+function brief(args, source) {
+  if (args === null || args === undefined) return "";
+  const text = source === "raw" || typeof args !== "object" ? String(args)
+    : Object.entries(args).map(([k, v]) => k + ": " + (typeof v === "string" ? v : JSON.stringify(v))).join(" · ");
+  return text.length > 90 ? text.slice(0, 89) + "…" : text;
+}
+
+// the run's page on this viewer: its live terminal, else its run pages
+function runLink(id) {
+  const page = document.querySelector('.nav a[href="/"]') ? "/" : document.querySelector('.nav a[href="/runs"]') ? "/runs" : null;
+  if (!page) return document.createTextNode(vis(id));
+  const a = document.createElement("a");
+  a.href = page + "#run=" + encodeURIComponent(id);
+  a.textContent = vis(id);
+  return a;
+}
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : {method: "POST", body: JSON.stringify(body),
@@ -62,19 +90,35 @@ const kinds = {person: a => !a.agent, agent: a => a.agent, escalated: a => a.esc
 async function list() {
   const page = await api("/api/approvals"), rows = $("list"), keep = kinds[$("filter").value] || (() => true);
   rows.replaceChildren();
-  for (const a of page.approvals.filter(keep)) {
+  const shown = page.approvals.filter(keep);
+  for (const a of shown) {
     const row = rows.insertRow(), open = document.createElement("button");
     open.textContent = vis(a.approval_id);
     open.addEventListener("click", () => show(a.approval_id).catch(fail));
     row.insertCell().append(open);
     for (const v of [a.state + (a.escalated ? " (escalated)" : a.agent ? " (agent approver)" : ""),
-      a.tool + (a.passkey ? " (passkey)" : ""), a.rule_ids.join(", "), a.run_id, a.expires_at, answeredBy(a)])
+      a.tool + (a.passkey ? " (passkey)" : ""), argsOf.get(a.approval_id) ?? "", a.rule_ids.join(", ")])
       row.insertCell().textContent = vis(v);
+    row.insertCell().append(runLink(a.run_id));
+    const exp = row.insertCell();
+    exp.textContent = vis(relative(a.expires_at));
+    exp.title = vis(a.expires_at);
+    row.insertCell().textContent = vis(answeredBy(a));
+  }
+  // the arguments of each approval still waiting, read once each
+  for (const a of shown.filter(a => a.state === "requested" && !argsOf.has(a.approval_id))) {
+    argsOf.set(a.approval_id, "…");
+    api("/api/approvals/" + encodeURIComponent(a.approval_id)).then(x => {
+      argsOf.set(a.approval_id, brief(x.args, x.args_source));
+      return list();
+    }).catch(() => argsOf.set(a.approval_id, ""));
   }
 }
 
 async function show(id) {
-  current = await api("/api/approvals/" + encodeURIComponent(id));
+  const next = await api("/api/approvals/" + encodeURIComponent(id));
+  if (!current || current.approval_id !== next.approval_id) $("reason").value = "";   // a reason is for one approval
+  current = next;
   $("title").textContent = vis(current.approval_id + " (" + current.state + ")");
   const facts = [["tool", current.tool], ["rules", current.rule_ids.join(", ")], ["run", current.run_id],
     ["call", current.tool_call_id + " attempt " + current.attempt], ["requester", current.requester],
@@ -92,7 +136,14 @@ async function show(id) {
   }));
   $("args").textContent = vis(current.args === null ? "(deleted: the approval is no longer live)"
     : current.args_source === "raw" ? current.args : JSON.stringify(current.args, null, 2));
-  $("revoke").hidden = !(current.state === "approved" && current.answered?.kind === "agent");
+  // only a waiting approval can be answered; an agent's approval can be revoked until it is used
+  const open = current.state === "requested", revocable = current.state === "approved" && current.answered?.kind === "agent";
+  $("approve").hidden = $("reject").hidden = !open;
+  $("revoke").hidden = !revocable;
+  $("answer").hidden = !(open || revocable);
+  $("answered").hidden = open || revocable;
+  $("answered").textContent = vis("This approval is " + current.state + (current.answered ? ", answered by " + answeredBy(current) : "")
+    + ": there is nothing to answer.");
   $("detail").hidden = false;
 }
 
@@ -137,6 +188,10 @@ api("/api/session").then(s => {
   session = s;
   $("who").textContent = vis("Signed in as " + s.person);
   $("register").hidden = !s.rp_id;
+  setInterval(() => {
+    list().catch(fail);
+    if (current && document.activeElement !== $("reason")) show(current.approval_id).catch(fail);
+  }, REFRESH_MS);
   return list();
 }).catch(fail);
 </script>

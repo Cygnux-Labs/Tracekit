@@ -35,28 +35,40 @@ runs, and the sample v1 bundle.
 
 Panel 1 lists each run with its verdict: `VERIFIED` means `tracekit verify`'s checks passed on the run's bundle against
 the pinned log key (here the store's own key: `dev` assurance); `FAILED` means they did not, and the run shows only its
-failure report; `PENDING` means no checkpoint covers the run's last record yet. Under each run: calls, **blocked** (red:
-the policy denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `VERIFY`
-is the verifier's report, `BLOCK` a denied call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `SESS` the run's
-start and end. The header's `CHAIN ✓ N SIGNED RECORDS` counts the records shown from runs that verified. Click a run
-to scope the whole page to it; **All runs** goes back.
+failure report; `PENDING` means no checkpoint covers the run's records yet. A run still being written is shown up to
+the newest checkpoint and grows with each one. Under each run: calls, **blocked** (red: the policy denied them), held
+for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied call (red), `TOOL` an
+allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded under it and its final
+state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `WAITING`) in STATUS, `SESS` the run's start and end. A row marked
+`ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `FINDING`s of its
+analysis have no seq and no hash, and replay skips them; a row marked `WHY` comes from a why log. The tape renders the
+newest 600 rows; **SHOW OLDER** at its end renders more. Times are your browser's local time; the clock names the
+zone. The header's `CHAIN ✓ N SIGNED RECORDS` and `RECORDS` count the records shown from runs that verified. Click a
+run to scope the whole page to it; **All runs** goes back. A red bar under the header says when the page lost its
+viewer: it reconnects on its own and reloads the records.
 
 ### A run's review
 
 ![The run review: integrity VERIFIED, assurance dev, two allowed, one flagged, two denied, no gaps](viewer/review.png)
 
-With a run selected and no row, panel 8 is the run review: Integrity, Assurance, how many calls were allowed, flagged,
-denied and held, who approved, gaps by kind and coverage. Click a line to jump to its first record. Every verdict here
-is operator-side: for evidence, verify the bundle yourself with keys you pinned.
+With a run selected and no row, panel 8 is the run review. It opens with one sentence ("Verified. 8 calls: 5 ran, 1
+blocked, 3 held (1 rejected, 1 approved, 1 expired). 2 findings, 1 high."), then Integrity, Assurance, how many calls
+were allowed, flagged, denied and held, who approved, gaps in words (the gap's kind is the line's tooltip) and
+coverage. Click a line to jump to its first record. Every verdict here is operator-side: for evidence, verify the
+bundle yourself with keys you pinned; **EXPORT** and **VERIFY** give the exact `tracekit export --v2` and
+`tracekit verify` commands, each with a **COPY** button. A run that fails leads with its failing check.
 
 ### A denied call
 
 ![A BLOCK row selected: the call, its decision DENY to BLOCKED, the rules with their reasons, and its ledger evidence](viewer/denied.png)
 
 Click a tape row for its record: the decision (`DENY → BLOCKED`), the rules that matched with their reasons, the run's
-verdict, the arguments commitment (v2 records keep arguments only as a salted commitment) and, on the right, the
-record's seq, hash and previous hash. The bottom bar replays the selected run: `SPACE` plays, `←` `→` step,
-`D` `H` `G` jump to the next deny, hold or gap, `L` returns to live.
+verdict, the arguments the dev signer kept (when it kept them), the arguments commitment (v2 records keep arguments
+only as a salted commitment) and, on the right, the record's seq, hash and previous hash in full. **COPY** copies a
+hash, a run id or the `tracekit signer reveal` command. The findings that cite a record are listed on it, and a
+finding's CITES opens the records it cites. The bottom bar replays the selected run: `SPACE` (or `PLAY` and `PAUSE` in
+the command box) plays, `←` `→` step, `D` `H` `G` jump to the next deny, hold or gap (with none ahead, the box says
+so), `L` returns to live.
 
 ### The command box
 
@@ -126,8 +138,10 @@ interval), with → without, and **text reuse** (how much of the content's wordi
 **GRAPH** (header buttons) draws the run's data flow as a left-to-right flowchart, as Causeway did: inputs (cyan),
 model calls (magenta), tool calls (green), messages (amber), each arrow a recorded flow; a red border is untrusted
 content, a thick red arrow a confirmed cause with its effect, a dashed one an inferred link, an amber dot a sensitive
-tool call. **FIT** (the default) shrinks a wide flowchart to the panel, never above actual size; **ACTUAL SIZE**
-scrolls; **CLEAR HIGHLIGHT** undoes a click. Click a node: the graph
+tool call. **FIT** (the default) fits the flowchart to the panel's width and height, never above actual size;
+**ACTUAL SIZE** scrolls; **CLEAR HIGHLIGHT** undoes a click. The legend names only the marks the graph has. A run of
+more than 600 events is too large to draw: GRAPH says so, and TIMELINE, WHY DID IT HAPPEN? and a call's WHY tab show
+it. The picker names each run by its agents and short id. Click a node: the graph
 keeps what it came from and led to and fades the rest, and panel 8's **NODE** tab shows it in full: for a model call
 its model, time, tokens, what it saw (each a link) and what it produced; for a tool call its arguments, result,
 policy decision and a **WHY DID THIS HAPPEN?** button; for an input or a message its content and trust. **Came from**
@@ -145,8 +159,9 @@ left to right in run order; each node carries its signed decision: **DENIED** (r
 **APPROVED**, or ALLOWED (muted), with the first rule id. Click a node: NODE shows the decision, every rule with its
 reason, who approved, and the record it cites. A run's arguments are only a salted commitment, so WHY can list the
 path but not replay it. With ACTUAL SIZE a flowchart wider than its panel scrolls sideways (`scroll →` in the
-panel's title), and a
-clicked node is scrolled into view. The legend's DENIED, HELD and FLAGGED are the marks on the nodes.
+panel's title), and a clicked node is scrolled into view. A held call's node says how its approval ended
+(**APPROVED**, **REJECTED**, **EXPIRED**). The why views follow the run selected in panel 1; a run that failed
+verification has no graph, and GRAPH says why.
 
 ### AGENTS
 
@@ -188,9 +203,9 @@ run with the code `tracekit verify` runs. The page is the observer's terminal, f
   `PENDING` until a checkpoint covers the run's last record; every verdict is operator-side, see below), start time,
   duration, and its calls, blocked, held and gaps. Clicking a run scopes the tape, timeline, tool mix and header to it;
   **All runs** restores the full view. A run that fails shows only its verifier report.
-- **Tape** filters: All, Decisions, Approvals, Gaps & alerts. Holds and approvals are their own rows (`HOLD`,
-  `APPROVE`, `REJECT`) in words: who asked, which rules, who answered (attested, or vouched for by a bridge), the
-  reason, self-approval and break-glass. The signer's own records (`signer.epoch`, `refusal.summary`, key records) are
+- **Tape** filters: All, Decisions, Approvals, Gaps & alerts. A held call's approvals are rows (`HOLD`, `APPROVE`,
+  `REJECT`) folded under the call's row, in words: who asked, which rules, who answered (attested, or vouched for by a
+  bridge), the reason, self-approval (an approval only) and break-glass. The signer's own records (`signer.epoch`, `refusal.summary`, key records) are
   the `signer`'s rows, not an agent's.
 - **Detail**: a call's decision, its rules with their reasons, its arguments commitment and approval binding, and the
   verdict of its run. v2 records keep a call's arguments only as a salted commitment, so the viewer shows the rules'
@@ -202,7 +217,7 @@ run with the code `tracekit verify` runs. The page is the observer's terminal, f
   `THINK` or `SAYS` row and an entry of the Reasoning panel, labelled by its form (full, summary, withheld: sealed or
   absent). A call's detail shows what was said before it in the message that asked for it, marked "signed before this
   call" only when its record is older than the decision. It is the model's account: self-reported, not proof. Without
-  content, a line shows as committed and not readable here.
+  content, a line shows as said, its text not kept here (the record holds only its commitment).
 - **Run review** (detail, with a run selected and no row): Integrity and Assurance, allowed / flagged / denied / held
   and who approved, gaps by kind, coverage. Each line opens its first record. Once a dev run is final, its
   [findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2) (`tracekit analyze --v2`) are

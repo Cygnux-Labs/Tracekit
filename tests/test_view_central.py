@@ -178,7 +178,8 @@ class CentralViewer(unittest.TestCase):
     def test_downloaded_bundle_verifies_offline(self):
         status, r, data = self.get(f"/api/bundle?log=0&tenant=acme&run={self.ids['a1']}", self.acme)
         self.assertEqual(status, 200)
-        self.assertEqual(r.getheader("Content-Disposition"), 'attachment; filename="run.tkb"')
+        # each download is named by its run, so two saved bundles never overwrite each other
+        self.assertEqual(r.getheader("Content-Disposition"), f'attachment; filename="{self.ids["a1"]}.tkb"')
         d = tmpdir(self)
         out, trust = os.path.join(d, "run.tkb"), os.path.join(d, "trust.json")
         with open(out, "wb") as f:
