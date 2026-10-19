@@ -96,8 +96,9 @@ class Custody:
                 state, end = "requested", time.monotonic() + self.wait_s
                 while state == "requested" and end > time.monotonic():
                     try:
-                        state = self.client.approval_wait({**base, "approval_id": hint["approval_id_hint"], "timeout_ms":
-                                                           int(min(end - time.monotonic(), 300) * 1000)})["state"]
+                        state = self.client.approval_wait({
+                            **base, "approval_id": hint["approval_id_hint"],
+                            "timeout_ms": int(min(end - time.monotonic(), 300) * 1000)})["state"]
                     except RPCError as e:   # this client's other waits hold every slot: still requested, ask again
                         if e.code != "quota_exceeded":
                             raise

@@ -3,8 +3,8 @@
 Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
 `tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states),
 model_event's `amended` (the fields an LLM gateway changed in a request), its `said_only` (a response recorded without
-its calls) and register_run's `caller` (a gateway registering the run of a client it serves). Version 18 adds observe_effect's kernel sensor
-events (its `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17 (Tracekit 1.3) adds
+its calls) and register_run's `caller` (a gateway registering the run of a client it serves). Version 18 adds
+observe_effect's kernel sensor events (its `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17 (Tracekit 1.3) adds
 model_event's optional
 `tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
 Version 16 (all of Tracekit 1.2) adds register_run's optional

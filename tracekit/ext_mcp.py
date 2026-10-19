@@ -56,7 +56,8 @@ def _passed(tcid):
     """McpRequestResult: pass; header_mutation (4) {remove (2): RUN_HEADER}, so the agent's run token never reaches the
     MCP server (agentgateway applies it on a pass: mcp/guardrails/client.rs apply_request_side); metadata (5) Struct
     {fields (1): {key (1): CALL, value (2): Value {string_value (3)}}}."""
-    return PASS + _ld(4, _ld(2, RUN_HEADER.encode())) + _ld(5, _ld(1, _ld(1, CALL.encode()) + _ld(2, _ld(3, tcid.encode()))))
+    return (PASS + _ld(4, _ld(2, RUN_HEADER.encode()))
+            + _ld(5, _ld(1, _ld(1, CALL.encode()) + _ld(2, _ld(3, tcid.encode())))))
 
 
 def _strings(buf):
