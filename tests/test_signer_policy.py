@@ -135,6 +135,15 @@ class CodingPack(unittest.TestCase):
                            ("Write", {"file_path": "/repo/docs/hooks.md"})):
             self.assertEqual(self.e.decide(tool, args)["verdict"], "allow", args)
 
+    def test_shell_targets_and_startup_paths_are_matched_in_any_case(self):
+        # the agent's file system may ignore case (on macOS `cp x .ENV` writes .env): TK-A010 looked for LaunchAgents
+        # in the casefolded path, and shell targets weren't casefolded at all
+        self.verdicts([({"file_path": "/Users/u/library/launchagents/x.plist"}, "TK-A010"),
+                       ({"file_path": "/Users/u/LIBRARY/LAUNCHDAEMONS/x.plist"}, "TK-A010")], tool="Write")
+        self.verdicts([("cp x ~/library/launchagents/", "TK-A011"), ("cp x ~/.CONFIG/systemd/user/", "TK-A011"),
+                       ("cp x .GIT/hooks/pre-commit", "TK-A013"), ("echo x > .Git/Hooks/pre-commit", "TK-A013"),
+                       ("cp x .ENV", "TK-D010"), ("echo k > .Env", "TK-D010")])
+
     def test_shell_writes_into_protected_paths_are_read_per_command(self):
         # each command on its own, a wrapper's and a nested shell's too, and each redirection target
         self.verdicts([("find . -name k -exec cp {} ~/.ssh/id_rsa \\;", "TK-D010"), ("env A=1 cp a .env", "TK-D010"),
