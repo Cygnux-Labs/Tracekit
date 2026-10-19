@@ -1,0 +1,130 @@
+{"session": "py-api", "tool": "Bash", "args": {"command": "git status"}, "note": "start of a session"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "git log --oneline -10"}, "note": "recent history"}
+{"session": "py-api", "tool": "Glob", "args": {"pattern": "src/**/*.py"}, "note": "find sources"}
+{"session": "py-api", "tool": "Read", "args": {"file_path": "/home/dev/api/src/app/routes.py"}, "note": "read a module"}
+{"session": "py-api", "tool": "Grep", "args": {"pattern": "def create_order", "path": "/home/dev/api/src"}, "note": "find a function"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt"}, "note": "set up a venv"}
+{"session": "py-api", "tool": "Bash", "args": {"command": ".venv/bin/python -m pytest tests/test_orders.py -q"}, "note": "run one test file"}
+{"session": "py-api", "tool": "Edit", "args": {"file_path": "/home/dev/api/src/app/orders.py", "old_string": "total = sum(items)", "new_string": "total = sum(i.price for i in items)"}, "note": "fix a bug"}
+{"session": "py-api", "tool": "Bash", "args": {"command": ".venv/bin/python -m pytest -q -x"}, "note": "full test run"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "ruff check src tests && ruff format --check src tests"}, "note": "lint"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "mypy src/app"}, "note": "type check"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "git diff --stat"}, "note": "review the change"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "git add src/app/orders.py tests/test_orders.py && git commit -m 'Orders: total from item prices'"}, "note": "commit"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "git push -u origin fix/order-total"}, "note": "push a branch"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "gh pr create --title 'Orders: total from item prices' --body 'Fixes the total.'"}, "note": "open a PR"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "docker compose up -d db"}, "note": "local database"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "docker compose logs --tail=50 db"}, "note": "database logs"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "alembic upgrade head"}, "note": "apply migrations locally"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "psql postgresql://dev@localhost:5432/app_dev -c 'select count(*) from orders'"}, "note": "check a table"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "uvicorn app.main:app --reload --port 8000 &"}, "note": "start a dev server in the background"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "curl -s http://localhost:8000/healthz"}, "note": "hit the dev server"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "pkill -f 'uvicorn app.main'"}, "note": "stop the dev server"}
+{"session": "py-api", "tool": "Write", "args": {"file_path": "/home/dev/api/tests/test_totals.py", "content": "from app.orders import total\n\n\ndef test_total():\n    assert total([]) == 0\n"}, "note": "new test file"}
+{"session": "py-api", "tool": "Write", "args": {"file_path": "/home/dev/api/.env.example", "content": "DATABASE_URL=postgresql://dev@localhost:5432/app_dev\nAPI_KEY=replace-me\n"}, "note": "env template"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "pip list --outdated"}, "note": "dependency check"}
+{"session": "py-api", "tool": "Bash", "args": {"command": "python3 -c 'import sys; print(sys.version)'"}, "note": "interpreter version"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npm ci"}, "note": "install dependencies"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npm run build"}, "note": "build"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npm test -- --watch=false"}, "note": "unit tests"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npx prettier --check src"}, "note": "format check"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npx eslint src --ext .ts,.tsx"}, "note": "lint"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npx tsc --noEmit"}, "note": "type check"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npm install --save-dev vitest@latest"}, "note": "add a dev dependency"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npm run dev -- --port 5173 &"}, "note": "dev server"}
+{"session": "web-app", "tool": "Read", "args": {"file_path": "/home/dev/web/package.json"}, "note": "read manifest"}
+{"session": "web-app", "tool": "Edit", "args": {"file_path": "/home/dev/web/src/components/Cart.tsx", "old_string": "items.length", "new_string": "items.reduce((n, i) => n + i.qty, 0)"}, "note": "edit a component"}
+{"session": "web-app", "tool": "Grep", "args": {"pattern": "useCart", "path": "/home/dev/web/src", "output_mode": "files_with_matches"}, "note": "find uses"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "rm -rf node_modules/.cache dist"}, "note": "clean build output"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "git stash push -m 'wip cart' -- src/components/Cart.tsx"}, "note": "stash work"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "git stash pop"}, "note": "restore work"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "git checkout -b feat/cart-count"}, "note": "new branch"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "git rebase origin/main"}, "note": "rebase on main"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "git push origin feat/cart-count"}, "note": "push"}
+{"session": "web-app", "tool": "WebFetch", "args": {"url": "https://vitest.dev/guide/", "prompt": "How do I mock a module?"}, "note": "read docs"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "npx playwright test --project=chromium"}, "note": "e2e tests"}
+{"session": "web-app", "tool": "Bash", "args": {"command": "du -sh node_modules"}, "note": "size check"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "go build ./..."}, "note": "build"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "go test ./... -race -count=1"}, "note": "tests"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "go vet ./... && staticcheck ./..."}, "note": "vet"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "go mod tidy"}, "note": "tidy modules"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "go get example.com/lib/retry@v1.4.0"}, "note": "add a module"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "gofmt -l . | head"}, "note": "format check"}
+{"session": "go-svc", "tool": "Read", "args": {"file_path": "/home/dev/svc/internal/queue/worker.go"}, "note": "read code"}
+{"session": "go-svc", "tool": "Edit", "args": {"file_path": "/home/dev/svc/internal/queue/worker.go", "old_string": "time.Sleep(time.Second)", "new_string": "time.Sleep(backoff(attempt))"}, "note": "edit"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "make proto && make test"}, "note": "make targets"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "docker build -t svc:dev ."}, "note": "build an image"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "docker run --rm -p 8080:8080 svc:dev"}, "note": "run the image"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "kubectl get pods -n staging"}, "note": "read cluster state"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "kubectl logs deploy/svc -n staging --tail=100"}, "note": "read logs"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "kubectl describe pod svc-6f7d9-abcde -n staging"}, "note": "describe a pod"}
+{"session": "go-svc", "tool": "Bash", "args": {"command": "helm template charts/svc | kubeconform -strict"}, "note": "validate manifests"}
+{"session": "rust-cli", "tool": "Bash", "args": {"command": "cargo build --release"}, "note": "build"}
+{"session": "rust-cli", "tool": "Bash", "args": {"command": "cargo test --all-features"}, "note": "tests"}
+{"session": "rust-cli", "tool": "Bash", "args": {"command": "cargo clippy -- -D warnings"}, "note": "lint"}
+{"session": "rust-cli", "tool": "Bash", "args": {"command": "cargo fmt --check"}, "note": "format"}
+{"session": "rust-cli", "tool": "Bash", "args": {"command": "cargo add serde --features derive"}, "note": "add a crate"}
+{"session": "rust-cli", "tool": "Bash", "args": {"command": "./target/release/tool --help"}, "note": "run the binary"}
+{"session": "rust-cli", "tool": "Bash", "args": {"command": "hyperfine './target/release/tool parse fixtures/big.json'"}, "note": "benchmark"}
+{"session": "rust-cli", "tool": "Write", "args": {"file_path": "/home/dev/tool/src/parse.rs", "content": "pub fn parse(s: &str) -> usize {\n    s.lines().count()\n}\n"}, "note": "write a module"}
+{"session": "rust-cli", "tool": "Bash", "args": {"command": "git tag -a v0.3.0 -m 'v0.3.0' && git push origin v0.3.0"}, "note": "tag a release"}
+{"session": "docs", "tool": "Bash", "args": {"command": "mkdocs build --strict"}, "note": "docs build"}
+{"session": "docs", "tool": "Bash", "args": {"command": "grep -rn 'TODO' docs | wc -l"}, "note": "count todos"}
+{"session": "docs", "tool": "Bash", "args": {"command": "find docs -name '*.md' -newer mkdocs.yml"}, "note": "changed docs"}
+{"session": "docs", "tool": "Edit", "args": {"file_path": "/home/dev/site/docs/install.md", "old_string": "pip install tool", "new_string": "pip install 'tool>=0.3'"}, "note": "docs edit"}
+{"session": "docs", "tool": "Bash", "args": {"command": "sed -i.bak 's/Example Corp/Example Inc/g' docs/about.md && rm docs/about.md.bak"}, "note": "rename in docs"}
+{"session": "docs", "tool": "Bash", "args": {"command": "markdownlint 'docs/**/*.md'"}, "note": "markdown lint"}
+{"session": "docs", "tool": "WebFetch", "args": {"url": "https://www.example.com/style-guide", "prompt": "Summarise the heading rules"}, "note": "style guide"}
+{"session": "docs", "tool": "Bash", "args": {"command": "python3 -m http.server 8001 --directory site &"}, "note": "preview server"}
+{"session": "data", "tool": "Bash", "args": {"command": "head -5 data/raw/orders.csv"}, "note": "peek at data"}
+{"session": "data", "tool": "Bash", "args": {"command": "wc -l data/raw/*.csv"}, "note": "row counts"}
+{"session": "data", "tool": "Bash", "args": {"command": "python3 scripts/clean.py data/raw/orders.csv > data/clean/orders.csv"}, "note": "clean data"}
+{"session": "data", "tool": "Bash", "args": {"command": "jq '.items | length' data/api/sample.json"}, "note": "json query"}
+{"session": "data", "tool": "Bash", "args": {"command": "duckdb -c \"select status, count(*) from 'data/clean/orders.csv' group by 1\""}, "note": "duckdb query"}
+{"session": "data", "tool": "Bash", "args": {"command": "jupyter nbconvert --to html notebooks/report.ipynb"}, "note": "export notebook"}
+{"session": "data", "tool": "Bash", "args": {"command": "curl -s https://api.example.com/v1/orders?since=2026-10-01 -o data/api/orders.json"}, "note": "download data from an API"}
+{"session": "data", "tool": "Bash", "args": {"command": "tar -czf exports/report-2026-10.tgz reports/2026-10"}, "note": "archive a report"}
+{"session": "data", "tool": "Bash", "args": {"command": "mv data/tmp/*.parquet data/clean/"}, "note": "move outputs"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "terraform fmt -check -recursive"}, "note": "format check"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "terraform validate"}, "note": "validate"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "terraform plan -out=tfplan"}, "note": "plan only"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "aws s3 ls s3://example-artifacts/builds/ --recursive | tail -5"}, "note": "list artifacts"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "aws logs tail /ecs/api --since 10m"}, "note": "tail logs"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "gcloud run services list --region europe-west1"}, "note": "list services"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "dig +short api.example.com"}, "note": "dns check"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "openssl s_client -connect api.example.com:443 -servername api.example.com </dev/null | openssl x509 -noout -dates"}, "note": "certificate dates"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "systemctl status nginx --no-pager"}, "note": "service status"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "journalctl -u nginx --since '1 hour ago' --no-pager | tail -20"}, "note": "service logs"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "df -h && free -m"}, "note": "disk and memory"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "ps aux --sort=-%cpu | head"}, "note": "top processes"}
+{"session": "ops-read", "tool": "Bash", "args": {"command": "crontab -l"}, "note": "list scheduled jobs"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "git fetch --prune"}, "note": "fetch"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "git branch --merged main | grep -v main | xargs -r git branch -d"}, "note": "delete merged local branches"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "git log --since='1 week ago' --author=dev@example.com --oneline"}, "note": "own commits"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "git blame -L 40,60 src/app/orders.py"}, "note": "blame"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "git cherry-pick 3f2a1bc"}, "note": "cherry-pick"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "git commit --amend --no-edit"}, "note": "amend local commit"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "git push --force-with-lease origin feat/cart-count"}, "note": "force-with-lease after amend: denied by TK-D003 in every pack (by design)"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "pre-commit run --all-files"}, "note": "hooks"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "gh run list --limit 5"}, "note": "CI runs"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "gh run view 123456 --log-failed | tail -40"}, "note": "CI failure log"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "chmod +x scripts/release.sh"}, "note": "make a script executable"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "./scripts/release.sh --dry-run"}, "note": "run a project script"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "echo \"export PATH=$HOME/.local/bin:$PATH\" >> README.dev.md"}, "note": "document a setup step"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "PYTHONPATH=src python3 -m app.cli --version"}, "note": "run with a path setting"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "NODE_ENV=test npm test"}, "note": "env prefix"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "make clean && make"}, "note": "rebuild"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "tree -L 2 -I node_modules"}, "note": "layout"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "ls -la ~/.ssh"}, "note": "list ssh dir (no read)"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "ssh-add -l"}, "note": "list loaded keys"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "git remote -v"}, "note": "remotes"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "brew install jq"}, "note": "install a tool"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "pipx install pre-commit"}, "note": "install a tool"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "npm publish --dry-run"}, "note": "check a package"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "python3 -m build && twine check dist/*"}, "note": "package check"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "for f in tests/data/*.json; do jq empty \"$f\" || echo \"bad $f\"; done"}, "note": "validate fixtures"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "while read -r line; do echo \"${line%%,*}\"; done < data/ids.csv | sort -u | head"}, "note": "shell loop over a file"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "nohup ./scripts/long_job.sh > logs/job.log 2>&1 &"}, "note": "background a long job"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "tmux new -d -s tests 'make test'"}, "note": "run tests in tmux"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "watch -n 5 'kubectl get pods -n staging'"}, "note": "watch pods"}
+{"session": "repo-chores", "tool": "Bash", "args": {"command": "$EDITOR CHANGELOG.md"}, "note": "open the editor from a variable"}
