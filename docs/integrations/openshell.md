@@ -53,7 +53,11 @@ tool, allowed and flagged.
 
 ```yaml
 listen: 0.0.0.0:50051                      # reached by the OpenShell gateway and every sandbox supervisor
-tls: {cert: tls/mw.pem, key: tls/mw.key}   # optional; without it, plaintext gRPC
+tls: {cert: tls/mw.pem, key: tls/mw.key}
+gateway_jwt:                               # who may call it: see below
+  gateway_id: openshell                    # the gateway's [openshell.gateway.gateway_jwt] gateway_id
+  public_key: jwt/public.pem               # a copy of its public_key_path
+  audience: "urn:openshell:extension:middleware:tracekit"   # the registration's audience (its default for "tracekit")
 signer: https://signer.internal:8443       # its identity: $TRACEKIT_SIGNER_CERT/_KEY or _TOKEN_FILE
 ```
 
@@ -77,7 +81,23 @@ timeout = "10s"
 The middleware makes four signer calls for a sandbox's first request (register, delegate, decide, consume) and two
 for each later one. `timeout` bounds each call OpenShell makes to the middleware, and OpenShell's default of 500 ms
 leaves little room for a remote signer. For local development, use an `http://` endpoint with
-`allow_insecure_transport = true` and leave `tls` out of `openshell-middleware.yaml`.
+`allow_insecure_transport = true`, and leave `tls` and `gateway_jwt` out of `openshell-middleware.yaml`: the
+middleware then listens on a loopback address only (`listen: 127.0.0.1:50051`), unless you set
+`allow_unauthenticated: true`.
+
+### Who may call it
+
+With JWT signing configured, OpenShell sends a short-lived token with every call to the middleware
+([Authenticating Extensions](https://github.com/NVIDIA/OpenShell/blob/main/docs/extensibility/overview.mdx#authenticating-extensions)).
+With `gateway_jwt` the middleware checks it on each call: `typ` `openshell-ext+jwt`, an EdDSA signature under the
+gateway's key, issuer `openshell-gateway:<gateway_id>`, the audience, not expired. A request or a response needs a
+sandbox supervisor's token for the sandbox it names, so one sandbox (or anything else on the network) can't send
+requests or responses in another's name. A request without a valid token is denied (`tracekit_unauthenticated`);
+`Describe`, `ValidateConfig` and a response stream are refused (`UNAUTHENTICATED`). `gateway_jwt` needs `tls`:
+OpenShell sends its tokens to `https://` endpoints only.
+
+Without `gateway_jwt`, any peer that reaches the address is taken for OpenShell, so the middleware refuses to listen
+beyond loopback unless `allow_unauthenticated: true` says the network already authenticates its callers.
 
 **4. The sandbox policy.** Attach it to the hosts whose traffic you want decided and recorded:
 
@@ -112,8 +132,10 @@ middleware's reason code and none of its text:
 | `tracekit_signer_unreachable` | the signer can't be reached: nothing is sent, whatever the run's fail modes |
 | `tracekit_signer_refused` | the signer refused the middleware's call (a missing grant, a quota) |
 | `tracekit_malformed_request` | OpenShell's message didn't decode |
+| `tracekit_unauthenticated` | with `gateway_jwt`, the call came without a valid token for the request's sandbox |
 
-The middleware prints each refusal and each held request on stderr, with the reason OpenShell doesn't pass on.
+The middleware prints each refusal and each held request on stderr, with the reason OpenShell doesn't pass on (a
+held request's URL without its query string, which may carry a secret).
 
 ## Held requests
 
@@ -133,7 +155,9 @@ own gets `tracekit_approval_pending` until someone answers.
 ## What Tracekit records
 
 - **One run per sandbox**, `openshell-<sandbox id>-<8 hex>`, agent `openshell sandbox <name>`, registered by the
-  middleware on the sandbox's first request. The run token stays in the middleware; the agent never holds it. When the
+  middleware on the sandbox's first request, for `openshell:<sandbox id>`: each sandbox's runs, approval waits and
+  events count against the signer's quotas (`limits`) on their own, not against one budget for every sandbox. The
+  run token stays in the middleware; the agent never holds it. When the
   signer closes the run after `idle_s` without calls, the sandbox's next request starts a new run, and so does a
   restart of the middleware.
 - **Each request** as tool `http_request` with arguments `method`, `url`, `headers` (the headers OpenShell passes, in
@@ -159,8 +183,11 @@ counts the calls under `tiers` as T2.
   recorded: OpenShell doesn't send it today.
 - **Doesn't read:** a response body OpenShell doesn't offer to middleware (compressed, partial, bodyless or
   `no-transform`); such a call completes with the digest of its status and headers.
-- **Doesn't check:** who calls it. OpenShell can send a signed token with each call; the middleware doesn't verify it
-  yet, so it takes any caller that reaches its address for a supervisor.
+- **Doesn't check without `gateway_jwt`:** who calls it. Any caller that reaches its address is taken for OpenShell
+  ([who may call it](#who-may-call-it)).
+- **Doesn't take more than 64 responses at once:** each response stream holds a thread, and the threads that decide
+  requests stay free; one more response is refused, which OpenShell handles by the entry's `on_error`, and its call
+  ends as a `held_call_unresolved` gap.
 - **Doesn't import:** OpenShell's OCSF events. OpenShell exports them as OpenTelemetry log records over gRPC, and the
   signer's OpenTelemetry import takes traces only.
 
