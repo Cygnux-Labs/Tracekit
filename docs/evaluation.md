@@ -383,7 +383,7 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   is denied or held (ask); a benign call is a false positive when it is denied or held.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
   data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
-- Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,207 calls in this run; 2,227 in the recorded results, after E17 grew).
+- Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,207 calls in this run; 2,230 in the recorded results, after E17 grew).
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
