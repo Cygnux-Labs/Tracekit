@@ -72,7 +72,7 @@ VERSIONS = {
     "1.3.0": {"types": ["reconcile.result_mismatch"], "fields": {},
               "values": {"capture.gap": {"kind": ["result_unchecked"]}}},
     "1.4.0": {"types": ["constraint.added"], "fields": {"effect.observed": ["sensor"], "review": ["cites"],
-                                                        "model.exchange": ["said_only"]},
+                                                        "model.exchange": ["said_only"], "capture.gap": ["sensor"]},
               "values": {"capture.gap": {"kind": ["constraint_refused"]}}, "ext": ["amended"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
@@ -242,7 +242,8 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
     if anchor:
         files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
-    events = [r["event"] for r in [*pointed, *(r for rs in runs.values() for r in rs)]]
+    # every record the verifier reads (its schema, ext names), the key records too
+    events = [r["event"] for r in [*keys, *pointed, *(r for rs in runs.values() for r in rs)]]
     for h in sorted(cited_policies(events) if policy_dir else ()):
         try:
             with open(os.path.join(policy_dir, h.removeprefix("sha256:") + ".json"), "rb") as f:

@@ -988,6 +988,8 @@ ENTRIES = {
     "effect.observed.sensor": [registered(), ("effect.observed", {
         "observer": "uid:7", "sensor": "tetragon", "kind": "exec", "ts": TS_, "pid": 7, "binary": "/usr/bin/curl",
         "attribution": "identity"}, "run-a")],
+    "capture.gap.sensor": [registered(), ("capture.gap", {"kind": "observer_lost", "sensor": "falco", "reason": "r"},
+                                          "run-a")],
     "constraint.added": [registered(), ("constraint.added", {"kind": "no_push"}, "run-a")],
     "model.exchange.said_only": [registered(), ("model.exchange", {
         "exchange_id": "x1", "phase": "response", "streamed": False, "model": "m", "said_only": True}, "run-a")],
@@ -1021,6 +1023,20 @@ class TestVersionTable(Case):
 class TestExt(Case):
     """Format 1.4's non-critical slot: ext fields and records are signed, chained and included like any record; a name
     the verifier doesn't interpret is a warning, never a failure; any use of the slot needs 1.4.0."""
+
+    def test_an_ext_on_a_key_record_needs_1_4_0_too(self):
+        log = self.log()
+        der = crypto.spki(pub(KEY1))   # keys/records.jsonl, which the verifier reads like any run's records
+        log.add("signer.epoch", {"keys": [{"kid": crypto.spki_kid(der), "alg": "ed25519",
+                                           "spki": base64.b64encode(der).decode()}]}, run="signer", key=KEY1, ext=NOTE)
+        log.register()
+        log.final()
+        out = os.path.join(self.d, "key-ext.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        manifest = json.loads(v2.read_zip(out)["manifest.json"])
+        self.assertEqual((manifest["verifier_min_version"], manifest["verifier_version"]), ("1.4.0", "1.4.0"))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.warnings), (0, ["not interpreted"]), rep.checks)
 
     def test_an_ext_name_not_interpreted_verifies_with_a_warning(self):
         out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))

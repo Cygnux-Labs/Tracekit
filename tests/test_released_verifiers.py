@@ -19,7 +19,7 @@ from tracekit.signer import service as svc
 from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RELEASED = ["v1.3.0"]   # add each release's tag
+RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0"]   # add each release's tag
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
 VERIFY = ("import json, sys, tracekit\nfrom tracekit.verify import v2\nrep, code = v2.verify(sys.argv[1], sys.argv[2])\n"
           "print(json.dumps({'version': tracekit.__version__, 'code': code, 'integrity': rep.integrity, "
@@ -58,7 +58,7 @@ class Released(Signed):
     def sensor_run(self, effect):
         """A run a kernel sensor's import covered: with `effect` an exec it saw, else none and then a loss."""
         def observe(**req):
-            self.call(SENSOR, "observe_effect", instance="i", sensor="tetragon", **req)
+            self.call(SENSOR, "observe_effect", instance="i", sensor="tetragon", callers=[f"uid:{ME.subject}"], **req)
         observe(effects=[])
         run = self.register(ME)
         proc = {"caller": f"uid:{ME.subject}", "ts": "2026-10-12T10:00:00.000000Z", "pid": 7, "binary": "/usr/bin/curl"}
@@ -74,7 +74,9 @@ class Released(Signed):
         cases = {"an agent run": (self.export(run), "1.2.0")}
         self.findings(ANALYZER, run)
         cases["the run, with a findings run not exported"] = (self.export(run), "1.2.0")
-        cases["a sensor covered it, then lost events"] = (self.export(self.sensor_run(effect=False)), "1.2.0")
+        # a sensor's loss names its sensor: an older verifier says it can't verify it rather than print a line about
+        # an egress observer
+        cases["a sensor covered it, then lost events"] = (self.export(self.sensor_run(effect=False)), "1.4.0")
         cases["a sensor's effect"] = (self.export(self.sensor_run(effect=True)), "1.4.0")
         log = Log(os.path.join(self.dir, "ext"))
         self.addCleanup(log.store.close)

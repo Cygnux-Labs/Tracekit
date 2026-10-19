@@ -2225,6 +2225,13 @@
             "null"
           ],
           "maxLength": 4096
+        },
+        "sensor": {
+          "enum": [
+            "tetragon",
+            "falco"
+          ],
+          "description": "format 1.4: the kernel sensor whose import an observer_lost gap is about"
         }
       }
     },
@@ -4697,7 +4704,7 @@
         },
         "tool_call_id": {
           "$ref": "#/$defs/id",
-          "description": "the tool call id the process's environment carried (CODEX_TOOL_CALL_ID): the agent's claim"
+          "description": "the tool call id the process's environment carried (CODEX_TOOL_CALL_ID): the agent's claim, recorded as it came and checked by no signer (TK-X206 checks it)"
         },
         "attribution": {
           "enum": [
@@ -4705,10 +4712,6 @@
             "identity"
           ],
           "description": "identity: the import mapped the process to the run's owner and the signer picked that owner's latest open run"
-        },
-        "explained_by": {
-          "const": "call",
-          "description": "the run decided the tool call tool_call_id names, and didn't deny it"
         }
       }
     },

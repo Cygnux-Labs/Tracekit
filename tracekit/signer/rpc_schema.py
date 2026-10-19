@@ -31,6 +31,7 @@ RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
+MAX_CALLERS = 256   # identities a kernel sensor's import maps processes to
 
 ERROR_CODES = [
     "invalid_request",      # fails the request schema
@@ -306,6 +307,7 @@ REQUESTS = {
     # `instance`; `check`: refused with run_token_invalid unless the signer issued that token for that run
     # A kernel sensor's import (tracekit.sensor) names its `sensor` in every call: each of its effects is what that
     # sensor says process `pid` did (`tool_call_id`: the id the process's environment carried, the agent's claim);
+    # `callers`, in every call: the identities its `runs` map processes to, whose runs it covers (no other run);
     # `lost`: events the sensor or the import dropped, a gap in each run it covers
     "observe_effect": _obj(["request_id", "instance", "effects"], request_id=ID, instance=ID, effects={
         "type": "array", "maxItems": 256, "items": {"oneOf": [_obj(
@@ -319,7 +321,7 @@ REQUESTS = {
                  port={"type": "integer", "minimum": 0, "maximum": 65535}, **_OS),
             _obj(_OS_REQ + ["path"], kind={"const": "file"}, path=_str(4096, minLength=1), **_OS)]}},
         check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN), sensor={"enum": ["tetragon", "falco"]},
-        lost=REASON),
+        callers={"type": "array", "maxItems": MAX_CALLERS, "items": IDENTITY}, lost=REASON),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
                  limit={"type": "integer", "minimum": 1, "maximum": 1000}),

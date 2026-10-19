@@ -115,6 +115,7 @@ class TestImport(Signer):
             if not snapshot:   # replay the log in full
                 shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
             s = self.open()
+            self.assertEqual(s._beats, {})   # no follower sends an OTLP import's run heartbeats: none is awaited
             self.assertEqual(self.post(s, data), (200, {}))
             s.close()
             self.assertEqual(len(self.events()), n, snapshot)

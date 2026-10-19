@@ -132,7 +132,8 @@ drops from a full output queue (`outputs_queue.capacity`) show only in its log a
   reports.
 - **Doesn't see:** system calls the rules don't match, alerts with a field the rule's output doesn't name (the import
   can't attribute them, so they're skipped, or counted as lost when the process is an agent's but the effect can't be
-  built), and anything before the import's first heartbeat.
+  built), a connect to a unix socket (`fd.sip` null: skipped and counted on stderr, no loss), and anything before
+  the import's first heartbeat.
 - **Doesn't check:** that Falco's alerts are true. The records are the import's assertion of what Falco said, and a
   root user on the node can change Falco, its output or the import.
 

@@ -18,6 +18,7 @@ from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import rpc_schema, service as svc
+from tracekit.storage.file import FileStorage
 from tracekit.verify import v2
 
 FOLLOWER = CallerIdentity("mtls", "spiffe://acme/agentsh-follow", True)
@@ -229,6 +230,15 @@ class TestAgentsh(Followed):
                               r".+\): read it there$")
         self.assertEqual([e["data"]["tool_use_id"] for e in self.typed("policy.external")], ["evt-029"])
 
+    def test_a_decision_the_signer_would_refuse_is_a_gap_and_the_log_goes_on(self):
+        al, log = self.agentsh()
+        al.write('{"id":"evt-9","type":"","policy":{"decision":"deny","rule":["a"]}}', SHADOW)   # no tool, a list rule
+        log.step()
+        [refused] = self.reasons()
+        self.assertRegex(refused, r"^the record at byte \d+ of .+ holds a decision the signer would refuse \(tool: "
+                                  r"shorter than 1; rule_ids\[0\]: expected string, got list\): it is in that log only$")
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.typed("policy.external")], ["evt-029"])
+
     def test_the_signer_unreachable_holds_the_line_and_records_it_once(self):
         al, log = self.agentsh()
         al.write(SHADOW)
@@ -269,6 +279,17 @@ class TestAgentsh(Followed):
         self.assertRegex(gap, r"^no tailer_heartbeat for \d+s while the run was open: the log follower stopped or was "
                               r"killed; what the log says after that is not recorded: read the log itself for it, and "
                               r"restart `tracekit follow`$")
+
+    def test_a_follower_killed_across_a_signer_restart_without_a_snapshot_is_a_gap(self):
+        al, log = self.agentsh()
+        al.write(SHADOW)
+        log.step()   # its run registered
+        with mock.patch.object(FileStorage, "snapshot_put"):   # the signer stopped without its snapshot
+            self.close()
+        self.open()   # the run's state replayed from its records: still watched for the follower's heartbeats
+        self.s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)
+        [gap] = self.gaps()
+        self.assertIn("the log follower stopped or was killed", gap)
 
     def test_a_rotated_log_is_followed_into_the_new_one(self):
         al, log = self.agentsh()

@@ -175,7 +175,8 @@ are absent is not counted (`findings counted`, a warning). A bundle with either 
 Signed findings (format 1.4, [findings](findings.md)): `tracekit analyze --v2`, run by an operator identity signer.yaml
 `analyzers` lists, writes each finding through the `review_finding` RPC in a findings run (`run.registered`
 `analyzes`; refused in any other run) as `review{reviewer, verdict, cites: [{run_seq, hash}]}`. `cites` are records of
-the analysed run, by `run_seq` and record `hash`. The verdict holds no text of the run, only `{kind: finding, rule,
+the analysed run, by `run_seq` and record `hash`: the signer refuses a finding (`invalid_request`) unless each is.
+The verdict holds no text of the run, only `{kind: finding, rule,
 title, severity: info|low|medium|high|critical, tier?: gateway|harness|transcript|sdk (the text it relied on; harness:
 a prompt the hook recorded and the transcript agree on), order?: signed_before|transcript_order|after (that text
 against the call), redacted?, lifted?: true (TK-X204: a later request named what the constraint kept away, so the
@@ -216,7 +217,7 @@ and then never heard about. All are `capture.gap` records with `source: signer`.
 | `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the closing identity wrote (or that never reached the signer) not received by then (the reason names that identity; values up to there that arrive later are recorded with no second gap). A gateway's report about a run already final goes in the tenant's run `tracekit/signer` | `missed_events`, top-level `stream`; in `tracekit/signer`, `run_id`: the run |
 | `tailer_lost` | also when a transcript tailer (an identity a run was delegated to with the `tailer_heartbeat` grant) makes no call for 90 s while its run is open, counted from the delegation | — |
 | `tailer_redelegated` | in the run, when a second tailer token is delegated for it | — |
-| `observer_lost` | in each open run an egress observer (or a kernel sensor's import, format 1.4) covers, when it makes no `observe_effect` call for 90 s, or another process of it (`instance`) takes over; and when an import reports a loss | — |
+| `observer_lost` | in each open run an egress observer (or a kernel sensor's import, format 1.4) covers, when it makes no `observe_effect` call for 90 s, or another process of it (`instance`) takes over; and when an import reports a loss | `sensor` (format 1.4): `tetragon` or `falco`, when it is a kernel sensor's import |
 | `effect_outside_run` | in the tenant's run `tracekit/signer`: an egress observation no open run holds (after its `run.final` and `observe_grace_s`, a token the signer didn't issue for that run, an identity with no open run) | `run_id`: the run the client named or it was attributed to, when there is one |
 
 Effects (format 1.2, [egress](egress.md)): an egress observer outside the agent reports the hosts each run reached
@@ -260,17 +261,18 @@ once per call. A bundle with either needs `verifier_min_version` 1.3.0.
 
 Kernel sensor events (format 1.4, experimental, [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md)):
 an import of a kernel sensor's export (`observe_effect` with `sensor`, the same grant) reports what an agent's
-processes did; the signer writes
-`effect.observed{observer, sensor, kind: exec|exit|connect|file, ts, pid, binary, exec_id?, args_commitment?,
-salt_id?, status?, signal?, host?, port?, path?, tool_call_id?, attribution, explained_by?: call}` (`source: signer`,
-one per event) in the run it is attributed to. `args_commitment` commits to `"sha256:" + hex(SHA-256(UTF-8 bytes of
-the arguments string as the sensor reported it))` (§2). `tool_call_id` is the id the process's environment carried,
-the agent's claim; `explained_by: call` when the run decided that call and didn't deny it. An event no open run holds
-is an `effect_outside_run` gap, as for the egress observer. A loss the import reports (`lost`) is an `observer_lost`
-gap in each run it covers, or in the tenant's run `tracekit/signer` when it covers none, and ends that coverage; so do
-90 s of silence and a restart. `run.final`'s `matrix` says `processes: observed` with the sensor as its layer when an
-import covered the run throughout; an import's coverage never makes `network` observed. A bundle with these records
-needs `verifier_min_version` 1.4.0.
+processes did, and names in every call the identities its configuration maps processes to (`callers`): it covers the
+runs of those identities registered while it is alive, and no other run. The signer writes
+`effect.observed{observer, sensor, kind: exec|exit|connect|file, ts, pid, binary, exec_id?, args_commitment?, salt_id?,
+status?, signal?, host?, port?, path?, tool_call_id?, attribution}` (`source: signer`, one per event) in the run it is
+attributed to. `args_commitment` commits to `"sha256:" + hex(SHA-256(UTF-8 bytes of the arguments string as the sensor
+reported it))` (§2). `tool_call_id` is the id the process's environment carried, the agent's claim, recorded as it
+came: the signer never takes it as explaining the effect (`tracekit analyze --v2`'s TK-X206 checks it). An event no
+open run holds is an `effect_outside_run` gap, as for the egress observer. A loss the import reports (`lost`) is an
+`observer_lost` gap with `sensor` in each run it covers, or in the tenant's run `tracekit/signer` when it covers none,
+and ends that coverage; so do 90 s of silence and a restart. `run.final`'s `matrix` says `processes: observed` with the sensor as
+its layer when an import covered the run throughout; an import's coverage never makes `network` observed. A bundle
+with these records needs `verifier_min_version` 1.4.0.
 
 Non-critical fields and records (format 1.4): any record may carry `ext`, an object of names to strict JSON values,
 and a record of type `ext` holds `data: {name, ...}` with any other fields. They are signed, chained and included like
@@ -524,11 +526,16 @@ them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — | — |
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
-| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites`; `model.exchange`: `said_only` | `capture.gap` `kind`: `constraint_refused` | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
+| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
 
-Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
-newer critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,
-never FAILED, and from 1.4.0 the `bundle readable` line lists the commands that verify the bundle (§11 step 2).
+Every v2 definition but `review`'s and `error`'s data (open since format 1.0) and the `ext` record's (open by
+design) is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a newer
+critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,
+never FAILED, and from 1.4.0 the `bundle readable` line lists the commands that verify the bundle (§11 step 2). The
+open definitions are why the manifest's version matters for `review.cites`: a 1.3 verifier given a signed finding
+under a manifest edited down to 1.3.0 passes its record's schema and checks neither its citations nor its author,
+and prints no `Findings:` line. What it prints stays true, the records being signed and included as any; the
+findings are left out, unchecked, so verify a bundle with signed findings with 1.4.0 or later.
 
 **Criticality.** From 1.4.0, an addition an older verifier can leave unread goes in the non-critical slot rather than
 a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
@@ -540,8 +547,9 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
 - A verifier from 1.4.0 checks every record's schema, signature, chain and inclusion whatever its `ext` holds, so an
   ext value edited, added or removed fails `signatures`, and an `ext` record dropped fails `run chain`. It interprets
   the ext names its own rows list, each on lines of its own; every other name gets a `not interpreted` warning
-  (`n record(s) carry ext.<name>: ...; tracekit >= <verifier_version> checks it`), exit 0 (3 with `--strict`), and the
-  integrity stays `VERIFIED`: every check that verifier implements passed.
+  (`n record(s) carry ext.<name>: ...; tracekit >= <verifier_version> checks it`; the first 20 names in code-point
+  order, and one more line, `n more ext name(s), ...`, for the rest), exit 0 (3 with `--strict`), and the integrity
+  stays `VERIFIED`: every check that verifier implements passed.
 - **The rule.** A name may go in `ext` only if every line an older verifier prints stays true without its
   interpretation: with it off, the report is the full report minus that name's own lines, plus its `not interpreted`
   line (`test_an_ext_interpretation_adds_only_its_own_lines` checks each name a row lists).
@@ -549,7 +557,9 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
   sent either way); a verifier that reads it adds a `gateway amendments` line.
 - `review.cites` and `effect.observed.sensor` stay critical: a verifier that passed over a signed finding's citations
   would label it `imported`, a false line; and a sensor's effects are records of what the agent's own processes did,
-  in its run, which a verifier must read to verify that run.
+  in its run, which a verifier must read to verify that run. So does `capture.gap.sensor`: a 1.3 verifier counts every
+  `observer_lost` as an egress observer gone silent, a false line for a sensor's reported loss, so it reports such a
+  bundle `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
 
 `tests/test_released_verifiers.py` runs each released Python verifier (from its git tag) on bundles of today's signer:
 those that declare its version or lower verify there with the same lines as here, the others are `UNVERIFIABLE`.
@@ -621,8 +631,9 @@ line and verdict is in [verdicts](verdicts.md).
    `self-asserted` (a warning) when that is the analysed run's identity or either run's `signer_isolation` is
    `same-user`; else `independent` when the trust config's `analyzers` lists it, else `unpinned author <id>`. Without
    the analysed run, the findings are `author not checked` and their cites not counted (`reviews counted`, a warning).
-   A `review` without `cites` is `imported`. The findings themselves are summed up on a `Findings:` line after
-   `Integrity` and `Assurance`, never in them.
+   A `review` without `cites` is `imported`. The signed findings themselves are summed up on a `Findings:` line after
+   `Integrity` and `Assurance`, never in them: by severity, the coverage reviews, and every review's label (an
+   imported review's severity is not counted).
    **Live constraints**: each `policy.decision` whose `rule_ids` hold `TK-CONSTRAINT` is an `ask` after a
    `constraint.added` in its run, else `constraints` fails.
 9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256 (else `policy snapshot` fails and neither
@@ -642,7 +653,7 @@ line and verdict is in [verdicts](verdicts.md).
    (`incidents`).
 10. **Ext** (records with an `ext` field or of type `ext`, §9). Each ext name the key and run records carry, in
     name order: the verifier's own check of it when it interprets it, else a `not interpreted` warning counting the
-    records that carry it. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show
+    records that carry it, for the first 20 such names; one more `not interpreted` warning counts the others. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show
     reasoning (<pointer>: <count>, ... the first 8 in code-point order); each record commits to the request as sent`,
     a warning listing the records (the first 20) where it is anything but a non-empty list of JSON pointers of at most
     256 characters on a `model.exchange` request record of source `gateway`.

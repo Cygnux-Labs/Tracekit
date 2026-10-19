@@ -112,7 +112,8 @@ The first `runs` entry whose `match` fits the event's process (its pod's namespa
 uid) attributes it: the signer gives the event to the latest open run of that entry's `caller`
 (`attribution: identity` in the record). An event of a process no entry matches is not an agent's: the import skips
 it. An event of a matched process whose caller has no open run is a signed `capture.gap{effect_outside_run}` in the
-tenant's signer run.
+tenant's signer run. The import covers the runs of its entries' `caller`s only (it names them in every call), so a run
+of any other identity never says its processes were observed, and the import's losses are no gaps in it.
 
 ## What is recorded
 
@@ -130,16 +131,18 @@ Every record also has `observer` (the import's identity), `sensor: tetragon`, `t
 `attribution`. Other events (other kprobes, tracepoints, LSM hooks) aren't recorded, nor are the `procFS` exec events
 of processes already running when Tetragon started.
 
-`run.final`'s coverage matrix says `processes observed (tetragon)` when the import covered the run throughout: it
-was alive when the run registered, sent a heartbeat at least every 30 s, and reported no loss.
+`run.final`'s coverage matrix says `processes observed (tetragon)` when the import covered the run throughout: the
+run's identity is a `caller` of its `runs`, and the import was alive when the run registered, sent a heartbeat at least
+every 30 s, and reported no loss.
 
 ## Tool calls
 
 Codex puts the id of the tool call that started a command into its environment as `CODEX_TOOL_CALL_ID`, the id Tracekit
 records as the call's `tool_call_id` ([coding agents](../coding-agents.md)). With Tetragon keeping that variable
-(step 1), each record of the command's processes carries it as `tool_call_id`, and `explained_by: call` when the run
-decided that call and didn't deny it. The id is the agent's claim: the process can change or remove it. A record with
-no `explained_by` is activity no decided call accounts for.
+(step 1), each record of the command's processes carries it as `tool_call_id`. The id is the agent's claim: the
+process can change, remove or reuse it, so the signer records it as it came and never takes it as explaining the
+record. `tracekit analyze --v2` checks it (TK-X206, below): the call ran, the record falls in its window, and its tool
+causes that kind of effect.
 
 Claude Code puts no such id into the commands it runs, so its runs' records carry none.
 
@@ -171,7 +174,9 @@ signed gap:
 - `process_throttle` (`THROTTLE_START`): its cgroup rate limit (`--cgroup-rate`) stopped sending a cgroup's exec and
   exit events.
 
-The import adds lines it can't read and an agent's events it can't record. It sends them to the signer as `lost`,
+The import adds lines it can't read and an agent's events it can't record. It skips, and counts on stderr when it
+exits, events it never records: a connect to no IP address (a unix socket: any family but `AF_INET` and `AF_INET6`),
+other kinds of event, and events of no agent; none of these is a loss. It sends the losses to the signer as `lost`,
 which writes a `capture.gap{observer_lost}` in each run the import covers (in the tenant's signer run when it covers
 none) and ends its coverage of those runs: their matrix says processes not covered. An import that stops sending for
 90 s, or restarts, is the same gap, as for the [egress observer](../egress.md#heartbeats-and-coverage).

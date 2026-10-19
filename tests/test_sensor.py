@@ -8,6 +8,7 @@ import tempfile
 import time
 import types
 import unittest
+import uuid
 from unittest import mock
 
 from test_signer_lifecycle import Lifecycle
@@ -17,6 +18,7 @@ from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import SignerUnavailable
+from tracekit.signer import pipeline
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.verify import v2
@@ -157,6 +159,8 @@ class TestFalcoLines(unittest.TestCase):
         self.assertIsNone(sensor.falco(dict(other, tags=["container", "shell"])))   # not a tracekit rule
         self.assertIsNone(self.effect(falco_line("Tracekit agent exec", "clone"))[1])
         self.assertIn("dropping 1287 of 23110 syscall event(s) in one second", sensor.falco(json.loads(FALCO_DROPS)))
+        unix = falco_line("Tracekit agent connect", "connect", **{"fd.sip": None, "fd.sport": None})   # a unix socket
+        self.assertEqual(self.effect(unix)[1], sensor.LOCAL)
 
 
 class Sensed(Lifecycle):
@@ -186,7 +190,7 @@ class Sensed(Lifecycle):
 
 
 class TestImport(Sensed):
-    def test_events_go_to_the_mapped_run_joined_to_the_call_and_verify(self):
+    def test_events_go_to_the_mapped_run_with_their_claimed_call_and_verify(self):
         imp = self.importer()
         self.assertTrue(imp.flush())   # its first heartbeat: it covers the runs registered from now on
         run = self.register()
@@ -198,11 +202,14 @@ class TestImport(Sensed):
                      exec_line(pod="web-1")):   # a pod no runs entry matches: not an agent's
             imp.add(text)
         self.assertTrue(imp.flush())
-        self.assertEqual(imp.skipped, 1)
+        self.assertEqual(imp.skipped, {sensor.NO_AGENT: 1})
         es = self.final(run)
         effects = [e["data"] for e in self.typed(es, "effect.observed")]
-        self.assertEqual([(d["kind"], d.get("explained_by")) for d in effects],
-                         [("exec", "call"), ("connect", None), ("file", None), ("exit", None)])   # call_9: no decide
+        # the call a process's environment names is the agent's claim: recorded, never signed as explaining the
+        # effect, whether the run decided that call (call_7) or not (call_9); TK-X206 checks it
+        self.assertEqual([(d["kind"], d.get("tool_call_id"), "explained_by" in d) for d in effects],
+                         [("exec", "call_7", False), ("connect", "call_9", False), ("file", None, False),
+                          ("exit", None, False)])
         x = effects[0]
         self.assertEqual({k: x[k] for k in ("observer", "sensor", "attribution", "tool_call_id", "binary", "pid",
                                             "parent_exec_id")},
@@ -211,7 +218,6 @@ class TestImport(Sensed):
                           "parent_exec_id": PARENT_EXEC_ID})   # the process that started it: TK-X206's ancestry
         self.assertRegex(x["args_commitment"], "^hmac-sha256:")   # the arguments' digest never in the clear
         self.assertNotIn("args_digest", x)
-        self.assertEqual(effects[1]["tool_call_id"], "call_9")   # the claim is kept, unexplained
         matrix = self.typed(es, "run.final")[0]["data"]["matrix"]
         self.assertEqual((matrix["processes"], matrix["network"]),
                          ({"status": "observed", "layers": ["tetragon"]}, {"status": "none", "layers": []}))
@@ -251,6 +257,19 @@ class TestImport(Sensed):
         self.assertIn("2 x tetragon lines the import could not read or record", lost["reason"])
         self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"], {"status": "none", "layers": []})
 
+    def test_a_connect_to_no_ip_address_is_skipped_not_a_loss(self):
+        imp = self.importer()
+        imp.flush()
+        run = self.register()
+        # an agent's process connecting to a unix socket: Tetragon's sockaddr of any family but AF_INET(6)
+        imp.add(kprobe_line("security_socket_connect", [{"sockaddr_arg": {"family": "AF_UNIX", "addr": "invalid IP"}}]))
+        imp.add("\n")   # a blank line: nothing
+        self.assertTrue(imp.flush())
+        self.assertEqual(imp.skipped, {sensor.LOCAL: 1})
+        es = self.final(run)
+        self.assertEqual((self.typed(es, "effect.observed"), self.gaps(es, "observer_lost")), ([], []))
+        self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"]["status"], "observed")
+
     def test_a_loss_with_no_run_covered_goes_to_the_signer_run(self):
         imp = self.importer()
         imp.add(RATE_LIMITED)
@@ -273,17 +292,65 @@ class TestImport(Sensed):
         (lost,) = self.gaps(self.events(later["run_id"]), "observer_lost")
         self.assertIn("the tetragon import mtls:spiffe://acme/tetragon restarted", lost["reason"])
 
+    def failing_once(self):
+        """The signer's storage refusing its next append, as a full disk would, and recovering at once."""
+        real, fail = self.s.log.storage.append_batch, [OSError("disk full")]
+
+        def append(records):
+            if fail:
+                raise fail.pop()
+            return real(records)
+        return mock.patch.multiple(self.s.log.storage, append_batch=append), mock.patch.object(pipeline, "RECOVER_S", 0)
+
+    def failed_then_sent_again(self, change):
+        """The gap of the import's call after `change(imp)`: its write fails, and the import sends the call again."""
+        imp = self.importer()
+        imp.flush()
+        run = self.register()
+        change(imp)
+        later = time.monotonic() + svc.HEARTBEAT_S
+        store, recover = self.failing_once()
+        with store, recover:
+            self.assertFalse(imp.flush(later))   # unavailable: the import sends it again
+            self.assertTrue(imp.flush(later + 1))
+        (gap,) = self.gaps(self.final(run), "observer_lost")   # in the run it covered, not the signer run
+        self.assertEqual(self.gaps(self.events("tracekit/signer"), "observer_lost"), [])
+        return gap
+
+    def test_a_loss_whose_gap_failed_to_write_is_a_gap_in_the_run_once_sent_again(self):
+        gap = self.failed_then_sent_again(lambda imp: imp.add(RATE_LIMITED))
+        self.assertIn("the tetragon import mtls:spiffe://acme/tetragon reported lost events", gap["reason"])
+
+    def test_a_restart_whose_gap_failed_to_write_is_a_gap_in_the_run_once_sent_again(self):
+        gap = self.failed_then_sent_again(lambda imp: setattr(imp, "instance", uuid.uuid4().hex))
+        self.assertIn("the tetragon import mtls:spiffe://acme/tetragon restarted", gap["reason"])
+
     def test_the_signer_keeps_sensor_and_net_effects_apart(self):
         run = self.register()
         exec_effect = {"kind": "exec", "ts": "2026-10-12T10:00:00.000000Z", "pid": 1, "binary": "/bin/sh", **run}
         net = {"kind": "net", "host": "a.example", "port": 443, "bytes_out": 1, "bytes_in": 1, "connections": 1,
                "first_ts": "2026-10-12T10:00:00.000000Z", "last_ts": "2026-10-12T10:00:00.000000Z", **run}
-        for req in ({"effects": [exec_effect]}, {"effects": [net], "sensor": "tetragon"}, {"effects": [], "lost": "x"},
-                    {"effects": [dict(exec_effect, kind="file")], "sensor": "tetragon"}):   # a file event needs a path
+        sensed = {"sensor": "tetragon", "callers": [f"uid:{ME.subject}"]}
+        for req in ({"effects": [exec_effect]}, {"effects": [net], **sensed}, {"effects": [], "lost": "x"},
+                    {"effects": [dict(exec_effect, kind="file")], **sensed},   # a file event needs a path
+                    {"effects": [exec_effect], "sensor": "tetragon"},   # whose runs it covers goes in every call
+                    {"effects": [net], "callers": sensed["callers"]}):
             with self.subTest(req):
                 self.refused("invalid_request", "observe_effect", {"instance": "i", **req}, SENSOR)
-        self.refused("forbidden", "observe_effect", {"instance": "i", "sensor": "tetragon",
+        self.refused("forbidden", "observe_effect", {"instance": "i", **sensed,
                                                      "effects": [dict(exec_effect, caller=f"uid:{ME.subject}")]})
+
+    def test_an_import_covers_only_the_runs_of_the_identities_it_maps_processes_to(self):
+        imp = sensor.Import(types.SimpleNamespace(observe_effect=lambda req: self.call("observe_effect", req, SENSOR)),
+                            "tetragon", RUNS[1:])   # only the idle-* pods, OTHER's
+        imp.flush()
+        run = self.register()   # ME's: no runs entry maps a process to it
+        imp.add(RATE_LIMITED)
+        imp.flush()
+        es = self.final(run)
+        self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["processes"], {"status": "none", "layers": []})
+        self.assertEqual(self.gaps(es, "observer_lost"), [])   # its loss is no gap in a run it doesn't cover
+        self.assertEqual(len(self.gaps(self.events("tracekit/signer"), "observer_lost")), 1)
 
 
 class TestFalcoImport(Sensed):
@@ -300,15 +367,15 @@ class TestFalcoImport(Sensed):
         self.assertTrue(imp.flush())
         es = self.final(run)
         [x] = [e["data"] for e in self.typed(es, "effect.observed")]
-        self.assertEqual({k: x[k] for k in ("sensor", "kind", "explained_by", "observer")},
-                         {"sensor": "falco", "kind": "exec", "explained_by": "call",
+        self.assertEqual({k: x.get(k) for k in ("sensor", "kind", "tool_call_id", "explained_by", "observer")},
+                         {"sensor": "falco", "kind": "exec", "tool_call_id": "call_7", "explained_by": None,
                           "observer": "mtls:spiffe://acme/falco"})
         (lost,) = self.gaps(es, "observer_lost")
         self.assertIn("the falco import mtls:spiffe://acme/falco reported lost events: 1 x Falco reported dropping "
                       "1287 of 23110", lost["reason"])
         (outside,) = self.gaps(self.events("tracekit/signer"), "effect_outside_run")
         self.assertIn("falco mtls:spiffe://acme/falco saw exec by pid 51583", outside["reason"])
-        self.assertEqual(imp.skipped, 1)
+        self.assertEqual(imp.skipped, {sensor.NO_AGENT: 1})
 
 
 class TestDelivery(Sensed):
@@ -351,7 +418,8 @@ class TestCommand(unittest.TestCase):
         self.assertEqual(cfg["runs"], [{"match": {"namespace": "agents", "pod": "coder-*"},
                                         "caller": "k8s_sa:system:serviceaccount:agents:coder"}])
         for bad in ("sensor: auditd\nsigner: x\nruns: []\n", "sensor: tetragon\nsigner: x\n",
-                    "sensor: tetragon\nsigner: x\nruns:\n  - match: {cgroup: x}\n    caller: uid:1\n"):
+                    "sensor: tetragon\nsigner: x\nruns:\n  - match: {cgroup: x}\n    caller: uid:1\n",
+                    "sensor: tetragon\nsigner: x\nruns:\n  - match: {uid: 1}\n    caller: UID:1\n"):   # no identity
             with self.subTest(bad), self.assertRaises(ValueError):
                 sensor.load_config(self.config(bad))
         self.assertEqual(sensor.main(["import", "--config", self.config("sensor: x\n")]), 2)
@@ -364,6 +432,19 @@ class TestCommand(unittest.TestCase):
         self.assertEqual(sensor.run(imp, [exec_line().encode() + b"\n", RATE_LIMITED.encode() + b"\n"]), 0)
         self.assertEqual([len(r["effects"]) for r in sent if r["effects"]], [1])
         self.assertIn("rate limit", next(r["lost"] for r in sent if "lost" in r))
+
+    def test_a_line_nested_too_deep_is_a_loss_and_reading_goes_on(self):
+        imp = sensor.Import(types.SimpleNamespace(observe_effect=None), "tetragon", RUNS)
+        imp.add(b"[" * 100_000 + b"]" * 100_000 + b"\n")
+        imp.add(exec_line().encode())
+        self.assertEqual((dict(imp.lost), len(imp.pending)), ({"tetragon lines the import could not read or record": 1}, 1))
+
+    def test_reading_that_fails_stops_the_import_with_exit_1(self):
+        def lines():
+            yield exec_line().encode()
+            raise RuntimeError("the reader broke")
+        imp = sensor.Import(types.SimpleNamespace(observe_effect=lambda req: None), "tetragon", RUNS)
+        self.assertEqual(sensor.run(imp, lines()), 1)
 
     def test_follow_reads_across_rotation(self):
         d = tempfile.TemporaryDirectory()

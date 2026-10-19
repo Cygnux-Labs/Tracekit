@@ -98,7 +98,8 @@ class Signed(unittest.TestCase):
         independent, self_ = self.findings(ANALYZER, run), self.findings(AGENT, run)
         same_user = self.findings(ANALYZER, mine)
         cited = self.cites(run)
-        bad = self.findings(ANALYZER, run, [dict(cited[0], hash="sha256:" + "0" * 64), dict(cited[1], run_seq=99)])
+        with mock.patch.object(svc.SignerService, "_bad_cite", return_value=None):   # a signer that let them through
+            bad = self.findings(ANALYZER, run, [dict(cited[0], hash="sha256:" + "0" * 64), dict(cited[1], run_seq=99)])
         out = {"independent": self.export(run, independent, analyzers=[f"uid:{ANALYZER.subject}"]),
                "unpinned": self.export(run, independent),
                "self-asserted": self.export(run, self_, analyzers=[f"uid:{AGENT.subject}"]),
@@ -171,6 +172,25 @@ class TestReviewFinding(Signed):
             ("review", {"reviewer": "tracekit-analyze/1.4.0", "cites": [],
                         "verdict": {**COVERAGE, "title": "Check coverage"}})])
 
+    def test_refused_unless_each_cite_is_a_record_of_the_analysed_run_with_its_hash(self):
+        run = self.agent_run()
+        f = self.register(ANALYZER, analyzes=run["run_id"])
+        cited = self.cites(run)
+        for name, cites, why in (
+                ("another hash", [cited[0], dict(cited[1], hash="sha256:" + "0" * 64)],
+                 f"cites run_seq 1 of run {run['run_id']}, whose hash differs"),
+                ("no such record", [dict(cited[0], run_seq=99)], f"cites run_seq 99, which run {run['run_id']} does "
+                                                                 "not have"),
+                ("one record, two hashes", [cited[0], dict(cited[0], hash="sha256:" + "0" * 64)],
+                 f"cites run_seq 0 of run {run['run_id']}, whose hash differs")):
+            with self.subTest(name), self.assertRaises(RPCError) as e:
+                self.review(ANALYZER, f, FINDING, cites)
+            self.assertEqual(e.exception.code, "invalid_request")
+            self.assertTrue(e.exception.message.startswith(why), e.exception.message)
+        self.assertEqual([r["event"]["type"] for r in self.s.log.storage.iter_run("default", f["run_id"])],
+                         ["run.registered"])   # none written
+        self.review(ANALYZER, f, FINDING, cited)
+
     def test_the_closed_verdict_takes_no_text_of_the_run(self):
         run = self.agent_run()
         f = self.register(ANALYZER, analyzes=run["run_id"])
@@ -238,6 +258,28 @@ class TestVerify(Signed):
                          [f"cites run_seq 0 of run {rep_run(b['independent'][0], analysed=True)}, whose hash differs",
                           f"cites run_seq 99 of run {rep_run(b['independent'][0], analysed=True)}, which it does not "
                           "have"])
+
+    def test_an_analysed_run_is_read_once_however_many_findings_runs_cite_it(self):
+        run = self.agent_run()
+        bundle, trust = self.export(run, *[self.findings(ANALYZER, run) for _ in range(3)])
+        with mock.patch.object(v2, "_seq_hashes", wraps=v2._seq_hashes) as built:
+            rep, code = v2.verify(bundle, trust)
+        self.assertEqual((code, reviews(rep)["reviews"]["detail"], built.call_count),
+                         (0, f"3 review(s): 3 unpinned author uid:{ANALYZER.subject}", 1))
+
+    def test_the_findings_line_counts_signed_findings_not_imported_reviews(self):
+        log = Log(os.path.join(self.dir, "imported"))
+        self.addCleanup(log.store.close)
+        log.epoch(KEY1)
+        log.register()
+        log.add("review", {"reviewer": "judge", "verdict": {"kind": "finding", "severity": "critical"}})   # a v1 verdict
+        log.final()
+        bundle, trust = os.path.join(self.dir, "imported.tkb"), os.path.join(self.dir, "imported.trust.json")
+        export(log.store, "acme", "run-a", log.note(), bundle)
+        with open(trust, "w") as f:
+            json.dump(trust_config(), f)
+        rep, code = v2.verify(bundle, trust)
+        self.assertEqual((code, rep.findings), (0, "0 finding(s); 1 imported (an opinion of the run, not its integrity)"))
 
     def test_a_signed_finding_needs_format_1_4_and_older_verifiers_say_unverifiable(self):
         run = self.agent_run()
