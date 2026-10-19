@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -524,6 +525,66 @@ class ThinkingSummaries(unittest.TestCase):
     def test_on_or_without_the_vault_is_ok(self):
         self.assertEqual(self.check({"showThinkingSummaries": True})["status"], "ok")
         self.assertEqual(self.check({}, vault=False)["status"], "ok")
+
+    def test_not_checked_without_claude_codes_hooks(self):
+        """A Codex- or Gemini-only user got a warning whose fix installs Claude Code's hooks."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        cfg = {"data_dir": d, "content": {"retain": True}}
+        got = {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=os.path.join(d, "none.json"),
+                                                    harnesses={"gemini": os.path.join(d, "gemini.json")})}
+        self.assertNotIn("D-THINKING-SUMMARIES", got)
+        self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "ok")
+        self.assertIn("v2 hooks for gemini", got["D-HOOKS-PRESENT"]["detail"])
+
+    def test_the_last_settings_file_that_sets_it_wins(self):
+        """A true in the user's file passed although the project's false wins in Claude Code; a true in
+        settings.local.json still warned."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        user, project, local = (os.path.join(d, n) for n in ("user.json", "project.json", "local.json"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(user, module=install.V2_HOOK)
+        cfg = {"data_dir": d, "content": {"retain": True}}
+        for layers, want in (({user: True, project: False}, "warn"), ({user: False, local: True}, "ok"),
+                             ({project: True, local: None}, "ok")):
+            for p in (project, local):
+                with open(p, "w") as f:
+                    json.dump({}, f)
+            for p, v in layers.items():
+                with open(p) as f:
+                    s = json.load(f)
+                with open(p, "w") as f:
+                    json.dump(dict(s, showThinkingSummaries=v) if v is not None else s, f)
+            got = {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=user, sandbox_settings=[
+                user, project, local, os.path.join(d, "managed.json")])}["D-THINKING-SUMMARIES"]
+            self.assertEqual(got["status"], want, layers)
+        self.assertEqual(self.check({"showThinkingSummaries": True})["status"], "ok")
+
+
+@unittest.skipIf(not hasattr(os, "mkfifo"), "FIFOs")
+class HostileSettings(unittest.TestCase):
+    def test_a_fifo_or_a_device_as_the_agents_settings_doesnt_hang_doctor(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        fifo, dev = os.path.join(d, "fifo.json"), os.path.join(d, "zero.json")
+        os.mkfifo(fifo)
+        os.symlink(os.devnull, dev)
+        for p in (fifo, dev):
+            with self.assertRaises(OSError):
+                install.agent_file(p)
+        out = []
+        with mock.patch.object(install, "user_settings", return_value=dev):
+            t = threading.Thread(target=lambda: out.extend(doctor.v2_checks(
+                {"data_dir": d, "content": {"retain": True}}, "dev", settings=fifo, sandbox_settings=[fifo, dev],
+                plugin=dev, gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
+                                                                    "gemini": fifo})), daemon=True)
+            t.start()
+            t.join(5)
+        self.assertFalse(t.is_alive(), "doctor blocked on the FIFO")
+        got = {r["id"]: r for r in out}
+        self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "warn")
+        self.assertIn("not a regular file", got["D-HOOKS-PRESENT"]["detail"])
 
 
 class CodingAgentReasoning(unittest.TestCase):

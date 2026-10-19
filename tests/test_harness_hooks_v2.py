@@ -12,6 +12,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -286,15 +287,51 @@ class CodexReasoningSummary(unittest.TestCase):
         with open(self.toml) as f:
             return f.read()
 
-    def test_unset_goes_at_the_top_level_before_the_first_table(self):
-        self.write('model = "gpt-5-codex"\n# servers\n[mcp_servers.docs]\ncommand = "docs"\n')
+    def test_unset_goes_first_so_it_is_top_level(self):
+        text = 'model = "gpt-5-codex"\n# servers\n[mcp_servers.docs]\ncommand = "docs"\n'
+        self.write(text)
         self.assertEqual(agent_hooks.codex_reasoning(self.hooks), [self.toml, "auto", True])
-        self.assertEqual(self.read(), 'model = "gpt-5-codex"\n# servers\nmodel_reasoning_summary = "auto"\n'
-                                      '[mcp_servers.docs]\ncommand = "docs"\n')
+        self.assertEqual(self.read(), agent_hooks.CODEX_LINE + text)
         self.assertTrue([n for n in os.listdir(os.path.dirname(self.toml)) if n.startswith("config.toml.bak-")])
         self.write('model = "m"')   # no table, no final newline
         agent_hooks.codex_reasoning(self.hooks)
-        self.assertEqual(self.read(), 'model = "m"\nmodel_reasoning_summary = "auto"\n')
+        self.assertEqual(self.read(), agent_hooks.CODEX_LINE + 'model = "m"')
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib")
+    def test_a_multi_line_array_stays_valid_toml(self):
+        import tomllib
+        text = 'notify = [\n["x"],\n["a", "b"]\n]\nmodel = "m"\n[profiles.fast]\nmodel = "f"\n'   # a line like a table
+        self.write(text)
+        self.assertEqual(agent_hooks.codex_reasoning(self.hooks)[1:], ["auto", True])
+        self.assertEqual(tomllib.loads(self.read()), {**tomllib.loads(text), "model_reasoning_summary": "auto"})
+        self.write(text.replace('model = "m"', 'model_reasoning_summary = "none"'))   # set after that line: refused
+        with self.assertRaisesRegex(install.SettingsError, "--no-thinking-summaries"):
+            agent_hooks.codex_reasoning(self.hooks)
+        self.assertNotIn(agent_hooks.CODEX_LINE, self.read())
+
+    @unittest.skipIf(os.name == "nt", "symlinks")
+    def test_a_symlinked_config_is_refused_with_what_to_do(self):
+        real = os.path.join(self.d, "dotfiles.toml")
+        with open(real, "w") as f:
+            f.write('model = "m"\n')
+        os.symlink(real, self.toml)
+        with self.assertRaisesRegex(install.SettingsError, "symlink.*--no-thinking-summaries"):
+            agent_hooks.codex_reasoning(self.hooks)
+        with open(real) as f:
+            self.assertEqual(f.read(), 'model = "m"\n')
+
+    def test_uninstall_removes_only_the_line_init_added(self):
+        for before in ("", 'model = "m"\n'):
+            self.write(before)
+            agent_hooks.codex_reasoning(self.hooks)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("codex", path=self.hooks, v2=True)
+                agent_hooks.install("codex", path=self.hooks, uninstall=True)
+            self.assertEqual(self.read(), before)
+        self.write('model_reasoning_summary = "auto"\n')   # a person's own line stays
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codex", path=self.hooks, uninstall=True)
+        self.assertEqual(self.read(), 'model_reasoning_summary = "auto"\n')
 
     def test_a_set_value_is_left_and_a_profiles_is_not_the_top_level(self):
         for text, value in (('model_reasoning_summary = "none"  # mine\n', "none"),
@@ -304,7 +341,7 @@ class CodexReasoningSummary(unittest.TestCase):
             self.assertEqual(self.read(), text)
         self.write('[profiles.fast]\nmodel_reasoning_summary = "none"\n')
         self.assertEqual(agent_hooks.codex_reasoning(self.hooks)[1:], ["auto", True])
-        self.assertTrue(self.read().startswith('model_reasoning_summary = "auto"\n[profiles.fast]'))
+        self.assertTrue(self.read().startswith(agent_hooks.CODEX_LINE + '[profiles.fast]'))
         self.assertIn("off", agent_hooks.reasoning_line(self.toml, "none", False))
 
     def test_a_missing_file_is_created_and_init_opts_out(self):
@@ -316,7 +353,7 @@ class CodexReasoningSummary(unittest.TestCase):
         self.assertFalse(os.path.exists(self.toml))
         with mock.patch("os.getcwd", return_value=self.d), contextlib.redirect_stdout(out):
             self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project"]), 0)
-        self.assertEqual(self.read(), 'model_reasoning_summary = "auto"\n')
+        self.assertEqual(self.read(), agent_hooks.CODEX_LINE)
         self.assertIn("Codex reasoning summaries: on", out.getvalue())
 
 

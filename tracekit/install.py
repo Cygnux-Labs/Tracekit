@@ -6,6 +6,7 @@ Dev mode (--dev): the signer runs as *your* user. Convenient, but the agent coul
 ledger, so every run is labelled signer_isolation=same-user and verify says so.
 """
 import base64
+import errno
 import json
 import os
 import re
@@ -360,6 +361,23 @@ def user_settings_all():
     return out
 
 
+AGENT_FILE_MAX = 4 << 20   # bytes of an agent's settings file doctor and init read at most
+
+
+def agent_file(path):
+    """The bytes of a settings file the agent's user controls: a regular file (a symlink to one is read, as the agent
+    reads it) of at most AGENT_FILE_MAX bytes, opened without blocking, so a FIFO or a device can't hang or flood the
+    reader. OSError otherwise (FileNotFoundError when missing)."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", path)
+        data = f.read(AGENT_FILE_MAX + 1)
+    if len(data) > AGENT_FILE_MAX:
+        raise OSError(errno.EFBIG, f"larger than {AGENT_FILE_MAX} bytes", path)
+    return data
+
+
 def plugin_enabled(user=None):
     """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
     or None. Reads `user` (default user_settings_all()), the working directory's project and local settings, then the
@@ -370,8 +388,7 @@ def plugin_enabled(user=None):
     project = [os.path.join(os.getcwd(), ".claude", f) for f in ("settings.json", "settings.local.json")]
     for p in (*(user or user_settings_all()), *project, managed):
         try:
-            with open(p, encoding="utf-8") as f:
-                v = json.load(f).get("enabledPlugins", {}).get(PLUGIN)
+            v = json.loads(agent_file(p)).get("enabledPlugins", {}).get(PLUGIN)
         except (OSError, ValueError, AttributeError):   # missing, or not a settings file
             continue
         if isinstance(v, bool):
@@ -385,8 +402,8 @@ def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, ex
     file before changing it; leaves other hooks and settings alone. proxy_url sets
     env.ANTHROPIC_BASE_URL (C3), signer env.TRACEKIT_SIGNER or a dict of env variables (each removed on uninstall
     while it still has that value); the SIGNER_ENV variables it doesn't name are removed. thinking: also turn
-    Claude Code's thinking summaries on (THINKING: true) unless the file already sets them; uninstall leaves them.
-    Returns the file's THINKING setting then.
+    Claude Code's thinking summaries on (THINKING: true) unless the file already sets them; uninstall turns them off
+    again only when init turned them on and they are still on (_thinking). Returns the file's THINKING setting then.
     Raises SettingsError instead of overwriting a file it cannot parse,
     or one that is a symlink. With owner (as root) the whole edit runs as that user. python, module: see _hook_command."""
     if owner is not None:
@@ -405,20 +422,23 @@ def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, ex
         raise SettingsError(f"{settings_path}: {e}") from e
 
 
+def _parse_settings(raw, settings_path):
+    """The settings object in a file's bytes `raw` ({} for no file or an empty one); SettingsError if it isn't one."""
+    try:
+        s = json.loads(raw.decode("utf-8")) if raw and raw.strip() else {}
+    except ValueError as e:
+        raise SettingsError(f"{settings_path} is not valid JSON ({e}); fix or remove it, then retry. "
+                            "Tracekit did not change it.") from e
+    if not isinstance(s, dict):
+        raise SettingsError(f"{settings_path} must contain a JSON object; Tracekit did not change it.")
+    return s
+
+
 def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None, module="tracekit.hook",
                       signer=None, thinking=False):
     name = os.path.basename(settings_path)
-    s, raw = {}, files.read(d, name)
-    original = None
-    if raw is not None:
-        try:
-            original = raw.decode("utf-8")
-            s = json.loads(original) if original.strip() else {}
-        except ValueError as e:
-            raise SettingsError(f"{settings_path} is not valid JSON ({e}); fix or remove it, then retry. "
-                                "Tracekit did not change it.") from e
-        if not isinstance(s, dict):
-            raise SettingsError(f"{settings_path} must contain a JSON object; Tracekit did not change it.")
+    raw = files.read(d, name)
+    s = _parse_settings(raw, settings_path)
     hooks = s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {settings_path} must be an object; Tracekit did not change it.")
@@ -474,14 +494,9 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
             s.pop(k, None)
         else:
             s[k] = v
-    if thinking and not uninstall:   # a person's own setting stays
-        s.setdefault(THINKING, True)
-    if original is not None:
-        try:
-            unchanged = json.loads(original) == s
-        except ValueError:
-            unchanged = False
-        if unchanged:
+    _thinking(s, thinking, uninstall)
+    if raw is not None:
+        if _parse_settings(raw, settings_path) == s:
             return s.get(THINKING)
         files.backup(d, name, raw)
     files.write(d, name, files.json_bytes(s), mode)
@@ -493,6 +508,40 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
 
 
 THINKING = "showThinkingSummaries"   # Claude Code keeps the model's thinking summaries in its transcript
+THINKING_MARKER = "_tracekit_thinking"   # init turned THINKING on, so uninstall turns it off again
+
+
+def _thinking(s, on, uninstall):
+    """Turn THINKING on in settings `s` unless it sets it (a person's own setting stays), marking that init did; on
+    uninstall, remove it again only when init set it and it is still true."""
+    if uninstall:
+        if s.pop(THINKING_MARKER, None) and s.get(THINKING) is True:
+            s.pop(THINKING)
+    elif on and THINKING not in s:
+        s[THINKING], s[THINKING_MARKER] = True, True
+
+
+def thinking_on(settings_path):
+    """Claude Code's thinking summaries on in `settings_path` (_thinking), its hooks untouched: for the plugin's users,
+    whose hooks come from the plugin. -> the file's THINKING setting. Raises SettingsError as install_hooks does."""
+    settings_path = os.path.abspath(settings_path)
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+    try:
+        d = files.open_dir(os.path.dirname(settings_path))
+        try:
+            name = os.path.basename(settings_path)
+            raw = files.read(d, name)
+            s = _parse_settings(raw, settings_path)
+            if THINKING not in s:
+                _thinking(s, True, False)
+                if raw is not None:
+                    files.backup(d, name, raw)
+                files.write(d, name, files.json_bytes(s), 0o600)
+            return s.get(THINKING)
+        finally:
+            files.close(d)
+    except files.UnsafePath as e:
+        raise SettingsError(f"{settings_path}: {e}") from e
 
 
 def thinking_line(settings, on):

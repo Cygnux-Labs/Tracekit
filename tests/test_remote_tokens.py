@@ -230,16 +230,18 @@ class TestCli(unittest.TestCase):
         cwd = os.getcwd()
         os.chdir(self.d)
         self.addCleanup(os.chdir, cwd)
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.main(["init", "--remote", "https://signer.example:8443", "--v2", "--token-file", token,
                                        "--ca", token, "--project"]), 0)
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(cli.main(["init", "--remote", "http://127.0.0.1:8443", "--v2", "--token-file", token,
                                            "--project"]), 2)
         with open(os.path.join(self.d, ".claude", "settings.json")) as f:
-            env = json.load(f)["env"]
-        self.assertEqual(env, {"TRACEKIT_SIGNER": "https://signer.example:8443", "TRACEKIT_SIGNER_TOKEN_FILE": token,
-                               "TRACEKIT_SIGNER_CA": token})
+            s = json.load(f)
+        self.assertEqual(s["env"], {"TRACEKIT_SIGNER": "https://signer.example:8443",
+                                    "TRACEKIT_SIGNER_TOKEN_FILE": token, "TRACEKIT_SIGNER_CA": token})
+        self.assertIs(s["showThinkingSummaries"], True)   # as every init --v2 sets it
+        self.assertIn("thinking summaries: on", out.getvalue())
 
     def test_a_later_init_and_uninstall_drop_the_remote_signer(self):
         """A re-init without --ca kept the old CA pinned, and uninstall left the remote's env in settings.json."""

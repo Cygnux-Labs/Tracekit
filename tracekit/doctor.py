@@ -74,7 +74,7 @@ def collect(config=None, issuer_key=None):
         unit = (os.path.join(install.LAUNCHD_DIR, install.V2_LABEL + ".plist") if sys.platform == "darwin"
                 else os.path.join(install.SYSTEMD_DIR, install.V2_UNIT + ".service"))
         # lean: the hook checks read Claude Code's settings only; a Codex, Cursor or Gemini config gets the reasoning
-        # checks alone (its hooks are reported as no hooks recorded) until doctor learns their formats
+        # checks alone (D-HOOKS-PRESENT names the config client.json records, unread) until doctor learns their formats
         agent_name = h.get("agent", "claude")
         settings = h.get("settings") if agent_name == "claude" else None
         agent = _user(h.get("user"))
@@ -108,7 +108,7 @@ def _layers(paths, key):
     """The `key` object of each settings file in `paths` that has one, in order."""
     for p in paths:
         try:
-            s = read_json(p).get(key)
+            s = _json(p).get(key)
         except (OSError, ValueError, AttributeError, TypeError):   # missing, unreadable, not a settings object, or
             continue                                                  # client.json's settings not a path
         if isinstance(s, dict):
@@ -152,7 +152,7 @@ def _dev_harnesses():
     for harness in agent_hooks.HARNESSES:
         for path in (agent_hooks.config_path(harness), agent_hooks.config_path(harness, os.getcwd())):
             try:
-                hooks = (read_json(path) or {}).get("hooks") or {}
+                hooks = (_json(path) or {}).get("hooks") or {}
                 cmds = [h.get("command") for lst in hooks.values() for g in lst
                         for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
             except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
@@ -177,8 +177,7 @@ def _reasoning_checks(add, harnesses, vault, fix):
         if harness == "codex":
             toml = os.path.join(os.path.dirname(path), "config.toml")
             try:
-                with open(toml, encoding="utf-8") as f:
-                    value = agent_hooks.codex_summary(f.read())
+                value = agent_hooks.codex_summary(install.agent_file(toml).decode("utf-8"))
             except (OSError, ValueError):
                 value = None
             on, key = value not in (None, "none"), agent_hooks.CODEX_SUMMARY
@@ -190,7 +189,7 @@ def _reasoning_checks(add, harnesses, vault, fix):
                 f'add the line {key} = "auto" at the top of {toml} ({fix} --agent codex does)', bad=WARN)
         elif harness == "gemini":
             try:
-                off = _includes_thoughts_off((read_json(path) or {}).get("modelConfigs"))
+                off = _includes_thoughts_off((_json(path) or {}).get("modelConfigs"))
             except (OSError, ValueError, AttributeError):
                 off = False
             add("D-GEMINI-THOUGHTS", not off or not vault, f"Gemini CLI records its thought summaries ({path} leaves "
@@ -200,10 +199,16 @@ def _reasoning_checks(add, harnesses, vault, fix):
                 f"modelConfigs in {path} (Gemini CLI's default includes thoughts)", bad=WARN)
 
 
+def _json(path):
+    """A settings file the agent's user controls, parsed (install.agent_file: a FIFO or a device can't hang or flood
+    doctor)."""
+    return json.loads(install.agent_file(path))
+
+
 def _setting(path, key):
     """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable."""
     try:
-        s = read_json(path)
+        s = _json(path)
     except (OSError, ValueError):
         return None
     return s.get(key) if isinstance(s, dict) else None
@@ -286,7 +291,7 @@ def helper_result(unit, fix):
 
 def _hooks(settings):
     """{tool event: [v2 hook entries]} of a Claude Code settings file."""
-    hooks = (read_json(settings) or {}).get("hooks") or {}
+    hooks = (_json(settings) or {}).get("hooks") or {}
     return {ev: [h for g in hooks.get(ev) or () if isinstance(g, dict) and install._hook_version(g) == "v2"
                  for h in g.get("hooks") or () if isinstance(h, dict)] for ev in install.TOOL_EVENTS}
 
@@ -476,9 +481,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     hook_fix = REINIT if prod else "tracekit init --dev --v2"
     from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin}"
+    others = "v2 hooks for " + ", ".join(f"{h} in {p}" for h, p in sorted((harnesses or {}).items()))
     if not settings:
-        add("D-HOOKS-PRESENT", bool(plugin), from_plugin if plugin else "no hooks recorded in client.json", REINIT,
-            bad=WARN)
+        add("D-HOOKS-PRESENT", bool(plugin or harnesses), from_plugin if plugin else others if harnesses else
+            "no hooks recorded in client.json", REINIT, bad=WARN)
     else:
         try:
             hooks = _hooks(settings)
@@ -492,6 +498,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", not both, f"{from_plugin}, and init's v2 hooks in {settings}: every call is decided "
                 "twice, and every approved call is blocked" if both else from_plugin,
                 f"keep one: tracekit uninstall (init's hooks), or /plugin disable {install.PLUGIN}", bad=sev)
+        elif hooks is not None and harnesses and not any(hooks.values()):   # another coding agent's, not Claude's
+            add("D-HOOKS-PRESENT", True, others, "")
         elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
             add("D-HOOKS-PRESENT", not missing, f"no v2 hook for {', '.join(missing)} in {settings}" if missing else
@@ -513,17 +521,25 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             if pre:
                 add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S, f"PreToolUse timeout {min(pre)} s, approval wait "
                     f"{APPROVAL_WAIT_S} s", f"set the PreToolUse hook timeout to {install.HOOK_TIMEOUT['PreToolUse']}")
-            vault = isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True
-            user = os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings()
-            on = [p for p in dict.fromkeys((settings, user)) if _setting(p, install.THINKING) is True]
-            add("D-THINKING-SUMMARIES", on or not vault, f"Claude Code's thinking summaries are on ({on[0]})" if on else
-                "the content vault is off: no reasoning is kept to check" if not vault else
-                f"the content vault keeps each transcript line, but Claude Code's thinking summaries are off "
-                f"({install.THINKING} is not true in {settings}): its thinking is kept sealed, so `tracekit analyze "
-                "--v2` can't read the model's reasoning", f'set "{install.THINKING}": true in {settings} ({hook_fix} '
-                "does), and for headless runs pass `claude -p --thinking-display summarized`", bad=WARN)
+            if any(hooks.values()) or plugin:   # without Claude Code's hooks none of its reasoning is recorded
+                vault = isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True
+                user = os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings()
+                value, where = None, None   # Claude Code's precedence: the last file that sets it wins
+                for p in sandbox_settings or dict.fromkeys((user, settings)):
+                    v = _setting(p, install.THINKING)
+                    if v is not None:
+                        value, where = v, p
+                off = f"{where} sets {install.THINKING} to {json.dumps(value)[:64]}" if where else \
+                    f"{install.THINKING} is set in none of its settings files"
+                add("D-THINKING-SUMMARIES", value is True or not vault, f"Claude Code's thinking summaries are on "
+                    f"({where})" if value is True else "the content vault is off: no reasoning is kept to check"
+                    if not vault else f"the content vault keeps each transcript line, but Claude Code's thinking "
+                    f"summaries are off ({off}): its thinking is kept sealed, so `tracekit analyze --v2` can't read "
+                    f"the model's reasoning", (f'set "{install.THINKING}": true in {where}' if where else
+                                               f'set "{install.THINKING}": true in {settings} ({hook_fix} does)')
+                    + ", and for headless runs pass `claude -p --thinking-display summarized`", bad=WARN)
             if signer:
-                env = (read_json(settings) or {}).get("env")
+                env = (_json(settings) or {}).get("env")
                 env = env.get("TRACEKIT_SIGNER") if isinstance(env, dict) else None
                 add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",
