@@ -429,8 +429,9 @@ each on its own and before it records the prompt; a scope (`only_change`) it lea
 session's state keeps them: after the signer closes an idle run, the session's next run gets every constraint its
 earlier prompts stated (kept before they are sent, so a signer it can't reach at that prompt loses none). A small
 fixed grammar reads them ([tracekit/constraints.py](../tracekit/constraints.py)) and leaves what is ambiguous unread,
-so it holds no wanted call: a condition ("don't edit X until the tests pass", "don't push before I review", "while
-the server runs"), a question ("should I change X?"), quoted text, quoted lines and code, a description rather than an
+so it holds no wanted call: a condition on the work ("don't edit X until the tests pass", "while the server runs"; a
+condition on the person's own go-ahead keeps the constraint, as holding the call for them is what they ask: "don't push
+before I review", "never touch X without asking me first", "unless I confirm"), a question ("should I change X?"), quoted text, quoted lines and code, a description rather than an
 instruction ("add a read-only mode", "we don't use the network in unit tests"), a negated change of one aspect of the
 file asked for ("don't change the public API of X, just fix the bug in it"), a scoped push ("don't push to main"),
 and a constraint a later clause of the same request lifts ("don't touch X for now; ... then update X too") state none

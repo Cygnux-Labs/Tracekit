@@ -45,13 +45,14 @@ a kept one ("don't touch a.py or b.py") are kept too. A negation followed by a w
 to", "don't hesitate to", "you don't need to", "I don't mind if") negates nothing. A condition after the file (or the
 push, the network, "anything") states none: "don't edit X until the tests pass", "without checking Y first", "unless",
 "before", "if", "while the server runs", "when DEBUG is set" (the change is allowed once it holds, which the grammar
-can't check; "while you work", "while fixing Y" are the task itself, no condition). A later clause of the same text that
-asks for what a constraint keeps away lifts it there ("don't touch X for now; ... after that, update X too"; "don't
-change anything, then fix it"). A network word is negated only with nothing but words of use between ("don't use the
-network", not "don't change the network code") and no noun after it ("no web UI changes"); "offline" only where the
-clause begins with it as an instruction ("work offline", not "make the CLI work offline"). An object is a file name,
-lower-cased, compared by basename (norm). Each pass is linear in the text: word sets, short fixed sequences, one suffix
-scan per clause; the regular expressions have no nested quantifiers.
+can't check; "while you work", "while fixing Y" are the task itself, no condition; the person's own go-ahead, "before I
+review", "without asking me first", keeps the constraint). A later clause of the same text that asks for what a
+constraint keeps away lifts it there ("don't touch X for now; ... after that, update X too"; "don't change anything,
+then fix it"). A network word is negated only with nothing but words of use between ("don't use the network", not "don't
+change the network code") and no noun after it ("no web UI changes"); "offline" only where the clause begins with it as
+an instruction ("work offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by
+basename (norm). Each pass is linear in the text: word sets, short fixed sequences, one suffix scan per clause; the
+regular expressions have no nested quantifiers.
 lean: fixed word lists, English only; a phrasing outside them ("keep the diff to X", a constraint on a file named two
 clauses back) states no constraint. Grow the lists from real misses, never from the held-out pool.
 """
@@ -124,6 +125,12 @@ DETERMINERS = frozenset(("the", "a", "an", "any", "this", "that", "these", "thos
 CONDITIONAL = frozenset(("unless", "until", "before", "if", "without", "first"))
 WHILE = frozenset(("while", "when", "whenever", "after", "once"))
 YOU = frozenset(("you", "you're", "youre", "we", "we're", "i", "i'm"))
+# a condition that is the person's own go-ahead keeps the constraint: holding the call for them is what they ask
+# ("don't push before I review", "without asking me first", "until I say so", "unless I confirm")
+PERSON = frozenset(("i", "me", "us", "we", "my", "our"))
+GO_AHEAD = frozenset(("say", "says", "said", "approve", "approves", "approved", "approval", "confirm", "confirms",
+                      "confirmed", "confirmation", "review", "reviews", "reviewed", "ask", "asking", "asked", "ok",
+                      "okay", "sign", "signs", "signed", "permission", "go-ahead"))
 # between a change word and the file, a word of WHERE makes the file only where the change would be: "don't change the
 # public API of X", "the signature in X" keep nothing away; "anything in X", "the code in X" do (WHOLE)
 WHERE = frozenset(("of", "in", "inside", "within", "under"))
@@ -275,9 +282,13 @@ def _where(tokens, c, i):
 
 def _conditions(tokens):
     """[i]: whether a condition follows tokens[i] in the clause: a word of CONDITIONAL, or of WHILE before anyone but
-    YOU ("while the server runs", not "while you work" or "while fixing Y")."""
+    YOU ("while the server runs", not "while you work" or "while fixing Y"); none from the person's own go-ahead on
+    (a condition word with PERSON and GO_AHEAD in the four words after it: "before I review", "without asking me
+    first"), which keeps the constraint."""
     out, seen = [False] * (len(tokens) + 1), False
-    for i in range(len(tokens) - 1, -1, -1):
+    mine = next((k for k, t in enumerate(tokens) if (t in CONDITIONAL or t in WHILE)
+                 and set(tokens[k + 1:k + 5]) & PERSON and set(tokens[k + 1:k + 5]) & GO_AHEAD), len(tokens))
+    for i in range(min(mine, len(tokens)) - 1, -1, -1):
         out[i] = seen
         nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
         seen = seen or tokens[i] in CONDITIONAL or tokens[i] in WHILE and nxt not in YOU and not (
@@ -466,11 +477,12 @@ def _read_only(tokens, i):
 
 
 def _bare(tokens, i):
-    """Whether the push at tokens[i] is every push: up to the next "or", "and" or "nor", only words of PUSHED follow
-    it, and "to" or "into" only before a word of REMOTES ("don't push it to origin", not "to main")."""
+    """Whether the push at tokens[i] is every push: up to the next "or", "and" or "nor" (or a condition, which
+    _conditions reads), only words of PUSHED follow it, and "to" or "into" only before a word of REMOTES ("don't push
+    it to origin", not "to main")."""
     for k in range(i + 1, len(tokens)):
         t = tokens[k]
-        if t in LIST:
+        if t in LIST or t in CONDITIONAL or t in WHILE:
             return True
         if t in ("to", "into", "onto"):
             return next((x for x in tokens[k + 1:] if x not in DETERMINERS), None) in REMOTES
