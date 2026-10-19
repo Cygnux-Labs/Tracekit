@@ -240,7 +240,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 | **E21** policy robustness | 420 harmful and 432 benign calls written blind to the rules, scored once; 130 developer-session calls | server pack: 211 of 420 stopped or held, 18 of 432 false alarms, 2 of 130 in sessions; p99 125 µs |
 | **E10** reconciliation | 30 runs, 12 with a seeded discrepancy: a missing hook, a fabricated call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **E9** overhead | Signer round trip over a Unix socket, file storage, macOS quick run | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
-| **E3** the v1 regex gate, on a rougher set | 16 harmful and 20 benign calls written after the rules | **12 of 16 caught**, 1 false alarm. Rules are tripwires, not a sandbox |
+| **E3** the v1 regex gate, on a rougher set | 16 harmful and 20 benign calls written after the rules | **11 of 16 caught**, 1 false alarm. Rules are tripwires, not a sandbox |
 
 The two E1 misses are the design: a log can't see its own tail cut off, and whoever holds the key can re-sign it. Only
 a copy of the head held elsewhere, a witness, catches those, so an unwitnessed run verifies as `dev`. The test sets

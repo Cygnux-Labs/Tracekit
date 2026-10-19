@@ -386,10 +386,11 @@ check that the client's per-run context never leaks a call into another run.
 | run set | 3 | yes |
 | run token | 10 | yes |
 | control: own identity, own run | 1 | went through |
+| node async local storage: 8 x 20 calls, calls in another run / runs missing calls | 0 / 0 | - |
 | python asyncio tasks: 8 x 20 calls, calls in another run / runs missing calls | 0 / 0 | - |
 | python threads: 8 x 20 calls, calls in another run / runs missing calls | 0 / 0 | - |
 
-Skipped: node async local storage. Platform: darwin, Python 3.11.15.
+Skipped: none. Platform: darwin, Python 3.11.15.
 <!-- /table -->
 
 ## 4.7 Outage behaviour (E14)
@@ -402,15 +403,15 @@ cases a and b through the TypeScript client. Every store must pass `tracekit sig
 <!-- table e14 -->
 | Scenario | Passed | Measured |
 |---|---|---|
-| a fail closed | yes | blocked 20; calls while down 20 |
-| b fail open | yes | calls while down 20; ran 20; fsck problems 0 |
+| a fail closed | yes | blocked 5; calls while down 5 |
+| b fail open | yes | calls while down 5; ran 5; fsck problems 0 |
 | c restart | yes | approval after restart approved; asked ask; decide after allow; decide before allow; completed; consumed; fsck problems 0 |
-| d partition | yes | client timeout ms 1000.0; fs ran unrecorded 20; shell blocked 20; fsck problems 0 |
-| e witness unreachable | yes | answered 40; calls while down 40; degraded unanchored gaps 1; witness failed gaps 2; cosigned after recovery; fsck problems 0 |
-| f storage unavailable | yes | acknowledged 41; acknowledged lost 0; signer unavailable gaps 1; fsck problems 0 |
-| g typescript | yes | back allow; blocked 20; calls while down 40; ran 20; up allow; fsck problems 0 |
+| d partition | yes | client timeout ms 1000.0; fs ran unrecorded 5; shell blocked 5; fsck problems 0 |
+| e witness unreachable | yes | answered 10; calls while down 10; degraded unanchored gaps 1; witness failed gaps 2; cosigned after recovery; fsck problems 0 |
+| f storage unavailable | yes | acknowledged 11; acknowledged lost 0; signer unavailable gaps 1; fsck problems 0 |
+| g typescript | yes | back allow; blocked 5; calls while down 10; ran 5; up allow; fsck problems 0 |
 
-Run: full. Platform: darwin, Python 3.11.15.
+Run: quick. Platform: darwin, Python 3.11.15.
 <!-- /table -->
 
 Latency of a tool call under the partition (scenario d):
@@ -418,9 +419,9 @@ Latency of a tool call under the partition (scenario d):
 <!-- table e14-partition -->
 | Phase | Calls | p50 ms | p95 ms | added p50 ms | added p99 ms |
 |---|---|---|---|---|---|
-| baseline | 200 | 1.85 | 2.23 | - | - |
-| during | 40 | 1003.18 | 1003.32 | 1001.32 | 1001.58 |
-| after | 200 | 1.8 | 2.04 | -0.06 | 0.57 |
+| baseline | 30 | 2.23 | 2.88 | - | - |
+| during | 10 | 1002.15 | 1002.3 | 999.91 | 1000.07 |
+| after | 30 | 3.25 | 7.07 | 1.01 | 5.91 |
 
 Client timeout: 1000.0 ms.
 <!-- /table -->
