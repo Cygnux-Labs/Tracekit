@@ -45,6 +45,11 @@ class Rewrites(unittest.TestCase):
                 self.assertIn("cd-dot-and", e21.rewrites(command))
                 self.assertIn("true-semi", e21.rewrites(command))
 
+    def test_a_command_the_parser_cant_read_gets_the_same_shell_prefixes_only(self):
+        command = "echo 'unclosed && sudo id"   # held by TK-SHELL-PARSE
+        self.assertEqual(e21.rewrites(command),
+                         {"cd-dot-and": f"cd . && {command}", "true-semi": f"true; {command}"})
+
     def test_shell_analysis_uses_the_command_list_from_the_four_value_result(self):
         for command in ("sudo id", "cd . && sudo id", "true; sudo id"):
             with self.subTest(command=command):

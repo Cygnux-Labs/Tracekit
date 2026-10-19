@@ -47,10 +47,14 @@ def load_cases():
 
 
 def rewrites(command):
-    """Return same-shell equivalents and, when safe, equivalent child-shell wrappers."""
+    """Return same-shell equivalents and, when safe, equivalent child-shell wrappers. A command the parser can't read
+    (held by TK-SHELL-PARSE) gets the same-shell prefixes only."""
     quoted = shlex.quote(command)
-    parsed = shell.analyse(command)[0]
     out = {"cd-dot-and": f"cd . && {command}", "true-semi": f"true; {command}"}
+    try:
+        parsed = shell.analyse(command)[0]
+    except shell.ParseError:
+        return out
     if stateful_reason(command) is None:
         out.update({"bash-c": f"bash -c {quoted}", "env-bash-c": f"env bash -c {quoted}"})
     top_level = [cmd for cmd in parsed if not cmd["via"]]
