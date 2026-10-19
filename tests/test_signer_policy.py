@@ -233,13 +233,24 @@ class CodingPack(unittest.TestCase):
     def test_dev_signer_dirs_and_installed_packs_are_protected(self):
         for path in ("/Users/u/Library/Application Support/tracekit/data/keys/log.key", "/home/u/.local/share/tracekit/x",
                      "C:\\Users\\u\\AppData\\Local\\tracekit\\keys", "/run/user/1000/tracekit/signer.sock",
-                     "/tmp/tk-501/signer.sock", "/usr/lib/python3/site-packages/tracekit/policy2/packs/coding.yaml"):
+                     "/tmp/tk-501/signer.sock", "/usr/lib/python3/site-packages/tracekit/policy2/packs/coding.yaml",
+                     # another HOME's dev signer beside the per-user one (sdk/autospawn.py _side)
+                     "/run/user/1000/tracekit-0123456789ab/endpoint.json", "/tmp/tk-501-0123456789ab/signer.sock",
+                     "/tmp/tracekit-1000-0123456789ab/endpoint.json"):
             with self.subTest(path=path):
                 self.assertIn("TK-D013", self.e.decide("Write", {"file_path": path})["rule_ids"])
         self.verdicts([("rm -rf ~/Library/Application\\ Support/tracekit", "TK-D007"),
                        ("rm -rf \"$XDG_DATA_HOME/tracekit\"", "TK-D007"), ("rm -rf ~/.local/share/tracekit", "TK-D007"),
                        ("del %LOCALAPPDATA%\\tracekit", "TK-D007"), ("rm /tmp/tracekit-501/signer.sock", "TK-D007"),
                        ("cp x .venv/lib/python3.12/site-packages/tracekit/policy2/packs/coding.yaml", "TK-D007")])
+
+    def test_each_harness_config_an_agent_could_turn_its_sandbox_or_hooks_off_in_is_flagged(self):
+        for tool, args in (("Write", {"file_path": "/home/u/.gemini/settings.json", "content": "{}"}),
+                           ("Edit", {"file_path": "/home/u/p/.gemini/settings.json", "old_string": "a", "new_string": "b"}),
+                           ("Write", {"file_path": "/home/u/.cursor/hooks.json", "content": "{}"}),
+                           ("Bash", {"command": "sed -i s/true/false/ ~/.gemini/settings.json"})):
+            with self.subTest(args=args):
+                self.assertIn("TK-F009", self.e.decide(tool, args)["rule_ids"])
 
     def test_other_harnesses_shell_tools_and_the_server_pack(self):
         for tool in ("run_shell_command", "shell", "local_shell", "run_terminal_cmd", "container.exec"):

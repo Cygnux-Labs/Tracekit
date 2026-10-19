@@ -138,7 +138,7 @@ deny:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit|tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
+    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit(-[0-9a-f]+)?|tmp/(tracekit|tk)-[0-9]+(-[0-9a-f]+)?|(site|dist)-packages/tracekit/policy2/packs)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
     reason: writing Tracekit's own files, signer state or policy
     remedy: Leave Tracekit's files, signer state and policy alone; a person changes them through the signer's own configuration.
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
@@ -375,7 +375,8 @@ flag:
     label: background_spawn
   - id: TK-F009
     tool: Bash|Write|Edit|MultiEdit
-    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
+    # the harnesses' settings, hooks and sandboxes: Claude Code's, Codex's, Gemini CLI's, Cursor's hooks
+    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|\.gemini/|\.cursor/hooks\.json|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
     label: harness_config
   - id: TK-F010
     class: shell
