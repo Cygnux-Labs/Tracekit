@@ -3,6 +3,7 @@ gateway against the middleware, which decides and records through a real signer 
 here field by field from OpenShell's proto/supervisor_middleware.proto, apart from the module's codec."""
 import base64
 import contextlib
+import gzip
 import importlib.util
 import io
 import json
@@ -24,6 +25,7 @@ from tracekit import openshell
 from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
 from tracekit.otlp_wire import _fields, varint
+from tracekit.policy2.compile import build
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
@@ -97,9 +99,9 @@ class Codec(unittest.TestCase):
         self.assertEqual(openshell.args_of(req), {
             "method": "POST", "url": "https://api.example/v1/send", "headers": [["content-type", "application/json"]],
             "body": '{"to": "x"}'})
-        binary = openshell.args_of(openshell.decode(request("h", b"\xff\x00"), openshell._REQUEST))["body"]
-        self.assertEqual(binary["size"], 2)
-        self.assertRegex(binary["digest"], "^sha256:[0-9a-f]{64}$")
+        for body in (b"\xff\x00", b"x" * (openshell.MAX_TEXT + 1)):   # binary, or past half a frame: never decided
+            with self.subTest(size=len(body)), self.assertRaises(openshell.Unreadable):
+                openshell.args_of(openshell.decode(request("h", body), openshell._REQUEST))
 
     def test_packed_body_modes_and_the_manifest(self):
         packed = pb([(1, [(8, varint(1) + varint(3))])])   # how protobuf encoders write a repeated enum
@@ -147,11 +149,12 @@ class Middleware(unittest.TestCase):
     """The middleware on loopback in front of a signer, and a grpcio client playing OpenShell."""
     config = {}   # the middleware's config besides listen and signer
     authorize = {"openshell:*": PER_CALL}
+    policy = POLICY
 
     def setUp(self):
         import grpc
         self.grpc = grpc
-        self.s = SignerService(tmpdir(self), policy=POLICY, gateways=["uid:*"], authorize=self.authorize,
+        self.s = SignerService(tmpdir(self), policy=self.policy, gateways=["uid:*"], authorize=self.authorize,
                                observe_grace_s=0)
         self.addCleanup(self.s.close)
         path, self.signer = serve_signer(self, self.s)
@@ -326,6 +329,27 @@ class Supervisor(Middleware):
             self.evaluate(request("ask.example", b"{}", query="token=abc123"))
         self.assertIn("POST https://ask.example/v1/send waits for approval", err.getvalue())
         self.assertNotIn("abc123", err.getvalue())
+
+
+class ServerPack(Middleware):
+    """Under the shipped server pack: a body the policy can't read is denied, never decided without it."""
+    policy = Engine(build(os.path.join(os.path.dirname(openshell.__file__), "policy2", "packs", "server.yaml"))[0])
+
+    def test_a_body_the_policy_cannot_read_is_denied(self):
+        secret = b'{"key": "AKIA' + b'IOSFODNN7EXAMPLE"}'
+        self.assertEqual(self.evaluate(request("upload.example.com", b'{"q": 1}')), (openshell.ALLOW, ""))
+        self.assertEqual(self.evaluate(request("upload.example.com", secret)), (openshell.DENY, "tracekit_denied"))
+        decided = len(self.events(self.runs()[0], "policy.decision"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for body in (gzip.compress(secret), secret + b" " * (600 * 1024)):   # binary; past half a frame
+                with self.subTest(size=len(body)):
+                    self.assertEqual(self.evaluate(request("upload.example.com", body)),
+                                     (openshell.DENY, "tracekit_body_unreadable"))
+        self.assertEqual(len(self.events(self.runs()[0], "policy.decision")), decided)   # no decision without it
+        self.assertIn("isn't UTF-8 text", err.getvalue())
+        self.assertIn("over the 512 KiB the signer takes", err.getvalue())
+        self.assertEqual(self.evaluate(request("upload.example.com", secret + b" " * (100 * 1024)))[0], openshell.DENY)
 
 
 class Authenticated(Middleware):

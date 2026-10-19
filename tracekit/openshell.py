@@ -39,10 +39,11 @@ sandbox. The tokens stay in this process. Once the signer has closed a sandbox's
 registers a new one.
 
 Request: tool `http_request`, args {method, url, headers: [[name, value], ...], body}: `body` is the text of a UTF-8
-body (else, or when the args would not fit a frame, {digest, size}). allow: ALLOW. deny: DENY tracekit_denied. ask: approval_request and DENY
-tracekit_approval_required at once (OpenShell waits at most its registration timeout, 30 s at most); the same request
-again (same run, tool and args) reads the approval: requested, DENY tracekit_approval_pending; approved, consumed and
-ALLOW; else DENY tracekit_approval_<state>, and the request after that is decided anew. The signer unreachable: DENY
+body. A body that isn't UTF-8, or args over half a frame, is never decided on without it: DENY tracekit_body_unreadable.
+allow: ALLOW. deny: DENY tracekit_denied. ask: approval_request and DENY tracekit_approval_required at once
+(OpenShell waits at most its registration timeout, 30 s at most); the same request again (same run, tool and args)
+reads the approval: requested, DENY tracekit_approval_pending; approved, consumed and ALLOW; else DENY
+tracekit_approval_<state>, and the request after that is decided anew. The signer unreachable: DENY
 tracekit_signer_unreachable; a signer refusal: tracekit_signer_refused; a request that doesn't decode:
 tracekit_malformed_request. OpenShell enforces a DENY whatever the entry's on_error, and gives the sandbox the code,
 never the reason; refusals and asks are printed on stderr.
@@ -327,12 +328,13 @@ def _url(t):
     return f"{t['scheme']}://{host}{port}{t.get('path') or '/'}" + (f"?{t['query']}" if t.get("query") else "")
 
 
-def _digest(data):
-    return {"digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size": len(data)}
+class Unreadable(Exception):
+    """A request whose body the policy can't read: denied, never decided on without it."""
 
 
 def args_of(req):
-    """The decided arguments of HttpRequestEvaluation `req` (decoded)."""
+    """The decided arguments of HttpRequestEvaluation `req` (decoded). Unreadable when its body isn't UTF-8 text or the
+    arguments don't fit a signer frame."""
     t = req.get("target", {})
     if not all(t.get(k) for k in ("scheme", "host", "method")):
         raise WireError("the target has no scheme, host or method")
@@ -343,9 +345,10 @@ def args_of(req):
         try:
             args["body"] = raw.decode("utf-8")
         except UnicodeDecodeError:
-            args["body"] = _digest(raw)
-        if not sendable(args):
-            args["body"] = _digest(raw)
+            raise Unreadable(f"its body ({len(raw)} bytes) isn't UTF-8 text (compressed or binary)") from None
+    if not sendable(args):
+        raise Unreadable(f"its body ({len(raw)} bytes) and headers are over the {MAX_TEXT // 1024} KiB the signer "
+                         "takes")
     return args
 
 
@@ -405,6 +408,9 @@ class Middleware:
             args = args_of(req)
         except WireError as e:
             return self._deny("tracekit_malformed_request", f"the request doesn't decode: {e}")
+        except Unreadable as e:
+            return self._deny("tracekit_body_unreadable", f"sandbox {ctx['sandbox_id']}: Tracekit's policy can't read "
+                              f"the request, {e}: denied, never decided without its body")
         if sandbox is not None and sandbox != ctx["sandbox_id"]:
             return self._deny("tracekit_unauthenticated", f"a token for sandbox {sandbox[:100]} sent another "
                                                           "sandbox's request")
