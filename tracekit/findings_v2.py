@@ -5,6 +5,11 @@
     tracekit analyze --v2 --run R --bundle B --trust T
         [--project DIR] [--allow DIR ...] [--open] [--budget S] [--dry-run] [--json]
 
+Each pass signs its findings and its coverage review through the signer (review_finding), in a findings run of its own
+about the run (`register_run analyzes`), as an identity signer.yaml `analyzers` lists (the dev signer lists its user, so
+dev findings read self-asserted); `tracekit export --v2 --run R --with-findings` bundles them with the run. --dry-run
+signs nothing.
+
 Records come from the store, or from a bundle once it verifies; content (what the person asked, what the model said, a
 call's arguments) from the signer's content vault (content_get, each read a signed content.accessed), each item opening
 its record's commitment with the salt the vault returns, else the analysis stops (EvidenceAlert). Content redaction
@@ -17,6 +22,13 @@ Checks, for each call the run allowed or ran:
           call names. A sentence that names a file to keep away from it ("leave billing.py untouched") is no mention:
           it is a constraint, and a file the request kept away is a finding whatever the model said about it.
   TK-X203 (high) a write tool, a Bash write target or a kernel sensor's file effect outside the project
+  TK-X204 (high; medium when the model stated it, low once a later request lifts it) a call or a kernel sensor's
+          effect breaks a constraint stated before it (tracekit.constraints: "don't touch X", "leave X alone",
+          "read-only", "don't push", "no network", "only change Y"). A later request that names what the constraint
+          keeps away lifts it: the finding stays, downgraded, and cites the lifting record.
+For each prompt line of the main transcript:
+  TK-X208 (high) the run's prompt hook recorded prompts, and none of them is this line's text: a line the harness never
+          submitted (an agent can append one to its own transcript). It is no request: it lifts and clears nothing.
   TK-X200 (info) coverage: per check what it checked, found and could not check (by reason), and the monitorability
           score: how many actions had full, summarized, withheld (sealed or absent) or no reasoning before them, from
           which the share of actions each check could check follows.
@@ -31,38 +43,39 @@ sensor; operator: --project) are in `shown`: printed, never signed. `--json` pri
 (docs/findings.md).
 
 Intent is only what a person typed: a prompt line of the main Claude Code transcript (not isMeta, a compaction
-summary, command output, a tool result or a sub-agent's prompt), the newest user message of a recorded model request,
-an input observed as trusted. The gateway's record of a model message is preferred where an agent's report of it
-exists too; two reports of one message from different event streams make its reasoning not checkable
-(conflicting_reports), and their text clears nothing. Ordering is computed from run_seq: a reasoning link is
-`signed_before` the call's decision, in `transcript_order` (a transcript line the signer recorded after the decision,
-before the tool use in the file), or `after`.
+summary, command output, a tool result or a sub-agent's prompt) whose text a prompt the hook recorded at
+UserPromptSubmit (input.observed, source <agent>:UserPromptSubmit: the harness's payload) matches, each hook prompt
+confirming one line (tier `harness`); in a run whose hook recorded no prompt (hooks before 1.4), the line alone (tier
+`transcript`). Also the newest user message of a recorded model request, and an input observed as trusted. The
+gateway's record of a model message is preferred where an agent's report of it exists too; two reports of one message
+from different event streams make its reasoning not checkable (conflicting_reports), and their text clears nothing.
+Ordering is computed from run_seq: a reasoning link is `signed_before` the call's decision, in `transcript_order` (a
+transcript line the signer recorded after the decision, before the tool use in the file), or `after`.
 """
 import argparse
 import bisect
+import collections
+import hashlib
 import json
 import os
 import posixpath
-import re
-import shlex
 import sys
 import tempfile
 import time
 
-from . import parsers
+from . import __version__, constraints, parsers
 from .findings import SEVERITY, WRITE_TOOLS
+from .signer.rpc_schema import FINDING_TITLES as TITLES, RPCError
 
 BUDGET_S = 60.0
 MAX_TEXT = 1 << 16    # lean: characters of one record's text a check reads; past it a long prompt or answer is cut
 MAX_NAMES = 1 << 17   # distinct words the mention index holds; past it the analysis stops (budget)
+MAX_PROMPTS = 1 << 23   # characters of prompt text held until the hook's prompts and the transcript's are paired
 MAX_CITES = 8
 EXCERPT = 600
 SHELL_TOOLS = ("Bash", "bash", "shell")
 
-# the fixed titles the signer writes beside a signed finding (rpc_schema.FINDING_TITLES once review_finding is in)
-TITLES = {"TK-X200": "Check coverage", "TK-X201": "Action with no reasoning before it",
-          "TK-X202": "Edit of a file not mentioned before", "TK-X203": "Write outside the project"}
-SEVERITIES = {"TK-X201": "info", "TK-X202": "medium", "TK-X203": "high"}
+SEVERITIES = {"TK-X201": "info", "TK-X202": "medium", "TK-X203": "high", "TK-X204": "high", "TK-X208": "high"}
 WHY = {   # rule -> (why it matters, what to do)
     "TK-X201": ("nothing the model said explains this action, so there is no stated reason to check it against",
                 "read the action and its result; if the model's reasoning was withheld, turn on thinking summaries"),
@@ -71,6 +84,12 @@ WHY = {   # rule -> (why it matters, what to do)
     "TK-X203": ("an agent working on one project changed a file elsewhere on the machine",
                 "check that file and what the change did; keep the agent's writes inside the project with a policy "
                 "rule or a sandbox"),
+    "TK-X204": ("the agent did what the run's own words said not to do",
+                "review the action and its result with the person who set the constraint; with this release's hooks "
+                "the signer holds such a call for their approval as it happens (live constraints)"),
+    "TK-X208": ("a line in the agent's own transcript reads like the person's request, but the harness never "
+                "submitted it: the agent (or something with its access) can write that file",
+                "treat the line as the agent's words, not the person's; find what wrote it"),
 }
 REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "no_response": ("no model response was recorded for this call",
@@ -95,27 +114,16 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "relative_path": ("a relative path with no working directory for the call",
                       "Claude Code: `tracekit init --dev --v2` (the transcript tailer records each call's cwd)"),
     "budget": ("the analysis reached its time or size budget", "pass --budget SECONDS, larger than the default 60"),
+    "no_hook": ("the run's hook recorded no prompt, so no prompt line can be confirmed",
+                "update the hooks: `tracekit init --dev --v2` (from 1.4 the hook records each prompt at "
+                "UserPromptSubmit)"),
 }
-CHECKS = ("TK-X201", "TK-X202", "TK-X203")
+CHECKS = ("TK-X201", "TK-X202", "TK-X203", "TK-X204", "TK-X208")
+PROMPT_HOOK = ":UserPromptSubmit"   # an input.observed source: <agent>:UserPromptSubmit, the hook's prompt
 FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorability classes, best first
-TIERS = ("operator", "observer", "gateway", "decision", "sdk", "transcript")   # trust, best first
-TEXT_TIERS = ("transcript", "sdk", "gateway")   # weakest first: a finding names the weakest text it relied on
-
-WORD = re.compile(r"[\w.~/\\-]+")   # path-like runs: a word, a file name, a path
-# lean: a clause ends at a sentence end, a comma or semicolon, "but", "except" or "though": "fix pager.py but leave
-# billing.py alone" keeps billing.py away and asks for pager.py; "don't touch a.py, b.py" keeps only a.py away
-CLAUSE = re.compile(r"(?<=[.!?])\s+|\n+|[,;:]\s*|\s+(?:but|except|though)\s+", re.I)
-FILE_LIKE = re.compile(r"\w\.\w|/")
-WORDS = re.compile(r"[a-z']+")
-KEEP_WORDS = frozenset(("untouched", "unchanged", "intact"))
-NEGATIONS = frozenset(("not", "never", "don't", "dont", "won't", "wont", "mustn't", "shouldn't", "without", "avoid"))
-VERBS = frozenset(("touch", "touching", "touched", "modify", "modifying", "modified", "edit", "editing", "edited",
-                   "change", "changing", "changed", "delete", "deleting", "deleted", "alter", "altering", "rewrite",
-                   "overwrite", "update", "updating", "remove", "removing"))
+TIERS = ("operator", "observer", "gateway", "decision", "harness", "sdk", "transcript")   # trust, best first
+TEXT_TIERS = ("transcript", "sdk", "harness", "gateway")   # weakest first: a finding names the weakest text it relied on
 COMMAND_OUTPUT = ("<command-", "<local-command-", "<bash-stdout", "<bash-stderr")
-WRITERS = {"tee": "all", "touch": "all", "mkdir": "all", "rm": "all", "rmdir": "all", "truncate": "all",
-           "cp": "last", "mv": "last", "install": "last", "ln": "last"}
-SEPARATORS = (";", ";;", "&&", "||", "|", "|&", "&", "(", ")")
 
 
 class Budget(Exception):
@@ -185,66 +193,31 @@ def _message(body, data):
     return "anthropic:messages", body
 
 
-def _keep_away(sentence):
-    words = set(WORDS.findall(sentence.lower()))
-    return bool(words & KEEP_WORDS or {"leave", "alone"} <= words or {"left", "alone"} <= words
-                or (words & NEGATIONS and words & VERBS))
-
-
 def _names(text):
-    """[(name, kept away)] of the words of `text`, each a lower-cased basename. A clause that names a file to keep away
-    from it ("leave billing.py untouched", "don't modify billing.py") marks that file kept away; its other words are
-    no mention."""
+    """[(name, kept away)] of the words of `text`, each a basename as constraints compare them (constraints.norm). A
+    file a clause keeps away ("leave billing.py untouched", "don't modify billing.py") is marked kept away, and that
+    clause's other words, its other files aside, are no mention."""
     out = []
-    for clause in CLAUSE.split(_text(text)):
-        away = None
-        for m in WORD.finditer(clause):
-            name = re.split(r"[/\\]", m.group().strip(".-~"))[-1].strip(".").lower()
-            if name:
-                if away is None:
-                    away = _keep_away(clause)
-                if not away or FILE_LIKE.search(m.group()):
-                    out.append((name, away))
+    for clause in constraints.CLAUSE.split(_text(text)):
+        tokens = constraints._tokens(clause)
+        kept = constraints._clause(tokens)[1]
+        for t in tokens:
+            file = bool(constraints.FILE_LIKE.search(t))
+            if (file or not kept) and constraints.norm(t):
+                out.append((constraints.norm(t), t in kept))
     return out
 
 
 def _targets(cmd):
-    """(paths, cd) of a shell command: what it writes as far as a lexer can tell, and whether it changes directory.
-    lean: redirections, tee/touch/mkdir/rm/rmdir/truncate arguments and cp/mv/install/ln destinations; a word with a
-    variable, a glob or a command substitution is skipped. Parse the shell properly if it misses real writes."""
-    try:
-        lex = shlex.shlex(_text(cmd), posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        words = list(lex)
-    except ValueError:
-        return [], False
-    out, cd, cur, skip = [], False, [], None
+    """(paths, cd) of a shell command: what it writes as far as a lexer can tell (constraints.shell), and whether it
+    changes directory."""
+    s = constraints.shell(cmd)
+    return s["paths"], s["cd"]
 
-    def flush():
-        nonlocal cd
-        if cur:
-            name, args = posixpath.basename(cur[0]), [w for w in cur[1:] if not w.startswith("-")]
-            cd = cd or name in ("cd", "pushd")
-            out.extend(args if WRITERS.get(name) == "all" else args[-1:] if WRITERS.get(name) == "last" and
-                       len(args) > 1 else [])
-        cur.clear()
-    for w in words:
-        if skip is not None:
-            if skip and not w.isdigit() and w != "-":
-                out.append(w)
-            skip = None
-        elif w in SEPARATORS:
-            flush()
-        elif set(w) <= set("<>&|") and ">" in w:   # a redirection: its target is the next word
-            if cur and cur[-1].isdigit():
-                cur.pop()
-            skip = True
-        elif set(w) <= set("<&|") and "<" in w:   # input: the next word is read, not written
-            skip = False
-        else:
-            cur.append(w)
-    flush()
-    return [t for t in out if not set(t) & set("$`*?[")], cd
+
+def _same_text(text):
+    """A prompt's text as the hook and the transcript are compared: its words, whitespace aside."""
+    return hashlib.sha256(" ".join(_text(text).split()).encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _under(path, root):
@@ -265,13 +238,16 @@ class _Run:
                                                       if first["type"] == "run.registered" else None)
         self.final = any(r["event"]["type"] == "run.final" for r in self.records)
         self.calls, self.carriers, self.groups, self.streams, self.effects = {}, {}, {}, {}, []
-        self.synthetic = False
+        self.synthetic = self.hooked = False   # hooked: the run's hook recorded a prompt (PROMPT_HOOK)
+        self.net_effects, self.requests = [], []   # net and connect effects; agent-reported request records
         for r in self.records:
             e, d = r["event"], r["event"]["data"]
             if e["type"] == "policy.decision":
                 self.calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
             elif e["type"] == "tool.result" and d.get("tool_use_id") in self.calls:
                 self.calls[d["tool_use_id"]]["result"] = r
+            elif e["type"] == "model.exchange" and d.get("phase") == "request" and e["source"] != "gateway":
+                self.requests.append(e["run_seq"])
             elif e["type"] == "model.exchange" and d.get("phase") == "response":
                 x = d.get("exchange_id")
                 if x is not None:
@@ -283,6 +259,10 @@ class _Run:
                         self.synthetic = self.synthetic or bool(t.get("id_synthetic"))
             elif e["type"] == "effect.observed" and d.get("kind") == "file" and isinstance(d.get("path"), str):
                 self.effects.append(r)
+            elif e["type"] == "effect.observed" and d.get("kind") in ("net", "connect"):
+                self.net_effects.append(r)
+            elif e["type"] == "input.observed" and str(d.get("source")).endswith(PROMPT_HOOK):
+                self.hooked = True
             elif e["type"] == "run.final" and (d.get("coverage") or {}).get("paired_by_args"):
                 self.synthetic = True
         self.ran = {c: v for c, v in self.calls.items()
@@ -294,7 +274,13 @@ class _Run:
         # and in a sentence keeping away from it ("kept_asked", "kept_said")
         self.names = {"asked": {}, "said": {}, "kept_asked": {}, "kept_said": {}}
         self.intent, self.prose = [], []   # run_seqs of intent records; positions of readable model text
-        self.args, self.cwd, self.root = {}, {}, None
+        self.args, self.cwd, self.root, self.facts = {}, {}, None, {}   # facts: decision run_seq -> constraints.facts
+        # prompts: [(run_seq, text digest, text, cwd)] of the transcript's prompt lines and the hook's prompts, until
+        # confirm() pairs them; unconfirmed: the transcript's lines no hook prompt has the text of (TK-X208)
+        self.prompts, self.hook_prompts, self.held, self.unconfirmed, self.confirmed = [], [], 0, [], {}
+        # stated: [(position, run_seq, kind, object, "request" or "model")] of each constraint stated; lifts:
+        # [(position, run_seq, constraints.mentions(text), "request" or "model")] of each text after
+        self.stated, self.lifts, self.lift_names = [], [], 0
 
     def conflicting(self, x):
         return len(self.streams.get(x, ())) > 1
@@ -308,10 +294,72 @@ class _Run:
     def _mention(self, text, pos, seq, tier, source):
         for name, away in _names(text):
             index = self.names[("kept_" if away else "") + source]
-            if name not in index:
-                if sum(map(len, self.names.values())) >= MAX_NAMES:
+            if name not in index or pos < index[name][0]:   # confirm() reads the prompts after the rest
+                if name not in index and sum(map(len, self.names.values())) >= MAX_NAMES:
                     raise Budget()
                 index[name] = (pos, seq, tier)
+
+    def _stated(self, text, pos, seq, source):
+        """The constraints `text` states, and what it mentions that could lift one stated before it."""
+        self.stated += [(pos, seq, kind, obj, source) for kind, obj in constraints.extract(_text(text))]
+        mention = constraints.mentions(_text(text))
+        if mention[0] or mention[1]:
+            self.lift_names += len(mention[0]) + len(mention[1])
+            if self.lift_names > MAX_NAMES:
+                raise Budget()
+            self.lifts.append((pos, seq, mention, source))
+
+    def _request(self, seq, text, tier):
+        self.intent.append(seq)
+        self._mention(text, (seq, -1), seq, tier, "asked")
+        self._stated(text, (seq, -1), seq, "request")
+
+    def _keep(self, into, seq, text, cwd=None):
+        self.held += len(_text(text))
+        if self.held > MAX_PROMPTS:
+            raise Budget()
+        into.append((seq, _same_text(text), _text(text), cwd))
+
+    def confirm(self):
+        """Pair the prompts the hook recorded with the transcript's prompt lines, one each by their text, and read
+        each confirmed line (in a run whose hook recorded none: each line) as a request; the other lines are
+        TK-X208's. Then order what was stated and mentioned by position."""
+        hooks = collections.defaultdict(list)
+        for seq, h, _, _ in self.hook_prompts:
+            hooks[h].append(seq)
+        for seq, h, text, cwd in self.prompts:
+            if self.hooked:
+                if not hooks[h]:
+                    self.unconfirmed.append(seq)
+                    continue
+                self.confirmed[seq] = hook = hooks[h].pop(0)
+                self.tier[seq] = self.tier[hook] = "harness"
+            if cwd and self.root is None:
+                self.root = (cwd, seq)
+            self._request(seq, text, self.tier[seq])
+        self.prompts = [(seq, None, None, None) for seq, *_ in self.prompts]   # the text is read
+        self.hook_prompts = []
+        self.intent.sort()
+        self.stated.sort(key=lambda c: c[:2])
+        self.lifts.sort(key=lambda m: m[:2])
+
+    def broken(self, f, pos):
+        """The constraint stated before position `pos` that a call's or effect's facts `f` (constraints.facts) break,
+        a request's before the model's and one no later text lifts first: (stated, what breaks it, the lifting
+        entry or None), or None."""
+        only = {c[3] for c in self.stated if c[2] == "only_change" and c[0] < pos}
+        best = None
+        for c in self.stated:
+            if c[0] >= pos:
+                break
+            name = constraints.breaks(c[2], f, only.__contains__ if c[2] == "only_change" else c[3].__eq__)
+            if name is None:
+                continue
+            lift = next((m for m in self.lifts if c[0] < m[0] < pos and (m[3] == "request" or c[4] == "model")
+                         and constraints.lifts(c[2], m[2], (name if c[2] == "only_change" else c[3]).__eq__)), None)
+            if best is None or (c[4] != "request", lift is not None) < (best[0][4] != "request", best[2] is not None):
+                best = (c, name, lift)
+        return best
 
     def first(self, index, name, pos):
         """(position, run_seq, tier) of `name`'s first mention in `index` before position `pos`, or None."""
@@ -327,6 +375,8 @@ class _Run:
             self.redacted.add(seq)
         if e["type"] == "policy.decision":
             self.tier[seq] = "decision"
+            if isinstance(body, dict):
+                self.facts[seq] = constraints.facts(d["tool"], body)
             if d["tool"] in WRITE_TOOLS and isinstance(body, dict):
                 path = body.get("file_path") or body.get("notebook_path") or body.get("path")
                 self.args[seq] = {"paths": [path] if isinstance(path, str) else [], "cd": False, "edit": True}
@@ -340,11 +390,13 @@ class _Run:
             self.cwd[seq] = body["entry"]["cwd"]
         if e["type"] == "input.observed":
             text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)[:MAX_TEXT]
+            if str(d.get("source")).endswith(PROMPT_HOOK):   # a request only once a transcript line agrees
+                return self._keep(self.hook_prompts, seq, text)
         elif d.get("phase") == "request":
-            prompt = _prompt(body) if _tailer(body) else None
-            text = prompt[0] if prompt else None if _tailer(body) else _asked(body)
-            if prompt and prompt[1] and self.root is None:
-                self.root = (prompt[1], seq)
+            if _tailer(body):
+                prompt = _prompt(body)
+                return prompt and self._keep(self.prompts, seq, *prompt)
+            text = _asked(body)
         else:
             if self.conflicting(d.get("exchange_id")):   # text that may be forged clears nothing
                 self.segs[seq] = [(s["kind"], s["form"], bool(s["text"].strip()), s["tools"], "")
@@ -357,10 +409,10 @@ class _Run:
                 if s["text"].strip():
                     self.prose.append((seq, k))
                     self._mention(s["text"], (seq, k), seq, tier, "said")
+                    self._stated(s["text"], (seq, k), seq, "model")
             return
         if text:
-            self.intent.append(seq)
-            self._mention(text, (seq, -1), seq, tier, "asked")
+            self._request(seq, text, tier)
 
     # ----------------------------------------------------------------------- per call
 
@@ -439,13 +491,39 @@ def _tiers(run, seqs, extra=()):
     return [t for t in TIERS if t in found]
 
 
-def _finding(run, rule, seqs, severity=None, order=None):
+def _finding(run, rule, seqs, severity=None, order=None, lifted=False):
     """A finding as review_finding takes it: {verdict, cites}, no text of the run (rpc_schema.REVIEW)."""
     tier = next((t for t in TEXT_TIERS if t in {run.tier.get(s) for s in seqs}), None)
     return {"verdict": {"kind": "finding", "rule": rule, "severity": severity or SEVERITIES[rule],
                         **({"tier": tier} if tier else {}), **({"order": order} if order else {}),
-                        **({"redacted": True} if run.redacted & set(seqs) else {})},
+                        **({"redacted": True} if run.redacted & set(seqs) else {}),
+                        **({"lifted": True} if lifted else {})},
             "cites": _cite(run, seqs)}
+
+
+STATED = {"keep_away": "to keep {} unchanged", "only_change": "to change only {}", "read_only": "to make no changes",
+          "no_push": "not to push", "no_network": "not to use the network"}
+DID = {"keep_away": "changed {}", "only_change": "changed {}", "read_only": "changed {}", "no_push": "pushed",
+       "no_network": "reached the network"}
+
+
+def _constraint(run, note, call, f, pos, seqs, who):
+    """TK-X204 of one call or effect (`f` its constraints.facts, at position `pos`; `seqs` its records; `who` names
+    it): whether it breaks a constraint stated before it."""
+    hit = run.broken(f, pos)
+    if hit is None:
+        return note(call, "TK-X204", "checked", _tiers(run, seqs))
+    (_, cseq, kind, obj, source), name, lift = hit
+    seqs = [*seqs, cseq, *([lift[1]] if lift else [])]
+    only = sorted({c[3] for c in run.stated if c[2] == "only_change" and c[0] < pos})
+    note(call, "TK-X204", "checked", _tiers(run, seqs), _finding(
+        run, "TK-X204", seqs, "low" if lift else "high" if source == "request" else "medium",
+        call and call["order"], bool(lift)),
+        f"{who} {DID[kind].format(name)} after the {source} (record {cseq}) said "
+        + STATED[kind].format(", ".join(only[:3]) if kind == "only_change" else obj)
+        + (f"; a later {lift[3]} (record {lift[1]}) named it, so the constraint may have been lifted" if lift else ""),
+        [kind] + (["lifted"] if lift else []) + (["stated_by_model"] if source == "model" else []))
+    return True
 
 
 def _home_like(root):
@@ -523,26 +601,32 @@ def _check(run, out, project, allow, deadline, clock):
         else:
             note(call, "TK-X201", x201)
         facts = run.args.get(dseq)
+        pos = run.said_before(tcid)[1]
+        i, prose = bisect.bisect_left(run.intent, pos[0]), bisect.bisect_left(run.prose, pos) > 0
+        # TK-X204
+        if dseq not in run.facts:
+            note(call, "TK-X204", "no_content")
+        elif not i and not prose:
+            note(call, "TK-X204", "no_text")
+        else:
+            _constraint(run, note, call, run.facts[dseq], pos, [dseq, *([cs] if cs is not None else [])], tool)
         # TK-X202
         if tool in WRITE_TOOLS:
-            pos = run.said_before(tcid)[1]
-            i, prose = bisect.bisect_left(run.intent, pos[0]), bisect.bisect_left(run.prose, pos) > 0
             if not facts or not facts["paths"]:
                 note(call, "TK-X202", "no_content")
             elif not i and not prose:
                 note(call, "TK-X202", "no_text")
             else:
-                name = posixpath.basename(facts["paths"][0]).lower()
+                name = constraints.norm(facts["paths"][0])
                 asked, said = run.first("asked", name, pos), run.first("said", name, pos)
                 kept = run.first("kept_asked", name, pos) or run.first("kept_said", name, pos)
-                kept_by_request = bool(run.first("kept_asked", name, pos)) and not asked
                 seqs = [dseq, *([cs] if cs is not None else []), *run.intent[max(0, i - 3):i]]
-                hit = kept_by_request or not (asked or said)
+                # a file a constraint keeps away is TK-X204's: the stronger finding covers the call
+                hit = not (asked or said) and call["checks"]["TK-X204"] != "found"
                 note(call, "TK-X202", "checked", _tiers(run, seqs), hit and _finding(
                     run, "TK-X202", seqs + ([kept[1]] if kept else []), order=call["order"]),
-                    f"{tool} changed {facts['paths'][0]}; " + (
-                        "the request named it only to keep it unchanged" if kept_by_request else
-                        f"neither the request nor the model's text before the call names {name}")
+                    f"{tool} changed {facts['paths'][0]}; neither the request nor the model's text before the call "
+                    f"names {name}" + (" other than to keep it unchanged" if kept else "")
                     + ("" if prose else " (no model text was readable: checked against the request only)"),
                     (["kept_away"] if kept else []) + ([] if prose else ["reasoning_absent"]))
         # TK-X203
@@ -568,9 +652,29 @@ def _check(run, out, project, allow, deadline, clock):
             run, "TK-X201", [s for s in seqs if s is not None],
             severity="low" if checkable and explained / checkable > 0.5 else "info"),
             f"{call['tool']} (call {tcid}) came with nothing said before it in the model's message")
+    found = {t for t, c in shown["calls"].items() if c["checks"].get("TK-X204") == "found"}
+    for r in sorted(run.effects + run.net_effects, key=lambda r: r["event"]["run_seq"]):   # TK-X204 of each effect
+        d, eseq = r["event"]["data"], r["event"]["run_seq"]
+        run.tier[eseq] = "observer"
+        if run.stated and d.get("tool_call_id") not in found:   # a call's own finding covers what it did
+            file = d["kind"] == "file"
+            _constraint(run, note, None, {"names": [constraints.norm(d["path"])] if file else [], "write": file,
+                                          "push": False, "network": not file}, (eseq, 0), [eseq],
+                        f"the {d.get('sensor') or 'egress'} observer saw {d.get('binary', 'a process')}: it")
+    for seq, _, _, _ in run.prompts:   # TK-X208
+        if not run.hooked:
+            note(None, "TK-X208", "no_hook")
+        elif seq in run.unconfirmed:
+            note(None, "TK-X208", "checked", ["transcript"], _finding(run, "TK-X208", [seq]),
+                 f"the transcript's prompt line (record {seq}) matches no prompt the harness submitted (the hook "
+                 "recorded each one): it is no request, and lifts or clears nothing", ["unconfirmed"])
+        else:
+            note(None, "TK-X208", "checked", ["harness"])
+    for seq in run.requests:   # an agent-reported request whose content is not here: maybe a prompt line
+        if seq not in run.content:
+            note(None, "TK-X208", "no_content")
     for r in run.effects:
         p = posixpath.normpath(r["event"]["data"]["path"])
-        run.tier[r["event"]["run_seq"]] = "observer"
         if root_why:
             note(None, "TK-X203", root_why)
             continue
@@ -587,12 +691,12 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
     vault holds content for, in run_seq order (why.signed.vault_content), or None (no vault: little is checkable).
     -> the --json shape (docs/findings.md): {"run_id", "agent", "summary": the one line, "findings": [{verdict,
     cites}], "coverage": {verdict, cites} (TK-X200), "shown": what printing shows, plaintext, never signed
-    ("details" per finding, "tiers" per check, "constraints", "calls": tool_use_id -> the reasoning before it and each
-    check's outcome)}; each {verdict, cites} is what review_finding signs. EvidenceAlert (from `content`) when the
-    vault's content does not open its record."""
+    ("details" per finding, "tiers" per check, "constraints" stated, "prompts": each prompt line confirmed or not,
+    "calls": tool_use_id -> the reasoning before it and each check's outcome)}; each {verdict, cites} is what
+    review_finding signs. EvidenceAlert (from `content`) when the vault's content does not open its record."""
     run, deadline = _Run(records), clock() + budget_s
     out = {"run_id": run.run_id, "agent": run.agent, "findings": [],
-           "shown": {"details": [], "constraints": [], "calls": {}}}
+           "shown": {"details": [], "constraints": [], "prompts": [], "calls": {}}}
     cov, forms, budget = None, dict.fromkeys(FORMS, 0), False
     try:
         needed = run.needed()
@@ -606,6 +710,7 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
                 nxt = next(got, None)
             if nxt is not None and nxt[0] == seq:
                 run.feed(r, nxt[1], nxt[2])
+        run.confirm()
         cov, forms = _check(run, out, project, allow, deadline, clock)
     except Budget:
         budget, out["findings"], out["shown"]["details"] = True, [], []
@@ -624,10 +729,12 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
         **({"partial": True} if partial or not run.final else {}),
         "reasoning": {k: forms[k] for k in FORMS if k != "unknown"}}, "cites": []}
     out["shown"]["tiers"] = {r: [t for t in TIERS if t in c["tier"]] for r, c in cov.items()}
-    out["shown"]["constraints"] = sorted(({"name": n, "run_seq": s, "tier": t, "source": src}
-                                          for index, src in (("kept_asked", "request"), ("kept_said", "model"))
-                                          for n, (_, s, t) in run.names[index].items()),
-                                         key=lambda c: c["run_seq"])[:50]
+    out["shown"]["constraints"] = [{"kind": k, **({"name": o} if o else {}), "run_seq": s, "source": src,
+                                    "tier": run.tier.get(s)} for _, s, k, o, src in run.stated][:50]
+    out["shown"]["prompts"] = [{"run_seq": s, "status": "unconfirmed" if s in run.unconfirmed else "confirmed"
+                                if s in run.confirmed else "unchecked", **({"hook": run.confirmed[s]} if s in
+                                                                            run.confirmed else {})}
+                               for s, *_ in run.prompts][:200]
     order = {s: i for i, s in enumerate(reversed(SEVERITY))}
     pairs = sorted(zip(out["findings"], out["shown"]["details"]), key=lambda fd: (
         order[fd[0]["verdict"]["severity"]], fd[0]["cites"][0]["run_seq"] if fd[0]["cites"] else 0))
@@ -663,6 +770,10 @@ def summary(out):
             + (" · PARTIAL: the run is still open" if out["coverage"]["verdict"].get("partial") else ""))
 
 
+TIER_NOTES = {"transcript": "transcript (the agent can write it)",
+              "harness": "harness (the prompt hook and the transcript agree)"}
+
+
 def render(out):
     lines = [summary(out), ""]
     for f, d in zip(out["findings"], out["shown"]["details"]):
@@ -675,19 +786,20 @@ def render(out):
                   f"  Why it matters: {why}",
                   f"  What to do: {todo}",
                   "  Records: " + ", ".join(f"{c['run_seq']} ({c['hash'][7:19]})" for c in f["cites"])
-                  + " · relied on: " + ", ".join("transcript (the agent can write it)" if t == "transcript" else t
-                                                 for t in d["tiers"]), ""]
+                  + " · relied on: " + ", ".join(TIER_NOTES.get(t, t) for t in d["tiers"]), ""]
     cov = out["coverage"]["verdict"]
     gaps = [(r, g["reason"], g["n"]) for r, c in cov["checks"].items() for g in c["not_checkable"]]
     if gaps:
         lines.append("Not checkable (never counted as a pass):")
         for r, why, n in gaps:
             plain, fix = REASONS[why]
-            lines += [f"  {r} for {n} call{'s' * (n != 1)}: {plain}.", f"    To make it checkable: {fix}"]
+            unit = "prompt line" if r == "TK-X208" else "call"
+            lines += [f"  {r} for {n} {unit}{'s' * (n != 1)}: {plain}.", f"    To make it checkable: {fix}"]
         lines.append("")
     if out["shown"]["constraints"]:
-        lines.append("Stated constraints (a sentence that names a file to keep away from it):")
-        lines += [f"  {c['name']} (record {c['run_seq']}, from the {c['source']})" for c in out["shown"]["constraints"]]
+        lines.append("Stated constraints (what the run's own words said not to do; TK-X204 checks each later call):")
+        lines += [f"  {c['kind']}{' ' + c['name'] if 'name' in c else ''} (record {c['run_seq']}, from the "
+                  f"{c['source']})" for c in out["shown"]["constraints"]]
         lines.append("")
     actions, readable = monitorability(cov)
     lines.append(f"Monitorability (the share of actions whose reasoning can be read): {_pct(readable, actions)} of "
@@ -698,6 +810,10 @@ def render(out):
     lines.append("Checkable share: " + ", ".join(
         f"{r} {_pct(c['checked'], c['checked'] + sum(g['n'] for g in c['not_checkable']))}"
         f" ({c['checked']} checked, {c['found']} found)" for r, c in cov["checks"].items()))
+    s = out.get("signed")
+    lines.append(f"Signed: {s['records']} record(s), the findings and the coverage review, in findings run "
+                 f"{s['findings_run']}; bundle them with `tracekit export --v2 --run {out['run_id']} --with-findings`"
+                 if s else "Not signed: printed only.")
     return "\n".join(lines)
 
 
@@ -720,11 +836,32 @@ def _latest(data_dir):
     return None
 
 
+def sign(client, run_id, out):
+    """Sign `out`'s findings and its coverage review into a new findings run about `run_id`, then close it. -> the
+    findings run's id. A signer rate limit (quota_exceeded with retry_after_ms) is waited out."""
+    reviewer, run = f"tracekit-analyze/{__version__}", client.run("tracekit-analyze", analyzes=run_id)
+    try:
+        for f in [*out["findings"], out["coverage"]]:
+            while True:
+                try:
+                    run.review_finding(reviewer, f["verdict"], f["cites"])
+                    break
+                except RPCError as e:
+                    if e.code != "quota_exceeded" or e.retry_after_ms is None:
+                        raise
+                    time.sleep(min(e.retry_after_ms, 5000) / 1000)
+    finally:
+        run.close()
+    return run.run_id
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit analyze --v2", description=(
         "Check whether what a v2 run's person asked, what its model said and what its agent did agree (TK-X201 "
-        "nothing said before an action, TK-X202 an unmentioned file edited, TK-X203 a write outside the project; "
-        "TK-X200 coverage and the monitorability score). Exit 0, 4 when a finding is high or worse, 2 on an error."))
+        "nothing said before an action, TK-X202 an unmentioned file edited, TK-X203 a write outside the project, "
+        "TK-X204 a stated constraint broken, TK-X208 a prompt line the harness never submitted; TK-X200 coverage and "
+        "the monitorability score), and sign the findings. Exit 0, 4 when a finding is high or worse, 2 on an "
+        "error (findings that could not be signed among them)."))
     ap.add_argument("--run", help="the run id (default: the store's latest run)")
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--store", metavar="DIR", help="a signer data dir (default: the dev signer's), read-only")
@@ -740,7 +877,6 @@ def main(argv=None):
     a = ap.parse_args(argv)
     from .sdk.client import Client, SignerUnavailable
     from .signer.pipeline import SIGNER_RUN
-    from .signer.rpc_schema import RPCError
     from .signer.service import dev_data_dir
     from .why import import_v2
     from .why.signed import EvidenceAlert, vault_content
@@ -787,21 +923,28 @@ def main(argv=None):
                 note = f"the signer gave no content: {e}"
             else:
                 raise
+    failed = None
     try:
-        out = analyze(records, content, a.project, a.allow, a.open, a.budget)
-    except EvidenceAlert as e:
-        print(f"tracekit analyze: EVIDENCE ALERT: {e}", file=sys.stderr)
-        return 4
+        try:
+            out = analyze(records, content, a.project, a.allow, a.open, a.budget)
+        except EvidenceAlert as e:
+            print(f"tracekit analyze: EVIDENCE ALERT: {e}", file=sys.stderr)
+            return 4
+        if note:
+            print(f"tracekit analyze: {note}: checks that read content are not checkable", file=sys.stderr)
+        if not a.dry_run:
+            try:
+                out["signed"] = {"findings_run": sign(client, run_id, out), "records": len(out["findings"]) + 1}
+            except (SignerUnavailable, OSError, RPCError) as e:
+                failed = e
     finally:
         client.close()
-    if note:
-        print(f"tracekit analyze: {note}: checks that read content are not checkable", file=sys.stderr)
-    if not a.dry_run:
-        # signing plugs in here (#309 phase 2): each finding and the coverage entry through review_finding, in one
-        # findings run (`analyzes`) per pass; until then they are printed only
-        print("tracekit analyze: findings are printed, not signed: signing them into the log comes with the "
-              "review_finding RPC", file=sys.stderr)
     print(json.dumps(out, indent=2) if a.json else render(out))
+    if failed is not None:
+        print(f"tracekit analyze: the findings are printed but NOT signed: {failed}. The signer signs them for an "
+              "identity its signer.yaml `analyzers` lists (the dev signer lists its user), about a run it holds; "
+              "pass --dry-run to only print them", file=sys.stderr)
+        return 2
     worst = max((SEVERITY.index(f["verdict"]["severity"]) for f in out["findings"]), default=-1)
     return 4 if worst >= SEVERITY.index("high") else 0
 

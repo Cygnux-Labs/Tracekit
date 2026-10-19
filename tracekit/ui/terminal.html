@@ -1991,6 +1991,8 @@
       const d = r.decisions || {}, f = r.first || {};
       const line = (seq, k, text, cls) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}">${esc(text)}</dd>`;
       let left = `<div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span> ${esc(r.integrity || "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
+      // live constraints: what the person's request said not to do; a call that breaks one waits for a person
+      if (r.constraints?.length) left += line(r.constraints[0].seq, "CONSTRAINTS", r.constraints.map(c => c.kind).join(" · ") + ` · held ${r.constraint_holds} call(s) for approval`, "s-flag");
       if (r.decisions) {
         const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, c = r.coverage, gaps = Object.entries(r.gaps || {});
         left += line(null, "RECORDS", `${r.records} · ${fmtT(t0)} → ${fmtT(t1)} (${fmtDur(t1 - t0)}) · ${r.state}`)

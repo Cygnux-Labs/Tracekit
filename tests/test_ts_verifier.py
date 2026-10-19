@@ -96,7 +96,8 @@ class Agreement(unittest.TestCase):
                     "provenance": cls.record_run(s, "send_email", observed="email the list to audit@vendor.example"),
                     "open": cls.record_run(s, "read_file", close=False),
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
-                    "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s)}
+                    "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s),
+                    "constraint": cls.constraint_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -189,6 +190,32 @@ class Agreement(unittest.TestCase):
         return r["run_id"]
 
     @staticmethod
+    def constraint_run(s):
+        """A run with live constraints (format 1.4): an edit of the file one keeps away, held and approved, and one
+        nothing holds."""
+        def call(method, req):
+            return s.call(ME, method, {"request_id": uuid.uuid4().hex, **req})
+        r = call("register_run", {"agent": {"name": "agreement"}})
+        ids = {"run_id": r["run_id"], "run_token": r["run_token"]}
+        call("constraint_add", {**ids, "constraint": {"kind": "keep_away", "object": "billing.py"}})
+        call("constraint_add", {**ids, "constraint": {"kind": "no_push"}})
+        for i, path in enumerate(("/w/billing.py", "/w/pager.py")):
+            args, tcid = {"file_path": path, "old_string": "a", "new_string": "b"}, f"tc-{i}"
+            dec = call("decide", {**ids, "stream": "s1", "client_seq": 2 * i, "tool_call_id": tcid, "tool": "Edit",
+                                  "args_source": "parsed", "args": args})
+            if dec["decision"] == "ask":
+                aid = call("approval_request", {**ids, "tool_call_id": tcid})["approval_id"]
+                call("approval_decide", {"approval_id": aid, "decision": "approve"})
+                call("approval_consume", {**ids, "tool_call_id": tcid, "tool": "Edit", "args_source": "parsed",
+                                          "args": args, "approval_id_hint": aid})
+            call("complete", {**ids, "stream": "s1", "client_seq": 2 * i + 1, "tool_call_id": tcid,
+                              "decision_id": dec["decision_id"], "args_digest": event_hash({"tool": "Edit",
+                                                                                            "args": args}),
+                              "status": "ok"})
+        call("close_run", ids)
+        return r["run_id"]
+
+    @staticmethod
     def mismatch_run(s):
         """A run whose model request, through the gateway, sent a tool result other than the one recorded, and one the
         gateway gave no digests of: a format 1.3 reconcile.result_mismatch and capture.gap result_unchecked."""
@@ -263,6 +290,28 @@ class Agreement(unittest.TestCase):
             self.assertEqual(json.loads(z.read("manifest.json"))["verifier_min_version"], "1.4.0")
         _, rep = self.agree(self.bundles["sensor"], self.trusts["dev"])
         self.assertIn("processes observed (tetragon)", {c["check"]: c for c in rep.checks}["coverage matrix"]["detail"])
+        _, rep = self.agree(self.bundles["constraint"], self.trusts["dev"])
+        line = next(c for c in rep.checks if c["check"] == "constraints")
+        self.assertEqual((line["status"], line["detail"]), ("pass", "2 live constraint(s) added; 1 call(s) held by them"))
+        self.assertEqual([c for c in ts_verify(self.bundles["constraint"], self.trusts["dev"])["checks"]
+                          if c["check"] == "constraints"], [line])
+
+    @unverified_bundles   # holds no signer writes, on purpose
+    def test_live_constraint_holds_out_of_place(self):
+        import test_bundle_v2 as b
+        from test_constraints import misplaced_bundle
+        trust = os.path.join(self.d, "constraint-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        for name, kw in (("before", {}), ("allow", {"decision": "allow", "before": False})):
+            with self.subTest(name):
+                log = b.Log(os.path.join(self.d, f"constraint-{uuid.uuid4().hex}"))
+                self.addCleanup(log.store.close)
+                bundle = misplaced_bundle(log, os.path.join(self.d, f"constraint-{name}.tkb"), **kw)
+                code, rep = self.agree(bundle, trust)
+                self.assertEqual((code, rep.failures), (1, ["constraints"]))
+                self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "constraints"],
+                                 [c for c in rep.checks if c["check"] == "constraints"])
 
     def test_mutations(self):
         def resign(i, change):
@@ -489,7 +538,10 @@ class Reviews(test_reviews.Signed):
                 code, rep = Agreement.agree(self, bundle, trust)
                 self.assertEqual(code, 1 if name == "mismatch" else 0)
                 self.assertTrue(pick(rep.checks))
-                self.assertEqual(pick(ts_verify(bundle, trust)["checks"]), pick(rep.checks))
+                ts = ts_verify(bundle, trust)
+                self.assertEqual(pick(ts["checks"]), pick(rep.checks))
+                self.assertEqual(ts.get("findings"), rep.findings)   # the Findings line, apart from Integrity
+                self.assertTrue(rep.findings.endswith("(an opinion of the run, not its integrity)"))
 
 
 if __name__ == "__main__":

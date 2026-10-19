@@ -23,6 +23,13 @@ Each run of a session gets one transcript tailer (tracekit.tailer) on the transc
 model's tool uses, thinking and text, and the user's prompts (as commitments, with their content when the signer keeps
 content) from the transcript, which no hook payload carries.
 
+At UserPromptSubmit the prompt as the harness submitted it is recorded too (`observe`, source <agent>:UserPromptSubmit,
+trusted): `tracekit analyze --v2` reads a transcript prompt line as the person's only when one of these has its text
+(TK-X208 flags a line none has). Each constraint the prompt states (tracekit.constraints: "don't touch X", "read-only",
+"don't push", ...) goes to the signer as a live constraint (`constraint_add`), which holds a later call that breaks it
+for a person's approval; the agent reads why on stderr. A constraint can only hold more calls, so the agent's own
+identity adding one (it could add its own) weakens nothing.
+
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
 unreachable is always fail-closed there, whatever the agent-writable state says. The run token stays in the agent's
@@ -41,7 +48,7 @@ import sys
 import time
 import uuid
 
-from tracekit import privacy
+from tracekit import constraints, privacy
 from tracekit.client import system_config
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
@@ -176,10 +183,12 @@ def _pre(client, p, sid, tid):
               file=sys.stderr)
         return 2
     if d["decision"] == "ask":
+        why = f": {d['reason']}" if d.get("reason") else ""   # a live constraint's says which and what to do
         try:
             cap()
             aid = run.call("approval_request", tool_call_id=tid)["approval_id"]
-            print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])})", file=sys.stderr, flush=True)
+            print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])}){why}", file=sys.stderr,
+                  flush=True)
             state, deadline = "requested", end - 2 * per_call   # time left for the last wait's answer and the consume
             while state == "requested" and deadline > time.monotonic():
                 left_s = min(deadline - time.monotonic(), 300)
@@ -190,7 +199,8 @@ def _pre(client, p, sid, tid):
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
         if c is None:
-            print(f"Held by tracekit policy ({'; '.join(d['rule_ids'])}) and not approved: {state}", file=sys.stderr)
+            print(f"Held by tracekit policy ({'; '.join(d['rule_ids'])}{why}) and not approved: {state}",
+                  file=sys.stderr)
             return 2
     else:
         cap()
@@ -228,6 +238,12 @@ def _post(client, p, sid, tid):
          args_digest=call["args_digest"], status="ok" if ok else "error", result=value)
     os.remove(path)
     return 0
+
+
+def prompted(run, prompt):
+    """Each constraint `prompt` states, as a live constraint of `run` (module docstring)."""
+    for kind, obj in constraints.extract(prompt):
+        run.call("constraint_add", constraint={"kind": kind, **({"object": obj[:256]} if obj else {})})
 
 
 def _unfinished(client, sid):
@@ -295,10 +311,14 @@ def _handle(client, p, name, sid, tid):
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
             os.remove(f)
         return 0
-    transcript = None
+    transcript, prompt = None, p.get("prompt") if name == "UserPromptSubmit" else None
     if name == "SessionStart":
         _prune()
         transcript = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
+    if isinstance(prompt, str) and prompt:   # the harness's own copy of what the person typed
+        run, _ = _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=prompt)
+        prompted(run, prompt)
+        return 0
     _run(client, sid, transcript=transcript)   # SessionStart, or any other first event of the session, registers the run
     return 0
 

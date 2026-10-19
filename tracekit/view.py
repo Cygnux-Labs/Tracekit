@@ -487,6 +487,11 @@ class Translator(observe.Translator):
                     "incident.response": f"response engine {'on' if d.get('enabled') else 'paused'} by {d.get('by')}",
                     "identity.suspension": f"{d.get('identity')} {d.get('state')} by {d.get('by')}"}[t]
             return alert("med", t.upper().replace(".", " · "), text, "ALERT", incident=d.get("incident_id"))
+        if t == "constraint.added":   # a live constraint (#309): the person's request said not to do this
+            return alert("info", f"CONSTRAINT · {CONSTRAINTS.get(d.get('kind'), d.get('kind'))}",
+                         "a later call that breaks it waits for a person's approval (TK-CONSTRAINT)"
+                         + (": the file is committed, not named" if d.get("object_commitment") else ""), "HOLD",
+                         constraint=d.get("kind"))
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
@@ -515,13 +520,17 @@ class Translator(observe.Translator):
         return (turn if blocks else []) + out
 
 
+CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only certain files",
+               "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
+
+
 def review(records, rep, verdict):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
     report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
-           "incidents": [],
+           "incidents": [], "constraints": [], "constraint_holds": 0,
            "state": "open", "first": {}}
     for rec in records:
         e = rec["event"]
@@ -533,7 +542,10 @@ def review(records, rep, verdict):
             out["agent"] = (d.get("agent") or {}).get("name") or "agent"
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
+            out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
+        elif t == "constraint.added":
+            out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
             who = _who(d["approver_identity"]) if d.get("approver_identity") else d.get("approver")
             out["approvals"].append({"decision": d.get("decision"), "tool_use_id": d.get("tool_use_id"),

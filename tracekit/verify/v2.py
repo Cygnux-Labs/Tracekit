@@ -86,7 +86,11 @@ labelled by its author, the findings run's registered identity, positive-only: `
 config's `analyzers` pins it; `self-asserted` (a warning) when it is the analysed run's own identity or either run's
 signer_isolation is same-user (the agent could have written it); else `unpinned author <id>`. Without the analysed run
 in the bundle, its cites are not counted and its author not checked (`reviews counted`, a warning). A review without
-cites (a migrated v1 judge verdict) is `imported`, never checked.
+cites (a migrated v1 judge verdict) is `imported`, never checked. The findings themselves are an opinion of the run,
+never part of its integrity: they get a `Findings:` line of their own after Integrity and Assurance (how many, by
+severity, and their authors' labels); only a cite that does not match fails, as tampered or made-up evidence would.
+Live constraints (format 1.4): a policy.decision held by TK-CONSTRAINT must be an ask that comes after a
+constraint.added in its run, else `constraints` fails; the line counts the constraints and the calls they held.
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -157,6 +161,7 @@ MAX_LINES = MAX_ENTRY // 256   # per JSON lines file: no signed record is shorte
 CLASSES = ("public", "customer", "tracekit", "operator")
 MATRIX = ("model_calls", "tool_calls", "network", "processes", "services")
 COVERED = ("none", "reported", "observed", "enforced")   # weakest first
+SEVERITIES = ("critical", "high", "medium", "low", "info")   # a signed finding's, worst first
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
 _VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -608,6 +613,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                                       "while its run was open", lost[:20], warn=True)
     _findings(rep, runs)
     _reviews(rep, runs, trust["analyzers"])
+    _constraints(rep, runs)
     _incidents(rep, runs, policies)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
@@ -1053,10 +1059,39 @@ def _reviews(rep, runs, pinned):
     if total:
         rep.check("reviews", not problems and not selfs, f"{total} review(s): " + ", ".join(
             f"{n} {k}" for k, n in sorted(labels.items()) if n), (problems or selfs)[:20], warn=not problems)
+        verdicts = [r["event"]["data"].get("verdict") for rs in runs.values() for r in rs
+                    if r["event"].get("type") == "review"]
+        sev = collections.Counter(str(v.get("severity"))[:16] for v in verdicts
+                                  if isinstance(v, dict) and v.get("kind") == "finding")
+        cov = sum(isinstance(v, dict) and v.get("kind") == "coverage" for v in verdicts)
+        rep.findings = (f"{sum(sev.values())} finding(s)" + (" (" + ", ".join(
+            f"{sev[s]} {s}" for s in SEVERITIES if sev[s]) + ")" if sev else "")
+            + (f" and {cov} coverage review(s)" if cov else "") + "; " + ", ".join(
+                f"{n} {k}" for k, n in sorted(labels.items()) if n) + " (an opinion of the run, not its integrity)")
     if uncounted:
         rep.check("reviews counted", False, f"{labels['author not checked']} signed finding(s) not counted: export the "
                   "analysed run with `tracekit export --v2 --run <run> --with-findings` to check their citations",
                   uncounted[:20], warn=True)
+
+
+def _constraints(rep, runs):
+    """The `constraints` line: live constraints added, and the calls they held, each after one in its run (module
+    docstring: Live constraints)."""
+    added, held, problems = 0, 0, []
+    for rs in runs.values():
+        seen = False
+        for r in rs:
+            e = r["event"]
+            if e.get("type") == "constraint.added":
+                added, seen = added + 1, True
+            elif e.get("type") == "policy.decision" and "TK-CONSTRAINT" in (e["data"].get("rule_ids") or ()):
+                held += 1
+                if not seen or e["data"].get("decision") != "ask":
+                    problems.append(f"seq {e['seq']}: a {str(e['data'].get('decision'))[:16]} held by TK-CONSTRAINT "
+                                    + ("before any constraint.added in its run" if not seen else "is no ask"))
+    if added or held:
+        rep.check("constraints", not problems, f"{added} live constraint(s) added; {held} call(s) held by them",
+                  problems[:20])
 
 
 def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):
@@ -1306,4 +1341,5 @@ def print_report(rep, code, stream=None):
         s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(c['detail'])}" if c["detail"] else "") + "\n")
         for p in c["problems"]:
             s.write(f"        {clean(p)}\n")
-    s.write(f"\nIntegrity: {clean(rep.integrity)}.\nAssurance: {clean(rep.assurance)}.\n")
+    s.write(f"\nIntegrity: {clean(rep.integrity)}.\nAssurance: {clean(rep.assurance)}.\n"
+            + (f"Findings: {clean(rep.findings)}.\n" if getattr(rep, "findings", None) else ""))

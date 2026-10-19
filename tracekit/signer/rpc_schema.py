@@ -1,7 +1,7 @@
 """The signer RPC contract, version 19: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
-`tracekit analyze --v2`, in a findings run). Version 18 adds observe_effect's kernel sensor events (its
+`tracekit analyze --v2`, in a findings run) and `constraint_add` (a live constraint the person's request states). Version 18 adds observe_effect's kernel sensor events (its
 `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17 (Tracekit 1.3) adds model_event's optional
 `tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
 Version 16 (all of Tracekit 1.2) adds register_run's optional
@@ -148,7 +148,7 @@ FINDING_TITLES = {COVERAGE: "Check coverage", "TK-X201": "Action with no reasoni
                   "TK-X202": "Edit of a file not mentioned before", "TK-X203": "Write outside the project",
                   "TK-X204": "Stated constraint broken", "TK-X205": "Success claimed after a failure",
                   "TK-X206": "Effect with no action", "TK-X207": "Action with no effect",
-                  "TK-X210": "Flagged by the reviewer model"}
+                  "TK-X208": "Prompt the harness never submitted", "TK-X210": "Flagged by the reviewer model"}
 _CHECKS = [r for r in FINDING_TITLES if r != COVERAGE]
 _CHECKED = _obj(["checked", "found"], checked=SEQ, found=SEQ, not_checkable={"type": "array", "maxItems": 16,
                 "items": _obj(["reason", "n"], reason=_str(32, minLength=1, pattern=r"^[a-z][a-z_]*" + _END), n=SEQ)})
@@ -157,12 +157,16 @@ REVIEW = _obj(["reviewer", "verdict", "cites"], reviewer=_str(128, minLength=1, 
               verdict={"oneOf": [
                   _obj(["kind", "rule", "severity"], kind={"const": "finding"}, rule={"enum": _CHECKS},
                        severity={"enum": ["info", "low", "medium", "high", "critical"]},
-                       tier={"enum": ["gateway", "transcript", "sdk"]},
+                       tier={"enum": ["gateway", "harness", "transcript", "sdk"]},
                        order={"enum": ["signed_before", "transcript_order", "after"]}, redacted={"type": "boolean"},
+                       lifted={"type": "boolean"},
                        digests={"type": "array", "maxItems": 32, "items": DIGEST}),
                   _obj(["kind", "rule", "severity", "checks"], kind={"const": "coverage"}, rule={"const": COVERAGE},
                        severity={"const": "info"}, checks=_obj([], **dict.fromkeys(_CHECKS, _CHECKED)),
                        partial={"type": "boolean"}, reasoning=_obj([], full=SEQ, summary=SEQ, withheld=SEQ, none=SEQ))]})
+# a live constraint (constraint_add): what the person's request says not to do in the rest of the run; the signer
+# commits `object` (a file name) and holds a later call that breaks it for a person's approval, never lowering a decision
+CONSTRAINT_KINDS = ["keep_away", "only_change", "read_only", "no_push", "no_network"]
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),
@@ -311,6 +315,10 @@ REQUESTS = {
     "why_finding": _obj(_RUN_REQ + ["finding"], **_RUN, finding=FINDING),
     # a signed finding of `tracekit analyze --v2` about the run a findings run analyses: a review record
     "review_finding": _obj(_RUN_REQ + ["review"], **_RUN, review=REVIEW),
+    # a live constraint of the run (CONSTRAINT_KINDS; keep_away and only_change name the file, `object`): a
+    # constraint.added record holding the object's commitment, never its name
+    "constraint_add": _obj(_RUN_REQ + ["constraint"], **_RUN, constraint=_obj(
+        ["kind"], kind={"enum": CONSTRAINT_KINDS}, object=_str(256, minLength=1))),
     # containment (docs/incidents.md): operator calls, `authorize` grants and never defaults, each in the caller's tenant
     "incident_list": _obj([], state={"enum": ["open", "resolved"]}, cursor=ID,
                           limit={"type": "integer", "minimum": 1, "maximum": 1000}),
@@ -421,6 +429,7 @@ RESPONSES = {
     "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
     "why_finding": _SEQ_ONLY,
     "review_finding": _SEQ_ONLY,
+    "constraint_add": _SEQ_ONLY,
     "incident_list": _obj(["incidents", "next_cursor"], incidents={"type": "array", "maxItems": 1000, "items": _INCIDENT},
                           next_cursor={"oneOf": [ID, {"type": "null"}]}),
     "incident_show": _INCIDENT,
@@ -491,6 +500,7 @@ class SignerAPI(Protocol):
     def content_erase(self, req: dict) -> dict: ...
     def why_finding(self, req: dict) -> dict: ...
     def review_finding(self, req: dict) -> dict: ...
+    def constraint_add(self, req: dict) -> dict: ...
     def incident_list(self, req: dict) -> dict: ...
     def incident_show(self, req: dict) -> dict: ...
     def incident_resolve(self, req: dict) -> dict: ...

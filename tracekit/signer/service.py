@@ -212,6 +212,13 @@ Passkeys: an ask rule with `approval: {passkey: required}` is approved only with
 registered through a bridge (`passkey_register`, kept in data_dir/passkeys.json), verified here against
 `approvals.webauthn`; the record carries the credential id and that the user was verified.
 
+Live constraints (docs/policy-v2.md#live-constraints): `constraint_add` (any client of the run: the Claude Code hook
+sends what the person's prompt states at UserPromptSubmit, tracekit.constraints) writes a constraint.added record with
+the kind and, for a file, only the file name's commitment. After the policy engine, a call of the run that breaks one
+(the commitment of a file it writes opens it; a push; the network; any write) is raised to an ask (TK-CONSTRAINT) a
+person answers as any ask; a deny stays a deny and nothing is ever lowered, so a made-up constraint can only hold more.
+The agent is told why with the file name from its own arguments.
+
 Containment (docs/incidents.md): an incident of a `respond: {mode: enforce}` trigger acts in the writer item of the
 record that fired it (_respond): `hold` makes every further call of each live run its scope reaches an ask a person
 answers (TK-HOLD, carrying the incident id: never an agent, never self-approval) and expires their live approvals;
@@ -287,7 +294,8 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, provenance, public_witness, yamlmini
+from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, privacy, provenance, public_witness, \
+    yamlmini
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -303,8 +311,9 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, cooldown_key, degrade, epoch,
-                                      final_run, owner, person_only_keys, salt_label, skipped, subject, writer)
+from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, constraint_state,
+                                      cooldown_key, degrade, epoch, final_run, owner, person_only_keys, salt_label,
+                                      skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -374,7 +383,7 @@ DEFAULT_GRANTS = frozenset({
     "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
-    "passkey_register", "why_finding", "review_finding"})
+    "passkey_register", "why_finding", "review_finding", "constraint_add"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
@@ -386,6 +395,7 @@ DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its vi
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
+MAX_CONSTRAINTS = 32   # live constraints a run takes (constraint_add)
 COOLDOWN_S = 3600   # respond.cooldown_s default: how long new runs of a held owner and principal inherit the hold
 MAX_UNMATCHED = 1 << 16   # (decision, result digest) pairs remembered as not matching; forgotten all at once past it
 
@@ -2557,6 +2567,7 @@ class SignerService:
         cls = self.policy.tool_class(tool)
         host = classes.extract(cls, tool, args).get("host") if cls in ("http", "browser") and isinstance(
             args, dict) else None
+        facts = constraints.facts(tool, args, cls) if digest else None   # what a live constraint looks at
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
@@ -2599,6 +2610,9 @@ class SignerService:
                     tx.set(run["denied"], digest, True)
                 elif verdict != "ask" and digest in run["denied"]:
                     gaps.append(("decision_flip", f"{verdict} after a deny for the same arguments in this run"))
+            held = facts and verdict != "deny" and self._constrained(run, facts)   # tighten only: never lowered
+            if held and "TK-CONSTRAINT" not in rule_ids:
+                verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"]
             if unreadable and verdict in ("allow", "flag"):
                 verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
             if sums:
@@ -2648,7 +2662,8 @@ class SignerService:
             out = {"decision": "allow" if d["decision"] == "flag" else d["decision"], "decision_id": d["decision_id"],
                    "rule_ids": d["rule_ids"], "run_seq": seq, "expires_at": expires_at,
                    **({"reason": big["reasons"][0][:1024]} if big else {})}
-            if d["decision"] in ("deny", "ask") and not big and (why := self._reasons(d["rule_ids"])):
+            if d["decision"] in ("deny", "ask") and not big and (why := "; ".join(x for x in (
+                    held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"])) if x)[:1024]):
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
@@ -3688,6 +3703,44 @@ class SignerService:
 
     def _why_finding(self, identity, req):
         return self._finding(identity, req, "why_finding", "why.finding", req["finding"])
+
+    def _constraint_add(self, identity, req):
+        """A live constraint of the caller's run (module docstring): constraint.added, with the commitment of its file
+        name under the record's own salt, never the name; tighten-only, so any client of the run may add one."""
+        key, c = self._authorize(identity, req), req["constraint"]
+        if (c["kind"] in constraints.OBJECT_KINDS) != ("object" in c) or "object" in c and not constraints.norm(
+                c["object"]):
+            raise RPCError("invalid_request", "keep_away and only_change name the file (`object`); the other kinds "
+                                              "name none")
+        self.quotas.take_event(identity)
+        data = {"kind": c["kind"]}
+        if "object" in c:
+            data["salt_id"] = secrets.token_hex(16)
+            data["object_commitment"] = self._commit(salt_label({"type": "constraint.added", "data": data}),
+                                                     constraints.digest(c["object"]))
+
+        def fn(tx, run):
+            have = run.get("constraints") or []
+            if len(have) >= MAX_CONSTRAINTS:
+                raise RPCError("invalid_request", f"run {run['run_id'][:128]} has {MAX_CONSTRAINTS} live constraints, "
+                                                  "the most a run takes")
+            seq = tx.emit(run, "constraint.added", data, request_id=req["request_id"])
+            tx.set(run, "constraints", [*have, constraint_state({"type": "constraint.added", "data": data})])
+            return {"run_seq": seq}
+        return self.log.submit(identity, "constraint_add", req, fn, key)
+
+    def _constrained(self, run, facts):
+        """What the agent is told when a call (its constraints.facts) breaks one of `run`'s live constraints, or
+        None: each file it writes is committed under a constraint's salt and compared with its commitment."""
+        live = run.get("constraints") or ()
+        only = [(label, c) for kind, label, c in live if kind == "only_change"]
+        for kind, label, commitment in live:
+            name = constraints.breaks(kind, facts, (lambda n: any(
+                self._opens(c, lb, constraints.digest(n)) for lb, c in only)) if kind == "only_change" else (
+                lambda n, lb=label, c=commitment: self._opens(c, lb, constraints.digest(n))))
+            if name is not None:
+                return constraints.held(kind, name)
+        return None
 
     def _review_finding(self, identity, req):
         """A review record: the signed finding, with its rule's fixed title (format-v2.md §3: no text of the run)."""

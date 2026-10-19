@@ -15,6 +15,7 @@ from unittest import mock
 
 from factories import wait_for
 from tracekit import __version__, cli
+from tracekit.format.canon import event_hash
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service
@@ -171,6 +172,48 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.assertEqual(code, 0, rep.checks)
         self.assertEqual(next((x["status"], x["detail"]) for x in rep.checks if x["check"] == "reviews"),
                          ("warn", "1 review(s): 1 self-asserted"))
+
+    def test_tracekit_analyze_signs_a_dev_runs_findings_and_verify_shows_them_apart(self):
+        """End to end (#309): a Claude Code-shaped run (the hook's prompt, the tailer's lines, an edit nobody asked
+        for), `tracekit analyze --v2` signs its finding and coverage in a findings run, `tracekit export --with-findings`
+        bundles both, and `tracekit verify` checks the citations: integrity on its own, a reviews line (self-asserted:
+        the dev user is agent and analyzer) and a Findings line after Integrity and Assurance."""
+        c = Client()
+        self.addCleanup(c.close)
+        args = {"file_path": "/work/proj/billing.py", "old_string": "a", "new_string": "b"}
+        asked = {"transcript": "main", "entry": {"type": "user", "cwd": "/work/proj", "message": {
+            "role": "user", "content": "Fix src/pager.py."}}}
+        said = {"transcript": "main", "entry": {"type": "assistant", "message": {"id": "msg_1", "content": [
+            {"type": "thinking", "thinking": "One more small fix.", "signature": "c2ln"},
+            {"type": "tool_use", "id": "toolu_1", "name": "Edit", "input": args}]}}}
+        with c.run("claude-code") as run:
+            run.observe("Fix src/pager.py.", "claude-code:UserPromptSubmit", "trusted")
+            run.call("model_event", provider="anthropic", model="m", phase="request", exchange_id="u1",
+                     content_digest=event_hash(asked), body=asked)
+            run.call("model_event", provider="anthropic", model="m", phase="response", exchange_id="msg_1",
+                     content_digest=event_hash(said), body=said, tool_uses=[{
+                         "id": "toolu_1", "name": "Edit", "executed_by": "client", "args_source": "parsed",
+                         "args_digest": event_hash({"tool": "Edit", "args": args})}])
+            self.assertEqual(run.decide("toolu_1", "Edit", args)["decision"], "allow")
+            run.complete("toolu_1")
+        store = os.path.join(service.dev_data_dir(), "store")
+        final = lambda rid: list(FileReader(store).iter_run("default", rid))[-1]["event"]["type"] == "run.final"  # noqa
+        self.assertTrue(wait_for(lambda: final(run.run_id), 20), "no run.final after the grace window")
+        out = self.cli("analyze", "--v2", "--run", run.run_id)
+        self.assertIn("1 problem (1 medium)", out.splitlines()[0])
+        findings_run = out.rsplit("in findings run ", 1)[1].split(";")[0]
+        self.assertTrue(wait_for(lambda: final(findings_run), 20), "no run.final for the findings run")
+        trust, bundle = os.path.join(self.dir, "trust.json"), os.path.join(self.dir, "run.tkb")
+        self.cli("signer", "trust", "--dev", "-o", trust)
+        self.cli("export", "--v2", "--run", run.run_id, "--dev", "--with-findings", "-o", bundle)
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            self.assertEqual(cli.main(["verify", bundle, "--trust", trust]), 0)
+        text = report.getvalue()
+        self.assertIn("[WARN] reviews — 2 review(s): 2 self-asserted", text)
+        self.assertIn("\nIntegrity: VERIFIED.\nAssurance: dev;", text)
+        self.assertTrue(text.endswith("Findings: 1 finding(s) (1 medium) and 1 coverage review(s); 2 self-asserted "
+                                      "(an opinion of the run, not its integrity).\n"), text[-300:])
 
     def test_idle_exit(self):
         os.environ["TRACEKIT_DEV_IDLE"] = "1"

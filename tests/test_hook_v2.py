@@ -150,6 +150,31 @@ class HookV2(unittest.TestCase):
         self.assertIn("TK-SHELL-PARSE", err)
         self.assertIn("rejected", err)
 
+    def test_a_prompt_is_recorded_and_its_constraints_hold_the_call_that_breaks_them(self):
+        """UserPromptSubmit records the harness's copy of the prompt and adds what it keeps away as a live constraint:
+        the edit of that file waits for a person, who is told why; the agent reads it on stderr; others run."""
+        prompt = "Fix src/pager.py. Don't touch billing.py."
+        self.assertEqual(self.hook("UserPromptSubmit", prompt=prompt), (0, ""))
+        evs = self.events()
+        self.assertEqual([e["type"] for e in evs], ["run.registered", "input.observed", "constraint.added"])
+        self.assertEqual((evs[1]["data"]["source"], evs[1]["data"]["trust"]), ("claude-code:UserPromptSubmit", "trusted"))
+        self.assertEqual(evs[2]["data"]["kind"], "keep_away")
+        self.assertNotIn("billing", json.dumps(evs))
+        edit = {"file_path": os.path.join(self.dir, "billing.py"), "old_string": "a", "new_string": "b"}
+        proc = self.hook("PreToolUse", tool_name="Edit", tool_input=edit, tool_use_id="t1", wait=False)
+        line = proc.stderr.readline()
+        self.assertIn("(TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the "
+                      "person", line)
+        Client().approval_decide({"approval_id": line.split()[4], "decision": "reject"})
+        err = proc.stderr.read()
+        proc.wait(60)
+        proc.stdout.close()
+        proc.stderr.close()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("said not to modify billing.py", err)
+        other = dict(edit, file_path=os.path.join(self.dir, "pager.py"))
+        self.assertEqual(self.hook("PreToolUse", tool_name="Edit", tool_input=other, tool_use_id="t2"), (0, ""))
+
     def test_session_end_closes_the_run_and_it_verifies(self):
         self.pre("ls")
         self.post("ls")

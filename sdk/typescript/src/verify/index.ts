@@ -34,6 +34,7 @@ const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
 const MATRIX = ["model_calls", "tool_calls", "network", "processes", "services"];
 const COVERED = ["none", "reported", "observed", "enforced"];   // weakest first
+const SEVERITIES = ["critical", "high", "medium", "low", "info"];   // a signed finding's, worst first
 
 export type Check = { check: string; status: "pass" | "warn" | "fail"; detail: string; problems: string[] };
 
@@ -44,6 +45,8 @@ export class Report {
   notes: string[] = [];
   integrity = "UNUSABLE BUNDLE";
   assurance = "none";
+  /** The Findings line: signed findings, an opinion of the run kept apart from its integrity (null: none). */
+  findings: string | null = null;
   /** Checks the bundle needs that this verifier does not implement. */
   unsupported: string[] = [];
 
@@ -442,6 +445,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (lost.length)
     rep.check("observers", false, `${lost.length} observer gap(s): an observer went silent, restarted or lost events while its run was open`, lost.slice(0, 20), true);
   checkReviews(rep, runs, trust.analyzers);
+  checkConstraints(rep, runs);
   checkIncidents(rep, runs, policies, floats);
   const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
   if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -654,14 +658,49 @@ function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
     } else label = pinned.includes(mine) ? "independent" : `unpinned author ${cut(str(mine), 256)}`;
     labels.push(...Array(signed.length).fill(label));
   }
-  if (total)
+  if (total) {
     rep.check("reviews", !problems.length && !selfs.length, `${total} review(s): `
       + count(labels).map(([k, n]) => `${n} ${k}`).join(", "), (problems.length ? problems : selfs).slice(0, 20),
     !problems.length);
+    const verdicts = [...runs.values()].flatMap((rs) => rs.map((r) => r.event))
+      .filter((e) => get(e, "type") === "review").map((e) => get(at(e, "data"), "verdict"));
+    const sev = count(verdicts.filter((v) => isObj(v) && get(v, "kind") === "finding")
+      .map((v) => cut(str(get(v, "severity")), 16)));
+    const n = sev.reduce((a, [, k]) => a + k, 0), cov = verdicts.filter((v) => isObj(v) && get(v, "kind") === "coverage").length;
+    rep.findings = `${n} finding(s)` + (n ? " (" + SEVERITIES.flatMap((s) => sev.filter(([k]) => k === s))
+      .map(([k, c]) => `${c} ${k}`).join(", ") + ")" : "") + (cov ? ` and ${cov} coverage review(s)` : "") + "; "
+      + count(labels).map(([k, c]) => `${c} ${k}`).join(", ") + " (an opinion of the run, not its integrity)";
+  }
   if (uncounted.length)
     rep.check("reviews counted", false, `${labels.filter((l) => l === "author not checked").length} signed finding(s) not `
       + "counted: export the analysed run with `tracekit export --v2 --run <run> --with-findings` to check their citations",
     uncounted.slice(0, 20), true);
+}
+
+/** The `constraints` line, as verify/v2.py's _constraints: live constraints added, and the calls they held, each an
+ * ask after one in its run. */
+function checkConstraints(rep: Report, runs: Map<string, J[]>) {
+  let added = 0, held = 0;
+  const problems: string[] = [];
+  for (const rs of runs.values()) {
+    let seen = false;
+    for (const r of rs) {
+      const e = r.event;
+      if (get(e, "type") === "constraint.added") {
+        added++;
+        seen = true;
+      } else if (get(e, "type") === "policy.decision" && list(get(at(e, "data"), "rule_ids", [])).includes("TK-CONSTRAINT")) {
+        held++;
+        const decision = get(e.data, "decision");
+        if (!seen || decision !== "ask")
+          problems.push(`seq ${e.seq}: a ${cut(str(decision), 16)} held by TK-CONSTRAINT `
+            + (!seen ? "before any constraint.added in its run" : "is no ask"));
+      }
+    }
+  }
+  if (added || held)
+    rep.check("constraints", !problems.length, `${added} live constraint(s) added; ${held} call(s) held by them`,
+      problems.slice(0, 20));
 }
 
 /** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
@@ -957,6 +996,7 @@ export function formatReport(rep: Report): string {
     s += `[${c.status.toUpperCase()}] ${c.check}` + (c.detail ? ` — ${clean(c.detail)}` : "") + "\n";
     for (const p of c.problems) s += `        ${clean(p)}\n`;
   }
-  return s + `\nIntegrity: ${clean(rep.integrity)}.\nAssurance: ${clean(rep.assurance)}.\n`;
+  return s + `\nIntegrity: ${clean(rep.integrity)}.\nAssurance: ${clean(rep.assurance)}.\n`
+    + (rep.findings ? `Findings: ${clean(rep.findings)}.\n` : "");
 }
 

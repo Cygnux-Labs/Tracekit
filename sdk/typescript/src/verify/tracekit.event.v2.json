@@ -142,7 +142,8 @@
         "incident.resolved",
         "incident.response",
         "identity.suspension",
-        "effect.observed"
+        "effect.observed",
+        "constraint.added"
       ]
     },
     "data": {
@@ -1170,6 +1171,22 @@
                 "$ref": "#/$defs/sensor_effect"
               }
             ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "constraint.added"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/constraint_added"
           }
         }
       }
@@ -4738,6 +4755,34 @@
         "asserted": {
           "const": true,
           "description": "the status rests on the operator's posture (signer.yaml), not on anything the signer measured"
+        }
+      }
+    },
+    "constraint_added": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "description": "format 1.4: a live constraint of the run (constraint_add): what the person's request said not to do in the rest of it, as its client reported it (the Claude Code hook, at UserPromptSubmit). From then on the signer raises a call that breaks it to an ask (rule TK-CONSTRAINT) and never lowers a decision, so a made-up constraint can only hold more calls",
+      "properties": {
+        "kind": {
+          "enum": [
+            "keep_away",
+            "only_change",
+            "read_only",
+            "no_push",
+            "no_network"
+          ],
+          "description": "keep_away: writes of the file; only_change: writes of any other file; read_only: any write; no_push: a git push; no_network: a call that reaches the network"
+        },
+        "object_commitment": {
+          "$ref": "#/$defs/commitment",
+          "description": "keep_away and only_change: commitment to sha256 of the file's lower-cased basename; never the name"
+        },
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitment (salt label <type>:<salt_id>)"
         }
       }
     }

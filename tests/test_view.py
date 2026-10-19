@@ -109,6 +109,22 @@ class Translate(unittest.TestCase):
                          ("APPROVE", "APPROVAL CONSUMED · create_refund", "c6"))
         self.assertNotIn("{", "".join(r.get("text", "") for r in rows))   # no record JSON in place of words
 
+    def test_live_constraints_are_rows_and_head_the_run_review(self):
+        recs = [v2rec(1, "constraint.added", {"kind": "keep_away", "salt_id": "a" * 32,
+                                              "object_commitment": "hmac-sha256:" + "b" * 64}),
+                v2rec(2, "constraint.added", {"kind": "no_push"}),
+                v2rec(3, "policy.decision", {"tool_use_id": "c1", "tool": "Edit", "decision": "ask",
+                                             "rule_ids": ["TK-CONSTRAINT"], "policy_hash": SERVER_HASH})]
+        added = self.feed(*recs)[:2]
+        self.assertEqual([(r["tape"], r["title"]) for r in added],
+                         [("HOLD", "CONSTRAINT · keep a file unchanged"), ("HOLD", "CONSTRAINT · don't push")])
+        self.assertIn("the file is committed, not named", added[0]["text"])
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev; records ed25519"), "verified")
+        self.assertEqual((rv["constraints"], rv["constraint_holds"]),
+                         ([{"kind": "keep a file unchanged", "seq": 1}, {"kind": "don't push", "seq": 2}], 1))
+        with open(os.path.join(os.path.dirname(view.__file__), "ui", "terminal.html")) as f:
+            self.assertIn('line(r.constraints[0].seq, "CONSTRAINTS"', f.read())   # the review's first line after it
+
     def test_gaps_and_signer_records_in_words_and_the_signer_is_no_agent(self):
         gap, child, final = self.feed(
             v2rec(1, "capture.gap", {"kind": "client_counter_gap", "missed_events": 3, "reason": "stream s skipped"}),

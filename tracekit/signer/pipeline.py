@@ -232,6 +232,12 @@ def salt_label(e):
     return None
 
 
+def constraint_state(e):
+    """A live constraint as a run's state keeps it (SignerService._constrained), from its constraint.added `e`:
+    [kind, the salt label of its object's commitment, that commitment or None]."""
+    return [e["data"]["kind"], salt_label(e), e["data"].get("object_commitment")]
+
+
 def writer(identity, req):
     """Who writes a stream: the caller, and whether through a gateway (a request with `caller`)."""
     return subject(identity) + (" through a gateway" if "caller" in req else "")
@@ -553,6 +559,8 @@ class RecordLog:
                     run["decisions"][call["decision_id"]] = call
             elif e["type"] == "state.write":
                 run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
+            elif e["type"] == "constraint.added":
+                run["constraints"] = [*(run.get("constraints") or ()), constraint_state(e)]
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
                 d, out = e["data"], e["data"].get("output") or {}
                 if out.get("hash") and e.get("tool_call_id"):

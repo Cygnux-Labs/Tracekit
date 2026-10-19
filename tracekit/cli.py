@@ -631,7 +631,8 @@ def _run(a):
             integrity, assurance = mod.integrity(rep, code), mod.assurance(rep)
         if a.json:
             print(json.dumps({"exit_code": code, "checks": rep.checks, "failures": rep.failures, "warnings": rep.warnings,
-                              "integrity": integrity, "assurance": assurance, "notes": rep.notes},
+                              "integrity": integrity, "assurance": assurance, "notes": rep.notes,
+                              **({"findings": rep.findings} if getattr(rep, "findings", None) else {})},
                              indent=2))
         else:
             mod.print_report(rep, code)
