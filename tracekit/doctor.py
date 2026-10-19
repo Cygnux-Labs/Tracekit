@@ -100,6 +100,15 @@ def _dev_settings():
     return install.user_settings()
 
 
+def _setting(path, key):
+    """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable."""
+    try:
+        s = read_json(path)
+    except (OSError, ValueError):
+        return None
+    return s.get(key) if isinstance(s, dict) else None
+
+
 def _user(name):
     try:
         return pwd.getpwnam(name) if name and pwd else None
@@ -393,6 +402,15 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             if pre:
                 add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S, f"PreToolUse timeout {min(pre)} s, approval wait "
                     f"{APPROVAL_WAIT_S} s", f"set the PreToolUse hook timeout to {install.HOOK_TIMEOUT['PreToolUse']}")
+            vault = isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True
+            user = os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings()
+            on = [p for p in dict.fromkeys((settings, user)) if _setting(p, install.THINKING) is True]
+            add("D-THINKING-SUMMARIES", on or not vault, f"Claude Code's thinking summaries are on ({on[0]})" if on else
+                "the content vault is off: no reasoning is kept to check" if not vault else
+                f"the content vault keeps each transcript line, but Claude Code's thinking summaries are off "
+                f"({install.THINKING} is not true in {settings}): its thinking is kept sealed, so `tracekit analyze "
+                "--v2` can't read the model's reasoning", f'set "{install.THINKING}": true in {settings} ({hook_fix} '
+                "does), and for headless runs pass `claude -p --thinking-display summarized`", bad=WARN)
             if signer:
                 env = (read_json(settings) or {}).get("env")
                 env = env.get("TRACEKIT_SIGNER") if isinstance(env, dict) else None

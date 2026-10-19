@@ -214,6 +214,8 @@ CASES = [
     ("PreToolUse timeout below the approval wait", "D-HOOKS-TIMEOUT", _timeout),
     ("hooks installed before 1.2 (no event argument)", "D-HOOKS-EVENT", _unnamed),
     ("TRACEKIT_SIGNER elsewhere", "D-SIGNER-ENV", lambda L: L.hooks(env={"TRACEKIT_SIGNER": L.path("decoy.sock")})),
+    ("content vault on, thinking summaries off", "D-THINKING-SUMMARIES",
+     lambda L: L.signer_yaml(content={"retain": True})),
     ("policy does not compile", "D-POLICY-ENGINE", lambda L: L.write("etc/policy.json", b'{"bogus": 1}')),
     ("ack-on-write", "D-DURABILITY", lambda L: L.signer_yaml(durability="ack-on-write")),
     ("a fail-open class", "D-FAIL-MODES", lambda L: L.signer_yaml(fail_modes={"default": "closed", "read": "open"})),

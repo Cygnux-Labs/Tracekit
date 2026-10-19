@@ -374,6 +374,36 @@ class PluginHooks(unittest.TestCase):
         self.assertEqual(v2.call_args.kwargs["plugin"], os.path.join(home, ".claude", "settings.json"))
 
 
+class ThinkingSummaries(unittest.TestCase):
+    """D-THINKING-SUMMARIES: with Claude Code's hooks and the content vault on, thinking summaries off leave every
+    transcript's reasoning sealed, so `tracekit analyze --v2` can't check it."""
+
+    def check(self, settings_extra, vault=True):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        settings = os.path.join(d, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(settings, module=install.V2_HOOK)
+        with open(settings) as f:
+            s = json.load(f)
+        with open(settings, "w") as f:
+            json.dump(dict(s, **settings_extra), f)
+        cfg = {"data_dir": d, "content": {"retain": True} if vault else None}
+        with mock.patch.object(install, "user_settings", return_value=os.path.join(d, "none.json")):
+            return {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=settings)}["D-THINKING-SUMMARIES"]
+
+    def test_off_with_the_vault_warns_and_names_the_setting_and_the_headless_flag(self):
+        got = self.check({})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn('"showThinkingSummaries": true', got["fix"])
+        self.assertIn("claude -p --thinking-display summarized", got["fix"])
+        self.assertEqual(self.check({"showThinkingSummaries": False})["status"], "warn")
+
+    def test_on_or_without_the_vault_is_ok(self):
+        self.assertEqual(self.check({"showThinkingSummaries": True})["status"], "ok")
+        self.assertEqual(self.check({}, vault=False)["status"], "ok")
+
+
 @unittest.skipIf(os.name == "nt", "POSIX modes")
 class DevProfile(unittest.TestCase):
     def test_dev_signer_warns_instead_of_failing(self):

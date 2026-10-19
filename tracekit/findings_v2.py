@@ -72,27 +72,29 @@ WHY = {   # rule -> (why it matters, what to do)
                 "check that file and what the change did; keep the agent's writes inside the project with a policy "
                 "rule or a sandbox"),
 }
-REASONS = {   # not checkable: (why, the one change that makes it checkable)
+REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "no_response": ("no model response was recorded for this call",
-                    "record the model's responses: the Claude Code transcript tailer (`tracekit init --v2`) or the "
-                    "Tracekit LLM gateway"),
+                    "Claude Code: run `tracekit init --dev --v2` (its transcript tailer records each model message); "
+                    "other agents: send model calls through the Tracekit LLM gateway (docs/gateway.md)"),
     "unlinked": ("the call was decided under an id of the adapter's own, which no model response carries",
-                 "use an integration that decides under the provider's tool call id"),
+                 "use an integration that decides under the provider's tool call id (docs/integrations/)"),
     "no_content": ("the signer kept no content for the records this check reads",
-                   "turn the content vault on (content: {retain: true} in signer.yaml; the dev signer keeps it) and "
-                   "analyse as an identity granted content_read"),
+                   "set `content: {retain: true}` in signer.yaml (the dev signer keeps it unless "
+                   "TRACEKIT_DEV_CONTENT=0) and grant the analysing identity content_read"),
     "withheld": ("the model's reasoning was withheld or sealed, so it can't be read",
-                 'turn on thinking summaries: "showThinkingSummaries": true in Claude Code settings, or '
-                 "`claude -p --thinking-display summarized`"),
+                 'Claude Code: `tracekit init --dev --v2` sets "showThinkingSummaries": true (or set it in its '
+                 "settings); headless: `claude -p --thinking-display summarized`; API: thinking display "
+                 '"summarized", Responses reasoning.summary "auto"'),
     "conflicting_reports": ("two event streams reported the model message this call came from",
-                            "route model calls through the Tracekit LLM gateway, whose record is preferred"),
+                            "send model calls through the Tracekit LLM gateway (docs/gateway.md): its record is "
+                            "preferred"),
     "no_text": ("neither a request nor anything the model said before the call was recorded",
-                "record prompts and model text: the transcript tailer or the gateway, with the content vault on"),
+                "Claude Code: `tracekit init --dev --v2` with the content vault on (the dev signer keeps it)"),
     "no_root": ("the project directory is unknown", "pass --project DIR"),
     "root_too_broad": ("the project directory is / or a home directory", "pass --project DIR"),
     "relative_path": ("a relative path with no working directory for the call",
-                      "record the call's transcript line (the tailer keeps each call's cwd)"),
-    "budget": ("the analysis reached its time or size budget", "pass a larger --budget, or analyse a smaller run"),
+                      "Claude Code: `tracekit init --dev --v2` (the transcript tailer records each call's cwd)"),
+    "budget": ("the analysis reached its time or size budget", "pass --budget SECONDS, larger than the default 60"),
 }
 CHECKS = ("TK-X201", "TK-X202", "TK-X203")
 FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorability classes, best first

@@ -98,6 +98,9 @@ def main(argv=None):
                                                          "firewall rule; undone by uninstall; docs/egress.md)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
+    p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2 and Claude Code: leave its "
+                   "showThinkingSummaries setting alone (init turns it on so `tracekit analyze --v2` can read the "
+                   "model's reasoning)")
     p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable; default: the last init's, else a local clone)")
     p.add_argument("--checkpoint-every", type=int, help="records between checkpoints (default: the last init's, else 50)")
     p.add_argument("--user", help="system mode: the user whose agents are traced (default: $SUDO_USER)")
@@ -409,7 +412,7 @@ def _run(a):
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
                                                         a.allow_privileged, a.agent, a.harness, a.public_witness,
-                                                        a.egress)
+                                                        a.egress, not a.no_thinking_summaries)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -458,12 +461,14 @@ def _run(a):
                           f"/plugin disable {install.PLUGIN}, then run init again")
                     return 0
                 try:
-                    if hooks:
-                        install.install_hooks(hooks, module=install.V2_HOOK)
+                    on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
+                                                         thinking=not a.no_thinking_summaries)
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1
                 print("v2 hooks:", hooks or "not installed")
+                if hooks and not a.no_thinking_summaries:
+                    print(install.thinking_line(hooks, on))
                 return 0
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,

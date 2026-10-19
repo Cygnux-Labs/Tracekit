@@ -210,7 +210,7 @@ class InstallAndUninstall(unittest.TestCase):
                                                                  "python": install.OPT_PYTHON}))
         self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, tailer_heartbeat, status]', yaml)
         self.assertEqual(hooks.call_args.kwargs, {"owner": AGENT, "python": install.OPT_PYTHON,
-                                                  "module": install.V2_HOOK, "signer": sock})
+                                                  "module": install.V2_HOOK, "signer": sock, "thinking": True})
         self.assertIn(["systemctl", "restart", "tracekit-signer"], [c.args[0] for c in run.call_args_list])
 
     def test_a_signer_that_does_not_start_fails_init_after_the_hooks(self):
