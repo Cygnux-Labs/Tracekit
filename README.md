@@ -103,7 +103,7 @@ ran and verified in 27 seconds: [`examples/v2/clean-machine.sh langchain`](https
 
 <sub>Stable: Claude Code, the OpenAI Agents SDK, LangChain / LangGraph, the Claude Agent SDK and MCP. Experimental: Codex
 CLI, Cursor, Gemini CLI, CrewAI, Browser Use, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent
-Framework, Strands Agents and the TypeScript SDK. Setup:
+Framework, Strands Agents, LiteLLM's MCP gateway and the TypeScript SDK. Setup:
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md">coding agents</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md">OpenAI Agents SDK</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/claude-agent-sdk.md">Claude Agent SDK</a> ·
@@ -117,6 +117,7 @@ Framework, Strands Agents and the TypeScript SDK. Setup:
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/llamaindex.md">LlamaIndex</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/microsoft-agent-framework.md">Microsoft Agent Framework</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/strands.md">Strands Agents</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/litellm.md">LiteLLM</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md">TypeScript</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/vercel-ai.md">Vercel AI SDK</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/otel.md">OpenTelemetry</a> ·
