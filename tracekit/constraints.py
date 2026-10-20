@@ -88,7 +88,7 @@ FILE_LIKE = re.compile(r"\w\.\w|/|^\.\w")
 # files people name without an extension: each is a file name too ("don't touch the Dockerfile")
 EXTENSIONLESS = frozenset(("dockerfile", "containerfile", "makefile", "gnumakefile", "justfile", "jenkinsfile",
                            "vagrantfile", "gemfile", "rakefile", "procfile", "pipfile", "brewfile", "codeowners",
-                           "license", "copying"))
+                           "license", "copying", "readme", "changelog"))
 NEGATIONS = frozenset(("not", "never", "don't", "dont", "do'nt", "won't", "wont", "mustn't", "mustnt", "shouldn't",
                        "shouldnt", "can't", "cant", "cannot", "without", "avoid", "avoiding", "refrain"))
 # a word after a negation that turns it around: "don't forget to update X" asks for the change

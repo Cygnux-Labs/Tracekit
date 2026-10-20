@@ -291,7 +291,11 @@ class Grammar(unittest.TestCase):
                 # delta review D-L7: a folder whose name has a dot, an underscore or a hyphen
                 ("Don't touch the .github folder.", ("keep_away", ".github/"), edit(".github/workflows/ci.yml")),
                 ("Don't touch the node_modules folder.", ("keep_away", "node_modules/"),
-                 edit("node_modules/left-pad/index.js"))):
+                 edit("node_modules/left-pad/index.js")),
+                # delta review D-L2: a README or CHANGELOG named without an extension
+                ("Leave the README alone.", ("keep_away", "readme"), edit("README")),
+                ("I don't want the README changed.", ("keep_away", "readme"), edit("README")),
+                ("The CHANGELOG is not yours to edit.", ("keep_away", "changelog"), edit("CHANGELOG"))):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [want])
                 self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", *call), (True, "high"))
