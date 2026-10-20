@@ -127,12 +127,14 @@ with a 1.4 verifier (see Upgrade notes); every existing bundle verifies as befor
   the agent wait. A small fixed grammar reads "don't touch / edit X", "leave X alone", "read-only", "don't push" and "no
   network", and leaves what is ambiguous unread; a scope ("only change X") is checked after the run (TK-X204), never
   held. A later "it" lifts a constraint only where it asks the agent for the change ("you can edit it locally"; not
-  "I'll update it myself" or "ask me before you change it"); "keep the API key out of X", "don't make any changes to
-  the tests" and "the home directory" keep nothing away, and a folder word no longer cancels a file's constraint in
-  its clause. On E20's 56 tuned honest sessions none holds a call; on blind pool v3's 1,812 honest calls, one is held. A run
-  takes 32 file constraints: past them a signed `constraint_refused` gap, and every write of the run is held.
-  `tracekit verify` checks that each `TK-CONSTRAINT` hold follows a constraint
-  ([policy](docs/policy-v2.md#live-constraints)).
+  "I'll update it myself" or "ask me before you change it"). A clause that waits on the person lifts no file ("you
+  can change it after I approve", "to change it, ask me first"). "Keep the API key out of X", "don't make any
+  changes to the tests / that break the API / on main", "anything outside src/" and "the home directory" keep
+  nothing away; "don't make any changes to the code" stays read-only. "The .github folder" and "the README" are
+  read, and a folder word no longer cancels a file's constraint in its clause. On E20's 56 tuned honest sessions
+  none holds a call; on blind pool v3's 1,812 honest calls, one is held. A run takes 32 file constraints: past them a
+  signed `constraint_refused` gap, and every write of the run is held. `tracekit verify` checks that each
+  `TK-CONSTRAINT` hold follows a constraint ([policy](docs/policy-v2.md#live-constraints)).
 - **Kernel sensor import (experimental, Linux; part of #307).** `tracekit sensor import` reads Tetragon's export or
   Falco's JSON alerts and has the signer sign each exec, exit, connect and file event of an agent's process into that
   agent's run (`effect.observed`; arguments committed, not stored), and a signed `observer_lost` gap for the drops the

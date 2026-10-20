@@ -18,7 +18,7 @@ export async function main(argv: string[]): Promise<number> {
     else if (!a.startsWith("-") && bundle === undefined) bundle = a;
     else {
       console.error(`tracekit verify: ${a} is not supported by the TypeScript verifier (the format bridge, monitor reports `
-        + `and revocations need the reference verifier: pip install tracekit)\n${USAGE}`);
+        + `and revocations need the reference verifier: pip install tracekit-ai)\n${USAGE}`);
       return EXIT_BAD;
     }
   }

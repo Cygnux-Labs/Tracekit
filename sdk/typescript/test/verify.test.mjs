@@ -332,6 +332,18 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
     ["3 decided: 2 allow, 0 deny, 1 ask", '"pay": approved by alice', "none recorded", '"support-bot" (uid:1000)']);
 });
 
+test("the CLI sends what it doesn't support to the reference verifier by its PyPI name, tracekit-ai", async () => {
+  const { main } = await import("../dist/verify/cli.js");
+  const said = [], error = console.error;
+  console.error = (m) => said.push(m);
+  try {
+    assert.equal(await main(["run.tkb", "--bridge"]), 2);
+  } finally {
+    console.error = error;
+  }
+  assert.match(said.join("\n"), /reference verifier: pip install tracekit-ai\)/);
+});
+
 test("agreement with the reference verifier (tests/test_ts_verifier.py)", { skip: NO_SIGNER }, () => {
   const r = spawnSync(PY, [join(ROOT, "tests/test_ts_verifier.py")], { env: PY_ENV, encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);

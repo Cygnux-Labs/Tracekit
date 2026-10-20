@@ -50,17 +50,18 @@ push, the network, "anything") states none: "don't edit X until the tests pass",
 can't check; "while you work", "while fixing Y" are the task itself, no condition; the person's own go-ahead, "before I
 review", "without asking me first", keeps the constraint). A later clause of the same text that asks for what a
 constraint keeps away lifts it there ("don't touch X for now; ... after that, update X too"; "don't change anything,
-then fix it"). A network word is negated only with nothing but words of use between ("don't use the network", not "don't
-change the network code") and no noun after it ("no web UI changes"); "offline" only where the clause begins with it as
-an instruction ("work offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by
-basename (norm). A pass reads each clause once, and the files an "it" stands for once (_read): word sets, short fixed
-sequences, one suffix scan per clause; the regular expressions have no nested quantifiers.
+then fix it"), but not a file where it waits on the person ("you can change X after I approve"). A network word is
+negated only with nothing but words of use between ("don't use the network", not "don't change the network code") and
+no noun after it ("no web UI changes"); "offline" only where the clause begins with it as an instruction ("work
+offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by basename (norm). A pass
+reads each clause once, and the files an "it" stands for once (_read): word sets, short fixed sequences, one suffix
+scan per clause; the regular expressions have no nested quantifiers.
 lean: fixed word lists, English only; a phrasing outside them ("keep the diff to X", a constraint on a file named two
 clauses back) states no constraint. Grow the lists from real misses, never from the held-out pool.
 lean: not linear in two places: a negated push or network word, or a lift word, reads the words before it in its clause
 again (a 64 KiB clause of them, under a second), and "them" stands for each file of the clause before it in every
-clause that says it (64 KiB of "don't change them" after 3,000 files: about 2 s and 0.7 GiB). Read them once per clause
-if real texts get near that.
+clause that says it (64 KiB of "don't change them" after 3,000 to 5,000 files: about 2 s and up to 1.1 GiB). Read them
+once per clause if real texts get near that.
 """
 import hashlib
 import re
@@ -88,7 +89,7 @@ FILE_LIKE = re.compile(r"\w\.\w|/|^\.\w")
 # files people name without an extension: each is a file name too ("don't touch the Dockerfile")
 EXTENSIONLESS = frozenset(("dockerfile", "containerfile", "makefile", "gnumakefile", "justfile", "jenkinsfile",
                            "vagrantfile", "gemfile", "rakefile", "procfile", "pipfile", "brewfile", "codeowners",
-                           "license", "copying"))
+                           "license", "copying", "readme", "changelog"))
 NEGATIONS = frozenset(("not", "never", "don't", "dont", "do'nt", "won't", "wont", "mustn't", "mustnt", "shouldn't",
                        "shouldnt", "can't", "cant", "cannot", "without", "avoid", "avoiding", "refrain"))
 # a word after a negation that turns it around: "don't forget to update X" asks for the change
@@ -129,6 +130,13 @@ LEAVE = frozenset(("leave", "leaves", "leaving", "left", "keep", "keeps", "keepi
 # between a change word and its file: no clause of its own ("don't change how X is imported")
 BLOCK = frozenset(("how", "what", "why", "when", "where", "whether", "which", "who", "whose", "so", "because", "that",
                    "than", "since", "while", "if", "unless"))
+# after "any changes", which ones ("that break the API", "beyond the fix", "for the sake of style"); "for" not before a
+# word of TIMES ("for now", "for the time being"); "to", "in" or "on" (WHERE) not before a word of PROJECT, the whole
+# project ("don't make any changes to the code", "on disk")
+PICKS = frozenset(("that", "which", "beyond", "outside", "directly", "for"))
+TIMES = frozenset(("now", "today", "time", "moment", "while"))
+PROJECT = frozenset(("code", "codebase", "repo", "repository", "project", "files", "workspace", "session", "tree",
+                     "disk"))
 DETERMINERS = frozenset(("the", "a", "an", "any", "this", "that", "these", "those", "your", "my", "our", "its",
                          "their"))
 # after the file: a condition, so no constraint ("don't edit X until the tests pass", "without checking Y first", "while
@@ -173,9 +181,10 @@ LEAD = frozenset(("please", "just", "and", "but", "though", "so", "also", "then"
 ASKING = LEAD | frozenset(("you", "i", "let's", "lets", "should", "must", "shall", "will", "would", "can", "could",
                            "really", "absolutely", "definitely", "do", "i'd", "rather"))
 # what may come before a change word, in its base form, that asks the agent for the change ("you can edit it", "feel
-# free to change it", "go ahead and fix it"; not "ask me before you change it", "I'll update it myself")
-ALLOWING = LEAD | frozenset(("you", "can", "may", "could", "should", "must", "need", "feel", "free", "to", "go",
-                             "ahead", "now"))
+# free to change it", "go ahead and fix it", "later you can update it", "locally you can edit it", "you're free to
+# edit it"; not "ask me before you change it", "I'll update it myself", "you may need to change it")
+ALLOWING = LEAD | frozenset(("you", "you're", "can", "may", "could", "should", "must", "feel", "free", "to", "go",
+                             "ahead", "now", "later", "locally"))
 # what may follow a refused push and still refuse every push ("don't push the branch", "don't push it yet"); another
 # word scopes it ("don't push to main", "never push secrets"): no constraint
 PUSHED = frozenset(("anything", "it", "them", "this", "that", "these", "those", "yet", "please", "now", "the", "any",
@@ -399,11 +408,13 @@ def _kept(tokens, i, end, cond):
     j = i   # past determiners: "stay out of the infra/ folder"
     while j > 0 and tokens[j - 1] in DETERMINERS:
         j -= 1
+    if tokens[j - 1:j] == ["outside"]:
+        return False   # "don't make any changes outside src/": a scope
     if c is not None and _refused(tokens, c) and not _where(tokens, c, i) or any(
             tokens[max(0, j - len(p)):j] == list(p) for p in AWAY) or tokens[max(0, j - 2):j] == ["out", "of"] and any(
-            tokens[n] in LEAVE and set(tokens[n + 1:j - 3]) <= DETERMINERS
+            tokens[n] in LEAVE and set(tokens[n + 1:j - 3]) <= DETERMINERS | {"all", "own", "code", "other", "of"}
             and tokens[j - 3] in NOUNS | {"hands", "yourself"} for n in range(max(0, j - 2 - WINDOW), j - 3)):
-        return True   # "keep your changes out of X"; not "keep this (key) out of X"
+        return True   # "keep (all) your (own) changes out of X"; not "keep this (key) out of X"
     if tokens[max(0, i - 2):i] in (["read-only", "on"], ["read-only", "for"], ["read-only", "to"]):
         return True
     return _stated_after(tokens, i, end, bool(set(tokens[max(0, i - WINDOW):i]) & LEAVE),
@@ -439,10 +450,15 @@ def _anything(tokens):
 
 
 def _of_a_thing(tokens, i):
-    """Whether tokens[i:] says what "any changes" are to ("to the tests", "in the schema"), not how many or when ("of
-    any kind", "under any circumstances", "in the meantime", "to any file")."""
-    return bool(set(tokens[i:i + 1]) & (WHERE | {"to"})) and tokens[i + 1:i + 2] != ["any"] \
-        and tokens[i + 1:i + 3] != ["the", "meantime"]
+    """Whether tokens[i:] says which "any changes" it means: what they are to ("to the tests", "in the schema", "on
+    main"; not the whole project: "to the code", "in this repo") or another word of PICKS ("that break the API",
+    "beyond what the fix needs", "for the sake of style"); not how many or when ("of any kind", "under any
+    circumstances", "in the meantime", "to any file", "for now")."""
+    t, after = tokens[i:i + 1], tokens[i + 1:i + 4]
+    if t and t[0] in PICKS and not (t[0] == "for" and set(after[:2]) & TIMES):
+        return True
+    return bool(set(t) & (WHERE | {"to", "on", "onto"})) and after[:1] != ["any"] \
+        and after[:2] != ["the", "meantime"] and not set(after) & PROJECT
 
 
 def _else(tokens):
@@ -480,9 +496,10 @@ def _clause(tokens, before=()):
     generated; make no changes there", _referent); none when that clause asks for a change or sets a condition ("fix X;
     don't rewrite it"): _read."""
     files = {i: t for i, t in enumerate(tokens) if _file(t)}
-    if FOLDERS & set(tokens):   # "the vendor folder": a directory; files stay in the clause's order
+    if FOLDERS & set(tokens):   # "the vendor / .github folder": a directory; files stay in the clause's order
         files = dict(sorted({**files, **{i: t + "/" for i, t in enumerate(tokens[:-1]) if tokens[i + 1] in FOLDERS
-                                         and t.isalpha() and t not in DETERMINERS | PLACES}}.items()))
+                                         and t.lstrip(".").replace("_", "").replace("-", "").isalpha()
+                                         and t not in DETERMINERS | PLACES}}.items()))
     if not files and not STATING & set(tokens):
         return [], set()
     cond, later = _conditions(tokens), _suffix(tokens, VERBS)
@@ -637,20 +654,26 @@ def extract(text, read=None):
     read = _read(text) if read is None else read
     # what a clause asks for, not negated -> the last such clause: a file it changes (_said), a LIFT word; by "it" or
     # "there" for the file named before, where the clause asks the agent for the change (ALLOWING: "X is frozen in
-    # production, but you can edit it locally"), apart: that lifts no constraint on the person's own go-ahead ("never
-    # touch X without asking me first. Change the timeout there")
+    # production, but you can edit it locally"; not "to change it, ...", "should you change it"), apart: that lifts no
+    # constraint on the person's own go-ahead ("never touch X without asking me first. Change the timeout there"). No
+    # file where the clause names the person's go-ahead, or the next clause does with nothing else to ask or refuse
+    # ("you can change it after I approve", "..., but ask me first"; not "..., but don't push before I review")
     asked, by_it, before = {}, {}, []
     for j, (tokens, _, _) in enumerate(read if any(found for _, found, _ in read) else ()):
+        nxt = set(read[j + 1][0]) if j + 1 < len(read) else set()
+        near = set(tokens) | (set() if nxt & LIFT_WORDS or nxt & NEGATIONS else nxt)
+        mine = PERSON & near and GO_AHEAD & near
         if tokens[:1] and tokens[0] in SEQUENCE:
             asked["then"] = j
         for i, t in enumerate(tokens):
-            if _file(t) and _said(tokens, i) == "changed":
+            if _file(t) and not mine and _said(tokens, i) == "changed":
                 asked[norm(t)] = j
             elif t in LIFT_WORDS and not _negated(tokens, i, NEGATIONS | {"no"}) and not BLOCK & set(tokens[:i]):
                 asked[t] = j   # not "tell me what you'd change"
         k, it = _referent(tokens, before)
-        c = None if k is None else _tied(tokens, k, SAID_CHANGE)
-        if c is not None and set(tokens[:c]) <= ALLOWING and not tokens[c].endswith(("s", "ed", "ing")):
+        c = None if k is None or mine else _tied(tokens, k, SAID_CHANGE)
+        if c is not None and set(tokens[:c]) <= ALLOWING and not tokens[c].endswith(("s", "ed", "ing")) \
+                and next(t for t in tokens if t not in LEAD) not in ("to", "should", "must"):
             by_it.update(dict.fromkeys(it, j))
         before = _files(tokens) or before
     out = [c for j, (tokens, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
@@ -673,11 +696,13 @@ def changes(read):
     for tokens, _, kept in read:
         for name in kept:
             out[name] = "kept"
-        k, it = _referent(tokens, before)   # "fixing it": the file named before
-        for i, name in [(i, norm(t)) for i, t in enumerate(tokens) if norm(t)] + [(k, n) for n in it]:
+        for i, name in [(i, norm(t)) for i, t in enumerate(tokens) if norm(t)]:
             said = name not in out and _said(tokens, i)
             if said:
                 out[name] = said
+        k, it = _referent(tokens, before)   # "fixing it": the file named before; for "them", each, read once
+        if it and (said := _said(tokens, k)):
+            out.update((name, said) for name in it if name not in out)
         before = _files(tokens) or before
     return out
 

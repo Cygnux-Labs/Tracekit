@@ -294,11 +294,13 @@ class GatewayBody(unittest.TestCase):
     def test_a_body_only_when_the_signer_keeps_content(self):
         for status, want in (({"rpc_version": 14}, {}), ({"content": {"max_record_bytes": 100}}, {"body": {"a": 1}}),
                              (RPCError("forbidden", "not granted status"), {})):
-            with self.subTest(status):
+            with self.subTest(status), warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
                 gw, client = self.gw(status)
                 self.assertEqual(gw.body({"a": 1}, 10), want)
                 self.assertEqual(gw.body({"a": 1}, 10), want)
                 self.assertEqual(client.status.call_count, 1)   # asked once
+                self.assertEqual(len(w), isinstance(status, RPCError))   # a refusal says so, once
         gw, _ = self.gw({"content": {"max_record_bytes": 100}})
         self.assertEqual(gw.body({"a": 1}, 101), {})   # over the vault's limit: not sent
         gw, _ = self.gw({"content": {"max_record_bytes": 1 << 30}})

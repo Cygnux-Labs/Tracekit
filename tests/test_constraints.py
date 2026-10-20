@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import time
+import timeit
 import unittest
 from unittest import mock
 
@@ -239,16 +240,38 @@ class Grammar(unittest.TestCase):
                            ("Don't edit schema.sql; we'll change it in the next PR.", "schema.sql"),
                            ("Don't touch billing.py. Explain how you would change it.", "billing.py"),
                            ("Don't touch prod.yaml. Changing it breaks the deploy.", "prod.yaml"),
-                           ("Don't touch prod.yaml. Changes to it need a review.", "prod.yaml")):
+                           ("Don't touch prod.yaml. Changes to it need a review.", "prod.yaml"),
+                           # delta review D-H1: the person's go-ahead, a purpose clause, should or need
+                           ("Don't touch prod.yaml. To change it, ask me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml. To edit it, ping me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml, but to change it, ask me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You can change it after I approve.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You can change it, once I approve.", "prod.yaml"),
+                           ("Don't touch prod.yaml. Feel free to edit it once I say so.", "prod.yaml"),
+                           ("Don't touch prod.yaml. Go ahead and update it after I review the plan.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You can change it later, but ask me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You may need to change it later, but ask me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml. Should you need to change it, ask me.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You can edit prod.yaml once I approve.", "prod.yaml")):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [("keep_away", name)])
                 self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", "Edit", {
                     "file_path": f"/w/{name}", "old_string": "a", "new_string": "b"}), (True, "high"))
-        for text in ("settings.py is frozen in production, but you can edit it locally.",
-                     "Leave billing.py alone for now; then go ahead and update it.",
-                     "Don't touch billing.py yet. Feel free to change it after the refactor."):
+        text = "Don't touch prod.yaml or deploy.yaml. You can update them after I approve."
+        self.assertEqual(constraints.extract(text), [("keep_away", "prod.yaml"), ("keep_away", "deploy.yaml")])
+        for text, want in (("settings.py is frozen in production, but you can edit it locally.", []),
+                           ("Leave billing.py alone for now; then go ahead and update it.", []),
+                           ("Don't touch billing.py yet. Feel free to change it after the refactor.", []),
+                           ("Don't touch billing.py for now. Feel free to change it.", []),
+                           ("Don't touch billing.py. If tests fail, fix them.", []),
+                           # delta review D-L5
+                           ("settings.py is frozen in production, but locally you can edit it.", []),
+                           ("Leave settings.py alone in prod, but you're free to edit it locally.", []),
+                           ("Don't touch billing.py for now. Later you can update it.", []),
+                           ("Don't touch billing.py. Go ahead and fix it, but don't push before I review.",
+                            [("no_push", None)])):
             with self.subTest(text):
-                self.assertEqual(constraints.extract(text), [])
+                self.assertEqual(constraints.extract(text), want)
 
     def test_more_ways_of_keeping_a_file_or_a_directory_away(self):
         """Round-3 review: prohibitions the grammar didn't read (each now held live and found), and "any changes"."""
@@ -264,7 +287,15 @@ class Grammar(unittest.TestCase):
                 ("Keep your changes out of db/migrations/.", ("keep_away", "migrations/"),
                  edit("db/migrations/0004.sql")),
                 ("Don't modify the vendor directory.", ("keep_away", "vendor/"), edit("vendor/x.py")),
-                ("Don't make any changes, only review cache.go.", ("read_only", None), edit("cache.go"))):
+                ("Don't make any changes, only review cache.go.", ("read_only", None), edit("cache.go")),
+                # delta review D-L7: a folder whose name has a dot, an underscore or a hyphen
+                ("Don't touch the .github folder.", ("keep_away", ".github/"), edit(".github/workflows/ci.yml")),
+                ("Don't touch the node_modules folder.", ("keep_away", "node_modules/"),
+                 edit("node_modules/left-pad/index.js")),
+                # delta review D-L2: a README or CHANGELOG named without an extension
+                ("Leave the README alone.", ("keep_away", "readme"), edit("README")),
+                ("I don't want the README changed.", ("keep_away", "readme"), edit("README")),
+                ("The CHANGELOG is not yours to edit.", ("keep_away", "changelog"), edit("CHANGELOG"))):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [want])
                 self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", *call), (True, "high"))
@@ -274,16 +305,34 @@ class Grammar(unittest.TestCase):
         """1.4.0 review M1: "don't make any changes to the tests" read as read_only, so the edit the person asked for
         was held and found. "Any changes" is read-only only with no object after it."""
         for said in ("Don't make any changes to the tests.", "Don't make any changes to the public API.",
-                     "Don't make any edits in the database schema."):
+                     "Don't make any edits in the database schema.",
+                     # delta review D-M1: what picks the changes out
+                     "Don't make any changes that break the public API.",
+                     "Don't make any changes on main; work on a new branch.",
+                     "Don't make any changes directly on main.", "Don't make any changes beyond what the fix needs.",
+                     "Don't make any changes which would slow down the parser.",
+                     "Don't make any changes for the sake of style.", "Don't make any edits that touch the schema.",
+                     # delta review D-L7: a scope, not src/ kept away
+                     "Don't make any changes outside src/.", "Don't touch anything outside src/."):
             with self.subTest(said):
                 self.assertEqual(constraints.extract(f"Fix the bug in src/pager.py. {said}"), [])
                 self.assertEqual(replay_one(f"Fix the bug in src/pager.py. {said}", "Edit", {
                     "file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}), (False, None))
         self.assertEqual(constraints.extract("Investigate the crash. Don't make any changes."), [("read_only", None)])
         for said in ("Don't make any changes of any kind.", "Don't make any changes in the meantime.",
-                     "Don't make any changes under any circumstances.", "Don't make any edits to any file."):
-            with self.subTest(said):   # how many or when, not what: still read-only
+                     "Don't make any changes under any circumstances.", "Don't make any edits to any file.",
+                     "Don't make any changes for now.", "Don't make any changes for the time being.",
+                     # delta review D-M2: the whole project
+                     "Don't make any changes to the code.", "Don't make any changes to the codebase.",
+                     "Don't make any changes to the repo.", "Don't make any changes in this repository.",
+                     "Don't make any changes to the project.", "Don't make any changes to the files.",
+                     "Don't make any changes to my project.", "Don't make any changes in the workspace.",
+                     "Don't make any changes on disk."):
+            with self.subTest(said):   # how many, when, or the whole project: still read-only
                 self.assertEqual(constraints.extract(f"Investigate the crash. {said}"), [("read_only", None)])
+        self.assertEqual(replay_one("Investigate the crash in src/pager.py. Don't make any changes to the code.",
+                                    "Edit", {"file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}),
+                         (True, "high"))
 
     def test_keeping_something_else_out_of_a_file_keeps_nothing_away(self):
         """1.4.0 review M2: "keep the API key out of settings.py" kept settings.py away, so the edit the person asked
@@ -296,7 +345,10 @@ class Grammar(unittest.TestCase):
                 self.assertEqual(constraints.extract(said), [])
                 self.assertEqual(replay_one(said, "Edit", {"file_path": f"/w/{path}", "old_string": "a",
                                                            "new_string": "b"}), (False, None))
-        for said in ("Keep your hands out of billing.py.", "Keep any edits out of billing.py."):
+        for said in ("Keep your hands out of billing.py.", "Keep any edits out of billing.py.",
+                     # delta review D-L1
+                     "Keep all changes out of billing.py.", "Keep all your changes out of billing.py.",
+                     "Keep your own changes out of billing.py.", "Keep your code changes out of billing.py."):
             with self.subTest(said):
                 self.assertEqual(constraints.extract(said), [("keep_away", "billing.py")])
 
@@ -434,20 +486,31 @@ class Grammar(unittest.TestCase):
             constraints.mentions(text)
             constraints.facts("Bash", {"command": text})
             self.assertLess(time.perf_counter() - t0, 5, text[:20])
-        for many in ("Don't touch " + " or ".join(f"a{k}.py" for k in range(9000)),   # one clause naming 9,000 files
-                     "Don't change anything except " + " ".join(f"a{k}.py" for k in range(9000)),
-                     "Don't change anything" + "".join(f", except a{k}.py" for k in range(4000))):
-            t0 = time.perf_counter()
-            self.assertGreater(len(constraints.extract(many)), 3000)
-            constraints.mentions(many)
-            self.assertLess(time.perf_counter() - t0, 0.2)   # each file looked only at the next, not at every other
-        for unit in ("change it, ", "don't change it, "):   # 1.4.0 review L2: each "it" read the clause before again
-            text = "Don't touch " + "a.py " * 6000 + ". " + unit * 2800
-            t0 = time.perf_counter()
-            read = constraints._read(text)
-            constraints.extract(None, read)
-            constraints.changes(read)
-            self.assertLess(time.perf_counter() - t0, 1, unit)
+
+        def read(text):
+            r = constraints._read(text)
+            constraints.extract(None, r)
+            constraints.mentions(None, r)
+            constraints.changes(r)
+        files = lambda n, sep=" ": sep.join(f"a{k}.py" for k in range(n))   # noqa: E731
+        for label, text, n in (   # each file looked only at the next, not at every other
+                ("a clause naming files", lambda n: "Don't touch " + files(n, " or "), 1350),
+                ("files after except", lambda n: "Don't change anything except " + files(n), 1800),
+                ("an except clause each", lambda n: "Don't change anything, except " + files(n, ", except "), 950),
+                # 1.4.0 review L2: each "it" read the clause before again
+                ("change it", lambda n: "Don't touch " + "a.py " * (2 * n) + ". " + "change it, " * n, 700),
+                ("don't change it", lambda n: "Don't touch " + "a.py " * (2 * n) + ". " + "don't change it, " * n,
+                 550),
+                # delta review D-L4: changes() read a "them" no change word governs once per file
+                ("keep them", lambda n: "Leave " + "a.py " * (2 * n) + "alone. " + "keep them, " * n, 750),
+                ("keep them, each file once", lambda n: f"Leave {files(n)} alone. " + "keep them, " * n, 750)):
+            with self.subTest(label):   # linear: 4n takes 4 times as long as n, quadratic 16; in CPU time, which
+                best = [min(timeit.repeat(lambda: read(t), timer=time.process_time, number=3, repeat=3))   # load
+                        for t in (text(n), text(4 * n))]   # on the machine doesn't change; the best of three
+                self.assertLess(best[1], 8 * best[0], best)
+        for text in ("Don't touch " + files(1400, " or "), "Don't change anything except " + files(1400),
+                     "Don't change anything, except " + files(1400, ", except ")):
+            self.assertEqual(len(constraints.extract(text)), 1400)   # each file read
 
 
 class Live(Signed):
