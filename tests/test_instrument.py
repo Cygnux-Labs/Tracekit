@@ -23,6 +23,7 @@ from quickstart_agents import AGENTS, REFUSED
 from tracekit import autowire
 from tracekit.format.canon import event_hash
 from tracekit.sdk.client import AsyncClient, Client, SignerUnavailable, current_run
+from tracekit.wiki import wiki_url
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.testing import FakeSigner
 
@@ -158,7 +159,13 @@ class TestInstrument(unittest.TestCase):
         msgs = [str(x.message) for x in w]
         self.assertIn("Broken 1.5 not wired (ImportError: cannot import name 'ToolNode'). Tracekit is tested with "
                       "broken>=1,<2", msgs[0])
+        self.assertIn(f"wire it by hand ({wiki_url('docs/custom.md')})", msgs[0])   # was docs/custom.md, a repo path
         self.assertIn("Fine 2.1rc1 is wired but untested", msgs[1])
+
+    def test_every_framework_names_a_docs_page(self):
+        """Its not-wired warning sends people to that page's wiki URL."""
+        docs = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs")
+        self.assertEqual([f[5] for f in autowire.FRAMEWORKS if not os.path.exists(os.path.join(docs, f[5] + ".md"))], [])
 
     def test_instrument_called_while_wiring_returns_the_same_run(self):
         """A module imported while a framework is wired may call instrument() itself (a script named after the

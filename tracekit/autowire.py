@@ -411,7 +411,7 @@ def instrument(agent=None):
             except Exception as e:
                 warnings.warn(f"tracekit.instrument(): {label} {version} not wired ({type(e).__name__}: {e}). "
                               f"Tracekit is tested with {req}: install those, or wire it by hand "
-                              f"(docs/{page}.md)", stacklevel=2)
+                              f"({wiki_url(f'docs/{page}.md')})", stacklevel=2)
                 continue
             if not lo <= _release(version) < hi:
                 warnings.warn(f"tracekit.instrument(): {label} {version} is wired but untested; Tracekit is tested "
