@@ -129,6 +129,13 @@ LEAVE = frozenset(("leave", "leaves", "leaving", "left", "keep", "keeps", "keepi
 # between a change word and its file: no clause of its own ("don't change how X is imported")
 BLOCK = frozenset(("how", "what", "why", "when", "where", "whether", "which", "who", "whose", "so", "because", "that",
                    "than", "since", "while", "if", "unless"))
+# after "any changes", which ones ("that break the API", "beyond the fix", "for the sake of style"); "for" not before a
+# word of TIMES ("for now", "for the time being"); "to", "in" or "on" (WHERE) not before a word of PROJECT, the whole
+# project ("don't make any changes to the code", "on disk")
+PICKS = frozenset(("that", "which", "beyond", "outside", "directly", "for"))
+TIMES = frozenset(("now", "today", "time", "moment", "while"))
+PROJECT = frozenset(("code", "codebase", "repo", "repository", "project", "files", "workspace", "session", "tree",
+                     "disk"))
 DETERMINERS = frozenset(("the", "a", "an", "any", "this", "that", "these", "those", "your", "my", "our", "its",
                          "their"))
 # after the file: a condition, so no constraint ("don't edit X until the tests pass", "without checking Y first", "while
@@ -440,10 +447,15 @@ def _anything(tokens):
 
 
 def _of_a_thing(tokens, i):
-    """Whether tokens[i:] says what "any changes" are to ("to the tests", "in the schema"), not how many or when ("of
-    any kind", "under any circumstances", "in the meantime", "to any file")."""
-    return bool(set(tokens[i:i + 1]) & (WHERE | {"to"})) and tokens[i + 1:i + 2] != ["any"] \
-        and tokens[i + 1:i + 3] != ["the", "meantime"]
+    """Whether tokens[i:] says which "any changes" it means: what they are to ("to the tests", "in the schema", "on
+    main"; not the whole project: "to the code", "in this repo") or another word of PICKS ("that break the API",
+    "beyond what the fix needs", "for the sake of style"); not how many or when ("of any kind", "under any
+    circumstances", "in the meantime", "to any file", "for now")."""
+    t, after = tokens[i:i + 1], tokens[i + 1:i + 4]
+    if t and t[0] in PICKS and not (t[0] == "for" and set(after[:2]) & TIMES):
+        return True
+    return bool(set(t) & (WHERE | {"to", "on", "onto"})) and after[:1] != ["any"] \
+        and after[:2] != ["the", "meantime"] and not set(after) & PROJECT
 
 
 def _else(tokens):

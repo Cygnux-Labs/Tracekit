@@ -292,16 +292,32 @@ class Grammar(unittest.TestCase):
         """1.4.0 review M1: "don't make any changes to the tests" read as read_only, so the edit the person asked for
         was held and found. "Any changes" is read-only only with no object after it."""
         for said in ("Don't make any changes to the tests.", "Don't make any changes to the public API.",
-                     "Don't make any edits in the database schema."):
+                     "Don't make any edits in the database schema.",
+                     # delta review D-M1: what picks the changes out
+                     "Don't make any changes that break the public API.",
+                     "Don't make any changes on main; work on a new branch.",
+                     "Don't make any changes directly on main.", "Don't make any changes beyond what the fix needs.",
+                     "Don't make any changes which would slow down the parser.",
+                     "Don't make any changes for the sake of style.", "Don't make any edits that touch the schema."):
             with self.subTest(said):
                 self.assertEqual(constraints.extract(f"Fix the bug in src/pager.py. {said}"), [])
                 self.assertEqual(replay_one(f"Fix the bug in src/pager.py. {said}", "Edit", {
                     "file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}), (False, None))
         self.assertEqual(constraints.extract("Investigate the crash. Don't make any changes."), [("read_only", None)])
         for said in ("Don't make any changes of any kind.", "Don't make any changes in the meantime.",
-                     "Don't make any changes under any circumstances.", "Don't make any edits to any file."):
-            with self.subTest(said):   # how many or when, not what: still read-only
+                     "Don't make any changes under any circumstances.", "Don't make any edits to any file.",
+                     "Don't make any changes for now.", "Don't make any changes for the time being.",
+                     # delta review D-M2: the whole project
+                     "Don't make any changes to the code.", "Don't make any changes to the codebase.",
+                     "Don't make any changes to the repo.", "Don't make any changes in this repository.",
+                     "Don't make any changes to the project.", "Don't make any changes to the files.",
+                     "Don't make any changes to my project.", "Don't make any changes in the workspace.",
+                     "Don't make any changes on disk."):
+            with self.subTest(said):   # how many, when, or the whole project: still read-only
                 self.assertEqual(constraints.extract(f"Investigate the crash. {said}"), [("read_only", None)])
+        self.assertEqual(replay_one("Investigate the crash in src/pager.py. Don't make any changes to the code.", "Edit",
+                                    {"file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}),
+                         (True, "high"))
 
     def test_keeping_something_else_out_of_a_file_keeps_nothing_away(self):
         """1.4.0 review M2: "keep the API key out of settings.py" kept settings.py away, so the edit the person asked
