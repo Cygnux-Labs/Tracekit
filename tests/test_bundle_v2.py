@@ -1118,7 +1118,8 @@ class TestVersionTable(Case):
         # verifier of that version never meets a field its own version claims to know
         shipped = {"1.1.0": "2e5a668bf93c0e4b3fca960f9824e2c5858d5539109511d636bd7635e648061e",
                    "1.2.0": "c0c704e79fe3641a7784cd2c05cf943c2ea9cab4c39181f6ab3bea5f736b1eb9",
-                   "1.3.0": "1ced79b94a5a8e0cb977946b39109020beeaaea8a5c2ac5ac856dbd1c0f794d2"}
+                   "1.3.0": "1ced79b94a5a8e0cb977946b39109020beeaaea8a5c2ac5ac856dbd1c0f794d2",
+                   "1.4.0": "7ba74fe8501c26765ef5cd3d0a762e6fbb9c9226e71cdcbc124d8f430c404d2b"}
         for version, digest in shipped.items():
             self.assertEqual(hashlib.sha256(canonical(VERSIONS[version])).hexdigest(), digest, version)
 
