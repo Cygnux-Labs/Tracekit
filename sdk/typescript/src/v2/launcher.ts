@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 
-export const INSTALL_HINT = "no Tracekit signer found. Install one: `pip install 'tracekit-ai[signer]'` (puts `tracekit` " +
+export const INSTALL_HINT = "no Tracekit signer found. Install one: `pip install tracekit-ai` (puts `tracekit` " +
   "on PATH), or reinstall @cygnuxlabs/tracekit without --omit=optional so npm adds the signer package for this platform";
 
 /** This platform's signer package suffix, as the optionalDependencies name them; null where none is built. */

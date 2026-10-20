@@ -67,7 +67,7 @@ test("launcher: a tracekit on PATH after its own shim still wins", { skip: POSIX
 test("launcher: neither -> both install routes and exit 1", { skip: POSIX }, (t) => {
   const r = fixture(t, { platformPackage: false })("self", "shim");
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /pip install 'tracekit-ai\[signer\]'.*--omit=optional/s);
+  assert.match(r.stderr, /pip install tracekit-ai`.*--omit=optional/s);
 });
 
 test("the v2 client's dev auto-spawn runs `tracekit up --json` from the launcher", { skip: POSIX }, async (t) => {
