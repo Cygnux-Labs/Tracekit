@@ -276,31 +276,28 @@ def _follow(f, path):
     `path`)."""
     f.seek(0, os.SEEK_END)
     part = b""
-    try:
-        while True:
-            line = f.readline()
-            part += line
-            if part.endswith(b"\n"):
-                yield part
-                part = b""
-                continue
-            try:
-                st = os.stat(path)
-            except FileNotFoundError:
-                st = None
-            if st and st.st_ino != os.fstat(f.fileno()).st_ino:   # rotated: the rest of the old file, then the new one
-                part += f.read()
-                f.close()
-                f = open_rotating_log(path)
-            elif st and st.st_size < f.tell():   # truncated in place
-                f.seek(0)
-            else:
-                time.sleep(0.2)
-                continue
-            yield from part.splitlines(keepends=True)   # a last line with no end was cut off: unreadable, a loss
+    while True:
+        line = f.readline()
+        part += line
+        if part.endswith(b"\n"):
+            yield part
             part = b""
-    finally:
-        f.close()
+            continue
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            st = None
+        if st and st.st_ino != os.fstat(f.fileno()).st_ino:   # rotated: the rest of the old file, then the new one
+            part += f.read()
+            f.close()
+            f = open_rotating_log(path)
+        elif st and st.st_size < f.tell():   # truncated in place
+            f.seek(0)
+        else:
+            time.sleep(0.2)
+            continue
+        yield from part.splitlines(keepends=True)   # a last line with no end was cut off: unreadable, a loss
+        part = b""
 
 
 def run(imp, lines):

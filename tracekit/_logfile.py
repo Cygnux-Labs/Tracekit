@@ -25,12 +25,8 @@ def open_rotating_log(path):
         err = ctypes.get_last_error()
         raise OSError(None, ctypes.FormatError(err), path, err)   # FileNotFoundError and the like, naming the path
     try:
-        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
-    except Exception:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    except OSError:
         close(handle)
         raise
-    try:
-        return os.fdopen(fd, "rb")
-    except Exception:
-        os.close(fd)
-        raise
+    return open(fd, "rb")
