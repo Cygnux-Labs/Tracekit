@@ -148,7 +148,7 @@ class Engine:
                     parsed = [], [], [command if isinstance(command, str) else canonical(command)], []
                 if any(c["opaque"] for c in parsed[0]):
                     unreadable.append("TK-SHELL-PARSE")
-        # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by the 64 KiB input
+        # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class

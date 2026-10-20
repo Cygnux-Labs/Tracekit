@@ -107,11 +107,15 @@ _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E"
 # the command at run time, and awk's `print | "cmd"` and `"cmd" | getline`, are not followed (tripwire territory)
 _CALL = re.compile(r"\b(system|popen|execSync|execFileSync|exec|spawn\w*|run|call|check_call|check_output|Popen|getoutput|"
                    r"shell_exec|passthru|proc_open|os\.execute)(\s*\(\s*|\s+)")
-# (sed addresses and s/// parts are bounded so a long script cannot make the scan quadratic)
-_SED_ADDR = r"(?:^|[;\n{}])\s*(?:(?:[0-9$,~+!]|/(?:\\.|[^/\\\n]){0,200}/)\s*){0,8}"
+# (sed addresses and s/// parts are bounded so a long script cannot make the scan quadratic; the whitespace runs stay
+# off `\n`, which is already a start, so a newline-only script is not re-scanned from each one)
+_SED_ADDR = r"(?:^|[;\n{}])[^\S\n]*(?:(?:[0-9$,~+!]|/(?:\\.|[^/\\\n]){0,200}/)[^\S\n]*){0,8}"
 _SED_E = re.compile(_SED_ADDR + r"e([^\n]*)")
 _SED_S_E = re.compile(_SED_ADDR + r"s([^\\\n])(?:\\.|(?!\1).){0,200}\1(?:\\.|(?!\1).){0,200}\1[^;\n}]{0,20}e")
 _STR = re.compile(r"""(['"])((?:\\.|(?!\1)[^\\\n])*)\1""")
+# the end of a `[...]` argv list: the first `]` that isn't inside a string literal (a string is consumed whole, so a
+# `]` in one is skipped); linear, since literals of the same quote can't overlap
+_LIST_END = re.compile(r"""(['"])(?:\\.|(?!\1)[^\\\n])*\1|\]""")
 _TICK = re.compile(r"`([^`]*)`")
 
 
@@ -664,7 +668,8 @@ class _Parser:
                 continue   # Python's exec runs Python, not a shell
             i = m.end()
             if code.startswith("[", i):
-                j = code.find("]", i)
+                end = next((e for e in _LIST_END.finditer(code, i + 1) if e.group() == "]"), None)
+                j = end.start() if end else -1
                 self.charge((len(code) if j < 0 else j) - i)   # calls whose lists overlap read the same text again
                 argv = [body for _, body in _STR.findall(code, i, j)] if j >= 0 else []
                 if argv:
