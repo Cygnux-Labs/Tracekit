@@ -104,6 +104,7 @@ def main(keep=False):
         rec = SIGNED_SYSTEM.run(seed=seed, out_dir=runs, run_id="desk", signer=client)
         stop.set()
         answers.join()
+        client.close()
         for e in rec.of_type("action"):
             print(f"  {e['agent']:<10} {e['tool']:<16} {e['status']}")
 
