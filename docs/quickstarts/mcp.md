@@ -60,6 +60,7 @@ An offline run of all this (a mock model, no API key), with an approval: `python
 ## Read the verify report
 
 ```text
+[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/... at tree size 12, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] signatures — 11 record(s), keys valid at their position

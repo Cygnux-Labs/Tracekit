@@ -59,7 +59,7 @@ have written them. Findings are an opinion of the run, never part of its integri
 | Verdict | Exit | Meaning |
 |---|---|---|
 | `VERIFIED` | 0 | Every check passed and every run ended in `run.final` |
-| `VERIFIED TO HEAD n (open)` | 0 | The run hasn't finished; everything up to record n checks out |
+| `VERIFIED TO HEAD n (open)` | 0 | The run hasn't finished, or was cut back (records dropped from its end, which the bundle can't show): everything up to record n checks out. For audits require `VERIFIED` |
 | `VERIFIED (k run(s) open)` | 0 | A run-set bundle in which k runs haven't finished |
 | `FAILED` | 1 | A check failed: something was changed, removed, reordered or forged |
 | `UNUSABLE BUNDLE` | 2 | The trust config or the zip can't be read |
@@ -88,7 +88,7 @@ log, but only a witness stops the operator.
 The TypeScript verifier was written from [format v2](../format-v2.md), not from the Python code. It has its own
 canonical JSON, zip reader, schema checks and Merkle and checkpoint code, uses only Web Crypto, and runs in Node and in
 browsers. Tests require both verifiers to give the same verdict, assurance, exit code and check lines on every golden
-bundle, on 46 deliberately broken ones, and on tampered copies of bundles from a real signer. A bug in one verifier
+bundle, on 55 deliberately broken ones, and on tampered copies of bundles from a real signer. A bug in one verifier
 therefore can't decide an audit on its own.
 
 The TypeScript verifier doesn't check SLH-DSA lines, Rekor anchors, record-key certificates or `tracekit why` findings

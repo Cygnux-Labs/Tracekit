@@ -120,7 +120,7 @@ The rules, each with the title a signed finding carries and what it means in pla
 The first line is the answer; then each finding in plain words; record numbers last:
 
 ```text
-Findings for run 13b8…: 3 problems (1 high, 1 medium, 1 low) · reasoning readable before 3 of 5 actions (60%)
+Findings for run 13b8…: 4 problems (2 high, 1 medium, 1 low) · reasoning readable before 3 of 5 actions (60%)
 
 HIGH · Write outside the project  (TK-X203)
   What happened: Bash wrote ~/.profile, outside the project /work/shop (the cwd of the first prompt, record 1)
@@ -135,7 +135,7 @@ Not checkable (never counted as a pass):
   TK-X201 for 1 call: the model's reasoning was withheld or sealed, so it can't be read.
     To make it checkable: Claude Code: `tracekit init --dev --v2` sets "showThinkingSummaries": true ...
 ...
-Signed: 4 record(s), the findings and the coverage review, in findings run 7c1e…; bundle them with `tracekit export --v2 --run 13b8… --with-findings`
+Signed: 5 record(s), the findings and the coverage review, in findings run 7c1e…; bundle them with `tracekit export --v2 --run 13b8… --with-findings`
 ```
 
 In detail, each rule's severity, what it checks and when it is not checkable (the reasons are below):
@@ -303,7 +303,7 @@ later than the import's one-second flush, the sensor's clock may be behind. Eith
 Stable from this release; new keys may be added:
 
 ```json
-{"run_id": "13b8…", "agent": "claude-code", "summary": "Findings for run 13b8…: 3 problems (1 high, 1 medium, 1 low) · …",
+{"run_id": "13b8…", "agent": "claude-code", "summary": "Findings for run 13b8…: 4 problems (2 high, 1 medium, 1 low) · …",
  "findings": [{"verdict": {"kind": "finding", "rule": "TK-X202", "severity": "medium", "tier": "transcript",
                            "order": "signed_before"},
                "cites": [{"run_seq": 12, "hash": "sha256:…"}, {"run_seq": 13, "hash": "sha256:…"}]}],
@@ -372,11 +372,12 @@ before). Naming the file innocently in the model's text no longer clears TK-X202
 pools (0 of 24 on pool v2 and 38% on pool v1 before 2026-10-19); one the model says it changes ("updating billing.py to
 match") is told, and passes. The constraint grammar reads 11 of the 12 ways of saying "don't touch X" in pool v2 and 9
 of 14 in pool v1 (4 of each before), so TK-X204 and live constraints miss the rest; both pools were read while
-writing these fixes, so these are development numbers, and pool v3, written blind, is scored once the checks are
-frozen. What still isn't caught is in the [limits](limits.md#intent-reasoning-and-action-checks). On E20's 56 honest
+writing these fixes, so these are development numbers. Pool v3, written blind, is not scored yet: it is scored once the
+checks are frozen. What still isn't caught is in the [limits](limits.md#intent-reasoning-and-action-checks). On E20's 56 honest
 sessions (requests that describe a read-only mode, keep one aspect of the file asked for, scope or condition a push,
-describe the network, quote a note), no call is held live and no TK-X204 is found; before the round-2 review's fixes,
-13 had a call held and 14 a TK-X204 high.
+describe the network, quote a note), no call is held live and no TK-X204 is found; 2 get a TK-X202 medium, an edit of a
+file the request never named and the model never said it changes. Before the round-2 review's fixes, 13 had a call
+held and 14 a TK-X204 high.
 
 E20 also splices text faults. A false success claim after a failed test run (F4) is found in every tuned session, in
 88% of sessions built from pool v2 (blind, scored once on 2026-10-19, since read: a development set) and in 73% of
