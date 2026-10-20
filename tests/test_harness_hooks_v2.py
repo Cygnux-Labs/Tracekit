@@ -210,7 +210,9 @@ class OnTheDevPolicy(HarnessCase):
     def test_a_gemini_sandbox_expansion_waits_for_a_person(self):
         pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
                "tool_input": {"command": "npm install", "additional_permissions": {"network": True}}}
-        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 1):   # nobody answers
+        # nobody answers: under twice the hook client's 30 s timeout the hook asks once and doesn't wait, and 10 s leaves
+        # a slow runner room for its decide and request (1 s left none on Windows py3.9)
+        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 10):
             code, out, err = self.hook("gemini", pre)
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
         self.assertIn("waiting for approval", err)
