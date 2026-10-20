@@ -12,9 +12,9 @@
 
 Tamper-evident tracing for AI agents: every tool call is recorded as an Ed25519-signed, hash-chained event by a signer
 the agent can't control, checkpointed to witnesses, gated by a policy engine, and exported as offline-verifiable `.tkb`
-bundles. Today's code (1.3) has two generations: the v1 laptop path (tracekitd, the
+bundles. Today's code (1.4) has two generations: the v1 laptop path (tracekitd, the
 JSONL ledger, Claude Code / Codex / Cursor / Gemini hooks) and the v2 signer service for server-hosted agents (evidence
-format v2 at 1.3, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
+format v2 at 1.4, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
 observation), with Python and TypeScript SDKs and framework integrations. [HIGH CONFIDENCE — read
 `tracekit/signer/service.py`, `tracekit/signer/pipeline.py`, `tracekit/verify/v2.py`, `tracekit/daemon.py`,
 `tracekit/ledger.py`]
