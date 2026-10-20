@@ -1,20 +1,21 @@
-# Evaluation (v0.2)
+# Evaluation
 
-Eight experiments. E1 to E4 and E6 are offline and run with `make eval`; E5 uses real Claude Code runs and is opt-in
-(`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is `make eval-scale`; E8 needs root and a Linux
-system-mode signer and runs in CI as a merge gate. Results are written to
-`eval/results/`. For the v2 signer: E4 v2 (`eval/e4_seeded_faults_v2.py`, seeded faults against a v2 bundle, in
-`make eval`), E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix socket, gated on Linux; `make eval`
-runs its `--quick` form on Linux), E11, E12 and E14 (below, in `make eval`, E14 as `--quick`; POSIX) and E15 (`eval/e15_durability.py`,
-`kill -9` of the signer under concurrent clients, POSIX). `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small, synthetic and written by the authors. They show how the mechanisms
-behave, not how Tracekit performs across real agents and projects. The v0.1 paper's experiments (14 Claude Code
-runs, seeded faults, hook latency) were ported to v0.2 as E2, E4 and E5, with different scenarios and numbers.
+Twenty-one experiments, E1 to E22 (there is no E13). `make eval` runs the offline ones: E1 to E4 (E4 on v1 and v2
+bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20 and E21, and E9 `--quick` on Linux.
+E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
+`make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
+and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
+socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. Results are
+written to `eval/results/`. `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small,
+synthetic and written by the authors. They show how the mechanisms behave, not how Tracekit performs across real
+agents and projects. The v0.1 paper's experiments (14 Claude Code runs, seeded faults, hook latency) were ported to
+v0.2 as E2, E4 and E5, with different scenarios and numbers.
 
 The [technical report](../report/tracekit-v2.md) presents E1, E4, E8, E9, E10, E11, E12, E14, E15 and E16 in tables generated
 from `eval/results/` by `report/tables.py`.
 
-Machine for the numbers below: Linux x86_64, Python 3.13, dev-mode signer on the same host. Other machines will
-differ, so each results file records the platform.
+Timings depend on the machine. E2's are from Linux x86_64, Python 3.13, with a dev-mode signer on the same host; E9's,
+E14's and E21's from macOS arm64, Python 3.11. Each results file that measures time records its platform.
 
 ## E1: tamper detection
 
@@ -269,6 +270,36 @@ a to c and g drive `tracekit signer serve`; d to f run the signer in process to 
 Every store must pass `tracekit signer fsck`. Under the partition (full run, measured on macOS) each call took the
 client timeout (about 1000 ms added at p50 and p99 over a 2 ms baseline); after it, the added latency was 4.5 ms at
 p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
+
+## E17: policy packs, detection and containment
+
+Three offline parts, each with a signer in process; nothing is executed.
+
+- **Policy packs** (`eval/e17_policy_corpus.py`): 570 harmful and 738 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 570 harmful calls are
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 738 (0.14%); the engines
+  decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
+- **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
+  runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
+  doesn't count, restarts mid-sequence, a snapshot then a crash, storage recovery, a deployment that adds a sequence,
+  and the detector's state staying the same size however many calls a run makes. 10 of 10 hold.
+- **Containment** (`eval/e17_containment.py`): 8 scenarios where an agent, or content it reads, would undo a hold: the
+  agent's identity calling operator calls, a trigger that would suspend an identity, held runs next to a healthy one,
+  holds across restarts and a storage recovery, an approval granted before a hold, a quarantine against the LLM
+  gateway's model loop, a held run registered again, and a bundle whose signer let a call through after a hold (caught
+  by both verifiers). 8 of 8 hold.
+
+Results: `eval/results/e17_policy_corpus.json`, `e17_detection.json` and `e17_containment.json`.
+
+## E18: agent approvers
+
+`eval/e18_agent_approvers.py` attacks a reviewer agent that approves everything it may see, as one whose judgment was
+steered would ([agent approvers](approvals.md#agent-approvers)). One signer in process has an `ask` rule on a payment
+tool that agents may answer within bounds (an amount of 1 to 100, two payees, a plain-text memo), under a tenant budget
+of 5 approvals and 300 in a window. A call runs only when `approval_consume` lets it. Seven attacks: arguments out of
+bounds, a memo only untrusted content brought into the run, asking again after the reviewer said no, 50 variants one
+cent apart, the budget, a reviewer answering after it escalated (and after a restart), and an approved agent approval
+when the operator switches agent approvals off. 7 of 7 caught. Results: `eval/results/e18_agent_approvers.json`.
 
 ## E19: egress observation
 
