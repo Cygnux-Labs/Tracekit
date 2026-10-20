@@ -808,6 +808,24 @@ class View(unittest.TestCase):
         view.mirror_run(why_dir, "default", run_id, None)   # it failed verification: no graph says LOG INTACT
         self.assertEqual(os.listdir(why_dir), [])
 
+    def test_a_mirror_waits_for_a_reader_windows_lets_deny_its_rename(self):
+        """On Windows a reader with a file of a run's folder open (the why server's scan) denies the folder's rename:
+        the graph of a run that left the live view stayed for the server's life."""
+        why_dir = ts.tmpdir(self)
+        os.makedirs(_target(why_dir, "r", "default"))
+        rename, denied = os.rename, []
+
+        def held(src, dst):
+            if not denied:
+                denied.append(src)
+                e = PermissionError(13, "Access is denied")
+                e.winerror = 5
+                raise e
+            rename(src, dst)
+        with mock.patch.object(view.os, "rename", held):
+            view.mirror_run(why_dir, "default", "r", None)
+        self.assertEqual((os.listdir(why_dir), len(denied)), ([], 1))
+
     def test_mirror_folders_are_unique_per_tenant_and_run_id(self):
         names = {os.path.basename(_target("/w", rid, tenant)) for rid, tenant in (
             ("victim_run", "default"), ("victim:run", "default"), ("victim_run", "other"),
