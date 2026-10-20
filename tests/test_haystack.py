@@ -347,12 +347,13 @@ class Said(unittest.TestCase):
         r = ts.vault(run())
         self.assertEqual(self.answer(r), "done")
         (f,) = ts.recorded(r)
-        decided = [c.args[0] for c in r.decide.call_args_list]
-        self.assertEqual(decided[0], "call-1")
-        self.assertTrue(decided[1].startswith("haystack-"))   # Tracekit's id for the call that had none
-        self.assertEqual([t["id"] for t in f["tool_uses"]], decided)
+        ids = [t["id"] for t in f["tool_uses"]]
+        self.assertEqual(ids[0], "call-1")
+        self.assertTrue(ids[1].startswith("haystack-"))   # Tracekit's id for the call that had none
+        # the two calls run concurrently, so they are decided in either order
+        self.assertEqual(sorted(c.args[0] for c in r.decide.call_args_list), sorted(ids))
         self.assertEqual(ts.segments(f), [("reasoning", "summary", "the user wants both closed", []),
-                                          ("text", "full", "Closing ACC-9.", decided)])
+                                          ("text", "full", "Closing ACC-9.", ids)])
         self.assertEqual((f["model"], f["body"]["output"][0]["encrypted_content"]), ("m-1", "ENC"))
 
     def test_without_the_vault_only_the_commitment(self):
