@@ -1,7 +1,7 @@
 name: Nightly evals
 # The slow and machine-bound evals (docs/evaluation.md): E2 and E14 in full, E9 and E16 on Postgres, E22 through all
-# three verifiers, E7 at a million events. Each eval's own exit code is the gate. A failure opens one issue (label
-# nightly-evals) until it is closed.
+# three verifiers, E7 at a million events. Each eval's own exit code is the gate; a failed scheduled run is shown in
+# Actions and GitHub notifies the workflow's owner.
 on:
   schedule:
     - cron: "41 3 * * *"
