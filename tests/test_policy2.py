@@ -351,7 +351,8 @@ class Engines(unittest.TestCase):
 
     def test_the_shell_parse_is_not_charged_to_the_fallback_time(self):
         """The fallback's time started before the shell parse: on a slow CPU, 64 KiB of one-word lines (0.4 s to parse
-        on a laptop) spent it before the first match and denied, marked nondeterministic."""
+        on a laptop) spent it before the first match and denied, marked nondeterministic. The parse is bounded by the
+        64 KiB input, not by this deadline."""
         e = Engine({"tools": {"Bash": "shell"}, "flag": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
         parse = engine._shell
         with mock.patch.object(engine, "REGEX_TIMEOUT_S", 0.2), \

@@ -453,13 +453,15 @@ def _of_a_thing(tokens, i):
     main"; not the whole project: "to the code", "in this repo") or another word of PICKS ("that break the API",
     "beyond what the fix needs", "for the sake of style"); not how many or when ("of any kind", "under any
     circumstances", "in the meantime", "to any file", "for now")."""
+    while tokens[i:i + 1] == ["directly"]:   # "directly on main": what follows says which
+        i += 1
     t, after = tokens[i:i + 1], tokens[i + 1:i + 4]
-    if t == ["directly"]:   # "directly on main": what follows says which
-        return _of_a_thing(tokens, i + 1)
     if t and t[0] in PICKS or t == ["for"] and after[:2] == ["the", "sake"]:
         return True
     return bool(set(t) & (WHERE | {"to", "on", "onto"})) and after[:1] != ["any"] \
-        and after[:2] != ["the", "meantime"] and not set(after) & (PROJECT | {"own", "machine", "computer"})
+        and after[:2] != ["the", "meantime"] and not set(after) & PROJECT \
+        and not (t == ["on"] and after[:2] in (["your", "own"], ["my", "own"], ["this", "machine"], ["my", "machine"],
+                                                 ["my", "computer"], ["this", "computer"], ["your", "computer"]))
 
 
 def _else(tokens):

@@ -309,12 +309,18 @@ class Grammar(unittest.TestCase):
                      "Don't make any changes which would slow down the parser.",
                      "Don't make any changes for the sake of style.", "Don't make any edits that touch the schema.",
                      # delta review D-L7: a scope, not src/ kept away
-                     "Don't make any changes outside src/.", "Don't touch anything outside src/."):
+                     "Don't make any changes outside src/.", "Don't touch anything outside src/.",
+                     # final review M1: "machine", "own", "computer" only in "on your own", "on this machine"
+                     "Don't make any changes to the machine learning pipeline.",
+                     "Don't make any changes in my own module.", "Don't make any changes in the computer vision module.",
+                     "Don't make any changes to your own tests."):
             with self.subTest(said):
                 self.assertEqual(constraints.extract(f"Fix the bug in src/pager.py. {said}"), [])
                 self.assertEqual(replay_one(f"Fix the bug in src/pager.py. {said}", "Edit", {
                     "file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}), (False, None))
         self.assertEqual(constraints.extract("Investigate the crash. Don't make any changes."), [("read_only", None)])
+        self.assertEqual(constraints.extract("Don't make any changes " + "directly " * 1200 + "please."),
+                         [("read_only", None)])   # final review L2: no recursion per word
         for said in ("Don't make any changes of any kind.", "Don't make any changes in the meantime.",
                      "Don't make any changes under any circumstances.", "Don't make any edits to any file.",
                      "Don't make any changes for now.", "Don't make any changes for the time being.",
