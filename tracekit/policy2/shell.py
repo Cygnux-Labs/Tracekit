@@ -24,9 +24,10 @@ class ParseError(ValueError):
 
 
 MAX_DEPTH = 32
-MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings and the list each process call in
-                     # interpreter code reads included: 4 × the largest subject, so a worst-case command costs a
-                     # fraction of a second of the signer (the parser holds the GIL)
+MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings, the list each process call in
+                     # interpreter code reads and the words each wrapper level copies included: 4 × the largest
+                     # subject, so a worst-case command costs a fraction of a second of the signer (the parser holds
+                     # the GIL)
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "rbash", "mksh", "ksh93", "yash", "posh", "lksh", "oksh"}
 # shells whose language the parser doesn't read: the commands they get on their line or from stdin are opaque
 FOREIGN_SHELLS = {"fish", "csh", "tcsh", "pwsh", "powershell", "nu", "xonsh", "elvish"}
@@ -113,9 +114,9 @@ _SED_ADDR = r"(?:^|[;\n{}])[^\S\n]*(?:(?:[0-9$,~+!]|/(?:\\.|[^/\\\n]){0,200}/)[^
 _SED_E = re.compile(_SED_ADDR + r"e([^\n]*)")
 _SED_S_E = re.compile(_SED_ADDR + r"s([^\\\n])(?:\\.|(?!\1).){0,200}\1(?:\\.|(?!\1).){0,200}\1[^;\n}]{0,20}e")
 _STR = re.compile(r"""(['"])((?:\\.|(?!\1)[^\\\n])*)\1""")
-# the end of a `[...]` argv list: the first `]` that isn't inside a string literal (a string is consumed whole, so a
-# `]` in one is skipped); linear, since literals of the same quote can't overlap
-_LIST_END = re.compile(r"""(['"])(?:\\.|(?!\1)[^\\\n])*\1|\]""")
+# in a `[...]` argv list, the next string literal or the list's end: the first `]` outside a literal (a literal is
+# consumed whole, so a `]` in one is skipped); a quote whose literal never closes is charged for the line it read
+_LIST_NEXT = re.compile(r"""['"\]]""")
 _TICK = re.compile(r"`([^`]*)`")
 
 
@@ -545,7 +546,7 @@ class _Parser:
                 continue
             if not words and raw == text and text in ("case", "function", "coproc"):
                 raise ParseError(f"{text} is not supported")
-            if not words and _ASSIGN.match(self.s, start):
+            if not words and _ASSIGN.match(self.s, start, self.i):   # within the word, as bash reads it
                 self.ctx["refs"].append(text)
                 continue
             words.append(text)
@@ -624,6 +625,7 @@ class _Parser:
                 if name == "xargs":
                     repl = _xargs_replace(args[:len(args) - len(inner)])
                 argv, via, unreadable = inner, via + [name], unreadable[len(argv) - len(inner):]
+                self.charge(len(argv))   # each wrapper level copies the words after it
                 continue
             elif name in SHELLS:
                 mode, script = _shell_mode(args)
@@ -668,11 +670,17 @@ class _Parser:
                 continue   # Python's exec runs Python, not a shell
             i = m.end()
             if code.startswith("[", i):
-                end = next((e for e in _LIST_END.finditer(code, i + 1) if e.group() == "]"), None)
-                j = end.start() if end else -1
-                self.charge((len(code) if j < 0 else j) - i)   # calls whose lists overlap read the same text again
-                argv = [body for _, body in _STR.findall(code, i, j)] if j >= 0 else []
-                if argv:
+                argv, k = [], i + 1
+                while (end := _LIST_NEXT.search(code, k)) and end.group() != "]":
+                    if lit := _STR.match(code, end.start()):
+                        argv.append(lit.group(2))
+                        k = lit.end()
+                    else:   # a quote that doesn't close: the match read to the end of its line
+                        nl = code.find("\n", end.start())
+                        self.charge((len(code) if nl < 0 else nl) - end.start())
+                        k = end.start() + 1
+                self.charge((end.start() if end else len(code)) - i)   # overlapping lists read the same text again
+                if end and argv:
                     self.emit(argv, pid, via)
             elif lit := _STR.match(code, i):
                 self.nested(lit.group(2), via)

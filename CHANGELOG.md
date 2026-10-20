@@ -2,6 +2,18 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.4.1 (2026-10-21) — shell parser hardening
+
+A patch for 1.4 that finishes the shell parser hardening 1.4.0 began. Bundles are unchanged.
+
+### Security
+- **Shell parser hardening** (versions before 1.4.1): in a program run by an interpreter (`python3 -c`, `node -e` and
+  the like), a process call's argument list full of quotes that never close made one policy decision take up to 40
+  seconds, stalling the signer. Each such quote is now charged to the parser's work budget for the text it reads, so
+  past the budget the call fails closed (`TK-SHELL-PARSE`, as `on_parse_error` says). The words a wrapper (`env`,
+  `sudo`, `timeout`, …) passes on now count toward the same budget, and a variable assignment is read within its own
+  word, as bash reads it. No other command decides differently. Upgrade the signer.
+
 ## 1.4.0 (2026-10-20) — sandboxes, and what was asked, said and done
 
 Tracekit now works with the sandbox an agent runs in (#308): it holds Claude Code's and Gemini CLI's requests to run a

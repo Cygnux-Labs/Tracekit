@@ -546,7 +546,6 @@ class TestCommand(unittest.TestCase):
         imp = sensor.Import(types.SimpleNamespace(observe_effect=lambda req: None), "tetragon", RUNS)
         self.assertEqual(sensor.run(imp, lines()), 1)
 
-    @unittest.skipIf(os.name == "nt", "Windows refuses to rename a log the follower holds open")
     def test_follow_reads_across_rotation(self):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
@@ -560,7 +559,7 @@ class TestCommand(unittest.TestCase):
             if not steps:
                 raise InterruptedError
             steps.pop(0)()
-        got, f = [], open(path, "rb")
+        got, f = [], sensor.open_rotating_log(path)
         self.addCleanup(f.close)
         with mock.patch.object(sensor.time, "sleep", sleep):
             try:
@@ -578,7 +577,7 @@ class TestCommand(unittest.TestCase):
 
     def follow(self, path, steps, stat_hook=lambda: None):
         """_follow's lines while `steps` run, one at each of its sleeps; `stat_hook` runs before each of its stats."""
-        got, f, stat = [], open(path, "rb"), os.stat
+        got, f, stat = [], sensor.open_rotating_log(path), os.stat
         self.addCleanup(f.close)
 
         def sleep(_):
@@ -594,7 +593,6 @@ class TestCommand(unittest.TestCase):
                 pass
         return got
 
-    @unittest.skipIf(os.name == "nt", "Windows refuses to rename a log the follower holds open")
     def test_a_line_written_to_the_old_file_as_it_rotates_is_read(self):
         path, armed = self.log("tetragon.log"), []
 
