@@ -361,7 +361,7 @@ set scored on the earlier checks):
 | F1 | pool v1 (development) | 100% | 100% (38%) | 100% | 100% | 100% | 100% | 100% |
 | F1 | pool v2 (development) | 100% | 100% (0%) | 100% | 100% | 100% | 100% | 100% |
 | F1c | tuned | 100% (79%) | 100% (42%) | 100% (58%) | 100% (79%) | 100% (50%) | 100% (71%) | 100% (67%) |
-| F1c | pool v1 (development) | 75% (33%) | 96% (79%) | 88% (25%) | 75% (46%) | 79% (33%) | 83% (33%) | 83% (13%) |
+| F1c | pool v1 (development) | 54% (33%) | 83% (79%) | 83% (25%) | 67% (46%) | 71% (33%) | 79% (33%) | 62% (13%) |
 | F1c | pool v2 (development) | 96% (75%) | 88% (38%) | 92% (46%) | 92% (42%) | 96% (29%) | 92% (33%) | 96% (42%) |
 | F1o | all three | 100% | 100% | 100% | 100% | 100% | 100% | 100% |
 
@@ -376,9 +376,11 @@ set scored on the earlier checks):
   requests that state no constraint; 9 of pool v1's 14 phrasings (4 before) and 11 of pool v2's 12 (4 before). A
   live constraint held the F1c edit for approval whenever the grammar read a named-file prohibition: in 54-83% of pool
   v1 sessions and 88-96% of pool v2 sessions by cover (13-46% and 25-75% before); in 67-88% of tuned sessions, since a
-  scope ("only change T") is an analysis finding only, never a live hold. Since round 3 a prohibition the grammar
-  can't read no longer counts its file as asked, so TK-X202 finds those edits: F1c detection on pool v1 went from
-  54-92% to 75-96% by cover.
+  scope ("only change T") is an analysis finding only, never a live hold. A prohibition the grammar can't read
+  leaves its file named unless its negation governs a change of the file ("nobody should ever edit X"): round 3
+  dropped the file under any negation, which found more of pool v1's F1c edits (75-96% by cover) but flagged honest
+  requests about what a file does ("make sure uploader.py never sends the token"); since round 4 pool v1 is back at
+  54-83%.
 - No false alarm of TK-X201, TK-X203, TK-X204 or TK-X208 on the honest calls of any set (1,812 each; 1,809 on pool
   v2, whose message and final steps make no call). TK-X202 flagged 5 pool v1 and 4 pool v2 hard negatives (edits whose
   file the request never named, as before the fixes), and no honest call was held live.
@@ -420,7 +422,7 @@ round-2 fixes in brackets; before TK-X211, F2 and F5 were 0-38% and F3 4-100%):
 | F2 | pool v2 | 83% (83%) | 83% (83%) | 92% (92%) | 100% (100%) | 79% (79%) |
 | F3 | tuned | 100% (83%) | 38% (38%) | 79% (79%) | 100% (100%) | 100% (83%) |
 | F3 | pool v1 | 100% (42%) | 83% (38%) | 67% (4%) | 100% (100%) | 100% (33%) |
-| F3 | pool v2 | 100% (75%) | 46% (42%) | 100% (12%) | 100% (100%) | 100% (62%) |
+| F3 | pool v2 | 100% (75%) | 42% (42%) | 100% (12%) | 100% (100%) | 100% (62%) |
 | F5 | tuned | 96% (96%) | 100% (96%) | 83% (75%) | 100% (100%) | 96% (96%) |
 | F5 | pool v1 | 38% (4%) | 17% (17%) | 8% (0%) | 100% (100%) | 33% (4%) |
 | F5 | pool v2 | 100% (96%) | 88% (88%) | 100% (83%) | 100% (100%) | 100% (83%) |

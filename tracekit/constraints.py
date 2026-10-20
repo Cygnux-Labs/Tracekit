@@ -293,14 +293,19 @@ def _conditions(tokens):
     (a condition word with PERSON and GO_AHEAD in the four words after it: "before I review", "without asking me
     first"), which keeps the constraint."""
     out, seen = [False] * (len(tokens) + 1), False
-    mine = next((k for k, t in enumerate(tokens) if (t in CONDITIONAL or t in WHILE)
-                 and set(tokens[k + 1:k + 5]) & PERSON and set(tokens[k + 1:k + 5]) & GO_AHEAD), len(tokens))
-    for i in range(min(mine, len(tokens)) - 1, -1, -1):
+    for i in range(_mine(tokens) - 1, -1, -1):
         out[i] = seen
         nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
         seen = seen or tokens[i] in CONDITIONAL or tokens[i] in WHILE and nxt not in YOU and not (
             tokens[i] == "while" and nxt.endswith("ing"))
     return out
+
+
+def _mine(tokens):
+    """The index of the clause's condition on the person's own go-ahead (a condition word with PERSON and GO_AHEAD in
+    the four words after it: "before I review", "without asking me first"), or len(tokens)."""
+    return next((k for k, t in enumerate(tokens) if (t in CONDITIONAL or t in WHILE)
+                 and set(tokens[k + 1:k + 5]) & PERSON and set(tokens[k + 1:k + 5]) & GO_AHEAD), len(tokens))
 
 
 def _asking(tokens, n):
@@ -328,6 +333,23 @@ def _negating(tokens):
     return any((t in NEGATIONS or t in ("no", "nothing", "nobody", "none", "neither", "nor"))
                and not set(tokens[k + 1:k + 3]) & UNNEGATE
                for k, t in enumerate(tokens))
+
+
+def _prohibited(tokens, i):
+    """Whether a negation governs a change of the file at tokens[i]: a change word tied to it with a negation of
+    SAID_NEG before ("don't touch X", "nobody should ever edit X"; not "don't change the signature in X": _where), or
+    after it a negation and, past filler words, a participle or a change word that ends the clause ("X must not be
+    edited", "X should never change"; not "X never writes the token", "X must not crash")."""
+    c = _tied(tokens, i)
+    if c is not None and not _where(tokens, c, i) and SAID_NEG & set(tokens[max(0, c - WINDOW):c]):
+        return True
+    for k in range(i + 1, min(len(tokens), i + 1 + WINDOW)):
+        if tokens[k] in SAID_NEG or tokens[k].endswith("n't"):
+            m = _first(tokens, k, len(tokens))
+            return m < len(tokens) and (tokens[m] in PARTICIPLES or tokens[m] in VERBS and m + 1 == len(tokens))
+        if tokens[k] not in FILLER:
+            return False
+    return False
 
 
 def _phrase(tokens, k, phrases):
@@ -587,9 +609,10 @@ def extract(text, read=None):
     """The constraints `text` states (or its _read(), `read`): [(kind, object or None)], each once, in order. "Don't
     change anything else" keeps the text to the files it names (only_change each; nothing when it names none)."""
     read = _read(text) if read is None else read
-    asked, prev = {}, ()   # what a clause asks for, not negated -> the last such clause: a file it changes (_said;
-    #                        "it" for the file named before: "X is frozen in production, but you can edit it locally"),
-    #                        a LIFT word
+    # what a clause asks for, not negated -> the last such clause: a file it changes (_said), a LIFT word; by "it" or
+    # "there" for the file named before ("X is frozen in production, but you can edit it locally"), apart: that lifts
+    # no constraint on the person's own go-ahead ("never touch X without asking me first. Change the timeout there")
+    asked, by_it, prev = {}, {}, ()
     for j, (tokens, _, _) in enumerate(read if any(found for _, found, _ in read) else ()):
         if tokens[:1] and tokens[0] in SEQUENCE:
             asked["then"] = j
@@ -600,10 +623,11 @@ def extract(text, read=None):
                 asked[t] = j   # not "tell me what you'd change"
         k, before = _referent(tokens, prev)
         if k is not None and _said(tokens, k) == "changed":
-            asked.update(dict.fromkeys(before, j))
+            by_it.update(dict.fromkeys(before, j))
         prev = tokens if any(map(_file, tokens)) else prev
-    out = [c for j, (_, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
-        (c[1],) if c[0] in OBJECT_KINDS else (*LIFT[c[0]], "then") if c[0] == "read_only" else LIFT.get(c[0], ())))]
+    out = [c for j, (tokens, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
+        (c[1],) if c[0] in OBJECT_KINDS else (*LIFT[c[0]], "then") if c[0] == "read_only" else LIFT.get(c[0], ())))
+        and not (c[0] in OBJECT_KINDS and by_it.get(c[1], -1) > j and _mine(tokens) == len(tokens))]
     if ("else", None) in out:
         kept = set().union(*(k for _, _, k in read))
         out = [c for c in out if c[0] != "else"] + [("only_change", norm(t)) for tokens, _, _ in read for t in tokens

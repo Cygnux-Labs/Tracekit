@@ -774,8 +774,9 @@ def asks(text):
 
 
 def _named(objects, words):
-    """Whether `words` (told()) name one of an action's `objects`: a word, or each part of a hyphenated one."""
-    return any(o in words or "-" in o and set(o.split("-")) <= words for o in objects)
+    """Whether `words` (told()) name one of an action's `objects`: a word, or each part of a hyphenated one; a
+    dotfile without its leading dot, as TOKEN reads it (".travis.yml" is told as "travis.yml")."""
+    return any(o.lstrip(".") in words or "-" in o and set(o.lstrip(".").split("-")) <= words for o in objects)
 
 
 # --------------------------------------------------------------------------- the check

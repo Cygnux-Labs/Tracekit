@@ -309,7 +309,7 @@ class StatedConstraint(Base):   # TK-X204
         """Round-3 review: a prohibition the grammar can't read counted its file as asked, so its edit got no finding.
         In a clause with a negation, a file is asked only where a change of it is asked for."""
         for said, path in (("Nobody should ever edit ci/deploy.yml.", "ci/deploy.yml"),
-                           ("Do not let anything happen to the Brewfile.lock.", "Brewfile.lock")):
+                           ("Under no account should anyone modify the Brewfile.lock.", "Brewfile.lock")):
             with self.subTest(said):
                 t = self.task(f"Fix src/pager.py. {said}")
                 tid = t.step("One more small fix.", "Edit", edit(path))
@@ -317,6 +317,44 @@ class StatedConstraint(Base):   # TK-X204
         t = self.task("Fix src/pager.py and don't touch billing.py.")
         tid = t.step("The bound is off by one.", "Edit", edit("src/pager.py"))
         self.assertEqual(checks(self.run_session(t), tid)["TK-X202"], "checked")
+
+    def test_a_go_ahead_condition_isnt_lifted_by_its_own_there_and_a_lifted_file_is_named(self):
+        """Round-4 review: "never touch X without asking me first. Change the timeout there to 30" lifted the
+        constraint with its own "there", so nothing was held, yet the file still read as kept away (TK-X202). A
+        condition only the person can meet is not lifted by the same request's "it" or "there"; a constraint the
+        request does lift leaves its file named."""
+        t = Transcript(CWD)
+        t.prompt("Never touch config/app.yaml without asking me first. Change the timeout there to 30.")
+        tid = t.step("Setting the timeout.", "Edit", edit("config/app.yaml"))
+        t.final("Done.")
+        out = self.run_session(t)
+        held = next(r["event"]["data"]["rule_ids"] for r in self.records if r["event"]["type"] == "policy.decision"
+                    and r["event"]["data"]["tool_use_id"] == tid)
+        self.assertIn("TK-CONSTRAINT", held)
+        self.assertEqual((checks(out, tid)["TK-X204"], checks(out, tid)["TK-X202"]), ("found", "checked"))
+        t = Transcript(CWD)
+        t.prompt("The settings.py file is frozen in production, but you can edit it locally to add the flag.")
+        tid = t.step("Adding the flag.", "Edit", edit("settings.py"))
+        t.final("Done.")
+        out = self.run_session(t)
+        self.assertEqual((checks(out, tid)["TK-X204"], checks(out, tid)["TK-X202"]), ("checked", "checked"))
+
+    def test_a_negation_about_what_the_file_does_still_names_it(self):
+        """Round-4 review: a negated predicate about the file's behaviour ("uploader.py never sends the token") is a
+        request to change that file, not a prohibition: its edit is no TK-X202. Only a negation of a change of the
+        file drops it from what the request names."""
+        for said, path in (("Make sure uploader.py never sends the token.", "uploader.py"),
+                           ("Make cache.py work without network access.", "cache.py"),
+                           ("parser.py should never sleep between retries.", "parser.py"),
+                           ("worker.py must not crash when the queue is empty.", "worker.py"),
+                           ("Ensure client.py doesn't log the password.", "client.py")):
+            with self.subTest(said):
+                t = Transcript(CWD)
+                t.prompt(said)
+                tid = t.step("Making the change.", "Edit", edit(path))
+                t.final("Done, as asked.")
+                out = self.run_session(t)
+                self.assertEqual((checks(out, tid)["TK-X202"], checks(out, tid)["TK-X204"]), ("checked", "checked"))
 
     def test_a_held_call_a_person_approved_is_low_one_the_run_approved_itself_stays_high(self):
         """An approval of a call a live constraint held lifts the constraint for it only from an identity other than
