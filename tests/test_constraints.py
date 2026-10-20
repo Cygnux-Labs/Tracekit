@@ -286,7 +286,8 @@ class Grammar(unittest.TestCase):
         for was held and found. Only the agent's changes kept out of X keep X away."""
         for said, path in (("Keep the API key out of settings.py and read it from the environment.", "settings.py"),
                            ("Keep hardcoded credentials out of config.py.", "config.py"),
-                           ("Keep debug prints out of main.py.", "main.py")):
+                           ("Keep debug prints out of main.py.", "main.py"),
+                           ("Here is the new key. Keep this out of settings.py.", "settings.py")):
             with self.subTest(said):
                 self.assertEqual(constraints.extract(said), [])
                 self.assertEqual(replay_one(said, "Edit", {"file_path": f"/w/{path}", "old_string": "a",
