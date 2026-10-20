@@ -504,8 +504,12 @@ class VaultBody:
                 self.limit = min((self.status().get("content") or {}).get("max_record_bytes", 0), MAX_LINE // 2)
             except SignerUnavailable:
                 return {}
-            except RPCError:   # not granted `status`: no body
+            except RPCError as e:   # not granted `status`: no body
                 self.limit = 0
+                if e.code == "forbidden":
+                    warnings.warn(f"tracekit: the signer refused status ({e.message}): with its content vault on, it "
+                                  "keeps none of the text this process records, only its digest; grant this identity "
+                                  "status in signer.yaml authorize", stacklevel=2)
         if not self.limit or (size or 0) > self.limit:
             return {}
         try:

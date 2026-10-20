@@ -162,7 +162,7 @@ signer:
     gateways: ["k8s_sa:system:serviceaccount:tracekit:tk-gateway", "k8s_sa:system:serviceaccount:tracekit:tk-executor",
                "k8s_sa:system:serviceaccount:tracekit:tk-mcp-gateway"]
     authorize:
-      "k8s_sa:system:serviceaccount:tracekit:tk-gateway": [model_event]
+      "k8s_sa:system:serviceaccount:tracekit:tk-gateway": [model_event, close_run]
       "k8s_sa:system:serviceaccount:tracekit:tk-executor": [decide, complete, approval_request, approval_wait, approval_consume]
       "k8s_sa:system:serviceaccount:tracekit:tk-mcp-gateway": [decide, complete, approval_request, approval_wait, approval_consume, observe]
 ```

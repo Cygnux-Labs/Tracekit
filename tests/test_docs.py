@@ -110,6 +110,12 @@ class DocumentedGrants(unittest.TestCase):
                 s.call(agent, "complete", {"request_id": "r3", **ids, "stream": "s", "client_seq": 1, "status": "ok",
                                            "tool_call_id": "t1", "decision_id": d["decision_id"],
                                            "args_digest": event_hash({"tool": "Read", "args": call["args"]})})
+                s.call(agent, "status", {})   # the content vault's limit, for what the model said
+                if who.startswith("token:"):   # a coding-agent hook's identity on a remote signer: each prompt
+                    s.call(agent, "constraint_add", {"request_id": "r5", **ids, "constraint": {"kind": "no_push"}})
+                    s.call(agent, "observe", {"request_id": "r6", **ids, "stream": "s", "client_seq": 2,
+                                              "source": "claude-code:UserPromptSubmit", "trust": "trusted",
+                                              "value": "don't push"})
                 s.call(agent, "close_run", {"request_id": "r4", **ids})
 
 

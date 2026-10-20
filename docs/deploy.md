@@ -12,7 +12,7 @@ can prove.
 | [Laptop system mode](#laptop-system-mode) | Linux; macOS experimental | `/run/tracekit-signer/signer.sock` | root and the signer's OS user | `separate-user` |
 | [Container sidecar](#container-and-kubernetes-sidecar) | Linux containers, Kubernetes 1.29+ | a socket in a shared directory | the signer's uid and whoever runs the node | `separate-user` |
 | [Central](#central) | Linux containers | HTTPS (`k8s_sa`, `mtls` or `token` identity) | whoever administers the signer's host and storage | `remote` |
-| [Compose](#compose) | Docker Compose | HTTPS on a private network | whoever administers the Docker host | `remote` |
+| [Compose by hand, over HTTPS](#compose) | Docker Compose | HTTPS on a private network | whoever administers the Docker host | `remote` |
 
 What each mode defends, and against whom: [threat model: laptop](threat-model-laptop.md) (attackers A1–A4) and
 [threat model: server](threat-model-server.md) (adversaries S1–S6). How to read the report a bundle gets:
@@ -161,7 +161,8 @@ http:
     ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 tenants: {"k8s_sa:system:serviceaccount:acme:*": acme}
 authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, approval_consume, complete, close_run,
-                                                    model_event, approval_request, approval_wait]}
+                                                    model_event, approval_request, approval_wait, status]}
+# + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
 metrics: {listen: 0.0.0.0:9464, allow_remote: true}
 ```
 
@@ -205,7 +206,8 @@ http:
   tokens: /var/lib/tracekit-signer/tokens.json
 tenants: {"token:*": default}
 authorize: {"token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
-                       state_write, status]}
+                       state_write, status, observe, constraint_add]}   # observe, constraint_add: the coding-agent hooks
+# + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
 metrics: {listen: 127.0.0.1:9464}
 ```
 
@@ -302,7 +304,7 @@ as it needs nothing the schema lacks:
 - **1.4** speaks signer protocol 19. A 1.4 signer serves clients and gateways from protocol 15 up (1.2 and 1.3
   included), but a 1.4 client or gateway refuses a 1.3 signer: upgrade the signer first. A bundle whose records use
   1.4's additions (live constraints, signed findings that cite records, kernel sensor or OpenShell effects, `said_only`
-  model messages, the `ext` slot), and a run exported in parts (past 64 MiB of records), needs a 1.4 verifier; an older one reports it `UNVERIFIABLE (needs tracekit >=
+  model messages, the `ext` slot), or that holds a run exported in parts (past 64 MiB of records), needs a 1.4 verifier; an older one reports it `UNVERIFIABLE (needs tracekit >=
   1.4.0)`. A same-user dev signer from 1.3 is replaced by the first 1.4 client that finds it. The store's schema is
   unchanged.
 

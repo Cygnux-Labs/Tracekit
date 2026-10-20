@@ -80,16 +80,17 @@ paste or an image Claude Code writes as a placeholder (`[Pasted text #1 +40 line
 holds the rest of the line, whose full text is read; a hook prompt with no line (one the tailer missed) is read on its
 own. Hooks before this release record no prompt, and TK-X208 says `no_hook`.
 
-The hook also sends what the prompt says not to do ("don't touch billing.py", "read-only", "don't push", "no network",
-"only change src/pager.py") to the signer as [live constraints](policy-v2.md#live-constraints): a later call that
-breaks one waits for your approval, and the agent reads why on stderr: `[tracekit] waiting for approval apr-…
+The hook also sends what the prompt says not to do ("don't touch billing.py", "read-only", "don't push", "no network")
+to the signer as [live constraints](policy-v2.md#live-constraints): a later call that breaks one waits for your
+approval, and the agent reads why on stderr: `[tracekit] waiting for approval apr-…
 (TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the person (TK-CONSTRAINT)`. Answer it from another terminal as any
 held call: `tracekit approvals list`, then `tracekit approvals approve <id>` (or `reject`). `tracekit view --dev` lists
 the run's constraints at the top of its review. The grammar reads instructions, not descriptions: "add a read-only mode
 to client.py", "don't change the public API of client.py, just fix the timeout bug in it", "don't push to main" and
 "we don't use the network in unit tests" hold nothing. If a run already has the most file constraints the signer
 takes (32: an agent can add its own), a further one is refused, the hook says so at that prompt, and every write of the
-run waits for your approval from then on.
+run waits for your approval from then on. A scope ("only change src/pager.py") is never held: `tracekit analyze --v2`
+checks it after the run (TK-X204).
 
 ### Hooks name their event
 

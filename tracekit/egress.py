@@ -169,7 +169,8 @@ class Observer:
     def flush(self, now=None):
         """Send the totals of every minute that ended before `now` (time.time(); math.inf: all), or a heartbeat with
         none. False when the signer could not be reached (they are sent with the next one). A call the signer refuses
-        is split until each total it refuses is on its own; those are sent again with the next one, never dropped."""
+        is split until each total it refuses is on its own; those are sent again with the next one, and past MAX_REFUSED
+        the oldest are dropped, which it says on stderr."""
         now = time.time() if now is None else now
         with self.lock:
             done = [k for k in self.totals if (k[3] + 1) * 60 <= now]

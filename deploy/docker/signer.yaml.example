@@ -27,6 +27,7 @@ policy: /etc/tracekit/packs/server.yaml      # the server pack; yours: a file th
 #     ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 #   # or mTLS with SPIFFE ids: authenticators: [mtls] and client_ca: {example.org: /etc/tracekit/tls/client-ca.pem}
 # tenants: {"k8s_sa:system:serviceaccount:acme:*": acme}
-# authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait]}
+# authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait, status]}
+#   # + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
 # metrics: {listen: 0.0.0.0:9464, allow_remote: true}   # scraped by Prometheus, for the HPA
 # policy: /etc/tracekit/packs/server.yaml

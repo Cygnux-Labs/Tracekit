@@ -124,7 +124,7 @@ commitment to its name) and holds the limit for the rest of the run.
 | Kind | Holds |
 |---|---|
 | `keep_away` | a call that writes the named file, or under the named directory |
-| `only_change` | a call that writes any other file |
+| `only_change` | a call that writes any other file, when a client adds it; the coding-agent hooks don't, and `tracekit analyze --v2` checks a scope after the run (TK-X204) |
 | `read_only` | any call that writes, commits or installs |
 | `no_push` | a `git push` |
 | `no_network` | an http or browser call, a network command, a package install |
