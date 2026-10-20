@@ -27,7 +27,8 @@ Both verifiers' UNVERIFIABLE line sends a person whose verifier is too old for a
    and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("This is
    <version>"), and add a dated entry to `CHANGELOG.md`.
 2. `make check` and `make release-dry-run` locally; CI must be green on `main`.
-3. Tag and push: `git tag v<version> && git push origin v<version>`. The workflow refuses a tag that matches neither version.
+3. Tag and push: `git tag v<version> && git push origin v<version>`. The workflow refuses a tag other than `v` +
+   `__version__`, and a `package.json` version that isn't its npm form.
 4. The workflow runs `release` (build, image push, attestations), then `pypi`, then `npm` with no approval step: since
    2026-10-17 the environments have no required reviewers, so pushing a `v*` tag publishes. Add reviewers back
    (one-time setup, step 3) to require a second person.

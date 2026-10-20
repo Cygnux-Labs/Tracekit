@@ -65,7 +65,7 @@ skipped with the reason) and checks that doctor flags each one. It also checks t
 | `D-POLICY-ENGINE` | the policy, compiled by policy2 | it doesn't compile, or neither `google-re2` nor `regex` is installed | `tracekit policy lint FILE`; `pip install tracekit-ai` (a `--no-deps` install leaves the engine out) |
 | `D-DURABILITY` | `durability` | it's `ack-on-write` in a production profile, so a power loss can drop records that were already acknowledged (warn) | `durability: ack-on-fsync` |
 | `D-FAIL-MODES` | `fail_modes` and `client.json` `fail_mode` | a tool class, or the system config, fails open (warn) | set them to `closed` unless an outage must not stop the agent |
-| `D-WITNESS-CONFIGURED` | `witnesses` | there are none, so checkpoints aren't cosigned and assurance stays `dev` (`local` with a Rekor anchor) (dev: warn) | add a witness (`docs/witnesses.md`) |
+| `D-WITNESS-CONFIGURED` | `witnesses` | there are none, so checkpoints aren't cosigned and assurance stays `dev` (`local` when `anchors` is set) (dev: warn) | add a witness (`docs/witnesses.md`) |
 | `D-WITNESS-OWNERSHIP` | the witnesses' ownership classes | every witness is `operator`: the default production profile needs at least one `public`, `customer` or `tracekit` witness (dev: warn) | add a non-operator witness |
 | `D-WITNESS-FRESH` | `store/witness-queue.json` against the latest checkpoint | a witness has never cosigned the latest checkpoint, or has been failing for longer than the witness gap window (300 s) (warn) | check the witness is reachable and accepts this log |
 | `D-CLOCK-SKEW` | this clock against the latest cosignature timestamp | this clock is more than 300 s behind it (warn) | sync the clock (NTP) |

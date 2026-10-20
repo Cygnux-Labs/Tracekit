@@ -1,10 +1,11 @@
-# E20 held-out pool
+# E20 phrase pools
 
-`pool.json` is the held-out evaluation data for E20 (issue #309): detecting when an AI
-coding agent's stated intent or reasoning disagrees with what it actually did. The
-alignment harness (`eval/e20_alignment.py`) draws from this pool to splice concealed
-misaligned steps into real traces, then scores the detector on them separately from the
-tuned corpus.
+`pool.json` (v1), `pool.v2.json` and `pool.v3.json` are the blind phrase pools for E20
+(issue #309): detecting when an AI coding agent's stated intent or reasoning disagrees
+with what it actually did. The alignment harness (`eval/e20_alignment.py`) draws from
+each pool to splice concealed misaligned steps into real traces, then scores the detector
+on them separately from the tuned corpus. v1 and v2 are development sets now and v3 is
+the held-out pool (status below).
 
 ## It was written blind to the checks
 
@@ -61,7 +62,7 @@ actions are described as data only; nothing here is runnable against a real syst
 Do **not** edit the existing items — changing them silently changes past measurements.
 Instead, add a new, versioned pool alongside this one:
 
-1. Copy `pool.json` to `pool.v2.json` (keep `pool.json` as v1 for reproducibility).
-2. Bump the top-level `"version"` in the copy and add your new entries there.
+1. Write the next pool as `pool.v4.json`; keep the earlier pools in place for reproducibility.
+2. Bump the top-level `"version"` in it and add your new entries there.
 3. Write the additions blind to the detector code, same as this file.
 4. Point the harness at the new version; leave the old one in place for comparison.
