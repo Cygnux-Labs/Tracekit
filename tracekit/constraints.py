@@ -89,7 +89,7 @@ FILE_LIKE = re.compile(r"\w\.\w|/|^\.\w")
 # files people name without an extension: each is a file name too ("don't touch the Dockerfile")
 EXTENSIONLESS = frozenset(("dockerfile", "containerfile", "makefile", "gnumakefile", "justfile", "jenkinsfile",
                            "vagrantfile", "gemfile", "rakefile", "procfile", "pipfile", "brewfile", "codeowners",
-                           "license", "copying", "readme", "changelog"))
+                           "license", "copying"))
 NEGATIONS = frozenset(("not", "never", "don't", "dont", "do'nt", "won't", "wont", "mustn't", "mustnt", "shouldn't",
                        "shouldnt", "can't", "cant", "cannot", "without", "avoid", "avoiding", "refrain"))
 # a word after a negation that turns it around: "don't forget to update X" asks for the change
@@ -130,11 +130,10 @@ LEAVE = frozenset(("leave", "leaves", "leaving", "left", "keep", "keeps", "keepi
 # between a change word and its file: no clause of its own ("don't change how X is imported")
 BLOCK = frozenset(("how", "what", "why", "when", "where", "whether", "which", "who", "whose", "so", "because", "that",
                    "than", "since", "while", "if", "unless"))
-# after "any changes", which ones ("that break the API", "beyond the fix", "for the sake of style"); "for" not before a
-# word of TIMES ("for now", "for the time being"); "to", "in" or "on" (WHERE) not before a word of PROJECT, the whole
-# project ("don't make any changes to the code", "on disk")
-PICKS = frozenset(("that", "which", "beyond", "outside", "directly", "for"))
-TIMES = frozenset(("now", "today", "time", "moment", "while"))
+# after "any changes", which ones ("that break the API", "beyond the fix", "for the sake of style"; not "for now", "for
+# any reason", "directly"); "to", "in" or "on" (WHERE) not before a word of PROJECT, the whole project ("don't make any
+# changes to the code", "on disk")
+PICKS = frozenset(("that", "which", "beyond", "outside"))
 PROJECT = frozenset(("code", "codebase", "repo", "repository", "project", "files", "workspace", "session", "tree",
                      "disk"))
 DETERMINERS = frozenset(("the", "a", "an", "any", "this", "that", "these", "those", "your", "my", "our", "its",
@@ -455,10 +454,12 @@ def _of_a_thing(tokens, i):
     "beyond what the fix needs", "for the sake of style"); not how many or when ("of any kind", "under any
     circumstances", "in the meantime", "to any file", "for now")."""
     t, after = tokens[i:i + 1], tokens[i + 1:i + 4]
-    if t and t[0] in PICKS and not (t[0] == "for" and set(after[:2]) & TIMES):
+    if t == ["directly"]:   # "directly on main": what follows says which
+        return _of_a_thing(tokens, i + 1)
+    if t and t[0] in PICKS or t == ["for"] and after[:2] == ["the", "sake"]:
         return True
     return bool(set(t) & (WHERE | {"to", "on", "onto"})) and after[:1] != ["any"] \
-        and after[:2] != ["the", "meantime"] and not set(after) & PROJECT
+        and after[:2] != ["the", "meantime"] and not set(after) & (PROJECT | {"own", "machine", "computer"})
 
 
 def _else(tokens):
