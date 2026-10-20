@@ -113,8 +113,9 @@ identity the verifier pins to get findings it reads as independent.
 is held live by the signer ([live constraints](policy.md#live-constraints)) and checked again afterwards, together
 with the model's own promises.
 
-**Where it stops.** The checks read names and order, not meaning. A file named innocently in the model's text clears
-TK-X202, and the constraint grammar reads 4 of the 12 ways of saying "don't touch X" in E20's held-out pool v2
+**Where it stops.** The checks read names and order, not meaning. A file the model says it changes clears
+TK-X202 whatever reason it gives, and the constraint grammar misses phrasings it wasn't written for: on E20's blind
+pool v3 a live constraint held 67-92% of the edits made after a "don't touch X"
 ([evaluation](../evaluation.md#e20-intent-reasoning-and-action-checks),
 [limits](../limits.md#intent-reasoning-and-action-checks)). Commands, every rule and the `--json` shape:
 [findings](../findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2).

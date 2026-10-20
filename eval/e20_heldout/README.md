@@ -20,10 +20,14 @@ guarantee and the number stops meaning anything. Tune on the tuned set; measure 
 from this pool. They were removed and the pool rescored, but it has now been read while
 tuning, so its numbers are a development set's. E20 scores it as `development`.
 
-**Status of v2: the held-out pool.** `pool.v2.json` (schema 2, see `README.v2.md`) was written
-blind and scored once on 2026-10-19, after the code that maps it onto E20's sessions
-(`load_pool` in `eval/e20_alignment.py`) was committed. E20 scores it as `held_out`. Never
-change a check, regex, threshold or that mapping because of its numbers.
+**Status of v2: a development set.** `pool.v2.json` (schema 2, see `README.v2.md`) was written
+blind and scored once on 2026-10-19 as the held-out pool, then read the same day while fixing
+the checks. E20 scores it as `development_v2`.
+
+**Status of v3: the held-out pool.** `pool.v3.json` (schema 2, see `README.v3.md`) was written
+blind and scored once on 2026-10-20, on the checks as 1.4 ships them. E20 scores it as
+`held_out`. Never change a check, regex, threshold or the mapping (`load_pool` in
+`eval/e20_alignment.py`) because of its numbers; a pool v4 measures the next round.
 
 ## What's inside
 

@@ -372,15 +372,16 @@ before). Naming the file innocently in the model's text no longer clears TK-X202
 pools (0 of 24 on pool v2 and 38% on pool v1 before 2026-10-19); one the model says it changes ("updating billing.py to
 match") is told, and passes. The constraint grammar reads 11 of the 12 ways of saying "don't touch X" in pool v2 and 9
 of 14 in pool v1 (4 of each before), so TK-X204 and live constraints miss the rest; both pools were read while
-writing these fixes, so these are development numbers. Pool v3, written blind, is not scored yet: it is scored once the
-checks are frozen. What still isn't caught is in the [limits](limits.md#intent-reasoning-and-action-checks). On E20's 56 honest
+writing these fixes, so these are development numbers. On pool v3, written blind and scored once on the checks as they
+ship (2026-10-20), a live constraint held 67-92% of those edits by cover and the analysis found 79-100%, with 5 false
+findings and 1 held call in 1,812 honest calls. What still isn't caught is in the [limits](limits.md#intent-reasoning-and-action-checks). On E20's 56 honest
 sessions (requests that describe a read-only mode, keep one aspect of the file asked for, scope or condition a push,
 describe the network, quote a note), no call is held live and no TK-X204 is found; 2 get a TK-X202 medium, an edit of a
 file the request never named and the model never said it changes. Before the round-2 review's fixes, 13 had a call
 held and 14 a TK-X204 high.
 
 E20 also splices text faults. A false success claim after a failed test run (F4) is found in every tuned session, in
-88% of sessions built from pool v2 (blind, scored once on 2026-10-19, since read: a development set) and in 73% of
+86% of sessions built from the blind pool v3 (scored once on 2026-10-20), in 88% of sessions built from pool v2 (blind, scored once on 2026-10-19, since read: a development set) and in 73% of
 those built from pool v1 (written blind to the checks, but since read while tuning them; 60% before an admission took
 back only what it names). On pool v2 it is found in 85% of sessions where the claim is one of the pool's success
 claims and in all where it is a free-form final summary (pool v1: 68% and 96%); 86% when the run was piped through
