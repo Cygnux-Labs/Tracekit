@@ -9,23 +9,17 @@ A release is one tag. From it the release workflow builds the PyPI files, the np
 image, attests each one (SLSA build provenance through GitHub artifact attestations), publishes them, and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. Users check a download with
 `scripts/release/verify-release.sh`.
 
-## Release blockers for 1.4.0
-
-Both verifiers' UNVERIFIABLE line sends a person whose verifier is too old for a bundle to two places, and on
-2026-10-19 neither works. Don't tag 1.4.0 until both do, or a 1.4 bundle's upgrade line is a dead end:
-
-- **The browser verifier on Pages**: https://cygnux-labs.github.io/Tracekit/verify/ returns 404. Do one-time setup step
-  4, and procedure step 8 for the release, then open the URL.
-- **`npx -y @cygnuxlabs/tracekit@latest`** resolves to 1.3.0 (`npm view @cygnuxlabs/tracekit dist-tags`), which prints
-  UNVERIFIABLE again for a 1.4 bundle. The `npm` job must publish 1.4.0 under `latest`; check the dist-tag after it.
-
 ## Procedure
 
 1. Set the version in `tracekit/__init__.py` (`__version__`), in `sdk/typescript/package.json` (`version` and the
-   four `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`), in `server.json` and
+   four `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`), in `sdk/typescript/src/verify/index.ts`
+   (`VERSION`, which the verifier reports), in `docs/deploy-container.md`'s build example, in `server.json` and
    `plugin/.claude-plugin/plugin.json` (`version`), in both Helm charts (`appVersion` in `deploy/helm/*/Chart.yaml`
    and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("This is
-   <version>"), and add a dated entry to `CHANGELOG.md`.
+   <version>"), and add a dated entry to `CHANGELOG.md`. In `sdk/typescript/package-lock.json` set the root package's
+   `version` (twice) and `optionalDependencies` too, and put back each `node_modules/@cygnuxlabs/tracekit-signer-*`
+   entry as `{"optional": true}`: the last release's locked versions don't satisfy the new ones, so `npm ci` (the
+   release build) fails until they are unlocked; step 5 locks the new ones.
 2. `make check` and `make release-dry-run` locally; CI must be green on `main`.
 3. Tag and push: `git tag v<version> && git push origin v<version>`. The workflow refuses a tag other than `v` +
    `__version__`, and a `package.json` version that isn't its npm form.

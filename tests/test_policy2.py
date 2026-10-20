@@ -792,6 +792,41 @@ class Shell(unittest.TestCase):
             e.decide("Bash", {"command": cmd})
             self.assertLess(time.perf_counter() - start, 0.5)   # ~60 ms on a laptop
 
+    def test_a_quote_that_never_closes_in_a_list_is_charged_for_the_line_it_reads(self):
+        """In a process call's list, each quote of `\\"\\"\\"…` started a literal that read to the end of the line
+        and failed: 64 KiB took 38 s to parse, and was allowed. Each failed literal is now charged for the line it
+        read, so the parse fails closed in milliseconds; 16 KiB keeps the old code's failure to a couple of seconds."""
+        pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        for cmd in ("python3 -c 'run([\"" + '\\"' * 8000 + "])'", "python3 -c 'run([\"" + '\\"' * 8000 + "'",
+                    'python3 -c "run([\'' + "\\'" * 8000 + '])"'):
+            with self.subTest(cmd=cmd[:20]):
+                start = time.perf_counter()
+                with self.assertRaises(shell.ParseError):
+                    shell.parse(cmd)
+                self.assertLess(time.perf_counter() - start, 0.5)   # ~2 ms on a laptop
+                for e in (Engine(pol), Engine(pol, "regex")):
+                    self.assertEqual(e.decide("Bash", {"command": cmd})["rule_ids"], ["TK-SHELL-PARSE"])
+
+    def test_a_list_quote_that_doesnt_close_on_its_line_is_skipped_as_before(self):
+        cmd = "python3 -c 'import subprocess; subprocess.run([  # it\"s\n \"sudo\", \"id\"])'"
+        self.assertEqual(find(cmd, ["sudo", "id"])[0]["via"], ["python3 code"])
+
+    def test_each_wrapper_level_counts_its_words_toward_the_parse_budget(self):
+        """Each wrapper level copies the words after it: 30 `env` and 21 K empty strings emitted 651 K argv words,
+        and three overlapping lists of them in Python code 1.1 M, for every rule to read."""
+        for cmd in ("env " * 30 + '"" ' * 21000,
+                    "python3 -c '" + ('run(["' + '","'.join(["env"] * 30) + '",' + '"",' * 6000) * 3 + "]]]'"):
+            with self.subTest(cmd=cmd[:20]):
+                with self.assertRaises(shell.ParseError):
+                    shell.parse(cmd)
+        self.assertEqual(len(shell.parse("sudo env timeout 5 nice -n 5 ls")), 5)
+
+    def test_an_assignment_is_read_within_its_word(self):
+        """`_ASSIGN` read past the word to the next `]` on the line: `a[ x]=1` made `a[` an assignment, as bash
+        doesn't, and 64 KiB of `a[;` took 0.6 s to parse."""
+        self.assertEqual([c["argv"] for c in shell.parse("a[ x]=1 echo hi")], [["a[", "x]=1", "echo", "hi"]])
+        self.assertEqual([c["argv"] for c in shell.parse("a[x]=1 echo hi")], [["echo", "hi"]])
+
     def test_backslashes_and_brackets_parse_in_linear_time(self):
         for cmd, limit in (("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'", 0.1),
                            ("python3 -c 'import subprocess; subprocess.run([\"" + "\\" * 200 + "])'", 0.1),
