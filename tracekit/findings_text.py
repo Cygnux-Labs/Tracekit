@@ -745,6 +745,8 @@ def told(text):
             if any(_negates(t) for t in ts) or not KEPT_WORDS.isdisjoint(w):
                 continue
             out.update(ts)
+            out.update("." + ts[k + 1] for k in range(len(ts) - 1)   # ".env": a "." in a clause, not an ellipsis's
+                       if ts[k] == "." and ts[k + 1][0].isalnum() and ts[k - 1:k] != ["."])
             out.update(posixpath.basename(t) for t in ts if "/" in t)
             for kind, words in KIND_WORDS.items() if not w.isdisjoint(KIND_ANY) else ():
                 if not (w & words if kind != "install" or w & ADDING else w & words - ADDED):
@@ -775,8 +777,8 @@ def asks(text):
 
 def _named(objects, words):
     """Whether `words` (told()) name one of an action's `objects`: a word, or each part of a hyphenated one; a
-    dotfile without its leading dot, as TOKEN reads it (".travis.yml" is told as "travis.yml")."""
-    return any(o.lstrip(".") in words or "-" in o and set(o.lstrip(".").split("-")) <= words for o in objects)
+    dotfile with its dot (".env", not "env")."""
+    return any(o in words or "-" in o and set(o.split("-")) <= words for o in objects)
 
 
 # --------------------------------------------------------------------------- the check
