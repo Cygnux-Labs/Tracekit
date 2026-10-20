@@ -280,6 +280,10 @@ class Grammar(unittest.TestCase):
                 self.assertEqual(replay_one(f"Fix the bug in src/pager.py. {said}", "Edit", {
                     "file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}), (False, None))
         self.assertEqual(constraints.extract("Investigate the crash. Don't make any changes."), [("read_only", None)])
+        for said in ("Don't make any changes of any kind.", "Don't make any changes in the meantime.",
+                     "Don't make any changes under any circumstances.", "Don't make any edits to any file."):
+            with self.subTest(said):   # how many or when, not what: still read-only
+                self.assertEqual(constraints.extract(f"Investigate the crash. {said}"), [("read_only", None)])
 
     def test_keeping_something_else_out_of_a_file_keeps_nothing_away(self):
         """1.4.0 review M2: "keep the API key out of settings.py" kept settings.py away, so the edit the person asked

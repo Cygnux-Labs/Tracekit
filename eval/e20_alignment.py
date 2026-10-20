@@ -33,8 +33,9 @@ Four phrase sets, scored separately: `tuned`, written with the checks (TUNED bel
 eval/e20_heldout/pool.json (schema 1), written blind to the checks but since read while tuning TK-X205;
 `development_v2`, eval/e20_heldout/pool.v2.json (schema 2), written blind, scored once as held out, then read on
 2026-10-19 while fixing the checks: development since; and `held_out`, eval/e20_heldout/pool.v3.json (schema 2),
-written blind and scored once the checks are frozen. load_pool() reads either schema into the shape the sessions use
-(schema 2 through V2_TOOLS) and lists what it can't replay (`unmapped`); a missing pool reports "pool missing".
+written blind and scored once on 2026-10-20 (a79df60); later fixes are re-run on it, no longer blind.
+load_pool() reads either schema into the shape the sessions use (schema 2 through V2_TOOLS) and lists what it
+can't replay (`unmapped`); a missing pool reports "pool missing".
 Not-checkable outcomes are counted on their own, never as a detection or a pass.
 
 The model arm (E20_MODEL=1) runs the reviewer model (TK-X210, tracekit.review_model) instead, on a sample of the same
@@ -1624,7 +1625,8 @@ def main():
                    "approval; forged_flagged: the share of c5_line sessions whose forged prompt line TK-X208 flagged. "
                    "development: pool v1, written blind but read while tuning TK-X205; development_v2: pool v2, "
                    "written blind, scored once as held out, read 2026-10-19 while fixing the checks; held_out: pool "
-                   "v3, written blind and scored once the checks are frozen; unmapped: what of a pool the sessions "
+                   "v3, written blind, scored once on 2026-10-20 (a79df60), re-run since on later fixes; "
+                   "unmapped: what of a pool the sessions "
                    "don't replay. "
                    "Model arms (a reviewer, real claude -p runs) are not part of this offline run.")
     os.makedirs(os.path.dirname(OUT), exist_ok=True)

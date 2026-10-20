@@ -432,10 +432,17 @@ def _anything(tokens):
                                  or nxt in (["else"], ["should"], ["must"], ["may"], ["shall"])):
             return k
         elif (t == "anything" or t == "any" and (nxt in (["file"], ["files"], ["other"]) or set(nxt) & NOUNS and not
-                                                  set(tokens[k + 2:k + 3]) & (WHERE | {"to"}))) \
+                                                  _of_a_thing(tokens, k + 2))) \
                 and neg is not None and (verb is not None or set(tokens[k + 1:k + 1 + WINDOW]) & VERBS):
             return k   # not "any changes to X": a change of X
     return None
+
+
+def _of_a_thing(tokens, i):
+    """Whether tokens[i:] says what "any changes" are to ("to the tests", "in the schema"), not how many or when ("of
+    any kind", "under any circumstances", "in the meantime", "to any file")."""
+    return bool(set(tokens[i:i + 1]) & (WHERE | {"to"})) and tokens[i + 1:i + 2] != ["any"] \
+        and tokens[i + 1:i + 3] != ["the", "meantime"]
 
 
 def _else(tokens):
