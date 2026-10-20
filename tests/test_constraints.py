@@ -270,6 +270,19 @@ class Grammar(unittest.TestCase):
                 self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", *call), (True, "high"))
         self.assertEqual(constraints.extract("Change the output directory to dist."), [])
 
+    def test_a_folder_word_keeps_the_clauses_files_in_order(self):
+        """1.4.0 review H3: a "<word> folder" was read after the clause's files, so a file after it lost its bound and
+        its constraint: mentioning a folder cancelled an unrelated file's constraint."""
+        for text, want in (("Use the tmp folder for scratch files and leave config.yaml as is.",
+                            [("keep_away", "config.yaml")]),
+                           ("Leave the vendor folder and config.yaml untouched.", [("keep_away", "config.yaml")]),
+                           ("Don't touch the vendor folder or config.yaml.",
+                            [("keep_away", "vendor/"), ("keep_away", "config.yaml")])):
+            with self.subTest(text):
+                self.assertEqual(constraints.extract(text), want)
+                self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", "Edit", {
+                    "file_path": "/w/config.yaml", "old_string": "a", "new_string": "b"}), (True, "high"))
+
     def test_e20s_honest_sessions_hold_no_call_and_break_no_constraint(self):
         """E20's honest Claude Code sessions (HONEST_SESSIONS), replayed through the hook into a signer: no call is
         held live and no TK-X204 finding."""

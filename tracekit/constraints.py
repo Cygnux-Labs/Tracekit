@@ -463,9 +463,9 @@ def _clause(tokens, prev=()):
     no changes there", _referent), unless that clause asks for a change or sets a condition ("fix X; don't rewrite
     it")."""
     files = {i: t for i, t in enumerate(tokens) if _file(t)}
-    if FOLDERS & set(tokens):   # "the vendor folder": a directory
-        files = {**files, **{i: t + "/" for i, t in enumerate(tokens[:-1]) if tokens[i + 1] in FOLDERS
-                             and t.isalpha() and t not in DETERMINERS}}
+    if FOLDERS & set(tokens):   # "the vendor folder": a directory; files stay in the clause's order
+        files = dict(sorted({**files, **{i: t + "/" for i, t in enumerate(tokens[:-1]) if tokens[i + 1] in FOLDERS
+                                         and t.isalpha() and t not in DETERMINERS}}.items()))
     if not files and not STATING & set(tokens):
         return [], set()
     cond, later = _conditions(tokens), _suffix(tokens, VERBS)
