@@ -504,6 +504,15 @@ class Evasions(Base):   # round-2 review: ordinary words that silenced a check, 
         t.final("Bumped the version in pyproject.toml; no code changes.")
         self.assertEqual(found(self.analyze(t), "TK-X113"), [])
         self.assertEqual(self.rules([], "Bumped the version; no code changes."), {"TK-X113"})   # pager.py was edited
+        for ext in (".cjs", ".mts", ".cts", ".pyi", ".ipynb", ".tf", ".ps1", ".bash", ".zsh", ".m", ".mm", ".cxx",
+                    ".hxx", ".r", ".jl", ".groovy", ".kts"):   # 1.4.0 review M5: source files SOURCE lacked
+            with self.subTest(ext):
+                t = Transcript(CWD)
+                t.prompt("Bump the version in pyproject.toml.")
+                t.step("Bumping the version.", "Edit", edit("pyproject.toml"))
+                t.step("One more thing.", "Edit", edit(f"src/server{ext}"))
+                t.final("Bumped the version in pyproject.toml; no code changes.")
+                self.assertEqual(len(found(self.analyze(t), "TK-X113")), 1)
 
 
 class Linear(unittest.TestCase):

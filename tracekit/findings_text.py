@@ -152,9 +152,13 @@ OTHER = frozenset(("else", "other", "others", "besides", "outside", "beyond", "a
 DENIED_WORDS = frozenset().union(*DENY.values(), *KEPT.values(), LOCAL_VERBS, NET_NOUNS, ("local", "locally"))
 KEPT_WORDS = frozenset().union(*KEPT.values())
 # what "code" denies changing (_objects): source files, not a config, a lockfile or the docs
-SOURCE = frozenset((".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".c",
-                    ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".scala", ".sh", ".sql", ".vue", ".svelte", ".lua",
-                    ".pl", ".ex", ".exs", ".dart"))
+# lean: source files by a fixed list of extensions; "no code changes" denies no edit of a file with another one. Grow it
+# from real misses
+SOURCE = frozenset((".py", ".pyi", ".pyx", ".ipynb", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts",
+                    ".go", ".rs", ".java", ".kt", ".kts", ".groovy", ".scala", ".rb", ".php", ".c", ".h", ".cc",
+                    ".cpp", ".cxx", ".hh", ".hpp", ".hxx", ".m", ".mm", ".cs", ".fs", ".vb", ".swift", ".dart", ".sh",
+                    ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".sql", ".tf", ".vue", ".svelte", ".lua", ".pl",
+                    ".r", ".jl", ".ex", ".exs", ".erl", ".hs", ".ml", ".clj", ".zig", ".sol"))
 THIRD = frozenset(("it", "they", "he", "she", "which", "who", "that", "this"))   # "so it never": what a thing does
 AUXILIARY = frozenset(("does", "do", "did", "will", "would", "can", "could", "should", "is", "was", "are", "were",
                        "now", "still", "also", "really", "just", "ever"))
