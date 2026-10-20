@@ -630,6 +630,9 @@ OVERLAPS = {
         "constraints:folder", "constraints:owned elsewhere", "findings_text:ensure", "findings_text:had",
         "findings_text:high", "findings_text:necessary", "findings_text:repository", "findings_text:rspec",
         "findings_text:submitted", "findings_text:unittest"),
+    "words pool v3 also uses, first in the checks after its scored run, from the 1.4.0 delta review's own repro rows "
+    "(D-M2: \"don't make any changes in this repository\" is read-only), by a reviewer who never opened the pool": (
+        "constraints:repository",),
 }
 
 
