@@ -810,7 +810,7 @@ def load_pool(path):
     if version == 1:
         return raw, []
     if version != 2:
-        raise SystemExit(f"{os.path.relpath(path, ROOT)}: schema version {version!r}; E20 reads 1 and 2")
+        raise SystemExit(f"{path}: schema version {version!r}; E20 reads 1 and 2")
     skipped = {}
 
     def skip(key, why, n=1):
