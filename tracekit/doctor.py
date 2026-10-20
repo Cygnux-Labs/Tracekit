@@ -32,7 +32,8 @@ OK, WARN, FAIL = "ok", "warn", "fail"
 NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", "fuse", "fuseblk", "9p", "macfuse",
               "osxfuse"}
 MAX_SKEW_S = 300
-REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>" + (
+    " --experimental-macos" if sys.platform == "darwin" else "")   # init refuses macOS system mode without it
 
 
 

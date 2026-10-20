@@ -86,6 +86,12 @@ class DevFresh(unittest.TestCase):
             self.assertIn(f"assurance stays {level}", got["D-WITNESS-CONFIGURED"]["detail"])
 
 
+class Reinit(unittest.TestCase):
+    def test_the_reinit_fix_runs_on_this_platform(self):
+        """On macOS init refuses system mode without --experimental-macos, which the fix left out."""
+        self.assertEqual(doctor.REINIT.endswith(" --experimental-macos"), sys.platform == "darwin")
+
+
 class K8s(unittest.TestCase):
     def test_clean_deployment_passes_every_check(self):
         results = e16.run_k8s_case(None)
