@@ -334,9 +334,9 @@ class ResponseBodies(unittest.TestCase):
                                          "signature": "EqQBsealed"}, *ANTHROPIC_MSG["content"]]}
 
     def record(self, retain, stream=False):
-        me = f"uid:{os.getuid()}"
+        me = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
         s = SignerService(tmpdir(self), content={"retain": retain},
-                          authorize={me: sorted(DEFAULT_GRANTS | {CONTENT_READ})})
+                          authorize={f"uid:{me.subject}": sorted(DEFAULT_GRANTS | {CONTENT_READ})})
         self.addCleanup(s.close)
         client = Client(_serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
         self.addCleanup(client.close)
@@ -353,8 +353,7 @@ class ResponseBodies(unittest.TestCase):
         records = list(s.log.storage.iter_run("default", run.run_id))
         [resp] = [r["event"] for r in records if r["event"]["type"] == "model.exchange"
                   and r["event"]["data"]["phase"] == "response"]
-        vault = mock.Mock(content_get=lambda req: s.call(CallerIdentity("uid", str(os.getuid()), True), "content_get",
-                                                         req))
+        vault = mock.Mock(content_get=lambda req: s.call(me, "content_get", req))
         items = vault.content_get({"run_id": run.run_id, "seqs": [resp["run_seq"]], "purpose": "test"})["items"] \
             if retain else [{}]   # a signer that keeps no content refuses content_get
         analysed = findings_v2.analyze(records, (lambda recs: vault_content(vault, recs, "test")) if retain else None)
