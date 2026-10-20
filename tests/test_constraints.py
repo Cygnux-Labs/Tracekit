@@ -485,6 +485,11 @@ class Grammar(unittest.TestCase):
             constraints.extract(None, read)
             constraints.changes(read)
             self.assertLess(time.perf_counter() - t0, 1, unit)
+        for files in ("a.py " * 6000, " ".join(f"f{k}.py" for k in range(3000)) + " "):   # delta review D-L4: a
+            read = constraints._read(f"Leave {files}alone. " + "keep them, " * 3000)   # "them" no change word governs
+            t0 = time.perf_counter()
+            constraints.changes(read)
+            self.assertLess(time.perf_counter() - t0, 0.5, files[:10])
 
 
 class Live(Signed):

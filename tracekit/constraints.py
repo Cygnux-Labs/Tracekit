@@ -59,8 +59,8 @@ lean: fixed word lists, English only; a phrasing outside them ("keep the diff to
 clauses back) states no constraint. Grow the lists from real misses, never from the held-out pool.
 lean: not linear in two places: a negated push or network word, or a lift word, reads the words before it in its clause
 again (a 64 KiB clause of them, under a second), and "them" stands for each file of the clause before it in every
-clause that says it (64 KiB of "don't change them" after 3,000 files: about 2 s and 0.7 GiB). Read them once per clause
-if real texts get near that.
+clause that says it (64 KiB of "don't change them" after 3,000 to 5,000 files: about 2 s and up to 1.1 GiB). Read them
+once per clause if real texts get near that.
 """
 import hashlib
 import re
@@ -692,11 +692,13 @@ def changes(read):
     for tokens, _, kept in read:
         for name in kept:
             out[name] = "kept"
-        k, it = _referent(tokens, before)   # "fixing it": the file named before
-        for i, name in [(i, norm(t)) for i, t in enumerate(tokens) if norm(t)] + [(k, n) for n in it]:
+        for i, name in [(i, norm(t)) for i, t in enumerate(tokens) if norm(t)]:
             said = name not in out and _said(tokens, i)
             if said:
                 out[name] = said
+        k, it = _referent(tokens, before)   # "fixing it": the file named before; for "them", each, read once
+        if it and (said := _said(tokens, k)):
+            out.update((name, said) for name in it if name not in out)
         before = _files(tokens) or before
     return out
 
