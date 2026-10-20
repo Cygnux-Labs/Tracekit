@@ -258,11 +258,12 @@ with a 1.4 verifier (see Upgrade notes); every existing bundle verifies as befor
   recorded (11 of 16).
 
 ### Security
-- **The shell parser's cost is bounded** (all versions before 1.4.0): a crafted command of up to 64 KiB, a
-  `sed` script of newlines or a program text full of process-call lists, could make one policy decision take from
-  seconds to minutes and gigabytes of memory, stalling the signer. Its work budget now covers that text, and past it
-  the call fails closed (`TK-SHELL-PARSE`, as `on_parse_error` says). A `]` inside a quoted list string no longer ends
-  the list early, which had let a denied command in such a list be decided as a flag. Upgrade the signer.
+- **Shell parser hardening** (versions before 1.4.0): a crafted `sed` script of newlines, or a program text full of
+  process-call lists, could make one policy decision take from seconds to minutes and gigabytes of memory, stalling
+  the signer. Sed addresses are no longer rescanned from each newline, the parser's work budget now covers list text,
+  and past the budget the call fails closed (`TK-SHELL-PARSE`, as `on_parse_error` says). A `]` inside a quoted list
+  string no longer ends the list early, which had let a denied command in such a list be decided as a flag. Upgrade
+  the signer.
 - **Program names in any case** (#258): on a case-insensitive file system `Git push --force` runs git, and the coding
   pack allowed it. The command-line rules now read program names in any case, and shell paths casefolded.
 - An agent's `decide` labelled `args_source: coerced` no longer skips the comparison with the LLM gateway's own record
