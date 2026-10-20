@@ -295,6 +295,14 @@ class Grammar(unittest.TestCase):
             with self.subTest(said):
                 self.assertEqual(constraints.extract(said), [("keep_away", "billing.py")])
 
+    def test_a_place_before_a_folder_word_is_no_folder(self):
+        """1.4.0 review L1: "don't touch the home directory" kept home/ away, so with the project under /home every
+        write was held. A place ("home", "root", "current", "working", "parent") names no folder."""
+        for text in ("Don't touch the home directory.", "Never write to the root directory.",
+                     "Don't change the working directory in run.sh.", "Leave the current folder alone."):
+            with self.subTest(text):
+                self.assertEqual(constraints.extract(text), [])
+
     def test_a_folder_word_keeps_the_clauses_files_in_order(self):
         """1.4.0 review H3: a "<word> folder" was read after the clause's files, so a file after it lost its bound and
         its constraint: mentioning a folder cancelled an unrelated file's constraint."""

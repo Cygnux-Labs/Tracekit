@@ -76,6 +76,9 @@ TOKEN = re.compile(r"[\w.~/\\'-]+")
 READ_ONLY = re.compile(r"\bread[\s_-]*only\b", re.I)
 NO_CASE = re.compile(r"\b(?:under|in) no (?:circumstances|case)\b")
 FOLDERS = frozenset(("directory", "folder", "dir"))
+# before a word of FOLDERS, a place rather than a folder's name: "the home directory" is no home/ (a project under /home
+# would have every write held)
+PLACES = frozenset(("home", "root", "current", "working", "parent"))
 OFF_LIMITS = re.compile(r"\boff[\s_-]*limits\b", re.I)
 FILE_LIKE = re.compile(r"\w\.\w|/|^\.\w")
 # files people name without an extension: each is a file name too ("don't touch the Dockerfile")
@@ -468,7 +471,7 @@ def _clause(tokens, prev=()):
     files = {i: t for i, t in enumerate(tokens) if _file(t)}
     if FOLDERS & set(tokens):   # "the vendor folder": a directory; files stay in the clause's order
         files = dict(sorted({**files, **{i: t + "/" for i, t in enumerate(tokens[:-1]) if tokens[i + 1] in FOLDERS
-                                         and t.isalpha() and t not in DETERMINERS}}.items()))
+                                         and t.isalpha() and t not in DETERMINERS | PLACES}}.items()))
     if not files and not STATING & set(tokens):
         return [], set()
     cond, later = _conditions(tokens), _suffix(tokens, VERBS)
