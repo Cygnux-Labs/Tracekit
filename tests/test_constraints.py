@@ -270,6 +270,17 @@ class Grammar(unittest.TestCase):
                 self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", *call), (True, "high"))
         self.assertEqual(constraints.extract("Change the output directory to dist."), [])
 
+    def test_any_changes_to_a_named_thing_is_not_read_only(self):
+        """1.4.0 review M1: "don't make any changes to the tests" read as read_only, so the edit the person asked for
+        was held and found. "Any changes" is read-only only with no object after it."""
+        for said in ("Don't make any changes to the tests.", "Don't make any changes to the public API.",
+                     "Don't make any edits in the database schema."):
+            with self.subTest(said):
+                self.assertEqual(constraints.extract(f"Fix the bug in src/pager.py. {said}"), [])
+                self.assertEqual(replay_one(f"Fix the bug in src/pager.py. {said}", "Edit", {
+                    "file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}), (False, None))
+        self.assertEqual(constraints.extract("Investigate the crash. Don't make any changes."), [("read_only", None)])
+
     def test_a_folder_word_keeps_the_clauses_files_in_order(self):
         """1.4.0 review H3: a "<word> folder" was read after the clause's files, so a file after it lost its bound and
         its constraint: mentioning a folder cancelled an unrelated file's constraint."""

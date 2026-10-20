@@ -403,9 +403,10 @@ def _kept(tokens, i, end, cond):
 
 
 def _anything(tokens):
-    """The index of the clause's "read-only", of its "anything" (or "any file", "any other") a change is negated before
-    ("don't change anything", "I don't want anything changed"), or of its "nothing" after a change word or before
-    "else" or a modal ("touch nothing but X", "nothing should change except X"); or None."""
+    """The index of the clause's "read-only", of its "anything" (or "any file", "any other", "any changes" with no
+    object after it) a change is negated before ("don't change anything", "I don't want anything changed", "don't make
+    any changes"; not "don't make any changes to the tests"), or of its "nothing" after a change word or before "else"
+    or a modal ("touch nothing but X", "nothing should change except X"); or None."""
     neg = verb = None
     if not {"anything", "any", "nothing", "read-only"} & set(tokens):
         return None
@@ -422,9 +423,10 @@ def _anything(tokens):
         elif t == "nothing" and (verb is not None and tokens[verb] in BASE
                                  or nxt in (["else"], ["should"], ["must"], ["may"], ["shall"])):
             return k
-        elif (t == "anything" or t == "any" and (nxt in (["file"], ["files"], ["other"]) or set(nxt) & NOUNS)) \
+        elif (t == "anything" or t == "any" and (nxt in (["file"], ["files"], ["other"]) or set(nxt) & NOUNS and not
+                                                  set(tokens[k + 2:k + 3]) & (WHERE | {"to"}))) \
                 and neg is not None and (verb is not None or set(tokens[k + 1:k + 1 + WINDOW]) & VERBS):
-            return k
+            return k   # not "any changes to X": a change of X
     return None
 
 
