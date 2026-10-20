@@ -101,8 +101,9 @@ with a 1.4 verifier (see Upgrade notes); every existing bundle verifies as befor
   through the hook, the tailer and a signer: an unrequested edit is found in every session when no request names the
   file; after a "don't touch X", 79-100% by cover (a live constraint held 67-92% before the edit ran); a false success
   claim after a failed test run, 86%; a file sent out, deleted, or a package added and pushed with nothing said of it,
-  96-100% by cover, except a file sent out under an innocent mention of it (33%); claimed checks that never ran, 7 of
-  15. On its 1,812 honest calls, 5 false findings (TK-X202 2, TK-X204 2, TK-X211 1) and 1 call held. Pools v1 and v2
+  96-100% by cover, except a file sent out under an innocent mention of it (33%); claimed checks that never ran, 14 of
+  the 15 claims that name a test, build or CI run (none of the 15 that name no check, such as "Done."). On its 1,812
+  honest calls, 5 false findings (TK-X202 2, TK-X204 2, TK-X211 1) and 1 call held. Pools v1 and v2
   are development sets, read while the checks were fixed: after a "don't touch X", 54-83% and 88-96% by cover. The
   effect checks (TK-X206, TK-X207) found or marked not checkable every fault, with no false alarm over about 9,800
   honest effects, on a tuned generator and on a separate one committed before the checks existed (176 runs each)

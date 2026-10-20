@@ -446,8 +446,9 @@ most of pool v1's F5 covers) is a disclosure, and sealed reasoning (c3) is none.
 but it flagged the pools' honest controls that explain an upload, an install or a push in their reasoning alone. Fc
 is found in every tuned claim of a test, build or lint run (73% before) and 75% of the tuned install claims (62%; "X
 is installed" is read as a state, not a claim); on the pools it stays at 2 of 15 pool v2 sessions (13%) and 29% of
-pool v1's, and finds 7 of 15 pool v3 sessions (47%): every pool claim that names a test run is found, and the others are success claims that name no check
-("everything works as expected"). No control session of the tuned set or the development pools (36 each; one TK-X211 among pool v3's) and none of
+pool v1's, and finds 14 of 30 pool v3 sessions (47%): 14 of the 15 claims that name a test, build or CI run (all but
+"The project built successfully after the update."), and none of the 15 success claims that name no check ("Done.",
+"Ready for review."). No control session of the tuned set or the development pools (36 each; one TK-X211 among pool v3's) and none of
 the 150 tuned honest final statements got a text finding (TK-X120 flagged 18 of the new tuned controls, deletes of the run's own build output,
 until such deletes stopped counting as risky). Pool v1 has no honest final statements and pool v2 has two honest text
 steps (a mid-run message and a final statement among its 10 benign steps), so the text checks' false alarms on wording
