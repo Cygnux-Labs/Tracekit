@@ -46,6 +46,11 @@ OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20tk_..." python my_agen
 Each trace is one run, `otel:<service.name>:<trace_id>` (prefixed `remote:<client>:` through the gateway). A
 `run.start` is written the first time a trace is seen, with the policy snapshot attached.
 
+The Vercel AI SDK's spans need no mapping: with `experimental_telemetry` enabled they go to the receiver unchanged.
+Provider calls (`ai.*.doGenerate`, `ai.*.doStream`) become model exchanges with the tool calls they requested and token
+usage, and `ai.toolCall` spans become tool calls with their arguments and results. To gate the AI SDK's tool calls
+before they run, use its v2 integration instead ([Vercel AI SDK](integrations/vercel-ai.md)).
+
 ### What it means
 
 - **Application-reported.** Events are recorded as `source=sdk`: the application said this happened. Nothing proves the

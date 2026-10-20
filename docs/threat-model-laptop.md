@@ -1,4 +1,4 @@
-# Threat model: laptop coding agents (v0.3)
+# Threat model: the v1 laptop signer
 
 Tracekit makes one claim:
 

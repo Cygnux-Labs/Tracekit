@@ -45,7 +45,7 @@ Recompute the HMAC over the raw body, compare in constant time, and refuse a `t`
 ## Delivery
 
 The signer's writer only queues events; one thread per webhook sends them. A post that fails (unreachable, 5xx, 408
-or 429) is retried up to 5 times with backoff from 0.5 s to 30 s; another 4xx is not retried. Events not delivered are
+or 429) is tried 5 times in all, waiting 0.5, 1, 2 and 4 s between tries; another 4xx is not retried. Events not delivered are
 dropped and counted in `tracekit_signer_webhook_dropped_total` by reason: `queue_full` (more than 10000 waiting),
 `failed`, `shutdown` (still queued when the signer stopped) ([observability](observability.md)). Delivery is best
 effort: the signed log, not the webhook, is the evidence.

@@ -46,9 +46,10 @@ operator; as an auditor, check every key in it against your own sources before u
 Ask for the runs you sample, and for the tenant's run-set, which shows that no run was left out:
 
 ```sh
-tracekit export --v2 --run <run id> -o run.tkb                  # one run
-tracekit export --v2 --run-set --tenant <tenant> -o run-set.tkb  # the registry from size 0 to its latest checkpoint,
-                                                                 # with every run finalised in it
+tracekit export --v2 --config signer.yaml --run <run id> -o run.tkb                  # one run
+tracekit export --v2 --config signer.yaml --run-set --tenant <tenant> -o run-set.tkb  # the registry from size 0 to its
+                                                                                      # latest checkpoint, with every
+                                                                                      # run finalised in it
 ```
 
 The operator runs these after the next checkpoint covers the records. A run-set bundle holds the tenant's registry

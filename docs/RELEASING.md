@@ -22,10 +22,12 @@ Both verifiers' UNVERIFIABLE line sends a person whose verifier is too old for a
 ## Procedure
 
 1. Set the version in `tracekit/__init__.py` (`__version__`), in `sdk/typescript/package.json` (`version` and the
-   four `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`) and in `server.json` (`version`), and add a dated
-   entry to `CHANGELOG.md`.
+   four `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`), in `server.json` and
+   `plugin/.claude-plugin/plugin.json` (`version`), in both Helm charts (`appVersion` in `deploy/helm/*/Chart.yaml`
+   and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("This is
+   <version>"), and add a dated entry to `CHANGELOG.md`.
 2. `make check` and `make release-dry-run` locally; CI must be green on `main`.
-3. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`. The workflow refuses a tag that matches neither version.
+3. Tag and push: `git tag v<version> && git push origin v<version>`. The workflow refuses a tag that matches neither version.
 4. The workflow runs `release` (build, image push, attestations), then `pypi`, then `npm` with no approval step: since
    2026-10-17 the environments have no required reviewers, so pushing a `v*` tag publishes. Add reviewers back
    (one-time setup, step 3) to require a second person.
@@ -147,7 +149,7 @@ the comment).
 
 ```yaml
 name: Release
-# Tag a version (git tag v0.4.0 && git push origin v0.4.0). PyPI and npm use trusted publishing: no token is stored.
+# Tag a version (git tag v<version> && git push origin v<version>). PyPI and npm use trusted publishing: no token is stored.
 # docs/RELEASING.md has the procedure and the one-time setup.
 on:
   push:

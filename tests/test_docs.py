@@ -10,7 +10,11 @@ import tempfile
 import unittest
 from unittest import mock
 
+import yaml
+
 from tracekit import cli
+from tracekit.format.canon import event_hash
+from tracekit.identity.base import CallerIdentity
 from tracekit.signer import service
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -68,6 +72,45 @@ class DocTables(unittest.TestCase):
                         sep.match(line) and i > 1 and lines[i - 2].startswith("|"):
                     bad.append(f"{os.path.relpath(path, ROOT)}:{i + 1}")
         self.assertEqual(bad, [])
+
+
+def documented_authorize():
+    """(where, its `authorize` mapping) for every signer config the docs and deploy examples give."""
+    for page in ("docs/deploy.md", "docs/remote-ingest.md", "docs/identity.md"):
+        for lang, block in FENCE.findall(read(os.path.join(ROOT, page))):
+            if lang == "yaml" and re.search(r"^authorize:", block, re.M):
+                yield page, yaml.safe_load(block)["authorize"]
+    example = read(os.path.join(ROOT, "deploy", "docker", "signer.yaml.example"))   # the central block, commented out
+    yield "signer.yaml.example", yaml.safe_load(re.search(r"^# (authorize: .*)", example, re.M).group(1))["authorize"]
+    with open(os.path.join(ROOT, "examples", "v2", "agent_sandbox", "signer.yaml"), encoding="utf-8") as f:
+        config = next(o for o in yaml.safe_load_all(f) if o["kind"] == "ConfigMap")["data"]["signer.yaml"]
+    yield "agent_sandbox/signer.yaml", yaml.safe_load(config)["authorize"]
+
+
+@unittest.skipUnless(os.path.exists(os.path.join(ROOT, ".git")), "reads deploy/ and examples/, which an sdist leaves out")
+class DocumentedGrants(unittest.TestCase):
+    def test_every_documented_agent_grant_list_lets_an_adapter_run_a_call(self):
+        """The lists lacked approval_consume, which the adapters call after every allow: each allowed call was blocked."""
+        agent, call = CallerIdentity("token", "agent", True), {"tool_call_id": "t1", "tool": "Read",
+                                                                "args_source": "parsed", "args": {"file_path": "a"}}
+        lists = [(where, who, grants) for where, authorize in documented_authorize()
+                 for who, grants in authorize.items() if "register_run" in grants]
+        self.assertGreaterEqual(len(lists), 6)
+        for where, who, grants in lists:
+            with self.subTest(where=where, who=who):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                s = service.SignerService(d, authorize={"token:agent": grants})
+                self.addCleanup(s.close)
+                run = s.call(agent, "register_run", {"request_id": "r0", "agent": {"name": "a"}})
+                ids = {"run_id": run["run_id"], "run_token": run["run_token"]}
+                d = s.call(agent, "decide", {"request_id": "r1", **ids, "stream": "s", "client_seq": 0, **call})
+                self.assertEqual(d["decision"], "allow")
+                self.assertTrue(s.call(agent, "approval_consume", {"request_id": "r2", **ids, **call})["ok"])
+                s.call(agent, "complete", {"request_id": "r3", **ids, "stream": "s", "client_seq": 1, "status": "ok",
+                                           "tool_call_id": "t1", "decision_id": d["decision_id"],
+                                           "args_digest": event_hash({"tool": "Read", "args": call["args"]})})
+                s.call(agent, "close_run", {"request_id": "r4", **ids})
 
 
 class LimitsIndex(unittest.TestCase):

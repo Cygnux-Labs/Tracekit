@@ -66,7 +66,7 @@ in a server, see the [quickstarts](../quickstart-v2.md).
 | Vercel AI SDK (TypeScript) | Model middleware and the SDK's tool-approval flow | Experimental |
 | OpenTelemetry | Spans imported as tier T3 evidence (receipt only); runs exported as spans carrying record hashes | Experimental |
 
-The six added in 1.3 (Pydantic AI to Microsoft Agent Framework) share one gate,
+Pydantic AI, Google ADK, Strands Agents, LlamaIndex, Haystack and Microsoft Agent Framework share one gate,
 [`tracekit/integrations/gate.py`](../../tracekit/integrations/gate.py): decide, wait for a person on `ask` (up to 5
 minutes), consume, record the outcome, and refuse the call when Tracekit itself fails. A fix to how calls are decided
 lands in all six. Each is tested against the real library but not yet run through the shared contract suite.

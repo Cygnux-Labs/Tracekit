@@ -10,11 +10,13 @@ after the action it records the outcome. It works with any object that implement
 ## Install
 
 ```bash
-pip install tracekit-ai "browser-use==0.13.11"
+pip install tracekit-ai "browser-use>=0.13.11,<0.14"
 ```
 
-Tested with browser-use 0.13.11 (Python 3.11 or newer, its own requirement). Browser Use is imported only to build
-the result of a refused action and to read its action timeout.
+Python 3.11 or newer (browser-use's own requirement). Every push tests the adapter against a stand-in for Browser Use's
+action registry; its contract against the real library runs nightly, with the newest browser-use release, so a
+release outside 0.13 may be what it last ran against. Browser Use is imported only to build the result of a refused
+action and to read its action timeout.
 
 ## Setup
 

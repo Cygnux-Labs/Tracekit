@@ -32,7 +32,8 @@ OK, WARN, FAIL = "ok", "warn", "fail"
 NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", "fuse", "fuseblk", "9p", "macfuse",
               "osxfuse"}
 MAX_SKEW_S = 300
-REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>" + (
+    " --experimental-macos" if sys.platform == "darwin" else "")   # init refuses macOS system mode without it
 
 
 
@@ -613,7 +614,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     ws = cfg.get("witnesses") or []
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "
-        f"so assurance stays {'local' if prod else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
+        f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
         if prod else f"the dev signer takes no witnesses: serve one from a signer.yaml with witnesses: ({wiki_url('docs/witnesses.md')})",
         bad=sev)
     if ws:

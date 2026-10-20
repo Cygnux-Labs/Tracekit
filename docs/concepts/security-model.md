@@ -94,10 +94,10 @@ synthetic and written by the project.
 | Reconciliation (E10) | 12 of 12 seeded discrepancies flagged, 0 false positives |
 | Saved-state tampering (E11) | 21 of 21 caught |
 | Tenant isolation (E12) | Every attack refused, no leaks under concurrency |
-| Policy packs on the project's corpus (E17) | 536 of 536 harmful calls stopped, 1 false alarm in 712 |
-| Policy packs on calls written blind to the rules (E21) | Server pack: 215 of 420 harmful calls stopped or held, 18 false alarms in 432 |
+| Policy packs on the project's corpus (E17) | 570 of 570 harmful calls stopped, 1 false alarm in 738 |
+| Policy packs on calls written blind to the rules (E21) | Server pack: 211 of 420 harmful calls stopped or held on the only blind run; 237 with rules added since (the pool is no longer blind); 18 false alarms in 432 |
 | Agent approvers (E18) | 7 of 7 attacks caught |
-| Unrequested edits behind cover text, checked by `tracekit analyze --v2` (E20, synthetic, held-out phrases) | Caught under every cover but one (the file named innocently: 0 of 24); after a "don't touch X", 25 to 71% by cover |
+| Unrequested edits behind cover text, checked by `tracekit analyze --v2` (E20, synthetic; development pools v1 and v2, the blind pool v3 not scored yet) | Caught under every cover; after a "don't touch X", 75 to 96% by cover |
 | The v1 regex gate on a rougher set (E3) | 11 of 16 caught: rules are tripwires |
 
 Every experiment and what isn't measured: [evaluation](../evaluation.md).

@@ -12,6 +12,7 @@ same tree and REF give the same bytes. Publishing: docs/RELEASING.md.
 import argparse
 import fnmatch
 import glob
+import itertools
 import json
 import os
 import posixpath
@@ -31,8 +32,8 @@ EXCLUDED = {
 }
 # the sidebar: docs paths in order; a glob adds the pages it matches that no earlier entry placed, sorted
 SECTIONS = [
-    ("Get started", ["quickstart-v2.md", "quickstarts/README.md", "quickstarts/*.md", "walkthrough.md",
-                     "coding-agents.md", "doctor.md"]),
+    ("Get started", ["quickstart-v2.md", "quickstarts/README.md", "quickstarts/*.md", "coding-agents.md", "doctor.md",
+                     "walkthrough.md"]),
     ("How it works", ["concepts/README.md", "concepts/overview.md", "concepts/tool-call-lifecycle.md",
                       "concepts/evidence-format.md", "concepts/verification.md", "concepts/witnesses-and-monitoring.md",
                       "concepts/policy.md", "concepts/approvals.md", "concepts/containment.md",
@@ -93,6 +94,13 @@ def prose(text):
             yield line, False
         else:
             yield line, fence is None
+
+
+def paragraphs(text):
+    """`text` as runs of lines, each with True where it is a paragraph outside fenced code: a link's text may wrap
+    within a paragraph, never across a blank line or a fence."""
+    for outside, run in itertools.groupby(prose(text), lambda lo: lo[1] and lo[0].strip() != ""):
+        yield "\n".join(line for line, _ in run), outside
 
 
 def slug(heading):
@@ -191,8 +199,8 @@ def build(ref, root=ROOT):
         return f"[{label}]({REPO}/{kind}/{ref}/{dest}{'#' + anchor if anchor else ''})"
 
     for p, text in texts.items():
-        lines = [LINK.sub(lambda m: relink(p, m), line) if outside else line for line, outside in prose(text)]
-        out[names[p] + ".md"] = "\n".join(lines)
+        out[names[p] + ".md"] = "\n".join(LINK.sub(lambda m: relink(p, m), run) if outside else run
+                                          for run, outside in paragraphs(text))
     for p, _ in START:
         if p not in texts:
             errors.append(f"docs/{p}: on Home but not a docs page")

@@ -1,5 +1,8 @@
 # tracekit-stagehand
 
+> **Experimental (v1):** this package builds on the v1 laptop signer and isn't part of the stable core
+> ([what's stable](../../docs/support.md)).
+
 Stagehand `act` / `extract` / `observe` / `goto` calls as policy-checked, signed `browser:<method>` steps
 (`pip install ./contrib/stagehand`). A denied call raises `PermissionError`.
 

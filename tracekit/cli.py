@@ -39,7 +39,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
-              "sensor": "sensor"}  # subcommands with their own parsers
+              "sensor": "sensor", "ingest": "ingest"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
@@ -379,9 +379,6 @@ def _match_pending(pend, prefix):
 
 
 def _run(a):
-    if a.cmd == "ingest":
-        from . import ingest
-        return ingest.main(a.rest)
     if a.cmd == "init" and a.remote:
         return _init_remote(a)
     if a.cmd == "init":

@@ -38,7 +38,8 @@ data:
         ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
     # every service account in the agents namespace is tenant `agents`, and may run and record its own runs
     tenants: {"k8s_sa:system:serviceaccount:agents:*": agents}
-    authorize: {"k8s_sa:system:serviceaccount:agents:*": [register_run, decide, complete, close_run]}
+    authorize: {"k8s_sa:system:serviceaccount:agents:*": [register_run, decide, approval_consume, complete, close_run,
+                                                          model_event, approval_request, approval_wait]}
     metrics: {listen: 127.0.0.1:9464}
     policy: /etc/tracekit/packs/server.yaml
     # witnesses:                             # docs/witnesses.md: a witness off the cluster detects a rolled-back log

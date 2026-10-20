@@ -94,7 +94,7 @@ its record hash is that of `"seq": 1`. It adds to v1:
 | `engine` | signer | the policy engine `id@version` |
 | `span_id` | signer | the OTel span an imported record came from |
 
-`source` is `hook`, `proxy`, `transcript`, `signer`, `sdk`, `migrated` or `import`. Gap and tamper records
+`source` is `hook`, `proxy`, `transcript`, `signer`, `sdk`, `gateway`, `migrated` or `import`. Gap and tamper records
 (`capture.gap`, `trace.tamper`) are written only with `source: signer`; the `kind`s are listed in the schema's
 `capture_gap` and `trace_tamper` definitions. A gap marked `tenant_level: true` (`witness_failed`, `witness_late`,
 `clock_skew`, `degraded_unanchored`, and rollback tamper records) concerns every tenant (§7).

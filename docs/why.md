@@ -41,14 +41,16 @@ tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM
 
 ```text
 == counterfactual tests (n=40 paired replays each; tools served from tape)
-  remove input:vendor:portal/notes.md  target tool=send_email,arg~vendor-compliance  P(with)=0.80 P(without)=0.00 effect=+0.80 [+0.63, +0.90]  CAUSAL
-  remove input:web:shipping_faq        target tool=send_email,arg~vendor-compliance  P(with)=0.80 P(without)=0.80 effect=+0.00 [-0.18, +0.18]  RULED-OUT
-  remove input:inbox:ticket-881        target tool=send_email,arg~vendor-compliance  P(with)=0.80 P(without)=0.80 effect=+0.00 [-0.18, +0.18]  RULED-OUT
-  remove msg:researcher->planner       target tool=send_email,arg~vendor-compliance  P(with)=0.80 P(without)=0.00 effect=+0.80 [+0.63, +0.90]  CAUSAL
+  remove input:vendor:portal/notes.md target tool=send_email,arg~vendor-compliance    P(with)=0.80 P(without)=0.00 effect=+0.80 [+0.63, +0.90] n=40  CAUSAL (primary)
+  remove input:web:shipping_faq       target tool=send_email,arg~vendor-compliance    P(with)=0.80 P(without)=0.80 effect=+0.00 [-0.18, +0.18] n=40  RULED-OUT
+  remove input:inbox:ticket-881       target tool=send_email,arg~vendor-compliance    P(with)=0.80 P(without)=0.80 effect=+0.00 [-0.18, +0.18] n=40  RULED-OUT
+  remove msg:researcher->planner      target tool=send_email,arg~vendor-compliance    P(with)=0.80 P(without)=0.00 effect=+0.80 [+0.63, +0.90] n=40  CAUSAL (primary)
+  remove input:kb:refund_policy.md    target tool=issue_refund                        P(with)=0.93 P(without)=0.00 effect=+0.93 [+0.77, +0.97] n=40  CAUSAL (primary)
 ```
 
 All three untrusted inputs reached the email; replaying without the vendor note drops it from 80% of runs to 0%, and
-removing the other two changes nothing detectable. `tracekit view` prints a URL with a one-time token; open it.
+removing the other two changes nothing detectable. The last test finds the refund policy the cause of the refund.
+`tracekit view` prints a URL with a one-time token; open it.
 `runs/report.html` is the same page with the 8 runs embedded: it opens from the file, with no server and no network,
 and runs no replays (`tracekit why report ROOT [-o FILE]` writes one for any folder of why logs, or one run).
 

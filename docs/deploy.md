@@ -32,8 +32,8 @@ records were signed by the log key you pinned, in one unbroken chain covered by 
 
 The mode shows up as each run's `isolation` (from the signer, never from the agent). So a system-mode signer with no
 witness verifies as `Assurance: dev` with `isolation: separate-user`: the agent couldn't reach the keys, but nothing
-outside the host shows the log wasn't rolled back. Add a witness the operator doesn't run to reach `witnessed`, such as
-the free [public witness](witnesses.md#the-public-witness) (`witnesses: [public]` in signer.yaml).
+outside the host shows the log wasn't rolled back. Add a witness the operator doesn't run to reach `witnessed`: your own or a partner's
+([witnesses](witnesses.md)); the free [public witness](witnesses.md#the-public-witness) is not deployed yet.
 
 Every mode is checked the same way: `tracekit doctor` ([doctor](doctor.md)) lists each check with its fix and exits 0
 (all ok), 1 (a check failed) or 2 (warnings only). Doctor output is advice about the host, not evidence.
@@ -160,7 +160,8 @@ http:
     token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
     ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 tenants: {"k8s_sa:system:serviceaccount:acme:*": acme}
-authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, complete, close_run]}
+authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, approval_consume, complete, close_run,
+                                                    model_event, approval_request, approval_wait]}
 metrics: {listen: 0.0.0.0:9464, allow_remote: true}
 ```
 
@@ -203,7 +204,8 @@ http:
   authenticators: [token]
   tokens: /var/lib/tracekit-signer/tokens.json
 tenants: {"token:*": default}
-authorize: {"token:*": [register_run, decide, complete, state_write, model_event, close_run, status]}
+authorize: {"token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
+                       state_write, status]}
 metrics: {listen: 127.0.0.1:9464}
 ```
 
@@ -300,7 +302,7 @@ as it needs nothing the schema lacks:
 - **1.4** speaks signer protocol 19. A 1.4 signer serves clients and gateways from protocol 15 up (1.2 and 1.3
   included), but a 1.4 client or gateway refuses a 1.3 signer: upgrade the signer first. A bundle whose records use
   1.4's additions (live constraints, signed findings that cite records, kernel sensor or OpenShell effects, `said_only`
-  model messages, the `ext` slot) needs a 1.4 verifier; an older one reports it `UNVERIFIABLE (needs tracekit >=
+  model messages, the `ext` slot), and a run exported in parts (past 64 MiB of records), needs a 1.4 verifier; an older one reports it `UNVERIFIABLE (needs tracekit >=
   1.4.0)`. A same-user dev signer from 1.3 is replaced by the first 1.4 client that finds it. The store's schema is
   unchanged.
 

@@ -81,9 +81,10 @@ in compose. A run's `proxy_env` merged over `os.environ` keeps that `NO_PROXY` f
 An observation no open run takes (a token the signer did not issue for that run, or issued to another identity, with
 no open run of the connection's identity to fall back to; an identity with no open run; a run already final) goes into
 the tenant's signer run as a `capture.gap{kind: effect_outside_run}` naming the host, the traffic, why, and the run the
-client named, so a [run-set](format-v2.md#7-registry-logs-and-run-sets) shows it. The proxy drops nothing the signer
-refuses: it splits a refused call until each refused total is on its own, says why on stderr, and sends those again
-with every heartbeat.
+client named, so a [run-set](format-v2.md#7-registry-logs-and-run-sets) shows it. The proxy splits a call the signer
+refuses until each refused total is on its own, says why on stderr, and sends those again with every heartbeat. It
+keeps at most 10,000 of them: past that it drops the oldest and says how many on stderr
+([limits](limits.md#egress-observation-12)).
 
 ## What is refused
 
@@ -153,7 +154,7 @@ until your `explains` list is tuned.
 ## Heartbeats and coverage
 
 Every `observe_effect` call is the observer's heartbeat, on the same machinery as the
-[transcript tailer's](coding-agents.md#what-the-signer-records-as-a-gap-12). An observer covers each run of its tenant
+[transcript tailer's](coding-agents.md#what-the-signer-records-as-a-gap). An observer covers each run of its tenant
 registered while it is alive. When it makes no call for 90 s while a run it covers is open, or another process of
 it takes over (a restart: the old one's unreported totals may be gone), the signer writes a signed
 `capture.gap{kind: observer_lost}` in that run, and the run's network is no longer `observed`. The process taken over

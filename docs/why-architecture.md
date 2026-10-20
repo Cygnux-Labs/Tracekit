@@ -213,7 +213,8 @@ has passed since the last send, so a collector sees a run live. It raises on HTT
 the caller.
 
 **Security.** Every request needs the token (`--token`, `$TRACEKIT_WHY_TOKEN`, else a random one printed in the URL).
-The page exchanges the URL's `?token=` once for an HttpOnly, SameSite=Strict cookie derived from it; the API also takes
+The page exchanges the URL's `?token=` once for an HttpOnly, SameSite=Strict cookie: an expiry 8 hours on and a MAC
+of it under the server's own random key, so it holds nothing of the token and dies with the server; the API also takes
 `Authorization: Bearer <token>`, and ingest takes only that. A request addressed to a Host other than loopback or the
 bound address is refused unless it carries the token; a POST needs an expected Host. The replay POSTs need a JSON body
 and, when an `Origin` is sent, a same-origin one. The page has a strict CSP with a script nonce per response. Beyond

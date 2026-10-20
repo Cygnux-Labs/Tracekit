@@ -1,5 +1,8 @@
 # MCP client (signer RPC)
 
+> **Stable:** tested with [`tests/adapter_contract.py`](../../tests/adapter_contract.py) against the pinned library on every push to main
+> and every pull request ([what's stable](../support.md)).
+
 `tracekit.integrations.mcp.TracekitSession` gates the tool calls an agent makes through an MCP `ClientSession` (the
 Python `mcp` package). Before each `call_tool` it asks the Tracekit signer for a policy decision; after the server
 answers it records the outcome. It works with any object that implements the signer RPC
