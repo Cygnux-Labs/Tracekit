@@ -1,5 +1,8 @@
 # Proof packs
 
+> **Experimental (v1):** this package builds on the v1 laptop signer and isn't part of the stable core
+> ([what's stable](../../docs/support.md)).
+
 ```bash
 tracekit analyze --run R                                  # optional: include signed findings
 tracekit-proofpack --run R -o pack.zip --key signer.pub   # or: tracekit-proofpack run.tkb -o pack.zip

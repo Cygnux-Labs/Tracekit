@@ -1,5 +1,8 @@
 # tracekit-onchain: transaction guards
 
+> **Experimental (v1):** this package builds on the v1 laptop signer and isn't part of the stable core
+> ([what's stable](../../docs/support.md)).
+
 `pip install ./contrib/onchain`
 
 ```python

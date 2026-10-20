@@ -1,5 +1,8 @@
 # tracekit-causeway
 
+> **Experimental (v1):** this package builds on the v1 laptop signer and isn't part of the stable core
+> ([what's stable](../../docs/support.md)).
+
 [Causeway](https://github.com/Cygnux-Labs/Causeway) records causal logs of multi-agent runs and tests which input made
 an action happen by replaying without it. Its events are hash-chained but not signed. Tracekit closes that (`pip install ./contrib/causeway`):
 

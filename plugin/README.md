@@ -1,5 +1,8 @@
 # Tracekit plugin for Claude Code
 
+> **Experimental:** the plugin works and is tested, but may change and gets less hardening than the
+> [stable core](https://github.com/Cygnux-Labs/Tracekit/wiki/Support). The same hooks wired by `tracekit init --dev --v2` are stable.
+
 Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-status`, `/tracekit-verify` and
 `/tracekit-pending`.
 

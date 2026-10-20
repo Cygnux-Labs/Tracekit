@@ -1,5 +1,8 @@
 # SQL over the ledger
 
+> **Experimental (v1):** this package builds on the v1 laptop signer and isn't part of the stable core
+> ([what's stable](../../docs/support.md)).
+
 ```bash
 tracekit-sql --schema
 tracekit-sql "SELECT name, count(*) FROM tool_calls GROUP BY name ORDER BY 2 DESC"

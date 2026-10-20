@@ -1,5 +1,9 @@
 # @cygnuxlabs/tracekit
 
+> **Experimental:** the client and its Vercel AI SDK integration work and are tested, but may change and get less
+> hardening than the [stable core](https://github.com/Cygnux-Labs/Tracekit/wiki/Support). Its verifier
+> (`src/verify/`) is stable.
+
 Tracekit for TypeScript and JavaScript agents: every tool call is decided by the Tracekit signer before it runs and
 recorded after, and model responses become signed evidence. The client talks to the signer directly; it needs no Python
 at runtime (the same-user dev signer is started with Python when none is running).
