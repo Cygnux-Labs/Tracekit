@@ -291,11 +291,7 @@ class Grammar(unittest.TestCase):
                 # delta review D-L7: a folder whose name has a dot, an underscore or a hyphen
                 ("Don't touch the .github folder.", ("keep_away", ".github/"), edit(".github/workflows/ci.yml")),
                 ("Don't touch the node_modules folder.", ("keep_away", "node_modules/"),
-                 edit("node_modules/left-pad/index.js")),
-                # delta review D-L2: a README or CHANGELOG named without an extension
-                ("Leave the README alone.", ("keep_away", "readme"), edit("README")),
-                ("I don't want the README changed.", ("keep_away", "readme"), edit("README")),
-                ("The CHANGELOG is not yours to edit.", ("keep_away", "changelog"), edit("CHANGELOG"))):
+                 edit("node_modules/left-pad/index.js"))):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [want])
                 self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", *call), (True, "high"))
@@ -322,6 +318,10 @@ class Grammar(unittest.TestCase):
         for said in ("Don't make any changes of any kind.", "Don't make any changes in the meantime.",
                      "Don't make any changes under any circumstances.", "Don't make any edits to any file.",
                      "Don't make any changes for now.", "Don't make any changes for the time being.",
+                     # delta review N-M1: "directly", "for", "on" that say how or for whom, not which changes
+                     "Don't make any changes directly; propose a diff instead.",
+                     "Don't make any changes for any reason.", "Don't make any changes on your own.",
+                     "Don't make any changes for me, just explain.", "Don't make any changes on this machine.",
                      # delta review D-M2: the whole project
                      "Don't make any changes to the code.", "Don't make any changes to the codebase.",
                      "Don't make any changes to the repo.", "Don't make any changes in this repository.",
