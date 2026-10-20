@@ -30,7 +30,7 @@ for, the calls it makes (`signer.yaml`):
 gateways: ["mtls:spiffe://acme.org/litellm"]
 authorize:
   "mtls:spiffe://acme.org/litellm": [decide, complete, approval_request, approval_wait, approval_consume]
-  "k8s_sa:system:serviceaccount:acme:support-agent": [register_run, close_run, decide, complete, approval_request, approval_wait, approval_consume]
+  "k8s_sa:system:serviceaccount:acme:support-agent": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait, status]
 ```
 
 **2. The proxy.** Install Tracekit in the LiteLLM proxy's environment (`pip install tracekit-ai`) and give the proxy its

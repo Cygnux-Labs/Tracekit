@@ -32,7 +32,7 @@ The example is [examples/v2/agent_sandbox/](../../examples/v2/agent_sandbox/).
 - **Identity**: the signer knows the agent as `k8s_sa:system:serviceaccount:agents:support-agent`, attested by the API
   server, and records it in the run. signer.yaml maps every service account in namespace `agents` to tenant `agents`
   and grants them what the adapters call: `register_run`, `decide`, `approval_consume`, `complete`, `close_run`,
-  `model_event`, `approval_request` and `approval_wait` (add what your integration needs:
+  `model_event`, `approval_request`, `approval_wait` and `status` (add what your integration needs:
   [limits](../limits.md#deployment)).
 
 The Sandbox uses `spec.podTemplate` with its `metadata.labels` and `spec` (a PodSpec). Nothing else is needed; a

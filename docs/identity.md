@@ -47,7 +47,7 @@ An OIDC token gives the identity `oidc:<alias>/<sub>` with:
 
 ```yaml
 authorize: {"group:corp/agents": [register_run, decide, approval_consume, complete, close_run, model_event,
-                                  approval_request, approval_wait],
+                                  approval_request, approval_wait, status],   # + approval_list: TypeScript adapters
             "group:corp/approvers": [approval_list, approval_get, approval_decide]}
 approvals: {self_approval: deny, approvers: ["group:corp/approvers", "person:corp/ann@corp.example"],
             break_glass: ["group:corp/oncall"]}

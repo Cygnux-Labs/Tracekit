@@ -161,7 +161,8 @@ http:
     ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 tenants: {"k8s_sa:system:serviceaccount:acme:*": acme}
 authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, approval_consume, complete, close_run,
-                                                    model_event, approval_request, approval_wait]}
+                                                    model_event, approval_request, approval_wait, status]}
+# + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
 metrics: {listen: 0.0.0.0:9464, allow_remote: true}
 ```
 
@@ -205,7 +206,8 @@ http:
   tokens: /var/lib/tracekit-signer/tokens.json
 tenants: {"token:*": default}
 authorize: {"token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
-                       state_write, status]}
+                       state_write, status, observe, constraint_add]}   # observe, constraint_add: the coding-agent hooks
+# + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
 metrics: {listen: 127.0.0.1:9464}
 ```
 

@@ -29,11 +29,15 @@ with a 1.4 verifier (see Upgrade notes); every existing bundle verifies as befor
   existing bundle verifies with 1.4. From 1.4 that verdict lists the commands that verify the bundle
   ([verdicts](docs/verdicts.md#a-bundle-that-needs-a-newer-verifier)).
 - **Grant lists.** The `authorize` lists in the docs and examples (deploy, remote ingest, identity,
-  `deploy/docker/signer.yaml.example`, the agent-sandbox example) lacked `approval_consume`, which the Python and
-  TypeScript adapters call after every allow, so a signer set up from them blocked every allowed call. They now grant
-  `register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait`: if you
-  copied an older list, add the ones it lacks. The framework integrations that now record what the model said (below)
-  send it with `model_event`, and warn without the grant ([limits](docs/limits.md#deployment)).
+  `deploy/docker/signer.yaml.example`) lacked `approval_consume`, which the Python and TypeScript adapters call after
+  every allow, so a signer set up from them blocked every allowed call. They now grant `register_run, decide,
+  approval_consume, complete, close_run, model_event, approval_request, approval_wait, status`: if you copied an older
+  list, add the ones it lacks. The framework integrations that now record what the model said (below) send it with
+  `model_event`, and warn without the grant; with the content vault on they also need `status`, or the vault keeps none
+  of that text (they now warn about that too). Coding-agent hooks on a remote signer (`tracekit init --remote ... --v2`)
+  now also call `observe` (each prompt) and `constraint_add` (live constraints): add both to their token's list, or the
+  hook reports an error at each prompt, records none and holds no live constraint
+  ([limits](docs/limits.md#deployment)).
 - **Policy packs.** Coding `2026.10-v2-21` (from `2026.10-v2-7`), server `2026.10-server-8` (from `-6`), browser `-5`,
   server-cloud `-4`, server-comms `-3`, server-data `-3`, server-net `-4`, and the new `strict.yaml`
   (`2026.10-strict-3`). The dev signer's default policy extends the coding pack, so on a laptop too these hold or deny
