@@ -2,6 +2,264 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.4.0 (2026-10-DD) — sandboxes, and what was asked, said and done
+
+Tracekit now works with the sandbox an agent runs in (#308): it holds Claude Code's and Gemini CLI's requests to run a
+command outside or beyond their sandbox until a person approves, decides each request or MCP call that NVIDIA
+OpenShell, sandbox-runtime's proxy, agentgateway or LiteLLM is about to let through, signs the hosts E2B and
+microsandbox sandboxes reach, and signs what a kernel sensor (Tetragon, Falco) saw an agent's processes do.
+`tracekit analyze --v2` compares what the person asked, what the model said and what ran, and signs what it finds; the
+coding-agent hooks hold a call that breaks a "don't touch X" in the prompt. A bundle can be verified in a browser page,
+and a run too long for one bundle file exports in parts. Upgrade the signer before its clients, and verify 1.4 bundles
+with a 1.4 verifier (see Upgrade notes); every existing bundle verifies as before.
+
+### Upgrade notes
+- **Signer first.** 1.4 speaks signer protocol 19: a 1.4 signer serves clients and gateways from protocol 15 on (1.2
+  and 1.3 included), but a 1.4 client or gateway refuses a 1.3 signer. A same-user dev signer from 1.3 is replaced by
+  the first 1.4 client that finds it (Python and TypeScript); a signer you run yourself must be upgraded first
+  ([deploy](docs/deploy.md#upgrading)). The store's schema is unchanged. TypeScript: an older `tracekit` on your PATH
+  starts an older signer: `pip install -U tracekit-ai`.
+- **Bundles.** A bundle needs a 1.4 verifier when it holds a live constraint (`constraint.added`, or a
+  `capture.gap{constraint_refused}`), a signed finding (`review` with `cites`), a kernel sensor's or OpenShell's
+  effects (`effect.observed` with `sensor` or `denied`) or a sensor's `observer_lost` gap (with `sensor`), a model
+  message recorded `said_only` (Gemini CLI and Cursor sessions), any `ext` field or record (the LLM gateway's
+  `ext.amended`, OpenShell's `openshell.policy`), or a run in parts (`runs/<id>.part-NNNN.jsonl`, for a run past
+  64 MiB of records). A 1.3 or older verifier reports it `UNVERIFIABLE (needs tracekit >= 1.4.0)`, never `FAILED`, and
+  `tracekit export --v2` names the records that raised the version. Every other bundle verifies with 1.3 too, and every
+  existing bundle verifies with 1.4. From 1.4 that verdict lists the commands that verify the bundle
+  ([verdicts](docs/verdicts.md#a-bundle-that-needs-a-newer-verifier)).
+- **Grant lists.** The `authorize` lists in the docs and examples (deploy, remote ingest, identity,
+  `deploy/docker/signer.yaml.example`, the agent-sandbox example) lacked `approval_consume`, which the Python and
+  TypeScript adapters call after every allow, so a signer set up from them blocked every allowed call. They now grant
+  `register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait`: if you
+  copied an older list, add the ones it lacks. The framework integrations that now record what the model said (below)
+  send it with `model_event`, and warn without the grant ([limits](docs/limits.md#deployment)).
+- **Policy packs.** Coding `2026.10-v2-21` (from `2026.10-v2-7`), server `2026.10-server-8` (from `-6`), browser `-5`,
+  server-cloud `-4`, server-comms `-3`, server-data `-3`, server-net `-4`, and the new `strict.yaml`
+  (`2026.10-strict-3`). The dev signer's default policy extends the coding pack, so on a laptop too these hold or deny
+  calls 1.3 allowed (what each rule doesn't catch is in [limits](docs/limits.md#policy); the policy corpus, E17: 570 of
+  570 stopped, 1 false alarm in 738):
+  - a program name in another case or with `.exe` (`Git push --force` is denied as `git push --force` is), and a shell
+    command's paths in another case (`cp x .ENV` is denied as a write to `.env`);
+  - `ask`: `TK-A002` deleting a remote Git branch or tag; `TK-A003` a Claude Code command run with
+    `dangerouslyDisableSandbox: true`, and `TK-A014` one whose `allowed_domains` names a host; `TK-A004` a Gemini CLI
+    call's `additional_permissions`; `TK-A010` to `TK-A013` adding something that runs at every login or boot, writing
+    a Git hook or moving where hooks live; `TK-A020` to `TK-A030` reading a credential store or an SSH agent's keys,
+    changing Docker's daemon configuration or socket, a container with host privileges or mounts, a package source
+    changed or chosen for an install (an index, a registry, a version-control URL), and editing or clearing shell
+    history and system logs;
+  - `deny`: `TK-D020` dumping a whole credential store, `TK-D021` installing a package from a URL, and `TK-D010` a read
+    redirected from a credentials file (`< .env`) as well as a write;
+  - `TK-SHELL-PARSE` asks whenever a shell the parser can't read (`fish`, `csh`, `tcsh`, PowerShell, `nu`, `xonsh`,
+    `elvish`) runs commands from its line or stdin, even `pwsh -c 'Get-Date'`;
+  - `TK-ENGINE-ERROR` denies a call the policy engine itself fails on (a bug), which used to drop the signer
+    connection with nothing signed.
+- **Coding-agent hooks.** The v2 hooks of Claude Code (the plugin's too), Codex, Cursor and Gemini CLI now record each
+  prompt as the harness submits it, and send what it rules out ("don't touch billing.py", "read-only", "don't push",
+  "no network") to the signer as live constraints (experimental): a later call that breaks one waits for a person's
+  approval, as any `ask` (`TK-CONSTRAINT`). Run `tracekit init --v2` again (`--dev` on a laptop, `--agent` for Codex
+  or Cursor) so the model's reasoning can be read: it turns on Claude Code's thinking summaries and Codex's
+  `model_reasoning_summary` unless you set them (`--no-thinking-summaries` leaves them alone), and adds Cursor's
+  thought hooks. A hook the signer rate-limits now waits and sends again, where it blocked the call.
+- **The LLM gateway changes one field of some requests.** A request that has the model reason but hides it (Anthropic
+  `thinking` on with `display` unset or `"omitted"`; OpenAI Responses `reasoning` with no summary) is sent asking for
+  the provider's summaries (`thinking.display: "summarized"`, `reasoning.summary: "auto"`), and its record names the
+  change (`ext.amended`). A provider that answers 400 or 422 gets the request again as the client sent it.
+  `show_reasoning: false` in the gateway's config sends every request unchanged
+  ([gateway](docs/gateway.md#readable-reasoning)).
+- **Gateway limits count per agent.** The events, approval waits and runs a gateway (the executor, the MCP gateway,
+  the LLM gateway, the OpenShell middleware, the `ext_mcp` processor) sends for an agent count against that gateway's
+  `limits` for that agent, where its events shared one budget for all its agents; a gateway's open runs stop at
+  `limits.gateway_open_runs` (10,000). Size `limits` for one agent's traffic ([limits](docs/limits.md#custody-12)).
+- **Egress observer.** One identity is one observer process: a second process under it takes over, and the first is
+  refused (`conflict`), so give each proxy (and each sensor import) its own identity. A connection must send what
+  attributes it within 5 s and a tunnel its TLS ClientHello within 30 s; one attribution holds at most 64 tunnels at
+  once, and on Linux one loopback uid 64 connections ([egress](docs/egress.md#what-is-refused)).
+- **`tracekit export --v2 --run-set`** refuses a bundle past the format's 10,000 files or 512 MiB and says which, where
+  it wrote one no verifier reads. A tenant with more than about 10,000 finished runs needs splitting: a tenant per
+  workload, or a new `data_dir` ([limits](docs/limits.md#evidence-and-verification)).
+
+### Added
+- **What was asked, said and done (experimental, #309).** `tracekit analyze --v2` checks a v2 run's prompts and what
+  the model said (from the content vault) against what ran: an action with nothing said before it (TK-X201), an edit of
+  a file no request named and the model never said it changes (TK-X202), a write outside the project (TK-X203), a
+  broken stated constraint (TK-X204), success claimed after a failed test or build (TK-X205), a prompt line the harness
+  never submitted (TK-X208), data sent out, files deleted or a package added without telling the person (TK-X211), and
+  v1's say-vs-do checks; TK-X200 counts what each check couldn't check and why, never as a pass. Each finding is signed
+  through the signer (`review_finding`) into a findings run of its own, by an identity signer.yaml `analyzers` lists,
+  citing records by `run_seq` and hash with no text of the run. `tracekit export --v2 --run R --with-findings` bundles
+  them; both verifiers check the citations, label each finding's author (`independent` only when the trust config's new
+  `analyzers` pins it; `self-asserted` for the agent's own identity or a same-user signer) and sum the findings on a
+  `Findings:` line, beside the integrity verdict, never in it. `--review` adds a reviewer model's opinion (TK-X210,
+  warn only; its detection and false-alarm rates aren't measured yet)
+  ([findings](docs/findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)).
+  E20, synthetic, blind pool v3 scored once (#316, PR #317), replaying Claude Code sessions written blind to the checks
+  through the hook, the tailer and a signer: an unrequested edit is found in every session when no request names the
+  file; after a "don't touch X", 79-100% by cover (a live constraint held 67-92% before the edit ran); a false success
+  claim after a failed test run, 86%; a file sent out, deleted, or a package added and pushed with nothing said of it,
+  96-100% by cover, except a file sent out under an innocent mention of it (33%); claimed checks that never ran, 7 of
+  15. On its 1,812 honest calls, 5 false findings (TK-X202 2, TK-X204 2, TK-X211 1) and 1 call held. Pools v1 and v2
+  are development sets, read while the checks were fixed: after a "don't touch X", 54-83% and 88-96% by cover. The
+  effect checks (TK-X206, TK-X207) found or marked not checkable every fault, with no false alarm over about 9,800
+  honest effects, on a tuned generator and on a separate one committed before the checks existed (176 runs each)
+  ([evaluation](docs/evaluation.md#e20-intent-reasoning-and-action-checks)).
+- **Readable reasoning.** What the model said before each call is recorded where the agent exposes it: the Claude Code
+  transcript tailer records every line the model writes and every prompt; the Codex, Cursor and Gemini CLI hooks what
+  their model said since the last hook; the Pydantic AI, Google ADK, Strands, Haystack, LlamaIndex, LangChain
+  (`create_agent` middleware), Claude Agent SDK (`tracekit_said`) and Microsoft Agent Framework (`tk.chat`)
+  integrations each model message; the LLM gateway its exchanges (Upgrade notes). Each record commits to the text, which
+  the content vault keeps when it is on. Which agents, frameworks and providers return readable reasoning, and how to
+  turn it on: [reasoning](docs/reasoning.md). `tracekit doctor` warns when it is off (`D-THINKING-SUMMARIES`,
+  `D-CODEX-REASONING`, `D-GEMINI-THOUGHTS`), and when the agent's own identity may sign findings (`D-ANALYZER-AGENT`).
+- **Live constraints (experimental).** A limit the person's prompt states for the rest of the run is signed as
+  `constraint.added` (`constraint_add`; a file only as a salted commitment to its name), and the signer raises each
+  later call that breaks it to `ask` with `TK-CONSTRAINT`, never lowering a decision, so a made-up constraint only makes
+  the agent wait. A small fixed grammar reads "don't touch / edit X", "leave X alone", "read-only", "don't push" and "no
+  network", and leaves what is ambiguous unread; a scope ("only change X") is checked after the run (TK-X204), never
+  held. On E20's 56 honest sessions (a development set) none holds a call. A run takes 32 file constraints: past them a
+  signed `constraint_refused` gap, and every write of the run is held. `tracekit verify` checks that each
+  `TK-CONSTRAINT` hold follows a constraint ([policy](docs/policy-v2.md#live-constraints)).
+- **Kernel sensor import (experimental, Linux; part of #307).** `tracekit sensor import` reads Tetragon's export or
+  Falco's JSON alerts and has the signer sign each exec, exit, connect and file event of an agent's process into that
+  agent's run (`effect.observed`; arguments committed, not stored), and a signed `observer_lost` gap for the drops the
+  sensor reports and for the import's silence or restart. A run an import covered throughout reads `processes:
+  observed` in its coverage matrix. `tracekit analyze --v2` joins effects to calls (by the call id the process carried,
+  Codex's `CODEX_TOOL_CALL_ID`, its parent process or the time) and flags an effect no call explains (TK-X206) and a
+  call that reported success with no effect (TK-X207). Tested against event lines shaped as each sensor's source writes
+  them, not a live sensor ([Tetragon](docs/integrations/tetragon.md), [Falco](docs/integrations/falco.md)).
+- **Coding agents' sandboxes (#299, #302).** The coding pack's `TK-A003` holds each Claude Code command retried with
+  `dangerouslyDisableSandbox: true`, and `TK-A014` each one whose `allowed_domains` opens a host, until a person
+  approves from outside the session; `TK-A004` holds each sandbox expansion a Gemini CLI call asks for (Gemini CLI's
+  hooks are experimental). `tracekit doctor` warns when Claude Code would run commands unsandboxed if its sandbox can't
+  start, or a custom proxy port turns off its network allowlist (`D-CLAUDE-SANDBOX`), and when Gemini CLI's settings
+  turn on its whole-CLI sandbox, where Tracekit's hooks don't run or block every call (`D-GEMINI-SANDBOX`). Codex's
+  page says what Tracekit can't see there (its escalation requests) and how `CODEX_TOOL_CALL_ID` joins a process to its
+  signed call ([Claude Code](docs/integrations/claude-code-sandbox.md), [Codex](docs/integrations/codex-sandbox.md),
+  [Gemini CLI](docs/integrations/gemini-sandbox.md)).
+- **NVIDIA OpenShell (experimental, #300).** `tracekit openshell-middleware`, an OpenShell supervisor middleware,
+  decides each HTTP request OpenShell's network policy allows to the hosts you choose, before OpenShell adds
+  credentials, and records the response; a request it asks about is refused until the agent sends it again after a
+  person approved it. Its OCSF import signs OpenShell's own events into the same run: the connections OpenShell allowed
+  or blocked, the agent process it started, and each policy or configuration change (an `ext` record,
+  `openshell.policy`), with a signed gap where OpenShell drops events ([OpenShell](docs/integrations/openshell.md)).
+- **Network sandboxes (experimental).** The egress observer takes SOCKS5 on its listeners (inside TLS off loopback), so
+  the outbound proxies of [E2B](docs/integrations/e2b.md) and [microsandbox](docs/integrations/microsandbox.md) send
+  each sandbox's connections through it, and the run gets a signed record of each host reached, made outside the
+  sandbox (#303). `tracekit srt-decider` is the decider of sandbox-runtime's `srt-proxy`: the signer decides each
+  request srt-proxy would forward ([sandbox-runtime](docs/integrations/sandbox-runtime.md)).
+- **MCP gateways (experimental).** [agentgateway](docs/integrations/agentgateway.md) (#301): `tracekit ext-mcp serve`
+  is its `ext_mcp` processor, deciding each MCP `tools/call` before agentgateway forwards it, and the signer's OTLP
+  import records the MCP spans agentgateway exports. [LiteLLM](docs/integrations/litellm.md):
+  `tracekit.integrations.litellm.TracekitGuardrail`, a `pre_mcp_call` guardrail, decides each MCP tool call LiteLLM's
+  proxy runs. Behind Tracekit's MCP gateway: [Wassette](docs/integrations/wassette.md) (#304), with a policy that holds
+  each component load and permission grant for a person, and
+  [Docker's MCP Gateway](docs/integrations/docker-mcp-gateway.md) as an upstream.
+- **Kubernetes agent-sandbox (experimental, #306).** An example with the signer outside the agent's `Sandbox`, in a
+  namespace of its own, so the record outlives the pod ([agent-sandbox](docs/integrations/agent-sandbox.md)).
+- **agentsh (experimental).** `tracekit follow agentsh --log PATH` has the signer sign each decision agentsh logs as it
+  writes it, as the identity signer.yaml's new `importers` lists, with a signed gap wherever the log breaks
+  ([agentsh](docs/integrations/agentsh.md)).
+- **Policy (#310, PR #313; #258).** The rules in Upgrade notes. A rule's `remedy`, one sentence on what to do instead,
+  ends the `decide` response's `reason` (the coding pack's deny and ask rules, and those `server.yaml` and
+  `strict.yaml` add, carry one); `on_parse_error: deny` denies, rather than holds, a shell command the parser can't
+  read; the shell fields `effects` (each file a command writes or deletes), `package_index` and
+  `container_host_access`; and `TK-F014` flags a trailing `&` ([policy](docs/policy-v2.md#packs-shipped)).
+- **`strict.yaml`**: `server.yaml` with pushes, installs, publishes, `docker run`, applies, network commands and
+  environment changes held for a person, and unreadable commands denied. It holds 36 of E17's 738 benign calls (4.9%;
+  the server pack, 1) and 13 of E21's 130 developer-session calls (10.0%): use it where a person answers holds promptly.
+- **E21: policy robustness (#311, PR #314).** On 420 harmful and 432 benign calls written blind to the rules, the
+  server pack stopped or held 211 of the harmful ones (50.2%) on its one blind run, and 237 (56.4%) after rules were
+  added that target the pool's shapes, a number that overstates blind recall; it holds 18 of the 432 benign calls
+  (4.2%) and 2 of 130 developer-session calls (strict: 246 blind and 266 after, of 420; 47 benign and 13 session
+  calls held). Each of E17's 261 shell commands rewritten in up to five equivalent ways (1,265 rewrites) is still
+  denied or held, gated rule by rule ([evaluation](docs/evaluation.md#e21-policy-robustness)).
+- **Format 1.4: a non-critical slot.** Any record may carry `ext`, and a record of type `ext` holds what a later
+  Tracekit adds: a verifier from 1.4 on checks its signature, chain and inclusion and names each ext name it doesn't
+  interpret on a `not interpreted` warning (`--strict` exits 3), so a later bundle still verifies. The manifest's new
+  `verifier_version` names the version that checks everything ([format v2](docs/format-v2.md#9-bundle-layout)). RPC 19,
+  format gate 1.4.
+- **A run in parts.** A run past 64 MiB of records (about 24,000 tool calls) is exported as ordered parts of up to
+  64 MiB (`runs/<id>.part-0001.jsonl`, ...), up to the bundle's 512 MiB (about 190,000 tool calls), and both verifiers
+  check the parts as one run (`run parts`). A run cut back reads open, never `VERIFIED`
+  ([limits](docs/limits.md#evidence-and-verification)).
+- **The browser verifier.** `verify.html` (a release asset; `dist/verify.html` in the npm package; `make verify-page`)
+  is the TypeScript verifier as one page: drop in a bundle and its trust file, and its Content Security Policy lets it
+  load and send nothing. It explains each line and says what to do next; without a trust file it checks everything
+  that needs no pinned key and is never `VERIFIED` ([verdicts](docs/verdicts.md#verify-in-your-browser)).
+- **E22: verifier agreement on real bundles.** 63 bundles made as a user would (every offline example, the server demo,
+  the Claude Code hook with signed findings, sensor, OpenShell and agentsh runs, a 50,000-call run, the 1.2.3 and 1.3.0
+  signers' runs, the v1 sample, and 33 forgeries) get the same verdict from the Python CLI, the TypeScript CLI and the
+  page in Chrome; the 25 honest bundles and 5 controls verify, and no forgery does
+  ([evaluation](docs/evaluation.md#e22-verifier-agreement-on-real-bundles)).
+- **Docs.** [How Tracekit works](docs/concepts/README.md), fifteen pages on Tracekit's concepts in order (#238);
+  [compliance mapping](docs/compliance/README.md) for the EU AI Act, ISO/IEC 42001, the NIST AI RMF and OWASP (#292);
+  a [quickstarts index](docs/quickstarts/README.md); [integrations](docs/integrations.md) as the hub of every
+  integration. The GitHub wiki is generated from `docs/` (`scripts/wiki.py`).
+
+### Changed
+- **Shell commands are read more fully.** A program name is read in lower case and without `.exe`, more wrappers and
+  runners are followed (`caffeinate`, `npx`, `uv run`, `poetry run`, `direnv exec`, `mise exec`, `op run`,
+  `doppler run`, `npm exec`, `pnpm dlx`, `nix-shell --run`, `env -S`, ...), and path rules and shell `target` rules
+  match casefolded. `TK-D003` reads a force push in the push's own words, so a later command (`git push && ls -f`) or a
+  commit message naming one is no longer denied; `TK-D010`, `TK-A011` and `TK-A013` read each command and redirection
+  target on its own. Every shipped pattern but eight searches 64 KiB built to make it back off within 50 ms on the
+  fallback engine; the eight are in [limits](docs/limits.md#policy).
+- `TK-F009` also flags an agent's edit of Gemini CLI's and Cursor's settings and hooks; `TK-D013` covers the per-`HOME`
+  dev signer directories.
+- **The viewer** shows each prompt and what the model said (`PROMPT`, `THINK`, `SAYS` rows), signed findings beside the
+  integrity line, a held call's approvals under it with how it ended, the run in one sentence, and the exact
+  `tracekit export --v2` and `tracekit verify` commands. When one run can't be checked it says `NOT CHECKED` and keeps
+  checking the others; if its checks stop altogether it says `STOPPED`, not `LIVE` ([viewer](docs/viewer.md)).
+- **Docs links go to the wiki.** The README, package metadata and the CLI's messages, errors and doctor fixes link to
+  the GitHub wiki page of each docs page.
+- **Each integration page says what it was tested against** (#312 tracks the rest): Claude Code's sandbox settings
+  read from a real Claude Code, Wassette 0.8.0 by hand, agent-sandbox v1.0.7 end to end on a kind cluster; the others
+  against the product's source, API description or recorded payloads, or a stand-in, not yet a running release.
+- The egress observer's run-token checks cost none of its event rate; it keeps at most 10,000 refused totals to send
+  again, dropping the oldest with a line on stderr.
+
+### Fixed
+- `tracekit export` wrote a run past 64 MiB of records (about 24,000 tool calls) as one file every verifier called
+  `UNUSABLE BUNDLE`; it now writes the run in parts, and refuses a bundle past the format's limits (found by E22).
+- The TypeScript verifier reported a valid bundle of 60,000 or more records `FAILED` in a browser (a call stack
+  overflow).
+- An executor tool's call under LangChain or the Claude Agent SDK carries the model's call id, so it no longer
+  reconciles as `reconcile.fabricated` next to the LLM gateway.
+- A trace imported over OTLP closes its run when its root span arrives. Each trace stayed open for `idle_s`, so after
+  100 traces in an hour (agentgateway sends one per request) every batch was refused.
+- The MCP gateway reopens an upstream session that ended (a stdio server that exited) at the next call, where every
+  later call failed until the gateway restarted.
+- A second `HOME` that shares a runtime dir with the first (macOS's `/tmp` fallback for a long `HOME`, Linux's
+  `$XDG_RUNTIME_DIR`) gets a dev signer of its own; its client wrote runs into the other `HOME`'s store.
+- A shell command or a URL that made the policy engine fail dropped the signer connection with nothing signed; such a
+  call is now decided and signed (an engine error is `TK-ENGINE-ERROR`, a deny).
+- The viewer: a run that verified at one checkpoint and failed at a later one kept its earlier rows on the tape as
+  signed; they are taken back, with its earlier report and findings.
+- `tracekit ingest --help` shows ingest's own help; doctor's re-init fix names `--experimental-macos` on macOS, and its
+  no-witness message says assurance stays `dev`.
+- E4's v2 part, E12 and E14 run again; the README gives the compose stack's isolation as `separate-user`, and E3 as
+  recorded (11 of 16).
+
+### Security
+- **Program names in any case** (#258): on a case-insensitive file system `Git push --force` runs git, and the coding
+  pack allowed it. The command-line rules now read program names in any case, and shell paths casefolded.
+- An agent's `decide` labelled `args_source: coerced` no longer skips the comparison with the LLM gateway's own record
+  of the model's call, so decided arguments can't hide the ones the model asked for.
+- **The viewer's session cookie** was derived from its token: it never expired, every later viewer started with that
+  token took it, and a page on another port of the host could replay it. It is now the viewer's own, valid for 8 hours
+  and only while that viewer runs: open the URL again after that ([limits](docs/limits.md#viewer)).
+- Both verifiers drop bidirectional and zero-width characters from report text, so an agent-chosen name can't reorder
+  the words around it.
+- Both verifiers fail `run chain` when a bundle holds one run under two file names, which verified with its records
+  counted twice.
+- The viewer keeps each run's latest verdict past its live-view cap, a failed run's last of all, so an agent writing
+  many records can't push a `FAILED` run out of the run list.
+- Egress observer: a client trickling bytes before its TLS ClientHello kept its slot, and 256 of them locked out every
+  agent on a shared address; the deadline now holds until the ClientHello, with the per-attribution and per-uid caps
+  in Upgrade notes.
+- A gateway's agents no longer share one budget of events, approval waits and open runs, so one agent can't spend what
+  the gateway's other agents need.
+
 ## 1.3.0 (2026-10-18) — six more frameworks
 
 Tracekit now gates tool calls in Pydantic AI, Google ADK, Strands Agents, LlamaIndex, Haystack and Microsoft Agent
