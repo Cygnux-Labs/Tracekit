@@ -77,6 +77,14 @@ class DevFresh(unittest.TestCase):
         self.assertIn("assurance stays dev", got["D-WITNESS-CONFIGURED"]["detail"])
         self.assertIn("the dev signer takes no witnesses", got["D-WITNESS-CONFIGURED"]["fix"])
 
+    def test_without_witnesses_assurance_is_local_only_with_an_anchor(self):
+        """A production signer with no witness said assurance stays local; the verifier says dev without an anchor."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for cfg, level in (({}, "dev"), ({"anchors": {"rekor": {"url": "https://rekor.example"}}}, "local")):
+            got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d, **cfg})}
+            self.assertIn(f"assurance stays {level}", got["D-WITNESS-CONFIGURED"]["detail"])
+
 
 class K8s(unittest.TestCase):
     def test_clean_deployment_passes_every_check(self):

@@ -613,7 +613,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     ws = cfg.get("witnesses") or []
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "
-        f"so assurance stays {'local' if prod else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
+        f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
         if prod else f"the dev signer takes no witnesses: serve one from a signer.yaml with witnesses: ({wiki_url('docs/witnesses.md')})",
         bad=sev)
     if ws:
