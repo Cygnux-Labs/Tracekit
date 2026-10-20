@@ -418,8 +418,8 @@ class ObserverServer(unittest.TestCase):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, token))
         srv.daemon_threads = True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)   # cleanups run last first: serve_forever stops before its socket closes
         self.addCleanup(srv.shutdown)
-        self.addCleanup(srv.server_close)
         return srv.server_address[1]
 
     def get(self, port, path, headers=None):
@@ -443,8 +443,8 @@ class ObserverServer(unittest.TestCase):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, None))
         srv.daemon_threads = True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)   # cleanups run last first: serve_forever stops before its socket closes
         self.addCleanup(srv.shutdown)
-        self.addCleanup(srv.server_close)
         free, real = [], http.server.BaseHTTPRequestHandler.send_response
 
         def send_response(handler, *a, **kw):   # a client that stops reading would block right here
