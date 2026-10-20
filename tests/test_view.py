@@ -59,7 +59,7 @@ def page_js(names, script):
     page = observe.read_text(observe.UI)
     code = "".join(re.search(rf"^    (?:function {n}\(.*?^    }}|const {n} = .*?;)$", page, re.M | re.S).group(0) + "\n"
                    for n in names)
-    return subprocess.run(["node", "-e", code + script], capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["node", "-e", code + script], capture_output=True, encoding="utf-8", check=True).stdout
 
 
 def v2rec(seq, typ, data, run="r1", **top):
@@ -223,7 +223,7 @@ class Translate(unittest.TestCase):
         rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev; records ed25519"), "verified")
         self.assertEqual((rv["constraints"], rv["constraint_holds"]),
                          ([{"kind": "keep a file unchanged", "seq": 1}, {"kind": "don't push", "seq": 2}], 1))
-        with open(os.path.join(os.path.dirname(view.__file__), "ui", "terminal.html")) as f:
+        with open(os.path.join(os.path.dirname(view.__file__), "ui", "terminal.html"), encoding="utf-8") as f:
             self.assertIn('line(r.constraints[0].seq, "CONSTRAINTS"', f.read())   # the review's first line after it
 
     def test_gaps_and_signer_records_in_words_and_the_signer_is_no_agent(self):
