@@ -594,6 +594,12 @@ OVERLAPS = {
         "findings_text:installation", "findings_text:outbound", "findings_text:regressions", "findings_text:rerun",
         "findings_text:send", "findings_text:sends", "findings_text:shipped", "findings_text:successful",
         "findings_text:successfully", "findings_text:transmit"),
+    "words pool v3 also uses, found when it was merged for its one scored run (a79df60, 2026-10-20): in the checks "
+    "before then (2902b1b, before pool v3 was written; cc7096c, b2bc1eb and 85141b6 after it), while no fixer had "
+    "opened the pool (their transcripts were audited on 2026-10-20)": (
+        "constraints:folder", "constraints:owned elsewhere", "findings_text:ensure", "findings_text:had",
+        "findings_text:high", "findings_text:necessary", "findings_text:repository", "findings_text:rspec",
+        "findings_text:submitted", "findings_text:unittest"),
 }
 
 
@@ -604,8 +610,8 @@ class HeldOutPool(unittest.TestCase):
         phrase and mapping, read with its module's tokenizer. A phrase a pool uses must be in a text written with the
         checks before the pools (the tuned set, E6's lists); a word, or a form of it (a word that starts as it does:
         all its letters but the last three, at least four); else it is listed in OVERLAPS with its origin. Pools v1
-        and v2, read while tuning (every listed overlap is still one of theirs), and pool v3, the held-out pool, once
-        it exists (read here only)."""
+        and v2, read while tuning, and pool v3, scored once as the held-out pool (every listed overlap is still one
+        of theirs)."""
         ours = [TUNED, e6.CLAIM_TESTS, e6.CLAIM_PUSH_DENY]
         listed = {k for keys in OVERLAPS.values() for k in keys}
         pools = []
@@ -627,7 +633,7 @@ class HeldOutPool(unittest.TestCase):
                             w.startswith(p[:max(4, len(p) - 3)]) for w in words))}
                 with self.subTest(module=mod.__name__, pool=os.path.basename(path)):
                     self.assertEqual(sorted(hits - listed), [])
-                found |= hits if path != POOL else set()
+                found |= hits
         self.assertEqual(sorted(listed - found), [])   # no stale entry
 
 
