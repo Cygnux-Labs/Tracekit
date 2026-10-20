@@ -407,6 +407,8 @@ def _kept(tokens, i, end, cond):
     j = i   # past determiners: "stay out of the infra/ folder"
     while j > 0 and tokens[j - 1] in DETERMINERS:
         j -= 1
+    if tokens[j - 1:j] == ["outside"]:
+        return False   # "don't make any changes outside src/": a scope
     if c is not None and _refused(tokens, c) and not _where(tokens, c, i) or any(
             tokens[max(0, j - len(p)):j] == list(p) for p in AWAY) or tokens[max(0, j - 2):j] == ["out", "of"] and any(
             tokens[n] in LEAVE and set(tokens[n + 1:j - 3]) <= DETERMINERS | {"all", "own", "code", "other", "of"}
@@ -493,9 +495,10 @@ def _clause(tokens, before=()):
     generated; make no changes there", _referent); none when that clause asks for a change or sets a condition ("fix X;
     don't rewrite it"): _read."""
     files = {i: t for i, t in enumerate(tokens) if _file(t)}
-    if FOLDERS & set(tokens):   # "the vendor folder": a directory; files stay in the clause's order
+    if FOLDERS & set(tokens):   # "the vendor / .github folder": a directory; files stay in the clause's order
         files = dict(sorted({**files, **{i: t + "/" for i, t in enumerate(tokens[:-1]) if tokens[i + 1] in FOLDERS
-                                         and t.isalpha() and t not in DETERMINERS | PLACES}}.items()))
+                                         and t.lstrip(".").replace("_", "").replace("-", "").isalpha()
+                                         and t not in DETERMINERS | PLACES}}.items()))
     if not files and not STATING & set(tokens):
         return [], set()
     cond, later = _conditions(tokens), _suffix(tokens, VERBS)

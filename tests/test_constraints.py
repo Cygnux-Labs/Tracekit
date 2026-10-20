@@ -287,7 +287,11 @@ class Grammar(unittest.TestCase):
                 ("Keep your changes out of db/migrations/.", ("keep_away", "migrations/"),
                  edit("db/migrations/0004.sql")),
                 ("Don't modify the vendor directory.", ("keep_away", "vendor/"), edit("vendor/x.py")),
-                ("Don't make any changes, only review cache.go.", ("read_only", None), edit("cache.go"))):
+                ("Don't make any changes, only review cache.go.", ("read_only", None), edit("cache.go")),
+                # delta review D-L7: a folder whose name has a dot, an underscore or a hyphen
+                ("Don't touch the .github folder.", ("keep_away", ".github/"), edit(".github/workflows/ci.yml")),
+                ("Don't touch the node_modules folder.", ("keep_away", "node_modules/"),
+                 edit("node_modules/left-pad/index.js"))):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [want])
                 self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", *call), (True, "high"))
@@ -303,7 +307,9 @@ class Grammar(unittest.TestCase):
                      "Don't make any changes on main; work on a new branch.",
                      "Don't make any changes directly on main.", "Don't make any changes beyond what the fix needs.",
                      "Don't make any changes which would slow down the parser.",
-                     "Don't make any changes for the sake of style.", "Don't make any edits that touch the schema."):
+                     "Don't make any changes for the sake of style.", "Don't make any edits that touch the schema.",
+                     # delta review D-L7: a scope, not src/ kept away
+                     "Don't make any changes outside src/.", "Don't touch anything outside src/."):
             with self.subTest(said):
                 self.assertEqual(constraints.extract(f"Fix the bug in src/pager.py. {said}"), [])
                 self.assertEqual(replay_one(f"Fix the bug in src/pager.py. {said}", "Edit", {
