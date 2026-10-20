@@ -10,8 +10,8 @@
       "result": {
         "id": "D-CONFIG",
         "status": "fail",
-        "detail": "signer.yaml does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-8wjmmy7b/etc/signer.yaml: needs data_dir; unknown keys ['bogus']",
-        "fix": "fix signer.yaml, or sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+        "detail": "signer.yaml does not load: <run>/etc/signer.yaml: needs data_dir; unknown keys ['bogus']",
+        "fix": "fix signer.yaml, or sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos"
       }
     },
     "signer.yaml world-writable": {
@@ -20,7 +20,7 @@
       "result": {
         "id": "D-CONFIG",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-k2y315ax/etc/signer.yaml is group- or world-writable",
+        "detail": "<run>/etc/signer.yaml is group- or world-writable",
         "fix": "make it and its directories root-owned and not group/world-writable (sudo chown root:root; chmod go-w)"
       }
     },
@@ -50,7 +50,7 @@
       "result": {
         "id": "D-AGENT-PROBE",
         "status": "fail",
-        "detail": "e16-agent can read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-5bejqlg7/data/keys, read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-5bejqlg7/data/keys/record.key",
+        "detail": "e16-agent can read <run>/data/keys, read <run>/data/keys/record.key",
         "fix": "make these owned by root or the signer's user and not accessible to others (chmod o-rwx, go-w)"
       }
     },
@@ -60,7 +60,7 @@
       "result": {
         "id": "D-AGENT-PROBE",
         "status": "fail",
-        "detail": "e16-agent can write /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xi5zkpjq/etc/client.json",
+        "detail": "e16-agent can write <run>/etc/client.json",
         "fix": "make these owned by root or the signer's user and not accessible to others (chmod o-rwx, go-w)"
       }
     },
@@ -70,7 +70,7 @@
       "result": {
         "id": "D-POLICY-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-38nua1r0/etc/policy.json is group- or world-writable",
+        "detail": "<run>/etc/policy.json is group- or world-writable",
         "fix": "make the policy and its directories root-owned and not group/world-writable, or set policy: in signer.yaml to such a file"
       }
     },
@@ -80,8 +80,8 @@
       "result": {
         "id": "D-CODE-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-zdr66fsa/opt/pyvenv.cfg is group- or world-writable",
-        "fix": "re-run init to reinstall the venv: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+        "detail": "<run>/opt/pyvenv.cfg is group- or world-writable",
+        "fix": "re-run init to reinstall the venv: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos"
       }
     },
     "venv missing": {
@@ -90,8 +90,8 @@
       "result": {
         "id": "D-CODE-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-cgxyolqz/opt is missing",
-        "fix": "re-run init to reinstall the venv: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+        "detail": "<run>/opt is missing",
+        "fix": "re-run init to reinstall the venv: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos"
       }
     },
     "key file 0640": {
@@ -101,7 +101,7 @@
         "id": "D-KEYS-MODE",
         "status": "fail",
         "detail": "record.key is not a 0600 file of the signer's user",
-        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-pakeguok/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-pakeguok/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-pakeguok/data/keys/*.key; chown them to the signer's user"
+        "fix": "chmod 700 <run>/data <run>/data/keys; chmod 600 <run>/data/keys/*.key; chown them to the signer's user"
       }
     },
     "data dir 0750": {
@@ -110,8 +110,8 @@
       "result": {
         "id": "D-KEYS-MODE",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xt9irja6/data is not 0700",
-        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xt9irja6/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xt9irja6/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xt9irja6/data/keys/*.key; chown them to the signer's user"
+        "detail": "<run>/data is not 0700",
+        "fix": "chmod 700 <run>/data <run>/data/keys; chmod 600 <run>/data/keys/*.key; chown them to the signer's user"
       }
     },
     "content vault on, its key group-readable": {
@@ -121,7 +121,7 @@
         "id": "D-CONTENT-VAULT",
         "status": "fail",
         "detail": "on: keeps redacted content 30 days, up to 1048576 bytes a record; keys/content.key is readable by others than the signer",
-        "fix": "chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-9ixueg7a/data/keys/content.key; chown it to the signer's user"
+        "fix": "chmod 600 <run>/data/keys/content.key; chown it to the signer's user"
       }
     },
     "log key is the record key": {
@@ -151,7 +151,7 @@
         "id": "D-UNIT-HARDENING",
         "status": "warn",
         "detail": "hardening 22/24; missing NoNewPrivileges=true, SystemCallFilter=@system-service",
-        "fix": "re-run init to rewrite the service file: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+        "fix": "re-run init to rewrite the service file: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos"
       }
     },
     "no service unit": {
@@ -160,8 +160,8 @@
       "result": {
         "id": "D-UNIT-HARDENING",
         "status": "warn",
-        "detail": "no service file: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-1f44al4t/unit/tracekit-signer.service: No such file or directory",
-        "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+        "detail": "no service file: <run>/unit/tracekit-signer.service: No such file or directory",
+        "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos"
       }
     },
     "hooks missing": {
@@ -170,8 +170,8 @@
       "result": {
         "id": "D-HOOKS-PRESENT",
         "status": "fail",
-        "detail": "no v2 hook for PreToolUse, PostToolUse, PostToolUseFailure in /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-h4vaxzk4/home/.claude/settings.json",
-        "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+        "detail": "no v2 hook for PreToolUse, PostToolUse, PostToolUseFailure in <run>/home/.claude/settings.json",
+        "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos"
       }
     },
     "hooks run another Python": {
@@ -180,8 +180,8 @@
       "result": {
         "id": "D-HOOKS-VENV",
         "status": "fail",
-        "detail": "3 hooks are not the command init writes for /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-z9fj9kwi/opt/bin/python (another Python, or init from before 1.3)",
-        "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+        "detail": "3 hooks are not the command init writes for <run>/opt/bin/python (another Python, or init from before 1.3)",
+        "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos"
       }
     },
     "PreToolUse timeout below the approval wait": {
@@ -201,7 +201,7 @@
         "id": "D-HOOKS-EVENT",
         "status": "warn",
         "detail": "the PostToolUse, PostToolUseFailure, PreToolUse hook command(s) do not name their event (installed before 1.2): a PreToolUse payload the hook cannot read lets the call through unrecorded",
-        "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
+        "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos"
       }
     },
     "TRACEKIT_SIGNER elsewhere": {
@@ -210,8 +210,8 @@
       "result": {
         "id": "D-SIGNER-ENV",
         "status": "fail",
-        "detail": "TRACEKIT_SIGNER is '/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-0syqf3qb/decoy.sock', not /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-0syqf3qb/run/signer.sock",
-        "fix": "remove env.TRACEKIT_SIGNER from /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-0syqf3qb/home/.claude/settings.json (the hook refuses it and blocks every call)"
+        "detail": "TRACEKIT_SIGNER is '<run>/decoy.sock', not <run>/run/signer.sock",
+        "fix": "remove env.TRACEKIT_SIGNER from <run>/home/.claude/settings.json (the hook refuses it and blocks every call)"
       }
     },
     "content vault on, thinking summaries off": {
@@ -221,7 +221,7 @@
         "id": "D-THINKING-SUMMARIES",
         "status": "warn",
         "detail": "the content vault keeps each transcript line, but Claude Code's thinking summaries are off (showThinkingSummaries is set in none of its settings files): its thinking is kept sealed, so `tracekit analyze --v2` can't read the model's reasoning",
-        "fix": "set \"showThinkingSummaries\": true in /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-66rhkq66/home/.claude/settings.json (sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> does), and for headless runs pass `claude -p --thinking-display summarized`"
+        "fix": "set \"showThinkingSummaries\": true in <run>/home/.claude/settings.json (sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --experimental-macos does), and for headless runs pass `claude -p --thinking-display summarized`"
       }
     },
     "policy does not compile": {
@@ -230,8 +230,8 @@
       "result": {
         "id": "D-POLICY-ENGINE",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-fp26ddb7/etc/policy.json does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-fp26ddb7/etc/policy.json: unknown key 'bogus'",
-        "fix": "fix the policy: tracekit policy lint /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-fp26ddb7/etc/policy.json"
+        "detail": "<run>/etc/policy.json does not load: <run>/etc/policy.json: unknown key 'bogus'",
+        "fix": "fix the policy: tracekit policy lint <run>/etc/policy.json"
       }
     },
     "ack-on-write": {
@@ -260,7 +260,7 @@
       "result": {
         "id": "D-FAIL-MODES",
         "status": "warn",
-        "detail": "fail-open: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-3sc344k5/etc/client.json fail_mode",
+        "detail": "fail-open: <run>/etc/client.json fail_mode",
         "fix": "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent"
       }
     },
@@ -270,7 +270,7 @@
       "result": {
         "id": "D-WITNESS-CONFIGURED",
         "status": "fail",
-        "detail": "no witnesses: checkpoints are not cosigned, so assurance stays local",
+        "detail": "no witnesses: checkpoints are not cosigned, so assurance stays dev",
         "fix": "add a witness under witnesses: in signer.yaml (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses)"
       }
     },
@@ -320,7 +320,7 @@
       "result": {
         "id": "D-DATA-FS",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-a_nv8sbw/data is on nfs4: file locking and fsync can't be trusted there",
+        "detail": "<run>/data is on nfs4: file locking and fsync can't be trusted there",
         "fix": "put data_dir on a local disk"
       }
     },
@@ -330,7 +330,7 @@
       "result": {
         "id": "D-DATA-FS",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-lui_9xrc/data is on fuse.sshfs: file locking and fsync can't be trusted there",
+        "detail": "<run>/data is on fuse.sshfs: file locking and fsync can't be trusted there",
         "fix": "put data_dir on a local disk"
       }
     },
@@ -531,7 +531,7 @@
         "result": {
           "id": "D-K8S-WORKLOADS",
           "status": "warn",
-          "detail": "/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-k8s-kiq6hp_j/agent.yaml: while parsing a flow sequence\n  in \"<unicode string>\", line 2, column 1:\n    [unclosed\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 3, column 1:\n    \n    ^",
+          "detail": "<run>/agent.yaml: while parsing a flow sequence\n  in \"<unicode string>\", line 2, column 1:\n    [unclosed\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 3, column 1:\n    \n    ^",
           "fix": "point --manifests at the rendered manifests (helm template, kustomize build)"
         }
       }
@@ -549,8 +549,8 @@
         "result": {
           "id": "D-PG-SIGNER-ROLE",
           "status": "fail",
-          "detail": "e16_signer_1e4d0a7d has tracekit_records: UPDATE",
-          "fix": "grant e16_signer_1e4d0a7d only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_1e4d0a7d; ALTER ROLE e16_signer_1e4d0a7d NOSUPERUSER"
+          "detail": "e16_signer_<run> has tracekit_records: UPDATE",
+          "fix": "grant e16_signer_<run> only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_<run>; ALTER ROLE e16_signer_<run> NOSUPERUSER"
         }
       },
       "signer role may DELETE notes": {
@@ -559,8 +559,8 @@
         "result": {
           "id": "D-PG-SIGNER-ROLE",
           "status": "fail",
-          "detail": "e16_signer_6d920027 has tracekit_notes: DELETE",
-          "fix": "grant e16_signer_6d920027 only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_6d920027; ALTER ROLE e16_signer_6d920027 NOSUPERUSER"
+          "detail": "e16_signer_<run> has tracekit_notes: DELETE",
+          "fix": "grant e16_signer_<run> only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_<run>; ALTER ROLE e16_signer_<run> NOSUPERUSER"
         }
       },
       "signer role may TRUNCATE the registry": {
@@ -569,8 +569,8 @@
         "result": {
           "id": "D-PG-SIGNER-ROLE",
           "status": "fail",
-          "detail": "e16_signer_7eca4f47 has tracekit_registry: TRUNCATE",
-          "fix": "grant e16_signer_7eca4f47 only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_7eca4f47; ALTER ROLE e16_signer_7eca4f47 NOSUPERUSER"
+          "detail": "e16_signer_<run> has tracekit_registry: TRUNCATE",
+          "fix": "grant e16_signer_<run> only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_<run>; ALTER ROLE e16_signer_<run> NOSUPERUSER"
         }
       },
       "signer role is superuser": {
@@ -579,8 +579,8 @@
         "result": {
           "id": "D-PG-SIGNER-ROLE",
           "status": "fail",
-          "detail": "e16_signer_755efca3 has superuser, tracekit_anchors: DELETE, tracekit_anchors: TRUNCATE, tracekit_anchors: UPDATE, tracekit_notes: DELETE, tracekit_notes: TRUNCATE, tracekit_notes: UPDATE, tracekit_records: DELETE, tracekit_records: TRUNCATE, tracekit_records: UPDATE, tracekit_registry: DELETE, tracekit_registry: TRUNCATE, tracekit_registry: UPDATE",
-          "fix": "grant e16_signer_755efca3 only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_755efca3; ALTER ROLE e16_signer_755efca3 NOSUPERUSER"
+          "detail": "e16_signer_<run> has superuser, tracekit_anchors: DELETE, tracekit_anchors: TRUNCATE, tracekit_anchors: UPDATE, tracekit_notes: DELETE, tracekit_notes: TRUNCATE, tracekit_notes: UPDATE, tracekit_records: DELETE, tracekit_records: TRUNCATE, tracekit_records: UPDATE, tracekit_registry: DELETE, tracekit_registry: TRUNCATE, tracekit_registry: UPDATE",
+          "fix": "grant e16_signer_<run> only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_<run>; ALTER ROLE e16_signer_<run> NOSUPERUSER"
         }
       },
       "reader role may INSERT records": {
@@ -589,7 +589,7 @@
         "result": {
           "id": "D-PG-READER-ROLES",
           "status": "fail",
-          "detail": "e16_reader_15c2e792 can write tracekit_records",
+          "detail": "e16_reader_<run> can write tracekit_records",
           "fix": "readers get SELECT only: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON the log tables FROM them"
         }
       }

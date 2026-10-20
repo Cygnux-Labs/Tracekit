@@ -237,6 +237,15 @@ CASES = [
 ROOT_ONLY = {"data dir owned by the agent"}
 
 
+def stable(results, *names):
+    """results with this run's own names (temp dirs, role tags) as placeholders, so a re-run writes the same file."""
+    def sub(s):
+        for name in names:
+            s = s.replace(name, "<run>")
+        return s
+    return [{k: sub(v) if isinstance(v, str) else v for k, v in r.items()} for r in results]
+
+
 def run_case(mutate):
     tmp = tempfile.mkdtemp(prefix="e16-")
     top = os.path.realpath(tmp)
@@ -254,7 +263,7 @@ def run_case(mutate):
         for p in L.patches:
             p.start()
         try:
-            return L.run()
+            return stable(L.run(), top, tmp)
         finally:
             for p in L.patches:
                 p.stop()
@@ -363,7 +372,7 @@ def run_k8s_case(mutate):
     try:
         with open(os.path.join(top, "agent.yaml"), "w") as f:   # multi-document, like helm template's output
             f.write("".join(f"---\n{d if isinstance(d, str) else json.dumps(d)}\n" for d in docs))
-        return doctor.k8s_checks(*doctor.load_manifests(top))
+        return stable(doctor.k8s_checks(*doctor.load_manifests(top)), top)
     finally:
         shutil.rmtree(top, ignore_errors=True)
 
@@ -426,7 +435,7 @@ def run_pg_case(admin, sql):
                       + postgres.GRANTS.format(schema=schema, role=signer) + (sql or "").format(signer=signer, reader=reader))
             with open(os.path.join(top, "pg.dsn"), "w") as f:
                 f.write(make_conninfo(admin, user=signer, password=pw, options=f"-csearch_path={schema}"))
-            return doctor.pg_checks({"dsn_file": os.path.join(top, "pg.dsn")})
+            return stable(doctor.pg_checks({"dsn_file": os.path.join(top, "pg.dsn")}), top, tag)
         finally:
             c.execute(f"DROP SCHEMA {schema} CASCADE")
             for role in (signer, reader):

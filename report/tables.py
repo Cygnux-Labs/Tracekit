@@ -25,10 +25,6 @@ def yes(b):
     return "yes" if b else "**no**"
 
 
-def counts(d):
-    return ", ".join(f"{k} {v}" for k, v in sorted(d.items(), key=lambda kv: (-kv[1], kv[0])))
-
-
 def e1(d):
     n = d["records_per_ledger"]
     rows = [(k.replace("_", " "), f"{round(v['ledger_only'] * v['trials'])}/{v['trials']}",
@@ -51,9 +47,9 @@ def e4(d):
 
 
 def e4_v2(d):
-    rows = [(r["fault"], f"{r['detected']}/{r['trials']}", counts(r.get("first_failing_check", {})) or "-")
-            for r in d["results"]]
-    return (table(("Fault (v2 bundle)", "Detected", "First failing check"), rows)
+    # not first_failing_check: each run's fresh keys and timestamps change what a seeded fault hits, so it varies by run
+    rows = [(r["fault"], f"{r['detected']}/{r['trials']}") for r in d["results"]]
+    return (table(("Fault (v2 bundle)", "Detected"), rows)
             + f"\n\nUntampered control: exit {d['control_exit']}, {d['control_integrity']}. "
               f"Verifier crashes: {d['verifier_crashes']}. Platform: {d['platform']}, Python {d['python']}.")
 

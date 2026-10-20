@@ -5,7 +5,11 @@ bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20 
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
 `make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
 and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
-socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. Results are
+socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. So do E1,
+E3, E4, E6, E10 to E12, E14 (`--quick`) and E16 to E21, on every pull request ("Offline evals"): each must pass its own
+gate, and their deterministic results must equal the committed files, so a change that moves a number commits the new
+file, and `tests/test_eval_docs.py` checks the numbers this page, the README and the known limits quote against them.
+E2, E14 in full, E9 and E16 on Postgres, E22 and E7 run nightly (`.github/workflows/nightly-evals.yml`). Results are
 written to `eval/results/`. `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small,
 synthetic and written by the authors. They show how the mechanisms behave, not how Tracekit performs across real
 agents and projects. The v0.1 paper's experiments (14 Claude Code runs, seeded faults, hook latency) were ported to
