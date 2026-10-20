@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -538,9 +539,15 @@ class ImportWithoutWhyLog(unittest.TestCase):
 
 class DemoWhy(unittest.TestCase):
     def test_demo_why_holds(self):
+        before = set(threading.enumerate())
         with contextlib.redirect_stdout(io.StringIO()) as out:
             code = demo_why.main()
         self.assertEqual(code, 0, out.getvalue())
+        # with its client's connection left open, the connection's daemon threads were still running as the
+        # interpreter exited: `tracekit demo --why` segfaulted at exit once (Python 3.13, macOS CI)
+        conns = lambda: [t.name for t in set(threading.enumerate()) - before   # noqa: E731
+                         if t.name.startswith("tracekit-client") or "process_request_thread" in t.name]
+        self.assertTrue(wait_for(lambda: not conns(), 5), conns())
         self.assertIn("TK-P001: `to` 'audit@vendor-compliance.example' came only from untrusted content", out.getvalue())
         self.assertIn("a match of its text in the why log, not a signed link", out.getvalue())
         self.assertIn("in researcher.tkb, which the verifier passed", out.getvalue())

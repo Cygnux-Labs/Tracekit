@@ -3,7 +3,6 @@ Strands, LlamaIndex): check the run handle, decide a call (an `ask` waits for a 
 Framework-free: what differs between the integrations comes in as arguments.
 """
 import asyncio
-import contextlib
 import warnings
 
 from tracekit.format.canon import loads_strict
@@ -60,19 +59,15 @@ async def gate_call(run, call_id, attempt, tool, args, *, args_source=None, json
                                                                    timeout_ms=WAIT_MS))
                     while not (await asyncio.wait({wait}, timeout=POLL_S))[0]:
                         if cancelled.is_set():   # e.g. agent.cancel(): the call won't run, so no one may approve it
-                            await asyncio.to_thread(_abandon, run, hint, "the agent was cancelled while it waited")
+                            await _withdraw(run, request, "the agent was cancelled while it waited")
                             return d, f"Tool call held by Tracekit policy ({rules}) and not approved: cancelled"
                     state = wait.result()["state"]
             except asyncio.CancelledError:   # the task was cancelled: so is the approval, before anyone uses it
-                if hint is None:
-                    with contextlib.suppress(Exception):   # no approval was requested: nothing to withdraw
-                        hint = (await request)["approval_id"]
-                if hint is not None:
-                    await asyncio.to_thread(_abandon, run, hint, f"{who} was cancelled while it waited")
+                await _withdraw(run, request, f"{who} was cancelled while it waited")
                 raise
             if state != "approved":
                 if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
-                    await asyncio.to_thread(_abandon, run, hint, f"no answer within the {waiter}'s wait")
+                    await _withdraw(run, request, f"no answer within the {waiter}'s wait")
                 return d, f"Tool call held by Tracekit policy ({rules}) and not approved: {state}"
         c = await asyncio.to_thread(run.approval_consume, call_id, tool, args, approval_id_hint=hint, **src, **at)
         why = None
@@ -89,6 +84,18 @@ async def gate_call(run, call_id, attempt, tool, args, *, args_source=None, json
         raise
     except Exception as e:
         return d, f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})"[:4096]
+
+
+async def _withdraw(run, request, reason):
+    """Withdraw the approval `request` (the approval_request task) asked for, in a task of its own: a cancel, even one a
+    cancel scope (anyio's) delivers again at every await, stops only the wait for it, never the withdrawal."""
+    async def withdraw():
+        try:
+            approval_id = (await request)["approval_id"]
+        except Exception:   # no approval was requested: nothing to withdraw
+            return
+        await asyncio.to_thread(_abandon, run, approval_id, reason)
+    await asyncio.shield(asyncio.ensure_future(withdraw()))
 
 
 def _abandon(run, approval_id, reason):

@@ -251,8 +251,11 @@ class TestImport(Sensed):
         imp = self.importer()
         imp.flush()
         a = self.register()
-        during_a = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        during_a = now.strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z"
         self.call("close_run", a)   # in grace
+        while datetime.datetime.now(datetime.timezone.utc) <= now:   # a coarse clock (Windows before Python 3.13:
+            time.sleep(0.001)   # 15.6 ms) would register b at during_a too, and b would be the run open then
         b = self.register()   # the identity's next run starts at once
         imp.add(exec_line().replace(TIME, during_a))   # read, and sent, after b registered
         imp.add(exec_line().replace(TIME, "2026-10-05T10:00:01.615123456Z"))   # an export read again: a week old

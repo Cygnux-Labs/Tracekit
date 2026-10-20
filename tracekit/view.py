@@ -1092,11 +1092,25 @@ def mirror_run(why_dir, tenant, run_id, records, reasons=None):
         if records is not None:
             path = import_records({run_id: records}, stage, reasons)[0]
         if os.path.exists(target):
-            os.rename(target, os.path.join(stage, "old"))
+            _rename(target, os.path.join(stage, "old"))
         if records is not None:
-            os.rename(path, target)
+            _rename(path, target)
     finally:
         shutil.rmtree(stage, True)
+
+
+def _rename(src, dst):
+    """os.rename, tried again while Windows denies it: a reader with a file of the folder open (the why server reading
+    the run, a virus scanner) denies a folder's rename for as long as it reads."""
+    # lean: a reader holding a file over 5 s still fails the mirror (the run keeps its old graph); queue it again then
+    for _ in range(100):
+        try:
+            return os.rename(src, dst)
+        except PermissionError as e:
+            if getattr(e, "winerror", None) not in (5, 32):   # access denied, sharing violation
+                raise
+            time.sleep(0.05)
+    os.rename(src, dst)
 
 
 def write_trust(path, vkeys):

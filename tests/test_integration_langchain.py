@@ -292,7 +292,8 @@ class Jittery:
 
     def __getattr__(self, name):
         def call(req):
-            time.sleep(int(req["tool_call_id"][1:]) % 3 / 1000)
+            if "tool_call_id" in req:   # a model event, or the vault's status, names no call
+                time.sleep(int(req["tool_call_id"][1:]) % 3 / 1000)
             return getattr(self.client, name)(req)
         return call
 
