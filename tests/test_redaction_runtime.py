@@ -1,12 +1,13 @@
 """Redaction runs inside the hook on tool arguments, so every secret pattern must stay
 fast on large adversarial input (a prefix of the pattern repeated, never completing)."""
 import time
+import timeit
 import unittest
 
 from tracekit import privacy
 
 SIZE = 256 * 1024
-BOUND = 0.5  # seconds per input; generous for slow CI runners
+BOUND = 0.5  # CPU seconds per input, the best of three runs; generous for slow CI runners
 
 ADVERSARIAL = {
     "private_key": ["-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n", "-----BEGIN "],  # agent-flow:allow-secret
@@ -29,6 +30,11 @@ def repeated(prefix):
     return (prefix * (SIZE // len(prefix) + 1))[:SIZE]
 
 
+def seconds(f):
+    """f's best of three runs in this thread's CPU time: a slow pattern is slow every run, a busy runner slows one."""
+    return min(timeit.repeat(f, timer=time.thread_time, number=1, repeat=3))
+
+
 class RedactionRuntimeTests(unittest.TestCase):
     def test_every_pattern_has_adversarial_inputs(self):
         self.assertEqual({name for name, _ in privacy.SECRET_PATTERNS}, set(ADVERSARIAL))
@@ -38,9 +44,7 @@ class RedactionRuntimeTests(unittest.TestCase):
             for prefix in prefixes:
                 with self.subTest(pattern=name, prefix=prefix):
                     s = repeated(prefix)
-                    t = time.perf_counter()
-                    privacy.redact_text(s)
-                    self.assertLess(time.perf_counter() - t, BOUND)
+                    self.assertLess(seconds(lambda: privacy.redact_text(s)), BOUND)
 
     def test_a_url_with_a_port_and_an_address_in_its_path_or_query_is_kept(self):
         """What an approver must see: the recipient in a compose page's URL is not a connection string's password."""
@@ -64,9 +68,8 @@ class RedactionRuntimeTests(unittest.TestCase):
 
     def test_long_scheme_run_before_url_is_fast_and_redacted(self):
         s = repeated("a-")[:-100] + "postgres://user:pass@host/db"
-        t = time.perf_counter()
+        self.assertLess(seconds(lambda: privacy.redact_text(s)), BOUND)
         out, hit = privacy.redact_text(s)
-        self.assertLess(time.perf_counter() - t, BOUND)
         self.assertTrue(hit)
         self.assertNotIn("pass@host", out)
 
@@ -74,10 +77,7 @@ class RedactionRuntimeTests(unittest.TestCase):
         for s in (repeated("aws_secret_access_key"), repeated("password"), repeated("\n"), repeated(" \n"),
                   repeated("export ")):
             with self.subTest(prefix=s[:12]):
-                t = time.perf_counter()
-                privacy.redact_text(s)
-                privacy.redact_dotenv(s)
-                self.assertLess(time.perf_counter() - t, BOUND)
+                self.assertLess(seconds(lambda: (privacy.redact_text(s), privacy.redact_dotenv(s))), BOUND)
 
     def test_always_clear_fields_get_dotenv_redaction(self):
         rec = privacy.tool_input("Bash", {"command": "cat >> .env <<EOF\nDB_HOST=internal.example\nEOF"})
