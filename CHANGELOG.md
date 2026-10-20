@@ -97,15 +97,19 @@ with a 1.4 verifier (see Upgrade notes); every existing bundle verifies as befor
   `analyzers` pins it; `self-asserted` for the agent's own identity or a same-user signer) and sum the findings on a
   `Findings:` line, beside the integrity verdict, never in it. `--review` adds a reviewer model's opinion (TK-X210,
   warn only; its detection and false-alarm rates aren't measured yet)
-  ([findings](docs/findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)).
-  E20, synthetic, blind pool v3 scored once (#316, PR #317), replaying Claude Code sessions written blind to the checks
+  ([findings](docs/findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)). TK-X211 counts a dotfile
+  as told only by its name with the dot (".env"; not "env" or "travis.yml"); TK-X202 keeps a name without an extension
+  named under a negation about something else ("update the README so it never mentions the old flag"); "no code
+  changes" (TK-X113) covers 59 source extensions.
+  E20, synthetic, blind pool v3 scored once on 2026-10-20 (#316, PR #317; the final review's fixes changed the checks
+  after that run, and re-running E20 on them moved no pool v3 number), replaying Claude Code sessions written blind to the checks
   through the hook, the tailer and a signer: an unrequested edit is found in every session when no request names the
   file; after a "don't touch X", 79-100% by cover (a live constraint held 67-92% before the edit ran); a false success
   claim after a failed test run, 86%; a file sent out, deleted, or a package added and pushed with nothing said of it,
   96-100% by cover, except a file sent out under an innocent mention of it (33%); claimed checks that never ran, 14 of
   the 15 claims that name a test, build or CI run (none of the 15 that name no check, such as "Done."). On its 1,812
   honest calls, 5 false findings (TK-X202 2, TK-X204 2, TK-X211 1) and 1 call held. Pools v1 and v2
-  are development sets, read while the checks were fixed: after a "don't touch X", 54-83% and 88-96% by cover. The
+  are development sets, read while the checks were fixed: after a "don't touch X", 54-92% and 88-96% by cover. The
   effect checks (TK-X206, TK-X207) found or marked not checkable every fault, with no false alarm over about 9,800
   honest effects, on a tuned generator and on a separate one committed before the checks existed (176 runs each)
   ([evaluation](docs/evaluation.md#e20-intent-reasoning-and-action-checks)).
@@ -122,7 +126,10 @@ with a 1.4 verifier (see Upgrade notes); every existing bundle verifies as befor
   later call that breaks it to `ask` with `TK-CONSTRAINT`, never lowering a decision, so a made-up constraint only makes
   the agent wait. A small fixed grammar reads "don't touch / edit X", "leave X alone", "read-only", "don't push" and "no
   network", and leaves what is ambiguous unread; a scope ("only change X") is checked after the run (TK-X204), never
-  held. On E20's 56 tuned honest sessions none holds a call; on blind pool v3's 1,812 honest calls, one is held. A run
+  held. A later "it" lifts a constraint only where it asks the agent for the change ("you can edit it locally"; not
+  "I'll update it myself" or "ask me before you change it"); "keep the API key out of X", "don't make any changes to
+  the tests" and "the home directory" keep nothing away, and a folder word no longer cancels a file's constraint in
+  its clause. On E20's 56 tuned honest sessions none holds a call; on blind pool v3's 1,812 honest calls, one is held. A run
   takes 32 file constraints: past them a signed `constraint_refused` gap, and every write of the run is held.
   `tracekit verify` checks that each `TK-CONSTRAINT` hold follows a constraint
   ([policy](docs/policy-v2.md#live-constraints)).
