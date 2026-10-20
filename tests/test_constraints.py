@@ -436,6 +436,13 @@ class Grammar(unittest.TestCase):
             self.assertGreater(len(constraints.extract(many)), 3000)
             constraints.mentions(many)
             self.assertLess(time.perf_counter() - t0, 0.2)   # each file looked only at the next, not at every other
+        for unit in ("change it, ", "don't change it, "):   # 1.4.0 review L2: each "it" read the clause before again
+            text = "Don't touch " + "a.py " * 6000 + ". " + unit * 2800
+            t0 = time.perf_counter()
+            read = constraints._read(text)
+            constraints.extract(None, read)
+            constraints.changes(read)
+            self.assertLess(time.perf_counter() - t0, 1, unit)
 
 
 class Live(Signed):

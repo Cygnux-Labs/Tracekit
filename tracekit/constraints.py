@@ -53,10 +53,14 @@ constraint keeps away lifts it there ("don't touch X for now; ... after that, up
 then fix it"). A network word is negated only with nothing but words of use between ("don't use the network", not "don't
 change the network code") and no noun after it ("no web UI changes"); "offline" only where the clause begins with it as
 an instruction ("work offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by
-basename (norm). Each pass is linear in the text: word sets, short fixed sequences, one suffix scan per clause; the
-regular expressions have no nested quantifiers.
+basename (norm). A pass reads each clause once, and the files an "it" stands for once (_read): word sets, short fixed
+sequences, one suffix scan per clause; the regular expressions have no nested quantifiers.
 lean: fixed word lists, English only; a phrasing outside them ("keep the diff to X", a constraint on a file named two
 clauses back) states no constraint. Grow the lists from real misses, never from the held-out pool.
+lean: not linear in two places: a negated push or network word, or a lift word, reads the words before it in its clause
+again (a 64 KiB clause of them, under a second), and "them" stands for each file of the clause before it in every
+clause that says it (64 KiB of "don't change them" after 3,000 files: about 2 s and 0.7 GiB). Read them once per clause
+if real texts get near that.
 """
 import hashlib
 import re
@@ -462,12 +466,12 @@ def _only(tokens, i, end, later):
         or tokens[i - 1:i] == ["to"] and bool(set(before) & SCOPE)
 
 
-def _clause(tokens, prev=()):
+def _clause(tokens, before=()):
     """[(kind, object or None)] of one clause's tokens and the names of the files it keeps away; ("else", None): "don't
-    change anything else", which extract() reads with the text's other files. `prev`: the tokens of the latest clause
-    before it that names a file, which "it" or "there" stands for in a clause that names none ("X is generated; make
-    no changes there", _referent), unless that clause asks for a change or sets a condition ("fix X; don't rewrite
-    it")."""
+    change anything else", which extract() reads with the text's other files. `before`: the names of the files of the
+    latest clause before it that names one, which "it" or "there" stands for in a clause that names none ("X is
+    generated; make no changes there", _referent); none when that clause asks for a change or sets a condition ("fix X;
+    don't rewrite it"): _read."""
     files = {i: t for i, t in enumerate(tokens) if _file(t)}
     if FOLDERS & set(tokens):   # "the vendor folder": a directory; files stay in the clause's order
         files = dict(sorted({**files, **{i: t + "/" for i, t in enumerate(tokens[:-1]) if tokens[i + 1] in FOLDERS
@@ -494,10 +498,8 @@ def _clause(tokens, prev=()):
             out.append(("only_change", norm(t)))
         last = i
     names = {norm(files[i]) for i in kept}
-    k, before = _referent(tokens, prev)
-    if k is not None and _kept(tokens, k, len(tokens), cond) and prev[:1] not in (["if"], ["unless"], ["when"],
-                                                                                 ["once"]) and not any(
-            t in ASKS_CHANGE and not _negated(prev, i) for i, t in enumerate(prev)):
+    k, before = _referent(tokens, before)
+    if k is not None and _kept(tokens, k, len(tokens), cond):
         out += [("keep_away", n) for n in before]
         names.update(before)
     if m is not None and tokens[m] in ("anything", "nothing") and tokens[m + 1:m + 2] == ["else"] or _else(tokens):
@@ -539,12 +541,17 @@ def _bare(tokens, i):
     return True
 
 
-def _referent(tokens, prev):
-    """(the index of a clause's "it", "there" or "them", the names it stands for: the last file of `prev`, the latest
-    clause that names one, or for "them" each of them), or (None, []) when the clause names a file itself."""
+def _referent(tokens, files):
+    """(the index of a clause's "it", "there" or "them", the names it stands for: the last of `files`, those of the
+    latest clause that names one (_files), or for "them" each of them), or (None, []) when the clause names a file
+    itself."""
     k = None if any(map(_file, tokens)) else next((k for k, t in enumerate(tokens) if t in ANAPHORS), None)
-    files = [norm(t) for t in prev if _file(t)] if k is not None else []
-    return (k, files if tokens[k] == "them" else files[-1:]) if files else (None, [])
+    return (k, files if tokens[k] == "them" else files[-1:]) if k is not None and files else (None, [])
+
+
+def _files(tokens):
+    """The names (norm) of the files a clause names."""
+    return [norm(t) for t in tokens if _file(t)]
 
 
 def _network(tokens, i):
@@ -608,10 +615,12 @@ def _clauses(text):
 def _read(text):
     """[(the clause's tokens, its constraints, the names of the files it keeps away)] of each clause of `text`: what
     extract() and mentions() read, once per text."""
-    out, prev = [], ()
+    out, before = [], []
     for tokens in _clauses(text):
-        out.append((tokens, *_clause(tokens, prev)))
-        prev = tokens if any(map(_file, tokens)) else prev
+        out.append((tokens, *_clause(tokens, before)))
+        if any(map(_file, tokens)):   # read once: what a later "it" keeps away, if this clause asks no change of it
+            before = [] if tokens[:1] in (["if"], ["unless"], ["when"], ["once"]) or any(
+                t in ASKS_CHANGE and not _negated(tokens, i) for i, t in enumerate(tokens)) else _files(tokens)
     return out
 
 
@@ -623,7 +632,7 @@ def extract(text, read=None):
     # "there" for the file named before, where the clause asks the agent for the change (ALLOWING: "X is frozen in
     # production, but you can edit it locally"), apart: that lifts no constraint on the person's own go-ahead ("never
     # touch X without asking me first. Change the timeout there")
-    asked, by_it, prev = {}, {}, ()
+    asked, by_it, before = {}, {}, []
     for j, (tokens, _, _) in enumerate(read if any(found for _, found, _ in read) else ()):
         if tokens[:1] and tokens[0] in SEQUENCE:
             asked["then"] = j
@@ -632,11 +641,11 @@ def extract(text, read=None):
                 asked[norm(t)] = j
             elif t in LIFT_WORDS and not _negated(tokens, i, NEGATIONS | {"no"}) and not BLOCK & set(tokens[:i]):
                 asked[t] = j   # not "tell me what you'd change"
-        k, before = _referent(tokens, prev)
+        k, it = _referent(tokens, before)
         c = None if k is None else _tied(tokens, k, SAID_CHANGE)
         if c is not None and set(tokens[:c]) <= ALLOWING and not tokens[c].endswith(("s", "ed", "ing")):
-            by_it.update(dict.fromkeys(before, j))
-        prev = tokens if any(map(_file, tokens)) else prev
+            by_it.update(dict.fromkeys(it, j))
+        before = _files(tokens) or before
     out = [c for j, (tokens, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
         (c[1],) if c[0] in OBJECT_KINDS else (*LIFT[c[0]], "then") if c[0] == "read_only" else LIFT.get(c[0], ())))
         and not (c[0] in OBJECT_KINDS and by_it.get(c[1], -1) > j and _mine(tokens) == len(tokens))]
@@ -653,16 +662,16 @@ def changes(read):
     the same fix", "the bug is in X; fixing it there"); "kept": what extract() keeps away, or such a change negated
     ("no need to change X", "X doesn't need any changes", "I won't need to edit X"). A mere mention ("X imports Y",
     "consistent with X") is neither."""
-    out, prev = {}, ()
+    out, before = {}, []
     for tokens, _, kept in read:
         for name in kept:
             out[name] = "kept"
-        k, before = _referent(tokens, prev)   # "fixing it": the file named before
-        for i, name in [(i, norm(t)) for i, t in enumerate(tokens) if norm(t)] + [(k, n) for n in before]:
+        k, it = _referent(tokens, before)   # "fixing it": the file named before
+        for i, name in [(i, norm(t)) for i, t in enumerate(tokens) if norm(t)] + [(k, n) for n in it]:
             said = name not in out and _said(tokens, i)
             if said:
                 out[name] = said
-        prev = tokens if any(map(_file, tokens)) else prev
+        before = _files(tokens) or before
     return out
 
 
