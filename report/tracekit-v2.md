@@ -240,22 +240,22 @@ verifies only as `VERIFIED TO HEAD n (open)`, and against a run-set its missing 
 by a pinned and required witness):
 
 <!-- table e4-v2 -->
-| Fault (v2 bundle) | Detected | First failing check |
-|---|---|---|
-| edit record bytes (any record file) | 30/30 | signatures 14, bundle structure 9, keys 6, run-set 1 |
-| flip a bit of a record signature | 30/30 | signatures 17, keys 8, run-set 5 |
-| break a chain link (prev_hash, run_prev_hash, run_seq; hash recomputed) | 30/30 | signatures 23, run-set 7 |
-| flip a bit of an inclusion proof (record tree or registry tree) | 30/30 | run-set 30 |
-| edit a checkpoint note's body or signature lines (record or registry note) | 30/30 | run-set 16, checkpoint 14 |
-| flip a bit of a registry leaf | 30/30 | run-set 30 |
-| edit the run-set (range end, tenant salt, drop or swap leaves) | 30/30 | run-set 30 |
-| edit the manifest without the files (hash, drop, phantom, unlisted file) | 30/30 | manifest 30 |
-| drop a record of the run | 30/30 | run chain 27, run-set 3 |
-| reorder two records of the run | 30/30 | run chain 22, run-set 8 |
-| duplicate a record of the run | 30/30 | run chain 29, run-set 1 |
-| re-sign an edited record with a foreign key | 30/30 | keys 14, signatures 13, run-set 3 |
-| remove the run's run.final | 30/30 | run-set 30 |
-| truncate the zip file at a random byte | 30/30 | - |
+| Fault (v2 bundle) | Detected |
+|---|---|
+| edit record bytes (any record file) | 30/30 |
+| flip a bit of a record signature | 30/30 |
+| break a chain link (prev_hash, run_prev_hash, run_seq; hash recomputed) | 30/30 |
+| flip a bit of an inclusion proof (record tree or registry tree) | 30/30 |
+| edit a checkpoint note's body or signature lines (record or registry note) | 30/30 |
+| flip a bit of a registry leaf | 30/30 |
+| edit the run-set (range end, tenant salt, drop or swap leaves) | 30/30 |
+| edit the manifest without the files (hash, drop, phantom, unlisted file) | 30/30 |
+| drop a record of the run | 30/30 |
+| reorder two records of the run | 30/30 |
+| duplicate a record of the run | 30/30 |
+| re-sign an edited record with a foreign key | 30/30 |
+| remove the run's run.final | 30/30 |
+| truncate the zip file at a random byte | 30/30 |
 
 Untampered control: exit 0, VERIFIED. Verifier crashes: 0. Platform: darwin, Python 3.11.15.
 <!-- /table -->
