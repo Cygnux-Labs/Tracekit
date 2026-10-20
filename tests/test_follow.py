@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import time
+import unittest
 import uuid
 from unittest import mock
 
@@ -93,7 +94,7 @@ class AgentshLog:
 
     def write(self, *events, raw=""):
         """`raw`: text written as it is, before the events."""
-        with open(self.path, "a", encoding="utf-8") as f:
+        with open(self.path, "a", encoding="utf-8", newline="") as f:   # \n, as Go writes it on Windows too
             f.write(raw + "".join(self.line(e) for e in events))
 
 
@@ -314,6 +315,7 @@ class TestAgentsh(Followed):
         [gap] = self.gaps()
         self.assertIn("the log follower stopped or was killed", gap)
 
+    @unittest.skipIf(os.name == "nt", "Windows refuses to rename a log the follower holds open")
     def test_a_rotated_log_is_followed_into_the_new_one(self):
         al, log = self.agentsh()
         al.write(SHADOW)
