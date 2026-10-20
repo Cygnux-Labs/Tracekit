@@ -20,6 +20,7 @@ import regex
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from factories import SLOWER  # noqa: E402
 from tracekit import cli  # noqa: E402
 from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
 from tracekit.policy2 import classes, compile as pc, engine, shell  # noqa: E402
@@ -620,7 +621,7 @@ class Speed(unittest.TestCase):
                 d = e.decide(tool, args)
                 self.assertNotIn("nondeterministic", d)
                 # 64 KiB of one-word lines is ~0.4 s on a laptop under Python 3.9, nearly all the parse
-                self.assertLess(time.perf_counter() - start, 2)
+                self.assertLess(time.perf_counter() - start, 2 * SLOWER)
 
     def test_the_corpus_decides_within_budget(self):
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
@@ -740,8 +741,8 @@ class Shell(unittest.TestCase):
         start = time.monotonic()
         with self.assertRaises(shell.ParseError):
             shell.parse(cmd)
-        # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s; a coverage run traces every line, about 3x slower
-        self.assertLess(time.monotonic() - start, 6 if "coverage" in sys.modules else 2)
+        # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s
+        self.assertLess(time.monotonic() - start, 2 * SLOWER)
 
     def test_lists_after_process_calls_count_toward_the_parse_budget(self):
         """Each `run([` in interpreter code copied the rest of the code and took every string up to the next `]` as

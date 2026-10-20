@@ -14,6 +14,8 @@ import zipfile
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# time limits in tests are for an untraced run; a coverage run traces every line, about 3x slower
+SLOWER = 3 if "coverage" in sys.modules else 1
 sys.path.insert(0, ROOT)
 from tracekit import install, policy  # noqa: E402
 from tracekit.core import now_ts  # noqa: E402

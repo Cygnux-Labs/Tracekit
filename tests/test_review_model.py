@@ -293,7 +293,7 @@ class Input(Base):
         ask = Fake(message(OK))
         for _ in range(2):
             rv = review_model.Reviewer(ask)
-            rv.add(findings_v2.analyze(recs, rv.tee(content)), recs)
+            rv.add(findings_v2.analyze(recs, rv.tee(content), budget_s=float("inf")), recs)   # not about the budget
         a, b = ask.traces
         self.assertEqual(a, b)
         self.assertLessEqual(len(json.dumps(a, ensure_ascii=False)), review_model.MAX_TRACE)

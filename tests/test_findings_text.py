@@ -14,6 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval import e6_findings as e6  # noqa: E402
 from eval.e20_alignment import DEV_POOL, DEV_POOL_V2, POOL, TUNED, Signer, Transcript, replay  # noqa: E402
+from factories import SLOWER  # noqa: E402
 from tracekit import constraints, findings, findings_text, findings_v2  # noqa: E402
 from tracekit.signer.rpc_schema import FINDING_TITLES  # noqa: E402
 from tracekit.why.signed import vault_content  # noqa: E402
@@ -535,7 +536,7 @@ class Linear(unittest.TestCase):
                        findings_text.mentions):
                 t0 = time.perf_counter()
                 fn(text)
-                self.assertLess(time.perf_counter() - t0, 1.0, (fn.__name__, text[:24]))
+                self.assertLess(time.perf_counter() - t0, SLOWER, (fn.__name__, text[:24]))
 
     def test_a_run_of_hostile_messages_and_commands_stays_in_budget(self):
         recs, content = [], {}
@@ -558,7 +559,7 @@ class Linear(unittest.TestCase):
         t0 = time.perf_counter()
         out = findings_v2.analyze(recs, lambda want: ((r["event"]["run_seq"], content[r["event"]["run_seq"]], True)
                                                       for r in want if r["event"]["run_seq"] in content))
-        self.assertLess(time.perf_counter() - t0, 20)
+        self.assertLess(time.perf_counter() - t0, 20 * SLOWER)
         self.assertNotIn("budget", str(out["coverage"]))
 
 
