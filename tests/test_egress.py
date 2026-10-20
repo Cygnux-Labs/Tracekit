@@ -538,7 +538,8 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(self.up.got, [])
 
     def test_one_attribution_holds_at_most_max_tunnels(self):
-        with mock.patch.object(egress, "MAX_TUNNELS", 2):
+        # no uid: on Linux this process's would be the attribution, and its connection cap would close the third first
+        with mock.patch.object(egress, "MAX_TUNNELS", 2), mock.patch.object(egress, "_peer_uid", return_value=None):
             held = [self.connect(f"localhost:{self.up.port}")[0] for _ in range(2)]   # ClientHellos still to come
             s, status = self.connect(f"localhost:{self.up.port}")
             self.assertEqual(status, "HTTP/1.1 200 Connection established")
