@@ -260,20 +260,24 @@ class Hook(unittest.TestCase):
         self.assertEqual(self.ran, [])
 
     def test_a_run_cancelled_during_an_ask_withdraws_the_approval(self):
-        answered = threading.Event()
+        waiting, answered = threading.Event(), threading.Event()
         r = run("ask", ["A1"])
 
         def call(method, **f):
             if method == "approval_wait":
-                answered.wait(5)   # a person approves after the agent run was cancelled
+                waiting.set()
+                answered.wait(5)
                 return {"state": "approved"}
             return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}, "model_event": {}}[method]
         r.call.side_effect = call
 
         async def go():
-            with self.assertRaises(TimeoutError):
-                await asyncio.wait_for(turn(runner([Tracekit(r)], [self.tool()])), 0.3)
-        threading.Timer(0.6, answered.set).start()
+            task = asyncio.ensure_future(turn(runner([Tracekit(r)], [self.tool()])))
+            self.assertTrue(await asyncio.to_thread(waiting.wait, 5))   # in the ask, however slow the runner
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            answered.set()   # a person approves after the agent run was cancelled
         asyncio.run(go())   # returns once the approval_wait thread has (asyncio.run waits for its executor)
         self.assertIn("approval_abandon", [c.args[0] for c in r.call.call_args_list])
         r.approval_consume.assert_not_called()
