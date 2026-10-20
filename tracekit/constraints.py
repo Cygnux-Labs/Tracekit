@@ -50,11 +50,12 @@ push, the network, "anything") states none: "don't edit X until the tests pass",
 can't check; "while you work", "while fixing Y" are the task itself, no condition; the person's own go-ahead, "before I
 review", "without asking me first", keeps the constraint). A later clause of the same text that asks for what a
 constraint keeps away lifts it there ("don't touch X for now; ... after that, update X too"; "don't change anything,
-then fix it"). A network word is negated only with nothing but words of use between ("don't use the network", not "don't
-change the network code") and no noun after it ("no web UI changes"); "offline" only where the clause begins with it as
-an instruction ("work offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by
-basename (norm). A pass reads each clause once, and the files an "it" stands for once (_read): word sets, short fixed
-sequences, one suffix scan per clause; the regular expressions have no nested quantifiers.
+then fix it"), but not a file where it waits on the person ("you can change X after I approve"). A network word is
+negated only with nothing but words of use between ("don't use the network", not "don't change the network code") and
+no noun after it ("no web UI changes"); "offline" only where the clause begins with it as an instruction ("work
+offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by basename (norm). A pass
+reads each clause once, and the files an "it" stands for once (_read): word sets, short fixed sequences, one suffix
+scan per clause; the regular expressions have no nested quantifiers.
 lean: fixed word lists, English only; a phrasing outside them ("keep the diff to X", a constraint on a file named two
 clauses back) states no constraint. Grow the lists from real misses, never from the held-out pool.
 lean: not linear in two places: a negated push or network word, or a lift word, reads the words before it in its clause

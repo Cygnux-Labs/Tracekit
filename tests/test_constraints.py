@@ -330,8 +330,8 @@ class Grammar(unittest.TestCase):
                      "Don't make any changes on disk."):
             with self.subTest(said):   # how many, when, or the whole project: still read-only
                 self.assertEqual(constraints.extract(f"Investigate the crash. {said}"), [("read_only", None)])
-        self.assertEqual(replay_one("Investigate the crash in src/pager.py. Don't make any changes to the code.", "Edit",
-                                    {"file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}),
+        self.assertEqual(replay_one("Investigate the crash in src/pager.py. Don't make any changes to the code.",
+                                    "Edit", {"file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}),
                          (True, "high"))
 
     def test_keeping_something_else_out_of_a_file_keeps_nothing_away(self):
