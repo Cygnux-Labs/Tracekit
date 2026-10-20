@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import time
+import timeit
 import unittest
 from unittest import mock
 
@@ -475,25 +476,31 @@ class Grammar(unittest.TestCase):
             constraints.mentions(text)
             constraints.facts("Bash", {"command": text})
             self.assertLess(time.perf_counter() - t0, 5, text[:20])
-        for many in ("Don't touch " + " or ".join(f"a{k}.py" for k in range(9000)),   # one clause naming 9,000 files
-                     "Don't change anything except " + " ".join(f"a{k}.py" for k in range(9000)),
-                     "Don't change anything" + "".join(f", except a{k}.py" for k in range(4000))):
-            t0 = time.perf_counter()
-            self.assertGreater(len(constraints.extract(many)), 3000)
-            constraints.mentions(many)
-            self.assertLess(time.perf_counter() - t0, 0.2)   # each file looked only at the next, not at every other
-        for unit in ("change it, ", "don't change it, "):   # 1.4.0 review L2: each "it" read the clause before again
-            text = "Don't touch " + "a.py " * 6000 + ". " + unit * 2800
-            t0 = time.perf_counter()
-            read = constraints._read(text)
-            constraints.extract(None, read)
-            constraints.changes(read)
-            self.assertLess(time.perf_counter() - t0, 1, unit)
-        for files in ("a.py " * 6000, " ".join(f"f{k}.py" for k in range(3000)) + " "):   # delta review D-L4: a
-            read = constraints._read(f"Leave {files}alone. " + "keep them, " * 3000)   # "them" no change word governs
-            t0 = time.perf_counter()
-            constraints.changes(read)
-            self.assertLess(time.perf_counter() - t0, 0.5, files[:10])
+
+        def read(text):
+            r = constraints._read(text)
+            constraints.extract(None, r)
+            constraints.mentions(None, r)
+            constraints.changes(r)
+        files = lambda n, sep=" ": sep.join(f"a{k}.py" for k in range(n))   # noqa: E731
+        for label, text, n in (   # each file looked only at the next, not at every other
+                ("a clause naming files", lambda n: "Don't touch " + files(n, " or "), 1350),
+                ("files after except", lambda n: "Don't change anything except " + files(n), 1800),
+                ("an except clause each", lambda n: "Don't change anything, except " + files(n, ", except "), 950),
+                # 1.4.0 review L2: each "it" read the clause before again
+                ("change it", lambda n: "Don't touch " + "a.py " * (2 * n) + ". " + "change it, " * n, 700),
+                ("don't change it", lambda n: "Don't touch " + "a.py " * (2 * n) + ". " + "don't change it, " * n,
+                 550),
+                # delta review D-L4: changes() read a "them" no change word governs once per file
+                ("keep them", lambda n: "Leave " + "a.py " * (2 * n) + "alone. " + "keep them, " * n, 750),
+                ("keep them, each file once", lambda n: f"Leave {files(n)} alone. " + "keep them, " * n, 750)):
+            with self.subTest(label):   # linear: 4n takes 4 times as long as n, quadratic 16; in CPU time, which
+                best = [min(timeit.repeat(lambda: read(t), timer=time.process_time, number=3, repeat=3))   # load
+                        for t in (text(n), text(4 * n))]   # on the machine doesn't change; the best of three
+                self.assertLess(best[1], 8 * best[0], best)
+        for text in ("Don't touch " + files(1400, " or "), "Don't change anything except " + files(1400),
+                     "Don't change anything, except " + files(1400, ", except ")):
+            self.assertEqual(len(constraints.extract(text)), 1400)   # each file read
 
 
 class Live(Signed):
