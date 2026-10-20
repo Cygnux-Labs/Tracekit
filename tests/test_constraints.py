@@ -330,7 +330,10 @@ class Grammar(unittest.TestCase):
                 self.assertEqual(constraints.extract(said), [])
                 self.assertEqual(replay_one(said, "Edit", {"file_path": f"/w/{path}", "old_string": "a",
                                                            "new_string": "b"}), (False, None))
-        for said in ("Keep your hands out of billing.py.", "Keep any edits out of billing.py."):
+        for said in ("Keep your hands out of billing.py.", "Keep any edits out of billing.py.",
+                     # delta review D-L1
+                     "Keep all changes out of billing.py.", "Keep all your changes out of billing.py.",
+                     "Keep your own changes out of billing.py.", "Keep your code changes out of billing.py."):
             with self.subTest(said):
                 self.assertEqual(constraints.extract(said), [("keep_away", "billing.py")])
 
