@@ -184,8 +184,17 @@ jobs:
       - name: Publish (platform packages first)
         run: |
           case "${GITHUB_REF_NAME#v}" in *[a-z]*) dist=next ;; *) dist=latest ;; esac   # pre-releases never become latest
-          for f in release/cygnuxlabs-tracekit-signer-*.tgz; do npm publish "./$f" --provenance --access public --tag "$dist"; done
-          npm publish ./release/cygnuxlabs-tracekit-[0-9]*.tgz --provenance --access public --tag "$dist"
+          publish() {   # a version already on npm is skipped, so a re-run after a partial publish goes on; an upload is tried 3 times
+            spec=$(tar -xOzf "$1" package/package.json | node -p 'const p = JSON.parse(require("fs").readFileSync(0, "utf8")); p.name + "@" + p.version')
+            for i in 1 2 3; do
+              if npm view "$spec" version >/dev/null 2>&1; then echo "$spec is on npm"; return 0; fi
+              npm publish "./$1" --provenance --access public --tag "$dist" && return 0
+              sleep 30
+            done
+            return 1
+          }
+          for f in release/cygnuxlabs-tracekit-signer-*.tgz; do publish "$f"; done
+          publish "$(ls release/cygnuxlabs-tracekit-[0-9]*.tgz)"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-final
