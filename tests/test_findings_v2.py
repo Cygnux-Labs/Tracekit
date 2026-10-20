@@ -18,6 +18,7 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval.e20_alignment import Signer, Transcript, replay  # noqa: E402
+from factories import SLOWER  # noqa: E402
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub  # noqa: E402
 from tracekit import __version__, constraints, findings, findings_v2  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
@@ -782,7 +783,7 @@ class Bounded(unittest.TestCase):
         out = findings_v2.analyze(recs, content)
         took = time.perf_counter() - t0
         self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X202"]["found"], 5000)
-        self.assertLess(took, 30)
+        self.assertLess(took, 30 * SLOWER)
         recs, content = self.synthetic(1000, "Editing the next file. " * 40)
         tracemalloc.start()
         try:
@@ -823,7 +824,8 @@ class Bounded(unittest.TestCase):
                            ("one message over every line", self.synthetic(4000, "ok.", one_message=True))):
             t0 = time.perf_counter()
             out = findings_v2.analyze(*run)
-            self.assertLess(time.perf_counter() - t0, 5, label)   # was 13 s and more: each call read all before it
+            # was 13 s and more: each call read all before it
+            self.assertLess(time.perf_counter() - t0, 5 * SLOWER, label)
             self.assertLessEqual(max(len(c["seqs"]) for c in out["shown"]["calls"].values()), findings_v2.MAX_GROUP)
 
     def test_hostile_text_is_read_in_linear_time(self):
