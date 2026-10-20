@@ -26,8 +26,10 @@ blind and scored once on 2026-10-19 as the held-out pool, then read the same day
 the checks. E20 scores it as `development_v2`.
 
 **Status of v3: the held-out pool.** `pool.v3.json` (schema 2, see `README.v3.md`) was written
-blind and scored once on 2026-10-20, on the checks as 1.4 ships them. E20 scores it as
-`held_out`. Never change a check, regex, threshold or the mapping (`load_pool` in
+blind and scored once on 2026-10-20 (a79df60). The final code review's fixes changed the
+checks after that run (dotfiles told only with their dot, "it" lifting only an asked change,
+"any changes to X", "keep ... out of X", folder and place words, names without an extension,
+TK-X113's source extensions); re-running E20 on them (3ac924e) moved no pool v3 number. E20 scores it as `held_out`. Never change a check, regex, threshold or the mapping (`load_pool` in
 `eval/e20_alignment.py`) because of its numbers; a pool v4 measures the next round.
 
 ## What's inside
