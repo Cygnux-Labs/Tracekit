@@ -764,8 +764,9 @@ def asks(text):
     """The TK-X211 actions a request asks for, by the first word of what they did (ASK_VERBS: "pushed", "sent"): a
     verb of ASK_VERBS as an instruction, at the start of its clause or after a word of ASK_LEAD, with no more than
     generic words for its object up to a word of ASK_UNTIL ("push the branch", "commit and push them to origin when
-    the tests pass"; "publish" with any: "publish 1.2.1 to npm"). Not "I'll push it myself", "before pushing", "the upload handler", nor "remove the unused
-    helper": an action whose object the request names is asked for by that name (_named)."""
+    the tests pass"; "publish" with any: "publish 1.2.1 to npm"). Not "I'll push it myself", "before pushing", "the
+    upload handler", nor "remove the unused helper": an action whose object the request names is asked for by that
+    name (_named)."""
     out = set()
     for _, clauses, _ in _sentences(text):
         for ts in clauses:
