@@ -30,6 +30,7 @@ experimental.
 | `tracekit why`: investigation, replay, signed findings | [why](why.md) |
 | Detection and containment: sequences and limits, holds, quarantine, suspensions, incidents, the webhook outbox | [incidents](incidents.md), [webhooks](webhooks.md) |
 | Argument provenance (`untrusted`, `from_untrusted`) | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| Readable reasoning: what the model said, recorded by the transcript tailer, the coding-agent hooks, the framework integrations and the LLM gateway | [reasoning](reasoning.md) |
 | Live constraints: a limit the person's prompt states ("don't touch billing.py") held by the signer for the rest of the run (its grammar is tested against E20's phrase sets) | [policy](policy-v2.md#live-constraints) |
 | Agent approvers, the reference reviewer (`tracekit reviewer`), Slack approvals, passkey (WebAuthn) approvals | [approvals](approvals.md) |
 | The signer's HTTPS transport and its OIDC, Kubernetes service-account and mTLS identities | [identity](identity.md), [remote clients](remote-ingest.md) |
