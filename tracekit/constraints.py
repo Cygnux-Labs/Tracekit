@@ -330,6 +330,23 @@ def _negating(tokens):
                for k, t in enumerate(tokens))
 
 
+def _prohibited(tokens, i):
+    """Whether a negation governs a change of the file at tokens[i]: a change word tied to it with a negation of
+    SAID_NEG before ("don't touch X", "nobody should ever edit X"; not "don't change the signature in X": _where), or
+    after it a negation and, past filler words, a participle or a change word that ends the clause ("X must not be
+    edited", "X should never change"; not "X never writes the token", "X must not crash")."""
+    c = _tied(tokens, i)
+    if c is not None and not _where(tokens, c, i) and SAID_NEG & set(tokens[max(0, c - WINDOW):c]):
+        return True
+    for k in range(i + 1, min(len(tokens), i + 1 + WINDOW)):
+        if tokens[k] in SAID_NEG or tokens[k].endswith("n't"):
+            m = _first(tokens, k, len(tokens))
+            return m < len(tokens) and (tokens[m] in PARTICIPLES or tokens[m] in VERBS and m + 1 == len(tokens))
+        if tokens[k] not in FILLER:
+            return False
+    return False
+
+
 def _phrase(tokens, k, phrases):
     return any(tuple(tokens[k:k + len(p)]) == p for p in phrases)
 
