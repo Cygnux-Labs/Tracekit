@@ -1,5 +1,6 @@
 """The signer steps the framework integrations share (tracekit.integrations.gate), with a mock run handle."""
 import asyncio
+import threading
 import time
 import unittest
 from unittest import mock
@@ -35,6 +36,37 @@ class GateCall(unittest.TestCase):
                 await t
         asyncio.run(go())
         self.assertEqual([c.args[0] for c in r.call.call_args_list], ["approval_request"])   # nothing to withdraw
+        r.approval_consume.assert_not_called()
+
+    def test_a_cancel_delivered_again_while_the_approval_is_requested_still_withdraws_it(self):
+        """A cancel scope (anyio's) cancels its task again at every await: the second cancel stopped the cancel
+        handler's wait for the request, so the approval it made was never withdrawn and a person could still answer
+        it for a call that will never run."""
+        requested, release, withdrawn = threading.Event(), threading.Event(), threading.Event()
+        r = run("ask")
+
+        def call(method, **f):
+            if method == "approval_request":
+                requested.set()
+                release.wait(5)   # still in flight through both cancels
+                return {"approval_id": "apr-1"}
+            withdrawn.set()
+            return {}
+        r.call.side_effect = call
+
+        async def go():
+            t = asyncio.ensure_future(gate_call(r, "c1", 0, "pay", {}))
+            await asyncio.to_thread(requested.wait, 5)
+            t.cancel()
+            await asyncio.sleep(0)   # t runs its cancel handler, which waits for the request
+            t.cancel()
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await t
+            await asyncio.to_thread(withdrawn.wait, 5)
+        asyncio.run(go())
+        r.call.assert_called_with("approval_abandon", approval_id="apr-1",
+                                  reason="the agent run was cancelled while it waited")
         r.approval_consume.assert_not_called()
 
     def test_an_allowed_call_whose_consume_is_refused_is_completed_as_not_run(self):
