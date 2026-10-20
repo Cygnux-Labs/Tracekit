@@ -1178,6 +1178,13 @@ class WhyLive(WhyServer):
 
 
 class WhyPage(WhyServer):
+    def test_a_task_kept_out_of_the_log_reads_as_committed(self):
+        # a signed run's imported task is a committed value, not text: the run header showed "[object Object]"
+        out = page_js(["COMMITTED", "taskText"], 'for (const v of [{content: COMMITTED, hash: "h"}, "Close ACC-9", null])'
+                                                 ' console.log(JSON.stringify(taskText(v)))')
+        self.assertEqual([json.loads(x) for x in out.splitlines()],
+                         ["task: content committed, not in the log", "Close ACC-9", ""])
+
     def test_the_page_is_the_viewers_and_the_why_api_needs_the_token(self):
         self.assertEqual(self.request("GET", "/api/why/workspace")[0], 401)
         status, h, _ = self.request("GET", f"/?token={TOKEN}")

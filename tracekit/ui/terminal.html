@@ -2561,6 +2561,7 @@
     let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "", WNODE = null, WPICK = null;
     const TL = { agent: "", type: "", flag: false, q: "" };   // TIMELINE's filters
     const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null, fit: true };
+    const taskText = v => v && typeof v === "object" ? (v.content === COMMITTED ? "task: " + COMMITTED : JSON.stringify(v)) : String(v || "");
     const COMMITTED = "content committed, not in the log";   // a signed run's imported content: no value (why.core)
     const WTYPE = { input: "input", decision: "model call", action: "tool call", message: "message" };
     const WSTATUS = { confirmed: "PRIMARY CAUSE", contributing: "CONTRIBUTING FACTOR", suppressive: "SUPPRESSES IT", inconclusive: "INCONCLUSIVE", untested: "NOT TESTED", "no-effect-seen": "NO EFFECT SEEN", "ruled-out": "RULED OUT" };
@@ -2764,7 +2765,7 @@
     // one run's header on its views, as Causeway's: the task, LOG INTACT, REPLAYABLE, its counts
     function runHead(d) {
       const s = d.summary;
-      return `<div class="wverdict"><b>${esc(String(s.task || d.run_id).slice(0, 140))}</b><br>${s.integrity === "ok" ? `<span class="s-ok">LOG INTACT</span>` : `<span class="s-deny">LOG FAILED INTEGRITY</span>`} · ${s.replayable ? `<span class="s-run">REPLAYABLE</span>` : `<span class="dim">NOT REPLAYABLE</span>`} · <span class="dim">${esc(`${s.agents.length} agents · ${s.decisions} model calls · ${s.actions} tool calls · ${s.messages} messages`)}</span></div>`;
+      return `<div class="wverdict"><b>${esc((taskText(s.task) || d.run_id).slice(0, 140))}</b><br>${s.integrity === "ok" ? `<span class="s-ok">LOG INTACT</span>` : `<span class="s-deny">LOG FAILED INTEGRITY</span>`} · ${s.replayable ? `<span class="s-run">REPLAYABLE</span>` : `<span class="dim">NOT REPLAYABLE</span>`} · <span class="dim">${esc(`${s.agents.length} agents · ${s.decisions} model calls · ${s.actions} tool calls · ${s.messages} messages`)}</span></div>`;
     }
     // RUNS: every why run (Causeway's runs list); a row opens its OVERVIEW
     function runsView(el) {
@@ -2772,7 +2773,7 @@
       el.innerHTML = `<p class="dim" style="padding:0 8px">Every recorded multi-agent run. Open one to see what happened and why.</p>`
         + tiles([["RUNS", R.length], ["HIGH ALERTS", sum("high"), "", sum("high") > 0], ["TOOL CALLS RECORDED", sum("actions")], ["CONFIRMED CAUSES", sum("confirmed_causes")]])
         + `<table class="wt"><thead><tr><th>RUN</th><th>STARTED (${esc(TZ)})</th><th>AGENTS</th><th>MODEL CALLS</th><th>TOOL CALLS</th><th>ALERTS</th><th>TESTS</th><th>LOG</th></tr></thead><tbody>`
-        + R.map(r => `<tr class="row" data-wgo="${esc(r.run_id)}"><td>${esc(r.run_id)}${r.finished === false ? ` <span class="s-run">running</span>` : ""}${r.guard ? ` <span class="dim">${esc("guard: " + r.guard)}</span>` : ""}<br><span class="dim">${esc(String(r.task || "").slice(0, 90))}</span></td>
+        + R.map(r => `<tr class="row" data-wgo="${esc(r.run_id)}"><td>${esc(r.run_id)}${r.finished === false ? ` <span class="s-run">running</span>` : ""}${r.guard ? ` <span class="dim">${esc("guard: " + r.guard)}</span>` : ""}<br><span class="dim">${esc(taskText(r.task).slice(0, 90))}</span></td>
           <td class="dim">${esc(r.started ? fmtD(Date.parse(r.started) / 1000) + " " + fmtT(Date.parse(r.started) / 1000) : "")}</td><td>${esc(r.agents.length)}</td><td>${esc(r.decisions)}</td><td>${esc(r.actions)}</td>
           <td>${r.alerts.high ? `<span class="s-deny">${esc(r.alerts.high + " high")}</span> ` : ""}${r.alerts.review ? `<span class="s-flag">${esc(r.alerts.review + " review")}</span>` : ""}${!r.alerts.high && !r.alerts.review ? `<span class="dim">none</span>` : ""}</td>
           <td>${esc(r.tests)}${r.confirmed_causes ? ` <span class="dim">${esc(`(${r.confirmed_causes} causal)`)}</span>` : ""}</td><td>${r.integrity === "ok" ? `<span class="s-ok">intact</span>` : `<span class="s-deny">failed</span>`}</td></tr>`).join("") + `</tbody></table>`;
