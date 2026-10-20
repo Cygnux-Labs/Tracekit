@@ -170,7 +170,7 @@ The shell field `effects` is each file the commands write, as `WRITE_TARGET:path
 sources; `cp`, `mv`, `install` and `ln` into a directory, `-t`'s or one that ends in `/`, also write each source's name
 there), and the start paths of a `find` with `-delete` or `-exec rm` and the log or history names among its tests. A
 rule on `effects` can tell a destination from a file a command only reads or copies. The tags are not in `target`,
-so a target rule reads what it did in 1.3.
+so a target rule reads the same subjects as before `effects` existed.
 
 - `host`: the URL's host as a browser reads it (`host:port/path` without a scheme is http; controls, tabs and newlines dropped, `view-source:` and `blob:`
   peeled, `\` as `/`, any number of slashes after the scheme, the host after the last `@`), percent-decoded, NFKC

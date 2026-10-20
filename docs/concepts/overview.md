@@ -81,8 +81,8 @@ system mode with file storage, `tracekit.instrument()` and the OpenAI Agents, La
 and MCP integrations, the Claude Code hooks, policy v2 and its packs, approvals from the command line, bundle export,
 both verifiers, `tracekit view` and `tracekit doctor`. Everything else (witnesses, the monitor, gateways, containment,
 agent approvers, `tracekit why`, `tracekit analyze --v2`, verified tool results, the kernel sensor and OpenShell
-imports, the six frameworks added in 1.3 and more) is experimental and says so when it starts. The full list:
-[what's stable](../support.md).
+imports, Pydantic AI, Google ADK, Strands Agents, LlamaIndex, Haystack, Microsoft Agent Framework and more) is
+experimental and says so when it starts. The full list: [what's stable](../support.md).
 
 ## How it relates to other tools
 

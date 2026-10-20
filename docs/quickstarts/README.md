@@ -13,13 +13,14 @@ reference page covers the rest.
 | MCP | [mcp.md](mcp.md) | [integrations/mcp.md](../integrations/mcp.md) |
 | CrewAI | | [integrations/crewai.md](../integrations/crewai.md) |
 | Browser Use | | [integrations/browser-use.md](../integrations/browser-use.md) |
-| Pydantic AI (New in 1.3) | | [integrations/pydantic-ai.md](../integrations/pydantic-ai.md) |
-| Google ADK (New in 1.3) | | [integrations/google-adk.md](../integrations/google-adk.md) |
-| Haystack (New in 1.3) | | [integrations/haystack.md](../integrations/haystack.md) |
-| LlamaIndex (New in 1.3) | | [integrations/llamaindex.md](../integrations/llamaindex.md) |
-| Microsoft Agent Framework (New in 1.3) | | [integrations/microsoft-agent-framework.md](../integrations/microsoft-agent-framework.md) |
-| Strands Agents (New in 1.3) | | [integrations/strands.md](../integrations/strands.md) |
+| Pydantic AI | | [integrations/pydantic-ai.md](../integrations/pydantic-ai.md) |
+| Google ADK | | [integrations/google-adk.md](../integrations/google-adk.md) |
+| Haystack | | [integrations/haystack.md](../integrations/haystack.md) |
+| LlamaIndex | | [integrations/llamaindex.md](../integrations/llamaindex.md) |
+| Microsoft Agent Framework | | [integrations/microsoft-agent-framework.md](../integrations/microsoft-agent-framework.md) |
+| Strands Agents | | [integrations/strands.md](../integrations/strands.md) |
 | TypeScript | | [sdk/typescript/README.md](../../sdk/typescript/README.md) |
 | Vercel AI SDK | | [integrations/vercel-ai.md](../integrations/vercel-ai.md) |
 | OpenTelemetry | | [otel.md](../otel.md) |
+| Sandboxes, MCP gateways and kernel sensors | | [integrations](../integrations.md#sandboxes-gateways-and-sensors) |
 | Any other agent | [custom.md](custom.md) | |

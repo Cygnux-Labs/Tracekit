@@ -44,11 +44,11 @@ sudo tracekit init --v2 --user AGENT --agent codex       # system mode: the sign
 The hooks run `python -I -m tracekit.integrations.harness_hooks <agent> <event>`: the same mapping as above, then the
 v2 Claude Code hook's core (the signer decides; approvals; the run's fail mode, closed by default and always closed in
 system mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error.
-**(1.3)** On any other event (a prompt, a tool result, a session event) a hook that fails exits 1, not 2, which
+On any other event (a prompt, a tool result, a session event) a hook that fails exits 1, not 2, which
 would block a prompt, and the event isn't recorded.
 
 A session is one run, open until the session ends. To watch it, `tracekit view --dev` (each call with what it ran);
-to verify it as it stands, `tracekit last --open` (1.2.2).
+to verify it as it stands, `tracekit last --open`.
 
 ### What was asked and said
 
@@ -91,7 +91,7 @@ to client.py", "don't change the public API of client.py, just fix the timeout b
 takes (32: an agent can add its own), a further one is refused, the hook says so at that prompt, and every write of the
 run waits for your approval from then on.
 
-### Hooks name their event (1.2)
+### Hooks name their event
 
 `tracekit init` writes each hook command with the event it's configured for as its last argument (the Claude Code
 hook: `... -m tracekit.integrations.claude_code PreToolUse`; Codex `PreToolUse`, Cursor `preToolUse`, Gemini CLI
@@ -104,7 +104,7 @@ Hooks installed before 1.2 have no event argument and keep working as before: an
 unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code's; for Codex, Cursor and Gemini CLI it doesn't
 check, so re-run `tracekit init --agent NAME` after upgrading.
 
-### What the signer records as a gap (1.2)
+### What the signer records as a gap
 
 Without anything else installed, the signer turns what it saw and then never heard about into signed gaps
 ([format](format-v2.md#3-events), [limits](limits.md#signer-and-capture)):

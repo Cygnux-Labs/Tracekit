@@ -1,6 +1,7 @@
-# Signing (v0.2)
+# Signing (the v1 laptop signer)
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+> This page is about the v1 signer, `tracekitd`; the v2 signer's keys: [evidence format](concepts/evidence-format.md#keys).
 
 ## Where the key lives
 
@@ -91,5 +92,5 @@ The socket accepts `status`, `append`, `checkpoint` (adds a checkpoint, nothing 
 - **Create**: at `init`, as the signer user. Never printed or sent anywhere.
 - **Distribute**: publish `signer.pub` (or its key id) where reviewers can get it independently of any bundle, e.g. in the witness repository's README. Reviewers pin it with `tracekit verify --key <signer.pub>`; without a pinned key or an independent witness the verifier reports the bundle as `UNANCHORED`.
 - **Rotate**: stop the service, move `keys/` aside, restart. A new `kid` appears in checkpoints; old bundles still verify against the old public key. Keep and publish old public keys so a verifier can tell a rotation from a forgery.
-- **Revoke**: publish the revoked key id and the last checkpoint seq you trust for it (commit it to the witness repository). Treat any record signed by that key after that checkpoint as untrusted. There is no online revocation check in v0.2; the verifier trusts exactly the key you pin.
+- **Revoke**: publish the revoked key id and the last checkpoint seq you trust for it (commit it to the witness repository). Treat any record signed by that key after that checkpoint as untrusted. The v1 signer has no online revocation check; the verifier trusts exactly the key you pin.
 - **Backup**: optional; losing the key does not affect existing bundles.

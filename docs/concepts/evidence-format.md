@@ -161,7 +161,7 @@ What each version added:
 | 1.1.0 | `tracekit why` findings, content vault records, observed inputs, provenance on decisions |
 | 1.2.0 | Agent approvers, containment (incidents, holds, quarantine, suspensions), `effect.observed`, the coverage matrix, more gap kinds |
 | 1.3.0 | `reconcile.result_mismatch` and the `result_unchecked` gap ([verified tool results](custody.md#the-llm-gateway)) |
-| 1.4.0 | `constraint.added` and the `constraint_refused` gap (live constraints), `review` records with `cites` (signed findings), kernel sensor and OpenShell fields on `effect.observed` and `capture.gap`, `said_only` on model exchanges, and the `ext` slot |
+| 1.4.0 | `constraint.added` and the `constraint_refused` gap (live constraints), `review` records with `cites` (signed findings), kernel sensor and OpenShell fields on `effect.observed` and `capture.gap`, `said_only` on model exchanges, the `ext` slot, and a run exported in parts (past 64 MiB of records) |
 
 **The `ext` slot.** From format 1.4.0, an addition an older verifier can leave unread doesn't need a new version. Any
 record may carry `ext`, an object of names to strict JSON values, and a record of type `ext` holds `data: {name, ...}`.
