@@ -349,6 +349,16 @@ class Engines(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 1)   # ten rules took 0.2 s each when every match had its own timeout
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S0"], True))
 
+    def test_the_shell_parse_is_not_charged_to_the_fallback_time(self):
+        """The fallback's time started before the shell parse: on a slow CPU, 64 KiB of one-word lines (0.4 s to parse
+        on a laptop) spent it before the first match and denied, marked nondeterministic."""
+        e = Engine({"tools": {"Bash": "shell"}, "flag": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
+        parse = engine._shell
+        with mock.patch.object(engine, "REGEX_TIMEOUT_S", 0.2), \
+                mock.patch.object(engine, "_shell", lambda args: (time.sleep(0.3), parse(args))[1]):
+            d = e.decide("Bash", {"command": "rm x"})
+        self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("flag", ["S"], None))
+
     def test_target_rules_read_a_commands_data_words_once(self):
         """data_words ran once per word of a command, for each target rule: a 16 KB grep took 24 s to decide."""
         e = Engine({"tools": {"Bash": "shell"},
@@ -484,7 +494,7 @@ class Prefilter(unittest.TestCase):
 
 class Speed(unittest.TestCase):
     """The fallback engine (`regex`) on 64 KiB built to make a pattern back off or rescan."""
-    BUDGET_S = 0.05
+    BUDGET_S = 0.15   # the slowest shipped pattern: ~20 ms on an M-series Mac, ~60 ms on CI runners; a rescan, 0.3 s+
     FILLERS = (" -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@")
     # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
     # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
@@ -607,7 +617,8 @@ class Speed(unittest.TestCase):
                 start = time.perf_counter()
                 d = e.decide(tool, args)
                 self.assertNotIn("nondeterministic", d)
-                self.assertLess(time.perf_counter() - start, 1)
+                # the slowest, 64 KiB of one-word lines, is ~0.4 s on a laptop under Python 3.9, nearly all the parse
+                self.assertLess(time.perf_counter() - start, 2)
 
     def test_the_corpus_decides_within_budget(self):
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])

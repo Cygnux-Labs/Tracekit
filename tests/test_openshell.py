@@ -790,7 +790,8 @@ class Config(unittest.TestCase):
             with self.subTest(bad), self.assertRaises(ValueError):
                 self.load(**bad)
         cfg = self.load(listen="0.0.0.0:50051", gateway_jwt=jwt, tls=tls)
-        self.assertTrue(cfg["gateway_jwt"]["public_key"].endswith(os.path.join("jwt", "public.pem")))
+        # the path as written, under the config file's directory (Windows takes its / as written too)
+        self.assertTrue(cfg["gateway_jwt"]["public_key"].endswith(os.sep + "jwt/public.pem"))
         self.assertTrue(os.path.isabs(cfg["gateway_jwt"]["public_key"]))
         self.assertTrue(self.load(listen="0.0.0.0:50051", allow_unauthenticated=True)["allow_unauthenticated"])
 

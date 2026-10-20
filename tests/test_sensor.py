@@ -543,6 +543,7 @@ class TestCommand(unittest.TestCase):
         imp = sensor.Import(types.SimpleNamespace(observe_effect=lambda req: None), "tetragon", RUNS)
         self.assertEqual(sensor.run(imp, lines()), 1)
 
+    @unittest.skipIf(os.name == "nt", "Windows refuses to rename a log the follower holds open")
     def test_follow_reads_across_rotation(self):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
@@ -590,6 +591,7 @@ class TestCommand(unittest.TestCase):
                 pass
         return got
 
+    @unittest.skipIf(os.name == "nt", "Windows refuses to rename a log the follower holds open")
     def test_a_line_written_to_the_old_file_as_it_rotates_is_read(self):
         path, armed = self.log("tetragon.log"), []
 
@@ -607,14 +609,14 @@ class TestCommand(unittest.TestCase):
         _append(path, "x" * 50 + "\n")
 
         def truncate():
-            with open(path, "w") as f:
+            with open(path, "w", newline="") as f:
                 f.write('{"ok": 1}\n')
         got = self.follow(path, [lambda: _append(path, '{"cut'), truncate, lambda: None, lambda: None])
         self.assertEqual(got, [b'{"cut', b'{"ok": 1}\n'])   # the cut one unreadable: a loss
 
 
 def _append(path, text):
-    with open(path, "a") as f:
+    with open(path, "a", newline="") as f:   # \n as the sensors write it, on Windows too
         f.write(text)
 
 

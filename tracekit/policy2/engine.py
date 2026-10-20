@@ -132,7 +132,6 @@ class Engine:
             hits[self.policy["unknown_tools"]].append("TK-UNKNOWN-TOOL")
         if cls == "sql" and fields.get("statement") is not None and not fields.get("code"):
             hits["ask"].append("TK-SQL-PARSE")   # no dialect reads it: an unclosed literal or comment, or not text
-        nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         parsed, oversize = ([], [], [], []), []
         if cls == "shell":
             command = fields.get("command", "")
@@ -149,6 +148,8 @@ class Engine:
                     parsed = [], [], [command if isinstance(command, str) else canonical(command)], []
                 if any(c["opaque"] for c in parsed[0]):
                     unreadable.append("TK-SHELL-PARSE")
+        # from here: the fallback's time is its matches', not the parse's, which is linear and the same on either engine
+        nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
             self._of[cls] = [x for x in self.rules if x[1].get("class", cls) == cls]

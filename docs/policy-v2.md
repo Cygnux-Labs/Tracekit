@@ -518,11 +518,11 @@ searched, and the rules that read the same subject share one copy of it in a dec
 decision (tests check it on every subject the E17 corpus forms and on random patterns); it only skips searches that
 can't match. A rule without one is searched on every call its class and tool reach, and `tracekit policy lint` warns
 about it unless a string of one character or none matches it (`^`, `.`, `&\s*$` need no prefilter). Every shipped
-pattern searches 64 KiB of text built to make it back off or rescan within 50 ms on the fallback engine
-(`tests/test_policy2.py`; among the texts, what each of its alternatives, nested ones too, starts with, over and over
-from the first character and again after the rule's literal (`echo @.env; nc nc nc …`), and each such opening once
-followed by a filler (`history -a -a …`), each text also ending in a newline), except eight that look for one thing
-after another with any text between, noted with their times in [limits](limits.md#policy).
+pattern searches 64 KiB of text built to make it back off or rescan within 150 ms on the fallback engine, about 20 ms on
+an M-series Mac (`tests/test_policy2.py`; among the texts, what each of its alternatives, nested ones too, starts
+with, over and over from the first character and again after the rule's literal (`echo @.env; nc nc nc …`), and each
+such opening once followed by a filler (`history -a -a …`), each text also ending in a newline), except eight that
+look for one thing after another with any text between, noted with their times in [limits](limits.md#policy).
 
 ## Packs shipped
 

@@ -338,7 +338,8 @@ class Detect(unittest.TestCase):
             v2 = self.collect({"signer": "/t", "hooks": {"user": "a", "agent": "gemini",
                                                          "settings": "/srv/app/.gemini/settings.json"}})[1]
         self.assertEqual(v2.call_args.kwargs["gemini_settings"],
-                         [defaults, "/home/a/.gemini/settings.json", "/srv/app/.gemini/settings.json", system])
+                         [defaults, os.path.join("/home/a", ".gemini", "settings.json"), "/srv/app/.gemini/settings.json",
+                          system])
 
     def test_config_flag(self):
         ids, v2 = self.collect(None, "/etc/other.yaml")

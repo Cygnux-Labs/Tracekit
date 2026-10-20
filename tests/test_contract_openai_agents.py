@@ -294,7 +294,7 @@ class ResponseBodies(unittest.TestCase):
     content, so the reasoning before a call is checkable (`tracekit analyze --v2`); tool_uses are what they were."""
 
     def record(self, retain):
-        me = CallerIdentity("uid", str(os.getuid()), True)
+        me = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
         s = SignerService(ac.tmpdir(self), content={"retain": retain},
                           authorize={f"uid:{me.subject}": sorted(DEFAULT_GRANTS | {CONTENT_READ})})
         self.addCleanup(s.close)

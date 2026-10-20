@@ -573,7 +573,7 @@ class CodingPack(unittest.TestCase):
             "rm ~/.config/systemd/user/x.service": (("flag", ["TK-F003"]),) * 2}
         for i, name in enumerate(("coding.yaml", "server.yaml")):
             policy = pc.build(os.path.join(PACKS, name))[0]
-            for engine in [Engine(policy, "regex")] + [Engine(policy, "re2")] * HAVE_RE2:
+            for engine in [Engine(policy, e) for e in (("regex", "re2") if HAVE_RE2 else ("regex",))]:
                 for command, want in before.items():
                     with self.subTest(pack=name, engine=engine.engine, command=command):
                         d = engine.decide("Bash", {"command": command})
