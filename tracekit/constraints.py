@@ -173,9 +173,10 @@ LEAD = frozenset(("please", "just", "and", "but", "though", "so", "also", "then"
 ASKING = LEAD | frozenset(("you", "i", "let's", "lets", "should", "must", "shall", "will", "would", "can", "could",
                            "really", "absolutely", "definitely", "do", "i'd", "rather"))
 # what may come before a change word, in its base form, that asks the agent for the change ("you can edit it", "feel
-# free to change it", "go ahead and fix it"; not "ask me before you change it", "I'll update it myself")
-ALLOWING = LEAD | frozenset(("you", "can", "may", "could", "should", "must", "need", "feel", "free", "to", "go",
-                             "ahead", "now"))
+# free to change it", "go ahead and fix it"; not "ask me before you change it", "I'll update it myself", "you may need
+# to change it")
+ALLOWING = LEAD | frozenset(("you", "can", "may", "could", "should", "must", "feel", "free", "to", "go", "ahead",
+                             "now"))
 # what may follow a refused push and still refuse every push ("don't push the branch", "don't push it yet"); another
 # word scopes it ("don't push to main", "never push secrets"): no constraint
 PUSHED = frozenset(("anything", "it", "them", "this", "that", "these", "those", "yet", "please", "now", "the", "any",
@@ -637,20 +638,26 @@ def extract(text, read=None):
     read = _read(text) if read is None else read
     # what a clause asks for, not negated -> the last such clause: a file it changes (_said), a LIFT word; by "it" or
     # "there" for the file named before, where the clause asks the agent for the change (ALLOWING: "X is frozen in
-    # production, but you can edit it locally"), apart: that lifts no constraint on the person's own go-ahead ("never
-    # touch X without asking me first. Change the timeout there")
+    # production, but you can edit it locally"; not "to change it, ...", "should you change it"), apart: that lifts no
+    # constraint on the person's own go-ahead ("never touch X without asking me first. Change the timeout there"). No
+    # file where the clause names the person's go-ahead, or the next clause does with nothing else to ask or refuse
+    # ("you can change it after I approve", "..., but ask me first"; not "..., but don't push before I review")
     asked, by_it, before = {}, {}, []
     for j, (tokens, _, _) in enumerate(read if any(found for _, found, _ in read) else ()):
+        nxt = set(read[j + 1][0]) if j + 1 < len(read) else set()
+        near = set(tokens) | (set() if nxt & LIFT_WORDS or nxt & NEGATIONS else nxt)
+        mine = PERSON & near and GO_AHEAD & near
         if tokens[:1] and tokens[0] in SEQUENCE:
             asked["then"] = j
         for i, t in enumerate(tokens):
-            if _file(t) and _said(tokens, i) == "changed":
+            if _file(t) and not mine and _said(tokens, i) == "changed":
                 asked[norm(t)] = j
             elif t in LIFT_WORDS and not _negated(tokens, i, NEGATIONS | {"no"}) and not BLOCK & set(tokens[:i]):
                 asked[t] = j   # not "tell me what you'd change"
         k, it = _referent(tokens, before)
-        c = None if k is None else _tied(tokens, k, SAID_CHANGE)
-        if c is not None and set(tokens[:c]) <= ALLOWING and not tokens[c].endswith(("s", "ed", "ing")):
+        c = None if k is None or mine else _tied(tokens, k, SAID_CHANGE)
+        if c is not None and set(tokens[:c]) <= ALLOWING and not tokens[c].endswith(("s", "ed", "ing")) \
+                and next(t for t in tokens if t not in LEAD) not in ("to", "should", "must"):
             by_it.update(dict.fromkeys(it, j))
         before = _files(tokens) or before
     out = [c for j, (tokens, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (

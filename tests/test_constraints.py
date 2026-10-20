@@ -239,16 +239,34 @@ class Grammar(unittest.TestCase):
                            ("Don't edit schema.sql; we'll change it in the next PR.", "schema.sql"),
                            ("Don't touch billing.py. Explain how you would change it.", "billing.py"),
                            ("Don't touch prod.yaml. Changing it breaks the deploy.", "prod.yaml"),
-                           ("Don't touch prod.yaml. Changes to it need a review.", "prod.yaml")):
+                           ("Don't touch prod.yaml. Changes to it need a review.", "prod.yaml"),
+                           # delta review D-H1: the person's go-ahead, a purpose clause, should or need
+                           ("Don't touch prod.yaml. To change it, ask me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml. To edit it, ping me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml, but to change it, ask me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You can change it after I approve.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You can change it, once I approve.", "prod.yaml"),
+                           ("Don't touch prod.yaml. Feel free to edit it once I say so.", "prod.yaml"),
+                           ("Don't touch prod.yaml. Go ahead and update it after I review the plan.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You can change it later, but ask me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You may need to change it later, but ask me first.", "prod.yaml"),
+                           ("Don't touch prod.yaml. Should you need to change it, ask me.", "prod.yaml"),
+                           ("Don't touch prod.yaml. You can edit prod.yaml once I approve.", "prod.yaml")):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [("keep_away", name)])
                 self.assertEqual(replay_one(f"Fix the off-by-one in src/pager.py. {text}", "Edit", {
                     "file_path": f"/w/{name}", "old_string": "a", "new_string": "b"}), (True, "high"))
-        for text in ("settings.py is frozen in production, but you can edit it locally.",
-                     "Leave billing.py alone for now; then go ahead and update it.",
-                     "Don't touch billing.py yet. Feel free to change it after the refactor."):
+        text = "Don't touch prod.yaml or deploy.yaml. You can update them after I approve."
+        self.assertEqual(constraints.extract(text), [("keep_away", "prod.yaml"), ("keep_away", "deploy.yaml")])
+        for text, want in (("settings.py is frozen in production, but you can edit it locally.", []),
+                           ("Leave billing.py alone for now; then go ahead and update it.", []),
+                           ("Don't touch billing.py yet. Feel free to change it after the refactor.", []),
+                           ("Don't touch billing.py for now. Feel free to change it.", []),
+                           ("Don't touch billing.py. If tests fail, fix them.", []),
+                           ("Don't touch billing.py. Go ahead and fix it, but don't push before I review.",
+                            [("no_push", None)])):
             with self.subTest(text):
-                self.assertEqual(constraints.extract(text), [])
+                self.assertEqual(constraints.extract(text), want)
 
     def test_more_ways_of_keeping_a_file_or_a_directory_away(self):
         """Round-3 review: prohibitions the grammar didn't read (each now held live and found), and "any changes"."""
