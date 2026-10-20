@@ -285,11 +285,10 @@ class Said(unittest.TestCase):
     """tracekit_said records each AssistantMessage: thinking (with its signature), text and tool uses, linked to the
     PreToolUse hook's decisions by the tool_use id; the message itself only with the vault; a failure only warns."""
 
-    MESSAGE = AssistantMessage([ThinkingBlock("the user asked for an echo", "sig-1"), TextBlock("Echoing."),
-                                ToolUseBlock("toolu_1", "echo", {"text": "hi"}),
-                                ToolUseBlock("toolu_2", f"mcp__{cas.SERVER}__run", {"cmd": "ls"})], "claude-x")
-
     def setUp(self):
+        self.MESSAGE = AssistantMessage([ThinkingBlock("the user asked for an echo", "sig-1"), TextBlock("Echoing."),
+                                         ToolUseBlock("toolu_1", "echo", {"text": "hi"}),
+                                         ToolUseBlock("toolu_2", f"mcp__{cas.SERVER}__run", {"cmd": "ls"})], "claude-x")
         self.signer = FakeSigner()
         self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
         self.sent = []

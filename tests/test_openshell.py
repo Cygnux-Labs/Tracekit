@@ -504,12 +504,17 @@ class OcsfCodec(unittest.TestCase):
                 openshell.log_records(body)
 
 
+def ocsf_grants():
+    """The OCSF classes' grants: the export is accepted under the test's own uid."""
+    return {"openshell:*": PER_CALL, f"uid:{os.getuid()}": sorted(svc.DEFAULT_GRANTS | {"observe_effect"})}
+
+
 class Ocsf(Middleware):
     """OpenShell's OCSF export into the middleware (LogsService.Export on its port), recorded in each sandbox's run."""
     config = {"ocsf": {}}
-    authorize = {"openshell:*": PER_CALL, f"uid:{os.getuid()}": sorted(svc.DEFAULT_GRANTS | {"observe_effect"})}
 
     def setUp(self):
+        self.authorize = ocsf_grants()
         super().setUp()
         channel = self.grpc.insecure_channel(f"127.0.0.1:{self.port}")
         self.addCleanup(channel.close)
@@ -685,9 +690,8 @@ class Ocsf(Middleware):
 
 class OcsfToken(Middleware):
     """ocsf.token_file: OpenShell's OCSF export sends it as its collector header (OTEL_EXPORTER_OTLP_LOGS_HEADERS)."""
-    authorize = Ocsf.authorize
-
     def setUp(self):
+        self.authorize = ocsf_grants()
         path = os.path.join(tmpdir(self), "ocsf.token")
         with open(path, "w") as f:
             f.write("s3cret-token\n")

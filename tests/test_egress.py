@@ -900,6 +900,7 @@ class TestProxy(unittest.TestCase):
         self.addCleanup(self.srv.shutdown)
         tls = ssl.create_default_context()
         tls.check_hostname, tls.verify_mode = False, ssl.CERT_NONE
+        tls.minimum_version = ssl.TLSVersion.TLSv1_2
         s, replies = self.socks("localhost", tls=tls)   # E2B's egressProxy with tls.enabled
         self.assertEqual(replies, [b"\x05\x02", b"\x01\x00", OPENED])
         s.sendall(client_hello("localhost"))
