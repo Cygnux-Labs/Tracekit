@@ -281,6 +281,20 @@ class Grammar(unittest.TestCase):
                     "file_path": "/w/src/pager.py", "old_string": "a", "new_string": "b"}), (False, None))
         self.assertEqual(constraints.extract("Investigate the crash. Don't make any changes."), [("read_only", None)])
 
+    def test_keeping_something_else_out_of_a_file_keeps_nothing_away(self):
+        """1.4.0 review M2: "keep the API key out of settings.py" kept settings.py away, so the edit the person asked
+        for was held and found. Only the agent's changes kept out of X keep X away."""
+        for said, path in (("Keep the API key out of settings.py and read it from the environment.", "settings.py"),
+                           ("Keep hardcoded credentials out of config.py.", "config.py"),
+                           ("Keep debug prints out of main.py.", "main.py")):
+            with self.subTest(said):
+                self.assertEqual(constraints.extract(said), [])
+                self.assertEqual(replay_one(said, "Edit", {"file_path": f"/w/{path}", "old_string": "a",
+                                                           "new_string": "b"}), (False, None))
+        for said in ("Keep your hands out of billing.py.", "Keep any edits out of billing.py."):
+            with self.subTest(said):
+                self.assertEqual(constraints.extract(said), [("keep_away", "billing.py")])
+
     def test_a_folder_word_keeps_the_clauses_files_in_order(self):
         """1.4.0 review H3: a "<word> folder" was read after the clause's files, so a file after it lost its bound and
         its constraint: mentioning a folder cancelled an unrelated file's constraint."""

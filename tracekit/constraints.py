@@ -393,8 +393,9 @@ def _kept(tokens, i, end, cond):
     while j > 0 and tokens[j - 1] in DETERMINERS:
         j -= 1
     if c is not None and _refused(tokens, c) and not _where(tokens, c, i) or any(
-            tokens[max(0, j - len(p)):j] == list(p) for p in AWAY) or tokens[max(0, j - 2):j] == ["out", "of"] and set(
-            tokens[max(0, j - 2 - WINDOW):j - 2]) & LEAVE:   # "keep your changes out of X"
+            tokens[max(0, j - len(p)):j] == list(p) for p in AWAY) or tokens[max(0, j - 2):j] == ["out", "of"] and any(
+            tokens[n] in LEAVE and set(tokens[n + 1:j - 2]) <= DETERMINERS | NOUNS | {"hands", "yourself"}
+            for n in range(max(0, j - 2 - WINDOW), j - 2)):   # "keep your changes out of X", not "keep a key out of X"
         return True
     if tokens[max(0, i - 2):i] in (["read-only", "on"], ["read-only", "for"], ["read-only", "to"]):
         return True
