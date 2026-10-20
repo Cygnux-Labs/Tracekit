@@ -315,7 +315,7 @@ class TestAgentsh(Followed):
         [gap] = self.gaps()
         self.assertIn("the log follower stopped or was killed", gap)
 
-    @unittest.skipIf(os.name == "nt", "Windows refuses to rename a log the follower holds open")
+    @unittest.skipIf(os.name == "nt", "Windows-specific delete-sharing regression is tested separately")
     def test_a_rotated_log_is_followed_into_the_new_one(self):
         al, log = self.agentsh()
         al.write(SHADOW)
@@ -337,6 +337,19 @@ class TestAgentsh(Followed):
         al.write(SHADOW)
         log.step()
         self.assertEqual((len(self.typed("policy.external")), self.gaps()), (4, []))
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows delete-sharing semantics")
+    def test_windows_agentsh_rotation_while_log_is_open(self):
+        al, log = self.agentsh()
+        al.write(SHADOW)
+        log.step()
+        al.write(NPM)
+        os.rename(al.path, al.path + ".1")
+        log.step()
+        al.write(PYTHON)
+        log.step()
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.typed("policy.external")],
+                         ["evt-029", "evt-040", "evt-046"])
 
     def test_without_integrity_lines_carry_no_sequence_to_check(self):
         al, log = self.agentsh(integrity=False)

@@ -341,6 +341,23 @@ class Detect(unittest.TestCase):
                          [defaults, os.path.join("/home/a", ".gemini", "settings.json"), "/srv/app/.gemini/settings.json",
                           system])
 
+    def test_gemini_windows_system_paths_and_overrides(self):
+        home, project = r"C:\Users\agent", r"C:\repo\.gemini\settings.json"
+        with mock.patch.object(doctor.sys, "platform", "win32"), mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(doctor._gemini(home, project), [
+                r"C:\ProgramData\gemini-cli\system-defaults.json",
+                r"C:\Users\agent\.gemini\settings.json", project,
+                r"C:\ProgramData\gemini-cli\settings.json"])
+        with mock.patch.object(doctor.sys, "platform", "win32"), mock.patch.dict(
+                os.environ, {"GEMINI_CLI_SYSTEM_SETTINGS_PATH": r"D:\Gemini\settings.json"}, clear=True):
+            self.assertEqual(doctor._gemini(None, None), [
+                r"D:\Gemini\system-defaults.json", r"D:\Gemini\settings.json"])
+        with mock.patch.object(doctor.sys, "platform", "win32"), mock.patch.dict(
+                os.environ, {"GEMINI_CLI_SYSTEM_SETTINGS_PATH": r"D:\Gemini\settings.json",
+                             "GEMINI_CLI_SYSTEM_DEFAULTS_PATH": r"E:\Defaults\system-defaults.json"}, clear=True):
+            self.assertEqual(doctor._gemini(None, None), [
+                r"E:\Defaults\system-defaults.json", r"D:\Gemini\settings.json"])
+
     def test_config_flag(self):
         ids, v2 = self.collect(None, "/etc/other.yaml")
         self.assertEqual((ids, v2.call_args.args[0]), (["D-V2"], "/etc/other.yaml"))

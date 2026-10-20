@@ -10,6 +10,7 @@ Doctor output is advice, not evidence: it reads the host as it is now, and nothi
 """
 import errno
 import json
+import ntpath
 import os
 import re
 import stat
@@ -130,9 +131,12 @@ def _sandbox(paths):
 
 def _gemini(home, project):
     """Gemini CLI's settings files, lowest rank first: system defaults, the user's, the project's, system settings."""
-    d = "/Library/Application Support/GeminiCli" if sys.platform == "darwin" else "/etc/gemini-cli"
-    return [p for p in (os.path.join(d, "system-defaults.json"), home and os.path.join(home, ".gemini", "settings.json"),
-                        project, os.path.join(d, "settings.json")) if p]
+    join, dirname = (ntpath.join, ntpath.dirname) if sys.platform == "win32" else (os.path.join, os.path.dirname)
+    d = "/Library/Application Support/GeminiCli" if sys.platform == "darwin" else (
+        r"C:\ProgramData\gemini-cli" if sys.platform == "win32" else "/etc/gemini-cli")
+    system = os.environ.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH") or join(d, "settings.json")
+    defaults = os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH") or join(dirname(system), "system-defaults.json")
+    return [p for p in (defaults, home and join(home, ".gemini", "settings.json"), project, system) if p]
 
 
 def _dev_settings():

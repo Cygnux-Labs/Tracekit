@@ -31,6 +31,7 @@ import time
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer.rpc_schema import MAX_EXTERNAL_RECORD, REQUESTS, RPCError, validate
 from tracekit.signer.service import HEARTBEAT_S
+from tracekit._logfile import open_rotating_log
 from tracekit.wiki import wiki_url
 
 POLL_S = 1.0
@@ -79,7 +80,7 @@ class Log:
     `path`, which is followed from its start."""
 
     def __init__(self, client, path):
-        self.client, self.path, self.f = client, path, open(path, "rb")
+        self.client, self.path, self.f = client, path, open_rotating_log(path)
         st = os.fstat(self.f.fileno())
         # off: the bytes of complete lines read; n: the lines recorded so far, across rotations
         self.ino, self.off, self.n, self.want = st.st_ino, st.st_size, 0, None
@@ -171,7 +172,7 @@ class Log:
             if self.buf:
                 self.gap(f"{self.path} was rotated with an incomplete last line ({len(self.buf)} bytes)", self.off, 4)
             self.f.close()
-            self.f = open(self.path, "rb")
+            self.f = open_rotating_log(self.path)
             self.ino, self.off = os.fstat(self.f.fileno()).st_ino, 0
             self.lines()
         elif st.st_size < self.off:

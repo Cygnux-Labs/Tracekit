@@ -546,7 +546,7 @@ class TestCommand(unittest.TestCase):
         imp = sensor.Import(types.SimpleNamespace(observe_effect=lambda req: None), "tetragon", RUNS)
         self.assertEqual(sensor.run(imp, lines()), 1)
 
-    @unittest.skipIf(os.name == "nt", "Windows refuses to rename a log the follower holds open")
+    @unittest.skipIf(os.name == "nt", "Windows-specific delete-sharing regression is tested separately")
     def test_follow_reads_across_rotation(self):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
@@ -569,6 +569,28 @@ class TestCommand(unittest.TestCase):
             except InterruptedError:
                 pass
         self.assertEqual(got, [b"a\n", b"b\n", b"c\n", b"d\n"])
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows delete-sharing semantics")
+    def test_windows_follow_reopens_rotated_sensor_log(self):
+        path = self.log("tetragon.log")
+        _append(path, "before\n")
+        f = sensor.open_rotating_log(path)
+        self.addCleanup(f.close)
+        steps = [lambda: (os.rename(path, path + ".1"), _append(path, "after\n"))]
+
+        def sleep(_):
+            if not steps:
+                raise InterruptedError
+            steps.pop(0)()
+
+        got, lines = [], sensor._follow(f, path)
+        with mock.patch.object(sensor.time, "sleep", sleep):
+            try:
+                for text in lines:
+                    got.append(text)
+            except InterruptedError:
+                lines.close()
+        self.assertEqual(got, [b"after\n"])
 
     def log(self, name):
         d = tempfile.TemporaryDirectory()
