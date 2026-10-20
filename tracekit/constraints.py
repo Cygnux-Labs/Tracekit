@@ -165,6 +165,10 @@ LEAD = frozenset(("please", "just", "and", "but", "though", "so", "also", "then"
 # the network", "I don't want"), not a description ("we don't use the network in unit tests")
 ASKING = LEAD | frozenset(("you", "i", "let's", "lets", "should", "must", "shall", "will", "would", "can", "could",
                            "really", "absolutely", "definitely", "do", "i'd", "rather"))
+# what may come before a change word, in its base form, that asks the agent for the change ("you can edit it", "feel
+# free to change it", "go ahead and fix it"; not "ask me before you change it", "I'll update it myself")
+ALLOWING = LEAD | frozenset(("you", "can", "may", "could", "should", "must", "need", "feel", "free", "to", "go",
+                             "ahead", "now"))
 # what may follow a refused push and still refuse every push ("don't push the branch", "don't push it yet"); another
 # word scopes it ("don't push to main", "never push secrets"): no constraint
 PUSHED = frozenset(("anything", "it", "them", "this", "that", "these", "those", "yet", "please", "now", "the", "any",
@@ -610,8 +614,9 @@ def extract(text, read=None):
     change anything else" keeps the text to the files it names (only_change each; nothing when it names none)."""
     read = _read(text) if read is None else read
     # what a clause asks for, not negated -> the last such clause: a file it changes (_said), a LIFT word; by "it" or
-    # "there" for the file named before ("X is frozen in production, but you can edit it locally"), apart: that lifts
-    # no constraint on the person's own go-ahead ("never touch X without asking me first. Change the timeout there")
+    # "there" for the file named before, where the clause asks the agent for the change (ALLOWING: "X is frozen in
+    # production, but you can edit it locally"), apart: that lifts no constraint on the person's own go-ahead ("never
+    # touch X without asking me first. Change the timeout there")
     asked, by_it, prev = {}, {}, ()
     for j, (tokens, _, _) in enumerate(read if any(found for _, found, _ in read) else ()):
         if tokens[:1] and tokens[0] in SEQUENCE:
@@ -622,7 +627,8 @@ def extract(text, read=None):
             elif t in LIFT_WORDS and not _negated(tokens, i, NEGATIONS | {"no"}) and not BLOCK & set(tokens[:i]):
                 asked[t] = j   # not "tell me what you'd change"
         k, before = _referent(tokens, prev)
-        if k is not None and _said(tokens, k) == "changed":
+        c = None if k is None else _tied(tokens, k, SAID_CHANGE)
+        if c is not None and set(tokens[:c]) <= ALLOWING and not tokens[c].endswith(("s", "ed", "ing")):
             by_it.update(dict.fromkeys(before, j))
         prev = tokens if any(map(_file, tokens)) else prev
     out = [c for j, (tokens, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
