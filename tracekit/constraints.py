@@ -293,14 +293,19 @@ def _conditions(tokens):
     (a condition word with PERSON and GO_AHEAD in the four words after it: "before I review", "without asking me
     first"), which keeps the constraint."""
     out, seen = [False] * (len(tokens) + 1), False
-    mine = next((k for k, t in enumerate(tokens) if (t in CONDITIONAL or t in WHILE)
-                 and set(tokens[k + 1:k + 5]) & PERSON and set(tokens[k + 1:k + 5]) & GO_AHEAD), len(tokens))
-    for i in range(min(mine, len(tokens)) - 1, -1, -1):
+    for i in range(_mine(tokens) - 1, -1, -1):
         out[i] = seen
         nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
         seen = seen or tokens[i] in CONDITIONAL or tokens[i] in WHILE and nxt not in YOU and not (
             tokens[i] == "while" and nxt.endswith("ing"))
     return out
+
+
+def _mine(tokens):
+    """The index of the clause's condition on the person's own go-ahead (a condition word with PERSON and GO_AHEAD in
+    the four words after it: "before I review", "without asking me first"), or len(tokens)."""
+    return next((k for k, t in enumerate(tokens) if (t in CONDITIONAL or t in WHILE)
+                 and set(tokens[k + 1:k + 5]) & PERSON and set(tokens[k + 1:k + 5]) & GO_AHEAD), len(tokens))
 
 
 def _asking(tokens, n):
@@ -604,9 +609,10 @@ def extract(text, read=None):
     """The constraints `text` states (or its _read(), `read`): [(kind, object or None)], each once, in order. "Don't
     change anything else" keeps the text to the files it names (only_change each; nothing when it names none)."""
     read = _read(text) if read is None else read
-    asked, prev = {}, ()   # what a clause asks for, not negated -> the last such clause: a file it changes (_said;
-    #                        "it" for the file named before: "X is frozen in production, but you can edit it locally"),
-    #                        a LIFT word
+    # what a clause asks for, not negated -> the last such clause: a file it changes (_said), a LIFT word; by "it" or
+    # "there" for the file named before ("X is frozen in production, but you can edit it locally"), apart: that lifts
+    # no constraint on the person's own go-ahead ("never touch X without asking me first. Change the timeout there")
+    asked, by_it, prev = {}, {}, ()
     for j, (tokens, _, _) in enumerate(read if any(found for _, found, _ in read) else ()):
         if tokens[:1] and tokens[0] in SEQUENCE:
             asked["then"] = j
@@ -617,10 +623,11 @@ def extract(text, read=None):
                 asked[t] = j   # not "tell me what you'd change"
         k, before = _referent(tokens, prev)
         if k is not None and _said(tokens, k) == "changed":
-            asked.update(dict.fromkeys(before, j))
+            by_it.update(dict.fromkeys(before, j))
         prev = tokens if any(map(_file, tokens)) else prev
-    out = [c for j, (_, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
-        (c[1],) if c[0] in OBJECT_KINDS else (*LIFT[c[0]], "then") if c[0] == "read_only" else LIFT.get(c[0], ())))]
+    out = [c for j, (tokens, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
+        (c[1],) if c[0] in OBJECT_KINDS else (*LIFT[c[0]], "then") if c[0] == "read_only" else LIFT.get(c[0], ())))
+        and not (c[0] in OBJECT_KINDS and by_it.get(c[1], -1) > j and _mine(tokens) == len(tokens))]
     if ("else", None) in out:
         kept = set().union(*(k for _, _, k in read))
         out = [c for c in out if c[0] != "else"] + [("only_change", norm(t)) for tokens, _, _ in read for t in tokens

@@ -258,15 +258,18 @@ def _names(read):
     marked kept away; the other words of a clause that keeps a file away are no mention, its other files aside. In a
     clause with a negation (constraints._negating) a file is no mention where the negation governs a change of it
     (constraints._prohibited: a prohibition the grammar can't read, "nobody should ever edit X"); a negation of what
-    the file does ("make sure uploader.py never sends the token", "X must not crash when ...") leaves it named."""
+    the file does ("make sure uploader.py never sends the token", "X must not crash when ...") leaves it named. A file
+    whose constraint the request lifts itself ("X is frozen in production, but you can edit it locally") is named."""
     out = []
+    lifted = set().union(*(k for _, _, k in read)) - {o for kind, o in constraints.extract(None, read)
+                                                      if kind == "keep_away"}
     for tokens, _, kept in read:
         negating = constraints._negating(tokens)
         for i, t in enumerate(tokens):
             name = constraints.norm(t)
             if name and (name in kept or not kept and not negating or constraints._file(t) and (
                     not negating or not constraints._prohibited(tokens, i))):
-                out.append((name, name in kept))
+                out.append((name, name in kept and name not in lifted))
     return out
 
 
