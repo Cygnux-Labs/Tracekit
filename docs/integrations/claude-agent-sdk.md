@@ -1,5 +1,8 @@
 # Claude Agent SDK (signer RPC)
 
+> **Stable:** tested with [`tests/adapter_contract.py`](../../tests/adapter_contract.py) against the pinned library on every push to main
+> and every pull request ([what's stable](../support.md)).
+
 `tracekit.integrations.claude_agent_sdk.tracekit_hooks` gates the tools of a Claude Agent SDK (Python) agent. Before
 each tool call it asks the Tracekit signer for a policy decision; after the tool runs it records the outcome.
 `TracekitSessionStore` wraps your `SessionStore` and commits every saved transcript to the signer. Both work with a

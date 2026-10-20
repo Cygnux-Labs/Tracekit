@@ -1,5 +1,8 @@
 # LangChain v1 (signer RPC)
 
+> **Stable:** tested with [`tests/adapter_contract.py`](../../tests/adapter_contract.py) against the pinned library on every push to main
+> and every pull request ([what's stable](../support.md)).
+
 `tracekit.integrations.langchain.TracekitMiddleware` is a LangChain v1 `AgentMiddleware`. Before each tool call it
 asks the Tracekit signer for a policy decision; after the tool runs it records the outcome. It works with any object
 that implements the signer RPC (`tracekit.signer.rpc_schema.SignerAPI`), including `tracekit.testing.FakeSigner`.
@@ -9,7 +12,7 @@ The older callback adapter in `tracekit.adapters.langchain` ([adapters.md](../ad
 ## Install
 
 ```bash
-pip install tracekit-ai "langchain>=1.4"
+pip install tracekit-ai "langchain>=1.4,<1.5" "langgraph>=1.2,<1.3"
 pip install langgraph-checkpoint-sqlite   # optional: a durable checkpointer for approvals
 ```
 

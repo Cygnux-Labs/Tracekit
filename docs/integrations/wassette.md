@@ -1,8 +1,9 @@
 # Wassette
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
-> Tested: Wassette's tools and arguments as its source names them, served to the real MCP gateway and decided by a real
-> signer under this page's policy; not yet run against a released Wassette ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
+> Tested in CI: Wassette's tools and arguments as its source names them, served to the real MCP gateway and decided by a
+> real signer under this page's policy. Checked once by hand against the Wassette 0.8.0 binary (the run below), not in
+> CI ([#312](https://github.com/Cygnux-Labs/Tracekit/issues/312)).
 
 [Wassette](https://github.com/microsoft/wassette) is an MCP server from Microsoft that runs each tool as a WebAssembly
 component in Wasmtime. A component can use only the files, hosts and environment variables its permissions allow.

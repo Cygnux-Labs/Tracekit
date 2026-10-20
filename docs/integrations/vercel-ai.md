@@ -17,7 +17,7 @@ npm install @cygnuxlabs/tracekit ai@7
 
 npm also installs the signer package for your platform (`@cygnuxlabs/tracekit-signer-<platform>`: Apple Silicon
 macOS, Linux x64 and arm64 with glibc, Windows x64), which bundles a Python, so a dev signer starts without one. On an
-Intel Mac or Alpine there is none: `pip install 'tracekit-ai[signer]'`.
+Intel Mac or Alpine there is none: `pip install tracekit-ai`.
 
 Tested by the TypeScript adapter contract against the real signer, and in CI by
 [`examples/v2_vercel_ai.mjs`](../../sdk/typescript/examples/v2_vercel_ai.mjs) against `ai` 7 with a mock model (no API

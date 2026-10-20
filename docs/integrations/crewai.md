@@ -12,7 +12,8 @@ outcome.
 pip install tracekit-ai "crewai>=1.15.27,<1.16"
 ```
 
-Tested with CrewAI 1.15.27.
+Tested in CI against a stand-in for CrewAI's tool hooks, not the real library; CrewAI 1.15.27 itself ran once, in the
+[case study](../case-study-oss-agents.md).
 
 ## Setup
 
