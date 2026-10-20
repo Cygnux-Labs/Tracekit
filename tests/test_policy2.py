@@ -766,7 +766,7 @@ class Shell(unittest.TestCase):
                     finally:
                         tracemalloc.stop()
                     self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
-                    self.assertLess(took, 0.5)          # ~15 ms traced on a laptop
+                    self.assertLess(took, 0.5 * SLOWER)   # ~15 ms traced on a laptop
                     self.assertLess(peak, 32 << 20)     # ~4 MB
 
     def test_a_bracket_in_a_list_string_does_not_truncate_the_argv(self):

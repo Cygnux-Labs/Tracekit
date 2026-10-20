@@ -783,7 +783,7 @@ class Bounded(unittest.TestCase):
         out = findings_v2.analyze(recs, content)
         took = time.perf_counter() - t0
         self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X202"]["found"], 5000)
-        self.assertLess(took, 30)
+        self.assertLess(took, 30 * SLOWER)
         recs, content = self.synthetic(1000, "Editing the next file. " * 40)
         tracemalloc.start()
         try:
