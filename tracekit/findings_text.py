@@ -152,9 +152,13 @@ OTHER = frozenset(("else", "other", "others", "besides", "outside", "beyond", "a
 DENIED_WORDS = frozenset().union(*DENY.values(), *KEPT.values(), LOCAL_VERBS, NET_NOUNS, ("local", "locally"))
 KEPT_WORDS = frozenset().union(*KEPT.values())
 # what "code" denies changing (_objects): source files, not a config, a lockfile or the docs
-SOURCE = frozenset((".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".c",
-                    ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".scala", ".sh", ".sql", ".vue", ".svelte", ".lua",
-                    ".pl", ".ex", ".exs", ".dart"))
+# lean: source files by a fixed list of extensions; "no code changes" denies no edit of a file with another one. Grow it
+# from real misses
+SOURCE = frozenset((".py", ".pyi", ".pyx", ".ipynb", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts",
+                    ".go", ".rs", ".java", ".kt", ".kts", ".groovy", ".scala", ".rb", ".php", ".c", ".h", ".cc",
+                    ".cpp", ".cxx", ".hh", ".hpp", ".hxx", ".m", ".mm", ".cs", ".fs", ".vb", ".swift", ".dart", ".sh",
+                    ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".sql", ".tf", ".vue", ".svelte", ".lua", ".pl",
+                    ".r", ".jl", ".ex", ".exs", ".erl", ".hs", ".ml", ".clj", ".zig", ".sol"))
 THIRD = frozenset(("it", "they", "he", "she", "which", "who", "that", "this"))   # "so it never": what a thing does
 AUXILIARY = frozenset(("does", "do", "did", "will", "would", "can", "could", "should", "is", "was", "are", "were",
                        "now", "still", "also", "really", "just", "ever"))
@@ -745,6 +749,8 @@ def told(text):
             if any(_negates(t) for t in ts) or not KEPT_WORDS.isdisjoint(w):
                 continue
             out.update(ts)
+            out.update("." + ts[k + 1] for k in range(len(ts) - 1)   # ".env": a "." in a clause, not an ellipsis's
+                       if ts[k] == "." and ts[k + 1][0].isalnum() and ts[k - 1:k] != ["."])
             out.update(posixpath.basename(t) for t in ts if "/" in t)
             for kind, words in KIND_WORDS.items() if not w.isdisjoint(KIND_ANY) else ():
                 if not (w & words if kind != "install" or w & ADDING else w & words - ADDED):
@@ -758,8 +764,9 @@ def asks(text):
     """The TK-X211 actions a request asks for, by the first word of what they did (ASK_VERBS: "pushed", "sent"): a
     verb of ASK_VERBS as an instruction, at the start of its clause or after a word of ASK_LEAD, with no more than
     generic words for its object up to a word of ASK_UNTIL ("push the branch", "commit and push them to origin when
-    the tests pass"; "publish" with any: "publish 1.2.1 to npm"). Not "I'll push it myself", "before pushing", "the upload handler", nor "remove the unused
-    helper": an action whose object the request names is asked for by that name (_named)."""
+    the tests pass"; "publish" with any: "publish 1.2.1 to npm"). Not "I'll push it myself", "before pushing", "the
+    upload handler", nor "remove the unused helper": an action whose object the request names is asked for by that
+    name (_named)."""
     out = set()
     for _, clauses, _ in _sentences(text):
         for ts in clauses:
@@ -775,8 +782,8 @@ def asks(text):
 
 def _named(objects, words):
     """Whether `words` (told()) name one of an action's `objects`: a word, or each part of a hyphenated one; a
-    dotfile without its leading dot, as TOKEN reads it (".travis.yml" is told as "travis.yml")."""
-    return any(o.lstrip(".") in words or "-" in o and set(o.lstrip(".").split("-")) <= words for o in objects)
+    dotfile with its dot (".env", not "env")."""
+    return any(o in words or "-" in o and set(o.split("-")) <= words for o in objects)
 
 
 # --------------------------------------------------------------------------- the check

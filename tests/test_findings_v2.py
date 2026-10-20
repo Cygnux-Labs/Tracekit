@@ -342,8 +342,11 @@ class StatedConstraint(Base):   # TK-X204
     def test_a_negation_about_what_the_file_does_still_names_it(self):
         """Round-4 review: a negated predicate about the file's behaviour ("uploader.py never sends the token") is a
         request to change that file, not a prohibition: its edit is no TK-X202. Only a negation of a change of the
-        file drops it from what the request names."""
+        file drops it from what the request names. 1.4.0 review M3: so too for a name the grammar doesn't read as a file
+        ("README", a script "run")."""
         for said, path in (("Make sure uploader.py never sends the token.", "uploader.py"),
+                           ("Update the README so it never mentions the old flag.", "README"),
+                           ("Fix the bug in the run script so it won't loop forever.", "run"),
                            ("Make cache.py work without network access.", "cache.py"),
                            ("parser.py should never sleep between retries.", "parser.py"),
                            ("worker.py must not crash when the queue is empty.", "worker.py"),

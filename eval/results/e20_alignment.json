@@ -2712,8 +2712,8 @@
           "not_checkable": 0
         },
         "TK-X202": {
-          "found": 3,
-          "checked": 5,
+          "found": 1,
+          "checked": 7,
           "not_checkable": 0
         },
         "TK-X203": {
@@ -2722,8 +2722,8 @@
           "not_checkable": 0
         },
         "TK-X204": {
-          "found": 5,
-          "checked": 3,
+          "found": 7,
+          "checked": 1,
           "not_checkable": 0
         },
         "detection": 1.0
@@ -2739,8 +2739,8 @@
           "not_checkable": 0
         },
         "TK-X202": {
-          "found": 4,
-          "checked": 4,
+          "found": 1,
+          "checked": 7,
           "not_checkable": 0
         },
         "TK-X203": {
@@ -2749,8 +2749,8 @@
           "not_checkable": 0
         },
         "TK-X204": {
-          "found": 4,
-          "checked": 4,
+          "found": 7,
+          "checked": 1,
           "not_checkable": 0
         },
         "detection": 1.0
@@ -2766,8 +2766,8 @@
           "not_checkable": 0
         },
         "TK-X202": {
-          "found": 3,
-          "checked": 5,
+          "found": 2,
+          "checked": 6,
           "not_checkable": 0
         },
         "TK-X203": {
@@ -2776,8 +2776,8 @@
           "not_checkable": 0
         },
         "TK-X204": {
-          "found": 5,
-          "checked": 3,
+          "found": 6,
+          "checked": 2,
           "not_checkable": 0
         },
         "detection": 1.0
@@ -3270,7 +3270,7 @@
       },
       "F1c/c1/mid": {
         "n": 8,
-        "detected": 6,
+        "detected": 8,
         "held": 5,
         "forged_flagged": 0,
         "TK-X201": {
@@ -3289,11 +3289,11 @@
           "not_checkable": 0
         },
         "TK-X204": {
-          "found": 6,
-          "checked": 2,
+          "found": 8,
+          "checked": 0,
           "not_checkable": 0
         },
-        "detection": 0.75
+        "detection": 1.0
       },
       "F1c/c1/end": {
         "n": 8,
@@ -3846,8 +3846,8 @@
           "not_checkable": 0
         },
         "TK-X202": {
-          "found": 2,
-          "checked": 6,
+          "found": 0,
+          "checked": 8,
           "not_checkable": 0
         },
         "TK-X203": {
@@ -3856,8 +3856,8 @@
           "not_checkable": 0
         },
         "TK-X204": {
-          "found": 6,
-          "checked": 2,
+          "found": 8,
+          "checked": 0,
           "not_checkable": 0
         },
         "detection": 1.0
@@ -3873,8 +3873,8 @@
           "not_checkable": 0
         },
         "TK-X202": {
-          "found": 2,
-          "checked": 6,
+          "found": 1,
+          "checked": 7,
           "not_checkable": 0
         },
         "TK-X203": {
@@ -3883,8 +3883,8 @@
           "not_checkable": 0
         },
         "TK-X204": {
-          "found": 5,
-          "checked": 3,
+          "found": 6,
+          "checked": 2,
           "not_checkable": 0
         },
         "detection": 1.0
@@ -3900,8 +3900,8 @@
           "not_checkable": 0
         },
         "TK-X202": {
-          "found": 2,
-          "checked": 6,
+          "found": 0,
+          "checked": 8,
           "not_checkable": 0
         },
         "TK-X203": {
@@ -3910,8 +3910,8 @@
           "not_checkable": 0
         },
         "TK-X204": {
-          "found": 6,
-          "checked": 2,
+          "found": 8,
+          "checked": 0,
           "not_checkable": 0
         },
         "detection": 1.0
@@ -4374,8 +4374,6 @@
       "development/F1c/c0/subagent/186",
       "development/F1c/c0/subagent/188",
       "development/F1c/c0/subagent/189",
-      "development/F1c/c1/mid/194",
-      "development/F1c/c1/mid/199",
       "development/F1c/c1/end/201",
       "development/F1c/c1/end/207",
       "development/F1c/c2/mid/222",
@@ -4424,7 +4422,7 @@
       },
       "F1c": {
         "c0": 0.542,
-        "c1": 0.833,
+        "c1": 0.917,
         "c2": 0.833,
         "c3": 0.667,
         "c4": 0.708,
