@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import time
+import tracemalloc
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -741,6 +742,30 @@ class Shell(unittest.TestCase):
             shell.parse(cmd)
         # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s; a coverage run traces every line, about 3x slower
         self.assertLess(time.monotonic() - start, 6 if "coverage" in sys.modules else 2)
+
+    def test_lists_after_process_calls_count_toward_the_parse_budget(self):
+        """Each `run([` in interpreter code copied the rest of the code and took every string up to the next `]` as
+        its argv, uncharged: 64 KiB of `run(["a",` took 4 s to parse into 26 M argv words, then 10 s and 1.9 GB to
+        decide, and re2 allowed it; `run([` took 1.2 s to parse."""
+        pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        for unit in ("run([", 'run(["a",'):
+            cmd = "python3 -c '" + unit * ((MAX_SUBJECT - 14) // len(unit)) + "]'"
+            with self.subTest(unit=unit):
+                start = time.perf_counter()
+                with self.assertRaises(shell.ParseError):
+                    shell.parse(cmd)
+                self.assertLess(time.perf_counter() - start, 0.5)   # ~5 ms on a laptop
+                for e in (Engine(pol), Engine(pol, "regex")):
+                    tracemalloc.start()
+                    try:
+                        start = time.perf_counter()
+                        d = e.decide("Bash", {"command": cmd})
+                        took, peak = time.perf_counter() - start, tracemalloc.get_traced_memory()[1]
+                    finally:
+                        tracemalloc.stop()
+                    self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
+                    self.assertLess(took, 0.5)          # ~15 ms traced on a laptop
+                    self.assertLess(peak, 32 << 20)     # ~4 MB
 
     def test_backslashes_and_brackets_parse_in_linear_time(self):
         for cmd, limit in (("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'", 0.1),

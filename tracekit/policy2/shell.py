@@ -24,8 +24,9 @@ class ParseError(ValueError):
 
 
 MAX_DEPTH = 32
-MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings included: 4 × the largest subject, so
-                     # a worst-case command costs a fraction of a second of the signer (the parser holds the GIL)
+MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings and the list each process call in
+                     # interpreter code reads included: 4 × the largest subject, so a worst-case command costs a
+                     # fraction of a second of the signer (the parser holds the GIL)
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "rbash", "mksh", "ksh93", "yash", "posh", "lksh", "oksh"}
 # shells whose language the parser doesn't read: the commands they get on their line or from stdin are opaque
 FOREIGN_SHELLS = {"fish", "csh", "tcsh", "pwsh", "powershell", "nu", "xonsh", "elvish"}
@@ -391,8 +392,11 @@ def _ansi_c(text):
 class _Parser:
     def __init__(self, src, ctx, via):
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
-        ctx["work"] += len(src)
-        if ctx["work"] > MAX_WORK:
+        self.charge(len(src))
+
+    def charge(self, n):
+        self.ctx["work"] += n
+        if self.ctx["work"] > MAX_WORK:
             raise ParseError("too much nested shell text")
 
     def peek(self, k=0):
@@ -658,13 +662,15 @@ class _Parser:
         for m in _CALL.finditer(code):
             if kind == "python" and m.group(1) == "exec":
                 continue   # Python's exec runs Python, not a shell
-            rest = code[m.end():]
-            if rest.startswith("[") and "]" in rest:
-                argv = [body for _, body in _STR.findall(rest[:rest.index("]")])]
+            i = m.end()
+            if code.startswith("[", i):
+                j = code.find("]", i)
+                self.charge((len(code) if j < 0 else j) - i)   # calls whose lists overlap read the same text again
+                argv = [body for _, body in _STR.findall(code, i, j)] if j >= 0 else []
                 if argv:
                     self.emit(argv, pid, via)
-            elif _STR.match(rest):
-                self.nested(_STR.match(rest).group(2), via)
+            elif lit := _STR.match(code, i):
+                self.nested(lit.group(2), via)
         for m in _TICK.finditer(code) if kind in ("perl", "ruby", "php") else ():
             self.nested(m.group(1), via)
 
