@@ -1,5 +1,9 @@
 # @cygnuxlabs/tracekit
 
+> **Experimental:** the client and its Vercel AI SDK integration work and are tested, but may change and get less
+> hardening than the [stable core](https://github.com/Cygnux-Labs/Tracekit/wiki/Support). Its verifier
+> (`src/verify/`) is stable.
+
 Tracekit for TypeScript and JavaScript agents: every tool call is decided by the Tracekit signer before it runs and
 recorded after, and model responses become signed evidence. The client talks to the signer directly; it needs no Python
 at runtime (the same-user dev signer is started with Python when none is running).
@@ -14,7 +18,7 @@ npm install @cygnuxlabs/tracekit
 
 npm also installs the signer package for your platform (`@cygnuxlabs/tracekit-signer-<platform>`: Apple Silicon
 macOS, Linux x64 and arm64 with glibc, Windows x64), which bundles a Python, so `npx @cygnuxlabs/tracekit up` starts a
-dev signer without one. On an Intel Mac or Alpine there is none: `pip install 'tracekit-ai[signer]'`.
+dev signer without one. On an Intel Mac or Alpine there is none: `pip install tracekit-ai`.
 
 Or build it from a checkout and install the file it makes:
 
@@ -90,6 +94,14 @@ console.log(report.integrity, report.assurance);   // e.g. "VERIFIED", "witnesse
 It does not check SLH-DSA checkpoint lines, Rekor anchors or certified record keys: a bundle that relies on one is
 `UNVERIFIABLE (not checked by this verifier: ...)`, never `VERIFIED`. Monitor reports, revocations and the v1 format
 bridge need the Python verifier.
+
+`verify(bundle, null)`, with no trust config, runs every check that needs no pinned key and is never `VERIFIED`: a
+changed record still fails, an intact bundle is `UNVERIFIABLE (no trust config: ...)`.
+
+In a browser: `dist/verify.html` in this package (and a release asset) is this verifier as one self-contained page.
+Drop in a bundle and its trust config; its Content Security Policy lets it load and send nothing, so neither file
+leaves the browser ([verify in your browser](../../docs/verdicts.md#verify-in-your-browser)). `make verify-page` builds
+it from a checkout.
 
 ## v2 framework adapters
 

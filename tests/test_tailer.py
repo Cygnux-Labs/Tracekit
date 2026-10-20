@@ -29,6 +29,11 @@ RESULT = {"type": "user", "uuid": "u-2", "message": {"content": [
 PROMPT = {"type": "user", "uuid": "u-3", "message": {"role": "user", "content": "deploy the build to staging-7731"}}
 NEXT = {"type": "assistant", "uuid": "u-4", "message": {"id": "msg_2", "model": "claude-x", "content": [
     {"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {"file_path": "a.txt"}}]}}
+# the lines Claude Code writes before a tool_use line of the same message: one per content block
+THINKING = {"type": "assistant", "uuid": "u-5", "cwd": "/work/proj", "message": {"id": "msg_1", "model": "claude-x",
+            "content": [{"type": "thinking", "thinking": "list the files first", "signature": "EqQBsealed"}]}}
+SAID = {"type": "assistant", "uuid": "u-6", "cwd": "/work/proj", "message": {"id": "msg_1", "model": "claude-x",
+        "content": [{"type": "text", "text": "Listing the files."}]}}
 
 
 def line(e):
@@ -46,7 +51,7 @@ class Run:
         req = {"run_id": self.run_id, "run_token": self.run_token, **fields}
         if "request_id" in REQUESTS[method]["properties"]:
             req["request_id"] = uuid.uuid4().hex
-        if "client_seq" in REQUESTS[method]["properties"]:
+        if "client_seq" in REQUESTS[method]["properties"] and "client_seq" not in fields:
             req.update(stream="tailer", client_seq=self.seq)
             self.seq += 1
         return self.signer.call(self.identity, method, req)
@@ -68,14 +73,14 @@ class Tailer(unittest.TestCase):
         with open(self.path, mode) as f:
             f.write(b"".join(e if isinstance(e, bytes) else line(e) for e in entries))
 
-    def tail(self, *steps, uid=None, run=None):
+    def tail(self, *steps, uid=None, run=None, status=None, offsets=None):
         """Tail until every step has run, one per wake."""
         until, steps = os.path.join(self.d, "until"), list(steps)
         open(until, "w").close()
 
         def wait():
             steps.pop(0)() if steps else os.remove(until)
-        tailer.tail(run or self.run, self.path, os.getuid() if uid is None else uid, until, wait)
+        tailer.tail(run or self.run, self.path, os.getuid() if uid is None else uid, until, wait, status, offsets)
 
     def events(self):
         return Run(self.signer, self.out).call("read", limit=1000)["events"]
@@ -134,6 +139,32 @@ class Tailer(unittest.TestCase):
         self.tail(lambda: None)
         self.assertIn("a symlink is in place of", self.lost()[0])
 
+    def test_a_later_run_of_the_session_starts_where_the_earlier_runs_lines_end(self):
+        # after an idle close, or a resumed session: the transcript's lines so far are an earlier run's
+        self.write(PROMPT, TOOL_USE, RESULT)
+        sub = self.sub(PROMPT)
+        offsets = {self.path: os.path.getsize(self.path), sub: os.path.getsize(sub)}
+        self.tail(lambda: self.write(NEXT), lambda: self.sub(THINKING), offsets=offsets)
+        ex = [e["data"] for e in self.events() if e["type"] == "model.exchange"]
+        self.assertEqual([(x["exchange_id"], x["phase"]) for x in ex], [("msg_2", "response"), ("msg_1", "response")])
+        self.assertEqual(self.lost(), [])
+
+    def test_an_earlier_runs_line_changed_before_a_later_run_reads_on_is_lost(self):
+        self.write(TOOL_USE, RESULT)
+        end = os.path.getsize(self.path)
+        with open(self.path, "r+b") as f:
+            data = f.read()
+            f.seek(0)
+            f.write(data.replace(b"ls -la", b"ls -lh"))
+
+        def edit():   # once the tailer has read the earlier lines, as the hook left them
+            with open(self.path, "r+b") as f:
+                f.write(data)
+        self.tail(lambda: None, edit, offsets={self.path: end})
+        self.assertIn("a line already read changed in place", self.lost()[0])
+        self.tail(offsets={self.path: os.path.getsize(self.path) + 1})   # past its end: it was rewritten
+        self.assertIn("shrank", self.lost()[-1])
+
     def test_the_args_commitment_opens_with_the_hooks_args_digest(self):
         self.write(TOOL_USE)
         self.tail()
@@ -150,6 +181,58 @@ class Tailer(unittest.TestCase):
         self.assertTrue(ex[0]["content_digest"].startswith("hmac-sha256:"))
         with open(os.path.join(self.d, "data", "store", "records.jsonl")) as f:
             self.assertNotIn("staging-7731", f.read())
+
+    def test_thinking_and_text_lines_are_model_events_committed_only_without_the_vault(self):
+        self.write(PROMPT, THINKING, SAID, TOOL_USE)
+        self.tail()
+        ex = [e["data"] for e in self.events() if e["type"] == "model.exchange"]
+        self.assertEqual([(x["exchange_id"], x["phase"], "tool_uses" in x) for x in ex],
+                         [("u-3", "request", False), ("msg_1", "response", False), ("msg_1", "response", False),
+                          ("msg_1", "response", True)])
+        self.assertTrue(all(x["content_digest"].startswith("hmac-sha256:") for x in ex))
+        self.assertEqual([x.get("tool_results_sent") for x in ex[1:]], [None, None, []])   # on the tool_use line only
+        with open(os.path.join(self.d, "data", "store", "records.jsonl")) as f:
+            stored = f.read()
+        for text in ("list the files first", "Listing the files", "EqQBsealed", "/work/proj"):
+            self.assertNotIn(text, stored)
+        label = "model.exchange:" + ex[1]["salt_id"]   # the commitment is to the line as read
+        self.assertEqual(ex[1]["content_digest"], self.signer._commit(label, event_hash({"transcript": "main",
+                                                                                         "entry": THINKING})))
+        self.assertEqual(self.lost(), [])
+
+    def test_with_the_vault_each_line_is_kept_whole_and_opens_its_commitment(self):
+        signer = svc.SignerService(os.path.join(self.d, "vault"), grace_s=600, fsck_every_s=0,
+                                   content={"retain": True},
+                                   authorize={f"uid:{ME.subject}": sorted(svc.DEFAULT_GRANTS | {svc.CONTENT_READ})})
+        self.addCleanup(signer.close)
+        out = signer.register_run({"request_id": "r", "agent": {"name": "claude-code"}})
+        prompt = {**PROMPT, "cwd": "/work/proj", "isMeta": False}
+        self.write(prompt, THINKING, TOOL_USE)
+        sub = {**SAID, "isSidechain": True, "message": {**SAID["message"], "id": "msg_s"}}
+        self.tail(lambda: self.sub(sub), run=Run(signer, out),
+                  status=lambda: signer.call(ME, "status", {}))
+        recs = [e for e in Run(signer, out).call("read", limit=100)["events"] if e["type"] == "model.exchange"]
+        got = signer.call(ME, "content_get", {"run_id": out["run_id"], "seqs": [e["run_seq"] for e in recs],
+                                              "purpose": "test"})["items"]
+        self.assertEqual([x["content"] for x in got], [
+            {"transcript": "main", "entry": prompt}, {"transcript": "main", "entry": THINKING},
+            {"transcript": "main", "entry": TOOL_USE}, {"transcript": "agent-a1.jsonl", "entry": sub}])
+        self.assertTrue(all("salt" in x for x in got))   # each opens its record's commitment
+
+    def test_a_burst_of_lines_past_the_rate_limit_is_sent_whole(self):
+        signer = svc.SignerService(os.path.join(self.d, "burst"), grace_s=600, fsck_every_s=0,
+                                   limits=svc.Limits(events_per_s=2000, burst=50))
+        self.addCleanup(signer.close)
+        out = signer.register_run({"request_id": "r", "agent": {"name": "claude-code"}})
+        self.write(*({**SAID, "uuid": f"u-{i}"} for i in range(1000)))
+        self.tail(run=Run(signer, out))
+        events = [e for e in Run(signer, out).call("read", limit=1000, from_seq=0)["events"]]
+        n = sum(e["type"] == "model.exchange" for e in events)
+        if n < 1000:   # read pages
+            n += sum(e["type"] == "model.exchange" for e in Run(signer, out).call(
+                "read", limit=1000, from_seq=events[-1]["run_seq"] + 1)["events"])
+        self.assertEqual(n, 1000)
+        self.assertFalse([e for e in events if e["type"] == "capture.gap"])
 
     def test_symlink_at_open_is_lost(self):
         other = os.path.join(self.d, "other.jsonl")
@@ -305,17 +388,17 @@ class Tailer(unittest.TestCase):
 class HookStartsTheTailer(unittest.TestCase):
     def setUp(self):
         from tracekit.integrations import claude_code
-        self.cc, d = claude_code, tempfile.mkdtemp(dir="/tmp")
-        self.addCleanup(shutil.rmtree, d, True)
-        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": d})
+        self.cc, self.d = claude_code, tempfile.mkdtemp(dir="/tmp")
+        self.addCleanup(shutil.rmtree, self.d, True)
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.d})
         env.start()
         self.addCleanup(env.stop)
         self.client = mock.Mock()
         self.client.register_run.return_value = {"run_id": "run-1", "run_token": "tok"}
         self.client.call.return_value = {"run_token": "delegated"}
 
-    def start(self, system=None, sid="s1"):
-        p = {"hook_event_name": "SessionStart", "session_id": sid, "transcript_path": "/home/agent/t.jsonl"}
+    def start(self, system=None, sid="s1", path="/home/agent/t.jsonl", source="startup"):
+        p = {"hook_event_name": "SessionStart", "session_id": sid, "transcript_path": path, "source": source}
         popen = mock.Mock()
         with mock.patch.object(self.cc.subprocess, "Popen", popen), \
                 mock.patch.object(self.cc, "system_config", return_value=system), \
@@ -364,6 +447,45 @@ class HookStartsTheTailer(unittest.TestCase):
             self.cc._run(self.client, "s1", send="decide", tool_call_id="t", tool="Bash", args={}, args_source="parsed")
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
         self.assertEqual((handle["run_id"], handle["path"]), ("run-2", "/home/agent/t.jsonl"))
+
+    def transcript(self, *entries):
+        path = os.path.join(self.d, "t.jsonl")
+        with open(path, "ab") as f:
+            f.write(b"".join(e if isinstance(e, bytes) else line(e) for e in entries))
+        return path
+
+    def decide(self, closed=False):
+        """A PreToolUse's decide, on a run the signer has idle-closed if `closed`. -> the handle of the tailer it
+        started, if any."""
+        def call(method, req):
+            if closed and req["run_id"] == "run-1":
+                raise RPCError("run_closed", req["run_id"])
+            return {"decision": "allow"}
+        self.client.call.side_effect = call
+        popen = mock.Mock()
+        with mock.patch.object(self.cc.subprocess, "Popen", popen), \
+                mock.patch.object(self.cc, "system_config", return_value=None):
+            self.cc._run(self.client, "s1", send="decide", tool_call_id="t", tool="Bash", args={}, args_source="parsed")
+        return popen.called and json.loads(popen.return_value.stdin.write.call_args.args[0])
+
+    def test_a_run_after_an_idle_close_reads_on_where_the_earlier_run_was_last_seen_open(self):
+        path = self.transcript(PROMPT, TOOL_USE)
+        self.start(path=path)
+        sub = os.path.join(self.d, "t", "subagents", "agent-a1.jsonl")
+        os.makedirs(os.path.dirname(sub))
+        with open(sub, "wb") as f:
+            f.write(line(PROMPT))
+        self.transcript(b'{"type": "assistant", "uuid": "u-')   # a line Claude Code is still writing
+        self.assertFalse(self.decide())   # run 1 takes it: those lines are its tailer's
+        seen = {path: len(line(PROMPT) + line(TOOL_USE)), sub: len(line(PROMPT))}
+        self.transcript(b'7"}\n', RESULT, NEXT)   # Claude Code writes on; then an hour passes, and run 1 is closed
+        self.client.register_run.return_value = {"run_id": "run-2", "run_token": "tok-2"}
+        self.assertEqual(self.decide(closed=True)["offsets"], seen)
+
+    def test_a_resumed_sessions_run_reads_its_transcript_from_where_it_ends(self):
+        path = self.transcript(PROMPT, TOOL_USE, RESULT, b'{"partial')   # the session's history: earlier runs'
+        handle = json.loads(self.start(path=path, source="resume").return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["offsets"], {path: os.path.getsize(path) - len(b'{"partial')})
 
 
 if __name__ == "__main__":

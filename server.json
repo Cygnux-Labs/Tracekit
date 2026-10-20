@@ -3,12 +3,12 @@
   "name": "io.github.Cygnux-Labs/tracekit-mcp-gateway",
   "title": "Tracekit MCP gateway",
   "description": "MCP gateway you deploy: a Tracekit signer decides and signs each call; agents send each run's token.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "repository": {
     "url": "https://github.com/Cygnux-Labs/Tracekit",
     "source": "github"
   },
-  "websiteUrl": "https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md",
+  "websiteUrl": "https://github.com/Cygnux-Labs/Tracekit/wiki/MCP-Gateway",
   "remotes": [
     {
       "type": "streamable-http",

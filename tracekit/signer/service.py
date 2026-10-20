@@ -38,13 +38,19 @@ signer.yaml:
     tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix:* -> tenant (attested)
                                              # (identities, here and in authorize and approvals, also match as
                                              # person:<id> and group:<alias>/<name> when OIDC: tracekit.identity.oidc)
-    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix:* ->
-                                             # methods; uid and token:dev default to all, the rest to none
+    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, approval_consume, complete, close_run, model_event,
+                                             approval_request, approval_wait]}   # identity or prefix:* -> methods
+                                             # (docs/limits.md#deployment); uid and token:dev default to all, the
+                                             # rest to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested), or a
                                              # bridge's on_behalf person's tenant
     migrators: ["uid:1003"]                  # may register `migrated` runs
-    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses, and
-                                             # `tracekit why` replay runs of it (replay_of)
+    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses (for
+                                             # `tracekit analyze --v2` and `tracekit why` findings), and `tracekit
+                                             # why` replay runs of it (replay_of); never the agent's identity
+    importers: ["uid:1005"]                  # log followers (tracekit.follow): the runs they register are imported
+                                             # runs (source import, tier T3, fidelity none, not reconciled), watched as
+                                             # a transcript tailer's: silent for TAILER_LOST_S, a tailer_lost gap
     gateways: ["mtls:spiffe://acme/gateway"]  # LLM and MCP gateways, tool executors (tracekit.gateway, .mcp_gateway,
                                              # .executor): their calls name the client they authenticated (`caller`):
                                              # model_event, decide, complete, approval_request and observe are
@@ -211,6 +217,13 @@ Passkeys: an ask rule with `approval: {passkey: required}` is approved only with
 registered through a bridge (`passkey_register`, kept in data_dir/passkeys.json), verified here against
 `approvals.webauthn`; the record carries the credential id and that the user was verified.
 
+Live constraints (docs/policy-v2.md#live-constraints): `constraint_add` (any client of the run: the Claude Code hook
+sends what the person's prompt states at UserPromptSubmit, tracekit.constraints) writes a constraint.added record with
+the kind and, for a file, only the file name's commitment. After the policy engine, a call of the run that breaks one
+(the commitment of a file it writes opens it; a push; the network; any write) is raised to an ask (TK-CONSTRAINT) a
+person answers as any ask; a deny stays a deny and nothing is ever lowered, so a made-up constraint can only hold more.
+The agent is told why with the file name from its own arguments.
+
 Containment (docs/incidents.md): an incident of a `respond: {mode: enforce}` trigger acts in the writer item of the
 record that fired it (_respond): `hold` makes every further call of each live run its scope reaches an ask a person
 answers (TK-HOLD, carrying the incident id: never an agent, never self-approval) and expires their live approvals;
@@ -269,6 +282,7 @@ import hmac
 import itertools
 import json
 import logging
+import traceback
 import math
 import os
 import pathlib
@@ -286,7 +300,8 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, provenance, public_witness, yamlmini
+from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, privacy, provenance, public_witness, \
+    yamlmini
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -302,9 +317,10 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, cooldown_key, degrade, epoch,
-                                      final_run, owner, person_only_keys, salt_label, skipped, subject, writer)
-from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
+from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, constraint_state,
+                                      cooldown_key, degrade, epoch, final_run, owner, person_only_keys, salt_label,
+                                      skipped, subject, writer)
+from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
@@ -312,6 +328,7 @@ from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
 from tracekit.transport import answering_hello, hello
+from tracekit.wiki import wiki_url
 
 DEFAULT_POLICY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs", "dev.yaml")
 APPROVAL_TTL_S = 3600
@@ -335,6 +352,7 @@ GRACE_S, IDLE_S = 5.0, 3600.0
 HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat, and an egress observer observe_effect
 TAILER_LOST_S = 3 * HEARTBEAT_S   # a tailer or observer silent this long while its run is open is lost
 OBSERVE_GRACE_S = 120.0   # an observer reports a minute's traffic once the minute ends, at its next heartbeat
+SENSOR_SKEW_S = 5.0   # how far a kernel sensor's clock may run behind the signer's for an event to find its run
 DECIDED_GAPS_MAX = 100   # decided_not_completed gaps per run, then one gap counting the rest
 GATEWAY_WAIT_S = 600.0   # the MCP gateway's upstream timeout, the longest of the shipped gateways
 FAIL_MODES = {"default": "closed"}
@@ -342,14 +360,15 @@ TLOG_PATH = re.compile(r"/(?:registry/([0-9a-f]{32})/)?(?:(checkpoint)|tile/(ent
                        r"((?:x[0-9]{3}/)*[0-9]{3})(?:\.p/([1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5]))?)")
 CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "durability", "tenant", "tenants",
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
-               "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
+               "importers", "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
                "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s",
                "verify_tool_results"}
 # signer.yaml sections whose features are experimental (docs/support.md)
 EXPERIMENTAL_KEYS = ("http", "storage", "tenants", "multi_tenant_apps", "gateways", "witnesses", "anchors", "record_key",
-                     "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions", "verify_tool_results")
+                     "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions", "verify_tool_results",
+                     "importers")
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn", "agents", "ttl_s",
                  "agent_consume_s", "agent_timeout_s"}
 # agent approvers (docs/approvals.md#agent-approvers): what an identity in approvals.agents may call, given an authorize
@@ -373,7 +392,7 @@ DEFAULT_GRANTS = frozenset({
     "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
-    "passkey_register", "why_finding"})
+    "passkey_register", "why_finding", "review_finding", "constraint_add"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
@@ -385,6 +404,8 @@ DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its vi
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
+MAX_CONSTRAINTS = 32   # live file constraints a run takes (constraint_add); past it every write is held
+MAX_NAMES = 256   # distinct files of one call checked against a run's file constraints; past it, the call is held
 COOLDOWN_S = 3600   # respond.cooldown_s default: how long new runs of a held owner and principal inherit the hold
 MAX_UNMATCHED = 1 << 16   # (decision, result digest) pairs remembered as not matching; forgotten all at once past it
 
@@ -406,6 +427,10 @@ MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
 
 def _salt(key, label):
     return hmac.new(key, label.encode(), "sha256").digest()
+
+
+def _commitment(salt, digest):
+    return "hmac-sha256:" + hmac.new(salt, digest.encode(), "sha256").hexdigest()
 
 
 def content_config(content):
@@ -636,9 +661,9 @@ class Suspensions:
 class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
-                 multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
-                 bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
-                 fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
+                 multi_tenant_apps=(), migrators=(), analyzers=(), importers=(), fail_modes=None, grace_s=GRACE_S,
+                 idle_s=IDLE_S, bridge=None, origin=None, authorize=None, contact=None, approvals=None,
+                 lock_timeout_s=0, fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
                  content=None, gateway_wait_s=GATEWAY_WAIT_S, suspensions=None, posture=None,
@@ -648,7 +673,7 @@ class SignerService:
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
         in data_dir/store. `origin` names the log in its checkpoints, `contact` its operator in the logs list.
         `witnesses` cosign its notes (see the module docstring).
-        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
+        `multi_tenant_apps`, `migrators`, `analyzers` and `importers` are identities ("scheme:subject"); `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
         `lock_timeout_s`, `fsck_every_s` (0: no background check) and `clock_skew_s`: see the config keys.
@@ -688,7 +713,7 @@ class SignerService:
         if any(r["mode"] == "enforce" and r["action"] == "notify" for r in respond) and \
                 not any("incident" in w["events"] for w in webhooks):
             raise ValueError("the policy's respond notifies (action notify, mode enforce) but no webhook subscribes to "
-                             "incident events: add `incident` to a webhook's events (docs/webhooks.md)")
+                             f"incident events: add `incident` to a webhook's events ({wiki_url('docs/webhooks.md')})")
         # a hold no person can answer is a quarantine (_respond)
         self._people = any(_person_like(p, (approvals or {}).get("persons", {}))
                            for p in (approvals or {}).get("approvers", ()))
@@ -752,7 +777,7 @@ class SignerService:
         if both:
             raise ValueError(f"authorize grants {', '.join(both)} both register_run and containment's operator calls: "
                              "an agent's identity can't operate its own containment; give operators an identity of "
-                             "their own (docs/incidents.md)")
+                             f"their own ({wiki_url('docs/incidents.md')})")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
@@ -811,12 +836,19 @@ class SignerService:
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
+        self.importers = set(importers)
         # run key -> monotonic time of its tailer's last heartbeat (a restart's open runs were tailed until now);
         # (*run key, observer) -> its observer's
         self._beats = {k: time.monotonic() for k in self.log.live if self.log.runs[k].get("tailed")}
         self._beats_lock = threading.Lock()
-        # (tenant, observer) -> (monotonic time of its last observe_effect, its process `instance`), under _beats_lock
+        # (tenant, observer) -> (monotonic time of its last observe_effect, its process `instance`, a sensor's name, the
+        # identities whose runs a sensor covers), under _beats_lock
         self._observers = {}
+        # (tenant, observer) -> the instances another took over from: one calling again is a second live process
+        self._superseded = collections.defaultdict(lambda: collections.deque(maxlen=64))
+        # (*run key, observer) -> whether a kernel sensor's import may say it observed the run: True once it recorded
+        # an event of it (with an import per node, only the run's node's does), False for good once it reported a loss
+        self._sensed = {}
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.gateway_wait_s = gateway_wait_s
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
@@ -1030,6 +1062,11 @@ class SignerService:
             return getattr(self, "_" + method)(identity, req)
         except RecursionError:   # nested close to the parser's limit, which checking, hashing or copying exceeds
             e = RPCError("invalid_request", "the request nests too deeply")
+            self._refused(identity, e)
+            raise e from None
+        except rfc8785.CanonicalizationError:   # hashing a record on the writer (rolled back): the same, one level deeper
+            e = RPCError("invalid_request", "the request can't be canonicalized (nested too deeply, or a number out of "
+                                            "range)")
             self._refused(identity, e)
             raise e from None
         except RPCError as e:
@@ -1455,12 +1492,14 @@ class SignerService:
                                                    "with no tool.result next to the harness's transcript or the "
                                                    "app's log for whether they ran"},
                     source="signer")
-        observed = False
+        observed, sensors = False, set()   # an egress observer, the kernel sensors, covering the run throughout
         for obs, at in self._covering(key).items():
-            if (time.monotonic() if now is None else now) - at < TAILER_LOST_S:
-                observed = True
-            else:
+            if (time.monotonic() if now is None else now) - at >= TAILER_LOST_S:
                 self._observer_lost(tx, run, obs, at, now)
+            elif self._observers.get((key[0], obs), (0, None, None))[2] is None:
+                observed = True
+            elif self._observers[(key[0], obs)][2] != "openshell" and self._sensed.get((*key, obs)):
+                sensors.add(self._observers[(key[0], obs)][2])   # OpenShell reports the sandbox's entrypoint only
         coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff,
                                     self.policy.is_structured_output)
         provider = len(reconcile.counted(run["rec"], self.gateway_mandatory, "provider")) if run.get("rec") else 0
@@ -1468,7 +1507,8 @@ class SignerService:
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
                                    **({"coverage": coverage,
-                                       "matrix": reconcile.matrix(run["rec"], self.posture or {}, observed)}
+                                       "matrix": reconcile.matrix(run["rec"], self.posture or {}, observed,
+                                                                  sorted(sensors))}
                                       if coverage else {}),
                                    **({"provider_executed": provider} if provider else {}),
                                    **({"paired_by_args": paired} if paired else {})}, source="signer")
@@ -1529,10 +1569,13 @@ class SignerService:
                     continue
                 if key in beats and t - beats[key] >= TAILER_LOST_S:
                     tx.emit(run, "capture.gap", {"kind": "tailer_lost", "reason": f"no tailer_heartbeat for "
-                            f"{t - beats[key]:.0f}s while the run was open: the transcript tailer stopped, was killed "
-                            "or never started; what the transcript says after that is not recorded: read the "
-                            "transcript itself for it, and run `sudo tracekit doctor` to check the tailer"},
-                            source="signer")
+                            f"{t - beats[key]:.0f}s while the run was open: " + (
+                                "the log follower stopped or was killed; what the log says after that is not "
+                                "recorded: read the log itself for it, and restart `tracekit follow`"
+                                if run["source"] == "import" else
+                                "the transcript tailer stopped, was killed or never started; what the transcript says "
+                                "after that is not recorded: read the transcript itself for it, and run `sudo tracekit "
+                                "doctor` to check the tailer")}, source="signer")
                     lost.append(key)
                 for obs, at in watched.get(key, {}).items():
                     if t - at >= TAILER_LOST_S:
@@ -1548,6 +1591,8 @@ class SignerService:
             done = set(finals)
             for k in [k for k in self._beats if k in lost or k[:2] in done]:
                 self._beats.pop(k)
+            for k in [k for k in self._sensed if k[:2] in done]:
+                self._sensed.pop(k)
         if finals:
             self._nudged.set()
         for key in finals if self._exporter else ():
@@ -1637,9 +1682,25 @@ class SignerService:
         with self._beats_lock:
             return {k[2]: at for k, at in self._beats.items() if len(k) == 3 and k[:2] == key}
 
-    def _observer_lost(self, tx, run, obs, at=None, now=None):
-        """An observer_lost gap in `run`: observer `obs` silent since `at` (monotonic) until `now`, or restarted."""
+    def _observer_lost(self, tx, run, obs, at=None, now=None, lost=None):
+        """An observer_lost gap in `run`: observer `obs` silent since `at` (monotonic) until `now`, restarted, or (a
+        kernel sensor's import) reporting `lost` events."""
         t = time.monotonic() if now is None else now
+        sensor = self._observers.get((run["tenant"], obs), (0, None, None))[2]
+        if sensor:
+            name = f"the {sensor} import {obs[:256]}"
+            what, check = (("OpenShell's events of the sandbox", "Check OpenShell's OCSF export "
+                            "([openshell.gateway.otlp.ocsf]), `tracekit openshell-middleware`") if sensor == "openshell"
+                           else ("the run's processes, connections and file writes", "Its coverage says processes not "
+                                 "observed. Check `tracekit sensor import`, the sensor"))
+            why = (f"{name} reported lost events: {privacy.redact_text(lost)[0]}" if lost else
+                   f"{name} restarted while the run was open: events its old process had not sent are not in the run"
+                   if at is None else f"no observe_effect from {name} for {t - at:.0f}s while the run was open: it "
+                   f"stopped or was killed, so {what} from then on are not in the run")
+            tx.emit(run, "capture.gap", {"kind": "observer_lost", "sensor": sensor, "reason": (
+                f"{why}. {check} and that the import's identity has the observe_effect grant")[:1024]},
+                source="signer")
+            return
         why = (f"egress observer {obs[:256]} restarted while the run was open: what the old process had not reported "
                "when it ended (up to a minute and a heartbeat of traffic if it was killed, none if it was stopped with "
                "SIGTERM) is not in the run, so its coverage says network not observed; find why the egress proxy "
@@ -1792,7 +1853,7 @@ class SignerService:
     def _commit(self, label, digest):
         """A published commitment: HMAC of `digest` under the salt of `label` (a record's salt_label), which the signer
         can reveal to an auditor for that one record."""
-        return "hmac-sha256:" + hmac.new(_salt(self._salt_key, label), digest.encode(), "sha256").hexdigest()
+        return _commitment(_salt(self._salt_key, label), digest)
 
     def _same(self, call, digest):
         """Whether `digest` is the args digest the decision `call` was made for."""
@@ -1805,25 +1866,43 @@ class SignerService:
         """(policy decision, hint disagreed, the rule ids of both readings). A class hint that disagrees with the
         policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
         hide a step. A tool the policy maps whose own reading is at least as strict as the hint's (an MCP adapter's
-        generic `mcp` against the deployment's `sql`) is no disagreement worth a gap."""
-        d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
-        if tool.startswith("mcp:") and "/" in tool:
-            # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class if
-            # the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an MCP one
-            bare = tool.split("/", 1)[1]
-            b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
-            d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
-                 "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
-        if hint is None or hint == cls:
+        generic `mcp` against the deployment's `sql`) is no disagreement worth a gap. An error of the engine itself on
+        these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`: its type), logged with its traceback,
+        never an exception that drops the connection and lets the call run unrecorded; a RecursionError is the
+        request's nesting, which call() refuses."""
+        try:
+            d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
+            if tool.startswith("mcp:") and "/" in tool:
+                # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class
+                # if the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an
+                # MCP one
+                bare = tool.split("/", 1)[1]
+                b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
+                d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
+                     "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
+            if hint is None or hint == cls:
+                return d, False, d["rule_ids"]
+            h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
+            strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
+            return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
+        except RecursionError:
+            raise
+        except Exception as e:
+            # the type and frames only: an exception message can carry argument text, which the signer otherwise
+            # keeps committed or encrypted; %r keeps an agent-supplied tool name on one log line
+            logging.getLogger(__name__).error("tracekit policy: the engine failed (%s) on a %r call\n%s", type(e).__name__,
+                                              tool[:256], "".join(traceback.format_tb(e.__traceback__)))
+            d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": self.policy.policy_hash,
+                 "engine": self.policy.engine, "error": type(e).__name__}
             return d, False, d["rule_ids"]
-        h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-        strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
-        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
 
     def _reasons(self, ids):
-        """The reasons of the rules among `ids` that give one, in their order, joined by "; " (at most 1024 chars)."""
-        by = {r["id"]: r.get("reason") or r.get("label") for _, r, *_ in self.policy.rules}
-        return "; ".join(by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and by.get(i))[:1024]
+        """The reasons of the rules among `ids` that give one, in their order, joined by "; ", then their remedies (what
+        to do instead), each once (at most 1024 chars)."""
+        by = {r["id"]: r for _, r, *_ in self.policy.rules}
+        rules = [by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by]
+        why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
+        return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""
@@ -2435,8 +2514,19 @@ class SignerService:
             except RPCError as e:
                 raise RPCError(e.code, f"parent: {e.message}; pass the parent run's handle, as the identity it was "
                                        "issued to, for a child run of the same tenant") from None
-        own = owner(identity)
-        self.quotas.take_event(identity)
+        own, caller = owner(identity), req.get("caller")
+        # a gateway registering the run of a client it serves (the OpenShell middleware's of a sandbox): the run counts
+        # against the gateway's open runs for that client, as its calls do against its rate for that client, and
+        # against its gateway_open_runs for all of them (a name it makes up is a fresh client)
+        if caller is not None and not lookup(self._gateways, sub, False):
+            raise RPCError("forbidden", f"{sub[:256]} is not a configured gateway")
+        client = caller and CallerIdentity(*caller.split(":", 1), True)
+        if client:
+            self._check_suspended(client)
+        count = own if caller is None else json.dumps([own, caller])   # the open_runs entry it counts in
+        # another system's log, which tracekit.follow reads: no layer here gates or reports its calls (an OTLP import's)
+        imported = sub in self.importers
+        self.quotas.take_event(*((client, identity) if client else (identity,)))
 
         def fn(tx, _):
             if (tenant, run_id) in self.log.runs:
@@ -2444,22 +2534,36 @@ class SignerService:
             for field in ("analyzes", "replay_of"):
                 if field in req and (tenant, req[field]) not in self.log.runs:
                     raise RPCError("unknown_run", req[field])
+                if field in req and self.log.runs[(tenant, req[field])].get("replay"):
+                    raise RPCError("invalid_request", f"{req[field]} is a findings or replay run: name the run it is "
+                                                      "about")
             up = parent and self.log.runs.get((tenant, parent["run_id"]))
             if parent and not up:
                 raise RPCError("unknown_run", f"{parent['run_id']}: register the child run on its parent's signer")
             if up and up["final"]:
                 raise RPCError("run_closed", f"parent run {parent['run_id']} is final: start the child run from an "
                                              "open run, or without `parent`")
-            n = self.log.open_runs.get(own, 0)
+            n = self.log.open_runs.get(count, 0)
             self.quotas.check_count("open_runs", n)
+            if client:   # lean: sums the gateway's entries per run it registers; keep a total if that ever shows
+                self.quotas.check_count("gateway_open_runs", sum(v for k, v in self.log.open_runs.items() if k == own
+                                                                 or k.startswith(json.dumps([own])[:-1] + ",")))
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", own)
-            tx.set(self.log.open_runs, own, n + 1)
-            tx.set(run, "source", req.get("source", "sdk"))
+            if caller is not None:
+                # lean: the entry is run state (memory and snapshot), not in run.registered: a run replayed from the
+                # log after the last snapshot counts in its owner's own entry until it closes; record the caller in
+                # run.registered if gateways' runs must count exactly across restarts
+                tx.set(run, "quota", count)
+            tx.set(self.log.open_runs, count, n + 1)
+            tx.set(run, "source", "import" if imported else req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
             tx.set(run, "prov", {"state": "complete", "index": {}})
             if "replay_of" in req:   # not reconciled: a replay run has model exchanges and, by design, no decisions
                 tx.set(run, "rec", None)
+            if imported:   # not reconciled (as pipeline replays it), and watched for the follower's heartbeats
+                for k, v in (("rec", None), ("spans", {}), ("tailed", True)):
+                    tx.set(run, k, v)
             if harness:
                 tx.set(run, "harness", (harness["pid"], harness["start_time"]))
             if up:
@@ -2482,6 +2586,8 @@ class SignerService:
                 data["harness"] = dict(harness, attested=True)
             if self.posture:
                 data["posture"] = {**self.posture, "attested": False}
+            if imported:
+                data["fidelity"], top["tier"] = "none", "T3"
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             # evasion: a new run of a held owner and principal, or of a held parent run, starts held
             now = _iso(time.time())
@@ -2506,9 +2612,13 @@ class SignerService:
                 tx.set(o, "overlapped_by", [*o.get("overlapped_by", ()), run_id])
             return out
         out = self.log.submit(identity, "register_run", req, fn)
-        with self._beats_lock:   # the observers alive now cover the run from its start
-            for (t, obs), (at, _) in self._observers.items():
-                if t == out["tenant"] and time.monotonic() - at < TAILER_LOST_S:
+        # the observers alive now cover the run from its start (a sensor import only a run of an identity its `runs`
+        # map processes to), a follower its own run
+        with self._beats_lock:
+            if imported:
+                self._beats.setdefault((out["tenant"], out["run_id"]), time.monotonic())
+            for (t, obs), (at, _, sensor, callers) in self._observers.items():
+                if t == out["tenant"] and time.monotonic() - at < TAILER_LOST_S and (not sensor or own in callers):
                     self._beats.setdefault((t, out["run_id"], obs), at)
         return out
 
@@ -2527,7 +2637,7 @@ class SignerService:
     def _decide(self, identity, req):
         identity, gw = self._as_caller(identity, "decide", req)
         key, top, holder = self._authorize(identity, req, gw), T2 if gw else {}, _holder(gw, req)
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         args, digest = self._args(req)
         untrusted, prov = self._provenance(key, args, req)
@@ -2538,14 +2648,24 @@ class SignerService:
         agent = self._eligibility(key, identity, tool, args, digest, ruled[0], prov) if ruled and \
             ruled[0]["verdict"] == "ask" else None
         cls = self.policy.tool_class(tool)
-        host = classes.extract(cls, tool, args).get("host") if cls in ("http", "browser") and isinstance(
-            args, dict) else None
+        # read only where the engine read these arguments without failing (a host matters to no deny)
+        host = classes.extract(cls, tool, args).get("host") if ruled and "error" not in ruled[0] and cls in (
+            "http", "browser") and isinstance(args, dict) else None
+        facts = self._facts(key, tool, args, cls) if digest else None   # what a live constraint looks at
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
         # rule_ids say only TK-OVERSIZE: name the subjects it stands for
-        big = {"reasons": [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
-                            + ", ".join(ruled[0]["oversize"]))[:4096]]} if ruled and ruled[0].get("oversize") else {}
+        reasons = [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
+                    + ", ".join(ruled[0]["oversize"]))[:4096]] if ruled and ruled[0].get("oversize") else []
+        if ruled and ruled[0].get("nondeterministic"):   # the rule it was matching when time ran out is no match
+            reasons.append(f"nondeterministic: the fallback regex engine ran out of its {engine.REGEX_TIMEOUT_S:g} s on "
+                           "these arguments, so the call is denied; the rule it was matching then is among the rule ids "
+                           "without having matched (install google-re2 on the signer)")
+        if ruled and ruled[0].get("error"):   # the record and the response say why, as for TK-OVERSIZE
+            reasons = [f"TK-ENGINE-ERROR: the policy engine failed on these arguments ({ruled[0]['error']}), "
+                       "so the call is denied"]
+        big = {"reasons": reasons} if reasons else {}
         written = []   # (run_seq, commitment) of each decision record this call (not a retry the cache answers) wrote
 
         def fn(tx, run):
@@ -2582,6 +2702,11 @@ class SignerService:
                     tx.set(run["denied"], digest, True)
                 elif verdict != "ask" and digest in run["denied"]:
                     gaps.append(("decision_flip", f"{verdict} after a deny for the same arguments in this run"))
+            f = facts if facts is not None or not (digest and run.get("constraints")) else \
+                self._facts(key, tool, args, cls, run)   # the run's first constraint came meanwhile
+            held = f and verdict != "deny" and self._constrained(run, f)   # tighten only: never lowered
+            if held:
+                verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"] * ("TK-CONSTRAINT" not in rule_ids)
             if unreadable and verdict in ("allow", "flag"):
                 verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
             if sums:
@@ -2630,8 +2755,9 @@ class SignerService:
                         tool_call_id=tcid)
             out = {"decision": "allow" if d["decision"] == "flag" else d["decision"], "decision_id": d["decision_id"],
                    "rule_ids": d["rule_ids"], "run_seq": seq, "expires_at": expires_at,
-                   **({"reason": big["reasons"][0][:1024]} if big else {})}
-            if d["decision"] in ("deny", "ask") and not big and (why := self._reasons(d["rule_ids"])):
+                   **({"reason": "; ".join(big["reasons"])[:1024]} if big else {})}
+            if d["decision"] in ("deny", "ask") and not big and (why := "; ".join(x for x in (
+                    held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"])) if x)[:1024]):
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
@@ -2650,7 +2776,7 @@ class SignerService:
         `gw`: the gateway making the call (_as_caller), whose events these are. `check(run)`: on the writer, raises to
         refuse the event. `after(tx, run)`: on the writer, once the event is written: more fields of the response."""
         key = self._authorize(identity, req, gw)
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         sid = secrets.token_hex(16)
         label = salt_label({"type": typ, "data": {"salt_id": sid}})
         data = {**data(lambda digest: self._commit(label, digest)), "salt_id": sid}
@@ -2695,7 +2821,7 @@ class SignerService:
                                                  or isinstance(r, dict) and {"hash", "size"} <= r.keys())
         open_call = self.log.runs[key].get("decisions", {}).get(did)
         if not (gw and open_call and (open_call.get("via"), open_call.get("caller")) == holder):
-            self.quotas.take_event(gw or identity)   # a gateway's result for its own decision: its decide paid
+            self.quotas.take_event(identity, gw)   # a gateway's result for its own decision: its decide paid
         written = []
 
         def fn(tx, run):
@@ -2752,7 +2878,7 @@ class SignerService:
                 "output": {"hash": self._commit(label, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
                            "redacted": manifest["count"] > 0}, **({"via": subject(gw)} if gw else {})}
         keys, overflow = self._keys(req["value"]) if self.log.runs[key].get("prov") else ([], False)   # before redaction
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         written = []
 
         def fn(tx, run):
@@ -2793,7 +2919,7 @@ class SignerService:
     def _as_caller(self, identity, method, req):
         """(the identity a call is made as, the gateway making it or None): a `gateways` identity (an LLM or MCP
         gateway, a tool executor) that names `caller` acts for the client it authenticated, under that client's run
-        token and grants; the events are the gateway's, charged to its own rate."""
+        token and grants; the events are the gateway's, charged to its budget for that client (quotas.key)."""
         if "caller" not in req:
             return identity, None
         if not lookup(self._gateways, subject(identity), False):
@@ -2819,10 +2945,16 @@ class SignerService:
 
     def _model_event(self, identity, req):
         top, out, gw = {}, None, None
+        if "amended" in req and not ("caller" in req and req["phase"] == "request"):
+            raise RPCError("invalid_request", "amended is an LLM gateway's, on a request it changed before sending it")
+        if "said_only" in req and ("tool_uses" in req or req["phase"] != "response"):
+            raise RPCError("invalid_request", "said_only is a response recorded without its calls: no tool_uses")
         if "caller" in req:   # an LLM gateway reports the exchange of the client it authenticated, under its run token
             identity, gw = self._as_caller(identity, "model_event", req)
             top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes,
                                                "check_results": self.verify_tool_results is not None}
+            if "amended" in req:   # non-critical (format-v2.md §9): an older verifier's lines stay true without it
+                top["ext"] = {"amended": req["amended"]}
         keep, content_digest = None, req.get("content_digest")
         if "body" in req:   # committed to after redaction, as a result is; kept when the vault is on
             try:
@@ -2834,7 +2966,7 @@ class SignerService:
         def data(commit):
             d = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
                  "streamed": req.get("streamed", False), "model": req["model"], "upstream": req["provider"]}
-            for k in ("stop_reason", "tool_results_sent"):
+            for k in ("stop_reason", "tool_results_sent", "said_only"):
                 if k in req:
                     d[k] = req[k]
             if "error" in req:
@@ -2948,7 +3080,7 @@ class SignerService:
         key, top, holder = self._authorize(identity, req, gw), T2 if gw else {}, _holder(gw, req)
         tcid, sub = req["tool_call_id"], subject(identity)
         attempt = req.get("attempt", 0)
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         aid, sid = f"{self.id_prefix}apr-{secrets.token_hex(16)}", secrets.token_hex(16)
 
         def fn(tx, run):
@@ -3278,8 +3410,7 @@ class SignerService:
         aid = req["approval_id"]   # only waits for a state the run's records show anyway: no hold
         a = self._approval(self._authorize(identity, req, gw), aid)
         # a held run's waits use a budget of the run's own, so they don't starve its owner's healthy runs
-        slot = ("held", "/".join(a["run_key"])) if a.get("incident_id") else ((gw or identity).scheme,
-                                                                              (gw or identity).subject)
+        slot = ("held", "/".join(a["run_key"])) if a.get("incident_id") else quota_key(identity, gw)
 
         def waiting(a, now):   # an agent's approval waits out its veto delay: people may still revoke it
             return a["state"] == "requested" or a["state"] == "approved" and a.get("not_before", "") > _iso(now)
@@ -3303,7 +3434,7 @@ class SignerService:
         holder = _holder(gw, req)
         held = (self.log.runs[key].get("calls", {}).get(tcid) or {}) if gw else {}
         if not (held and (held.get("via"), held.get("caller")) == holder):   # a gateway's consume of its own call:
-            self.quotas.take_event(gw or identity)                         # its decide paid, as for its result
+            self.quotas.take_event(identity, gw)                           # its decide paid, as for its result
         args, digest = self._args(req)
         bound = self.log.approval_index.get((*key, tcid, attempt))
         # read before the writer runs: the copy is deleted once the approval is consumed
@@ -3431,7 +3562,7 @@ class SignerService:
         # it is
         identity, gw = self._as_caller(identity, "model_event", req)
         key = self._authorize(identity, req, gw)
-        self.quotas.take_event(gw or identity)
+        self.quotas.take_event(identity, gw)
         who = writer(identity, req)
 
         def fn(tx, run):
@@ -3519,8 +3650,9 @@ class SignerService:
                           f"reported by {subject(identity)[:256]})"},
                 source="signer", request_id=req["request_id"])}
         out = self.log.submit(identity, "tailer_lost", req, fn, key, late=True)
-        with self._beats_lock:   # reported: its silence from now on is no second loss
-            self._beats.pop(key, None)
+        if self.log.runs[key]["source"] != "import":   # a transcript tailer's last call: its silence is no second loss;
+            with self._beats_lock:                     # a log follower goes on after a gap, so it stays watched
+                self._beats.pop(key, None)
         return out
 
     def _observe_effect(self, identity, req):
@@ -3528,11 +3660,36 @@ class SignerService:
         that run is open or closing, then reconciled (a host nothing explains is one reconcile.unexplained_effect);
         else a capture.gap{effect_outside_run} in the tenant's signer run, which a run-set shows. Every call is the
         observer's heartbeat: the runs of its tenant registered while it is alive are covered by it, until another
-        process of it (`instance`) takes over, which is an observer_lost gap in each. `check`: refused unless this
-        signer issued that run token for that run of the observer's tenant (the proxy asks before it connects)."""
-        obs, tenant = subject(identity), self._tenant_of(identity)
+        process of it (`instance`) takes over, which is an observer_lost gap in each; the process taken over from is
+        refused from then on (two live processes of one identity). `check`: refused unless this
+        signer issued that run token for that run of the observer's tenant (the proxy asks before it connects).
+        A kernel sensor's import (tracekit.sensor; `sensor` and `callers` in every call) is an observer the same way, of
+        processes rather than network, covering only the runs of the identities its `runs` map processes to
+        (`callers`): its effects (_sensor_effect) are recorded but not reconciled; it says it observed a run only once
+        it recorded an event of it (with an import per node, the run's node's alone), and `lost` is an observer_lost gap
+        in each run it covers (in the signer run when it covers none) after which it says so of none of them, though
+        their watch of its silence goes on; an effect attributed to a run no caller owns is an effect_outside_run
+        gap. OpenShell's import (tracekit.openshell, sensor openshell,
+        its own identity its one caller) also sends a sandbox policy change (an `ext` record openshell.policy) and a
+        loss of one run's events (an observer_lost gap in that run only). A configured gateway may observe the runs it
+        registered for the clients it serves: it is not their agent."""
+        obs, tenant, sensor = subject(identity), self._tenant_of(identity), req.get("sensor")
+        callers = frozenset(req.get("callers", ()))
         if len(obs) > 256:   # each record names it in full
             raise RPCError("forbidden", f"{obs[:64]}...: an observer's identity is at most 256 characters")
+        if any((x["kind"] == "net") == bool(sensor) or x["kind"] in ("policy", "lost") and sensor != "openshell"
+               for x in req["effects"]) or bool(sensor) != ("callers" in req) or "lost" in req and not sensor:
+            raise RPCError("invalid_request", "net effects go without `sensor`; a kernel sensor's events and `lost` "
+                                              "go with it, and `callers` with every call of it; policy and lost "
+                                              "effects are OpenShell's")
+        if sensor == "openshell" and callers != {owner(identity)}:   # it observes the runs it registered, no other
+            raise RPCError("invalid_request", f"OpenShell's import observes the runs it registered: its callers are "
+                                              f"its own identity, [{owner(identity)[:256]}]")
+        was = self._observers.get((tenant, obs))
+        if was and was[2] != sensor:   # run.final classes its coverage by its kind (_finish_run)
+            kind = f"the {was[2]} import" if was[2] else "an egress observer"
+            raise RPCError("invalid_request", f"{obs[:256]} observes as {kind}: one identity is one observer; give "
+                                              "each its own")
         if "check" in req:   # before anything is charged: a made-up token must not spend the observer's events
             why = self._attributed(tenant, req["check"])[2]
             if why:
@@ -3540,40 +3697,77 @@ class SignerService:
         if req["effects"] or "check" not in req:   # one token check per proxied connection costs no event
             self.quotas.take_event(identity)
         now = time.monotonic()
+        # coverage ends only once the gap that ends it is written: until then the old process stays the one on record,
+        # so a call sent again after a failed write still finds the runs it covered
         with self._beats_lock:
+            if req["instance"] in self._superseded.get((tenant, obs), ()):
+                raise RPCError("conflict", f"another process of observer {obs[:256]} took over from this one, which "
+                                           "still sends: two processes share one identity (an import per node under "
+                                           "one identity?); give each its own identity, or run one")
             before = self._observers.get((tenant, obs))
-            self._observers[(tenant, obs)] = (now, req["instance"])
+            self._observers[(tenant, obs)] = (now, before[1] if before else req["instance"], sensor, callers)
             covered = [k for k in self._beats if len(k) == 3 and k[0] == tenant and k[2] == obs]
             restarted = covered if before and before[1] != req["instance"] else []
-            for k in covered:
-                if restarted:
+            lost = covered if "lost" in req and not restarted else []
+            for k in [] if restarted else covered:   # after a loss it stays watched: its silence is a gap still
+                if sensor and self.log.runs[k[:2]]["owner"] not in callers:   # its runs map no longer names the owner
                     self._beats.pop(k)
                 else:
                     self._beats[k] = now
         if restarted:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])
-        if not req["effects"]:
+        with self._beats_lock:
+            self._observers[(tenant, obs)] = (now, req["instance"], sensor, callers)
+            if before and before[1] != req["instance"]:
+                self._superseded[(tenant, obs)].append(before[1])
+            for k in restarted:
+                self._beats.pop(k, None)
+        if not req["effects"] and "lost" not in req:
             return {"recorded": 0}
         labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}
         explains = self.policy.policy.get("explains", ())
+        gateway = lookup(self._gateways, obs, False)
+        sensed = set()
 
         def fn(tx, _):
+            if "lost" in req:
+                for run in [self.log.runs[k[:2]] for k in lost if not self.log.runs[k[:2]]["final"]] or [
+                        self.log.signer_run(tx, tenant)]:
+                    self._observer_lost(tx, run, obs, lost=req["lost"])
             for x in req["effects"]:
                 key, how, why = self._attributed(tenant, x)
                 run = key and self.log.runs.get(key)
-                if run and run["owner"] == owner(identity):
+                if run and run["owner"] == owner(identity) and not gateway:
                     raise RPCError("forbidden", f"{obs[:256]} owns run {key[1]}: an observer is never the agent's "
-                                                "identity; give the egress proxy its own")
+                                                f"identity; give the {'sensor import' if sensor else 'egress proxy'} "
+                                                "its own")
+                if run and sensor and run["owner"] not in callers:   # an import covers its callers' runs alone
+                    why, run = f"run {key[1]} is {run['owner'][:256]}'s, none of the import's callers", None
                 if not run or run["final"]:
                     why = why or (f"run {key[1]} was final by then (raise observe_grace_s if the observer's reports "
                                   "often come this late)" if run else f"there is no run {key[1]}")
                     claimed = x.get("run_id") or key and key[1]
+                    target = f" {x['host']}:{x['port']}" if "host" in x else f" {x['path'][:256]}" if "path" in x else ""
+                    saw = (f"a loss: {privacy.redact_text(x['reason'])[0]}" if x["kind"] == "lost" else
+                           f"a policy change ({x['change']}) at {x['ts']}" if x["kind"] == "policy" else
+                           f"{x['kind']}{target} by pid {x['pid']} ({x['binary'][:256]}) at {x['ts']}" if sensor else
+                           f"{x['host']}:{x['port']} ({x['bytes_out']} bytes out, {x['bytes_in']} in, "
+                           f"{x['connections']} connection(s), {x['first_ts']} to {x['last_ts']})")
                     tx.emit(self.log.signer_run(tx, tenant), "capture.gap", {
                         "kind": "effect_outside_run", **({"run_id": claimed} if claimed else {}),
-                        "reason": f"egress observer {obs[:256]} saw {x['host']}:{x['port']} ({x['bytes_out']} bytes "
-                                  f"out, {x['bytes_in']} in, {x['connections']} connection(s), {x['first_ts']} to "
-                                  f"{x['last_ts']}) that no open run holds: {why}"}, source="signer")
+                        "reason": f"{sensor or 'egress observer'} {obs[:256]} saw {saw} that no open run holds: "
+                                  f"{why}"}, source="signer")
+                    continue
+                if x["kind"] == "lost":
+                    self._observer_lost(tx, run, obs, lost=x["reason"])
+                    continue
+                if x["kind"] == "policy":
+                    tx.emit(run, "ext", self._policy_change(obs, x, how), source="signer")
+                    continue
+                if sensor:
+                    tx.emit(run, "effect.observed", self._sensor_effect(obs, sensor, x, how), source="signer")
+                    sensed.add((*key, obs))
                     continue
                 rec = run.get("rec")
                 by = rec is not None and reconcile.explained(rec, x["host"], explains, labels) or None
@@ -3590,12 +3784,46 @@ class SignerService:
                               "package index), add it to the policy's explains; else find which call opened it"},
                         source="signer")
             return {"recorded": len(req["effects"])}
-        return self.log.submit(identity, "observe_effect", req, fn)
+        out = self.log.submit(identity, "observe_effect", req, fn)
+        with self._beats_lock:
+            for k in sensed:
+                self._sensed.setdefault(k, True)
+            for k in lost:   # its loss ends what it may say of the run, not the watch of its silence
+                self._sensed[k] = False
+        return out
+
+    def _sensor_effect(self, obs, sensor, x, how):
+        """effect.observed of kernel sensor event `x`: the arguments' digest as a commitment. The tool call id the
+        process's environment carried is the agent's claim, recorded as such: the agent sets that environment, so the
+        signer never takes it as explaining the effect (tracekit analyze --v2's TK-X206 checks it against the call)."""
+        # lean: an effect nothing explains is not reconciled (no reconcile.unexplained_effect, no count in run.final);
+        # add it once runs carry a tool call id into every process (Codex does, Claude Code doesn't)
+        d = {"observer": obs, "sensor": sensor, **{k: x[k] for k in (
+            "kind", "ts", "pid", "binary", "exec_id", "parent_exec_id", "status", "signal", "host", "port", "path",
+            "tool_call_id", "denied")
+            if k in x}, "attribution": how}
+        if "args_digest" in x:
+            sid = secrets.token_hex(16)
+            d.update(args_commitment=self._commit(salt_label({"type": "effect.observed", "data": {"salt_id": sid}}),
+                                                  x["args_digest"]), salt_id=sid)
+        return d
+
+    def _policy_change(self, obs, x, how):
+        """The `ext` record openshell.policy of OpenShell's sandbox policy change `x`: its message as a commitment."""
+        d = {"name": "openshell.policy", "observer": obs, **{k: x[k] for k in ("ts", "change", "policy_hash", "by")
+                                                             if k in x}, "attribution": how}
+        if "detail_digest" in x:
+            sid = secrets.token_hex(16)
+            d.update(detail_commitment=self._commit(salt_label({"type": "ext", "data": {"salt_id": sid}}),
+                                                    x["detail_digest"]), salt_id=sid)
+        return d
 
     def _attributed(self, tenant, x):
         """(run key or None, attribution, why there is none) of effect `x` of an observer of `tenant` (on the writer):
         the run its run token names, unless this signer didn't issue that token for that run of `tenant`, or issued it
-        to another identity than the client's (`caller`); else the latest open run of `caller`."""
+        to another identity than the client's (`caller`); else the latest open run of `caller` registered by the
+        effect's `ts` (a kernel sensor's: an event read late goes to the run it happened in, an old one to none), or
+        with none, its first registered up to SENSOR_SKEW_S after `ts`."""
         why = None
         if "run_token" in x:
             try:
@@ -3614,25 +3842,139 @@ class SignerService:
         c = CallerIdentity(*x["caller"].split(":", 1), True)
         if self._tenant_of(c) != tenant:
             return None, "identity", f"{why}{x['caller'][:256]} is of another tenant than the observer"
-        # lean: the owner's latest open run takes it; with concurrent runs of one owner, send the run token instead
-        key = next((k for k in reversed(list(self.log.live)) if k[0] == tenant
-                    and self.log.runs[k]["owner"] == owner(c)), None)
-        return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run"
+        # lean: the owner's latest open run registered by the effect's time takes it, else its first registered within
+        # SENSOR_SKEW_S after (the sensor's clock behind the signer's); with concurrent runs of one owner, send the run
+        # token instead
+        runs = [k for k in self.log.live if k[0] == tenant and self.log.runs[k]["owner"] == owner(c)]
+        at = x.get("ts", "~")
+        key = next((k for k in reversed(runs) if self.log.runs[k].get("registered", "") <= at), None) or next(
+            (k for k in runs if "ts" in x and self.log.runs[k].get("registered", "") <= _iso(
+                epoch(at) + SENSOR_SKEW_S)), None)
+        return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run" + (
+            f" registered by {at}" if "ts" in x else "")
 
-    def _why_finding(self, identity, req):
+    def _finding(self, identity, req, method, type_, data, cites=()):
+        """Write a `type_` record of `data` in the caller's findings run (registered with `analyzes`, which only an
+        identity signer.yaml `analyzers` lists may do); refused in any other run, and refused unless each of `cites`
+        is a record of the analysed run with that hash (a verifier fails a bundle on one that isn't, so a made-up cite
+        would turn an intact run's bundle FAILED)."""
         key = self._authorize(identity, req)
+        self.quotas.take_event(identity)   # before the reads: a refused call costs them too
         try:
             first = next(iter(self.log.storage.iter_run(*key)))["event"]
+            if "analyzes" not in first["data"]:
+                raise RPCError("forbidden", f"a {type_} goes in a findings run: register_run with `analyzes` "
+                                            "(signer.yaml `analyzers` lists who may)")
+            bad = self._bad_cite(key[0], first["data"]["analyzes"], cites)
         except (OSError, StorageUnavailable) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
-        if "analyzes" not in first["data"]:
-            raise RPCError("forbidden", "a why.finding goes in a findings run: register_run with `analyzes` (signer.yaml "
-                                        "`analyzers` lists who may)")
-        self.quotas.take_event(identity)
+        if bad:
+            raise RPCError("invalid_request", f"cites {bad}: cite records of the analysed run, with their hashes")
 
         def fn(tx, run):
-            return {"run_seq": tx.emit(run, "why.finding", req["finding"], request_id=req["request_id"])}
-        return self.log.submit(identity, "why_finding", req, fn, key)
+            return {"run_seq": tx.emit(run, type_, data, request_id=req["request_id"])}
+        return self.log.submit(identity, method, req, fn, key)
+
+    def _why_finding(self, identity, req):
+        return self._finding(identity, req, "why_finding", "why.finding", req["finding"])
+
+    def _constraint_add(self, identity, req):
+        """A live constraint of the caller's run (module docstring): constraint.added, with the commitment of its file
+        name under the record's own salt, never the name; tighten-only, so any client of the run may add one. One
+        equal to a live constraint of the run (the same kind, and for a file the same name: its commitment opens) is
+        that one: its run_seq, nothing written. Past MAX_CONSTRAINTS file constraints (keep_away, only_change; a kind
+        that names no file has at most one each and is always added) a new file constraint is a signed capture.gap
+        constraint_refused (its run_seq, and `refused` for the hook to warn), never dropped unrecorded, and the run
+        fails closed: every later write is held (_constrained), so made-up constraints only make the agent wait."""
+        key, c = self._authorize(identity, req), req["constraint"]
+        if (c["kind"] in constraints.OBJECT_KINDS) != ("object" in c) or "object" in c and not constraints.norm(
+                c["object"]):
+            raise RPCError("invalid_request", "keep_away and only_change name the file (`object`); the other kinds "
+                                              "name none")
+        self.quotas.take_event(identity)
+        data, name = {"kind": c["kind"]}, constraints.digest(c["object"]) if "object" in c else None
+        if name:
+            data["salt_id"] = secrets.token_hex(16)
+            data["object_commitment"] = self._commit(salt_label({"type": "constraint.added", "data": data}), name)
+
+        def fn(tx, run):
+            have = run.get("constraints") or []
+            same = next((seq for kind, label, commitment, seq in have if kind == c["kind"] and (
+                not name or self._opens(commitment, label, name))), None)
+            if same is not None:
+                return {"run_seq": same}
+            if name and sum(kind in constraints.OBJECT_KINDS for kind, *_ in have) >= MAX_CONSTRAINTS:
+                tx.set(run, "constraints_full", True)
+                return {"run_seq": tx.emit(run, "capture.gap", {"kind": "constraint_refused", "reason": (
+                    f"the run has {MAX_CONSTRAINTS} live file constraints, the most it takes: a further {c['kind']} "
+                    "constraint was not added, so every write of the run is held for a person's approval")},
+                    source="signer"), "refused": True}
+            seq = tx.emit(run, "constraint.added", data, request_id=req["request_id"])
+            tx.set(run, "constraints", [*have, constraint_state({"type": "constraint.added", "data": data,
+                                                                 "run_seq": seq})])
+            return {"run_seq": seq}
+        return self.log.submit(identity, "constraint_add", req, fn, key)
+
+    def _facts(self, key, tool, args, cls, run=None):
+        """What run `key`'s live constraints look at in a call (constraints.facts), or None when it has none: its
+        distinct file names, at most MAX_NAMES (`many`: more), with `opens`, the names whose commitment under each file
+        constraint's salt opens it, by salt label. Off the writer (`run` None: the run's state as it is now), so the
+        writer only checks a constraint added since (_constrained)."""
+        live = list((run or self.log.runs.get(key) or {}).get("constraints") or ())
+        if not live:
+            return None
+        f = constraints.facts(tool, args, cls)
+        names = list(dict.fromkeys(f["names"]))
+        f.update(names=names[:MAX_NAMES], many=len(names) > MAX_NAMES, digests=None, opens={})
+        for _, label, commitment, _ in live:
+            if commitment and not f["many"]:
+                f["opens"][label] = self._opened(f, label, commitment)
+        return f
+
+    def _opened(self, f, label, commitment):
+        """The names of call facts `f` whose commitment under salt `label` is `commitment`: each name digested once,
+        the salt derived once."""
+        f["digests"] = f["digests"] or [constraints.digest(n) for n in f["names"]]
+        salt = _salt(self._salt_key, label)
+        return {n for n, d in zip(f["names"], f["digests"]) if hmac.compare_digest(commitment, _commitment(salt, d))}
+
+    def _constrained(self, run, facts):
+        """What the agent is told when a call (its _facts) breaks one of `run`'s live constraints, or None: a file it
+        writes breaks a file constraint whose commitment its name opens (keep_away) or opens none of (only_change);
+        a call writing more than MAX_NAMES files is held whenever the run has a file constraint, and any write once a
+        file constraint was refused (constraints_full: past MAX_CONSTRAINTS)."""
+        live = run.get("constraints") or ()
+        if facts["many"] and any(kind in constraints.OBJECT_KINDS for kind, *_ in live):
+            return constraints.held("many", MAX_NAMES)
+        opens = facts["opens"]
+        for _, label, commitment, _ in live:   # one added after _facts looked
+            if commitment and label not in opens:
+                opens[label] = self._opened(facts, label, commitment)
+        only = [label for kind, label, *_ in live if kind == "only_change"]
+        for kind, label, *_ in live:
+            name = constraints.breaks(kind, facts, (lambda n: any(n in opens[lb] for lb in only))
+                                      if kind == "only_change" else opens.get(label, ()).__contains__)
+            if name is not None:
+                return constraints.held(kind, name)
+        return constraints.held("full", MAX_CONSTRAINTS) if run.get("constraints_full") and facts["write"] else None
+
+    def _review_finding(self, identity, req):
+        """A review record: the signed finding, with its rule's fixed title (format-v2.md §3: no text of the run)."""
+        v = req["review"]["verdict"]
+        return self._finding(identity, req, "review_finding", "review",
+                             {**req["review"], "verdict": {**v, "title": rpc_schema.FINDING_TITLES[v["rule"]]}},
+                             req["review"]["cites"])
+
+    def _bad_cite(self, tenant, run_id, cites):
+        """The first of `cites` that is no record of run `run_id` with that hash, in words, or None."""
+        want = {}
+        for c in cites:
+            want.setdefault(c["run_seq"], set()).add(c["hash"])
+        for r in self.log.storage.run_records(tenant, run_id, want) if want else ():   # by run_seq: no scan
+            seq = r["event"]["run_seq"]
+            if want.pop(seq) != {r["hash"]}:
+                return f"run_seq {seq} of run {run_id[:128]}, whose hash differs"
+        return f"run_seq {min(want)}, which run {run_id[:128]} does not have" if want else None
 
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},
@@ -3769,7 +4111,7 @@ class SignerService:
         """The key of run `run_id` of the caller's tenant, once the vault exists."""
         if self._content_key is None:
             raise RPCError("invalid_request", "this signer keeps no content: set content: {retain: true} in signer.yaml "
-                                              "(docs/privacy.md)")
+                                              f"({wiki_url('docs/privacy.md')})")
         key = (self._tenant_of(identity), run_id)
         if key not in self.log.runs:
             raise RPCError("unknown_run", run_id)
@@ -3780,8 +4122,7 @@ class SignerService:
         self.quotas.take_event(identity)
         wanted = set(req["seqs"])
         try:
-            records = {r["event"]["run_seq"]: r["event"] for r in self.log.storage.iter_run(*key)
-                       if r["event"]["run_seq"] in wanted}
+            records = {r["event"]["run_seq"]: r["event"] for r in self.log.storage.run_records(*key, wanted)}
         except (OSError, StorageUnavailable) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         purpose = privacy.redact_text(req["purpose"])[0][:512]
@@ -3834,22 +4175,23 @@ class SignerService:
                            lambda fn: self.log.submit(identity, "content_erase", req, fn))
 
     def _vault_replays(self, runs):
-        """{(tenant, run_id): [(tenant, replay run id)]}: of `runs` (content_runs), those whose run.registered names a
-        run in `replay_of` (tracekit why), by that run."""
+        """{(tenant, run_id): [(tenant, replay or findings run id)]}: of `runs` (content_runs), those whose
+        run.registered names a run in `replay_of` (tracekit why) or `analyzes` (a findings run, whose reviewer model
+        call keeps what it sent of that run), by that run."""
         # lean: reads the first record of every run with content in the vault per erasure or retention sweep; index runs
-        # by replay_of when vaults hold many runs
+        # by replay_of and analyzes when vaults hold many runs
         out = {}
         for log_id, tenant, run_id, _ in runs:
             first = next(iter(self.log.storage.iter_run(tenant, run_id)), None) if log_id == self.log.log_id else None
-            of = first and first["event"]["data"].get("replay_of")
+            of = first and (first["event"]["data"].get("replay_of") or first["event"]["data"].get("analyzes"))
             if of:
                 out.setdefault((tenant, of), []).append((tenant, run_id))
         return out
 
     def _erase(self, key, reason, by, submit=None, replays=None):
-        """Delete run `key`'s data key (replaced by its tombstone) and blobs, and those of its replay runs (`replays`,
-        default: every one in the vault), each then a content.erased, in one writer item: a record is signed only once
-        the key is gone. A storage failure writes no record and raises unavailable; a retry erases again (blobs a
+        """Delete run `key`'s data key (replaced by its tombstone) and blobs, and those of its replay and findings runs
+        (`replays`, default: every one in the vault), each then a content.erased, in one writer item: a record is signed
+        only once the key is gone. A storage failure writes no record and raises unavailable; a retry erases again (blobs a
         failure left behind stay inert: no key opens them)."""
         try:
             if replays is None:
@@ -3864,7 +4206,7 @@ class SignerService:
                     self.log.storage.content_erase(self.log.log_id, *k)
                 except (OSError, StorageUnavailable) as e:
                     raise RPCError("unavailable", f"the content of run {k[1]} was not erased: {e}") from None
-                why = reason if k == key else f"{reason} (a replay of run {key[1]})"[:1024]
+                why = reason if k == key else f"{reason} (a replay or findings run of run {key[1]})"[:1024]
                 seq = tx.emit(self.log.signer_run(tx, k[0]), "content.erased", {"run_id": k[1], "reason": why, "by": by},
                               source="signer")
                 out = out or {"run_seq": seq}
@@ -3873,7 +4215,7 @@ class SignerService:
 
     def expire_content(self, now=None):
         """Erase the content of every run whose data key was stored more than retention_days before `now`, with its
-        replay runs' (a replay run's content never outlives its run's)."""
+        replay and findings runs' (their content never outlives their run's)."""
         cutoff = (time.time() if now is None else now) - self.content["retention_days"] * 86400
         runs = self.log.write(lambda tx: self.log.storage.content_runs())
         replays, done = self._vault_replays(runs), set()
@@ -3906,11 +4248,12 @@ class SignerService:
 
     def _import(self, identity, spans):
         """Write decoded spans as the records of their imported runs, all in one writer item (nothing on a refusal):
-        a dict of counts for otlp.handle_traces."""
+        a dict of counts for otlp.handle_traces. A trace's root span closes its run: its spans are all ended."""
         res = {"accepted": 0, "duplicate": 0, "skipped": 0, "rejected": 0, "errors": [], "retryable": False}
         if len(spans) > self.otlp_max_spans:
             return dict(res, rejected=len(spans), errors=[f"more than {self.otlp_max_spans} spans in one request"])
         traces, agents = {}, {}   # trace id -> [[(type, data, span id)] per span]; trace id -> agent name
+        ended = {sp["trace_id"] for sp in spans if sp["parent_span_id"] is None}
         for sp in sorted(spans, key=lambda x: (x["start_ns"], x["end_ns"])):
             kind = otlp.classify(sp)
             if kind not in ("tool", "llm"):
@@ -3962,6 +4305,10 @@ class SignerService:
                     for typ, data, sid in new:
                         tx.emit(run, typ, data, tier=signer_otel.TIER, span_id=sid)
                         tx.set(run["spans"], f"{sid}:{typ}", True)
+            for tid in ended:   # one open run per trace would spend the importer's open_runs (agentgateway: per call)
+                run = self.log.runs.get((tenant, signer_otel.run_id(tid)))
+                if run and run["source"] == "import" and run["owner"] == own and not run["closed"]:
+                    tx.closing(run, "close_run")
             return out
         try:
             # lean: one event-rate token per request (at most max_spans spans); a token per span if imports need a
@@ -4073,8 +4420,8 @@ def signer_config(path=None):
     """The config at `path`, or the same-user dev signer's (data_dir and socket)."""
     if path:
         return load_config(path)
-    from tracekit.sdk.autospawn import SOCK, runtime_dir
-    return {"data_dir": dev_data_dir(), "socket": os.path.join(runtime_dir(), SOCK)}
+    from tracekit.sdk.autospawn import SOCK, signer_dir
+    return {"data_dir": dev_data_dir(), "socket": os.path.join(signer_dir(), SOCK)}
 
 
 def reader(cfg):
@@ -4130,7 +4477,8 @@ def open_service(cfg, **kw):
                          limits=Limits(**cfg.get("limits", {})),
                          acknowledge_rollback=bool(cfg.get("acknowledge_rollback")),
                          multi_tenant_apps=cfg.get("multi_tenant_apps", ()), migrators=cfg.get("migrators", ()),
-                         analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
+                         analyzers=cfg.get("analyzers", ()), importers=cfg.get("importers", ()),
+                         fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
                          origin=cfg.get("origin"), contact=cfg.get("contact"), approvals=cfg.get("approvals") or {},
                          authorize=cfg.get("authorize"), lock_timeout_s=float(cfg.get("lock_timeout_s", LOCK_TIMEOUT_S)),
@@ -4196,24 +4544,20 @@ def _dev_token():
 
 def dev_data_dir():
     """The dev signer's per-user data dir (keys and store), created 0700."""
-    if os.name == "nt":
-        d = os.path.join(os.environ["LOCALAPPDATA"], "tracekit")
-    elif sys.platform == "darwin":
-        d = os.path.expanduser("~/Library/Application Support/tracekit/data")
-    else:
-        d = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "tracekit")
+    from tracekit.sdk.autospawn import data_dir
+    d = data_dir()
     os.makedirs(d, 0o700, exist_ok=True)
     os.chmod(d, 0o700)
     return d
 
 
 def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.RPC_VERSION), version=__version__,
-              idle_s=900):
+              idle_s=900, data_dir=None):
     """Serve as the dev signer of `runtime_dir` (decision S3) until SIGTERM, or until `idle_s` seconds (0: never) pass
     with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life; then
     `open_handler()` -> (handle_frame, close); then binds the socket (loopback TCP without Unix sockets) and publishes
-    endpoint.json; before returning, unpublishes both, then calls close(). Call it from the main thread; returns an
-    exit code."""
+    endpoint.json, which names `data_dir` as hello does (autospawn takes only its own HOME's); before returning,
+    unpublishes both, then calls close(). Call it from the main thread; returns an exit code."""
     from tracekit.deploy import files
     from tracekit.sdk import autospawn
 
@@ -4234,7 +4578,7 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
     for p in (sock, endpoint):
         pathlib.Path(p).unlink(missing_ok=True)
     handle_frame, close = open_handler()
-    info = hello(proto, version)
+    info = {**hello(proto, version), **({"data_dir": data_dir} if data_dir else {})}
     handle = answering_hello(handle_frame, info)
     if hasattr(socket, "AF_UNIX"):
         from tracekit.transport.unix import UnixServer
@@ -4278,9 +4622,13 @@ def dev_content():
     of every dev key) `content_read`. TRACEKIT_DEV_CONTENT=0 keeps nothing."""
     if os.environ.get("TRACEKIT_DEV_CONTENT", "1") == "0":
         return {}
-    me = "token:dev" if os.name == "nt" else f"uid:{os.getuid()}"
     return {"content": {**CONTENT, "retain": True, "retention_days": DEV_RETENTION_DAYS},
-            "authorize": {me: sorted(DEFAULT_GRANTS | {CONTENT_READ})}}
+            "authorize": {_dev_identity(): sorted(DEFAULT_GRANTS | {CONTENT_READ})}}
+
+
+def _dev_identity():
+    """The identity the dev signer sees its user as."""
+    return "token:dev" if os.name == "nt" else f"uid:{os.getuid()}"
 
 
 def _serve_dev():
@@ -4288,12 +4636,13 @@ def _serve_dev():
 
     logkey.harden()
 
-    def open_handler():
-        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0,
+    def open_handler():   # the user may sign findings about their own runs: they read self-asserted (docs/verdicts.md)
+        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
                                 grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
         return service.handle_frame, service.close
     try:
-        return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))
+        return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)),
+                         data_dir=dev_data_dir())
     except BlockingIOError:
         print(f"tracekit signer: another signer holds {dev_data_dir()}", file=sys.stderr)
     except Exception as e:
@@ -4435,7 +4784,7 @@ def main(argv=None):
     t.add_parser("revoke", help="refuse the token from its next request").add_argument("name")
     for q in t.choices.values():
         q.add_argument("--config", required=True)
-    c = sub.add_parser("content", help="the content vault: read or erase a run's retained content (docs/privacy.md)"
+    c = sub.add_parser("content", help=f"the content vault: read or erase a run's retained content ({wiki_url('docs/privacy.md')})"
                        ).add_subparsers(dest="content_cmd", required=True)
     q = c.add_parser("get", help="print the retained content of records of a run, each with its salt (recorded as "
                                  "content.accessed)")
@@ -4447,7 +4796,7 @@ def main(argv=None):
         q.add_argument("--run", required=True)
         q.add_argument("--config", help="reach the signer on this config's socket (default: $TRACEKIT_SIGNER, else "
                                         "the dev signer)")
-    q = sub.add_parser("incidents", help="containment's operator calls on the running signer (docs/incidents.md)")
+    q = sub.add_parser("incidents", help=f"containment's operator calls on the running signer ({wiki_url('docs/incidents.md')})")
     q.add_argument("action", choices=sorted(INCIDENT_CMDS))
     q.add_argument("target", nargs="?", help="the incident (show, resolve), run (hold, quarantine, resume) or "
                                               "identity (suspend, unsuspend)")
@@ -4559,7 +4908,7 @@ def main(argv=None):
             f"approvals.{k}" for k in ("agents", "webauthn") if isinstance(cfg.get("approvals"), dict) and cfg["approvals"].get(k)]
         if extra:
             print(f"tracekit: the signer's {', '.join(extra)} setting(s) are experimental: they work and are tested, "
-                  "but may change (docs/support.md)", file=sys.stderr)
+                  f"but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
     try:
         service = open_service(cfg)
     except BlockingIOError as e:

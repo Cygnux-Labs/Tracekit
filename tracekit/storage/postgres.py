@@ -202,6 +202,13 @@ class _Reads:
                                 run["run_seq"] + 1 if run else 0):
             yield r
 
+    def run_records(self, tenant, run_id, run_seqs):
+        run = self.runs.get((tenant, run_id))
+        want = sorted({s for s in run_seqs if 0 <= s <= (run["run_seq"] if run else -1)})
+        with self._db() as conn:
+            return [r for (r,) in conn.execute("SELECT record FROM tracekit_records WHERE tenant = %s AND run_id = %s "
+                                               "AND run_seq = ANY(%s) ORDER BY run_seq", (tenant, run_id, want))]
+
     def registry_iter(self, tenant, start=0):
         tree = self.registry.get(tenant)
         for _, leaf in self._pages("SELECT idx, leaf FROM tracekit_registry WHERE tenant = %(t)s AND idx >= %(after)s "

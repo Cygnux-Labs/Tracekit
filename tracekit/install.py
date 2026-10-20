@@ -6,6 +6,7 @@ Dev mode (--dev): the signer runs as *your* user. Convenient, but the agent coul
 ledger, so every run is labelled signer_isolation=same-user and verify says so.
 """
 import base64
+import errno
 import json
 import os
 import re
@@ -29,6 +30,7 @@ except ImportError:
 from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
+from .wiki import wiki_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -360,6 +362,23 @@ def user_settings_all():
     return out
 
 
+AGENT_FILE_MAX = 4 << 20   # bytes of an agent's settings file doctor and init read at most
+
+
+def agent_file(path):
+    """The bytes of a settings file the agent's user controls: a regular file (a symlink to one is read, as the agent
+    reads it) of at most AGENT_FILE_MAX bytes, opened without blocking, so a FIFO or a device can't hang or flood the
+    reader. OSError otherwise (FileNotFoundError when missing)."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", path)
+        data = f.read(AGENT_FILE_MAX + 1)
+    if len(data) > AGENT_FILE_MAX:
+        raise OSError(errno.EFBIG, f"larger than {AGENT_FILE_MAX} bytes", path)
+    return data
+
+
 def plugin_enabled(user=None):
     """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
     or None. Reads `user` (default user_settings_all()), the working directory's project and local settings, then the
@@ -370,8 +389,7 @@ def plugin_enabled(user=None):
     project = [os.path.join(os.getcwd(), ".claude", f) for f in ("settings.json", "settings.local.json")]
     for p in (*(user or user_settings_all()), *project, managed):
         try:
-            with open(p, encoding="utf-8") as f:
-                v = json.load(f).get("enabledPlugins", {}).get(PLUGIN)
+            v = json.loads(agent_file(p)).get("enabledPlugins", {}).get(PLUGIN)
         except (OSError, ValueError, AttributeError):   # missing, or not a settings file
             continue
         if isinstance(v, bool):
@@ -380,42 +398,48 @@ def plugin_enabled(user=None):
 
 
 def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
-                  module="tracekit.hook", signer=None):
+                  module="tracekit.hook", signer=None, thinking=False):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
     env.ANTHROPIC_BASE_URL (C3), signer env.TRACEKIT_SIGNER or a dict of env variables (each removed on uninstall
-    while it still has that value); the SIGNER_ENV variables it doesn't name are removed.
+    while it still has that value); the SIGNER_ENV variables it doesn't name are removed. thinking: also turn
+    Claude Code's thinking summaries on (THINKING: true) unless the file already sets them; uninstall turns them off
+    again only when init turned them on and they are still on (_thinking). Returns the file's THINKING setting then.
     Raises SettingsError instead of overwriting a file it cannot parse,
     or one that is a symlink. With owner (as root) the whole edit runs as that user. python, module: see _hook_command."""
     if owner is not None:
         return files.as_user(owner, install_hooks, settings_path, uninstall, None, proxy_url, extra, mode, python,
-                             module, signer, errors=(SettingsError,))
+                             module, signer, thinking, errors=(SettingsError,))
     settings_path = os.path.abspath(settings_path)
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
     try:
         d = files.open_dir(os.path.dirname(settings_path))
         try:
-            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python, module, signer)
+            return _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python, module, signer,
+                                     thinking)
         finally:
             files.close(d)
     except files.UnsafePath as e:
         raise SettingsError(f"{settings_path}: {e}") from e
 
 
+def _parse_settings(raw, settings_path):
+    """The settings object in a file's bytes `raw` ({} for no file or an empty one); SettingsError if it isn't one."""
+    try:
+        s = json.loads(raw.decode("utf-8")) if raw and raw.strip() else {}
+    except ValueError as e:
+        raise SettingsError(f"{settings_path} is not valid JSON ({e}); fix or remove it, then retry. "
+                            "Tracekit did not change it.") from e
+    if not isinstance(s, dict):
+        raise SettingsError(f"{settings_path} must contain a JSON object; Tracekit did not change it.")
+    return s
+
+
 def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None, module="tracekit.hook",
-                      signer=None):
+                      signer=None, thinking=False):
     name = os.path.basename(settings_path)
-    s, raw = {}, files.read(d, name)
-    original = None
-    if raw is not None:
-        try:
-            original = raw.decode("utf-8")
-            s = json.loads(original) if original.strip() else {}
-        except ValueError as e:
-            raise SettingsError(f"{settings_path} is not valid JSON ({e}); fix or remove it, then retry. "
-                                "Tracekit did not change it.") from e
-        if not isinstance(s, dict):
-            raise SettingsError(f"{settings_path} must contain a JSON object; Tracekit did not change it.")
+    raw = files.read(d, name)
+    s = _parse_settings(raw, settings_path)
     hooks = s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {settings_path} must be an object; Tracekit did not change it.")
@@ -471,19 +495,64 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
             s.pop(k, None)
         else:
             s[k] = v
-    if original is not None:
-        try:
-            unchanged = json.loads(original) == s
-        except ValueError:
-            unchanged = False
-        if unchanged:
-            return
+    _thinking(s, thinking, uninstall)
+    if raw is not None:
+        if _parse_settings(raw, settings_path) == s:
+            return s.get(THINKING)
         files.backup(d, name, raw)
     files.write(d, name, files.json_bytes(s), mode)
     if replaced:
         old = " and ".join(sorted(replaced))
         print(f"Tracekit {old} hooks removed from {settings_path}" if uninstall else
               f"Tracekit {old} hooks replaced by {new} hooks in {settings_path}")
+    return s.get(THINKING)
+
+
+THINKING = "showThinkingSummaries"   # Claude Code keeps the model's thinking summaries in its transcript
+THINKING_MARKER = "_tracekit_thinking"   # init turned THINKING on, so uninstall turns it off again
+
+
+def _thinking(s, on, uninstall):
+    """Turn THINKING on in settings `s` unless it sets it (a person's own setting stays), marking that init did; on
+    uninstall, remove it again only when init set it and it is still true."""
+    if uninstall:
+        if s.pop(THINKING_MARKER, None) and s.get(THINKING) is True:
+            s.pop(THINKING)
+    elif on and THINKING not in s:
+        s[THINKING], s[THINKING_MARKER] = True, True
+
+
+def thinking_on(settings_path):
+    """Claude Code's thinking summaries on in `settings_path` (_thinking), its hooks untouched: for the plugin's users,
+    whose hooks come from the plugin. -> the file's THINKING setting. Raises SettingsError as install_hooks does."""
+    settings_path = os.path.abspath(settings_path)
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+    try:
+        d = files.open_dir(os.path.dirname(settings_path))
+        try:
+            name = os.path.basename(settings_path)
+            raw = files.read(d, name)
+            s = _parse_settings(raw, settings_path)
+            if THINKING not in s:
+                _thinking(s, True, False)
+                if raw is not None:
+                    files.backup(d, name, raw)
+                files.write(d, name, files.json_bytes(s), 0o600)
+            return s.get(THINKING)
+        finally:
+            files.close(d)
+    except files.UnsafePath as e:
+        raise SettingsError(f"{settings_path}: {e}") from e
+
+
+def thinking_line(settings, on):
+    """What init says about Claude Code's thinking summaries (`on`: the THINKING setting of `settings`)."""
+    if on is True:
+        return (f"thinking summaries: on ({THINKING} in {settings}), so `tracekit analyze --v2` can read the model's "
+                "reasoning; for headless runs pass `claude -p --thinking-display summarized`; init "
+                "--no-thinking-summaries leaves the setting alone")
+    return (f"thinking summaries: off ({settings} sets {THINKING} to {str(on).lower()}): `tracekit analyze --v2` can't "
+            f"read the model's reasoning; set {THINKING} to true to check it")
 
 
 def _my_uid():
@@ -596,7 +665,8 @@ def harness_config(specs, agent="claude"):
             print(f"note: harness binding off: {e}")
             return {"harness_binding": "off"}
     print(f"note: harness binding off: no root-owned `{HARNESS_COMMANDS.get(agent, agent)}` on PATH. Without it, any "
-          "process running as the agent's user can start a run (docs/threat-model-laptop.md). Re-run with --harness PATH.")
+          f"process running as the agent's user can start a run ({wiki_url('docs/threat-model-laptop.md')}). Re-run with "
+          "--harness PATH.")
     return {"harness_binding": "off"}
 
 
@@ -1113,7 +1183,7 @@ def _require_system(experimental_macos):
                          "`tracekit init --dev` to try Tracekit here (same-user, clearly labelled).")
     if darwin and not experimental_macos:
         raise SystemExit("macOS system mode is experimental: it has been written to the platform documentation but not "
-                         "yet validated on hardware (docs/portability.md). Re-run with --experimental-macos to use it, "
+                         f"yet validated on hardware ({wiki_url('docs/portability.md')}). Re-run with --experimental-macos to use it, "
                          "or use `tracekit init --dev`.")
     if os.geteuid() != 0:
         raise SystemExit("system mode needs root: sudo tracekit init   (or tracekit init --dev for a same-user signer)")
@@ -1231,12 +1301,14 @@ def v2_plist(user):
 
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
                    experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=False,
-                   egress=False):
+                   egress=False, thinking=True):
     """`sudo tracekit init --v2 --user AGENT`: the v2 signer service as its own user, from the root-owned venv, with
     the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
     different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
     which the harness helper attests. public_witness (`--public-witness`): the public witness cosigns the signer's logs.
     egress (`--egress`, Linux): the agent's outside traffic only through a local egress observer (docs/egress.md).
+    thinking: turn Claude Code's thinking summaries (install_hooks), or Codex's reasoning summaries
+    (agent_hooks.codex_reasoning), on for AGENT unless its settings set them.
     Returns (socket, settings path or None)."""
     if public_witness:
         from . import public_witness as pw
@@ -1333,10 +1405,15 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                   f"needed): see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then "
                                   f"{target_user}'s network is reported only")
     if settings and agent == "claude":
-        install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK,
-                      signer={"TRACEKIT_SIGNER": sock, **proxy} if proxy else sock)
+        on = install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK,
+                           signer={"TRACEKIT_SIGNER": sock, **proxy} if proxy else sock, thinking=thinking)
+        if thinking:
+            print(thinking_line(settings, on))
     elif settings:
         files.as_user(owner, agent_hooks.install, agent, None, False, True, OPT_PYTHON, settings, errors=(SettingsError,))
+        if agent == "codex" and thinking:
+            print(agent_hooks.reasoning_line(*files.as_user(owner, agent_hooks.codex_reasoning, settings,
+                                                            errors=(SettingsError,))))
     if proxy and agent != "claude":
         print(f"egress: start {target_user}'s agent with HTTPS_PROXY=http://{EGRESS_LISTEN}: anything else it sends "
               "outside is refused by the firewall")
@@ -1456,7 +1533,7 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     scfg = _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None, tk)
     if scfg["witnesses"] == [f"git:{os.path.join(SYS_HOME, 'witness')}"]:
         print("note: using a local git witness only. It protects against the agent's user, not against root on this "
-              "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
+              f"machine. Point --witness at a remote repository the security team owns ({wiki_url('docs/witnesses.md')}).")
     policy = _install_venv(requirement)
     # generate the key as the tracekit user so root-only reads are the only other path to it
     subprocess.run(["runuser" if shutil.which("runuser") else "sudo", "-u", tk.pw_name, "--", OPT_PYTHON, "-I", "-c",

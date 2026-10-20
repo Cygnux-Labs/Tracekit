@@ -1,20 +1,27 @@
 """Policy v2: compiler and lint, engine conformance (RE2 vs regex) and the structural shell parser."""
+import glob
 import importlib.util
 import io
+import itertools
 import json
 import os
+import random
+import re
 import shutil
 import sys
 import tempfile
 import time
+import tracemalloc
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
+import regex
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import cli  # noqa: E402
-from tracekit.policy import PolicyError  # noqa: E402
+from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
 from tracekit.policy2 import classes, compile as pc, engine, shell  # noqa: E402
 from tracekit.policy2.engine import MAX_SUBJECT, Engine  # noqa: E402
 
@@ -82,6 +89,39 @@ class Compile(unittest.TestCase):
                        "rule B: can never fire: no tool maps to class http", "rule C: unknown key 'colour'",
                        "rule C: duplicate id", "rule C: pattern: "):
             self.assertIn(needle, text)
+
+    def test_lint_refuses_an_id_the_engine_or_the_signer_gives_a_decision(self):
+        # a flag rule named TK-CONSTRAINT kept a broken live constraint from holding the call (the signer saw the id)
+        for rid in sorted(pc.RESERVED_IDS) + ["TK-APPROVAL-EXPIRED"]:
+            with self.subTest(rid=rid):
+                self.assertIn(f"flag rule {rid}: the engine or the signer gives a decision this id itself",
+                              "\n".join(self.errors(f"flag:\n  - {{id: {rid}, pattern: x}}\n")))
+        self.assertEqual(self.errors("flag:\n  - {id: TK-CONSTRAINTS, pattern: x}\n"), [])
+
+    def test_a_remedy_is_one_short_present_tense_sentence_on_a_deny_or_ask_rule(self):
+        rule = "  - {id: %s, class: shell, pattern: x, remedy: '%s'}\n"
+        ok = "Push without --force; a person approves the held call."
+        errs = "\n".join(self.errors("tools:\n  Bash: shell\ndeny:\n" + rule % ("A", ok) + rule % ("B", "push again.")
+                                     + rule % ("C", "Run it in a sandbox") + rule % ("D", "You should push again.")
+                                     + rule % ("E", "Push " + "x" * 200 + ".") + "flag:\n" + rule % ("F", ok)))
+        for needle in ("rule B: remedy is one line", "rule C: remedy is one line", "rule D: remedy says what to do",
+                       "rule E: remedy is over 200 characters", "flag rule F: remedy is for a deny or ask rule"):
+            self.assertIn(needle, errs)
+        self.assertNotIn("rule A", errs)
+        self.assertIn("rule G: remedy is one line", "\n".join(self.errors(
+            "tools:\n  Bash: shell\nask:\n  - {id: G, class: shell, pattern: x, remedy: \"Push.\\nAgain.\"}\n")))
+        self.assertIn("rule H: remedy must be a string", "\n".join(self.errors(
+            "tools:\n  Bash: shell\nask:\n  - {id: H, class: shell, pattern: x, remedy: [a]}\n")))
+        for name in sorted(os.listdir(PACKS)):   # the packs' own remedies pass
+            with self.subTest(pack=name):
+                self.assertEqual(pc.build(os.path.join(PACKS, name))[1], [])
+
+    def test_on_parse_error_is_ask_or_deny_and_inherited(self):
+        self.assertIn("on_parse_error must be ask or deny", "\n".join(self.errors("on_parse_error: flag\n")))
+        self.write("base.yaml", "on_parse_error: deny\ntools:\n  Bash: shell\n")
+        self.assertEqual(pc.build(self.write("p.yaml", "extends: base.yaml\n"))[0]["on_parse_error"], "deny")
+        self.assertEqual(pc.build(self.write("p.yaml", "extends: base.yaml\non_parse_error: ask\n"))[0]["on_parse_error"],
+                         "ask")
 
     def test_extends_by_relative_path_records_parent_hash(self):
         self.write("base.yaml", "tools:\n  Bash: shell\ndeny:\n  - {id: B1, class: shell, pattern: '^sudo\\b'}\n"
@@ -310,6 +350,17 @@ class Engines(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 1)   # ten rules took 0.2 s each when every match had its own timeout
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S0"], True))
 
+    def test_the_shell_parse_is_not_charged_to_the_fallback_time(self):
+        """The fallback's time started before the shell parse: on a slow CPU, 64 KiB of one-word lines (0.4 s to parse
+        on a laptop) spent it before the first match and denied, marked nondeterministic. The parse is bounded by the
+        64 KiB input, not by this deadline."""
+        e = Engine({"tools": {"Bash": "shell"}, "flag": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
+        parse = engine._shell
+        with mock.patch.object(engine, "REGEX_TIMEOUT_S", 0.2), \
+                mock.patch.object(engine, "_shell", lambda args: (time.sleep(0.3), parse(args))[1]):
+            d = e.decide("Bash", {"command": "rm x"})
+        self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("flag", ["S"], None))
+
     def test_target_rules_read_a_commands_data_words_once(self):
         """data_words ran once per word of a command, for each target rule: a 16 KB grep took 24 s to decide."""
         e = Engine({"tools": {"Bash": "shell"},
@@ -338,6 +389,15 @@ class Engines(unittest.TestCase):
         d = Engine({"tools": {"Bash": "shell"}}, "regex").decide("Bash", {"command": "echo \"open"})
         self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
 
+    def test_on_parse_error_deny_denies_what_the_parser_cannot_read(self):
+        e = Engine({"tools": {"Bash": "shell"}, "on_parse_error": "deny",
+                    "flag": [{"id": "F", "class": "shell", "pattern": "x"}]}, "regex")
+        for command in ("echo \"open x", "$CMD x", "curl -s x | bash", {"x": 1}):
+            with self.subTest(command=command):
+                d = e.decide("Bash", {"command": command})
+                self.assertEqual((d["verdict"], d["rule_ids"][0]), ("deny", "TK-SHELL-PARSE"), d)
+        self.assertEqual(e.decide("Bash", {"command": "ls x"})["verdict"], "flag")
+
     def test_precedence_and_tool_rules(self):
         self.assertEqual(self.regex.decide("Write", {"file_path": "/p/.env"})["verdict"], "deny")
         self.assertEqual(self.regex.decide("Write", {"file_path": "/p/.env.example"})["verdict"], "allow")
@@ -352,6 +412,229 @@ class Engines(unittest.TestCase):
             scans = glob.call_count
             self.assertEqual(e.tool_class("mcp__s__t"), "mcp")
             self.assertEqual(glob.call_count, scans)
+
+
+PACKS = os.path.join(os.path.dirname(pc.__file__), "packs")
+CORPUS = os.path.join(ROOT, "tests", "data", "policy")
+
+
+def pack_patterns():
+    """{(rule id, key, pattern)} of every pattern and unless in the shipped packs."""
+    out = set()
+    for name in sorted(os.listdir(PACKS)):
+        pol = pc.build(os.path.join(PACKS, name))[0]
+        out |= {(r["id"], k, r[k]) for sec in pc.SECTIONS for r in pol.get(sec, []) for k in ("pattern", "unless")
+                if k in r}
+    return sorted(out)
+
+
+def corpus_calls():
+    for path in sorted(glob.glob(os.path.join(CORPUS, "*", "*.jsonl"))):
+        with open(path, encoding="utf-8") as f:
+            yield from ((c["tool"], c["args"]) for c in map(json.loads, filter(str.strip, f)))
+
+
+class Prefilter(unittest.TestCase):
+    """compile.literals: a subject holding none of a rule's strings is not searched."""
+
+    def test_literals_fold_case_and_take_the_rarest_run(self):
+        for pattern, want in ((r"[Mm][Ee][Tt][Aa]\.", ("meta.",)), (r"^(sudo|doas)( |$)", ("doas", "sudo")),
+                              (r"git\s+push\b.*(--force|-f)", ("push",)), (r"(--force|-f)\b", ("-f",)),
+                              (r"x?ab{1,2}c", ("abbc", "abc")), (r"\bAKIA[0-9A-Z]{16}", ("akia",)),
+                              (r".*", None), (r"^", None), (r"a.b", None), (r"[a-z]+@", None), (r"é+x", None)):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(pc.literals(pattern), want)
+
+    def test_the_prefilter_never_skips_a_match_of_random_patterns(self):
+        rnd = random.Random(1)
+        atoms = ["a", "b", "A", "-", " ", "ab", "aA-", "[aA]", "[ab]", "[^a]", ".", r"\s", r"\S", "(a|bA)", "(?:ab|b-)",
+                 "(?:Ab|)", "^", "$", r"\b"]
+        texts = ["".join(t) for n in range(6) for t in itertools.product("aAb- ", repeat=n)]
+        for _ in range(800):
+            pattern = "".join(rnd.choice(atoms) + rnd.choice(["", "", "", "?", "*", "+", "{2}", "{1,3}", "*?"])
+                              for _ in range(rnd.randint(1, 5)))
+            try:
+                pc.check_pattern(pattern)
+            except PolicyError:
+                continue
+            lits, rx = pc.literals(pattern), re.compile(pc.translate(pattern), re.ASCII)
+            if lits is None:
+                continue
+            with self.subTest(pattern=pattern):
+                self.assertEqual([t for t in texts if rx.search(t) and not any(s in t.lower() for s in lits)], [])
+
+    def test_the_prefilter_never_skips_a_match_of_a_pack_rule_on_the_corpus(self):
+        """Every subject the server and dev packs form for the E17 corpus: a pattern that matches one holds a literal
+        of it, so skipping the search changed nothing."""
+        subjects = set()
+        real = engine._prepare
+        with mock.patch.object(engine, "_prepare", side_effect=lambda s: subjects.update(s) or real(s)):
+            for name in ("server.yaml", "dev.yaml"):
+                e = Engine(pc.build(os.path.join(PACKS, name))[0], "regex")
+                for tool, args in corpus_calls():
+                    e.decide(tool, args)
+        self.assertGreater(len(subjects), 2000)
+        for rid, key, pattern in pack_patterns():
+            lits = pc.literals(pattern)
+            if lits is None:
+                continue
+            rx = re.compile(pc.translate(pattern), re.ASCII)
+            with self.subTest(rule=rid, key=key):
+                self.assertEqual([s[:80] for s in subjects if rx.search(s) and not any(x in s.lower() for x in lits)],
+                                 [])
+
+    def test_lint_warns_of_a_rule_the_prefilter_cannot_skip(self):
+        pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "N", "class": "shell", "pattern": r"[a-z]+@[0-9]+"},
+                                                    {"id": "Y", "class": "shell", "pattern": r"[a-z]+@example"},
+                                                    {"id": "C", "class": "shell", "pattern": "."},
+                                                    {"id": "E", "class": "shell", "pattern": r"&\s*$"}]}
+        self.assertEqual([w.split(":")[0] for w in pc.warnings(pol)], ["flag rule N"])
+        for name in sorted(os.listdir(PACKS)):
+            with self.subTest(pack=name):
+                self.assertEqual(pc.warnings(pc.build(os.path.join(PACKS, name))[0]), [])
+
+
+class Speed(unittest.TestCase):
+    """The fallback engine (`regex`) on 64 KiB built to make a pattern back off or rescan."""
+    BUDGET_S = 0.15   # the slowest shipped pattern: ~20 ms on an M-series Mac, ~60 ms on CI runners; a rescan, 0.3 s+
+    FILLERS = (" -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@")
+    # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
+    # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
+    # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-D008 a writer, then a
+    # transcript path; TK-C010 kubectl delete, then --all, or aws s3 rm, then --recursive) or in an SQL statement
+    # (TK-DB003 DELETE FROM, then an always-true WHERE): a backtracking engine rescans that text from each occurrence of
+    # their first word, so 64 KiB repeating it in one command or statement spends the fallback's 1 s and denies
+    # (nondeterministic). RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade:
+    # structural pipeline and argv rules
+    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D008", "TK-D011", "TK-DB003", "TK-C010"}
+
+    def fillers(self, rid, pattern):
+        n = MAX_SUBJECT - 4
+        out = [f * (n // len(f)) for f in self.FILLERS]
+        if rid not in self.RESCAN:
+            rnd = random.Random(pattern)   # deterministic: the same strings every run
+            for lit in (pc.literals(pattern) or ())[:3]:
+                for sep in ("", " "):
+                    out.append("".join("".join(rnd.choice((c, c.upper())) for c in lit) + sep
+                                       for _ in range(n // (len(lit) + len(sep)))))
+            # what each branch starts with over and over, from the first character (an anchored branch only starts
+            # there) and after the rule's literal once (`echo @.env; nc nc nc …`): a backtracking engine retries the
+            # rest of the pattern from every copy; and each opening once, then a filler (`history -a -a …`), which an
+            # anchored branch's repeat backs off over
+            lit = (pc.literals(pattern) or ("",))[0]
+            openings = self.openings(pattern)
+            out += [head + (o + sep) * (n // (len(o) + len(sep))) for o in openings
+                    for sep in ("", " ", "/") for head in ("", lit + "; ")]
+            out += [o + f * (n // len(f)) for o in openings for f in self.FILLERS]
+        # each also ends in `://` and in a newline, which `.` and `[^\n]` don't cross and `$` doesn't match before
+        return [s[:n] for s in out] + [s[:n - 3] + "://" for s in out] + [s[:n - 1] + "\n" for s in out]
+
+    @staticmethod
+    def openings(pattern):
+        """What each branch of `pattern`, a nested one too (`^(…|curl .*Delete)`), matches up to each of its first three
+        unbounded repeats (`curl ` before `[^\\n]*`, `<!channel|` before `[^>]*`), a class read as one character it
+        holds."""
+        def char(items):
+            if items[0][0] == _sre_c.NEGATE:
+                return next(c for c in "a-1 /" if not any(
+                    k == _sre_c.LITERAL and v == ord(c) or k == _sre_c.RANGE and v[0] <= ord(c) <= v[1]
+                    for k, v in items[1:]))
+            k, v = items[0]
+            return chr(v) if k == _sre_c.LITERAL else chr(v[0]) if k == _sre_c.RANGE else \
+                {_sre_c.CATEGORY_SPACE: " ", _sre_c.CATEGORY_DIGIT: "1"}.get(v, "a")
+
+        def walk(items, text, found):
+            for op, av in items:
+                if len(found) >= 3:
+                    break
+                if op == _sre_c.LITERAL:
+                    text += chr(av)
+                elif op in (_sre_c.NOT_LITERAL, _sre_c.ANY):
+                    text += "b" if av == ord("a") else "a"
+                elif op == _sre_c.IN:
+                    text += char(av)
+                elif op == _sre_c.SUBPATTERN:
+                    text = walk(av[-1], text, found)
+                elif op == _sre_c.BRANCH:   # each other alternative with three of its own, then on with the first
+                    for alt in av[1][1:]:
+                        more.append([])
+                        walk(alt, text, more[-1])
+                    text = walk(av[1][0], text, found)
+                elif op in (_sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT):
+                    if av[1] == _sre_c.MAXREPEAT and text.strip():
+                        found.append(text)
+                    for _ in range(max(av[0], av[1] != _sre_c.MAXREPEAT)):
+                        text = walk(av[2], text, found)
+            return text
+
+        found, more = [], []
+        walk(list(_sre_p.parse(pattern)), "", found)
+        return list(dict.fromkeys(found + [o for m in more for o in m]))
+
+    def test_every_pack_pattern_searches_64_kib_within_budget(self):
+        slow = []
+        for rid, key, pattern in pack_patterns():
+            rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
+            for s in self.fillers(rid, pattern):
+                took = min(self.search(rx, s) for _ in range(2)) if self.search(rx, s) > self.BUDGET_S else 0
+                if took > self.BUDGET_S:
+                    slow.append(f"{rid} {key} {took * 1e3:.0f} ms on {s[:24]!r}")
+        self.assertEqual(slow, [])
+
+    def search(self, rx, s):
+        start = time.perf_counter()
+        try:
+            rx.search(s, timeout=self.BUDGET_S * 4)
+        except TimeoutError:
+            pass
+        return time.perf_counter() - start
+
+    def test_writes_into_protected_paths_read_each_command_on_its_own(self):
+        """TK-D010, TK-A011 and TK-A013 matched a writing command anywhere on the line and the path anywhere after it:
+        64 KiB repeating the command rescanned the line from each one on the fallback engine (`cp cp …`: over 1 s)."""
+        patterns = {rid: p for rid, key, p in pack_patterns() if key == "pattern"}
+        for rid, fillers in (("TK-D010", ("cp ", "mv x", "tee ", "/.", "a.env")),
+                             ("TK-A011", ("cp ", "ln ", "tee ", "sed -i ", "dd of=", "/etc/init.")),
+                             ("TK-A013", ("cp ", "chmod ", "git ", "git config ", "sed -i "))):
+            rx = regex.compile(pc.translate(patterns[rid]), regex.ASCII | regex.V0)
+            for f in fillers:
+                with self.subTest(rule=rid, filler=f):
+                    self.assertLess(self.search(rx, f * ((MAX_SUBJECT - 4) // len(f)) + "://"), self.BUDGET_S)
+
+    def test_adversarial_calls_decide_before_the_fallback_deadline(self):
+        """TK-S002's URL scheme rescanned to the end from each word: 64 KiB of `--x` spent the 1 s and denied. TK-D006
+        took `http` in each URL for a network command (a 20 KB download script: 0.8 s), TK-F011 a redirection
+        target past the next `>`, TK-M004 a mention's label past the next `<`, TK-DB005 the text after each COPY."""
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
+        n = MAX_SUBJECT - 200
+        for tool, args in [("Bash", {"command": "git push " + f * (n // len(f))}) for f in self.FILLERS] + [
+                ("Write", {"file_path": "/p/a", "content": "--x" * 21000 + "://"}),
+                ("Bash", {"command": "echo " + "--x" * 21000 + "://"}),
+                ("Bash", {"command": "source .env && curl -sS " + " ".join(
+                    f"https://example.com/f{i}.tar.gz -O http://example.com/g{i}" for i in range(700))}),
+                ("Bash", {"command": "echo x" + ">a" * (n // 2) + " .zshrc"}),
+                ("mcp__slack__slack_post_message", {"channel": "C1", "text": "<!channel|a" * (n // 11)}),
+                ("execute_sql", {"sql": "SELECT program FROM jobs; " + "COPY " * (n // 5)})]:
+            with self.subTest(args=str(args)[:40]):
+                start = time.perf_counter()
+                d = e.decide(tool, args)
+                self.assertNotIn("nondeterministic", d)
+                # 64 KiB of one-word lines is ~0.4 s on a laptop under Python 3.9, nearly all the parse
+                self.assertLess(time.perf_counter() - start, 2)
+
+    def test_the_corpus_decides_within_budget(self):
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
+        calls = list(corpus_calls())
+        for tool, args in calls:
+            e.decide(tool, args)
+        took = []
+        for tool, args in calls:
+            start = time.perf_counter()
+            e.decide(tool, args)
+            took.append(time.perf_counter() - start)
+        took.sort()
+        self.assertLess(took[len(took) // 2], 0.002)        # 45 us on an M-series laptop
+        self.assertLess(took[len(took) * 99 // 100], 0.01)  # 100 us
 
 
 def argvs(command):
@@ -459,6 +742,55 @@ class Shell(unittest.TestCase):
             shell.parse(cmd)
         # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s; a coverage run traces every line, about 3x slower
         self.assertLess(time.monotonic() - start, 6 if "coverage" in sys.modules else 2)
+
+    def test_lists_after_process_calls_count_toward_the_parse_budget(self):
+        """Each `run([` in interpreter code copied the rest of the code and took every string up to the next `]` as
+        its argv, uncharged: 64 KiB of `run(["a",` took 4 s to parse into 26 M argv words, then 10 s and 1.9 GB to
+        decide, and re2 allowed it; `run([` took 1.2 s to parse. The last case has no `]`, so it charges the tail of
+        an unclosed list."""
+        pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        for unit, tail in (("run([", "]'"), ('run(["a",', "]'"), ("run([", "'")):
+            cmd = "python3 -c '" + unit * ((MAX_SUBJECT - 14) // len(unit)) + tail
+            with self.subTest(unit=unit, tail=tail):
+                start = time.perf_counter()
+                with self.assertRaises(shell.ParseError):
+                    shell.parse(cmd)
+                self.assertLess(time.perf_counter() - start, 0.5)   # ~5 ms on a laptop
+                for e in (Engine(pol), Engine(pol, "regex")):
+                    tracemalloc.start()
+                    try:
+                        start = time.perf_counter()
+                        d = e.decide("Bash", {"command": cmd})
+                        took, peak = time.perf_counter() - start, tracemalloc.get_traced_memory()[1]
+                    finally:
+                        tracemalloc.stop()
+                    self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
+                    self.assertLess(took, 0.5)          # ~15 ms traced on a laptop
+                    self.assertLess(peak, 32 << 20)     # ~4 MB
+
+    def test_a_bracket_in_a_list_string_does_not_truncate_the_argv(self):
+        """Finding the list end with `code.find("]")` stopped at a `]` inside a quoted string, dropping the rest of
+        the argv: a subprocess.run whose shell string held a recursive delete then `#]` fell from deny (TK-D004) to
+        flag. The end is now found past string literals."""
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
+        cmd = 'python3 -c \'import subprocess; subprocess.run(["sh", "-c", "rm -rf ~ #]"])\''
+        self.assertEqual(find(cmd, ["rm", "-rf", "~"])[0]["via"], ["python3 code", "sh -c"])
+        d = e.decide("Bash", {"command": cmd})
+        self.assertEqual(d["verdict"], "deny")
+        self.assertIn("TK-D004", d["rule_ids"])
+
+    def test_sed_addresses_do_not_rescan_from_each_newline(self):
+        """`_SED_ADDR`'s whitespace runs matched `\\n`, so a sed script of only newlines was re-scanned from each one:
+        64 KiB took 86 s to decide and was allowed. The runs now stop at `\\n`, one match per newline as before."""
+        pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        cmd = "sed -e '" + "\n" * (MAX_SUBJECT - 10) + "'"
+        start = time.perf_counter()
+        shell.parse(cmd)
+        self.assertLess(time.perf_counter() - start, 0.5)       # ~5 ms on a laptop
+        for e in (Engine(pol), Engine(pol, "regex")):
+            start = time.perf_counter()
+            e.decide("Bash", {"command": cmd})
+            self.assertLess(time.perf_counter() - start, 0.5)   # ~60 ms on a laptop
 
     def test_backslashes_and_brackets_parse_in_linear_time(self):
         for cmd, limit in (("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'", 0.1),

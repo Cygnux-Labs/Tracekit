@@ -10,13 +10,24 @@ model gets Tracekit's reason as a denied tool result and the run goes on. A refu
 the model gets the reason as a retry prompt. A tool's exception is recorded as an error and reaches Pydantic AI
 unchanged, so its retries and `ModelRetry` work as before; each retry is a new call id and a new decision, and a call
 that runs again under the same id (a deferral resumed) is decided as its next attempt.
+
+Each model response is recorded too (tracekit.integrations.said): its thinking (with the provider's signature) and
+text, and each of its calls, under the id it is decided by, as a call of that response only once the capability
+decides it: a call Pydantic AI never runs (arguments that failed validation, a data-only output, a tool waiting for
+approval) is not recorded, so the signer reads it neither as a decided call the model didn't ask for nor as one that
+ran with no decision. An approved call resumed by a capability that never saw its response is recorded from the
+call itself just before its decision. A response that can't be recorded only warns.
 """
+import asyncio
+
 from pydantic_ai import ToolDenied, ToolReturn
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, SkipToolExecution
+from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart
 from pydantic_core import to_jsonable_python
 
 from tracekit.autowire import DECIDED_UPSTREAM
+from tracekit.integrations import said
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -30,6 +41,7 @@ class Tracekit(AbstractCapability):
         # lean: one entry per call the capability ran, for its life; prune them at run end if agents run for days
         self._attempts = {}   # tool_call_id -> the attempt its next execution is (a resumed deferral runs it again)
         self._ran = {}   # tool_call_id -> the arguments the tool ran with, from after_tool_execute
+        self.said = said.Said(lambda **f: self.run.call("model_event", **f), lambda: self.run.client.status({}))
 
     @classmethod
     def get_serialization_name(cls):
@@ -40,8 +52,13 @@ class Tracekit(AbstractCapability):
         # after_tool_execute sees the arguments the tool really ran with
         return CapabilityOrdering(position="outermost")
 
+    async def after_model_request(self, ctx, *, request_context, response):
+        await asyncio.to_thread(self.said, _said(response), response.model_name, response.provider_name)
+        return response
+
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
-        return await self._gated(call, lambda: handler(args), lambda why: SkipToolExecution(ToolDenied(why)), args)
+        return await self._gated(call, lambda: handler(args), lambda why: SkipToolExecution(ToolDenied(why)), args,
+                                 approved=ctx.tool_call_approved)
 
     async def after_tool_execute(self, ctx, *, call, tool_def, args, result):
         self._ran[call.tool_call_id] = args   # after every capability's before_tool_execute: what really ran
@@ -55,9 +72,13 @@ class Tracekit(AbstractCapability):
             return output
         return await self._gated(call, lambda: handler(output), ModelRetry, output=True)
 
-    async def _gated(self, call, run_it, refused, args=None, output=False):
+    async def _gated(self, call, run_it, refused, args=None, output=False, approved=False):
         call_id, tool, raw = call.tool_call_id, call.tool_name, call.args or {}   # Pydantic AI reads "" as {}
         attempt = self._attempts.get(call_id, 0)
+        if call_id in self.said.later:   # a call its recorded response left out: recorded as its call now
+            await asyncio.to_thread(self.said.decided, call_id)
+        elif approved and call_id not in self._attempts:   # resumed by a capability that never saw its response
+            await asyncio.to_thread(self.said, [said.call(call_id, tool, raw)])
         d, why = await gate_call(self.run, call_id, attempt, tool, raw, json_text=True)
         if why is not None:
             raise refused(why)
@@ -84,6 +105,18 @@ class Tracekit(AbstractCapability):
             DECIDED_UPSTREAM.reset(upstream)
             self._ran.pop(call_id, None)
             self._attempts[call_id] = attempt + 1
+
+
+def _said(response):
+    """What the model said in a ModelResponse, in order, its calls as `later`: the capability decides one only if it
+    runs."""
+    for p in response.parts:
+        if isinstance(p, ThinkingPart):
+            yield said.thought(p.content, p.signature)
+        elif isinstance(p, TextPart):
+            yield said.text(p.content)
+        elif isinstance(p, ToolCallPart):
+            yield said.later(said.call(p.tool_call_id, p.tool_name, p.args or {}))
 
 
 def _as_the_model_reads(value):

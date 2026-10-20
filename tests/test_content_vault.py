@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+import warnings
 from unittest import mock
 
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
@@ -293,15 +294,32 @@ class GatewayBody(unittest.TestCase):
     def test_a_body_only_when_the_signer_keeps_content(self):
         for status, want in (({"rpc_version": 14}, {}), ({"content": {"max_record_bytes": 100}}, {"body": {"a": 1}}),
                              (RPCError("forbidden", "not granted status"), {})):
-            with self.subTest(status):
+            with self.subTest(status), warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
                 gw, client = self.gw(status)
                 self.assertEqual(gw.body({"a": 1}, 10), want)
                 self.assertEqual(gw.body({"a": 1}, 10), want)
                 self.assertEqual(client.status.call_count, 1)   # asked once
+                self.assertEqual(len(w), isinstance(status, RPCError))   # a refusal says so, once
         gw, _ = self.gw({"content": {"max_record_bytes": 100}})
         self.assertEqual(gw.body({"a": 1}, 101), {})   # over the vault's limit: not sent
         gw, _ = self.gw({"content": {"max_record_bytes": 1 << 30}})
         self.assertEqual(gw.body({}, gateway.MAX_LINE // 2 + 1), {})   # or over half a frame
+
+    def test_a_refused_status_says_so_once(self):
+        """Without the `status` grant the vault kept none of the integrations' text, and nothing said why."""
+        vault = gateway.VaultBody(mock.Mock(side_effect=RPCError("forbidden", "token:a is not authorized for status")))
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            self.assertEqual((vault({"a": 1}), vault({"a": 1})), ({}, {}))
+        self.assertEqual(len(w), 1)
+        self.assertIn("grant this identity status", str(w[0].message))
+
+    def test_without_a_size_the_canonical_json_is_measured(self):   # the transcript tailer's lines
+        vault = gateway.VaultBody(lambda: {"content": {"max_record_bytes": 10}})
+        self.assertEqual(vault({"a": 1}), {"body": {"a": 1}})
+        self.assertEqual(vault({"a": "x" * 10}), {})
+        self.assertEqual(vault({"a": 2 ** 60}), {})   # not strict JSON
 
     def test_an_unreachable_signer_is_asked_again(self):
         gw, client = self.gw(gateway.SignerUnavailable("down"))

@@ -19,7 +19,7 @@ from unittest import mock
 
 from factories import rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
-from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export
+from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export, needs, run_name
 from tracekit.format import checkpoint
 from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
@@ -141,6 +141,21 @@ def gaps_bundle(log, out):
                                           "approved_commitment": "hmac-sha256:" + "1" * 64,
                                           "args_commitment": "hmac-sha256:" + "2" * 64}, tool_call_id="tc-1")
     log.add("capture.gap", {"kind": "approval_expired", "reason": "approval apr-2 expired"})
+    log.final()
+    export(log.store, "acme", "run-a", log.note(), out)
+    return out
+
+
+NOTE = {"acme.note": {"seen": [1, "x"], "by": None}}
+
+
+def ext_bundle(log, out, field=NOTE, record=("acme.note", {"detail": {"k": "v"}})):
+    """Export to `out` a run whose tool call carries the ext field `field` and that holds an `ext` record (name, other
+    data): format 1.4's non-critical slot."""
+    log.epoch(KEY1)
+    log.register()
+    log.add("tool.call", {"tool_use_id": "t1", "name": "Bash", "input": {}}, ext=field)
+    log.add("ext", {"name": record[0], **record[1]})
     log.final()
     export(log.store, "acme", "run-a", log.note(), out)
     return out
@@ -303,6 +318,19 @@ class TestVerifyV2(Case):
             export(log.store, "acme", "run-a", log.note(), out)
         self.assertEqual([n for n in os.listdir(self.d) if n.startswith("failed")], [])
 
+    def test_a_bundle_over_the_format_limits_is_refused_and_not_written(self):
+        """docs/format-v2.md §9: a bundle over its limits is UNUSABLE to every verifier (a run of 40,000 tool calls
+        exported one), so export refuses it and says why. A run over the per-file limit goes in parts (TestRunParts);
+        any other file over it is refused."""
+        log, out = self.honest()
+        files, big = v2.read_zip(out), os.path.join(self.d, "big.tkb")
+        for limit, value in (("MAX_ENTRY", len(files["keys/records.jsonl"]) - 1), ("MAX_ENTRIES", len(files) - 1),
+                             ("MAX_TOTAL", sum(map(len, files.values())) - 1)):
+            with self.subTest(limit), mock.patch.object(v2, limit, value), \
+                    self.assertRaisesRegex(ValueError, "over the format's limits .* so no verifier could read it"):
+                export(log.store, "acme", "run-a", log.note(), big)
+            self.assertFalse(os.path.exists(big))
+
     def test_run_written_after_the_checkpoint_exports_to_it(self):
         log, _ = self.honest(close=False)
         note = log.note()
@@ -421,6 +449,35 @@ class TestVerifyV2(Case):
         with self.subTest("record alg not pinned by the verifier"):
             self.assert_fails(out, "signatures", self.write_trust(algs=("ed448",), name="t2.json"))
 
+    def test_a_memo_skips_only_the_checks_the_same_record_passed(self):
+        """tracekit view checked a growing run in full at each checkpoint (0.5 ms a record each time): with verify's
+        memo a record that passed is not checked again for its signature and schema, the report is the same, and an
+        edited record, a changed algorithm or another record's signature still fail against a memo of every honest
+        record."""
+        _, out = self.honest()
+        memo = set()
+        rep, code = v2.verify(out, self.trust, memo=memo)
+        self.assertEqual(code, 0, rep.checks)
+        with mock.patch.object(crypto, "verify_v2", wraps=crypto.verify_v2) as signatures, \
+                mock.patch.object(v2, "validate", side_effect=AssertionError("schema checked again")):
+            again, code = v2.verify(out, self.trust, memo=memo)
+        self.assertEqual((again.checks, again.integrity, code), (rep.checks, rep.integrity, 0))
+        self.assertEqual(signatures.call_count, 2)   # the checkpoint and its cosignature, every time; no record
+
+        def edit(rs):
+            rs[2]["event"]["data"]["name"] = "Write"
+
+        def alg(rs):
+            rs[1]["alg"] = "ed25519ph"
+
+        def swap(rs):
+            rs[1]["sig"] = rs[2]["sig"]
+        for fn in (edit, alg, swap):
+            with self.subTest(fn.__name__):
+                rep, code = v2.verify(self.mutate(out, fn), self.trust, memo=memo)
+                self.assertEqual((code, rep.integrity), (1, "FAILED"))
+                self.assertIn("signatures", rep.failures)
+
     def test_rebuilt_chain_with_the_real_key_fails(self):
         _, out = self.honest()
         forged = self.log("forged")  # same record key, a different history
@@ -494,6 +551,23 @@ class TestVerifyV2(Case):
             ts = tv.ts_verify(bad, self.trust)
             self.assertEqual((ts["exit_code"], ts["integrity"]), (code, rep.integrity))
             self.assertIn("more lines than the bundle limits", json.dumps(ts["checks"]))
+
+    def test_lines_shorter_than_a_record_are_refused_before_they_are_parsed(self):
+        """No signed record is shorter than 256 bytes, so neither verifier parses a shorter line: a bundle that unzips to
+        millions of tiny lines (which crashed the browser page without a trust file) is refused at its first one."""
+        _, out = self.honest()
+
+        def tiny(files, manifest):
+            name = next(n for n in files if n.startswith("runs/"))
+            files[name] = b'{"event":{"seq":1}}\n' * 1000
+        bad = self.mutate(out, edit=tiny)
+        rep, code = self.verify(bad)
+        self.assertEqual(code, 1)
+        self.assertIn("line shorter than a signed record", str(rep.checks))
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            ts = tv.ts_verify(bad, self.trust)
+            self.assertEqual((ts["exit_code"], ts["checks"]), (code, rep.checks))
 
     def test_a_seq_written_as_a_float_fails_the_same_checks_in_both_verifiers(self):
         _, out = self.honest()
@@ -583,6 +657,94 @@ class TestVerifyV2(Case):
                                    cwd=os.path.dirname(TESTS))
                 self.assertEqual(p.returncode, want, p.stdout + p.stderr)
                 self.assertIn(verdict, p.stdout)
+
+
+class TestRunParts(Case):
+    """Format 1.4: a run whose records don't fit one file of a bundle is written in parts, split at records, which a
+    verifier reads in order as that one file; anything else about the parts fails `run parts` (format-v2.md §9)."""
+
+    def parted(self, cap=4096):
+        """(log, bundle) of a closed run of 20 calls, exported with the per-file limit lowered to `cap` bytes."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        for _ in range(20):
+            log.call()
+        log.final()
+        out = os.path.join(self.d, "parts.tkb")
+        with mock.patch.object(v2, "MAX_ENTRY", cap):
+            self.info = export(log.store, "acme", "run-a", log.note(), out)
+        return log, out
+
+    def test_a_run_past_the_file_limit_is_in_parts_that_verify_as_its_one_file(self):
+        log, out = self.parted()
+        whole = os.path.join(self.d, "whole.tkb")
+        one = export(log.store, "acme", "run-a", log.note(), whole)
+        files, name = v2.read_zip(out), run_name("acme", "run-a")
+        parts = [n for n in files if n.startswith("runs/")]
+        self.assertEqual(parts, [f"{name[:-len('.jsonl')]}.part-{i:04d}.jsonl" for i in range(1, len(parts) + 1)])
+        self.assertGreater(len(parts), 2)
+        self.assertTrue(all(len(files[n]) <= 4096 for n in parts))
+        self.assertEqual(b"".join(files[n] for n in parts), v2.read_zip(whole)[name])   # split only between records
+        self.assertEqual(sorted(json.loads(files.pop("manifest.json"))["files"]), sorted(files))
+        self.assertEqual([(i["verifier_min_version"], i["raised_by"]) for i in (self.info, one)],
+                         [("1.4.0", ["run parts"]), ("1.0.0", [])])
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+        self.assertEqual([c for c in rep.checks if c["check"] != "run parts"], self.verify(whole)[0].checks)
+        self.assertIn({"check": "run parts", "status": "pass", "problems": [],
+                       "detail": f"1 run(s) in {len(parts)} parts, each part continuing the one before it"}, rep.checks)
+        with mock.patch.object(v2, "__version__", "1.3.0"):   # a verifier before parts: says it can't, never FAILED
+            rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
+        self.assertEqual(needs([], ["run parts"]), ("1.4.0", "1.4.0"))
+
+    def test_a_run_that_fits_is_one_file_as_before(self):
+        log, out = self.parted(cap=64 << 20)
+        self.assertEqual([n for n in v2.read_zip(out) if n.startswith("runs/")], [run_name("acme", "run-a")])
+        self.assertEqual(self.info["verifier_min_version"], "1.0.0")
+        with mock.patch.object(v2, "MAX_ENTRY", len(v2.read_zip(out)[run_name("acme", "run-a")])):   # at the limit
+            export(log.store, "acme", "run-a", log.note(), out)
+        self.assertEqual([n for n in v2.read_zip(out) if n.startswith("runs/")], [run_name("acme", "run-a")])
+
+    @unverified_bundles
+    def test_a_part_missing_out_of_order_extra_misnamed_or_doubled_fails_naming_it(self):
+        _, out = self.parted()
+        p = [n for n in v2.read_zip(out) if n.startswith("runs/")]
+        one = run_name("acme", "run-a")
+        last, misnamed, zero = (f"{one[:-len('.jsonl')]}.part-{n}.jsonl" for n in (f"{len(p) + 1:04d}", "002", "0000"))
+
+        def copy(name, to):
+            return lambda f, m: (f.update({to: f[name]}), m["files"].update({to: ""}))
+        later = "is not in the checkpointed tree, so a later part may be missing"
+        for case, edit, check, first in [
+                ("a part missing", lambda f, m: f.pop(p[1]), "run parts", f"{p[1]} is missing"),
+                ("the first part missing", lambda f, m: f.pop(p[0]), "run parts", f"{p[0]} is missing"),
+                ("the last part missing", lambda f, m: f.pop(p[-1]), "inclusion",
+                 f"run 'run-a': the last record of {p[-2]} {later}"),
+                ("parts out of order", lambda f, m: f.update({p[0]: f[p[1]], p[1]: f[p[0]]}), "run parts",
+                 f"{p[1]} does not continue {p[0]}"),
+                ("an extra part", copy(p[0], last), "run parts", f"{last} does not continue {p[-1]}"),
+                ("a part under two names", copy(p[1], misnamed), "run parts",
+                 f"{misnamed}: not a part's name (part-0001, part-0002, ...)"),
+                ("a part numbered 0", copy(p[0], zero), "run parts", f"{zero}: not a part's name (part-0001, part-0002, "
+                                                                     "...)"),
+                ("an empty part", lambda f, m: f.update({p[1]: b""}), "run parts", f"{p[1]} holds no records"),
+                ("the run in one file and in parts", lambda f, m: (
+                    f.update({one: b"".join(f[n] for n in p)}), m["files"].update({one: ""})), "run parts",
+                 f"{one} and {p[0]}: one run in one file and in parts")]:
+            with self.subTest(case):
+                bad = os.path.join(self.d, "bad.tkb")
+                rewrite_bundle(out, bad, edit)
+                rep, code = self.verify(bad)
+                failed = [c for c in rep.checks if c["status"] == "fail"]
+                self.assertEqual((code, rep.integrity, failed[0]["check"], failed[0]["problems"][0]),
+                                 (1, "FAILED", check, first), rep.checks)
+        with zipfile.ZipFile(out) as z, zipfile.ZipFile(bad, "w", zipfile.ZIP_DEFLATED) as w:
+            for i in z.infolist():
+                w.writestr(i.filename, bytes((64 << 20) + 1) if i.filename == p[1] else z.read(i))
+        self.assertEqual(self.verify(bad)[0].checks[0]["detail"], f"cannot read bundle: Unusable: {p[1]} is larger "
+                                                                   "than the bundle limits")   # as any file over it
 
 
 class TestMalformedInput(Case):
@@ -922,6 +1084,22 @@ ENTRIES = {
                                                  "run-a")],
     "capture.gap.kind=result_unchecked": [registered(), ("capture.gap", {
         "kind": "result_unchecked", "tool_use_id": "t1", "reason": "no digests"}, "run-a")],
+    "capture.gap.kind=constraint_refused": [registered(), ("capture.gap", {
+        "kind": "constraint_refused", "reason": "the run has 32 live constraints"}, "run-a")],
+    "effect.observed.sensor": [registered(), ("effect.observed", {
+        "observer": "uid:7", "sensor": "tetragon", "kind": "exec", "ts": TS_, "pid": 7, "binary": "/usr/bin/curl",
+        "attribution": "identity"}, "run-a")],
+    "capture.gap.sensor": [registered(), ("capture.gap", {"kind": "observer_lost", "sensor": "falco", "reason": "r"},
+                                          "run-a")],
+    "effect.observed.denied": [registered(), ("effect.observed", {
+        "observer": "uid:7", "sensor": "openshell", "kind": "connect", "ts": TS_, "pid": 7, "binary": "/usr/bin/curl",
+        "host": "blocked.example.com", "port": 443, "denied": True, "attribution": "token"}, "run-a")],
+    "constraint.added": [registered(), ("constraint.added", {"kind": "no_push"}, "run-a")],
+    "model.exchange.said_only": [registered(), ("model.exchange", {
+        "exchange_id": "x1", "phase": "response", "streamed": False, "model": "m", "said_only": True}, "run-a")],
+    "review.cites": [registered(), registered("run-f", analyzes="run-a"), ("review", {
+        "reviewer": "tracekit-analyze/1.4.0", "verdict": {"kind": "coverage", "rule": "TK-X200", "severity": "info",
+                                                          "checks": {}}, "cites": []}, "run-f")],
 }
 
 
@@ -938,9 +1116,121 @@ class TestVersionTable(Case):
     def test_shipped_rows_are_frozen(self):
         # a row is frozen once its version's first release candidate ships: later additions go in a new row, so a
         # verifier of that version never meets a field its own version claims to know
-        shipped = {"1.1.0": "2e5a668bf93c0e4b3fca960f9824e2c5858d5539109511d636bd7635e648061e"}
+        shipped = {"1.1.0": "2e5a668bf93c0e4b3fca960f9824e2c5858d5539109511d636bd7635e648061e",
+                   "1.2.0": "c0c704e79fe3641a7784cd2c05cf943c2ea9cab4c39181f6ab3bea5f736b1eb9",
+                   "1.3.0": "1ced79b94a5a8e0cb977946b39109020beeaaea8a5c2ac5ac856dbd1c0f794d2"}
         for version, digest in shipped.items():
             self.assertEqual(hashlib.sha256(canonical(VERSIONS[version])).hexdigest(), digest, version)
+
+
+
+class TestExt(Case):
+    """Format 1.4's non-critical slot: ext fields and records are signed, chained and included like any record; a name
+    the verifier doesn't interpret is a warning, never a failure; any use of the slot needs 1.4.0."""
+
+    def test_an_ext_on_a_key_record_needs_1_4_0_too(self):
+        log = self.log()
+        der = crypto.spki(pub(KEY1))   # keys/records.jsonl, which the verifier reads like any run's records
+        log.add("signer.epoch", {"keys": [{"kid": crypto.spki_kid(der), "alg": "ed25519",
+                                           "spki": base64.b64encode(der).decode()}]}, run="signer", key=KEY1, ext=NOTE)
+        log.register()
+        log.final()
+        out = os.path.join(self.d, "key-ext.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        manifest = json.loads(v2.read_zip(out)["manifest.json"])
+        self.assertEqual((manifest["verifier_min_version"], manifest["verifier_version"]), ("1.4.0", "1.4.0"))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.warnings), (0, ["not interpreted"]), rep.checks)
+
+    def test_an_ext_name_not_interpreted_verifies_with_a_warning(self):
+        out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
+        manifest = json.loads(v2.read_zip(out)["manifest.json"])
+        self.assertEqual((manifest["verifier_min_version"], manifest["verifier_version"]), ("1.4.0", "1.4.0"))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity, rep.warnings), (0, "VERIFIED", ["not interpreted"]), rep.checks)
+        self.assertEqual(rep.checks[-1]["detail"], "2 record(s) carry ext.acme.note: their signatures, chain and "
+                                                   "inclusion are checked above; what ext.acme.note means is not checked")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["verify", out, "--trust", self.trust, "--strict"]), 3)
+
+    def test_an_older_verifier_is_unverifiable_and_told_how_to_verify(self):
+        out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
+        with mock.patch.object(v2, "__version__", "1.3.0"):
+            rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
+        self.assertEqual(rep.checks, [{"check": "bundle readable", "status": "fail", "detail": rep.integrity, "problems": [
+            f'uvx --from "tracekit-ai>=1.4.0" tracekit verify {out} --trust {self.trust}',
+            f"npx -y @cygnuxlabs/tracekit@latest verify {out} --trust {self.trust}",
+            f"or open {v2.PAGE} and choose both files: the page verifies them in your browser and sends nothing"]}])
+        if os.name != "nt":   # a path the shell would split is quoted
+            self.assertIn("verify '/tmp/my run.tkb' --trust t.json", v2.upgrade("1.4.0", "/tmp/my run.tkb", "t.json")[0])
+
+    def test_a_name_a_later_version_interprets_names_that_version(self):
+        with mock.patch.dict(VERSIONS, {"9.0.0": {"types": [], "fields": {}, "values": {}, "ext": ["acme.note"]}}):
+            out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
+        manifest = json.loads(v2.read_zip(out)["manifest.json"])
+        self.assertEqual((manifest["verifier_min_version"], manifest["verifier_version"]), ("1.4.0", "9.0.0"))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"))
+        self.assertTrue(rep.checks[-1]["detail"].endswith("is not checked; tracekit >= 9.0.0 checks it"))
+
+    def test_the_slot_needs_1_4_and_the_export_says_which_records(self):
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.add("tool.call", {"tool_use_id": "t1", "name": "Bash", "input": {}}, ext={})
+        log.final()
+        info = export(log.store, "acme", "run-a", log.note(), os.path.join(self.d, "e.tkb"))
+        self.assertEqual((info["verifier_min_version"], info["raised_by"], info["verifier_version"]),
+                         ("1.4.0", ["ext: seq 2"], "1.4.0"))
+        self.assertEqual(needs([{"type": "ext", "data": {"name": "n"}}]), ("1.4.0", "1.4.0"))
+
+    def test_an_ext_is_tamper_evident(self):
+        out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
+        for name, (edit, check) in {
+                "an ext value edited": (lambda rs: rs[1]["event"]["ext"]["acme.note"].update(seen=[2]), "signatures"),
+                "an ext field removed": (lambda rs: rs[1]["event"].pop("ext"), "signatures"),
+                "an ext record edited": (lambda rs: rs[2]["event"]["data"].update(detail={}), "signatures"),
+                "an ext record dropped": (lambda rs: rs.pop(2), "run chain")}.items():
+            with self.subTest(name):
+                self.assert_fails(self.mutate(out, edit), check)
+
+    @unverified_bundles   # each is schema-invalid on purpose
+    def test_ext_names_are_schema_checked(self):
+        for name, field, record in (("upper case", {"Acme": 1}, ("acme", {})), ("too long", {"a" * 65: 1}, ("a", {})),
+                                    ("a record's name not a string", NOTE, ("x", {"name": None}))):
+            with self.subTest(name):
+                out = ext_bundle(self.log(f"s-{random.random()}"), os.path.join(self.d, f"{random.random()}.tkb"),
+                                 field, record)
+                self.assert_fails(out, "signatures")
+
+    def test_an_ext_interpretation_adds_only_its_own_lines(self):
+        """What may go in ext: every line a verifier that doesn't interpret a name prints stays true without it, so the
+        report with the name's interpretation off is the full report minus that name's own lines, with its `not
+        interpreted` line instead. Every name a VERSIONS row lists has its check in EXT_CHECKS; a stand-in shows the
+        rule with one."""
+        listed = [n for row in VERSIONS.values() for n in row.get("ext", ())]
+        self.assertEqual(sorted(v2.EXT_CHECKS), sorted(listed))
+        checks = {**v2.EXT_CHECKS, "acme.note": lambda rep, es: rep.check("acme notes", True, f"{len(es)} note(s)")}
+        for name, check in checks.items():
+            with self.subTest(name):
+                out = ext_bundle(self.log(f"s-{name}"), os.path.join(self.d, f"{name}.tkb"), {name: {}}, (name, {}))
+                own = []
+
+                def tracked(rep, events, check=check, own=own):
+                    n = len(rep.checks)
+                    check(rep, events)
+                    own.extend(rep.checks[n:])
+                with mock.patch.dict(v2.EXT_CHECKS, {name: tracked}):
+                    on = self.verify(out)
+                with mock.patch.dict(v2.EXT_CHECKS):
+                    v2.EXT_CHECKS.pop(name, None)
+                    off = self.verify(out)
+                self.assertTrue(own)
+                self.assertEqual([c for c in on[0].checks if not any(c is o for o in own)],
+                                 [c for c in off[0].checks if c["detail"].split(":")[0] != f"2 record(s) carry ext.{name}"])
+                self.assertEqual((on[1], on[0].integrity, on[0].assurance), (off[1], off[0].integrity, off[0].assurance))
 
 
 if __name__ == "__main__":

@@ -9,13 +9,17 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
+import test_said as ts
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.testing import FakeSigner
 
 try:
     from langchain.agents import create_agent
     from langchain.agents.middleware import wrap_tool_call
-    from langchain_core.messages import HumanMessage, ToolMessage
+    from langchain.agents.structured_output import ToolStrategy
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
     from langchain_core.runnables import RunnableLambda
     from langchain_core.tools import tool
     from langgraph.checkpoint.memory import InMemorySaver
@@ -92,6 +96,102 @@ class Middleware(unittest.TestCase):
         a.invoke(prompt("echo", text="hi"))
         [r] = self.recorded("tool.result")
         self.assertEqual(r["status"], "error")
+
+
+if HAVE_LC:
+    class ThinkingModel(BaseChatModel):
+        """Thinks (a signed summary, and an open model's reasoning_content), says what it will do and calls echo; then
+        answers, in the agent's structured output when it has one."""
+
+        def _generate(self, messages, stop=None, run_manager=None, **kw):
+            if isinstance(messages[-1], HumanMessage):
+                msg = AIMessage([{"type": "thinking", "thinking": "the user wants an echo", "signature": "sig-1"},
+                                 {"type": "text", "text": "Echoing."}],
+                                additional_kwargs={"reasoning_content": "raw chain of thought"},
+                                tool_calls=[{"id": "call-1", "name": "echo", "args": {"text": "hi"}}],
+                                response_metadata={"model_name": "m-1", "model_provider": "anthropic"})
+            elif self.structured:
+                msg = AIMessage("", tool_calls=[{"id": "call-2", "name": "Echo", "args": {"text": "hi"}}])
+            else:
+                msg = AIMessage("done")
+            return ChatResult(generations=[ChatGeneration(message=msg)])
+
+        structured: bool = False
+
+        def bind_tools(self, tools, **kw):
+            return self
+
+        @property
+        def _llm_type(self):
+            return "stub"
+
+
+@unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
+class Said(unittest.TestCase):
+    """create_agent's model responses are recorded: reasoning and text before each call, and each call, under its id,
+    once it reaches the gate; the response itself only with the vault; a failure to record changes nothing for the
+    agent."""
+
+    def setUp(self):
+        self.signer = FakeSigner()
+        r = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+        self.run = {"run_id": r["run_id"], "run_token": r["run_token"]}
+        self.sent = []
+        model_event = self.signer.model_event
+        self.signer.model_event = lambda req: self.sent.append(req) or model_event(req)
+
+    def invoke(self, **kw):
+        a = create_agent(ThinkingModel(structured="response_format" in kw), TOOLS, middleware=[
+            TracekitMiddleware(self.signer, self.run["run_id"], self.run["run_token"])], **kw)
+        return a.invoke({"messages": [HumanMessage("echo hi")]})
+
+    def test_the_reasoning_before_a_call_is_linked_to_it(self):
+        status = self.signer.status
+        self.signer.status = lambda req: {**status(req), **ts.VAULT}
+        self.invoke()
+        first, call, last = self.sent
+        self.assertNotIn("tool_uses", first)
+        self.assertEqual(([t["id"] for t in call["tool_uses"]], call["exchange_id"]), (["call-1"], first["exchange_id"]))
+        decided = [e["data"]["tool_call_id"] for e in self.signer.read({**self.run, "limit": 100})["events"]
+                   if e["type"] == "policy.decision"]
+        self.assertEqual(decided, ["call-1"])
+        self.assertEqual((first["model"], first["provider"]), ("m-1", "anthropic"))
+        self.assertEqual(ts.segments(first), [("reasoning", "full", "raw chain of thought", []),
+                                              ("reasoning", "summary", "the user wants an echo", []),
+                                              ("text", "full", "Echoing.", [])])
+        self.assertEqual(first["body"]["output"][1]["encrypted_content"], "sig-1")
+        self.assertEqual(ts.segments(last), [("text", "full", "done", [])])
+
+    def test_without_the_vault_only_the_commitment_and_no_structured_output_call(self):
+        out = self.invoke(response_format=ToolStrategy(dict(title="Echo", type="object",
+                                                            properties={"text": {"type": "string"}})))
+        self.assertEqual(out["structured_response"], {"text": "hi"})
+        self.assertEqual(len(self.sent), 2)   # the response and its echo call: the structured answer said nothing else
+        self.assertTrue(all("body" not in r and r["content_digest"] for r in self.sent))
+        self.assertEqual([t["name"] for r in self.sent for t in r.get("tool_uses", ())], ["echo"])   # not Echo
+
+    def test_a_call_another_middleware_stops_before_the_gate_is_not_recorded(self):
+        """A person's reject, a call limit: the call never ran and no hook saw it; recorded, the signer would read it
+        as one that ran with no decision (reconcile.hook_missing)."""
+        from langchain.agents.middleware import HumanInTheLoopMiddleware, ToolCallLimitMiddleware
+        mw = lambda: TracekitMiddleware(self.signer, self.run["run_id"], self.run["run_token"])
+        a = create_agent(StubModel(), TOOLS, checkpointer=InMemorySaver(),
+                         middleware=[HumanInTheLoopMiddleware({"echo": True}), mw()])
+        a.invoke(prompt("echo", text="hi"), THREAD)
+        a.invoke(Command(resume={"decisions": [{"type": "reject", "message": "no"}]}), THREAD)
+        calls = [{"name": "echo", "args": {"text": str(i)}, "id": f"c{i}"} for i in range(3)]
+        create_agent(StubModel(), TOOLS, middleware=[ToolCallLimitMiddleware(run_limit=1), mw()]).invoke(
+            {"messages": [HumanMessage(json.dumps(calls))]})
+        self.assertEqual([t["id"] for r in self.sent for t in r.get("tool_uses", ())], ["c0"])   # the one that ran
+        decided = [e["data"]["tool_call_id"] for e in self.signer.read({**self.run, "limit": 100})["events"]
+                   if e["type"] == "policy.decision"]
+        self.assertEqual(decided, ["c0"])
+
+    def test_a_failure_to_record_changes_nothing_for_the_agent(self):
+        self.signer.model_event = mock.Mock(side_effect=SignerUnavailable("down"))
+        with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
+            out = self.invoke()
+        self.assertEqual(out["messages"][-1].content, "done")
 
 
 def handle_tool_error(state):

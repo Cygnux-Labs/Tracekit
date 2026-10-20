@@ -25,6 +25,7 @@ def load(*path):
 
 
 EXPECTED, V2, NEGATIVE = load("expected.json"), load("v2", "expected.json"), load("negative", "expected.json")
+PARTS = load("parts", "expected.json")   # format 1.4: a run in parts, and copies with one defect of its parts each
 
 
 def corpus_problems(golden, dirs=("v1", "v01"), want=None):
@@ -67,6 +68,7 @@ class Corpus(unittest.TestCase):
         self.assertEqual(corpus_problems(GOLDEN), [])
         self.assertEqual(corpus_problems(GOLDEN, ("v2",), V2["files"]), [])
         self.assertEqual(corpus_problems(GOLDEN, ("negative",), NEGATIVE["files"]), [])
+        self.assertEqual(corpus_problems(GOLDEN, ("parts",), PARTS["files"]), [])
         for expected in (EXPECTED, V2):
             for c in expected["cases"]:
                 for n, h in c["files"].items():
@@ -97,13 +99,20 @@ class Verdicts(unittest.TestCase):
 
     def test_negative_corpus(self):
         self.assertGreaterEqual(len(NEGATIVE["cases"]), 25)
-        trust = os.path.join(GOLDEN, "negative", "trust.json")
-        for case in NEGATIVE["cases"]:
-            with self.subTest(case["name"]):
-                rep, code = v2.verify(os.path.join(GOLDEN, "negative", case["bundle"]), trust)
-                self.assertEqual({"exit_code": code, "integrity": rep.integrity, "first_failure": next(
-                    (c["check"] for c in rep.checks if c["status"] == "fail"), None)}, case["expected"])
-                self.assertFalse(code == 0 and rep.integrity == "VERIFIED", rep.checks)
+        for d, cases in (("negative", NEGATIVE["cases"]), ("parts", PARTS["cases"][1:])):
+            trust = os.path.join(GOLDEN, d, "trust.json")
+            for case in cases:
+                with self.subTest(case["name"]):
+                    rep, code = v2.verify(os.path.join(GOLDEN, d, case["bundle"]), trust)
+                    self.assertEqual({"exit_code": code, "integrity": rep.integrity, "first_failure": next(
+                        (c["check"] for c in rep.checks if c["status"] == "fail"), None)}, case["expected"])
+                    self.assertFalse(code == 0 and rep.integrity == "VERIFIED", rep.checks)
+
+    def test_a_run_in_parts_verifies(self):
+        rep, code = v2.verify(os.path.join(GOLDEN, "parts", "parts.tkb"), os.path.join(GOLDEN, "parts", "trust.json"))
+        self.assertEqual((code, rep.integrity, PARTS["cases"][0]["expected"]["integrity"]), (0, "VERIFIED", "VERIFIED"))
+        self.assertIn({"check": "run parts", "status": "pass", "problems": [],
+                       "detail": "1 run(s) in 3 parts, each part continuing the one before it"}, rep.checks)
 
 
 if __name__ == "__main__":

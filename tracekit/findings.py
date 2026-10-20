@@ -2,6 +2,7 @@
 
     tracekit analyze --last            # run the detectors on the latest run and sign what they find
     tracekit analyze --run R --dry-run # print findings without writing them
+    tracekit analyze --v2              # a v2 signer's run: intent, reasoning and action checks (tracekit.findings_v2)
 
 A finding is a ``review`` event (schema v1, unchanged) in a companion run ``findings:<run_id>``:
 
@@ -331,7 +332,12 @@ def _fmt(f):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--v2" in argv:   # a v2 signer's run: tracekit.findings_v2
+        from . import findings_v2
+        return findings_v2.main([x for x in argv if x != "--v2"])
     ap = argparse.ArgumentParser(prog="tracekit analyze", description="Run detectors over a run and sign the findings into the ledger.")
+    ap.add_argument("--v2", action="store_true", help="analyse a v2 signer's run instead (`tracekit analyze --v2 --help`)")
     ap.add_argument("--home", help="signer home (default: from the client config)")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--run")

@@ -4,7 +4,7 @@
 # To allow a host TK-B002 or TK-B003 denies, or to set the domains typing is allowed on (TK-B011), extend this pack and redefine
 # the rule with the same id: a rule in the extending file replaces the parent's.
 
-version: '2026.10-browser-4'
+version: '2026.10-browser-5'
 description: browser agents (Browser Use)
 unknown_tools: ask
 
@@ -39,7 +39,7 @@ deny:
   - id: TK-B003
     class: browser
     field: host
-    pattern: '^(localhost|[^.:\[]+|kubernetes\.default|.*\.(localhost|internal|local|lan|corp|intranet|svc|home\.arpa))\.?$'
+    pattern: '^(localhost|[^.:\[]+|kubernetes\.default|.*?\.(localhost|internal|local|lan|corp|intranet|svc|home\.arpa))\.?$'
     reason: internal name navigation
     rationale: The name twin of TK-B002 (TK-N003 for the browser).
 

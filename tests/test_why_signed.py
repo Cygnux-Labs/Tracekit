@@ -12,12 +12,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-from factories import wait_for
+from factories import rewrite_bundle, wait_for
 from tracekit import demo_why
 from tracekit.demo_server import Witness, _serve, export_final, tamper
 from tracekit.deploy import files
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer.service import DEFAULT_POLICY, SignerService, load_policy, reveal
+from tracekit.verify import v2
 from tracekit.why import import_v2
 from tracekit.why.analysis import alerts
 from tracekit.why.cli import main
@@ -399,11 +400,33 @@ class SignedRuntime(unittest.TestCase):
         files.write_json(trust, {"logs": [self.service.vkey], "algs": ["ed25519"],
                                  "witnesses": [{"vkey": self.witness.vkey, "class": "customer"}]}, 0o644)
         self.assertEqual(list(import_v2.bundle_records(out, trust)[0]), [self.tk_run])
+        parts = os.path.join(self.dir, "parts.tkb")   # the run in parts: the same records, its parts read as one
+        with mock.patch.object(v2, "MAX_ENTRY", max(len(b) for n, b in v2.read_zip(out).items()
+                                                    if n.startswith("runs/")) - 1):
+            export_final(os.path.join(self.dir, "data", "store"), self.tk_run, self.witness, parts)
+        self.assertEqual(import_v2.bundle_records(parts, trust)[0], import_v2.bundle_records(out, trust)[0])
         tamper(out, bad)
         self.assertEqual(import_v2.bundle_records(bad, trust)[0], {})
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertNotEqual(main(["import", "--bundle", bad, "--trust", trust, "--out", self.dir]), 0)
         self.assertIn("nothing imported", err.getvalue())
+        # the file was verified, then opened again to read the runs: one swapped in between was imported unverified
+        real, want = v2.verify, import_v2.bundle_records(out, trust)[0]
+        swapped = shutil.copy(out, os.path.join(self.dir, "swapped.tkb"))
+
+        def verify_then_swap(path, *a, **kw):
+            try:
+                return real(path, *a, **kw)
+            finally:
+                shutil.copy(bad, swapped)
+        with mock.patch.object(v2, "verify", verify_then_swap):
+            self.assertEqual(import_v2.bundle_records(swapped, trust)[0], want)
+        # records were split at any line break: a CR, JSON whitespace both verifiers accept inside a record, broke them
+        cr = os.path.join(self.dir, "cr.tkb")
+        rewrite_bundle(out, cr, lambda files, manifest: files.update(
+            {n: files[n].replace(b'{"v":2,', b'{"v":2,\r', 1) for n in files if n.startswith("runs/")}))
+        self.assertEqual(v2.verify(cr, trust)[1], 0)
+        self.assertEqual(import_v2.bundle_records(cr, trust)[0], want)
 
 
 def mail(rt):
@@ -477,6 +500,32 @@ class ImportWithoutWhyLog(unittest.TestCase):
         g = build_graph(self.imported)
         self.assertIn(("ev:" + page["id"], "argument to (email), untrusted", "observed"),
                       [(e["src"], e["kind"], e["evidence"]) for e in g.edges if e["dst"] == "ev:" + held["id"]])
+
+    def test_committed_arguments_trace_to_nothing(self):
+        """The why view of a signed run grew with the square of its calls: each call's committed arguments (the same
+        placeholder text and a commitment) were traced as values to every earlier result. They are no values."""
+        from tracekit.why.analysis import _texts, arg_provenance
+        g, texts = build_graph(self.imported), _texts(self.imported)
+        self.assertEqual({str(arg_provenance(self.imported, g, e, texts)) for e in self.imported.of_type("action")},
+                         {"[]"})
+        self.assertEqual({t for _, t, _, _ in texts}, {""})
+
+    def test_a_held_call_nobody_approved_is_held_not_blocked(self):
+        titles = [a["title"] for a in alerts(self.imported, build_graph(self.imported))]
+        # the runtime gave up waiting (approval_wait_s=0) and abandoned the approval: held, never blocked
+        self.assertIn("send_email was held for approval and the approval was abandoned", titles)
+        self.assertIn("Bash was blocked by Tracekit policy", titles)
+        self.assertNotIn("send_email was blocked by Tracekit policy", titles)
+
+    def test_a_prompt_line_is_no_model_call(self):
+        """A transcript's prompt line is a request alone (model "unknown"): it imported as a model call."""
+        recs = import_v2.store_records(os.path.join(self.dir, "data"))[self.tk_run]
+        line = json.loads(json.dumps(recs[-1]))
+        line["event"].update(type="model.exchange", run_seq=len(recs), data={
+            "provider": "anthropic", "model": "unknown", "phase": "request", "exchange_id": "u-1"})
+        run = load_run(import_v2.convert(recs + [line], tempfile.mkdtemp(dir=self.dir), {}))
+        self.assertEqual([e["model"] for e in run.of_type("decision")], [e["model"] for e in
+                                                                          self.imported.of_type("decision")])
 
     def test_a_capture_gap_is_a_high_alert(self):
         recs = import_v2.store_records(os.path.join(self.dir, "data"))[self.tk_run]

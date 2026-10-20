@@ -16,6 +16,7 @@ from adapter_contract import tmpdir
 from test_reconcile import use
 from test_signer_service import records
 from tracekit import gateway
+from tracekit.bundle_v2 import export
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk import client
@@ -24,6 +25,7 @@ from tracekit.signer import pipeline, service as svc
 from tracekit.storage import file as file_storage
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.transport import parse_frame
+from tracekit.verify import v2
 
 GW = CallerIdentity("mtls", "spiffe://acme/gateway", True)
 AGENT = CallerIdentity("token", "http", True)        # what the gateway's token authenticator establishes
@@ -48,7 +50,8 @@ STREAM = sse({"id": "chatcmpl-2", "model": "gpt-x", "choices": [{"index": 0, "de
 
 class Upstream(http.server.BaseHTTPRequestHandler):
     """Answers with the server's `reply`: ("json", obj[, status]), ("sse", bytes) or ("cut", bytes): a chunked stream
-    that breaks after `bytes`; ("redirect", location); a list of those: one per request, in order."""
+    that breaks after `bytes`; ("redirect", location); a list of those: one per request, in order; or a function of the
+    request's JSON that returns one."""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *a):
@@ -58,6 +61,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         self.server.seen.append((dict(self.headers), self.rfile.read(int(self.headers["content-length"]))))
         time.sleep(self.server.delay)
         reply = self.server.reply
+        if callable(reply):   # a provider that reads the request
+            reply = reply(json.loads(self.server.seen[-1][1]))
         how, data, *status = reply.pop(0) if isinstance(reply, list) else reply
         if how == "redirect":
             self.send_response(302)
@@ -764,6 +769,216 @@ class TestVerifiedToolResultsOff(Gateway):
         first, second = [r for r in self.signer.sent if r["phase"] == "request"]
         self.assertEqual(first["tool_results"], [{"id": "call_7", "forms": gateway.result_forms("anything")}])
         self.assertNotIn("tool_results", second)   # the signer said it doesn't check them
+
+
+SIG = "c2lnbmF0dXJl"
+THINKING = {"model": "claude-x", "max_tokens": 1024, "thinking": {"type": "adaptive"},
+            "messages": [{"role": "user", "content": "read a"}]}
+REASONING = {"model": "gpt-x", "input": "read a", "reasoning": {"effort": "high"}}
+REJECTED = ("json", {"type": "error", "error": {"type": "invalid_request_error",
+                                                "message": "thinking.display: Extra inputs are not permitted"}}, 400)
+
+
+def claude(req):
+    """A Messages API that honors thinking.display: the thinking block's text only when it is summarized (else empty,
+    with its signature), streamed or not."""
+    thought = "The user wants a: read it." if (req.get("thinking") or {}).get("display") == "summarized" else ""
+    blocks = [{"type": "thinking", "thinking": thought, "signature": SIG}, {"type": "text", "text": "Reading a."},
+              {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "a"}}]
+    usage = {"input_tokens": 3, "output_tokens": 2}
+    if not req.get("stream"):
+        return "json", {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x", "content": blocks,
+                        "stop_reason": "tool_use", "usage": usage}
+
+    def delta(i, **d):
+        return {"type": "content_block_delta", "index": i, "delta": d}
+    return "sse", sse(
+        {"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant",
+                                              "model": "claude-x", "content": [], "usage": usage}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "",
+                                                                      "signature": ""}},
+        *([delta(0, type="thinking_delta", thinking=thought)] if thought else []),
+        delta(0, type="signature_delta", signature=SIG), {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+        delta(1, type="text_delta", text="Reading a."), {"type": "content_block_stop", "index": 1},
+        {"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "id": "toolu_1",
+                                                                      "name": "read_file", "input": {}}},
+        delta(2, type="input_json_delta", partial_json='{"path": "a"}'), {"type": "content_block_stop", "index": 2},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 2}},
+        {"type": "message_stop"})
+
+
+def wire(reply):
+    """The bytes the fake upstream sends for `reply`."""
+    return json.dumps(reply[1]).encode() if reply[0] == "json" else reply[1]
+
+
+class ShowReasoningRequests(unittest.TestCase):
+    def test_only_a_request_that_has_the_model_reason_and_hides_it_is_amended(self):
+        summarized = {"display": "summarized"}
+        for kind, field, want, pointer in (
+                ("anthropic:messages", {"thinking": {"type": "adaptive"}}, {"type": "adaptive", **summarized},
+                 "/thinking/display"),
+                ("anthropic:messages", {"thinking": {"type": "enabled", "budget_tokens": 2048, "display": "omitted"}},
+                 {"type": "enabled", "budget_tokens": 2048, **summarized}, "/thinking/display"),
+                ("anthropic:messages", {"thinking": {"type": "adaptive", "display": None}},
+                 {"type": "adaptive", **summarized}, "/thinking/display"),
+                ("openai:responses", {"reasoning": {"effort": "high"}}, {"effort": "high", "summary": "auto"},
+                 "/reasoning/summary"),
+                ("openai:responses", {"reasoning": {}}, {"summary": "auto"}, "/reasoning/summary")):
+            with self.subTest(kind=kind, field=field):
+                req = {"model": "m", "messages": [{"role": "user", "content": "hi"}], **field}
+                before = json.loads(json.dumps(req))
+                self.assertEqual(gateway.show_reasoning(kind, req),
+                                 ({**before, pointer.split("/")[1]: want}, [pointer]))
+                self.assertEqual(req, before)   # the client's request is left as it is
+        for kind, field in (
+                ("anthropic:messages", {}),   # thinking not asked for: never turned on
+                ("anthropic:messages", {"thinking": {"type": "disabled"}}),
+                ("anthropic:messages", {"thinking": {"type": "between_tools"}}),   # takes no display
+                ("anthropic:messages", {"thinking": {"type": "adaptive", "display": "summarized"}}),
+                ("anthropic:messages", {"thinking": {"type": "adaptive", "display": "updates"}}),
+                ("openai:responses", {}),
+                ("openai:responses", {"reasoning": {"effort": "none"}}),
+                ("openai:responses", {"reasoning": {"effort": "low", "summary": "detailed"}}),
+                ("openai:responses", {"reasoning": {"generate_summary": "concise"}}),
+                ("openai:chat", {"reasoning_effort": "high"}),   # chat completions have no field for it
+                ("openai:chat", {"thinking": {"type": "adaptive"}})):
+            with self.subTest(kind=kind, field=field):
+                req = {"model": "m", **field}
+                self.assertEqual(gateway.show_reasoning(kind, req), (req, []))
+
+
+class TestShowReasoning(Gateway):
+    def bundle(self):
+        self.s.call(AGENT, "close_run", {"request_id": uuid.uuid4().hex, **self.run})
+        self.s.sweep(time.monotonic() + 61)
+        self.s.checkpoint()
+        out, trust = os.path.join(self.dir, "b.tkb"), os.path.join(self.dir, "trust.json")
+        export(self.s.log.storage, "default", self.run["run_id"], self.s.log.storage.checkpoint_latest()[1], out)
+        with open(trust, "w") as f:
+            json.dump({"logs": [self.s.vkey], "algs": ["ed25519"]}, f)
+        return out, trust
+
+    def test_amended_per_provider_and_the_record_commits_to_the_request_as_sent(self):
+        self.up.reply = lambda req: claude(req) if "thinking" in req else ("json", {
+            "id": "resp_1", "object": "response", "model": "gpt-x", "status": "completed", "output": []})
+        shown = dict(THINKING, thinking={"type": "adaptive", "display": "summarized"})
+        for path, body in (("/v1/messages", THINKING), ("/v1/responses", REASONING), ("/v1/messages", shown),
+                           ("/v1/chat/completions", {"model": "gpt-x", "messages": [], "reasoning_effort": "high"})):
+            self.assertEqual(self.post(body, path=path)[0], 200)
+        got = [b for _, b in self.up.seen]
+        self.assertEqual([json.loads(b) for b in got[:2]],
+                         [shown, dict(REASONING, reasoning={"effort": "high", "summary": "auto"})])
+        self.assertEqual(got[2], json.dumps(shown).encode())   # nothing to amend: the client's bytes
+        requests = [r for r in self.signer.sent if r["phase"] == "request"]
+        self.assertEqual([r["content_digest"] for r in requests], ["sha256:" + hashlib.sha256(b).hexdigest() for b in got])
+        self.assertEqual([r.get("amended") for r in requests], [["/thinking/display"], ["/reasoning/summary"], None, None])
+        self.assertEqual([e.get("ext") for e in self.events() if e["type"] == "model.exchange"
+                          and e["data"]["phase"] == "request"],
+                         [{"amended": ["/thinking/display"]}, {"amended": ["/reasoning/summary"]}, None, None])
+
+    def test_off_by_config(self):
+        with open(os.path.join(self.dir, "gateway.yaml")) as f:
+            cfg = json.load(f)
+        with open(os.path.join(self.dir, "odd.yaml"), "w") as f:
+            json.dump(dict(cfg, show_reasoning="no"), f)
+        with self.assertRaisesRegex(ValueError, "show_reasoning is true or false"):
+            gateway.load_config(os.path.join(self.dir, "odd.yaml"))
+        self.gw.gateway.show_reasoning, self.up.reply = False, claude
+        self.assertEqual(self.post(THINKING, path="/v1/messages")[0], 200)
+        self.assertEqual(self.up.seen[0][1], json.dumps(THINKING).encode())
+        self.assertNotIn("amended", self.signer.sent[0])
+
+    def test_a_rejected_amendment_is_sent_again_as_the_client_sent_it_and_recorded(self):
+        ok = claude(THINKING)
+        self.up.reply = [REJECTED, ok, ok]
+        for _ in range(2):
+            status, body = self.post(THINKING, path="/v1/messages")
+            self.assertEqual((status, body), (200, wire(ok)))   # the agent never sees the rejection
+        got = [b for _, b in self.up.seen]
+        self.assertEqual(json.loads(got[0])["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(got[1:], [json.dumps(THINKING).encode()] * 2)   # not amended again for this model
+        ex = [(e["data"]["exchange_id"], e["data"]["phase"], e.get("ext"), e["data"].get("error"))
+              for e in self.events() if e["type"] == "model.exchange"]
+        self.assertEqual(len(ex), 6)
+        (x1, _, ext, _), (r1, _, _, err), (x2, _, none, _), (r2, _, _, ok_) = ex[:4]
+        self.assertEqual((ext, none, ok_, r1, r2), ({"amended": ["/thinking/display"]}, None, None, x1, x2))
+        self.assertEqual(err, f"upstream status 400 to the request as amended to show reasoning; sent again without "
+                              f"the amendment as exchange {x2}")
+
+    def test_a_request_rejected_either_way_gets_the_providers_error_and_the_model_is_still_amended(self):
+        self.up.reply = [REJECTED, REJECTED, claude(THINKING)]
+        status, body = self.post(dict(THINKING, stream=True), path="/v1/messages")
+        self.assertEqual((status, body), (400, wire(REJECTED)))
+        self.assertEqual(self.post(THINKING, path="/v1/messages")[0], 200)
+        self.assertEqual([json.loads(b)["thinking"].get("display") for _, b in self.up.seen],
+                         ["summarized", None, "summarized"])
+
+    def test_the_response_is_the_providers_with_only_the_summaries_added(self):
+        self.up.reply, got = claude, {}
+        for show in (True, False):
+            self.gw.gateway.show_reasoning = show
+            for stream in (False, True):
+                status, body = self.post(dict(THINKING, stream=stream), path="/v1/messages")
+                self.assertEqual((status, body), (200, wire(claude(json.loads(self.up.seen[-1][1])))))
+                got[show, stream] = body
+        on, off = json.loads(got[True, False]), json.loads(got[False, False])
+        self.assertEqual([b.get("thinking") for b in on["content"]], ["The user wants a: read it.", None, None])
+        self.assertEqual(dict(on, content=[dict(b, thinking="") if b["type"] == "thinking" else b
+                                           for b in on["content"]]), off)
+
+        def events(body):
+            return [json.loads(line[6:]) for line in body.split(b"\n") if line.startswith(b"data: ")]
+        added = [e for e in events(got[True, True]) if e.get("delta", {}).get("type") == "thinking_delta"]
+        self.assertEqual([e["delta"]["thinking"] for e in added], ["The user wants a: read it."])
+        self.assertEqual([e for e in events(got[True, True]) if e not in added], events(got[False, True]))
+        uses = [r["tool_uses"] for r in self.signer.sent if r["phase"] == "response"]   # as the tool uses were recorded
+        self.assertEqual(uses[:2], uses[2:])
+        self.assertEqual({(t["id"], t["name"], t["args_digest"]) for u in uses for t in u},
+                         {("toolu_1", "read_file", event_hash({"tool": "read_file", "args": {"path": "a"}}))})
+
+    def test_the_bundle_verifies_and_says_what_was_amended_which_an_older_verifier_leaves_true(self):
+        self.up.reply = claude
+        for stream in (False, True):
+            self.assertEqual(self.post(dict(THINKING, stream=stream), path="/v1/messages")[0], 200)
+        bundle, trust = self.bundle()
+        rep, code = v2.verify(bundle, trust)
+        [line] = [c for c in rep.checks if c["check"] == "gateway amendments"]
+        self.assertEqual((code, rep.integrity, line["status"], line["detail"]), (
+            0, "VERIFIED", "pass", "gateway amended 2 request(s) to show reasoning (/thinking/display: 2); each record "
+                                   "commits to the request as sent"))
+        with mock.patch.dict(v2.EXT_CHECKS):   # a verifier from 1.4 that doesn't interpret ext.amended
+            del v2.EXT_CHECKS["amended"]
+            off, off_code = v2.verify(bundle, trust)
+        self.assertEqual((off_code, off.integrity, off.assurance), (code, rep.integrity, rep.assurance))
+        self.assertEqual([c for c in off.checks if c["check"] != "not interpreted"], [c for c in rep.checks
+                                                                                      if c is not line])
+        self.assertTrue([c for c in off.checks if c["check"] == "not interpreted"][0]["detail"].startswith(
+            "2 record(s) carry ext.amended: "))
+
+    def test_only_a_gateways_request_record_says_it_was_amended(self):
+        ev = {"request_id": "r", **self.run, "client_seq": 0, "provider": "anthropic", "model": "m",
+              "amended": ["/thinking/display"]}
+        for who, req in ((AGENT, dict(ev, stream="agent", phase="request")),   # the agent's own report
+                         (GW, dict(ev, stream="gx", phase="response", caller="token:http"))):
+            with self.subTest(phase=req["phase"]), self.assertRaises(RPCError) as cm:
+                self.s.call(who, "model_event", req)
+            self.assertEqual(cm.exception.code, "invalid_request")
+
+
+class TestShowReasoningVault(Gateway):
+    content = {"retain": True}
+
+    def test_the_vault_keeps_the_request_as_sent(self):
+        self.up.reply = claude
+        self.assertEqual(self.post(THINKING, path="/v1/messages")[0], 200)
+        [seq] = [r["event"]["run_seq"] for r in self.s.log.storage.iter_run("default", self.run["run_id"])
+                 if r["event"]["type"] == "model.exchange" and r["event"]["data"]["phase"] == "request"]
+        self.s.authorize["token:http"] = sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR) + ["content_read"]
+        [item] = self.s.call(AGENT, "content_get", {"run_id": self.run["run_id"], "seqs": [seq], "purpose": "t"})["items"]
+        self.assertEqual(item["content"], json.loads(self.up.seen[0][1]))
+        self.assertEqual(item["content"]["thinking"], {"type": "adaptive", "display": "summarized"})
 
 
 class ToolResultParsing(unittest.TestCase):

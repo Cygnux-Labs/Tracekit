@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -66,16 +67,19 @@ def store_records(data_dir: str, run: Optional[str] = None) -> Dict[str, List[Di
 
 
 def bundle_records(path: str, trust: str):
-    """(run_id -> records, report, exit code) of a v2 bundle; no records unless it verifies against `trust`."""
+    """(run_id -> records, report, exit code) of a v2 bundle; no records unless it verifies against `trust`. The file
+    is read once, so the records are the ones verified, and they are parsed as the verifier parses them."""
+    from ..bundle_v2 import run_files
     from ..verify import v2
-    rep, code = v2.verify(path, trust)
+    with open(path, "rb") as f:
+        mine = io.BytesIO(f.read())
+    rep, code = v2.verify(mine, trust)
     if code:
         return {}, rep, code
-    out = {}
-    for name, data in v2.read_zip(path).items():
-        if name.startswith("runs/"):
-            recs = [json.loads(line) for line in data.splitlines() if line.strip()]
-            out[recs[0]["event"]["run_id"]] = recs
+    out, files = {}, v2.read_zip(mine)
+    for parts in run_files(files).values():
+        recs = [r for n in parts for r in v2._jsonl(files[n])]
+        out[recs[0]["event"]["run_id"]] = recs
     return out, rep, code
 
 
@@ -94,8 +98,10 @@ def cite(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """tool_call_id -> {"decision", "result": records, "approval": {decision, approver, self_approved}}."""
+    """tool_call_id -> {"decision", "result": records, "approval": {decision, approver, self_approved}}; an approval
+    that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...)."""
     calls: Dict[str, Dict[str, Any]] = {}
+    asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
     for r in recs:
         t, d = r["event"]["type"], r["event"]["data"]
         if t == "policy.decision":
@@ -104,14 +110,20 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             calls[d["tool_use_id"]]["result"] = r
         elif t == "approval" and d.get("tool_use_id") in calls:
             calls[d["tool_use_id"]]["approval"] = {k: d.get(k) for k in ("decision", "approver", "self_approved")}
+        elif t == "approval.request":
+            asked[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
+        elif t in ("approval.expired", "approval.abandoned", "approval.revoked"):
+            call = calls.get(r["event"].get("tool_call_id") or asked.get(d.get("approval_id")))
+            if call is not None and (call.get("approval") or {}).get("decision") in (None, "approve"):
+                call["approval"] = {"decision": t.split(".")[1], "approver": None, "self_approved": False}
     return calls
 
 
-def _policy(call: Dict[str, Any], reasons: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+def _policy(call: Dict[str, Any], reasons: Dict[str, Dict[str, Dict[str, str]]]) -> Dict[str, Any]:
     d = call["decision"]["event"]["data"]
     known = reasons.get(d["policy_hash"], {})
     p = {"decision": d["decision"], "rule_ids": d["rule_ids"], "policy_hash": d["policy_hash"],
-         "reasons": [known.get(i, "") for i in d["rule_ids"]]}
+         "reasons": [known.get(i, {}).get("reason", "") for i in d["rule_ids"]]}
     if "approval" in call:
         p["approval"] = call["approval"]
     return p
@@ -188,7 +200,7 @@ class _Writer:
 
 # --------------------------------------------------------------------------- one v2 run
 
-def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[str, str]]) -> str:
+def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[str, Dict[str, str]]]) -> str:
     first = recs[0]["event"]
     w = _Writer(out_dir, first["run_id"], first["tenant"])
     agent = (first["data"].get("agent") or {}).get("name") if first["type"] == "run.registered" else None
@@ -217,7 +229,10 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                         source=d["source"], trust=d["trust"], kind=kind)
             seen.append({"ref": ev["ref"], "kind": kind, "source": d["source"], "trust": d["trust"],
                          "from_event": ev["id"]})
-        elif t == "model.exchange" and exchanges[d["exchange_id"]][0] is r:
+        # a model call: an exchange with a response (a transcript's prompt line is a request alone, no model call;
+        # the prompt itself is the run's observed input)
+        elif t == "model.exchange" and exchanges[d["exchange_id"]][0] is r and \
+                any(x["event"]["data"].get("phase") != "request" for x in exchanges[d["exchange_id"]]):
             ex = [x["event"]["data"] for x in exchanges[d["exchange_id"]]]
             uses = [u for x in ex for u in x.get("tool_uses") or []]
             ev = w.emit(agent, "decision", e["ts"], r, model=d["model"], purpose="", params={}, seed=None,
@@ -401,7 +416,7 @@ def check(run: Run, records: Dict[str, List[Dict[str, Any]]]):
 
 
 def merge(run: Run, records: Dict[str, List[Dict[str, Any]]], out_dir: str,
-          reasons: Dict[str, Dict[str, str]]) -> str:
+          reasons: Dict[str, Dict[str, Dict[str, str]]]) -> str:
     """The why log `run` with each citation checked against `records` and the signed verdicts filled in."""
     problems, alerts, task = check(run, records)
     w = _Writer(out_dir, run.run_id)
@@ -462,7 +477,7 @@ def recheck(records: Dict[str, List[Dict[str, Any]]], out_dir: str) -> List[tupl
 
 
 def import_records(records: Dict[str, List[Dict[str, Any]]], out_dir: str,
-                   reasons: Optional[Dict[str, Dict[str, str]]] = None) -> List[str]:
+                   reasons: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None) -> List[str]:
     """Merge every why log under out_dir that cites one of these runs; convert the others. Returns the run paths.
     Writes nothing when a run it would write exists (FileExistsError). `reasons`: view.policy_reasons(), computed here
     when not given (it compiles every shipped pack)."""

@@ -1,5 +1,8 @@
 # LangChain v1 (signer RPC)
 
+> **Stable:** tested with [`tests/adapter_contract.py`](../../tests/adapter_contract.py) against the pinned library on every push to main
+> and every pull request ([what's stable](../support.md)).
+
 `tracekit.integrations.langchain.TracekitMiddleware` is a LangChain v1 `AgentMiddleware`. Before each tool call it
 asks the Tracekit signer for a policy decision; after the tool runs it records the outcome. It works with any object
 that implements the signer RPC (`tracekit.signer.rpc_schema.SignerAPI`), including `tracekit.testing.FakeSigner`.
@@ -9,7 +12,7 @@ The older callback adapter in `tracekit.adapters.langchain` ([adapters.md](../ad
 ## Install
 
 ```bash
-pip install tracekit-ai "langchain>=1.4"
+pip install tracekit-ai "langchain>=1.4,<1.5" "langgraph>=1.2,<1.3"
 pip install langgraph-checkpoint-sqlite   # optional: a durable checkpointer for approvals
 ```
 
@@ -53,6 +56,18 @@ app = graph.compile(checkpointer=TracekitCheckpointer(InMemorySaver(), signer, r
 | after the tool runs | `complete` | `status` `ok` or `error`, a `sha256:` commitment to the ToolMessage content (not the content), or the exception type and message |
 
 The signer classifies the tool and computes the args digest itself; nothing the middleware sends is trusted for that.
+
+## What the model said
+
+Under `create_agent` the middleware records each model response (`wrap_model_call`): its reasoning blocks (a
+summary, with the provider's signature or encrypted content), an open model's `reasoning_content` or inline `<think>`
+(its full reasoning), its text, and the calls of the agent's tools under the ids they are decided by (not a
+structured-output tool's), each added to its response only once it reaches the middleware: a call another middleware
+stops first (a person's reject in `HumanInTheLoopMiddleware`, `ToolCallLimitMiddleware`, the recursion limit) is not
+recorded. A call a person edited there is recorded as the model asked for it and decided as edited, so it reads as
+`reconcile.args_mismatch`. A tool executor's tool gets the model's id for its call from the middleware, and the
+executor decides it under that id. A `tracekit_tool_node` graph has no model hook: record its model
+calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
 
 ## Decisions
 

@@ -2,15 +2,19 @@
 
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
 strings, substitutions, heredocs into a shell and interpreter one-liners:
-`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename;
-`via` says how the command was reached (empty at top level); commands with the same `pipeline` are stages of one
-pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or expansion in its
-name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of a stream).
+`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename, the part after any
+`\\` in lower case and without a `.exe` (the agent's file system may ignore case: macOS runs git for `Git`; Windows
+runs git.exe for git); `via` says how the command was
+reached (empty at top level); commands with the same `pipeline` are stages of one pipeline, in order. `opaque`: what
+the command runs cannot be read from the line (a glob, brace or expansion in its name, a shell or interpreter reading
+its script from a pipe, a file or inherited stdin, `source` of a stream).
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
-redirections kept, for rules that match a whole command line; and the words that name something besides the commands'
-argv: redirection targets, `VAR=` assignments and the program an interpreter reads from a heredoc or herestring.
+redirections kept, and again with its program names in lower case when that differs, for rules that match a whole
+command line; the words that name something besides the commands' argv: redirection targets, `VAR=` assignments
+and the program an interpreter reads from a heredoc or herestring; and the targets of the redirections that write a
+file (`>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&` to a name rather than a descriptor).
 """
 import re
 
@@ -20,9 +24,12 @@ class ParseError(ValueError):
 
 
 MAX_DEPTH = 32
-MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings included: 4 × the largest subject, so
-                     # a worst-case command costs a fraction of a second of the signer (the parser holds the GIL)
-SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash"}
+MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings and the list each process call in
+                     # interpreter code reads included: 4 × the largest subject, so a worst-case command costs a
+                     # fraction of a second of the signer (the parser holds the GIL)
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "rbash", "mksh", "ksh93", "yash", "posh", "lksh", "oksh"}
+# shells whose language the parser doesn't read: the commands they get on their line or from stdin are opaque
+FOREIGN_SHELLS = {"fish", "csh", "tcsh", "pwsh", "powershell", "nu", "xonsh", "elvish"}
 # wrapper -> (options that take a value, positional arguments before the command)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"), 0), "nohup": ((), 0),
             "time": (("-f", "-o", "--format", "--output"), 0),
@@ -45,7 +52,35 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
                          "--whitelist-environment"), 0),
             "taskset": ((), 1), "chrt": (("-T", "-P", "-D", "--sched-runtime", "--sched-period", "--sched-deadline"), 1),
             "unbuffer": ((), 0), "fakeroot": (("-l", "-s", "-i", "-b", "--lib", "--faked"), 0),
-            "dbus-run-session": (("--config-file", "--dbus-daemon"), 0)}
+            "dbus-run-session": (("--config-file", "--dbus-daemon"), 0),
+            "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
+            "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
+            "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
+            "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
+            "proxychains": (("-f",), 0), "proxychains4": (("-f",), 0), "firejail": ((), 0),
+            "sandbox-exec": (("-f", "-n", "-p", "-D"), 0), "ssh-agent": (("-a", "-E", "-t", "-O", "-P"), 0),
+            "systemd-run": (("-u", "--unit", "-p", "--property", "-E", "--setenv", "--description", "--slice", "--uid",
+                             "--gid", "--nice", "--working-directory", "-H", "--host", "-M", "--machine", "--on-active",
+                             "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar"), 0),
+            "valgrind": ((), 0), "ltrace": (("-a", "-A", "-D", "-e", "-F", "-l", "-n", "-o", "-p", "-s", "-u", "-w"), 0),
+            "chpst": (("-u", "-U", "-b", "-e", "-/", "-n", "-l", "-L", "-m", "-d", "-o", "-p", "-f", "-c", "-r", "-t"), 0),
+            "s6-setuidgid": ((), 1), "gosu": ((), 1), "su-exec": ((), 1), "with-contenv": ((), 0),
+            "dumb-init": (("-r", "--rewrite"), 0), "tini": (("-p", "-e"), 0)}
+# runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
+# "--": the command follows a `--`, after the tools to run it with)
+# lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
+# anchored on a command's name (TK-D001, TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
+RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirements", "--python", "-p", "--package",
+                             "--extra", "--group", "--only-group", "--env-file", "--directory", "--project", "--index",
+                             "--default-index", "--index-url", "--extra-index-url"), 0),
+           "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
+           "pdm": (("run",), ("-p", "--project"), 0), "direnv": (("exec",), (), 1),
+           "op": (("run",), ("--env-file", "--account", "--config", "--environment"), 0),
+           "doppler": (("run",), ("-p", "--project", "-c", "--config", "--token", "--scope", "--mount"), 0),
+           "mise": (("exec", "x"), ("-C", "--cd", "-j", "--jobs"), "--"),
+           "npm": (("exec", "x"), ("-p", "--package", "-w", "--workspace"), 0),
+           "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
+           "yarn": (("exec", "dlx"), ("-p", "--package"), 0), "bun": (("x",), ("-p", "--package"), 0)}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -72,11 +107,15 @@ _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E"
 # the command at run time, and awk's `print | "cmd"` and `"cmd" | getline`, are not followed (tripwire territory)
 _CALL = re.compile(r"\b(system|popen|execSync|execFileSync|exec|spawn\w*|run|call|check_call|check_output|Popen|getoutput|"
                    r"shell_exec|passthru|proc_open|os\.execute)(\s*\(\s*|\s+)")
-# (sed addresses and s/// parts are bounded so a long script cannot make the scan quadratic)
-_SED_ADDR = r"(?:^|[;\n{}])\s*(?:(?:[0-9$,~+!]|/(?:\\.|[^/\\\n]){0,200}/)\s*){0,8}"
+# (sed addresses and s/// parts are bounded so a long script cannot make the scan quadratic; the whitespace runs stay
+# off `\n`, which is already a start, so a newline-only script is not re-scanned from each one)
+_SED_ADDR = r"(?:^|[;\n{}])[^\S\n]*(?:(?:[0-9$,~+!]|/(?:\\.|[^/\\\n]){0,200}/)[^\S\n]*){0,8}"
 _SED_E = re.compile(_SED_ADDR + r"e([^\n]*)")
 _SED_S_E = re.compile(_SED_ADDR + r"s([^\\\n])(?:\\.|(?!\1).){0,200}\1(?:\\.|(?!\1).){0,200}\1[^;\n}]{0,20}e")
 _STR = re.compile(r"""(['"])((?:\\.|(?!\1)[^\\\n])*)\1""")
+# the end of a `[...]` argv list: the first `]` that isn't inside a string literal (a string is consumed whole, so a
+# `]` in one is skipped); linear, since literals of the same quote can't overlap
+_LIST_END = re.compile(r"""(['"])(?:\\.|(?!\1)[^\\\n])*\1|\]""")
 _TICK = re.compile(r"`([^`]*)`")
 
 
@@ -85,17 +124,18 @@ def parse(command):
 
 
 def analyse(command):
-    """(the commands, the normalised lines, the other words that name something)."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "pipes": 0, "depth": 0, "work": 0, "exp": 0}
+    """(the commands, the normalised lines, the other words that name something, the files redirections write)."""
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "pipes": 0, "depth": 0, "work": 0, "exp": 0}
     _Parser(command, ctx, []).script()
-    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"]
+    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"], ctx["written"]
 
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [" ".join(argv)], "refs": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
-    _Parser("", ctx, []).emit(list(argv), 1, [])
-    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"]
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
+    words = list(argv)
+    lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
+    return ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"]
 
 
 def data_words(argv):
@@ -104,7 +144,8 @@ def data_words(argv):
     name, i = argv[0], 1
     if name == "git":   # the subcommand, after git's own options
         while i < len(argv) and argv[i].startswith("-"):
-            i += 2 if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+            i += 2 if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+                                  "--config-env") else 1
         name, i = (argv[i] if i < len(argv) else ""), i + 1
         if name in ("commit", "tag", "merge", "stash", "notes"):
             out = set()
@@ -137,7 +178,14 @@ def _kind(name):
 
 
 def _unwrap(name, args):
-    opts, positional = WRAPPERS[name]
+    """What a wrapper, or a runner's subcommand (args[0]: `uv run`), runs."""
+    if name in WRAPPERS:
+        opts, positional = WRAPPERS[name]
+    else:
+        _, opts, positional = RUNNERS[name]
+        args = args[1:]
+        if positional == "--":
+            return args[args.index("--") + 1:] if "--" in args else []
     i = 0
     while i < len(args):
         a = args[i]
@@ -168,7 +216,7 @@ def _shell_mode(args):
         if a in ("--", "-"):
             i += 1
             break
-        if a[:1] not in "-+" or len(a) == 1:
+        if a[:1] not in ("-", "+") or len(a) == 1:   # an empty word is an operand too
             break
         if a[0] == "-" and not a.startswith("--"):
             flags += a[1:]
@@ -199,13 +247,39 @@ def _split_string(args):
     i = 0
     while i < len(args) and args[i].startswith("-") and args[i] != "--":
         a = args[i]
-        if a in ("-S", "--split-string"):
+        if a == "--split-string" or re.fullmatch(r"-[iv0]*S", a):
             return " ".join(args[i + 1:])
         if a.startswith("--split-string="):
             return " ".join([a[15:]] + args[i + 1:])
         if re.fullmatch(r"-[iv0]*S.+", a, re.S):
             return " ".join([a[a.index("S") + 1:]] + args[i + 1:])
         i += 2 if a in WRAPPERS["env"][0] else 1
+    return None
+
+
+def _foreign_runs_text(shell, args):
+    """Whether a FOREIGN_SHELLS shell runs commands from its line or stdin: -c (also in a cluster, -lc, but for
+    PowerShell, whose options are words: -ExecutionPolicy), --command or PowerShell's -Command or -EncodedCommand (any
+    prefix, any case), or no script file before them."""
+    for a in args:
+        if not a.startswith("-"):
+            return False   # a script file
+        name = a.lstrip("-").split("=", 1)[0].lower()
+        if shell not in ("pwsh", "powershell") and re.fullmatch(r"-[a-z]*c[a-z]*", a) or name and (
+                "command".startswith(name) or name == "ec" or "encodedcommand".startswith(name)):
+            return True
+    return True
+
+
+def _npm_call(args):
+    """The script of npm exec's (npx's) -c/--call, among the options before the command it runs, or None."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "--":
+        if args[i] in ("-c", "--call"):
+            return args[i + 1] if i + 1 < len(args) else ""
+        if args[i].startswith("--call="):
+            return args[i][7:]
+        i += 2 if args[i] in ("-p", "--package", "-w", "--workspace") else 1
     return None
 
 
@@ -321,9 +395,12 @@ def _ansi_c(text):
 
 class _Parser:
     def __init__(self, src, ctx, via):
-        self.s, self.i, self.ctx, self.via, self.heredocs, self.out = src, 0, ctx, via, [], []
-        ctx["work"] += len(src)
-        if ctx["work"] > MAX_WORK:
+        self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
+        self.charge(len(src))
+
+    def charge(self, n):
+        self.ctx["work"] += n
+        if self.ctx["work"] > MAX_WORK:
             raise ParseError("too much nested shell text")
 
     def peek(self, k=0):
@@ -350,9 +427,9 @@ class _Parser:
             raise ParseError(f"heredoc {self.heredocs[0]['delim']} not terminated")
 
     def flush(self):
-        while self.out[-1:] == [";"]:
+        if self.out[-1:] == [";"]:   # the separator list() put after the last pipeline; a `;` word before it stays
             self.out.pop()
-        self.ctx["lines"].append(" ".join(self.out))
+        self.ctx["lines"] += _lines(self.out, self.progs)
 
     def blank(self):
         s = self.s
@@ -420,7 +497,7 @@ class _Parser:
             self.gap()
 
     def simple(self, pid, piped=False):
-        words, globs, names, strings, docs = [], [], [], [], []
+        words, globs, names, strings, docs, idx = [], [], [], [], [], []
         consumed = loop_header = stdin_redirect = False
         while True:
             self.blank()
@@ -453,6 +530,8 @@ class _Parser:
                 else:
                     self.ctx["refs"].append(target[0])
                     stdin_redirect |= m.group(2) in ("<", "<&", "<>")
+                    if m.group(2) not in ("<", "<&") and not (m.group(2) == ">&" and re.fullmatch(r"\d*-?", target[0])):
+                        self.ctx["written"].append(target[0])
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
@@ -470,9 +549,11 @@ class _Parser:
                 self.ctx["refs"].append(text)
                 continue
             words.append(text)
+            idx.append(len(self.out) - 1)
             globs.append(g)
             names.append(g or (expanded and _name_unreadable(text)))
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
+        self.progs += [idx[k] for k in _programs(words, cmds)]
         for d in docs:
             d["cmds"] = cmds
         shell = _stdin_shell(cmds)
@@ -499,7 +580,7 @@ class _Parser:
         while argv:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
-            name, args = argv[0].rsplit("/", 1)[-1] or argv[0], argv[1:]
+            name, args = _lower_name(argv[0].rsplit("/", 1)[-1] or argv[0]), argv[1:]
             # xargs -I{} inserting its input into a script or a command name: what runs comes from stdin
             tainted = repl is not None and (repl in argv[0] or (
                 (name in SHELLS or _kind(name)) and any(repl in a for a in args)))
@@ -530,7 +611,10 @@ class _Parser:
                     cmd["opaque"] = True   # it reads the commands from stdin
             elif name == "env" and _split_string(args) is not None:
                 self.nested(_split_string(args), via + ["env -S"])
-            elif name in WRAPPERS:
+            elif (name == "npx" or name == "npm" and args[:1] in (["exec"], ["x"])) and \
+                    (script := _npm_call(args if name == "npx" else args[1:])) is not None:
+                self.nested(script, via + [name + " -c"])
+            elif name in WRAPPERS or name in RUNNERS and args[:1] and args[0] in RUNNERS[name][0]:
                 if name == "runuser" and _dash_c(args) is not None:
                     self.nested(_dash_c(args), via + ["runuser -c"])
                 inner = _unwrap(name, args)
@@ -545,12 +629,18 @@ class _Parser:
                 mode, script = _shell_mode(args)
                 if mode == "c":
                     self.nested(script, via + [name + " -c"])
+            elif name in FOREIGN_SHELLS:
+                cmd["opaque"] = cmd["opaque"] or _foreign_runs_text(name, args)
             elif name in ("source", ".") and args[:1] and args[0].startswith(STREAMS):
                 cmd["opaque"] = True
             elif name == "eval":
                 self.nested(" ".join(args), via + ["eval"])
             elif name == "ssh":
                 self.nested(_ssh_command(args), via + ["ssh"])
+            elif name == "nix-shell":   # --run and --command take a script, as sh -c does
+                for i in range(len(args) - 1):
+                    if args[i] in ("--run", "--command"):
+                        self.nested(args[i + 1], via + ["nix-shell --run"])
             elif name == "find":
                 for inner in _find_execs(args):
                     self.emit(inner, pid, via + ["find -exec"])
@@ -576,13 +666,16 @@ class _Parser:
         for m in _CALL.finditer(code):
             if kind == "python" and m.group(1) == "exec":
                 continue   # Python's exec runs Python, not a shell
-            rest = code[m.end():]
-            if rest.startswith("[") and "]" in rest:
-                argv = [body for _, body in _STR.findall(rest[:rest.index("]")])]
+            i = m.end()
+            if code.startswith("[", i):
+                end = next((e for e in _LIST_END.finditer(code, i + 1) if e.group() == "]"), None)
+                j = end.start() if end else -1
+                self.charge((len(code) if j < 0 else j) - i)   # calls whose lists overlap read the same text again
+                argv = [body for _, body in _STR.findall(code, i, j)] if j >= 0 else []
                 if argv:
                     self.emit(argv, pid, via)
-            elif _STR.match(rest):
-                self.nested(_STR.match(rest).group(2), via)
+            elif lit := _STR.match(code, i):
+                self.nested(lit.group(2), via)
         for m in _TICK.finditer(code) if kind in ("perl", "ruby", "php") else ():
             self.nested(m.group(1), via)
 
@@ -652,10 +745,10 @@ class _Parser:
         return "".join(buf), s[start:self.i], bool(glob), self.ctx["exp"] != exp
 
     def sub(self, label):
-        via, out, self.via, self.out = self.via, self.out, self.via + [label], []
+        via, out, progs, self.via, self.out, self.progs = self.via, self.out, self.progs, self.via + [label], [], []
         self.list(")")
         self.flush()
-        self.via, self.out = via, out
+        self.via, self.out, self.progs = via, out, progs
 
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
@@ -736,6 +829,35 @@ class _Parser:
         self.ctx["exp"] += 1
         self.nested(re.sub(r"\\([`\\$])", r"\1", m.group(1)), self.via + ["``"])
         return self.s[start:self.i]
+
+
+def _lower_name(word):
+    """`word` with the name after its last / or \\ in lower case and without a `.exe` (Windows runs git.exe for git):
+    the directories keep their case."""
+    i = max(word.rfind("/"), word.rfind("\\")) + 1
+    name = word[i:].lower()
+    return word[:i] + (name[:-4] if name.endswith(".exe") and len(name) > 4 else name)
+
+
+def _programs(words, cmds):
+    """Indexes in `words` of the program names of `cmds`, emit's commands for them (a wrapper's and what it runs), and
+    of what a find among them runs (the word after each -exec, -execdir, -ok or -okdir)."""
+    out = []
+    for c in cmds:
+        k = len(words) - len(c["argv"])
+        if k >= 0 and words[k + 1:] == c["argv"][1:]:
+            out.append(k)
+            if c["argv"][0] == "find":
+                out += [k + j + 1 for j, a in enumerate(c["argv"][:-1]) if a in ("-exec", "-execdir", "-ok", "-okdir")]
+    return out
+
+
+def _lines(words, progs):
+    """The line `words` make, and again with the program names at indexes `progs` in lower case when that differs."""
+    low = list(words)
+    for i in progs:
+        low[i] = _lower_name(low[i])
+    return [" ".join(words)] + ([" ".join(low)] if low != words else [])
 
 
 def _stdin_shell(cmds):

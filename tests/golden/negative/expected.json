@@ -2,6 +2,7 @@
   "files": {
     "negative/checkpoint-body-edited.tkb": "5b69e6ef7955d869f2d70fd42021fa68240da372e1a41e825a4e21c0378d98dd",
     "negative/checkpoint-wrong-origin.tkb": "35c02d6c18d66fe28ee03e06bcdcb262da07a6a96f78779d57335109b137def8",
+    "negative/findings-run-twice.tkb": "9d86cfd8f70a02f8fa8684e7d136c19d2ffee91b2284137e704f700f2ad6add0",
     "negative/json-manifest-duplicate-key.tkb": "a989a2d11df1d94b865cfef93d18bbe532280c7f873affa93ff55d9a4c5507e5",
     "negative/json-manifest-too-deep.tkb": "88b01509cfc58d6ca3e80695d23ab60310b05bb4c8fc46951d7010b3546c4527",
     "negative/json-no-final-newline.tkb": "aba095faa37af2a8bf7c2f1e18f2c568d54153149ae7e03b6e4c79a00417f052",
@@ -32,6 +33,7 @@
     "negative/run-set-float-bound.tkb": "0ed2a956336f93ca554f277c761c45aa1ab6883473bf805306a3323bb1d738fe",
     "negative/run-set-foreign-run.tkb": "26ecca52a68cd63bfeec460ae2e2671cd6fc70bed2ae4ff37278989a743f497a",
     "negative/run-set-registry-uncosigned.tkb": "66838d8a2c2bb6e8ee3ad1d70d8cd21d6c415bd6a5310ae14b3a6b2e91c3d1e2",
+    "negative/run-set-run-twice.tkb": "0f63beaa30c43717336efba16d3670b2d576754be1c3db7eb893647b142e9527",
     "negative/trust.json": "090951d638b56562abb560215bbf164f4d6cc7630227b97d7cf036050c012883",
     "negative/witness-none.tkb": "8148aa341b08808513350e71eedb40d14d8e0b5d89455fe7e8f090d3a099b20d",
     "negative/witness-unpinned-only.tkb": "0efd3ea1b5e73b45b054ad74ff3b96c474b38a8947217706dc49523bed5d0117",
@@ -101,6 +103,69 @@
         "exit_code": 2,
         "integrity": "UNUSABLE BUNDLE",
         "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "bytes before the first entry",
+      "bundle": "zip-prefix.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "archive comment",
+      "bundle": "zip-archive-comment.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "entry with an extra field",
+      "bundle": "zip-extra-field.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "entry with a general-purpose flag",
+      "bundle": "zip-flags.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "entry compressed with bzip2",
+      "bundle": "zip-bzip2.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "manifest nested deeper than 128",
+      "bundle": "json-manifest-too-deep.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "record file line nested deeper than 128",
+      "bundle": "json-record-too-deep.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "bundle structure"
       }
     },
     {
@@ -302,6 +367,15 @@
       }
     },
     {
+      "name": "two central directories, one reached by a zip64 locator",
+      "bundle": "zip-two-directories.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
       "name": "record after run.final",
       "bundle": "run-record-after-final.tkb",
       "expected": {
@@ -383,84 +457,30 @@
       }
     },
     {
-      "name": "bytes before the first entry",
-      "bundle": "zip-prefix.tkb",
-      "expected": {
-        "exit_code": 2,
-        "integrity": "UNUSABLE BUNDLE",
-        "first_failure": "bundle readable"
-      }
-    },
-    {
-      "name": "archive comment",
-      "bundle": "zip-archive-comment.tkb",
-      "expected": {
-        "exit_code": 2,
-        "integrity": "UNUSABLE BUNDLE",
-        "first_failure": "bundle readable"
-      }
-    },
-    {
-      "name": "entry with an extra field",
-      "bundle": "zip-extra-field.tkb",
-      "expected": {
-        "exit_code": 2,
-        "integrity": "UNUSABLE BUNDLE",
-        "first_failure": "bundle readable"
-      }
-    },
-    {
-      "name": "entry with a general-purpose flag",
-      "bundle": "zip-flags.tkb",
-      "expected": {
-        "exit_code": 2,
-        "integrity": "UNUSABLE BUNDLE",
-        "first_failure": "bundle readable"
-      }
-    },
-    {
-      "name": "entry compressed with bzip2",
-      "bundle": "zip-bzip2.tkb",
-      "expected": {
-        "exit_code": 2,
-        "integrity": "UNUSABLE BUNDLE",
-        "first_failure": "bundle readable"
-      }
-    },
-    {
-      "name": "manifest nested deeper than 128",
-      "bundle": "json-manifest-too-deep.tkb",
-      "expected": {
-        "exit_code": 2,
-        "integrity": "UNUSABLE BUNDLE",
-        "first_failure": "bundle readable"
-      }
-    },
-    {
-      "name": "record file line nested deeper than 128",
-      "bundle": "json-record-too-deep.tkb",
-      "expected": {
-        "exit_code": 1,
-        "integrity": "FAILED",
-        "first_failure": "bundle structure"
-      }
-    },
-    {
-      "name": "two central directories, one reached by a zip64 locator",
-      "bundle": "zip-two-directories.tkb",
-      "expected": {
-        "exit_code": 2,
-        "integrity": "UNUSABLE BUNDLE",
-        "first_failure": "bundle readable"
-      }
-    },
-    {
       "name": "run-set whose range ends in a float token",
       "bundle": "run-set-float-bound.tkb",
       "expected": {
         "exit_code": 1,
         "integrity": "FAILED",
         "first_failure": "run-set"
+      }
+    },
+    {
+      "name": "run-set with a run's file twice",
+      "bundle": "run-set-run-twice.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run chain"
+      }
+    },
+    {
+      "name": "findings run's file twice",
+      "bundle": "findings-run-twice.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run chain"
       }
     }
   ]

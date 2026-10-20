@@ -36,6 +36,7 @@ access.
 | `class` | Your judgement of who runs each witness: `public` (a witness network), `customer` (you or another customer), `tracekit`, or `operator` (the party being audited). Only non-`operator` witnesses count toward `witnessed`. |
 | `witnesses_required` | How many pinned cosignatures a checkpoint must carry. Set it to at least 1 for an audit. |
 | `rekor` (optional) | Sigstore's `trusted_root` from Sigstore's TUF repository, the signer's Rekor publishing key (`rekor.pub`) from the operator, and its class. See [witnesses](witnesses.md#v2-rekor-v2-anchors-and-rfc-3161-timestamps). |
+| `analyzers` (optional) | The identities (`scheme:subject`, such as `uid:1004` or `mtls:spiffe://acme/analyzer`) whose signed findings you take as independent: the operator's analyzer, never the agent's identity. Only a finding by a pinned author reads `independent`; see [verdicts](verdicts.md#reviews). |
 
 `tracekit signer trust -o trust.json` writes a trust config from a signer's own config. It is a convenience for the
 operator; as an auditor, check every key in it against your own sources before using it.
@@ -45,9 +46,10 @@ operator; as an auditor, check every key in it against your own sources before u
 Ask for the runs you sample, and for the tenant's run-set, which shows that no run was left out:
 
 ```sh
-tracekit export --v2 --run <run id> -o run.tkb                  # one run
-tracekit export --v2 --run-set --tenant <tenant> -o run-set.tkb  # the registry from size 0 to its latest checkpoint,
-                                                                 # with every run finalised in it
+tracekit export --v2 --config signer.yaml --run <run id> -o run.tkb                  # one run
+tracekit export --v2 --config signer.yaml --run-set --tenant <tenant> -o run-set.tkb  # the registry from size 0 to its
+                                                                                      # latest checkpoint, with every
+                                                                                      # run finalised in it
 ```
 
 The operator runs these after the next checkpoint covers the records. A run-set bundle holds the tenant's registry
@@ -73,6 +75,16 @@ npx --package ./cygnuxlabs-tracekit-<version>.tgz tracekit verify run.tkb --trus
 
 It needs only Node ≥ 20.12. Where it can't check something the bundle relies on (an SLH-DSA checkpoint line, a Rekor
 anchor, a certified record key) it says `UNVERIFIABLE` and names it; use the Python verifier for those.
+
+**In a browser.** The release's `verify.html` is the TypeScript verifier as one page whose Content Security Policy lets
+it load and send nothing, so a bundle checked there never leaves your machine. Check your copy against the release
+first, `gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`, then open it and drop in the bundle and your
+trust config. Without the trust config it still finds changed records, but never says VERIFIED
+([verdicts](verdicts.md#verify-in-your-browser)).
+
+A verifier older than the bundle says `UNVERIFIABLE (needs tracekit >= x)` and, from 1.4.0, the commands that verify
+it ([verdicts](verdicts.md#a-bundle-that-needs-a-newer-verifier)). A `not interpreted` warning means the records carry
+an ext name your verifier doesn't check: they verified, but for what the name says use the version the line names.
 
 ## 5. Read the report
 

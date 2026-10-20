@@ -99,7 +99,8 @@ def write_zip(path, files):
 
 
 def cross_tenant(d):
-    methods = [*REQUESTS.keys() - svc.OPERATOR, svc.OTLP_IMPORT]
+    # content_get is granted as content_read (the signer refuses the method name itself in authorize)
+    methods = [*REQUESTS.keys() - svc.OPERATOR - {"content_get"}, svc.CONTENT_READ, svc.OTLP_IMPORT]
     s = svc.SignerService(os.path.join(d, "signer"), grace_s=0, tenants=TENANTS,
                           authorize={"uid:1001": methods, "uid:1002": methods},
                           policy=Engine({"ask": [{"id": "E12-PAY", "tool": "pay", "pattern": "^"}]}))

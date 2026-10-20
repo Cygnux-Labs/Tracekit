@@ -139,6 +139,7 @@ class Surfaces(unittest.TestCase):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, SECRET, ["127.0.0.1"], login=login,
                                                                          runs=no_logs(), why=why))
         auth = {"Authorization": f"Bearer {SECRET}"}
+        operator = _session(srv.RequestHandlerClass.session_key, int(time.time()) + 60)   # the token's session
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 401), ("GET", "/nope", auth, 404),
                              ("GET", "/runs", {}, 401), ("GET", f"/api/runs?run={SECRET}", {}, 401),
                              ("GET", f"/api/runs?limit={BIG}", auth, 400), ("GET", f"/api/runs?{SECRET}=1", auth, 400),
@@ -150,7 +151,7 @@ class Surfaces(unittest.TestCase):
                              ("GET", f"/api/why/runs/{SECRET}", auth, 404), ("GET", "/api/why/runs/..%2f..", auth, 400),
                              ("GET", "/api/why/nope", auth, 404),
                              ("GET", "/api/why/workspace", {"Cookie": f"tracekit_observe={SECRET}"}, 401),
-                             ("POST", "/v1/ingest", {"Cookie": f"tracekit_observe={_session(SECRET)}"}, 401),
+                             ("POST", "/v1/ingest", {"Cookie": f"tracekit_observe={operator}"}, 401),
                              ("POST", "/v1/ingest", {**auth, "Content-Length": BIG}, 413),
                              ("POST", "/api/why/runs/x/tests", {"Content-Type": "application/json"}, 401),
                              ("POST", "/api/why/runs/x/tests", auth, 403), ("POST", "/nope", auth, 404),
@@ -359,7 +360,7 @@ class Approvals(unittest.TestCase):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
-        self.port = srv.server_address[1]
+        self.port, self.key = srv.server_address[1], srv.RequestHandlerClass.session_key
         self.sid = self.sessions.add({"subject": "corp/u", "person": "corp/p", "groups": [], "tenant": "acme"},
                                      "approver")
         self.good = {"Cookie": f"{observe.COOKIE}={self.sid}", "Content-Type": "application/json",
@@ -393,7 +394,8 @@ class Approvals(unittest.TestCase):
                 (dict(self.good, **{"X-CSRF-Token": "forged"}), body, 403),
                 (dict(self.good, **{"Content-Type": "text/plain"}), body, 403),
                 (dict(self.good, Cookie=f"{observe.COOKIE}={auditor}"), body, 403),
-                (dict(self.good, Cookie=f"{observe.COOKIE}={_session(SECRET)}"), body, 403),   # the operator token
+                (dict(self.good, Cookie=f"{observe.COOKIE}={_session(self.key, int(time.time()) + 60)}"), body,
+                 403),   # the operator token's session
                 (dict(self.good, Host="evil.example"), body, 403),
                 (dict(self.good, **{"Content-Length": BIG}), b"", 413),
                 (self.good, b"[1]", 400)):
@@ -482,9 +484,14 @@ class Page(unittest.TestCase):
     def test_no_url_or_code_sink_takes_data(self):
         for page in (self.page, self.approvals, self.runs):
             self.assertEqual([v for v in re.findall(r'\b(?:href|src|action)="([^"]*)"', page) if "${" in v], [])
-            # the one href set: the downloaded bundle's object URL, never data
-            self.assertNotRegex(page, r"\beval\(|new Function|\.href\s*=(?! URL\.createObjectURL\(await r\.blob\(\)\);)"
-                                      r"|window\.open|document\.write|location\.")
+            # the hrefs set: the downloaded bundle's object URL, and a run link that is a fixed page plus an encoded run
+            # id in the fragment, never data as a URL; location.hash is read (a run id to select), never navigated to
+            self.assertNotRegex(page, r"\beval\(|new Function|\.href\s*=(?! URL\.createObjectURL\(await r\.blob\(\)\);"
+                                      r"| page \+ \"#run=\" \+ encodeURIComponent\(id\);)"
+                                      r"|window\.open|document\.write|\blocation\s*=|location\.(?:assign|replace)\(")
+        # the run link's page is one of the viewer's own paths, never data
+        self.assertIn('const page = document.querySelector(\'.nav a[href="/"]\') ? "/" : document.querySelector('
+                      '\'.nav a[href="/runs"]\') ? "/runs" : null;', self.approvals)
 
 
 if __name__ == "__main__":

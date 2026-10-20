@@ -45,7 +45,8 @@ _MISSING = object()
 
 def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
-    `closing_at` are monotonic times for the idle and grace clocks. `prov`: the provenance index of a run registered
+    `closing_at` are monotonic times for the idle and grace clocks; `registered`, its run.registered's time (none in a
+    snapshot before 1.4). `prov`: the provenance index of a run registered
     since this signer started (SignerService._index), memory only; None after a restart (unavailable). `writers`: who
     wrote each stream first (writer()), `tails`: the last client_seq a close_run said each stream ended at; both memory
     and snapshot only. `results`: tool_call_id -> [[decision_id, output hash, comparable, redacted, the form digest it
@@ -55,12 +56,13 @@ def new_run(tenant, run_id):
             "tails": {}, "closed": False, "results": {},
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
             "principal": None, "people": (None, None), "harness": None, "active": time.monotonic(), "closing_at": None,
-            "rec": reconcile.new(), "digests": {}, "prov": None}
+            "rec": reconcile.new(), "digests": {}, "prov": None, "replay": False}
 
 
-# the streams: a gateway's close_run may still name one (SignerService._close_run)
+# the streams: a gateway's close_run may still name one (SignerService._close_run); `replay`: a findings or replay run,
+# which no findings or replay run may be about (SignerService._register_run)
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
-              "tails")
+              "tails", "replay")
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "nondeterministic",
              "detect_ids", "via", "caller")
@@ -232,6 +234,12 @@ def salt_label(e):
     return None
 
 
+def constraint_state(e):
+    """A live constraint as a run's state keeps it (SignerService._constrained), from its constraint.added `e`:
+    [kind, the salt label of its object's commitment, that commitment or None, its run_seq]."""
+    return [e["data"]["kind"], salt_label(e), e["data"].get("object_commitment"), e["run_seq"]]
+
+
 def writer(identity, req):
     """Who writes a stream: the caller, and whether through a gateway (a request with `caller`)."""
     return subject(identity) + (" through a gateway" if "caller" in req else "")
@@ -300,6 +308,8 @@ class Tx:
         self.set(log.head, "prev", r["hash"])
         self.set(run, "run_seq", e["run_seq"] + 1)
         self.set(run, "head", r["hash"])
+        if typ == "run.registered":
+            self.set(run, "registered", e["ts"])
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
         agent_state(self.set, log, run, e)
         contain_state(self.set, log, run, e, self.pop)
@@ -356,11 +366,12 @@ class Tx:
     def closing(self, run, reason, **top):
         reason = "quarantine" if run.get("quarantined") else reason
         self.set(run, "closed", True)
-        n = self.log.open_runs[run["owner"]] - 1
+        count = run.get("quota", run["owner"])   # a gateway's run for a client counts in their entry (_register_run)
+        n = self.log.open_runs[count] - 1
         if n:
-            self.set(self.log.open_runs, run["owner"], n)
+            self.set(self.log.open_runs, count, n)
         else:
-            self.pop(self.log.open_runs, run["owner"])
+            self.pop(self.log.open_runs, count)
         self.set(run, "closing_at", time.monotonic())
         return self.emit(run, "run.closing", {"reason": reason}, **top)
 
@@ -477,6 +488,7 @@ class RecordLog:
                     r.setdefault("writers", {})   # a snapshot written before 1.2
                     r.setdefault("tails", {})
                     r.setdefault("results", {})   # before 1.3: results recorded since the snapshot are checked
+                    r.setdefault("replay", False)   # before 1.4: set already in a findings or replay run's state
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             agent, contain = st.get("agent", agent), st.get("contain", contain)
@@ -518,6 +530,7 @@ class RecordLog:
                 run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                run["registered"] = e["ts"]
                 run["principal"] = e.get("principal")
                 run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
                 h = e["data"].get("harness")
@@ -529,11 +542,13 @@ class RecordLog:
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
                 if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
                     run["rec"], run["spans"] = None, {}
+                    if "request_id" in e:   # an importer's over RPC (tracekit follow, not OTLP): watched for its beats
+                        run["tailed"] = True
                 elif "replay_of" in e["data"]:   # not reconciled: a tracekit why replay run has no decisions by design
                     run["rec"] = None
             elif e["type"] == "run.closing":
                 run["closed"], run["closing_at"] = True, run["active"]
-                open_runs[run["owner"]] -= 1
+                open_runs[run.get("quota", run["owner"])] -= 1
             elif e["type"] == "run.final":
                 run["final"] = True
                 key = (e["tenant"], e["run_id"])
@@ -553,6 +568,10 @@ class RecordLog:
                     run["decisions"][call["decision_id"]] = call
             elif e["type"] == "state.write":
                 run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
+            elif e["type"] == "constraint.added":
+                run["constraints"] = [*(run.get("constraints") or ()), constraint_state(e)]
+            elif e["type"] == "capture.gap" and e["data"].get("kind") == "constraint_refused":
+                run["constraints_full"] = True   # SignerService._constraint_add: every write is held
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
                 d, out = e["data"], e["data"].get("output") or {}
                 if out.get("hash") and e.get("tool_call_id"):

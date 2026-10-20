@@ -1,4 +1,4 @@
-# Witnesses (v0.2)
+# Witnesses
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
 
@@ -138,7 +138,8 @@ cosigned; whether the agent could reach the signer is each run's `signer_isolati
 
 ## The public witness
 
-Cygnux runs a free public C2SP tlog-witness, so a team gets `Assurance: witnessed` without running or finding one.
+Cygnux will run a free public C2SP tlog-witness, so a team gets `Assurance: witnessed` without running or finding one.
+It is not deployed yet: until it is, the signer and `init` refuse it (below).
 
 ```yaml
 # signer.yaml

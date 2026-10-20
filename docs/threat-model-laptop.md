@@ -1,4 +1,4 @@
-# Threat model: laptop coding agents (v0.3)
+# Threat model: the v1 laptop signer
 
 Tracekit makes one claim:
 
@@ -84,7 +84,7 @@ can verify without showing it. **Out of scope**: Tracekit does not try.
 | E | Forge a whole bundle with a fresh key, verified with `--key` or `--witness` | detected | Wrong key, or no checkpoints from the pinned key |
 | E | Forge a whole bundle with a fresh key, verified without either | not detected | The verdict says `UNANCHORED` (internally consistent only) |
 | E | Never export a run | out of scope | A bundle covers the runs it contains |
-| any | Intent, the model's internal reasoning, when something happened | out of scope | `ts` comes from the host; `seq` and the chain prove order only |
+| any | Intent, the model's internal reasoning, when something happened | out of scope | `ts` comes from the host; `seq` and the chain prove order only. v2 records what the person typed and what the model said (committed transcript lines) and `tracekit analyze --v2` compares them with what ran, but that text is the agent's own report: whether it is the model's true reasoning is out of scope |
 
 ## Trust roots for verification
 
@@ -117,7 +117,8 @@ Without either, a whole bundle forged with a fresh key verifies as consistent.
 | Detects edits to the agent's transcript | A1 transcript rows; not after the last hook |
 | Detects disabled hooks / proxy bypass | A1 hook rows; needs the proxy |
 | Held actions need approval from outside the session | A1 approval rows; not bound to the exact arguments yet |
-| Reasoning is self-reported, optional, off by default | Fidelity: `source=transcript` is harness-reported, lower trust |
+| Reasoning is self-reported, optional, off by default | Fidelity: `source=transcript` is harness-reported, lower trust. v2: the tailer reports every transcript line and `tracekit init --v2` turns Claude Code's thinking summaries on; a summary is the provider's account of the reasoning, and the agent can write the transcript. A prompt counts as the person's only when the hook's copy at UserPromptSubmit and the transcript line agree; a line only the transcript has is flagged (TK-X208). The hook runs as the agent's user, so an agent that runs the hook itself with a made-up prompt and writes the matching line passes |
+| Constraints in the request hold calls ("don't touch X", "don't push") | Live constraints: the hook sends them at UserPromptSubmit and the signer raises a call that breaks one to an ask. Tighten-only: an agent that adds or forges one can only hold its own calls. The grammar is a fixed phrase list, and a write it can't see (a script, a variable path) isn't held |
 
 ## Remote SDK clients
 

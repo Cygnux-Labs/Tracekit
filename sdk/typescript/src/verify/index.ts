@@ -10,30 +10,52 @@
  * SLH-DSA-SHA2-128s hybrid checkpoint lines (Web Crypto has no SLH-DSA), Rekor v2 anchors, record-key certificates,
  * tracekit why findings and replay runs.
  * Monitor reports, revocations and the v1 format bridge are inputs of the reference's CLI that this one doesn't take.
+ * A bundle that needs a newer verifier is UNVERIFIABLE, with the commands that verify it; one whose records carry ext
+ * names this verifier doesn't interpret (format 1.4's non-critical slot) verifies, with a `not interpreted` warning
+ * per name; it interprets `amended` (the fields an LLM gateway changed in a request to show reasoning) and
+ * `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import).
+ * `verify(bundle, null)` (no trust config) checks what needs no pinned key and is never VERIFIED. web.ts is this
+ * verifier as a browser page (verify.html).
  */
-import { type Floats, canonicalize, strictParseBytes } from "./jcs.js";
+import { type Floats, canonicalize, repr as quoted, strictParseBytes } from "./jcs.js";
 import {
   HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, equal, keyAlg, leafHash, openNote, parseLeaf, parseVkey,
   registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
-import { MAX_ENTRY, readZip } from "./zip.js";
+import { MAX_ENTRY, Unusable, readZip } from "./zip.js";
 
 export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
-export const VERSION = "1.3.0";
+export const VERSION = "1.4.0";
+/** The browser verifier of the latest release (docs/RELEASING.md). */
+const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
 const FORMAT = "tracekit.bundle.v2";
 const MAX_LINE = 1 << 20;
-const MAX_LINES = MAX_ENTRY / 256;   // per JSON lines file: no signed record is shorter than 256 bytes
+const MIN_RECORD = 256;   // no signed record's line is shorter: its hash, signature, ids and timestamp alone are longer
+const MAX_LINES = MAX_ENTRY / MIN_RECORD;   // per JSON lines file
 const CLASSES = ["public", "customer", "tracekit", "operator"];
 const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
 const MATRIX = ["model_calls", "tool_calls", "network", "processes", "services"];
 const COVERED = ["none", "reported", "observed", "enforced"];   // weakest first
+const SEVERITIES = ["critical", "high", "medium", "low", "info"];   // a signed finding's, worst first
+// the closed fields of a signed finding's verdict (tracekit/signer/rpc_schema.py REVIEW) and the values each may take
+const FAMILIES = ["anthropic", "openai", "google", "meta", "mistral", "deepseek", "qwen", "xai"];
+const VERDICT: Record<string, J[]> = {
+  kind: ["finding", "coverage"], severity: SEVERITIES, tier: ["gateway", "harness", "transcript", "sdk"],
+  order: ["signed_before", "transcript_order", "after"], alignment: ["ok", "drift", "misaligned"],
+  reason: ["none", "unrequested_action", "unexplained_action", "contradicted_reasoning", "scope_creep", "workaround",
+    "false_success", "followed_tool_output", "injection", "other"],
+};
+
+/** The reference verifier's exception names, which reports print: a bundle the format refuses, a key it lacks. */
+class ValueError extends Error {}
+class KeyError extends Error {}
 
 export type Check = { check: string; status: "pass" | "warn" | "fail"; detail: string; problems: string[] };
 
@@ -44,6 +66,8 @@ export class Report {
   notes: string[] = [];
   integrity = "UNUSABLE BUNDLE";
   assurance = "none";
+  /** The Findings line: signed findings, an opinion of the run kept apart from its integrity (null: none). */
+  findings: string | null = null;
   /** Checks the bundle needs that this verifier does not implement. */
   unsupported: string[] = [];
 
@@ -74,7 +98,7 @@ function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad:
 const kind = (v: unknown) => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
 function at(o: unknown, k: string): J {
   if (!isObj(o)) throw new TypeError(`${kind(o)} is not an object`);
-  if (!Object.hasOwn(o, k)) throw new TypeError(`missing ${JSON.stringify(k)}`);
+  if (!Object.hasOwn(o, k)) throw new KeyError(repr(k));
   return o[k];
 }
 function get(o: unknown, k: string, missing: J = null): J {
@@ -103,12 +127,26 @@ function text(v: unknown): string {
 const truthy = (v: unknown) => Array.isArray(v) ? v.length > 0 : isObj(v) ? Object.keys(v).length > 0 : !!v;
 const str = (v: unknown): string => v === null ? "None" : v === true ? "True" : v === false ? "False"
   : typeof v === "string" ? v : JSON.stringify(v);
-const repr = (v: unknown) => typeof v === "string" ? `'${v.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'` : str(v);
+const repr = (v: unknown) => typeof v === "string" ? quoted(v) : str(v);
 const cut = (s: string, n: number) => [...s].slice(0, n).join("");
+/** `xs` appended to `to` one by one: a spread call (`push(...xs)`, `Math.max(...xs)`) puts every element on the stack,
+ * which a bundle of 60k records overflows. */
+const extend = <T>(to: T[], xs: Iterable<T>) => {
+  for (const x of xs) to.push(x);
+};
+/** Python's order of strings, by code point (JavaScript's `<` and sort() compare UTF-16 code units, which put a
+ * character above U+FFFF before one in U+E000..U+FFFF). */
+const byCodePoint = (a: string, b: string) => {
+  const unit = (u: number) => u >= 0xd800 && u < 0xe000 ? u + 0x2000 : u >= 0xe000 ? u - 0x800 : u;
+  for (let i = 0; i < Math.min(a.length, b.length); i++)
+    if (a.charCodeAt(i) !== b.charCodeAt(i)) return unit(a.charCodeAt(i)) - unit(b.charCodeAt(i));
+  return a.length - b.length;
+};
+const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => byCodePoint(a, b);
 const count = (xs: string[]) => {
   const m = new Map<string, number>();
   for (const x of xs) m.set(x, (m.get(x) ?? 0) + 1);
-  return [...m].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return [...m].sort(byKey);
 };
 const fmt = (ts: bigint | number) => {
   if (ts > 253402300799) throw new RangeError("year is out of range");
@@ -116,9 +154,9 @@ const fmt = (ts: bigint | number) => {
 };
 
 type Trust = { logs: string[]; witnesses: { vkey: string; class: string }[]; algs: string[]; witnesses_required: number;
-  rekor?: Record<string, J>; issuers: J[] };
+  rekor?: Record<string, J>; issuers: J[]; analyzers: string[] };
 
-async function loadTrust(data: Uint8Array): Promise<Trust> {
+async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   const floats: Floats = new WeakMap();
   const t: J = strictParseBytes(data.subarray(0, MAX_LINE), floats);
   const int = (o: Record<string, J>, k: string, d: number) => !Object.hasOwn(o, k) ? d
@@ -128,7 +166,7 @@ async function loadTrust(data: Uint8Array): Promise<Trust> {
   const opt = (o: Record<string, J>, k: string) => Object.hasOwn(o, k) ? o[k] : [];
   const r = isObj(t) ? get(t, "rekor", {}) : null;
   const ok = isObj(t) && Object.keys(t).every((k) => ["logs", "witnesses", "algs", "witnesses_required", "rekor",
-    "monitors", "issuers"].includes(k))
+    "monitors", "issuers", "analyzers"].includes(k))
     && isObj(r) && (!Object.keys(r).length || exactly(r, ["trusted_root", "publishing_key", "class"])
       && isObj(r.trusted_root) && typeof r.publishing_key === "string" && CLASSES.includes(r.class))
     && strings(t.logs)
@@ -138,14 +176,32 @@ async function loadTrust(data: Uint8Array): Promise<Trust> {
     && Array.isArray(opt(t, "monitors")) && opt(t, "monitors").every((m: J) => exactly(m, ["vkey", "class", "max_age_s"])
       && typeof m.vkey === "string" && CLASSES.includes(m.class) && int(m, "max_age_s", 0) > 0)
     && Array.isArray(opt(t, "issuers")) && opt(t, "issuers").every((i: J) => exactly(i, ["vkey", "issuance_log_vkey"])
-      && Object.values(i).every((v) => typeof v === "string"));
-  if (!ok) throw new Error("not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers)");
+      && Object.values(i).every((v) => typeof v === "string"))
+    && Array.isArray(opt(t, "analyzers"))
+    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:.+$/.test(a));
+  if (!ok) throw new ValueError(`${name}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, `
+    + "issuers, analyzers)");
   for (const k of [...t.logs, ...opt(t, "witnesses").map((w: J) => w.vkey), ...opt(t, "monitors").map((m: J) => m.vkey),
     ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) await parseVkey(k);
   t.witnesses ??= [];
   t.witnesses_required ??= 0;
   t.issuers ??= [];
+  t.analyzers ??= [];
   return t as Trust;
+}
+
+/** `s` as one shell argument, as the reference quotes it (shlex.quote; on Windows subprocess.list2cmdline). */
+function quote(s: string) {
+  if ((globalThis as J).process?.platform === "win32") return /[ \t]/.test(s) || !s ? `"${s}"` : s;
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'"'"'`)}'`;
+}
+
+/** Ways to verify the bundle with a verifier of version `need` or later, as commands with the user's own paths. */
+function upgrade(need: string, names: { bundle: string; trust: string }) {
+  const [b, t] = [quote(names.bundle), quote(names.trust)];
+  return [`npx -y @cygnuxlabs/tracekit@latest verify ${b} --trust ${t}`,
+    `uvx --from "tracekit-ai>=${need}" tracekit verify ${b} --trust ${t}`,
+    `or open ${PAGE} and choose both files: the page verifies them in your browser and sends nothing`];
 }
 
 function newer(need: string, have: string) {
@@ -156,12 +212,25 @@ function newer(need: string, have: string) {
 
 const errorText = (e: unknown) => `${(e as Error)?.constructor?.name ?? "Error"}: ${(e as Error)?.message ?? e}`;
 
-/** Verify a v2 bundle (zip bytes) against the verifier's own pinned trust config (JSON bytes). Never throws. */
-export async function verify(bundle: Uint8Array, trust: Uint8Array): Promise<{ report: Report; code: number }> {
+/** Without a trust config: the bundle against its own checkpoint, whose signature no pinned key checks. */
+const UNANCHORED = "UNVERIFIABLE (no trust config: the records match their own checkpoint, which no pinned key checked)";
+
+/**
+ * Verify a v2 bundle (zip bytes) against the verifier's own pinned trust config (JSON bytes). Never throws. `names`: the
+ * files' paths, for the commands a bundle that needs a newer verifier is told to run. `trust` null (the browser page,
+ * when no trust config is chosen): every check that needs no pinned key, and never VERIFIED: a changed record still
+ * FAILS, and an intact bundle is UNVERIFIABLE, since anyone can sign a bundle and its checkpoint with keys of their own.
+ */
+export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
+  names = { bundle: "BUNDLE", trust: "TRUST.json" }): Promise<{ report: Report; code: number }> {
   const rep = new Report();
-  let t: Trust, files: Map<string, Uint8Array>, manifest: J;
-  try {
-    t = await loadTrust(trust);
+  let t: Trust, files: Map<string, Uint8Array>, manifest: J, v1 = false;
+  if (trust === null) {
+    t = { logs: [], witnesses: [], algs: ["ed25519"], witnesses_required: 0, issuers: [], analyzers: [] };
+    rep.check("trust config", false, "none: the checkpoint's signature and its witnesses are not checked, so nothing ties "
+      + "these records to a signer you trust", [], true);
+  } else try {
+    t = await loadTrust(trust, names.trust);
   } catch (e) {
     rep.check("trust config", false, errorText(e));
     return { report: rep, code: EXIT_BAD };
@@ -170,20 +239,24 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array): Promise<{ r
   try {
     files = await readZip(bundle);
     const m = files.get("manifest.json");
-    if (!m) throw new Error("no manifest.json");
+    if (!m) throw new KeyError(repr("manifest.json"));
     files.delete("manifest.json");
     manifest = strictParseBytes(m, floats);
-    if (!isObj(manifest) || manifest.format !== FORMAT) throw new Error(`format is not ${FORMAT}`);
+    v1 = isObj(manifest) && manifest.format === "tracekit.bundle.v1";
+    if (!isObj(manifest) || manifest.format !== FORMAT) throw new Unusable(`format is not ${FORMAT}`);
     const need = manifest.verifier_min_version;
     if (!(typeof need === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(need)))
-      throw new Error("verifier_min_version is not a version number");
+      throw new Unusable("verifier_min_version is not a version number");
     if (newer(need, VERSION)) {
       rep.integrity = `UNVERIFIABLE (needs tracekit >= ${need})`;
-      rep.check("bundle readable", false, rep.integrity);
+      rep.check("bundle readable", false, rep.integrity, upgrade(need, names));
       return { report: rep, code: EXIT_BAD };
     }
   } catch (e) {
-    rep.check("bundle readable", false, `cannot read bundle: ${errorText(e)}`);
+    // a format v1 bundle (the laptop signer's): the reference verifier checks it, against the signer.pub the sender pins
+    rep.check("bundle readable", false, `cannot read bundle: ${errorText(e)}`, v1 ? ["a format v1 bundle: verify it with "
+      + `the signer's public key (signer.pub, from the sender): uvx --from tracekit-ai tracekit verify ${quote(names.bundle)}`
+      + " --key signer.pub"] : []);
     return { report: rep, code: EXIT_BAD };
   }
   try {
@@ -192,6 +265,7 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array): Promise<{ r
     rep.check("bundle structure", false, "", [`malformed and could not be fully checked: ${errorText(e)}`]);
   }
   if (rep.failures.length) rep.integrity = "FAILED";
+  else if (trust === null) rep.integrity = UNANCHORED;
   else if (rep.unsupported.length) rep.integrity = `UNVERIFIABLE (not checked by this verifier: ${rep.unsupported.join(", ")})`;
   return { report: rep, code: rep.failures.length ? EXIT_FAIL : rep.integrity.startsWith("UNVERIFIABLE") ? EXIT_BAD : EXIT_OK };
 }
@@ -201,20 +275,23 @@ type Key = { spki: Uint8Array; from: number; until: number | null };
 async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, trust: Trust, floats: Floats) {
   const file = (name: string) => {
     const f = files.get(name);
-    if (!f) throw new TypeError(`no ${name}`);
+    if (!f) throw new KeyError(repr(name));
     return f;
   };
   const json = (name: string) => strictParseBytes(file(name), floats);
+  /** A JSON lines file's texts, each line at least MIN_RECORD bytes: checked before any is parsed, so a bundle's lines
+   * can't outnumber MAX_TOTAL / MIN_RECORD, whatever it unzips to. */
   const jsonl = (name: string) => {
     const data = file(name);
-    if (data.length && data.at(-1) !== 0x0a) throw new Error("a JSON lines file must end in a newline");
+    if (data.length && data.at(-1) !== 0x0a) throw new ValueError("a JSON lines file must end in a newline");
     const lines: Uint8Array[] = [];
     for (let i = 0, j; (j = data.indexOf(0x0a, i)) >= 0; i = j + 1) {
       // checked before any is parsed: a run of tiny lines costs no memory
-      if (lines.length === MAX_LINES) throw new Error("more lines than the bundle limits");
+      if (lines.length === MAX_LINES) throw new ValueError("more lines than the bundle limits");
       lines.push(data.subarray(i, j));
     }
-    if (lines.some((l) => l.length > MAX_LINE)) throw new Error("line longer than the bundle limits");
+    if (lines.some((l) => l.length > MAX_LINE)) throw new ValueError("line longer than the bundle limits");
+    if (lines.some((l) => l.length < MIN_RECORD)) throw new ValueError("line shorter than a signed record");
     return lines.map((l) => strictParseBytes(l, floats) as J);
   };
 
@@ -228,28 +305,31 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const proofs = json("proofs/records.json");
   const name = at(proofs, "checkpoint");
   if (!(typeof name === "string" && name.startsWith("checkpoints/") && name.endsWith(".note")))
-    throw new Error("proofs name no checkpoint note");
+    throw new ValueError("proofs name no checkpoint note");
   const witnesses = new Map(trust.witnesses.map((w) => [w.vkey, w.class]));
+  const anchored = trust.logs.length > 0;   // a trust config pins at least one log key
   let note;
   try {
-    note = await openNote(file(name), trust.logs, [...witnesses.keys()]);
+    note = await openNote(file(name), trust.logs, [...witnesses.keys()], anchored);
   } catch (e) {
     if (!(e instanceof NoteError)) throw e;
     rep.check("checkpoint", false, e.message);
     return;
   }
   const { origin, size, root, cosigs } = note;
-  rep.check("checkpoint", same(size, at(proofs, "tree_size")), `${origin} at tree size ${size}, signed by its pinned log key`);
+  rep.check("checkpoint", same(size, at(proofs, "tree_size")), `${origin} at tree size ${size}, `
+    + (anchored ? "signed by its pinned log key" : "its signature not checked (no trust config)"));
   if (note.unchecked) rep.unsupport("SLH-DSA-SHA2-128s checkpoint signature");
-  rep.check("witness quorum", cosigs.length >= trust.witnesses_required,
-    `${cosigs.length} pinned cosignature(s), ${trust.witnesses_required} required`);
+  if (anchored)
+    rep.check("witness quorum", cosigs.length >= trust.witnesses_required,
+      `${cosigs.length} pinned cosignature(s), ${trust.witnesses_required} required`);
   if (truthy(trust.rekor) && files.has(`rekor/${size}.json`)) rep.unsupport("rekor anchor");
 
   const included = async (r: J) => {
     const seq = at(at(r, "event"), "seq");
     const path = get(at(proofs, "inclusion"), str(seq));
-    return path !== null && verifyInclusion(num(seq), size, await leafHash(unhex(text(at(r, "hash")).slice(7))),
-      list(path).map(b64decode), root);
+    return Array.isArray(path) && verifyInclusion(num(seq), size, await leafHash(unhex(text(at(r, "hash")).slice(7))),
+      path.map(b64decode), root);
   };
 
   // keys: declared and retired by records the checkpointed tree includes, so the log key vouches for them
@@ -308,17 +388,24 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     for (const [kid, k] of declared) timeline.set(kid, k);
   }
 
-  // the runs: one, or with a run-set any number, or one with its tracekit why findings and replay runs
-  // lean: findings (verify/v2.py's _findings) are not checked here: a bundle with them is UNVERIFIABLE; port it when
-  // TS users verify findings bundles
-  const names = [...files.keys()].filter((n) => n.startsWith("runs/")).sort();
+  // the runs: one, or with a run-set any number, or one with its findings runs (and replay runs)
+  // lean: tracekit why findings (verify/v2.py's _findings) are not checked here: a bundle with a why.finding or a replay
+  // run is UNVERIFIABLE; port it when TS users verify tracekit why bundles
+  const names = runFiles(files.keys());
   const runSet = files.has("registry/run-set.json");
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
-  for (const name of names) {
-    const records = jsonl(name);
+  const layout: string[] = [], seen = new Set<string>();
+  for (const [name, parts] of names) {
+    const pieces = parts.map(jsonl), records = pieces.flat(), whole = parts.length === 1 && parts[0] === name;
     runs.set(name, records);
-    if (!records.length) throw new Error("a run has no records");
-    const head = at(records[0], "event");
+    extend(layout, parted(name, parts, pieces));
+    if (!records.length) throw new ValueError("a run has no records");
+    const head = at(records[0], "event"), tenant = get(head, "tenant"), runId = get(head, "run_id");
+    if (typeof tenant === "string" && typeof runId === "string") {   // a second file of one run would count it twice
+      const key = JSON.stringify([tenant, runId]);
+      if (seen.has(key)) chain.push(`run ${repr(cut(runId, 200))} of tenant ${repr(cut(tenant, 64))} again in ${name}`);
+      seen.add(key);
+    }
     for (const [i, r] of records.entries()) {
       await checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), problems);
       const e = r.event, prev = i ? records[i - 1] : null;
@@ -328,26 +415,28 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
         chain.push(`run ${repr(cut(str(get(head, "run_id")), 200))} run_seq ${i} (seq ${repr(get(e, "seq"))}) does not `
           + "continue the run");
     }
-    if (!(await included(records[0]) && await included(records.at(-1)))) outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}`);
+    if (!(await included(records[0]) && await included(records.at(-1))))
+      outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}` + (!whole && await included(records[0])
+        ? `: the last record of ${parts.at(-1)} is not in the checkpointed tree, so a later part may be missing` : ""));
   }
-  const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding")
-    || get(rs[0].event, "type") === "run.registered" && ["analyzes", "replay_of"].some((k) => has(get(rs[0].event, "data"), k)));
+  const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding") || about(rs)[1] !== null);
   if (why) rep.unsupport("tracekit why findings");
-  else if (names.length !== 1 && !runSet) throw new Error("a v2 bundle holds exactly one run, or a run-set");
+  else if (runs.size !== 1 && !runSet && !aboutOne(runs))
+    throw new ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
   let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
   if (runSet) {
     [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
       origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p), floats);
     const keyed = new Set(keyRecords.map((r) => `${at(at(r, "event"), "seq")} ${at(r, "hash")}`));
-    keyProblems.push(...retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
+    extend(keyProblems, retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
       .map(([seq]) => `seq ${seq}: key.retire withheld (the registry log has it)`));
   }
   rep.check("keys", timeline.size > 0 && !keyProblems.length, `${timeline.size} record key(s) from ${keyRecords.length} key `
     + "record(s)", keyProblems);
   const every = [...runs.values()].flat();
   const seqs = [...keyRecords, ...every].map((r) => num(at(at(r, "event"), "seq")));
-  if (!seqs.length) throw new Error("the bundle holds no key or run records");
-  const relied = Math.max(...seqs);
+  if (!seqs.length) throw new ValueError("the bundle holds no key or run records");
+  const relied = seqs.reduce((a, b) => b > a ? b : a);
   const rotated = timeline.size > 1 || keyRecords.some((r) => get(r.event, "type") === "key.retire");
   if (provenTo < relied && rotated)   // one key never retired: the assurance line notes it, no warning
     rep.check("keys", false, "retirements not proven complete",
@@ -356,6 +445,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (bridge && truthy(bridge.data.bridge))
     rep.notes.push(`this log continues the v1 ledger of key ${str(at(bridge.data.bridge, "v1_kid"))}; pass the v1 ledger and `
       + "its signer.pub to the reference verifier to check the format bridge");
+  const inParts = [...names].filter(([n, ps]) => !(ps.length === 1 && ps[0] === n)).map(([, ps]) => ps.length);
+  if (inParts.length)
+    rep.check("run parts", !layout.length, `${inParts.length} run(s) in ${inParts.reduce((a, b) => a + b, 0)} parts, `
+      + "each part continuing the one before it", layout);
   rep.check("signatures", !problems.length, `${every.length} record(s), keys valid at their position`, problems);
   const only = runs.size === 1 ? [...runs.values()][0][0].event : null;
   rep.check("run chain", !chain.length, only ? `run ${repr(cut(str(get(only, "run_id")), 200))} of tenant `
@@ -430,14 +523,16 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       + MATRIX.map((k) => {
         const cs = matrices.map((m) => at(m, k));
         const status = cs.map((c) => str(at(c, "status"))).reduce((a, b) => COVERED.indexOf(b) < COVERED.indexOf(a) ? b : a);
-        const layers = [...new Set(cs.flatMap((c) => list(at(c, "layers")).map(str)))].sort()
+        const layers = [...new Set(cs.flatMap((c) => list(at(c, "layers")).map(str)))].sort(byCodePoint)
           .concat(cs.some((c) => get(c, "asserted") === true) ? ["asserted"] : []);
         return `${k.replace("_", " ")} ` + (status === "none" ? "not covered"
           : status + (layers.length ? ` (${layers.join(", ")})` : ""));
       }).join(", "));
   const lost = gaps("observer_lost");
   if (lost.length)
-    rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
+    rep.check("observers", false, `${lost.length} observer gap(s): an observer went silent, restarted or lost events while its run was open`, lost.slice(0, 20), true);
+  checkReviews(rep, runs, trust.analyzers);
+  checkConstraints(rep, runs);
   checkIncidents(rep, runs, policies, floats);
   const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
   if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -463,7 +558,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   for (const [k, t] of claims) tiers.set(k, t);
   const split = [...paths].filter(([, p]) => p.size > 1).map(([k, p]) => {
     const [run, tcid] = JSON.parse(k);
-    return `${cut(str(run), 200)} ${cut(str(tcid), 200)}: ${[...p].sort().join(", ")}`;
+    return `${cut(str(run), 200)} ${cut(str(tcid), 200)}: ${[...p].sort(byCodePoint).join(", ")}`;
   });
   if (tiers.size) {
     const n = (t: J) => [...tiers.values()].filter((x) => x === t).length;
@@ -493,20 +588,110 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     if (!truthy(modes)) return [];
     if (!isObj(modes)) throw new TypeError("fail_modes is not an object");
     return Object.entries(modes).filter(([, m]) => m === "open").map(([c]) => cut(c, 64));
-  }))].sort();
+  }))].sort(byCodePoint);
   rep.check("fail-open classes", !failOpen.length, failOpen.join(", ") || "none",
     failOpen.length ? ["calls the agent classed as one of these may have run unrecorded while the signer was down"] : [],
     true);
   rep.check("key assurance", true, "asserted: the log declares its record keys; none is attested");
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
-  rep.assurance = await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
-    + (provenTo < relied ? "; key retirements not proven complete" : "");
+  rep.assurance = !anchored ? "none: no trust config pins a log key or witness"
+    : await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
+      + (provenTo < relied ? "; key retirements not proven complete" : "");
   approvals(rep, runs, policies, floats);
   const glass = typed("approval").filter((e) => get(at(e, "data"), "break_glass") === true);
   if (glass.length)
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
+  const pointed = runSet ? jsonl("registry/records.jsonl") : [];   // the records a run-set's leaves name
+  checkExt(rep, [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
+    .values()], get(manifest, "verifier_version"));
+}
+
+/**
+ * ext.amended: the JSON pointers of the fields an LLM gateway changed in a model request before sending it, to show the
+ * reasoning the request has the model do. The signer writes it on a gateway's request record only, whose content digest
+ * is of the request as sent; anywhere else, or not a list of pointers, it is a warning.
+ */
+function checkAmended(rep: Report, events: J[]) {
+  const fields = (e: J): string[] | null => {
+    const v = isObj(get(e, "ext")) ? get(e.ext, "amended") : null;
+    const data = get(e, "data", {});
+    return get(e, "type") === "model.exchange" && get(e, "source") === "gateway" && isObj(data)
+      && get(data, "phase") === "request" && Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string"
+        && [...p].length <= 256 && /^(\/([^~/]|~[01])*)+$/u.test(p)) ? v : null;
+  };
+  const good = events.filter((e) => fields(e)), bad = events.filter((e) => !fields(e));
+  const n = new Map<string, number>();
+  for (const e of good) for (const p of fields(e)!) n.set(p, (n.get(p) ?? 0) + 1);
+  const shown = [...n].sort(byKey).slice(0, 8).map(([p, c]) => `${p}: ${c}`);
+  rep.check("gateway amendments", bad.length === 0, `gateway amended ${good.length} request(s) to show reasoning`
+    + (shown.length ? ` (${shown.join(", ")})` : "") + "; each record commits to the request as sent",
+  bad.map((e) => `seq ${str(get(e, "seq"))}: ext.amended is not a list of JSON pointers on a gateway's model request`)
+    .slice(0, 20), true);
+}
+
+/**
+ * ext.openshell.policy: a change of the sandbox's policy or configuration that OpenShell reported (its name for the
+ * change, its hash of the policy, who made it; its message committed), an `ext` record the signer writes from the
+ * OpenShell middleware's OCSF import, that observer's assertion; anything else carrying the name is a warning.
+ */
+function checkOpenshellPolicy(rep: Report, events: J[]) {
+  const change = (e: J): string | null => {
+    const d = get(e, "data");
+    return get(e, "type") === "ext" && get(e, "source") === "signer" && isObj(d)
+      && get(d, "name") === "openshell.policy" && typeof get(d, "change") === "string"
+      && /^[a-z0-9_.-]{1,64}$/u.test(d.change) && typeof get(d, "observer") === "string" && d.observer !== ""
+      ? d.change : null;
+  };
+  const good = events.filter((e) => change(e)), bad = events.filter((e) => !change(e));
+  const n = new Map<string, number>();
+  for (const e of good) n.set(change(e)!, (n.get(change(e)!) ?? 0) + 1);
+  const shown = [...n].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, 8).map(([c, k]) => `${c}: ${k}`);
+  rep.check("openshell policy", bad.length === 0, "OpenShell changed the sandbox policy or configuration "
+    + `${good.length} time(s)` + (shown.length ? ` (${shown.join(", ")})` : "") + ", as OpenShell reported it",
+  bad.map((e) => `seq ${str(get(e, "seq"))}: ext.openshell.policy is not an OpenShell policy change the signer `
+    + "recorded").slice(0, 20), true);
+}
+
+/**
+ * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
+ * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
+ */
+const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended],
+  ["openshell.policy", checkOpenshellPolicy]]);
+const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
+
+/** The ext names an event carries: its `ext` field's keys, and an `ext` record's name. */
+const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {}),
+  ...get(e, "type") === "ext" ? [at(at(e, "data"), "name")] : []];
+
+/**
+ * A line per ext name the records carry: its EXT_CHECKS check, or a `not interpreted` warning. The records were checked
+ * like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version.
+ */
+function checkExt(rep: Report, events: J[], full: J) {
+  const carry = new Map<string, J[]>();   // name -> the events carrying it
+  for (const e of events)
+    for (const n of new Set(extNames(e).map((x) => cut(str(x), 64)))) {
+      if (!carry.has(n)) carry.set(n, []);
+      carry.get(n)!.push(e);
+    }
+  const later = typeof full === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(full) && newer(full, VERSION)
+    ? `; tracekit >= ${full} checks it` : "";
+  let shown = 0, more = 0;
+  for (const [n, es] of [...carry].sort(byKey)) {
+    const interpret = EXT_CHECKS.get(n);
+    if (interpret) interpret(rep, es);
+    else if (shown < MAX_UNREAD) {
+      shown++;
+      rep.check("not interpreted", false, `${es.length} record(s) carry ext.${n}: their signatures, chain and `
+        + `inclusion are checked above; what ext.${n} means is not checked${later}`, [], true);
+    } else more++;   // a line each would bury the report
+  }
+  if (more)
+    rep.check("not interpreted", false, `${more} more ext name(s), on records whose signatures, chain and inclusion `
+      + `are checked above; what they mean is not checked${later}`, [], true);
 }
 
 /** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
@@ -584,6 +769,144 @@ const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tam
   "reconcile.unexplained_effect"];
 const RECOMPUTED = ["sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch"];
 
+/** [analyzes, replay_of, investigation] of a run's run.registered (nulls when it is not one). */
+function about(rs: J[]): J[] {
+  const e = at(rs[0], "event"), d = get(e, "type") === "run.registered" ? get(e, "data") : null;
+  return ["analyzes", "replay_of", "investigation"].map((k) => truthy(d) ? get(d, k) : null);
+}
+
+/** Whether every run but one of the same tenant is a findings or replay run of that one. */
+function aboutOne(runs: Map<string, J[]>): boolean {
+  const all = [...runs.values()], main = all.filter((rs) => about(rs)[0] === null && about(rs)[1] === null);
+  if (main.length !== 1) return false;
+  const head = main[0][0].event;
+  return all.every((rs) => rs === main[0] || same(get(rs[0].event, "tenant"), get(head, "tenant"))
+    && about(rs).slice(0, 2).some((x) => same(x, get(head, "run_id"))));
+}
+
+/** ["scheme:subject", signer_isolation] of a run's run.registered (nulls when it is not one). */
+function author(rs: J[]): J[] {
+  const e = at(rs[0], "event"), d = get(e, "type") === "run.registered" ? get(e, "data") : {};
+  const i = get(d, "identity");
+  return [truthy(i) ? `${str(at(i, "scheme"))}:${str(at(i, "subject"))}` : null, get(d, "signer_isolation")];
+}
+
+/**
+ * Signed findings (format 1.4, docs/format-v2.md §11): each `review` with `cites`, in a findings run, cites records of
+ * the analysed run that are in the bundle with those hashes (else `reviews` fails), and is labelled by its author (the
+ * findings run's registered identity), positive-only: independent only when the trust config's `analyzers` pins it;
+ * self-asserted (a warning) when it is the analysed run's identity or either run's signer_isolation is same-user; else
+ * unpinned. Without its analysed run: not counted, author not checked (`reviews counted`). No cites: imported.
+ */
+/** What is wrong with a signed finding's verdict `v` (VERDICT; its asserted model, families and window), or null. */
+function verdictProblem(v: J): string | null {
+  if (!isObj(v) || typeof v.rule !== "string" || !/^TK-[A-Z][0-9]{3}$/.test(v.rule)
+      || !["kind", "severity"].every((k) => VERDICT[k].includes(get(v, k))))
+    return "its verdict has no kind, rule and severity of a signed finding";
+  const a = get(v, "asserted"), f = get(v, "families"), w = get(v, "window");
+  const name = (x: J) => typeof x === "string" && /^[A-Za-z0-9._:/@+-]{1,128}$/.test(x);
+  const seconds = (x: J) => typeof x === "number" && x >= 0;
+  const checks: [string, boolean][] = [
+    ["asserted", isObj(a) && name(get(a, "model")) && name(get(a, "version"))
+      && typeof get(a, "prompt_hash") === "string" && /^sha256:[0-9a-f]{64}$/.test(str(get(a, "prompt_hash")))],
+    ["families", isObj(f) && (get(f, "reviewer") === null || FAMILIES.includes(str(get(f, "reviewer"))))
+      && Array.isArray(get(f, "agent")) && list(get(f, "agent")).every((x) => typeof x === "string" && FAMILIES.includes(x))],
+    ["window", isObj(w) && seconds(get(w, "grace_s")) && seconds(get(w, "skew_s"))],
+  ];
+  const bad = [...Object.keys(VERDICT).filter((k) => has(v, k) && !VERDICT[k].includes(v[k])),
+    ...checks.filter(([k, ok]) => has(v, k) && !ok).map(([k]) => k)];
+  return bad.length ? `its verdict's ${bad.join(", ")} is not what a signed finding holds` : null;
+}
+
+function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
+  const byId = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs]));
+  const labels: string[] = [], problems: string[] = [], selfs: string[] = [], uncounted: string[] = [];
+  const hashesOf = new Map<J, Map<J, J>>();   // analysed run id -> {run_seq: record hash}, built once
+  let total = 0;
+  for (const rs of runs.values()) {
+    const reviews = rs.map((r) => r.event).filter((e) => get(e, "type") === "review");
+    const signed = reviews.filter((e) => has(at(e, "data"), "cites"));
+    total += reviews.length;
+    extend(labels, Array(reviews.length - signed.length).fill("imported"));
+    if (!signed.length) continue;
+    for (const e of signed) {
+      const why = verdictProblem(get(at(e, "data"), "verdict"));
+      if (why) problems.push(`seq ${e.seq}: ${why}`);
+    }
+    const rid = cut(str(get(rs[0].event, "run_id")), 128), analyzes = about(rs)[0];
+    if (analyzes === null) {
+      extend(problems, signed.map((e) => `seq ${e.seq}: a signed finding outside a findings run`));
+      continue;
+    }
+    const target = byId.get(analyzes);
+    if (!target) {
+      extend(labels, Array(signed.length).fill("author not checked"));
+      uncounted.push(`findings run ${rid}: run ${cut(str(analyzes), 128)} is not in the bundle`);
+      continue;
+    }
+    if (!hashesOf.has(analyzes)) hashesOf.set(analyzes, new Map(target.map((r) => [get(r.event, "run_seq"), r.hash])));
+    const hashes = hashesOf.get(analyzes)!;
+    for (const e of signed)
+      for (const c of list(at(e.data, "cites")))
+        if (hashes.get(at(c, "run_seq")) !== at(c, "hash"))
+          problems.push(`seq ${e.seq}: cites run_seq ${str(c.run_seq)} of run ${cut(str(analyzes), 128)}, `
+            + (hashes.has(c.run_seq) ? "whose hash differs" : "which it does not have"));
+    const [mine, isolation] = author(rs), [theirs, theirIsolation] = author(target);
+    let label;
+    if (mine === theirs || [isolation, theirIsolation].includes("same-user")) {
+      label = "self-asserted";
+      selfs.push(`findings run ${rid}: ` + (mine === theirs
+        ? `its author ${cut(str(mine), 256)} is the analysed run's identity`
+        : "the signer runs as the same user as a client (signer_isolation same-user)"));
+    } else label = pinned.includes(mine) ? "independent" : `unpinned author ${cut(str(mine), 256)}`;
+    extend(labels, Array(signed.length).fill(label));
+  }
+  if (total) {
+    rep.check("reviews", !problems.length && !selfs.length, `${total} review(s): `
+      + count(labels).map(([k, n]) => `${n} ${k}`).join(", "), (problems.length ? problems : selfs).slice(0, 20),
+    !problems.length);
+    const verdicts = [...runs.values()].flatMap((rs) => rs.map((r) => r.event))   // signed findings only
+      .filter((e) => get(e, "type") === "review" && has(at(e, "data"), "cites")).map((e) => get(e.data, "verdict"));
+    const sev = count(verdicts.filter((v) => isObj(v) && get(v, "kind") === "finding")
+      .map((v) => cut(str(get(v, "severity")), 16)));
+    const n = sev.reduce((a, [, k]) => a + k, 0), cov = verdicts.filter((v) => isObj(v) && get(v, "kind") === "coverage").length;
+    rep.findings = `${n} finding(s)` + (n ? " (" + SEVERITIES.flatMap((s) => sev.filter(([k]) => k === s))
+      .map(([k, c]) => `${c} ${k}`).join(", ") + ")" : "") + (cov ? ` and ${cov} coverage review(s)` : "") + "; "
+      + count(labels).map(([k, c]) => `${c} ${k}`).join(", ") + " (an opinion of the run, not its integrity)";
+  }
+  if (uncounted.length)
+    rep.check("reviews counted", false, `${labels.filter((l) => l === "author not checked").length} signed finding(s) not `
+      + "counted: export the analysed run with `tracekit export --v2 --run <run> --with-findings` to check their citations",
+    uncounted.slice(0, 20), true);
+}
+
+/** The `constraints` line, as verify/v2.py's _constraints: live constraints added, and the calls they held, each an
+ * ask after one in its run. */
+function checkConstraints(rep: Report, runs: Map<string, J[]>) {
+  let added = 0, held = 0;
+  const problems: string[] = [];
+  for (const rs of runs.values()) {
+    let seen = false;
+    for (const r of rs) {
+      const e = r.event;
+      if (get(e, "type") === "constraint.added") {
+        added++;
+        seen = true;
+      } else if (get(e, "type") === "policy.decision" && Array.isArray(get(at(e, "data"), "rule_ids"))
+        && get(e.data, "rule_ids").includes("TK-CONSTRAINT")) {
+        held++;
+        const decision = get(e.data, "decision");
+        if (!seen || decision !== "ask")
+          problems.push(`seq ${e.seq}: a ${cut(str(decision), 16)} held by TK-CONSTRAINT `
+            + (!seen ? "before any constraint.added in its run" : "is no ask"));
+      }
+    }
+  }
+  if (added || held)
+    rep.check("constraints", !problems.length, `${added} live constraint(s) added; ${held} call(s) held by them`,
+      problems.slice(0, 20));
+}
+
 /** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
  * bundled compiled policy (`policies`, by policy_hash), responses honoured. */
 function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
@@ -639,7 +962,7 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
         }
       }
     }
-    problems.push(...honoured(events, pointers));
+    extend(problems, honoured(events, pointers));
   }
   const n = opened.size + [...pointers].filter((p) => !opened.has(p)).length;
   rep.check("incidents", !problems.length, `${n} incident(s): ${checked} checked against the bundle, ${n - checked} `
@@ -648,7 +971,7 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
   if (unbundled.size)
     rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
       + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
-      + "records cite)", [...unbundled].sort().slice(0, 20), true);
+      + "records cite)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
 }
 
 /** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */
@@ -662,7 +985,7 @@ function honoured(events: J[], pointers: Set<string>): string[] {
   for (const e of events) {
     const t = e.type, d = e.data, where = `seq ${e.seq}`, on = quarantined || held.join(" and ");
     if (t === "policy.decision" && due.size && !quarantined) {   // an enforced response is written before the next call
-      problems.push(...unfollowed());
+      extend(problems, unfollowed());
       due.clear();
     }
     if (t === "incident.opened" && d.scope.kind === "run" && d.scope.id === str(e.run_id).slice(0, 256)
@@ -698,7 +1021,7 @@ function honoured(events: J[], pointers: Set<string>): string[] {
       problems.push(`${where}: a result while the run is ${state()} by incident ${on}, of a call neither in flight then nor `
         + "approved by a person for it");
   }
-  if (!quarantined) problems.push(...unfollowed());
+  if (!quarantined) extend(problems, unfollowed());
   return problems;
 }
 
@@ -741,7 +1064,10 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
 ): Promise<[[number, string][], number, [string, bigint][][]]> {
   const problems: string[] = [], tsalt = b64decode(at(rs, "tenant_salt"));
   const lo = at(rs, "from"), hi = at(rs, "to"), regOrigin = await registryOrigin(origin, tsalt);
-  const span = `registry ${str(lo)}..${str(hi)}`;
+  // a bound as the reference prints it: 2.0 when its token had a fraction or exponent
+  // lean: integral floats below 1e16 only; Python's repr of others (1e+16, 1e-05) differs from JavaScript's
+  const bound = (k: string, v: J) => floats.get(rs)?.has(k) && Number.isInteger(v) && Math.abs(v) < 1e16 ? `${v}.0` : str(v);
+  const span = `registry ${bound("from", lo)}..${bound("to", hi)}`;
   if (![lo, hi].every((n) => Number.isSafeInteger(n)) || floats.get(rs)?.has("from") || floats.get(rs)?.has("to")) {
     rep.check("run-set", false, `INCOMPLETE, ${span}`, ["the registry range is not two integers"]);
     return [[], -1, []];
@@ -756,7 +1082,8 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   for (const n of [...new Set([num(lo), num(hi)])].filter((n) => n !== 0).sort((a, b) => a - b)) {
     let got: J;
     try {
-      const note = await openNote(file(`checkpoints/registry-${n}.note`), vkeys, [...witnesses.keys()]);
+      const note = await openNote(file(`checkpoints/registry-${n}.note`), vkeys, [...witnesses.keys()],
+        trust.logs.length > 0);
       got = note.size;
       roots.set(n, note.root);
       regCosigs.push(note.cosigs);
@@ -824,7 +1151,7 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   if (untargeted > 1) problems.push(`${untargeted} runs in the bundle, but only the selected run may be in no leaf of the range`);
   if (truthy(closed) && size > num(at(at(closed, "data"), "final_seq")) + 1)
     problems.push(`records after log.closed at seq ${str(at(closed, "seq"))}`);
-  const counted = [...gaps].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, n]) => `${k} ${n}`).join(", ");
+  const counted = [...gaps].sort(byKey).map(([k, n]) => `${k} ${n}`).join(", ");
   const named = tenant === null ? "" : ` of tenant ${repr(cut(tenant, 64))}`;
   const open = [...registered.keys()].filter((k) => !finals.has(k)).length;
   rep.check("run-set", !problems.length, !problems.length ? `COMPLETE, ${span}${named} (${registered.size} runs registered, `
@@ -835,6 +1162,42 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   rep.check("log tail", truthy(closed), truthy(closed) ? `none: log.closed at seq ${str(closed.seq)} is the last record`
     : `records after tree size ${size} are unproven (no log.closed in the range)`, [], true);
   return [retired, lo === 0 ? top : -1, regCosigs];
+}
+
+/** A run's part: the run's file name, the part's number (tracekit/bundle_v2.py PART). */
+const PART = /^(runs\/.+)\.part-([0-9]+)\.jsonl$/;
+
+/** {run file: its entries in order} of a bundle's `names`: the run's file, runs/<id>.jsonl, or its parts,
+ * runs/<id>.part-0001.jsonl, ..., whose records read in that order are the run's (format-v2.md §9). */
+export function runFiles(names: Iterable<string>): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const n of [...names].filter((x) => x.startsWith("runs/")).sort()) {
+    const m = PART.exec(n), run = m ? `${m[1]}.jsonl` : n;
+    if (!out.has(run)) out.set(run, []);
+    out.get(run)!.push(n);
+  }
+  return out;
+}
+
+/** What is wrong with the parts of `run` (runFiles): `names`, its files in order, and `pieces`, their records. A run in
+ * one file has none; one in parts has part-0001 to part-n and no other file, each holding records, each one's first
+ * record the successor of the last of the part before it. */
+function parted(run: string, names: string[], pieces: J[][]): string[] {
+  if (names.length === 1 && names[0] === run) return [];
+  const stem = run.slice(0, -".jsonl".length), digits = names.filter((n) => n !== run).map((n) => [n, PART.exec(n)![2]]);
+  const numbered = new Set(digits.filter(([, d]) => d.length === 4 && d !== "0000").map(([, d]) => Number(d)));
+  const gaps: number[] = [];
+  for (let i = 1; i < Math.max(0, ...numbered); i++) if (!numbered.has(i)) gaps.push(i);
+  const held = names.map((n, i) => [n, pieces[i]] as const).filter(([, p]) => p.length);
+  return [
+    ...names.includes(run) ? [`${run} and ${names[1]}: one run in one file and in parts`] : [],
+    ...digits.filter(([, d]) => d.length !== 4 || d === "0000").map(([n]) => `${n}: not a part's name (part-0001, part-0002, ...)`),
+    ...gaps.length ? [`${stem}.part-${String(gaps[0]).padStart(4, "0")}.jsonl is missing`
+      + (gaps.length > 1 ? `, and ${gaps.length - 1} more part(s)` : "")] : [],
+    ...names.filter((_, i) => !pieces[i].length).map((n) => `${n} holds no records`),
+    ...held.slice(1).flatMap(([b, y], i) => same(get(at(y[0], "event"), "run_prev_hash"), at(held[i][1].at(-1), "hash"))
+      ? [] : [`${b} does not continue ${held[i][0]}`]),
+  ];
 }
 
 const runName = async (tenant: J, runId: J) => `runs/${(await sha256hex(bytes(`${str(tenant)}/${str(runId)}`))).slice(0, 32)}.jsonl`;
@@ -863,20 +1226,24 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
   else capped = null;
   const cosigned = [...cosigs].sort((a, b) => a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)
     .map(([k, ts]) => `${k.split("+")[0]} (${witnesses.get(k)}) at ${fmt(ts)}`).join(", ");
-  return `${lvl}; records ${[...algs].sort().join("+")}; checkpoint ${hybrid ? "Ed25519 + SLH-DSA-SHA2-128s" : "Ed25519 only"} `
+  return `${lvl}; records ${[...algs].sort(byCodePoint).join("+")}; checkpoint ${hybrid ? "Ed25519 + SLH-DSA-SHA2-128s" : "Ed25519 only"} `
     + `(${origin})` + (cosigned ? `; cosigned ed25519 by ${cosigned}` : "; no witness cosignature")
     + (times.length ? `; earliest independent anchor ${fmt(times.reduce((a, b) => b < a ? b : a))}` : "")
     + (capped ? `; capped by the run-set's registry notes (${capped})` : "") + (selfApproved ? "; approvals: self" : "");
 }
 
-/** The report as text, as the reference CLI prints it; control characters in bundle-derived strings are dropped. */
+/** `x` without control characters and the bidirectional and zero-width format characters that would reorder or hide
+ * the text around them, as the report prints bundle-derived strings. */
+export const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "");
+
+/** The report as text, as the reference CLI prints it; `clean` drops characters from bundle-derived strings. */
 export function formatReport(rep: Report): string {
-  const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
   let s = "";
   for (const c of rep.checks) {
     s += `[${c.status.toUpperCase()}] ${c.check}` + (c.detail ? ` — ${clean(c.detail)}` : "") + "\n";
     for (const p of c.problems) s += `        ${clean(p)}\n`;
   }
-  return s + `\nIntegrity: ${clean(rep.integrity)}.\nAssurance: ${clean(rep.assurance)}.\n`;
+  return s + `\nIntegrity: ${clean(rep.integrity)}.\nAssurance: ${clean(rep.assurance)}.\n`
+    + (rep.findings ? `Findings: ${clean(rep.findings)}.\n` : "");
 }
 

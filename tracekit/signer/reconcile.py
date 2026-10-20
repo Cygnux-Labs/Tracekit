@@ -8,10 +8,13 @@ of the run, just before run.final, and returns the coverage that run.final state
 
 For each L3 tool use the client runs: no decide with its id → hook_missing (written at once when a gateway request sends
 its result back, so a detector sees it mid-run); raw arguments that failed strict parsing → args_unparseable; another
-tool name, or (neither side coerced, both digests known) other arguments → args_mismatch. Tool uses the provider ran
+tool name, or (neither side coerced, both digests known) other arguments → args_mismatch. A decide's `coerced` is the
+agent's word: against a tool use the gateway recorded it excuses nothing, and the mismatch says the decide claimed it. Tool uses the provider ran
 itself (executed_by provider) are counted for run.final's `provider_executed`, never matched against a decide. Each
 decide with neither an L3 tool use nor a provider one → fabricated; each id in tool_results_sent with neither a decide
-nor an L3 tool use → result_without_call. A run with no L3 record gets none of these: its coverage says L3 is absent. The internal args
+nor an L3 tool use → result_without_call. A run with no L3 record gets none of these: its coverage says L3 is absent.
+A response recorded `said_only` (what the model said, without its calls: a harness whose hooks name no call) is no L3
+record, so it never makes a decide fabricated. The internal args
 digests live in the run's `digests`, which no snapshot holds.
 
 A framework that hands its hooks no tool-call id (CrewAI, an MCP session under mcp-agent) decides each call under an id
@@ -84,7 +87,7 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
         put(sub(put, rec, "mismatched"), e["tool_call_id"], True)
     if rec is not None and e["type"] == "capture.gap" and e["data"].get("kind") == "result_unchecked":   # once per call
         put(sub(put, rec, "unchecked"), e["tool_call_id"], True)
-    if rec is None or layer is None:
+    if rec is None or layer is None or e["data"].get("said_only"):   # said_only: no call to read from it
         return []
     digests, now = digests or {}, []
     if layer not in rec["layers"]:
@@ -171,9 +174,10 @@ def explained(rec, host, explains, labels):
     return None
 
 
-def matrix(rec, posture, observed):
+def matrix(rec, posture, observed, sensors=()):
     """run.final's coverage matrix of the run of index `rec`; `posture`: signer.yaml's; `observed`: whether an egress
-    observer covered the run and heartbeat throughout. Processes and services: none until an observer covers them."""
+    observer covered the run and heartbeat throughout; `sensors`: the kernel sensors whose imports did, which make
+    processes observed. Services: none until an observer covers them."""
     def cls(status, layers, asserted=False):
         return {"status": status, "layers": sorted(layers), **({"asserted": True} if asserted else {})}
     models, tools, gw = rec.get("models", {}), rec.get("tools", {}), posture.get("gateway_mandatory", False)
@@ -184,7 +188,7 @@ def matrix(rec, posture, observed):
             "tool_calls": cls("enforced", tools, True) if custody else cls("reported" if tools else "none", tools),
             "network": cls("enforced" if enforced else "observed", ["egress"], enforced) if observed else
             cls("reported", tools) if rec.get("hosts") else cls("none", ()),
-            "processes": cls("none", ()), "services": cls("none", ())}
+            "processes": cls("observed" if sensors else "none", sensors), "services": cls("none", ())}
 
 
 def counted(rec, mandatory, k="l3"):
@@ -254,8 +258,9 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
         if u["name"] not in model_names(d["name"]):
             out.append(("args_mismatch", tcid, ["L2", "L3"], f"decided {d['name'][:200]}, the model asked for "
                                                              f"{u['name'][:200]}"))
-        elif not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
-            out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for"))
+        elif not (u["unparseable"] or d["coerced"] and not u["gw"] or u["coerced"]) and a and b and a != b:
+            out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for" + (
+                " (the decide says a framework coerced them)" if d["coerced"] else "")))
     for tcid, d in rec["l2"].items():
         if tcid not in l3 and tcid not in provider and tcid not in pairs.values() and not structured(d["name"]):
             out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"

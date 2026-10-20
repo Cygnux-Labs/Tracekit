@@ -81,8 +81,11 @@ def build(d):
         s.checkpoint()
         st, tenant = s.log.storage, s.tenant
         note = cosign(st.checkpoint_latest()[1], WITNESS, WIT_SECRET, int(time.time()))
+        # the run-set's registry checkpoint needs the same witness quorum as the record checkpoint
+        reg_size, reg_note = st.checkpoint_latest(registry_tree(tenant))
+        st.checkpoint_put(reg_size, cosign(reg_note, WITNESS, WIT_SECRET, int(time.time())), tree=registry_tree(tenant))
         out = os.path.join(d, "base.tkb")
-        export(st, tenant, run["run_id"], note, out, run_set=(0, st.checkpoint_latest(registry_tree(tenant))[0]),
+        export(st, tenant, run["run_id"], note, out, run_set=(0, reg_size),
                tenant_salt=s.log.tenant_salt(tenant))
         trust = os.path.join(d, "trust.json")
         with open(trust, "w") as f:

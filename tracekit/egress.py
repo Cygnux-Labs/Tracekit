@@ -22,10 +22,21 @@ identity: the signer gives it that identity's latest open run. Else 407. That id
 token too (`caller`): the signer attributes by it instead when the token was issued to another identity.
 Relative paths are from the config file.
 
+Either listener takes SOCKS5 too (inside TLS on the `http` one), as microsandbox's and E2B's outbound proxies speak it:
+CONNECT, with a username and password that are a run id and its run token (attribution by token), or none (attribution
+by identity). A host name is resolved and checked as CONNECT's. An address is reached only through the server name its
+TLS ClientHello sends, which must resolve to it here, with the same checks; that name is the host recorded. An address
+`allow` lists passes as itself, any protocol.
+
 CONNECT host:port: the TLS ClientHello's SNI must be the host, else the tunnel is closed before anything reaches it;
 a raw IP address, a DNS-over-HTTPS endpoint or a name that resolves to a loopback, private or link-local address is
 refused (403) unless `allow` lists it (the proxy connects to the address it checked), and an allowed host needs no
 SNI (any protocol). A host name observe_effect would not take (HOST) is refused (400). Plain HTTP requests in absolute form (GET http://host/path) are forwarded with Connection: close.
+A client sends what attributes it (an HTTP request's head; SOCKS5's greeting and credentials) within PRE_AUTH_S, and
+the ClientHello within the connection's deadline (netserver.DEADLINE_S) from then, else the connection is closed. A
+loopback client's uid has at most MAX_TUNNELS connections open, counted from accept, and an attribution (its
+connection's identity, else its run) at most MAX_TUNNELS tunnels: in system mode every agent connects from loopback,
+which shares the transport's per-address limit, so no agent can hold every connection it gives.
 Per (attribution, host, port, minute): bytes each way, connections opened, first and last activity. Each minute's
 totals go to the signer (observe_effect) at the first heartbeat (every HEARTBEAT_S) after the minute ends, and a
 heartbeat goes out with nothing to report too, so the signer knows the observer is alive. Totals the signer can't take
@@ -73,6 +84,10 @@ DOH = {"dns.google", "dns.google.com", "cloudflare-dns.com", "mozilla.cloudflare
 CONNECT_TIMEOUT_S, IDLE_S = 30, 600
 MAX_BODY = 32 * 1024 * 1024   # a plain HTTP request's body, streamed through in CHUNK pieces, never held whole
 CHUNK = 64 * 1024
+# tunnels open at once per attribution (its connection's identity, else its run), below the transport's per-address
+# limit (256): in system mode every agent reaches the proxy from loopback, so one agent can't hold all of them
+MAX_TUNNELS = 64
+PRE_AUTH_S = 5   # from a connection's accept (or its request's first byte) to what attributes it
 MAX_EFFECTS = 256   # per observe_effect call
 MAX_REFUSED = 10_000   # totals the signer refused, kept to send again; past it the oldest are dropped (and counted)
 
@@ -87,6 +102,7 @@ class Observer:
     def __init__(self, client, allow=()):
         self.client, self.allow = client, set(allow)
         self.totals, self.lock = {}, threading.Lock()
+        self.conns = {}   # a loopback client's uid -> its connections open (_Handler.handle), under lock
         # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute); spool
         # them to disk if outages outlast the observer's memory
         self.queue = []   # [(request_id, effects)] not yet acknowledged, oldest first
@@ -153,7 +169,8 @@ class Observer:
     def flush(self, now=None):
         """Send the totals of every minute that ended before `now` (time.time(); math.inf: all), or a heartbeat with
         none. False when the signer could not be reached (they are sent with the next one). A call the signer refuses
-        is split until each total it refuses is on its own; those are sent again with the next one, never dropped."""
+        is split until each total it refuses is on its own; those are sent again with the next one, and past MAX_REFUSED
+        the oldest are dropped, which it says on stderr."""
         now = time.time() if now is None else now
         with self.lock:
             done = [k for k in self.totals if (k[3] + 1) * 60 <= now]
@@ -290,6 +307,20 @@ def _recv_exact(sock, n):
     return bytes(data)
 
 
+class _Unread:
+    """A connection's reader with the byte read ahead of it put back in front; http.server reads lines from it."""
+
+    def __init__(self, first, rest):
+        self.first, self.rest = first, rest
+
+    def readline(self, limit=-1):
+        line, self.first = self.first, b""
+        return line if line.endswith(b"\n") or len(line) == limit else line + self.rest.readline(limit - len(line))
+
+    def __getattr__(self, name):
+        return getattr(self.rest, name)
+
+
 def _relay(a, b, count):
     """Copy both ways until either side closes or both are idle for IDLE_S; `count(out, back)` for each chunk (out:
     from `a`)."""
@@ -315,7 +346,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         super().setup()
 
     def handle_one_request(self):
-        self.server.restart_deadline()
+        self.server.restart_deadline(PRE_AUTH_S)   # to its head; _who gives the rest the whole deadline
         super().handle_one_request()
 
     def log_message(self, *a):
@@ -347,16 +378,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return None
         return f"{i.scheme}:{i.subject}"
 
+    def _caller(self, auth=""):
+        """The connection's identity: what the authenticators accept, else on Linux the uid owning a loopback client's
+        socket; None."""
+        caller = self._identity(auth)
+        if caller is None and self.uid is not None:
+            caller = f"uid:{self.uid}"
+        return caller if caller and len(caller) <= 256 else None
+
     def _who(self):
         """The attribution of this request, or None once it is refused (407, or 503 when the signer can't check its
         run token): ("token", run_id, token, the connection's identity or None) or ("identity", identity)."""
+        self.server.restart_deadline()   # its head is in: checking it and what follows have the whole deadline
         auth = self.headers.get("Proxy-Authorization", "")
         scheme, _, cred = auth.partition(" ")
-        caller = self._identity(auth if scheme.lower() == "bearer" else "")
-        if caller is None and ipaddress.ip_address(self.client_address[0]).is_loopback:
-            uid = _peer_uid(self.client_address, self.connection.getsockname())
-            caller = None if uid is None else f"uid:{uid}"
-        caller = caller if caller and len(caller) <= 256 else None
+        caller = self._caller(auth if scheme.lower() == "bearer" else "")
         if scheme.lower() == "basic":
             try:
                 run_id, _, token = base64.b64decode(cred.strip(), validate=True).decode("utf-8").partition(":")
@@ -392,37 +428,156 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 pass
         return why
 
+    def handle(self):
+        """SOCKS5 when the connection's first byte says so, else HTTP; a loopback client's uid holds at most
+        MAX_TUNNELS connections."""
+        srv, obs = self.server, self.server.observer
+        self.uid = _peer_uid(self.client_address, self.connection.getsockname()) if ipaddress.ip_address(
+            self.client_address[0]).is_loopback else None
+        with obs.lock:
+            n = obs.conns.get(self.uid, 0)
+            if self.uid is not None and n < MAX_TUNNELS:
+                obs.conns[self.uid] = n + 1
+        if self.uid is not None and n >= MAX_TUNNELS:
+            return print(f"tracekit egress: closed a connection of uid {self.uid} at once: it has {MAX_TUNNELS} open",
+                         file=sys.stderr)
+        try:
+            srv.restart_deadline(PRE_AUTH_S)
+            try:
+                first = self.connection.recv(1)
+            except OSError:
+                return
+            if first == b"\x05":
+                return self._socks5()
+            self.rfile = _Unread(first, self.rfile)
+            super().handle()
+        finally:
+            with obs.lock:
+                if self.uid is not None:
+                    obs.conns[self.uid] -= 1
+                    if not obs.conns[self.uid]:
+                        del obs.conns[self.uid]
+
+    def _socks5(self):
+        """A SOCKS5 CONNECT (RFC 1928), its version byte read, as microsandbox's and E2B's outbound proxies send it: a
+        username and password (RFC 1929) are a run id and its run token, attribution by token; with none, the
+        connection's identity. SOCKS5 carries no reason for a refusal: it goes to stderr."""
+        c, obs = self.connection, self.server.observer
+
+        def reply(code):
+            c.sendall(b"\x05" + bytes([code]) + b"\x00\x01" + bytes(6))
+        try:
+            methods = _recv_exact(c, _recv_exact(c, 1)[0])
+            caller = self._caller()
+            if 2 in methods:
+                c.sendall(b"\x05\x02")
+                run_id = _recv_exact(c, _recv_exact(c, 2)[1]).decode("latin-1")
+                token = _recv_exact(c, _recv_exact(c, 1)[0]).decode("latin-1")
+                self.server.restart_deadline()   # its credentials are in: checking them and its request have the rest
+                why = self._checked(run_id, token) if RUN_ID.fullmatch(run_id) and TOKEN.fullmatch(token) else (
+                    407, "the SOCKS5 username and password are no run id and run token a run could have")
+                c.sendall(b"\x01\x00" if why is None else b"\x01\x01")
+                who = "token", run_id, token, caller
+            elif caller:
+                c.sendall(b"\x05\x00")
+                self.server.restart_deadline()
+                who, why = ("identity", caller), None
+            else:
+                c.sendall(b"\x05\xff")
+                why = 407, ("no run: give the SOCKS5 proxy the run id as its username and the run token as its "
+                            "password, or connect with an identity this proxy accepts")
+            if why:
+                return print(f"tracekit egress: refused a SOCKS5 client: {why[1]}", file=sys.stderr)
+            _, cmd, _, atyp = _recv_exact(c, 4)
+            if cmd != 1 or atyp not in (1, 3, 4):
+                reply(7 if cmd != 1 else 8)
+                return print("tracekit egress: refused a SOCKS5 request: only CONNECT (TCP) is taken", file=sys.stderr)
+            if atyp == 3:   # a host name, resolved and checked as CONNECT's
+                host = _recv_exact(c, _recv_exact(c, 1)[0]).decode("latin-1").lower().rstrip(".")
+            else:   # an address the client resolved: see _tunnel
+                host = socket.inet_ntop(socket.AF_INET if atyp == 1 else socket.AF_INET6,
+                                        _recv_exact(c, 4 if atyp == 1 else 16))
+            port = int.from_bytes(_recv_exact(c, 2), "big")
+            if atyp != 3:
+                addresses, why = ([(host, port)] if host in obs.allow else None), None
+            elif HOST.fullmatch(host):
+                addresses, why = obs.resolve(host, port)
+            else:
+                addresses, why = None, (400, "not a host name observe_effect takes")
+            if why:
+                reply({403: 2, 502: 4}.get(why[0], 1))
+                return print(f"tracekit egress: refused a SOCKS5 request for {host[:253]}:{port}: {why[1]}",
+                             file=sys.stderr)
+            reply(0)
+        except OSError:
+            return
+        self._tunnel(who, host, port, addresses)
+
     def do_CONNECT(self):
-        obs = self.server.observer
         host, port = _target(self.path)
         if host is None:
             return self._refuse(400, "CONNECT host:port")
         who = self._who()
         if who is None:
             return
-        addresses, why = obs.resolve(host, port)
+        addresses, why = self.server.observer.resolve(host, port)
         if why:
             return self._refuse(*why)
         self.send_response(200, "Connection established")
         self.end_headers()
         self.wfile.flush()
         self.close_connection = True
-        self.server.stop_deadline()
+        self._tunnel(who, host, port, addresses)
+
+    def _tunnel(self, who, host, port, addresses):
+        """Relay the client to host:port at `addresses` once its TLS ClientHello names `host`, unless `allow` lists it.
+        `addresses` None: `host` is an address the client resolved itself, and the ClientHello's server name must
+        resolve to it here (resolve's checks on a name included); that name is the host recorded."""
+        obs, srv = self.server.observer, self.server
+        whose = (who[3] or who[1]) if who[0] == "token" else who[1]
+        with srv.observer.lock:
+            n = srv.tunnels.get(whose, 0)
+            if n < MAX_TUNNELS:
+                srv.tunnels[whose] = n + 1
+        if n >= MAX_TUNNELS:
+            return print(f"tracekit egress: closed a tunnel to {host}:{port} before it reached it: {whose[:256]} has "
+                         f"{MAX_TUNNELS} tunnels open; close some first", file=sys.stderr)
         try:
             hello = b""
             if host not in obs.allow:
                 head = _recv_exact(self.connection, 5)
-                hello = head + _recv_exact(self.connection, int.from_bytes(head[3:5], "big"))
-                if _sni(hello) != host:
+                if head[0] == 0x16:   # a TLS handshake record; anything else is closed at once
+                    hello = head + _recv_exact(self.connection, int.from_bytes(head[3:5], "big"))
+                name = _sni(hello)
+                if addresses is None:
+                    # lean: a name whose answers change between the client's lookup and this one closes the tunnel;
+                    # share one caching resolver between them if that shows
+                    found, why = obs.resolve(name, port) if name and HOST.fullmatch(name) else (None, None)
+                    addresses = [a for a in found or () if ipaddress.ip_address(a[0]) == ipaddress.ip_address(host)]
+                    if not addresses:
+                        print(f"tracekit egress: closed a tunnel to {host}:{port} before it reached it: " + (
+                            why[1] if why else (f"its TLS server name {name!r} does not resolve to it here" if name
+                                                else "it sends no TLS server name") + "; an address is reached only "
+                            "by a TLS server name that resolves to it, unless allow in egress.yaml lists it"),
+                            file=sys.stderr)
+                        return
+                    host = name
+                elif name != host:
                     print(f"tracekit egress: closed a tunnel to {host}:{port} before it reached it: its TLS server name "
-                          f"is {_sni(hello)!r}, not {host!r}; clients must connect to the host they name", file=sys.stderr)
+                          f"is {name!r}, not {host!r}; clients must connect to the host they name", file=sys.stderr)
                     return
+            srv.stop_deadline()   # the ClientHello came in time and names the host: the tunnel may stay open
             with _connect(addresses) as up:
                 obs.add(who, host, port, len(hello), opened=True)
                 up.sendall(hello)
                 _relay(self.connection, up, lambda out, back: obs.add(who, host, port, out, back))
-        except OSError:   # either side went away, or the host can't be reached
+        except OSError:   # either side went away, the host can't be reached, or the deadline cut a slow ClientHello
             pass
+        finally:
+            with srv.observer.lock:
+                srv.tunnels[whose] -= 1
+                if not srv.tunnels[whose]:
+                    del srv.tunnels[whose]
 
     def _forward(self):
         obs, url = self.server.observer, urllib.parse.urlsplit(self.path)
@@ -501,6 +656,7 @@ def serve(cfg, client=None):
         address, auths, tls = (host, int(port)), [], None
     srv = transport.HttpServer(address, auths, tls, None, handler=_Handler)
     srv.observer = Observer(client or Client(cfg["signer"]), cfg.get("allow", ()))
+    srv.tunnels = {}   # attribution -> tunnels open (_tunnel)
     return srv
 
 

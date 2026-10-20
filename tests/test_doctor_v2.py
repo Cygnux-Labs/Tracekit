@@ -6,7 +6,9 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -74,6 +76,20 @@ class DevFresh(unittest.TestCase):
         self.assertEqual(got["D-KEYS-MODE"]["fix"], "start the dev signer: tracekit up")
         self.assertIn("assurance stays dev", got["D-WITNESS-CONFIGURED"]["detail"])
         self.assertIn("the dev signer takes no witnesses", got["D-WITNESS-CONFIGURED"]["fix"])
+
+    def test_without_witnesses_assurance_is_local_only_with_an_anchor(self):
+        """A production signer with no witness said assurance stays local; the verifier says dev without an anchor."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for cfg, level in (({}, "dev"), ({"anchors": {"rekor": {"url": "https://rekor.example"}}}, "local")):
+            got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d, **cfg})}
+            self.assertIn(f"assurance stays {level}", got["D-WITNESS-CONFIGURED"]["detail"])
+
+
+class Reinit(unittest.TestCase):
+    def test_the_reinit_fix_runs_on_this_platform(self):
+        """On macOS init refuses system mode without --experimental-macos, which the fix left out."""
+        self.assertEqual(doctor.REINIT.endswith(" --experimental-macos"), sys.platform == "darwin")
 
 
 class K8s(unittest.TestCase):
@@ -293,6 +309,38 @@ class Detect(unittest.TestCase):
     def test_both_system_modes(self):
         self.assertEqual(self.collect({"socket": "/s", "signer": "/t"})[0], ["D-V1-X", "D-V2"])
 
+    def test_the_sandbox_settings_read_are_the_ones_claude_code_ranks(self):
+        """With CLAUDE_CONFIG_DIR set, an old ~/.claude/settings.json read after it made a sandbox that falls back to
+        running unsandboxed look fail-closed: only the user settings file Claude Code reads counts."""
+        project = os.path.join(os.getcwd(), ".claude")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/work/claude"}):
+            self.assertEqual(self.collect(None)[1].call_args.kwargs["sandbox_settings"],
+                             [os.path.join("/work/claude", "settings.json"), os.path.join(project, "settings.json"),
+                              os.path.join(project, "settings.local.json"), doctor._managed()])
+        v2 = self.collect({"signer": "/t", "hooks": {"user": "nobody-e16", "settings": "/home/a/.claude/settings.json"}})[1]
+        self.assertEqual(v2.call_args.kwargs["sandbox_settings"], ["/home/a/.claude/settings.json", doctor._managed()])
+        # hooks in a project file (init --project): the agent's own user settings are read first
+        with mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
+                mock.patch.object(install, "plugin_enabled", return_value=None):
+            v2 = self.collect({"signer": "/t", "hooks": {"user": "a", "settings": "/srv/app/.claude/settings.json"}})[1]
+        self.assertEqual(v2.call_args.kwargs["sandbox_settings"],
+                         [os.path.join("/home/a", ".claude", "settings.json"), "/srv/app/.claude/settings.json",
+                          doctor._managed()])
+
+    def test_the_gemini_settings_read_are_the_ones_gemini_ranks(self):
+        d = "/Library/Application Support/GeminiCli" if sys.platform == "darwin" else "/etc/gemini-cli"
+        defaults, system = os.path.join(d, "system-defaults.json"), os.path.join(d, "settings.json")
+        self.assertEqual(self.collect(None)[1].call_args.kwargs["gemini_settings"],
+                         [defaults, os.path.join(os.path.expanduser("~"), ".gemini", "settings.json"),
+                          os.path.join(os.getcwd(), ".gemini", "settings.json"), system])
+        with mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
+                mock.patch.object(install, "plugin_enabled", return_value=None):
+            v2 = self.collect({"signer": "/t", "hooks": {"user": "a", "agent": "gemini",
+                                                         "settings": "/srv/app/.gemini/settings.json"}})[1]
+        self.assertEqual(v2.call_args.kwargs["gemini_settings"],
+                         [defaults, os.path.join("/home/a", ".gemini", "settings.json"), "/srv/app/.gemini/settings.json",
+                          system])
+
     def test_config_flag(self):
         ids, v2 = self.collect(None, "/etc/other.yaml")
         self.assertEqual((ids, v2.call_args.args[0]), (["D-V2"], "/etc/other.yaml"))
@@ -328,6 +376,96 @@ class Detect(unittest.TestCase):
     def test_untrusted_system_config_fails(self):
         with mock.patch.object(doctor.client, "system_config", side_effect=client.SystemConfigError("not root-owned")):
             self.assertEqual([(r["id"], r["status"]) for r in doctor.collect()], [("D-SYSTEM-CONFIG", "fail")])
+
+
+class ClaudeSandbox(unittest.TestCase):
+    """D-CLAUDE-SANDBOX: a sandbox that falls back to running commands unsandboxed, or whose allowlist a custom proxy
+    port switched off, looked the same as a sandbox that holds."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def check(self, *layers):
+        paths = []
+        for i, layer in enumerate(layers):
+            paths.append(os.path.join(self.d, f"{i}.json"))
+            with open(paths[-1], "w") as f:
+                json.dump(layer, f)
+        paths.append(os.path.join(self.d, "missing.json"))
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev",
+                                                     sandbox_settings=paths)}.get("D-CLAUDE-SANDBOX")
+
+    def test_shown_only_when_the_sandbox_is_on(self):
+        self.assertIsNone(self.check({}, {"sandbox": {"enabled": False}}, ["not settings"], {"sandbox": "on"}))
+        self.assertEqual(doctor._sandbox([["client.json's settings, not a path"]]), {"network": {}})
+        self.assertIsNone(self.check({"sandbox": {"enabled": True, "failIfUnavailable": True}},
+                                     {"sandbox": {"enabled": False}}))
+
+    def test_a_fallback_or_a_custom_proxy_warns(self):
+        got = self.check({"sandbox": {"enabled": True}})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("runs commands unsandboxed", got["detail"])
+        self.assertIn('"failIfUnavailable": true', got["fix"])
+        got = self.check({"sandbox": {"enabled": True, "failIfUnavailable": True, "network": {"httpProxyPort": 8080}}})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("httpProxyPort set: Claude Code's network allowlist stops applying", got["detail"])
+        self.assertNotIn("failIfUnavailable", got["fix"])
+
+    def test_a_sandbox_that_fails_closed_is_ok_and_says_who_holds_retries(self):
+        got = self.check({"sandbox": {"enabled": True, "failIfUnavailable": True}})
+        self.assertEqual((got["status"], got["fix"]), ("ok", ""))
+        self.assertIn("TK-A003 holds each one", got["detail"])
+        got = self.check({"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False}})
+        self.assertIn("retries off", got["detail"])
+
+    def test_a_later_file_wins_each_key_and_network_keys_merge(self):
+        got = self.check({"sandbox": {"enabled": True, "network": {"socksProxyPort": 1080}}},
+                         {"sandbox": {"failIfUnavailable": True, "network": {"allowedDomains": ["example.org"]}}})
+        self.assertEqual(got["status"], "warn")
+        self.assertEqual(got["detail"].split(":")[0], "socksProxyPort set")
+
+
+class GeminiSandbox(unittest.TestCase):
+    """D-GEMINI-SANDBOX: Gemini's whole-CLI sandbox runs its hooks in the box too (a container without them, Seatbelt
+    with no place for their state), so a sandboxed Gemini looked traced when nothing was recorded."""
+    HOOKS = {"hooks": {"BeforeTool": [{"matcher": "*", "hooks": [
+        {"type": "command", "command": "/v/python -I -m tracekit.integrations.harness_hooks gemini BeforeTool"}]}]}}
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def check(self, *layers):
+        paths = []
+        for i, layer in enumerate(layers):
+            paths.append(os.path.join(self.d, f"{i}.json"))
+            with open(paths[-1], "w") as f:
+                json.dump(layer, f)
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev",
+                                                     gemini_settings=paths)}.get("D-GEMINI-SANDBOX")
+
+    def test_shown_only_with_tracekits_hooks_and_a_sandbox_on(self):
+        self.assertIsNone(self.check({"tools": {"sandbox": "docker"}}))
+        for off in ({}, {"tools": {"sandbox": "false"}, "security": {"toolSandboxing": "true"}},
+                    {"tools": {"sandbox": {"enabled": False, "command": "docker"}}}, {"tools": {"sandbox": 0}}):
+            self.assertIsNone(self.check(self.HOOKS, off), off)
+
+    def test_the_whole_cli_sandbox_warns(self):
+        for box in (True, "1", "docker", "sandbox-exec", {"enabled": True}):
+            got = self.check(self.HOOKS, {"tools": {"sandbox": box}, "security": {"toolSandboxing": True}})
+            self.assertEqual(got["status"], "warn", box)
+        self.assertIn("nothing is recorded", got["detail"])
+        self.assertIn('"toolSandboxing": true', got["fix"])
+
+    def test_the_tool_sandbox_is_ok_and_says_who_holds_expansions(self):
+        got = self.check(self.HOOKS, {"security": {"toolSandboxing": True}})
+        self.assertEqual((got["status"], got["fix"]), ("ok", ""))
+        self.assertIn("TK-A004 holds", got["detail"])
+
+    def test_a_later_file_wins_each_key(self):
+        got = self.check({"tools": {"sandbox": "docker"}, "security": {"toolSandboxing": True}}, self.HOOKS,
+                         {"tools": {"sandbox": False}})
+        self.assertEqual(got["status"], "ok")
 
 
 class PluginHooks(unittest.TestCase):
@@ -372,6 +510,139 @@ class PluginHooks(unittest.TestCase):
                 mock.patch.object(doctor, "v2_checks", return_value=[]) as v2:
             doctor.collect()
         self.assertEqual(v2.call_args.kwargs["plugin"], os.path.join(home, ".claude", "settings.json"))
+
+
+class ThinkingSummaries(unittest.TestCase):
+    """D-THINKING-SUMMARIES: with Claude Code's hooks and the content vault on, thinking summaries off leave every
+    transcript's reasoning sealed, so `tracekit analyze --v2` can't check it."""
+
+    def check(self, settings_extra, vault=True):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        settings = os.path.join(d, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(settings, module=install.V2_HOOK)
+        with open(settings) as f:
+            s = json.load(f)
+        with open(settings, "w") as f:
+            json.dump(dict(s, **settings_extra), f)
+        cfg = {"data_dir": d, "content": {"retain": True} if vault else None}
+        with mock.patch.object(install, "user_settings", return_value=os.path.join(d, "none.json")):
+            return {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=settings)}["D-THINKING-SUMMARIES"]
+
+    def test_off_with_the_vault_warns_and_names_the_setting_and_the_headless_flag(self):
+        got = self.check({})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn('"showThinkingSummaries": true', got["fix"])
+        self.assertIn("claude -p --thinking-display summarized", got["fix"])
+        self.assertEqual(self.check({"showThinkingSummaries": False})["status"], "warn")
+
+    def test_on_or_without_the_vault_is_ok(self):
+        self.assertEqual(self.check({"showThinkingSummaries": True})["status"], "ok")
+        self.assertEqual(self.check({}, vault=False)["status"], "ok")
+
+    def test_not_checked_without_claude_codes_hooks(self):
+        """A Codex- or Gemini-only user got a warning whose fix installs Claude Code's hooks."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        cfg = {"data_dir": d, "content": {"retain": True}}
+        got = {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=os.path.join(d, "none.json"),
+                                                    harnesses={"gemini": os.path.join(d, "gemini.json")})}
+        self.assertNotIn("D-THINKING-SUMMARIES", got)
+        self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "ok")
+        self.assertIn("v2 hooks for gemini", got["D-HOOKS-PRESENT"]["detail"])
+
+    def test_the_last_settings_file_that_sets_it_wins(self):
+        """A true in the user's file passed although the project's false wins in Claude Code; a true in
+        settings.local.json still warned."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        user, project, local = (os.path.join(d, n) for n in ("user.json", "project.json", "local.json"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(user, module=install.V2_HOOK)
+        cfg = {"data_dir": d, "content": {"retain": True}}
+        for layers, want in (({user: True, project: False}, "warn"), ({user: False, local: True}, "ok"),
+                             ({project: True, local: None}, "ok")):
+            for p in (project, local):
+                with open(p, "w") as f:
+                    json.dump({}, f)
+            for p, v in layers.items():
+                with open(p) as f:
+                    s = json.load(f)
+                with open(p, "w") as f:
+                    json.dump(dict(s, showThinkingSummaries=v) if v is not None else s, f)
+            got = {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=user, sandbox_settings=[
+                user, project, local, os.path.join(d, "managed.json")])}["D-THINKING-SUMMARIES"]
+            self.assertEqual(got["status"], want, layers)
+        self.assertEqual(self.check({"showThinkingSummaries": True})["status"], "ok")
+
+
+@unittest.skipIf(not hasattr(os, "mkfifo"), "FIFOs")
+class HostileSettings(unittest.TestCase):
+    def test_a_fifo_or_a_device_as_the_agents_settings_doesnt_hang_doctor(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        fifo, dev = os.path.join(d, "fifo.json"), os.path.join(d, "zero.json")
+        os.mkfifo(fifo)
+        os.symlink(os.devnull, dev)
+        for p in (fifo, dev):
+            with self.assertRaises(OSError):
+                install.agent_file(p)
+        out = []
+        with mock.patch.object(install, "user_settings", return_value=dev):
+            t = threading.Thread(target=lambda: out.extend(doctor.v2_checks(
+                {"data_dir": d, "content": {"retain": True}}, "dev", settings=fifo, sandbox_settings=[fifo, dev],
+                plugin=dev, gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
+                                                                    "gemini": fifo})), daemon=True)
+            t.start()
+            t.join(5)
+        self.assertFalse(t.is_alive(), "doctor blocked on the FIFO")
+        got = {r["id"]: r for r in out}
+        self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "warn")
+        self.assertIn("not a regular file", got["D-HOOKS-PRESENT"]["detail"])
+
+
+class CodingAgentReasoning(unittest.TestCase):
+    """D-CODEX-REASONING and D-GEMINI-THOUGHTS: with an agent's v2 hooks installed and the content vault on, a setting
+    that keeps its reasoning unreadable is a warning naming the exact fix."""
+
+    def check(self, harness, files, vault=True):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for name, text in files.items():
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+        hooks = os.path.join(d, "settings.json" if harness == "gemini" else "hooks.json")
+        cfg = {"data_dir": d, "content": {"retain": True} if vault else None}
+        rid = "D-CODEX-REASONING" if harness == "codex" else "D-GEMINI-THOUGHTS"
+        return {r["id"]: r for r in doctor.v2_checks(cfg, "dev", harnesses={harness: hooks})}[rid]
+
+    def test_codex_summaries_unset_or_none_warn_with_the_line_to_add(self):
+        for files in ({}, {"config.toml": 'model_reasoning_summary = "none"\n'}):
+            got = self.check("codex", files)
+            self.assertEqual(got["status"], "warn")
+            self.assertIn('model_reasoning_summary = "auto"', got["fix"])
+            self.assertIn("tracekit init --dev --v2 --agent codex", got["fix"])
+        self.assertEqual(self.check("codex", {"config.toml": 'model_reasoning_summary = "auto"\n'})["status"], "ok")
+        self.assertEqual(self.check("codex", {}, vault=False)["status"], "ok")
+
+    def test_gemini_thoughts_turned_off_in_model_configs_warn(self):
+        off = {"modelConfigs": {"overrides": [{"match": {"model": "gemini-3-pro"}, "modelConfig": {
+            "generateContentConfig": {"thinkingConfig": {"includeThoughts": False}}}}]}}
+        got = self.check("gemini", {"settings.json": json.dumps(off)})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("includeThoughts: false", got["fix"])
+        self.assertEqual(self.check("gemini", {"settings.json": "{}"})["status"], "ok")
+
+    def test_dev_doctor_finds_the_agents_with_v2_hooks(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        from tracekit import agent_hooks
+        with mock.patch.dict(os.environ, {"HOME": d}), mock.patch("os.getcwd", return_value=d), \
+                contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codex", v2=True)
+            agent_hooks.install("gemini")   # v1: not checked
+            self.assertEqual(doctor._dev_harnesses(), {"codex": agent_hooks.config_path("codex")})
 
 
 @unittest.skipIf(os.name == "nt", "POSIX modes")

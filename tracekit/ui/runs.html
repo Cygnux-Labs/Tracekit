@@ -104,7 +104,7 @@ async function download() {
   const r = await fetch("/api/bundle?" + q);
   if (!r.ok) throw new Error((await r.json()).error || String(r.status));
   const save = $("save");
-  save.download = "run.tkb";
+  save.download = current.run_id.replace(/[^A-Za-z0-9._-]/g, "_") + ".tkb";   // two saved bundles never collide
   save.href = URL.createObjectURL(await r.blob());
   save.click();
   const url = save.href;
@@ -112,6 +112,11 @@ async function download() {
 }
 
 $("search").addEventListener("click", () => search(null).catch(fail));
+// Enter in a search field searches, as the button does
+for (const k of ["run", "agent", "tenant", "since", "until"])
+  $(k).addEventListener("keydown", e => { if (e.key === "Enter") search(null).catch(fail); });
+// a link to one run (/runs#run=<id>, from the approval pages) searches for it
+$("run").value = new URLSearchParams(location.hash.slice(1)).get("run") || "";
 $("more").addEventListener("click", () => search(next).catch(fail));
 $("more-records").addEventListener("click", () => show(current, current.next).catch(fail));
 $("download").addEventListener("click", () => download().catch(fail));

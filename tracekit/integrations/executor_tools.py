@@ -13,8 +13,16 @@ token); `context` is an ssl.SSLContext for its CA and a client certificate. The 
 the executor, which decides and records them: each is marked (EXECUTOR), and the Claude Agent SDK hooks skip the tools
 of the MCP server named SERVER. A refusal (deny, an approval not given, the signer unreachable) raises
 ExecutorRefused with the executor's message, which each framework hands the model as the tool's error.
+
+Each tool hands the executor the model's id for the call, so the executor decides it under the id the model's message
+carries and the signer pairs the two: OpenAI Agents gives it to the tool; under LangChain, TracekitMiddleware sets
+CALL_ID for the tool it runs; under the Claude Agent SDK, whose MCP handler gets no id, the PreToolUse hook of
+tracekit_hooks notes it (`called`) for the handler of the same action and arguments to take. Without them the executor
+decides under an id of its own, which the signer pairs with the model's call by arguments when it can.
 """
 import asyncio
+import collections
+import contextvars
 import json
 import urllib.error
 import urllib.request
@@ -23,6 +31,9 @@ from tracekit.client import no_redirect_opener, remote_url_error
 
 EXECUTOR = "tracekit_executor"   # set on the tools built here (a LangChain tool's metadata key): adapters don't gate them
 SERVER = "tracekit-executor"     # claude_agent_sdk's server: tools mcp__tracekit-executor__<action>
+CALL_ID = contextvars.ContextVar("tracekit_executor_call_id", default=None)   # the model's id for the LangChain call
+MAX_CALLED = 4096   # lean: ids noted and not taken yet (a call the CLI stopped after PreToolUse); the oldest dropped
+_called = collections.OrderedDict()   # (run_id, action, args as JSON) -> [the model's ids for such calls, oldest first]
 
 
 class ExecutorRefused(Exception):
@@ -32,6 +43,7 @@ class ExecutorRefused(Exception):
 class Action:
     def __init__(self, url, run, spec, headers, context):
         self.name, self.description, self.args = spec["name"], spec["description"], spec["args"]
+        self.run_id = run["run_id"]
         self._url, self._context = f"{url.rstrip('/')}/v1/actions/{self.name}", context
         self._headers = {**headers, "content-type": "application/json",
                          "x-tracekit-run": f"{run['run_id']}.{run['run_token']}"}
@@ -63,6 +75,28 @@ def actions(url, run, headers=None, context=None):
     return [Action(url, run, a, headers or {}, context) for a in listed["actions"]]
 
 
+def _key(run_id, action, args):
+    return run_id, action, json.dumps(args, sort_keys=True, default=str)
+
+
+def called(run_id, action, args, tool_use_id):
+    """The Claude Agent SDK's PreToolUse hook saw the model call `action` of SERVER with `args` as `tool_use_id`."""
+    _called.setdefault(_key(run_id, action, args), []).append(tool_use_id)
+    if len(_called) > MAX_CALLED:
+        _called.popitem(last=False)
+
+
+def _taken(action, args):
+    """The model's id for the oldest such call `called` noted and no handler took yet, or None."""
+    ids = _called.get(_key(action.run_id, action.name, args))
+    if not ids:
+        return None
+    tid = ids.pop(0)
+    if not ids:
+        del _called[_key(action.run_id, action.name, args)]
+    return tid
+
+
 def openai_agents(action):
     from agents import FunctionTool
 
@@ -79,7 +113,7 @@ def langchain(action):
 
     def run(**args):
         try:
-            return json.dumps(action(args))
+            return json.dumps(action(args, CALL_ID.get()))
         except ExecutorRefused as e:
             raise ToolException(str(e)) from None
     return StructuredTool.from_function(run, name=action.name, description=action.description,
@@ -92,7 +126,7 @@ def claude_agent_sdk(actions, name=SERVER):
     def one(action):
         async def handler(args):
             try:
-                out = await asyncio.to_thread(action, args)
+                out = await asyncio.to_thread(action, args, _taken(action, args))
             except ExecutorRefused as e:
                 return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
             return {"content": [{"type": "text", "text": json.dumps(out)}]}

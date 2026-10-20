@@ -12,9 +12,9 @@
 
 Tamper-evident tracing for AI agents: every tool call is recorded as an Ed25519-signed, hash-chained event by a signer
 the agent can't control, checkpointed to witnesses, gated by a policy engine, and exported as offline-verifiable `.tkb`
-bundles. Today's code (1.3) has two generations: the v1 laptop path (tracekitd, the
+bundles. Today's code (1.4) has two generations: the v1 laptop path (tracekitd, the
 JSONL ledger, Claude Code / Codex / Cursor / Gemini hooks) and the v2 signer service for server-hosted agents (evidence
-format v2 at 1.3, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
+format v2 at 1.4, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
 observation), with Python and TypeScript SDKs and framework integrations. [HIGH CONFIDENCE — read
 `tracekit/signer/service.py`, `tracekit/signer/pipeline.py`, `tracekit/verify/v2.py`, `tracekit/daemon.py`,
 `tracekit/ledger.py`]
@@ -31,6 +31,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/integrations/` | v2 framework integrations (OpenAI Agents, LangChain/LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent Framework, Strands Agents, Claude Code and harness hooks) | [HIGH CONFIDENCE] |
 | `tracekit/gateway.py`, `tracekit/executor.py`, `tracekit/mcp_gateway.py`, `tracekit/egress.py` | LLM gateway, T2 tool executor, MCP gateway, egress observer | [HIGH CONFIDENCE] |
 | `tracekit/why/` | `tracekit why`: causal investigation and replay | [HIGH CONFIDENCE] |
+| `tracekit/findings_v2.py`, `tracekit/findings_text.py`, `tracekit/findings_effects.py`, `tracekit/parsers.py`, `tracekit/review_model.py` | `tracekit analyze --v2`: intent, reasoning and action checks (TK-X200..X204, X208) over a v2 run and its content vault, the text checks (TK-X205 and v1's say-vs-do checks) and the effect checks (TK-X206, TK-X207: kernel sensor effects joined to calls); `parsers.said()` reads what a model said before each tool use; `--review`: the reviewer model (TK-X210, warn only) | [HIGH CONFIDENCE] |
 | `tracekit/storage/`, `tracekit/identity/`, `tracekit/transport/` | v2 storage (file, Postgres), caller identities (uid, token, mTLS, k8s service account, OIDC, WebAuthn), RPC transports | [HIGH CONFIDENCE] |
 | `tracekit/daemon.py` | v1 signer daemon (tracekitd): socket, peer identity, run state, approvals, checkpoints | [HIGH CONFIDENCE] |
 | `tracekit/ledger.py` | v1 append-only JSONL ledger, file key, v1 record envelope | [HIGH CONFIDENCE] |
@@ -46,7 +47,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `sdk/typescript/` | TS SDK: the v2 client speaks the signer RPC itself (`sdk/typescript/src/v2/`); only the legacy v1 API (`sdk/typescript/src/v1.ts`) spawns `tracekit.bridge`; the independent verifier is in `sdk/typescript/src/verify/` | [HIGH CONFIDENCE] |
 | `plugin/` | Claude Code plugin (laptop on-ramp) | [HIGH CONFIDENCE] |
 | `tests/` | pytest suite (real daemons); `tests/conftest.py` (markers, env isolation), `tests/factories.py` (shared builders), `tests/golden/` (frozen verifier corpus) | [HIGH CONFIDENCE] |
-| `eval/` | Experiments E1–E19 (`eval/e*.py`; no E7 or E13 script); E8 (insider attacks, v1 and v2) gates CI on Linux; CI also runs E9 and E15 | [HIGH CONFIDENCE] |
+| `eval/` | Experiments E1–E22 (`eval/e*.py`; no E7 or E13 script); E8 (insider attacks, v1 and v2) gates CI on Linux; CI also runs E9 and E15 | [HIGH CONFIDENCE] |
 | `docs/` | User docs; `docs/sample/` holds the shipped sample bundles | [HIGH CONFIDENCE] |
 | `paper/` | v0.1 paper — frozen artifact, don't update | [HIGH CONFIDENCE] |
 

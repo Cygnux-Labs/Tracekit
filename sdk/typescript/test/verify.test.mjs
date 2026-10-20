@@ -4,10 +4,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { deflateRawSync } from "node:zlib";
-import { MAX_ENTRY, StrictJSONError, Unusable, canonicalize, readZip, strictParse, strictParseBytes, verifyRecord } from "../dist/verify/index.js";
+import {
+  MAX_ENTRY, StrictJSONError, Unusable, canonicalize, readZip, strictParse, strictParseBytes, verify, verifyRecord,
+} from "../dist/verify/index.js";
+import { MEANING, asJson, asText, cliExit, nextSteps, summarize, verdict } from "../dist/verify/explain.js";
 import {
   COSIGNATURE, ED25519, b64decode, bytes, ed25519Verify, hex, keyId, leafHash, openNote, parseVkey, registryOrigin,
   runHash, sha256, spkiOf, unhex,
@@ -178,11 +184,11 @@ test("zip reader: stored and deflated entries, and every refusal within the bund
     "bad entry name  ": [{ name: "a/./b", data: "x" }],
     "duplicate entry": [{ name: "a", data: "x" }, { name: "a", data: "y" }],
     "symlink entry": [{ name: "a", data: "/etc/passwd", attr: 0o120777 * 0x10000 }],
-    "bad CRC-32": [{ name: "a", data: "x", crc: 1 }],
+    "Bad CRC-32 for file 'a'": [{ name: "a", data: "x", crc: 1 }],
     "encrypted": [{ name: "a", data: "x", flags: 1 }],
     "compression method 12": [{ name: "a", data: "x", method: 12 }],
-    "does not repeat the central entry": [{ name: "a", data: "x", local: "b" }],
-    "does not repeat the central entry ": [{ name: "a", data: "x", flags: 0, lflags: 8 }],
+    "bad local header for 'a'": [{ name: "a", data: "x", local: "b" }],
+    "bad local header for 'a' ": [{ name: "a", data: "x", flags: 0, lflags: 8 }],
     "general-purpose flags 0x800": [{ name: "a", data: "x", flags: 0x800 }],
     "compression method 0": [{ name: "a", data: "xx", usize: 1 }],
     "bad central directory entry": [{ name: "a", data: "x", extra: "\x01\x00\x00\x00" }],
@@ -213,8 +219,129 @@ test("zip reader: stored and deflated entries, and every refusal within the bund
   await assert.rejects(readZip(new Uint8Array(z64)), /not a zip file/);
   // a deflate stream shorter than its stated size
   await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(10), method: 8, usize: 100 }])), /10 bytes, not the 100/);
+  // ...and with a wrong CRC as well, the CRC is reported first, as the reference's zipfile does
+  await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(10), method: 8, usize: 100, crc: 1 }])),
+    /Bad CRC-32 for file 'a'/);
   // a size that lies low stops the inflate there; the CRC then catches it
-  await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(100), method: 8, usize: 10 }])), /bad CRC-32/);
+  await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(100), method: 8, usize: 10 }])), /Bad CRC-32 for file 'a'/);
+});
+
+test("a bundle of tiny lines is refused before one is parsed, with no trust config too", () => {
+  // 1M lines no signed record could be (records are 256 bytes or more): parsed, they'd need gigabytes
+  const run = Buffer.from('{"event":{"seq":1}}\n'.repeat(262_144));
+  const files = {
+    "checkpoints/10.note": `o.example/x\n10\n${Buffer.alloc(32).toString("base64")}\n\n— o.example/x `
+      + `${Buffer.alloc(69, 1).toString("base64")}\n`,
+    "proofs/records.json": JSON.stringify({ checkpoint: "checkpoints/10.note", tree_size: 10, inclusion: {} }),
+    "keys/records.jsonl": "", "registry/run-set.json": "{}",
+    ...Object.fromEntries([0, 1, 2, 3].map((i) => [`runs/r${i}.jsonl`, run])),
+  };
+  const hashes = Object.fromEntries(Object.entries(files).map(([n, d]) => [n, createHash("sha256").update(d).digest("hex")]));
+  const bomb = join(mkdtempSync(join(tmpdir(), "tk-bomb-")), "bomb.tkb");
+  writeFileSync(bomb, zip([{ name: "manifest.json", data: JSON.stringify({ format: "tracekit.bundle.v2",
+    verifier_min_version: "1.0", files: hashes }) }, ...Object.entries(files).map(([name, data]) => ({ name, data, method: 8 }))]));
+  const r = spawnSync(process.execPath, ["--max-old-space-size=256", "--input-type=module", "-e", `
+    import { readFileSync } from "node:fs";
+    import { verify } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../dist/verify/index.js")).href)};
+    const { report, code } = await verify(readFileSync(${JSON.stringify(bomb)}), null);
+    console.log(JSON.stringify([code, report.checks.at(-1).problems]));`], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(r.status, 0, r.stderr.slice(0, 300));
+  assert.deepEqual(JSON.parse(r.stdout), [1, ["malformed and could not be fully checked: ValueError: line shorter than a "
+    + "signed record"]]);
+});
+
+const sample = (n) => new Uint8Array(readFileSync(join(ROOT, "sdk/typescript/src/verify/sample", n)));
+const file = (p) => new Uint8Array(readFileSync(join(ROOT, p)));
+
+test("the page's samples: the clean one verifies, the tampered copy fails; without a trust config neither verifies",
+  async () => {
+    const trust = sample("sample.trust.json");
+    assert.equal((await verify(sample("sample.tkb"), trust)).code, 0);
+    const bad = await verify(sample("sample-tampered.tkb"), trust);
+    assert.deepEqual([bad.code, bad.report.failures], [1, ["signatures"]]);
+    assert.match(bad.report.checks.find((c) => c.check === "signatures").problems[0], /hash does not match the event/);
+    // no trust config: every check that needs no pinned key, never VERIFIED
+    const alone = await verify(sample("sample.tkb"), null);
+    assert.deepEqual([alone.code, alone.report.warnings, alone.report.failures], [2, ["trust config"], []]);
+    assert.match(alone.report.integrity, /^UNVERIFIABLE \(no trust config: /);
+    assert.equal(alone.report.assurance, "none: no trust config pins a log key or witness");
+    assert.ok(!alone.report.checks.some((c) => c.check === "witness quorum"));
+    const changed = await verify(sample("sample-tampered.tkb"), null);
+    assert.deepEqual([changed.code, changed.report.failures], [1, ["signatures"]]);
+    // a pinned log key still has to sign the checkpoint: another log's key fails it
+    const other = await verify(sample("sample.tkb"), file("tests/golden/v2/trust.json"));
+    assert.deepEqual([other.code, other.report.failures], [1, ["checkpoint"]]);
+  });
+
+test("the page's words: the verdict, what to do next, and a meaning for every line the verifier writes", async () => {
+  const trust = sample("sample.trust.json"), names = { bundle: "my run.tkb", trust: "trust.json" };
+  const words = async (bundle, t = trust, n = names) => {
+    const { report, code } = await verify(bundle, t, { bundle: n.bundle, trust: n.trust ?? "TRUST.json" });
+    return { report, code, v: verdict(report, code), steps: nextSteps(report, code, n) };
+  };
+  const ok = await words(sample("sample.tkb"));
+  assert.equal(ok.v.word, "VERIFIED");
+  assert.match(ok.v.notMeans, /doesn't mean the agent behaved well/);
+  assert.deepEqual(ok.steps, []);
+  const bad = await words(sample("sample-tampered.tkb"));
+  assert.deepEqual([bad.v.word, bad.v.means.endsWith("Failed: signatures.")], ["FAILED", true]);
+  assert.deepEqual(bad.steps.map((s) => s.command), ["shasum -a 256 'my run.tkb'",
+    "npx -y @cygnuxlabs/tracekit@latest verify 'my run.tkb' --trust trust.json"]);
+  const wrong = await words(sample("sample.tkb"), file("tests/golden/v2/trust.json"));
+  assert.match(wrong.v.means, /^This bundle is not signed by the signer your trust file names/);
+  const alone = await words(sample("sample.tkb"), null, { ...names, trust: null });
+  assert.deepEqual([alone.v.word, alone.v.means], ["UNVERIFIABLE",
+    "Signatures are intact, but you haven't said whose signer you trust."]);
+  assert.match(alone.steps[0].text, /^Ask for the sender's trust file/);
+  // the exit line: the CLIs refuse without a trust file, and check a v1 bundle, or what this verifier lacks, themselves
+  assert.equal(cliExit(alone.report), " The command-line verifiers need the trust file: without one they exit 2.");
+  assert.equal(cliExit((await words(sample("sample-tampered.tkb"), null, { ...names, trust: null })).report),
+    " The command-line verifiers need the trust file: without one they exit 2.");
+  assert.equal(cliExit(ok.report), " The command-line verifiers exit with the same code.");
+  const rekor = await words(file("tests/golden/v2/closed.tkb"), file("tests/golden/v2/trust-rekor.json"));
+  assert.deepEqual([rekor.code, cliExit(rekor.report)], [2, " The TypeScript command-line verifier exits with the same "
+    + "code; the Python one checks what this page doesn't."]);
+  const v1 = await words(file("tests/golden/v1/demo-run.tkb"), trust, { bundle: "demo-run.tkb", trust: "t.json" });
+  assert.deepEqual([v1.code, v1.v.word], [2, "UNVERIFIABLE"]);
+  assert.match(v1.v.means, /format v1 bundle/);
+  assert.equal(cliExit(v1.report), "");
+  assert.deepEqual(v1.steps.map((s) => s.command), ["uvx --from tracekit-ai tracekit verify demo-run.tkb --key signer.pub"]);
+  const newer = await words(file("tests/golden/negative/manifest-newer-verifier.tkb"), file("tests/golden/negative/trust.json"));
+  assert.match(newer.v.means, /needs a newer verifier/);
+  assert.deepEqual(newer.steps.map((s) => s.command?.split(" ")[0]), ["npx", "uvx", undefined]);
+  assert.deepEqual(newer.steps.map((s) => s.text.split(",")[0]),
+    ["With Node.js:", "Or with Python", "Open the latest page"]);
+  assert.match(v1.steps[0].text, /^A format v1 bundle: verify it with the signer.s public key/);
+  assert.match((await words(Uint8Array.of(1, 2, 3))).v.means, /couldn't be read as a Tracekit bundle/);
+  const untrusted = await words(sample("sample.tkb"), bytes("{}"));
+  assert.match(untrusted.v.means, /trust file couldn't be used/);
+  assert.equal(untrusted.report.checks[0].detail, "ValueError: trust.json: not a v2 trust config (logs, witnesses, algs, "
+    + "witnesses_required, rekor, monitors, issuers, analyzers)");
+  const src = readFileSync(join(ROOT, "sdk/typescript/src/verify/index.ts"), "utf8");
+  for (const [, name] of src.matchAll(/(?:check|unsupport)\("([^"]+)"/g)) assert.ok(MEANING[name], name);
+  assert.deepEqual(Object.keys(asJson(ok.report, ok.code)),
+    ["exit_code", "checks", "failures", "warnings", "integrity", "assurance", "notes"]);
+  // the Findings line, when a bundle has one, as the CLIs' --json carry it
+  assert.equal(asJson(Object.assign(new ok.report.constructor(), ok.report, { findings: "1 signed" }), 0).findings,
+    "1 signed");
+  assert.ok(asText(ok.report, ok.code).endsWith("\nIntegrity: VERIFIED.\n" + `Assurance: ${ok.report.assurance}.\n`
+    + "\nExit code 0.\n"));
+  const facts = Object.fromEntries(summarize(await readZip(sample("sample.tkb")), ok.report));
+  assert.match(facts.Records, /^12 signed record\(s\) in 1 run\(s\), 2026-/);
+  assert.deepEqual([facts["Tool calls"], facts["Held for approval"], facts.Gaps, facts.Agents],
+    ["3 decided: 2 allow, 0 deny, 1 ask", '"pay": approved by alice', "none recorded", '"support-bot" (uid:1000)']);
+});
+
+test("the CLI sends what it doesn't support to the reference verifier by its PyPI name, tracekit-ai", async () => {
+  const { main } = await import("../dist/verify/cli.js");
+  const said = [], error = console.error;
+  console.error = (m) => said.push(m);
+  try {
+    assert.equal(await main(["run.tkb", "--bridge"]), 2);
+  } finally {
+    console.error = error;
+  }
+  assert.match(said.join("\n"), /reference verifier: pip install tracekit-ai\)/);
 });
 
 test("agreement with the reference verifier (tests/test_ts_verifier.py)", { skip: NO_SIGNER }, () => {

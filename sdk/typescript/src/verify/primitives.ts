@@ -199,8 +199,9 @@ export type Note = { origin: string; size: number; root: Uint8Array; cosigs: [st
 /**
  * Open a checkpoint note with pinned vkeys: a pinned Ed25519 log key named after the origin must sign it, and each
  * pinned hybrid key of the origin must have a line. Web Crypto has no SLH-DSA, so a hybrid line is left `unchecked`.
+ * `anchored` false (no trust config, so `logKeys` is empty): no log signature is required.
  */
-export async function openNote(data: Uint8Array, logKeys: string[], witnessKeys: string[]): Promise<Note> {
+export async function openNote(data: Uint8Array, logKeys: string[], witnessKeys: string[], anchored = true): Promise<Note> {
   if (data.length > MAX_NOTE) throw new NoteError("note too large");
   let note: string;
   try {
@@ -266,7 +267,7 @@ export async function openNote(data: Uint8Array, logKeys: string[], witnessKeys:
       cosigs.push([k, ts]);
     }
   }
-  if (!logged) throw new NoteError(`no signature from a pinned log key for origin ${origin}`);
+  if (!logged && anchored) throw new NoteError(`no signature from a pinned log key for origin ${origin}`);
   if (hybrids.size) throw new NoteError(`no SLH-DSA signature from the pinned hybrid key for origin ${origin}`);
   return { origin, size: Number(size), root, cosigs, unchecked };
 }

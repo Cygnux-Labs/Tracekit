@@ -121,6 +121,22 @@ class TestSignerOnlyRecords(Lifecycle):
         reg = self.events(findings["run_id"])[0]
         self.assertEqual(reg["data"]["analyzes"], mine["run_id"])
         self.assertEqual(len(self.events(mine["run_id"])), 1)   # nothing was written into the analysed run
+        # a findings or replay run is never about one (its bundle with its findings would fail): open after a restart,
+        # final, and final after a restart
+        self.open()
+        for field in ("analyzes", "replay_of"):
+            self.refused("invalid_request", "register_run", {"agent": {"name": "a"}, field: findings["run_id"],
+                                                             **({"investigation": "i"} if field == "replay_of" else {})},
+                         ANALYZER)
+        self.call("close_run", findings, ANALYZER)
+        self.s.sweep(time.monotonic() + 1000)
+        for restart in (False, True):
+            if restart:
+                self.close()
+                self.open()
+            self.assertTrue(self.s.log.runs[("default", findings["run_id"])]["final"])
+            self.refused("invalid_request", "register_run", {"agent": {"name": "a"}, "analyzes": findings["run_id"]},
+                         ANALYZER)
 
 
 class TestLifecycle(Lifecycle):

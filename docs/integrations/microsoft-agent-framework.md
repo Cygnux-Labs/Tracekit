@@ -81,13 +81,27 @@ key): [`examples/v2/agent_framework`](../../examples/v2/agent_framework/README.m
   to Agent Framework, decided under its name there; the `ClientSession` that `instrument()` wires doesn't decide it
   again. Agent Framework 1.22's MCP tools need `mcp` 1.x.
 
+## What the model said
+
+Function middleware sees no model response. Add `tk.chat`, a chat middleware, beside the function middleware: it
+records each response's reasoning (`text_reasoning`, with its `protected_data` sealed), text and function calls under
+the call ids the function middleware decides them by; a streamed response once the stream ends.
+
+```python
+tk = Tracekit(run)
+agent = Agent(client=OpenAIChatClient(), tools=[close_account], middleware=[tk, tk.chat])
+```
+
+The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - The signer decides the validated arguments, not the model's JSON text: function middleware never sees it. A value the
   model sent that the function doesn't take is not in the record; one Agent Framework converted (`"5"` for an `int`)
-  is recorded converted, and the decision says so (`args_source: coerced`), so the gateway's or autotrace's record of
-  the model's own arguments is not held against them. A `SecretStr` argument is decided as `**********`: the policy
-  never sees its value.
+  is recorded converted, and the decision says so (`args_source: coerced`), so autotrace's record of the model's own
+  arguments is not held against them. The LLM gateway's record is: the label is the agent's word, so a converted or
+  dropped value reads as `reconcile.args_mismatch` "(the decide says a framework coerced them)". A `SecretStr`
+  argument is decided as `**********`: the policy never sees its value.
 - Agent Framework's own approvals are not the signer's: they are not in the bundle, and a call its approver rejects
   leaves no record. Use the policy's `ask` for approvals the bundle should hold.
 - A refusal reads to the model as the call's result, not as Agent Framework's error result: middleware that doesn't

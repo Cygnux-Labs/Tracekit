@@ -59,7 +59,9 @@ Limits: in-process autotrace (L3) runs in the same process as S2, so S2 can supp
 `(L3 absent)`. The [LLM gateway](gateway.md) captures L3 outside the agent, and the [egress observer](egress.md)
 the hosts each run reaches (L6): side effects beneath a recorded call, such as a shell command's own connections, are
 signed `effect.observed` records, and a host no http or model call nor `explains` entry covers is
-`reconcile.unexplained_effect`. Layers L4 and L5 (processes, services) are not shipped yet; run.final's coverage
+`reconcile.unexplained_effect`. Layer L5 (services) is not shipped yet, and L4 (processes) only as the experimental
+[kernel sensor import](integrations/tetragon.md): a Tetragon or Falco import that covered a run throughout makes its
+processes `observed`, its effects are the sensor's word, and the signer doesn't reconcile them; run.final's coverage
 matrix says per action class what covered the run (enforced, observed, reported or none) and never claims more. All limits: [limits.md](limits.md). Invariants: I1, I2, I6. Covered by `tests/test_reconcile.py`, `eval/e10_reconcile.py`,
 `tests/test_signer_lifecycle.py` (`test_client_forged_gap_or_tamper_is_refused_and_summarised`,
 `test_client_isolation_and_fail_mode_claims_have_no_effect`) and `tests/test_known_gaps_v2.py::test_kg11_signer_isolation_not_taken_from_client`.
@@ -108,6 +110,18 @@ into the agent's run).
 Out of scope. A provider that controls the hosts and storage of the signer and its witnesses can do anything S3 and
 S4 can. Witnesses run by other parties on other infrastructure and Rekor anchors still show a rewrite after they saw
 the log.
+
+### Signed findings
+
+`tracekit analyze --v2` reads a finished run and signs what its checks found as `review` records in a findings run
+([findings](findings.md), [format v2](format-v2.md#3-events)). Four threats are specific to it:
+
+| Threat | Stopped or shown by | Not stopped |
+|---|---|---|
+| **Forged findings** (S1, S2): the agent signs a finding, or a clean result, about its own run | `review_finding` writes only into a findings run, and only an identity in signer.yaml `analyzers` registers one; the finding's author is the identity the signer measured at registration, never a field of the request. When the author is the analysed run's own identity, or a run's signer is same-user, both verifiers label the finding `self-asserted` (a warning), and `tracekit doctor` warns when the agent's uid is in `analyzers` (`D-ANALYZER-AGENT`). A verifier pins the analyzers it trusts in its own trust config; only their findings read `independent` | in dev mode the user is agent and analyzer at once: every dev finding reads `self-asserted` |
+| **Analyzer compromise** (S3, S4, or a stolen analyzer credential): false findings, or none | the analyzer can't change the analysed run: a citation that names a record the run doesn't have, or another hash, fails `reviews`. Its reads of retained content are signed `content.accessed` records in the tenant's signer run. Signed findings hold no text of the run, so erasing a run's content leaves nothing of it in them | a false finding that cites real records, a missed finding, or a pass never run: a signed finding is the analyzer's word, and its absence proves nothing. `reviewer` (tool and version) is a claim |
+| **Suppression by agent-supplied text** (S1, S2): the agent phrases its reasoning, transcript or tool output so a check doesn't fire, or addresses a reviewer model | the checks read the agent's own text as data: a finding names the trust tier of the text it relied on (`gateway`, `transcript`, `sdk`) and whether that text was signed before the call; a later text naming what a stated constraint kept away only lowers that TK-X204 finding (`lifted`) and is cited | the model's own text clears the other checks outright: any text before a call clears TK-X201, and text saying it changes the file clears TK-X202 whatever reason it gives (naming it innocently no longer does: E20's `c1` cover is caught in every session of every set, from 17% tuned and 38% on pool v1 before 2026-10-19); adaptive wording defeats text checks; a finding is evidence to read, not proof the agent behaved ([limits](limits.md#intent-reasoning-and-action-checks)) |
+| **Reviewer injection** (S1, S2): text in the run (reasoning, a prompt line the agent appends, tool arguments) tells the reviewer model (`--review`, TK-X210) the run is fine, or tries to steer its answer | the run reaches the model as one JSON value, never as text tags it could imitate, each text labelled with who recorded it; the fixed prompt calls any text addressing a reviewer an injection attempt to flag; the answer must match a closed schema (free text is no verdict and is never read as `ok`), and only `run_seqs` the run has become citations. TK-X210 is warn only: it never changes the exit code or decides a call, and a reviewer's `ok` clears no deterministic finding | a model can still be persuaded, or miss a fault; a missing TK-X210 finding proves nothing. Prefer a reviewer of another model family than the agent's (the analyzer warns when they match) and read TK-X210 as a second opinion ([limits](limits.md#intent-reasoning-and-action-checks)) |
 
 ## Invariants
 

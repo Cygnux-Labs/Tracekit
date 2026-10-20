@@ -1,6 +1,14 @@
-"""The signer RPC contract, version 17: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 19: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 17 (Tracekit 1.3) adds model_event's optional
+Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
+`tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states; its
+response's `refused` past the run's cap), model_event's `amended` (the fields an LLM gateway changed in a request),
+its `said_only` (a response recorded without its calls), register_run's `caller` (a gateway registering the run of a
+client it serves), observe_effect's `callers` (the identities whose runs a kernel sensor's import covers, required
+with `sensor`) and its OpenShell import (sensor `openshell`, an effect's `denied`, and the `policy` and `lost` effects
+of one run). Version 18 adds
+observe_effect's kernel sensor events (its `sensor`, `lost`, and the exec, exit, connect and file effects). Version 17
+(Tracekit 1.3) adds model_event's optional
 `tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
 Version 16 (all of Tracekit 1.2) adds register_run's optional
 `parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
@@ -21,11 +29,12 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 17
+RPC_VERSION = 19
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
+MAX_CALLERS = 256   # identities a kernel sensor's import maps processes to
 
 ERROR_CODES = [
     "invalid_request",      # fails the request schema
@@ -37,7 +46,7 @@ ERROR_CODES = [
     "unknown_run",
     "run_exists",           # register_run with a run_id that is already registered
     "run_closed",           # close_run already accepted for this run
-    "conflict",             # request_id reused with a different payload
+    "conflict",             # request_id reused with a different payload; an observer process another took over from
     "client_seq_reused",    # client_seq at or below the stream's high-water mark, under a new request_id
     "unknown_tool_call",    # approval_request for a tool_call_id the run never decided
     "unknown_decision",     # complete with a decision_id that is not this call's, or already completed
@@ -61,11 +70,13 @@ def _obj(required, **props):
 
 ID = _str(128, minLength=1, pattern=r"^[A-Za-z0-9._:-]+" + _END)
 SEQ = {"type": "integer", "minimum": 0, "maximum": MAX_SAFE_INT}
+U32 = {"type": "integer", "minimum": 0, "maximum": 4294967295}
 DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:.+" + _END)   # scheme:subject
+HOST = _str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END)   # a host name or IP address, lower case
 TS = _str(27, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z" + _END)
 SLACK_ID = _str(64, pattern=r"^slack:[A-Z0-9]+/[A-Z0-9]+" + _END)   # slack:<team id>/<user or user group id>
 ANY = {}   # any JSON value; bounded by the transport's line limit
@@ -84,6 +95,12 @@ _EVENT = dict(_RUN, stream=ID, client_seq=SEQ)
 _RUN_REQ = ["request_id", "run_id", "run_token"]
 _EVENT_REQ = _RUN_REQ + ["stream", "client_seq"]
 _SEQ_ONLY = _obj(["run_seq"], run_seq=SEQ)
+# a kernel sensor's event (observe_effect): process `pid` running `binary`, attributed like a net effect; `denied`:
+# the sensor (OpenShell) blocked it
+_ATTRIBUTED = dict(run_id=ID, run_token=TOKEN, caller=IDENTITY)
+_OS = dict(_ATTRIBUTED, ts=TS, pid=U32, binary=_str(4096, minLength=1), exec_id=_str(256, minLength=1), tool_call_id=ID,
+           denied={"const": True})
+_OS_REQ = ["kind", "ts", "pid", "binary"]
 
 # `caller`, from a `gateways` identity only: the client it authenticated, whose run token the call carries (tier T2)
 _decide = _obj(_EVENT_REQ + ["tool_call_id", "tool", "args_source", "args"], **_EVENT, caller=IDENTITY,
@@ -130,6 +147,56 @@ FINDING = _obj(["target", "intervention", "n", "p_with", "p_without", "effect", 
                stopped={"enum": ["decisive", "futility", "n_max", "budget"]},
                uncounted={"type": "array", "maxItems": 4096, "items": _obj(
                    ["run_id", "reason"], run_id=ID, reason={"enum": ["ranking", "budget"]})})
+# a signed finding of `tracekit analyze --v2` (review_finding): no text of the run, only the check's rule (the signer
+# writes its fixed title), severity, `cites` (records of the analysed run, by run_seq and hash) and digests copied from
+# them. A finding names the trust tier of the text it relied on, where that text sits against the call it concerns
+# (`order`) and whether redaction changed it; the coverage review (TK-X200) counts per check what it checked, found
+# and could not check (by reason code), `partial` for an open run, and the calls by the reasoning readable before them.
+# A reviewer model's finding (TK-X210) adds its answer's closed fields (alignment, reason code), what the analyzer
+# asserts of the model ({model, version, prompt_hash}) and the model families of the reviewer and the agent; an effect
+# check's (TK-X206, TK-X207) the window it joined effects to calls with ({grace_s, skew_s}). Never the explanation.
+COVERAGE = "TK-X200"
+ALIGNMENTS = ["ok", "drift", "misaligned"]
+REVIEW_REASONS = ["none", "unrequested_action", "unexplained_action", "contradicted_reasoning", "scope_creep",
+                  "workaround", "false_success", "followed_tool_output", "injection", "other"]
+MODEL_FAMILIES = ["anthropic", "openai", "google", "meta", "mistral", "deepseek", "qwen", "xai"]
+_NAME = _str(128, minLength=1, pattern=r"^[A-Za-z0-9._:/@+-]+" + _END)   # a model's or a version's name: no prose
+_SECONDS = {"type": "number", "minimum": 0, "maximum": 86400}
+FINDING_TITLES = {COVERAGE: "Check coverage", "TK-X201": "Action with no reasoning before it",
+                  "TK-X202": "Edit of a file not mentioned before", "TK-X203": "Write outside the project",
+                  "TK-X204": "Stated constraint broken", "TK-X205": "Success claimed after a failure",
+                  "TK-X206": "Effect with no action", "TK-X207": "Action with no effect",
+                  "TK-X208": "Prompt the harness never submitted", "TK-X210": "Flagged by the reviewer model",
+                  "TK-X101": "Test run claimed, none ran",
+                  "TK-X102": "Commit claimed, none ran", "TK-X103": "Push claimed, none ran",
+                  "TK-X104": "Install claimed, none ran", "TK-X111": "Push denied, but it ran",
+                  "TK-X112": "Deletion denied, but it ran", "TK-X113": "File changes denied, but files changed",
+                  "TK-X114": "Network use denied, but it ran", "TK-X120": "Risky action not mentioned",
+                  "TK-X211": "Sent, deleted or installed without saying so"}
+_CHECKS = [r for r in FINDING_TITLES if r != COVERAGE]
+_CHECKED = _obj(["checked", "found"], checked=SEQ, found=SEQ, not_checkable={"type": "array", "maxItems": 16,
+                "items": _obj(["reason", "n"], reason=_str(32, minLength=1, pattern=r"^[a-z][a-z_]*" + _END), n=SEQ)})
+REVIEW = _obj(["reviewer", "verdict", "cites"], reviewer=_str(128, minLength=1, pattern=r"^[A-Za-z0-9._/+-]+" + _END),
+              cites={"type": "array", "maxItems": 256, "items": _obj(["run_seq", "hash"], run_seq=SEQ, hash=DIGEST)},
+              verdict={"oneOf": [
+                  _obj(["kind", "rule", "severity"], kind={"const": "finding"}, rule={"enum": _CHECKS},
+                       severity={"enum": ["info", "low", "medium", "high", "critical"]},
+                       tier={"enum": ["gateway", "harness", "transcript", "sdk"]},
+                       order={"enum": ["signed_before", "transcript_order", "after"]}, redacted={"type": "boolean"},
+                       lifted={"type": "boolean"},
+                       digests={"type": "array", "maxItems": 32, "items": DIGEST},
+                       alignment={"enum": ALIGNMENTS}, reason={"enum": REVIEW_REASONS},
+                       asserted=_obj(["model", "version", "prompt_hash"], model=_NAME, version=_NAME, prompt_hash=DIGEST),
+                       families=_obj(["reviewer", "agent"], reviewer={"enum": [*MODEL_FAMILIES, None]},
+                                     agent={"type": "array", "maxItems": len(MODEL_FAMILIES),
+                                            "items": {"enum": MODEL_FAMILIES}}),
+                       window=_obj(["grace_s", "skew_s"], grace_s=_SECONDS, skew_s=_SECONDS)),
+                  _obj(["kind", "rule", "severity", "checks"], kind={"const": "coverage"}, rule={"const": COVERAGE},
+                       severity={"const": "info"}, checks=_obj([], **dict.fromkeys(_CHECKS, _CHECKED)),
+                       partial={"type": "boolean"}, reasoning=_obj([], full=SEQ, summary=SEQ, withheld=SEQ, none=SEQ))]})
+# a live constraint (constraint_add): what the person's request says not to do in the rest of the run; the signer
+# commits `object` (a file name) and holds a later call that breaks it for a person's approval, never lowering a decision
+CONSTRAINT_KINDS = ["keep_away", "only_change", "read_only", "no_push", "no_network"]
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),
@@ -157,6 +224,8 @@ REQUESTS = {
                          investigation=ID,                 # with replay_of: the investigation it is an arm of
                          # the run that starts this one (a sub-agent's), proven by its token: recorded with the session
                          parent=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
+                         # a gateway registering the run of a client it serves: counted in its open runs for that client
+                         caller=IDENTITY,
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT, caller=IDENTITY,
@@ -179,6 +248,9 @@ REQUESTS = {
                         usage=_obj([], input_tokens=SEQ, output_tokens=SEQ, cache_read_tokens=SEQ,
                                    cache_write_tokens=SEQ, reasoning_tokens=SEQ),
                         tool_uses={"type": "array", "maxItems": 128, "items": _TOOL_USE},
+                        # what the model said, without the calls it asked for (a harness whose hooks name no call, or
+                        # report a message's text apart from its calls): reconciliation reads no call from it
+                        said_only={"const": True},
                         tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID},
                         # a gateway's: each tool result the request sends, as the values it may have been recorded as
                         # (`digest` event_hash(value), `result_digest` sha256(JCS({"result": value})))
@@ -186,6 +258,10 @@ REQUESTS = {
                             ["id", "forms"], id=ID, forms={"type": "array", "minItems": 1, "maxItems": 3, "items": _obj(
                                 ["digest", "result_digest"], digest=DIGEST, result_digest=DIGEST)})},
                         caller=IDENTITY,   # from a `gateways` identity only: the client it authenticated (source gateway)
+                        # with caller, on a request: the JSON pointers of the fields the gateway changed before sending
+                        # it (to show reasoning), signed as the record's ext.amended
+                        amended={"type": "array", "minItems": 1, "maxItems": 16,
+                                 "items": _str(256, pattern=r"^(/([^~/]|~[01])*)+" + _END)},
                         body=ANY),   # the exchange's body, for the content vault when status says it is on
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, caller=IDENTITY, tool_call_id=ID, attempt=SEQ,
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args
@@ -235,13 +311,30 @@ REQUESTS = {
     # by the run token the client presented (run_id, run_token) or by the identity the observer authenticated for the
     # connection (`caller`), which also goes with a token. Every call is the heartbeat of the observer's process
     # `instance`; `check`: refused with run_token_invalid unless the signer issued that token for that run
+    # A kernel sensor's import (tracekit.sensor) names its `sensor` in every call: each of its effects is what that
+    # sensor says process `pid` did (`tool_call_id`: the id the process's environment carried, the agent's claim);
+    # `callers`, in every call: the identities its `runs` map processes to, whose runs it covers (no other run);
+    # `lost`: events the sensor or the import dropped, a gap in each run it covers
     "observe_effect": _obj(["request_id", "instance", "effects"], request_id=ID, instance=ID, effects={
-        "type": "array", "maxItems": 256, "items": _obj(
+        "type": "array", "maxItems": 256, "items": {"oneOf": [_obj(
             ["kind", "host", "port", "bytes_out", "bytes_in", "connections", "first_ts", "last_ts"], run_id=ID,
-            run_token=TOKEN, caller=IDENTITY, kind={"const": "net"},
-            host=_str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END),
+            run_token=TOKEN, caller=IDENTITY, kind={"const": "net"}, host=HOST,
             port={"type": "integer", "minimum": 1, "maximum": 65535}, bytes_out=SEQ, bytes_in=SEQ, connections=SEQ,
-            first_ts=TS, last_ts=TS)}, check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN)),
+            first_ts=TS, last_ts=TS),
+            _obj(_OS_REQ, kind={"const": "exec"}, args_digest=DIGEST, parent_exec_id=_str(256, minLength=1), **_OS),
+            _obj(_OS_REQ, kind={"const": "exit"}, status=U32, signal=_str(32), **_OS),
+            _obj(_OS_REQ + ["host", "port"], kind={"const": "connect"}, host=HOST,
+                 port={"type": "integer", "minimum": 0, "maximum": 65535}, **_OS),
+            _obj(_OS_REQ + ["path"], kind={"const": "file"}, path=_str(4096, minLength=1), **_OS),
+            # OpenShell's (sensor openshell): a change of the sandbox's policy or configuration, as OpenShell names it,
+            # with its hash of the policy, who made it and the digest of its message; and a loss of one run's events
+            _obj(["kind", "ts", "change"], kind={"const": "policy"}, ts=TS,
+                 change=_str(64, minLength=1, pattern=r"^[a-z0-9_.-]+" + _END), policy_hash=_str(128, minLength=1),
+                 by=_str(256, minLength=1), detail_digest=DIGEST, **_ATTRIBUTED),
+            _obj(["kind", "reason"], kind={"const": "lost"}, reason=_str(1024, minLength=1), **_ATTRIBUTED)]}},
+        check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
+        sensor={"enum": ["tetragon", "falco", "openshell"]},
+        callers={"type": "array", "maxItems": MAX_CALLERS, "items": IDENTITY}, lost=REASON),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
                  limit={"type": "integer", "minimum": 1, "maximum": 1000}),
@@ -267,6 +360,12 @@ REQUESTS = {
     "content_erase": _obj(["request_id", "run_id"], request_id=ID, run_id=ID, reason=REASON),
     # a `tracekit why` finding about the run a findings run (register_run `analyzes`) analyses: a why.finding record
     "why_finding": _obj(_RUN_REQ + ["finding"], **_RUN, finding=FINDING),
+    # a signed finding of `tracekit analyze --v2` about the run a findings run analyses: a review record
+    "review_finding": _obj(_RUN_REQ + ["review"], **_RUN, review=REVIEW),
+    # a live constraint of the run (CONSTRAINT_KINDS; keep_away and only_change name the file, `object`): a
+    # constraint.added record holding the object's commitment, never its name
+    "constraint_add": _obj(_RUN_REQ + ["constraint"], **_RUN, constraint=_obj(
+        ["kind"], kind={"enum": CONSTRAINT_KINDS}, object=_str(256, minLength=1))),
     # containment (docs/incidents.md): operator calls, `authorize` grants and never defaults, each in the caller's tenant
     "incident_list": _obj([], state={"enum": ["open", "resolved"]}, cursor=ID,
                           limit={"type": "integer", "minimum": 1, "maximum": 1000}),
@@ -376,6 +475,10 @@ RESPONSES = {
         oneOf=[{"required": ["content", "salt"]}, {"required": ["content", "redacted"]}, {"required": ["state"]}])}),
     "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
     "why_finding": _SEQ_ONLY,
+    "review_finding": _SEQ_ONLY,
+    # refused: past the run's file constraint cap the constraint was not added (a constraint_refused gap, run_seq):
+    # every write of the run is held from then on
+    "constraint_add": _obj(["run_seq"], run_seq=SEQ, refused={"const": True}),
     "incident_list": _obj(["incidents", "next_cursor"], incidents={"type": "array", "maxItems": 1000, "items": _INCIDENT},
                           next_cursor={"oneOf": [ID, {"type": "null"}]}),
     "incident_show": _INCIDENT,
@@ -445,6 +548,8 @@ class SignerAPI(Protocol):
     def content_get(self, req: dict) -> dict: ...
     def content_erase(self, req: dict) -> dict: ...
     def why_finding(self, req: dict) -> dict: ...
+    def review_finding(self, req: dict) -> dict: ...
+    def constraint_add(self, req: dict) -> dict: ...
     def incident_list(self, req: dict) -> dict: ...
     def incident_show(self, req: dict) -> dict: ...
     def incident_resolve(self, req: dict) -> dict: ...

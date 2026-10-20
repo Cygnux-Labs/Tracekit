@@ -61,6 +61,12 @@ Each request through the proxy is attributed to a run:
 The connection's identity goes with a run token too: when the token was issued to another identity, the signer
 attributes the observation by the connection's identity instead.
 
+Either listener takes SOCKS5 on the same port (inside TLS on the `http` one), as the outbound proxies of
+[microsandbox](integrations/microsandbox.md) and [E2B](integrations/e2b.md) speak it: CONNECT, with the run id and its
+run token as the username and password (by token), or no credentials (by identity). A host name is resolved and
+checked as CONNECT's. An address is reached only through the server name of its TLS ClientHello, which must resolve to
+it on the observer's host; that name is the host recorded.
+
 To send the agent process's own traffic through the observer too, set `HTTPS_PROXY` (and `HTTP_PROXY`) for it. In
 [system mode](#linux-system-mode) that needs no run token: the observer reads the agent's uid. Over the network (the
 central chart, compose) the observer knows a client only by what it sends, and proxy settings carry no identity: a
@@ -75,14 +81,20 @@ in compose. A run's `proxy_env` merged over `os.environ` keeps that `NO_PROXY` f
 An observation no open run takes (a token the signer did not issue for that run, or issued to another identity, with
 no open run of the connection's identity to fall back to; an identity with no open run; a run already final) goes into
 the tenant's signer run as a `capture.gap{kind: effect_outside_run}` naming the host, the traffic, why, and the run the
-client named, so a [run-set](format-v2.md#7-registry-logs-and-run-sets) shows it. The proxy drops nothing the signer
-refuses: it splits a refused call until each refused total is on its own, says why on stderr, and sends those again
-with every heartbeat.
+client named, so a [run-set](format-v2.md#7-registry-logs-and-run-sets) shows it. The proxy splits a call the signer
+refuses until each refused total is on its own, says why on stderr, and sends those again with every heartbeat. It
+keeps at most 10,000 of them: past that it drops the oldest and says how many on stderr
+([limits](limits.md#egress-observation-12)).
 
 ## What is refused
 
 - `CONNECT host:port` whose TLS ClientHello names another server (SNI) than `host`: the tunnel is closed before
-  anything reaches the host, and the proxy says so on stderr.
+  anything reaches the host, and the proxy says so on stderr. So is a tunnel whose ClientHello doesn't arrive within
+  30 seconds of its request, and one more tunnel of an attribution (its connection's identity, else its run) that
+  has 64 open already.
+- a connection that doesn't send what attributes it (an HTTP request's head; SOCKS5's greeting and credentials)
+  within 5 seconds, and on Linux one more connection from a loopback client whose uid has 64 open already, counted
+  from accept: closed, so one agent's half-open connections can't take the 256 its shared address gets.
 - a raw IP address, in any form the resolver reads as one (`8.8.8.8`, `134744072`, `0x08080808`, `8.8.2056`, `::1`),
   and the public DNS-over-HTTPS endpoints (`dns.google`, `cloudflare-dns.com`, ...): 403, with what to do. List one in
   `allow` to let agents reach it; an allowed host needs no SNI, so any protocol passes.
@@ -90,6 +102,11 @@ with every heartbeat.
   naming the address, unless `allow` lists it. The proxy connects to the addresses it checked.
 - a host name `observe_effect` would not take (other characters than `a-z 0-9 . _ : -`, or over 253): 400.
 - a run id or token that can't be one (a token is 1 to 1024 of `A-Z a-z 0-9 . _ ~ + / = -`): 407.
+- over SOCKS5: a client with neither a run token nor an identity, or a token the signer refuses (the handshake fails);
+  any command but CONNECT (`command not supported`); a host name refused as above (`connection not allowed`,
+  `host unreachable`); and an address whose TLS server name is missing or resolves elsewhere on the observer's host
+  (closed before anything reaches it), unless `allow` lists the address. SOCKS5 carries no reason: each refusal is a
+  line on stderr.
 
 Plain HTTP requests in absolute form (`GET http://host/path`) are forwarded with `Connection: close`; a body needs a
 `Content-Length` (at most 32 MiB; send larger uploads over HTTPS) and is streamed through as it arrives, never held
@@ -137,10 +154,11 @@ until your `explains` list is tuned.
 ## Heartbeats and coverage
 
 Every `observe_effect` call is the observer's heartbeat, on the same machinery as the
-[transcript tailer's](coding-agents.md#what-the-signer-records-as-a-gap-12). An observer covers each run of its tenant
+[transcript tailer's](coding-agents.md#what-the-signer-records-as-a-gap). An observer covers each run of its tenant
 registered while it is alive. When it makes no call for 90 s while a run it covers is open, or another process of
 it takes over (a restart: the old one's unreported totals may be gone), the signer writes a signed
-`capture.gap{kind: observer_lost}` in that run, and the run's network is no longer `observed`.
+`capture.gap{kind: observer_lost}` in that run, and the run's network is no longer `observed`. The process taken over
+from is refused from then on (`conflict`): two proxies under one identity stop each other, so give each its own.
 
 ## Late observations
 
@@ -167,7 +185,8 @@ check it.
 | `model_calls` | the LLM gateway recorded them and posture says `gateway_mandatory` (asserted) | the LLM gateway recorded them | only the agent's process did | no model call recorded |
 | `tool_calls` | every decision came through the executor or the MCP gateway and posture says `tool_calls: enforced` (asserted) | — | otherwise, when calls were recorded | no call recorded |
 | `network` | an egress observer covered the run throughout and posture says `network: enforced` (asserted) | an egress observer covered the run throughout | no observer, but the run's http calls name hosts | neither |
-| `processes`, `services` | — | — | — | not covered yet |
+| `processes` | — | a Tetragon or Falco [import](integrations/tetragon.md) covered the run throughout (experimental, Linux) | — | otherwise |
+| `services` | — | — | — | always: nothing covers them yet |
 
 Each class lists the layers behind it (`gateway`, `adapter`, `hook`, `egress`, ...) and `asserted: true` where the
 status rests on posture. The verifier prints it as a `coverage matrix` line and never says a run is complete

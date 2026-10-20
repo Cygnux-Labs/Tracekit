@@ -431,6 +431,30 @@ class Executor(unittest.TestCase):
         self.assertEqual(json.loads(out)["status"], 201)
         [d] = [e for e in self.events() if e["type"] == "policy.decision"]
         self.assertEqual((d["source"], d["tier"]), ("gateway", "T2"))   # the executor's alone, not also the adapter's
+        self.assertEqual(d["tool_call_id"], "call-lc")   # under the model's id for the call
+
+    def reconciled(self):
+        """The run's reconcile records and decisions, once it is final."""
+        self.close_and_sweep()
+        return [(e["type"], e.get("tool_call_id")) for e in self.events()
+                if e["type"].startswith("reconcile.") or e["type"] == "policy.decision"]
+
+    @unittest.skipUnless(HAVE["langchain_core"], "langchain not installed")
+    def test_an_executor_call_the_model_asked_for_under_langchain_reconciles(self):
+        from langchain.agents import create_agent
+        from langchain_core.messages import HumanMessage
+        from test_contract_langchain import StubModel
+        from tracekit.integrations.langchain import TracekitMiddleware
+        mw = TracekitMiddleware(InProcess(self.s, AGENT), self.run["run_id"], self.run["run_token"])
+        agent = create_agent(StubModel(), [executor_tools.langchain(self.actions()["refund"])], middleware=[mw])
+        ask = lambda tcid: {"messages": [HumanMessage(json.dumps({"name": "refund", "args": PAID, "id": tcid}))]}
+        agent.invoke(ask("call-sync"))
+        asyncio.run(agent.ainvoke(ask("call-async")))
+        self.actions()["refund"](dict(PAID, cents=6))   # the program's own call: no model asked for it
+        got = self.reconciled()
+        own = [tcid for t, tcid in got if t == "reconcile.fabricated"]
+        self.assertEqual([t for t, _ in got if t.startswith("reconcile.")], ["reconcile.fabricated"])
+        self.assertEqual([tcid for t, tcid in got if t == "policy.decision"], ["call-sync", "call-async", *own])
 
     @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
     def test_the_claude_agent_sdk_hooks_leave_executor_tools_to_the_executor(self):
@@ -439,6 +463,23 @@ class Executor(unittest.TestCase):
         inp = {"tool_name": "mcp__tracekit-executor__refund", "tool_use_id": "tu-1", "tool_input": PAID}
         self.assertEqual(asyncio.run(pre(inp, "tu-1", None)), {})
         self.assertNotIn("policy.decision", [e["type"] for e in self.events()])
+
+    @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
+    def test_an_executor_call_the_model_asked_for_under_the_claude_agent_sdk_reconciles(self):
+        from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
+        from tracekit.integrations.claude_agent_sdk import tracekit_hooks, tracekit_said
+        [pre] = tracekit_hooks(InProcess(self.s, AGENT), self.run)["PreToolUse"][0].hooks
+        with mock.patch("claude_agent_sdk.create_sdk_mcp_server", lambda name, tools: tools):
+            [refund] = [t for t in executor_tools.claude_agent_sdk(list(self.actions().values())) if t.name == "refund"]
+        name = f"mcp__{executor_tools.SERVER}__refund"
+        asyncio.run(tracekit_said(InProcess(self.s, AGENT), self.run)(AssistantMessage(
+            content=[TextBlock("refunding"), ToolUseBlock(id="toolu_1", name=name, input=PAID)], model="claude-x")))
+        asyncio.run(pre({"tool_name": name, "tool_use_id": "toolu_1", "tool_input": PAID}, "toolu_1", None))
+        self.assertFalse(asyncio.run(refund.handler(PAID)).get("is_error"))   # the MCP handler gets no id: the hook's
+        self.actions()["refund"](dict(PAID, cents=6))   # the program's own call: no model asked for it
+        got = self.reconciled()
+        self.assertEqual([t for t, _ in got if t.startswith("reconcile.")], ["reconcile.fabricated"])
+        self.assertEqual(got[0], ("policy.decision", "toolu_1"))
 
     @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
     def test_a_claude_agent_sdk_server(self):
@@ -456,7 +497,8 @@ class Executor(unittest.TestCase):
                 "observe": {**event, "source": "mail", "trust": "untrusted", "value": "hi"},
                 "model_event": {**event, "provider": "openai", "model": "m", "phase": "request"},
                 "approval_request": {"request_id": "x", **self.run, "tool_call_id": "c"},
-                "approval_wait": {**self.run, "approval_id": "apr-1"}, "close_run": {"request_id": "x", **self.run}}
+                "approval_wait": {**self.run, "approval_id": "apr-1"}, "close_run": {"request_id": "x", **self.run},
+                "register_run": {"request_id": "x", "agent": {"name": "a"}}}
         self.assertEqual(set(reqs), {m for m, r in REQUESTS.items() if "caller" in r["properties"]})
         for method, req in reqs.items():
             with self.subTest(method):
@@ -583,6 +625,83 @@ class Executor(unittest.TestCase):
         with open(path, "w") as f:
             json.dump({"data_dir": ".", "gateways": [f"mtls:{long.subject}"]}, f)
         self.assertRaisesRegex(ValueError, "gateways: an identity is at most 256 characters", svc.load_config, path)
+
+    def test_a_gateways_events_waits_and_runs_count_per_caller(self):
+        self.s.quotas.limits = Limits(events_per_s=0.001, burst=2, concurrent_waits=1, open_runs=1)
+        self.s.authorize["token:other"] = self.s.authorize["token:http"]
+        self.s.authorize[f"mtls:{EX.subject}"] += ["register_run"]
+        other = self.s.call(CallerIdentity("token", "other", True), "register_run",
+                            {"request_id": "r2", "agent": {"name": "b"}})
+        asked = {}
+        for caller, run in (("token:http", self.run), ("token:other", other)):
+            base = {"run_id": run["run_id"], "run_token": run["run_token"], "caller": caller}
+            ex = InProcess(self.s, EX)   # decide and approval_request: both events of that caller's budget
+            ex.decide({**base, "tool_call_id": "c1", "tool": "pay", "args_source": "parsed", "args": PAID})
+            asked[caller] = {**base, "approval_id": ex.approval_request({**base, "tool_call_id": "c1"})["approval_id"]}
+        t = threading.Thread(target=InProcess(self.s, EX).approval_wait, args=({**asked["token:http"],
+                                                                                "timeout_ms": 5000},))
+        t.start()
+        time.sleep(0.2)
+        self.assertEqual(InProcess(self.s, EX).approval_wait({**asked["token:other"], "timeout_ms": 0})["state"],
+                         "requested")   # another caller's wait: a slot of its own
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, EX).approval_wait({**asked["token:http"], "timeout_ms": 0})
+        self.assertIn("concurrent_waits", e.exception.message)
+        self.s.call(AGENT, "approval_decide", {"request_id": "d", "approval_id": asked["token:http"]["approval_id"],
+                                               "decision": "reject"})
+        t.join(10)
+        self.s.quotas.limits = Limits(open_runs=1)
+        for caller in ("token:http", "token:other"):   # a gateway registering a run for a client: its open runs
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": caller})
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:http"})
+        self.assertEqual((e.exception.code, e.exception.message), ("quota_exceeded", "open_runs limit 1"))
+
+    def test_a_gateways_runs_for_all_its_clients_are_capped_and_a_suspended_client_gets_none(self):
+        """A client name is the gateway's word: each made-up one would be a fresh open_runs entry, so the runs a
+        gateway registers for all of them count against gateway_open_runs too, and a suspended client gets none."""
+        self.s.quotas.limits = Limits(open_runs=1, gateway_open_runs=2)
+        self.s.authorize[f"mtls:{EX.subject}"] += ["register_run"]
+        for caller in ("token:a", "token:b"):
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": caller})
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:c"})
+        self.assertEqual((e.exception.code, e.exception.message), ("quota_exceeded", "gateway_open_runs limit 2"))
+        self.s.authorize["token:op"] = ["suspend"]
+        self.s.call(CallerIdentity("token", "op", True), "suspend", {"request_id": "s1", "identity": "token:d"})
+        self.s.quotas.limits = Limits()
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:d"})
+        self.assertEqual(e.exception.code, "forbidden")
+        self.assertIn("token:d is suspended", e.exception.message)
+
+    def test_a_gateways_run_for_a_client_closes_from_its_entry_after_a_restart(self):
+        self.s.authorize[f"mtls:{EX.subject}"] = grants = ["register_run", "close_run"]
+        run = InProcess(self.s, EX).register_run({"agent": {"name": "sandbox"}, "caller": "token:http"})
+        entry = json.dumps([f"mtls:{EX.subject}", "token:http"])
+        self.assertEqual(self.s.log.open_runs, {"token:http": 1, entry: 1})   # the agent's own run, and this one
+        self.s.snapshot()
+        self.close()
+        self.s, self.closed = svc.SignerService(self.dir, policy=POLICY, gateways=["mtls:spiffe://acme/*"],
+                                                authorize={f"mtls:{EX.subject}": grants}), False
+        self.s.call(EX, "close_run", {"request_id": "c", "run_id": run["run_id"], "run_token": run["run_token"]})
+        self.assertEqual(self.s.log.open_runs, {"token:http": 1})
+
+    def test_asks_past_the_callers_wait_slots_stay_held(self):
+        custody = executor.Custody(InProcess(self.s), approval_wait_s=1.5)   # 12 asks, 8 wait slots (Limits)
+        runs = [self.s.call(AGENT, "register_run", {"request_id": f"r{i}", "agent": {"name": "a"}}) for i in range(12)]
+        out = [None] * len(runs)
+
+        def ask(i):
+            out[i] = custody.gate((runs[i]["run_id"], runs[i]["run_token"], "token:http"), "c1", "pay", PAID)[0]
+        threads = [threading.Thread(target=ask, args=(i,)) for i in range(len(runs))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(20)
+        self.assertEqual(out, [(403, "R-PAY: approval requested")] * len(runs))   # none refused for a wait slot
+        self.assertEqual(sum(len(self.s.call(AGENT, "approval_list", {"run_id": r["run_id"], "state": "requested"})[
+            "approvals"]) for r in runs), len(runs))
 
 
 if __name__ == "__main__":

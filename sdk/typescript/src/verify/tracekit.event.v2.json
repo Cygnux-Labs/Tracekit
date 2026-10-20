@@ -142,7 +142,9 @@
         "incident.resolved",
         "incident.response",
         "identity.suspension",
-        "effect.observed"
+        "effect.observed",
+        "constraint.added",
+        "ext"
       ]
     },
     "data": {
@@ -284,6 +286,13 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9._-]+@[A-Za-z0-9._+-]+$",
       "description": "Policy engine id@version."
+    },
+    "ext": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/ext_name"
+      },
+      "description": "Non-critical fields (format 1.4), on any record: {name: any strict JSON value}. A verifier that does not interpret a name still checks the record's signature, chain and inclusion, and says it did not interpret the name (docs/format-v2.md section 9)."
     }
   },
   "allOf": [
@@ -1162,7 +1171,46 @@
       "then": {
         "properties": {
           "data": {
-            "$ref": "#/$defs/effect_observed"
+            "oneOf": [
+              {
+                "$ref": "#/$defs/effect_observed"
+              },
+              {
+                "$ref": "#/$defs/sensor_effect"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "constraint.added"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/constraint_added"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ext"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ext"
           }
         }
       }
@@ -2007,6 +2055,29 @@
         },
         "verdict": {
           "type": "object"
+        },
+        "cites": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_seq",
+              "hash"
+            ],
+            "properties": {
+              "run_seq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "hash": {
+                "$ref": "#/$defs/hash"
+              }
+            }
+          },
+          "description": "A signed finding (format 1.4; review_finding), in a findings run: the records of the analysed run it rests on, by run_seq and record hash. A review without cites (a migrated v1 judge verdict) is imported, not checked."
         }
       }
     },
@@ -2139,7 +2210,8 @@
             "held_call_unresolved",
             "observer_lost",
             "effect_outside_run",
-            "result_unchecked"
+            "result_unchecked",
+            "constraint_refused"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },
@@ -2153,6 +2225,14 @@
             "null"
           ],
           "maxLength": 4096
+        },
+        "sensor": {
+          "enum": [
+            "tetragon",
+            "falco",
+            "openshell"
+          ],
+          "description": "format 1.4: the sensor (a kernel sensor, or OpenShell) whose import an observer_lost gap is about"
         }
       }
     },
@@ -2339,6 +2419,10 @@
             }
           },
           "maxItems": 1024
+        },
+        "said_only": {
+          "const": true,
+          "description": "format 1.4: a response recorded with what the model said and without the calls it asked for (a harness whose hooks name no call); reconciliation reads no call from it"
         },
         "tool_results_sent": {
           "type": "array",
@@ -4526,6 +4610,117 @@
         }
       }
     },
+    "sensor_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observer",
+        "sensor",
+        "kind",
+        "ts",
+        "pid",
+        "binary",
+        "attribution"
+      ],
+      "description": "format 1.4: what a kernel sensor (Tetragon, Falco) reported a process of the run did, or what OpenShell reported of its sandbox (its connections allowed and blocked, its entrypoint's start), imported under the import's own signer identity (an observer's assertion); signer-written",
+      "properties": {
+        "observer": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "the import's signer identity (scheme:subject)"
+        },
+        "sensor": {
+          "enum": [
+            "tetragon",
+            "falco",
+            "openshell"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "exec",
+            "exit",
+            "connect",
+            "file"
+          ],
+          "description": "exec: the process started; exit: it ended; connect: it connected to host:port; file: the sensor's policy selected a file event of it (a write outside the workspace, in the shipped samples)"
+        },
+        "ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "binary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "exec_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "the sensor's id of the process (Tetragon's exec_id)"
+        },
+        "parent_exec_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "exec: the sensor's id of the process that started this one (Tetragon's parent_exec_id)"
+        },
+        "args_commitment": {
+          "$ref": "#/$defs/commitment",
+          "description": "commitment to sha256 of the arguments string as the sensor reported it"
+        },
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>)"
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "signal": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "tool_call_id": {
+          "$ref": "#/$defs/id",
+          "description": "the tool call id the process's environment carried (CODEX_TOOL_CALL_ID): the agent's claim, recorded as it came and checked by no signer (TK-X206 checks it)"
+        },
+        "denied": {
+          "const": true,
+          "description": "the sensor (OpenShell's network policy) blocked it"
+        },
+        "attribution": {
+          "enum": [
+            "token",
+            "identity"
+          ],
+          "description": "identity: the import mapped the process to the run's owner and the signer picked that owner's latest open run"
+        }
+      }
+    },
     "reconcile_effect": {
       "type": "object",
       "additionalProperties": false,
@@ -4606,6 +4801,52 @@
           "description": "the status rests on the operator's posture (signer.yaml), not on anything the signer measured"
         }
       }
+    },
+    "constraint_added": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "description": "format 1.4: a live constraint of the run (constraint_add): what the person's request said not to do in the rest of it, as its client reported it (the Claude Code hook, at UserPromptSubmit). From then on the signer raises a call that breaks it to an ask (rule TK-CONSTRAINT) and never lowers a decision, so a made-up constraint can only hold more calls",
+      "properties": {
+        "kind": {
+          "enum": [
+            "keep_away",
+            "only_change",
+            "read_only",
+            "no_push",
+            "no_network"
+          ],
+          "description": "keep_away: writes of the file; only_change: writes of any other file; read_only: any write; no_push: a git push; no_network: a call that reaches the network"
+        },
+        "object_commitment": {
+          "$ref": "#/$defs/commitment",
+          "description": "keep_away and only_change: commitment to sha256 of the file's lower-cased basename; never the name"
+        },
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitment (salt label <type>:<salt_id>)"
+        }
+      }
+    },
+    "ext_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$",
+      "maxLength": 64,
+      "description": "The name of a non-critical field or record (format 1.4)."
+    },
+    "ext": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ext_name"
+        }
+      },
+      "description": "A non-critical record (format 1.4): its name and any other strict JSON fields, checked as the ext field is."
     }
   }
 }

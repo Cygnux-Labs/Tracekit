@@ -38,6 +38,7 @@ import json
 import math
 import random
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -47,6 +48,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 from .. import parsers
 from ..format.canon import canonical, event_hash, loads_strict
 from ..gateway import KINDS, OPEN, UPSTREAM_TIMEOUT_S, _NoRedirect
+from ..signer.rpc_schema import RPCError
 from .analysis import atoms
 from .core import content_hash
 from .import_v2 import _calls, cite
@@ -85,6 +87,47 @@ def _digest(e: Dict[str, Any], content: Any) -> str:
     if e["type"] == "policy.decision":
         return event_hash({"tool": e["data"]["tool"], "args": content})
     return "sha256:" + hashlib.sha256(canonical(content)).hexdigest()
+
+
+def vault_content(client: Any, records: List[Dict[str, Any]], purpose: str, chunk: int = CHUNK):
+    """(run_seq, content, opened) of each record of `records` (one run's) with a commitment whose content the vault
+    returns, in run_seq order, `chunk` records per content_get (each read a signed content.accessed naming `purpose`;
+    an answer too large for one frame is asked for again in halves, a rate limit after its retry_after_ms). `opened`:
+    the content opens its record's commitment with the salt the vault returned; False for content redaction changed
+    (no salt: it opens no commitment). EvidenceAlert, before anything of that chunk is yielded, when the vault's
+    content does not open its record's commitment: the caller stops."""
+    want = {r["event"]["run_seq"]: r for r in records if r["event"]["type"] in VAULTED and cite(r).get("commitment")}
+    seqs = sorted(want)
+    if not seqs:
+        return
+    run_id = want[seqs[0]]["event"]["run_id"]
+
+    def get(part):
+        try:
+            return client.content_get({"run_id": run_id, "seqs": part, "purpose": purpose})["items"]
+        except RPCError as e:
+            if e.code != "quota_exceeded" or (len(part) == 1 and e.retry_after_ms is None):
+                raise
+            if e.retry_after_ms is not None:
+                time.sleep(min(e.retry_after_ms, 5000) / 1000)
+                return get(part)
+            return get(part[:len(part) // 2]) + get(part[len(part) // 2:])
+
+    for i in range(0, len(seqs), chunk):
+        out = []
+        for item in get(seqs[i:i + chunk]):
+            if "content" not in item:
+                continue
+            r = want[item["seq"]]
+            e = r["event"]
+            if "salt" in item and not hmac.compare_digest(cite(r)["commitment"], "hmac-sha256:" + hmac.new(
+                    bytes.fromhex(item["salt"]), _digest(e, item["content"]).encode(), "sha256").hexdigest()):
+                raise EvidenceAlert(
+                    f"run {run_id} record {e['run_seq']} ({e['type']}, log seq {e['seq']}): the content the vault "
+                    "returned does not open the record's commitment; the read stopped. The vault or the record was "
+                    "altered: keep both and compare them with `tracekit signer reveal`")
+            out.append((item["seq"], item["content"], "salt" in item))
+        yield from sorted(out, key=lambda x: x[0])
 
 
 def _kind(data: Dict[str, Any], request: Any) -> str:
@@ -150,25 +193,10 @@ class Investigation:
 
     def _content(self, records: List[Dict[str, Any]]) -> Dict[int, Any]:
         """run_seq -> vaulted content of every record with a commitment; EvidenceAlert when one does not open it."""
-        want = {r["event"]["run_seq"]: r for r in records if r["event"]["type"] in VAULTED and cite(r).get("commitment")}
-        seqs, out, self.unchecked = sorted(want), {}, 0
-        # lean: fixed chunks; an answer over the signer's frame refuses with quota_exceeded: lower CHUNK if records are big
-        for i in range(0, len(seqs), CHUNK):
-            got = self.client.content_get({"run_id": self.run_id, "seqs": seqs[i:i + CHUNK], "purpose": self.id})
-            for item in got["items"]:
-                if "content" not in item:
-                    continue
-                r = want[item["seq"]]
-                e = r["event"]
-                if "salt" not in item:   # changed by redaction: it opens no commitment
-                    self.unchecked += 1
-                elif not hmac.compare_digest(cite(r)["commitment"], "hmac-sha256:" + hmac.new(
-                        bytes.fromhex(item["salt"]), _digest(e, item["content"]).encode(), "sha256").hexdigest()):
-                    raise EvidenceAlert(
-                        f"run {self.run_id} record {e['run_seq']} ({e['type']}, log seq {e['seq']}): the content the "
-                        "vault returned does not open the record's commitment; the investigation stopped. The vault "
-                        "or the record was altered: keep both and compare them with `tracekit signer reveal`")
-                out[item["seq"]] = item["content"]
+        out, self.unchecked = {}, 0
+        for seq, content, opened in vault_content(self.client, records, self.id):
+            out[seq] = content
+            self.unchecked += not opened
         return out
 
     # ----------------------------------------------------------------------- the recorded run

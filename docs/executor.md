@@ -154,9 +154,11 @@ could connect as a custody service.
 - A result that can't be recorded (the signer went away after the action ran) still goes to the agent. The executor
   tries twice under one request id, then says on stderr which call and run it couldn't record and what to check; the
   run ends with a `held_call_unresolved` gap for the call.
-- A call made without the model's tool-use id (the LangChain and Claude Agent SDK helpers, whose handlers don't get
-  one) is decided under an id of the executor's: with an LLM gateway on the same run it reconciles as
-  `reconcile.fabricated` plus `reconcile.hook_missing`. Read such a pair as one call through the executor; pass
-  `tool_call_id` where the framework exposes it, as the OpenAI Agents and Vercel AI helpers do.
+- A call made without the model's tool-use id is decided under an id of the executor's. The helpers pass it: OpenAI
+  Agents and Vercel AI from the tool's context, LangChain under `TracekitMiddleware` (or `tracekit_tool_node`), the
+  Claude Agent SDK under `tracekit_hooks`, whose PreToolUse hook notes it for the server's handler. Without them the
+  signer pairs the call with the model's tool use by arguments (same model turn, same tool and arguments, nothing
+  else alike); where it can't, the call reads as `reconcile.fabricated` (plus `reconcile.hook_missing` when an LLM
+  gateway saw the model ask for it). Read such a pair as one call through the executor, or use the adapter.
 
 See [limits](limits.md#custody-12).

@@ -1,5 +1,8 @@
 # OpenAI Agents SDK (signer RPC)
 
+> **Stable:** tested with [`tests/adapter_contract.py`](../../tests/adapter_contract.py) against the pinned library on every push to main
+> and every pull request ([what's stable](../support.md)).
+
 `tracekit.integrations.openai_agents.TracekitAgents` gates the tools of an OpenAI Agents SDK (Python) agent. Before
 each tool call it asks the Tracekit signer for a policy decision; after the tool runs it records the outcome. It works
 with any object that implements the signer RPC (`tracekit.signer.rpc_schema.SignerAPI`), including
@@ -46,7 +49,13 @@ A resumed run (another process, after a restart) builds `TracekitAgents` with th
 | before the tool runs | `decide` | `tool_call_id`, tool name, the arguments as the SDK decoded them (`parsed`); after a resume in another process, the model's raw string |
 | right before it runs | `approval_consume` | the same call, the arguments (for function tools the model's raw string), and the approval id the run state carries as a hint |
 | after the tool runs | `complete` | `status` `ok` or `error`, a `sha256:` commitment to the result (not the result), or the exception type and message |
-| after each model response | `model_event` | a `sha256:` commitment to the whole response output, every tool call in it (`tool_uses`; hosted ones as `executed_by: provider`), and token usage |
+| after each model response | `model_event` | a `sha256:` commitment to the whole response output, every tool call in it (`tool_uses`; hosted ones as `executed_by: provider`), and token usage; with the signer's content vault on, the output items themselves as the record's body |
+
+What the model said: with the content vault on (`content: {retain: true}` in signer.yaml; the dev signer keeps it),
+each response's output items (reasoning summaries, sealed `encrypted_content`, messages, calls) are kept encrypted in
+the vault, so `tracekit analyze --v2` can check the reasoning and claims before and after each call
+([findings](../findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)). Reasoning summaries come back
+only when the model is asked for them (`reasoning.summary`); with the vault off only the commitment is kept.
 
 The signer classifies the tool and computes the args digest itself; nothing the adapter sends is trusted for that.
 
@@ -77,6 +86,11 @@ signer's approval for this exact call and these exact arguments was granted and 
 state (the arguments, the call id, the hint, or approving the call in the state directly) gets the call refused, and
 the signer records why. Exceptions raised by a tool are recorded, then handled by the tool's own failure policy as
 without Tracekit.
+
+## What the model said
+
+`hooks=tk` records each model response in `on_llm_end`, its reasoning items included, linked to the calls by
+`call_id`. Ask for readable reasoning with `ModelSettings(reasoning=Reasoning(summary="auto"))`. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
 
 ## Not covered
 

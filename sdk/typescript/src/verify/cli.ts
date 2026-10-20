@@ -3,6 +3,7 @@
  * CLI's report and exit codes (0 verified, 1 failed, 2 unusable or unverifiable, 3 a warning under --strict).
  */
 import { readFile } from "node:fs/promises";
+import { asJson } from "./explain.js";
 import { EXIT_BAD, EXIT_OK, EXIT_WARN, formatReport, verify } from "./index.js";
 
 const USAGE = "usage: tracekit verify BUNDLE --trust TRUST.json [--json] [--strict]";
@@ -17,7 +18,7 @@ export async function main(argv: string[]): Promise<number> {
     else if (!a.startsWith("-") && bundle === undefined) bundle = a;
     else {
       console.error(`tracekit verify: ${a} is not supported by the TypeScript verifier (the format bridge, monitor reports `
-        + `and revocations need the reference verifier: pip install tracekit)\n${USAGE}`);
+        + `and revocations need the reference verifier: pip install tracekit-ai)\n${USAGE}`);
       return EXIT_BAD;
     }
   }
@@ -32,11 +33,9 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`tracekit verify: ${(e as Error).message}`);
     return EXIT_BAD;
   }
-  const { report, code: verdict } = await verify(...data);
+  const { report, code: verdict } = await verify(...data, { bundle, trust });
   const code = verdict === EXIT_OK && strict && report.warnings.length ? EXIT_WARN : verdict;
-  if (json)
-    console.log(JSON.stringify({ exit_code: code, checks: report.checks, failures: report.failures,
-      warnings: report.warnings, integrity: report.integrity, assurance: report.assurance, notes: report.notes }, null, 2));
+  if (json) console.log(JSON.stringify(asJson(report, code), null, 2));
   else process.stdout.write(formatReport(report));
   return code;
 }

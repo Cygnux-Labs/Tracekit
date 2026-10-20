@@ -16,8 +16,20 @@ declares; `tool_results(kind, request)` gives the tool results a request sends, 
 A tool use the provider sent without an id gets `<provider>:<response id>:<index>` and `id_synthetic: true` (a random
 nonce in place of a missing response id, so two such responses never share one).
 
-`Stream(kind)` accumulates a streamed response, chunk by chunk, into the shape `parse` reads.
+`Stream(kind)` accumulates a streamed response, chunk by chunk, into the shape `parse` reads, keeping what the model
+said (text, reasoning and the provider's sealed reasoning) within MAX_TEXT characters and MAX_INDEX parts of a Gemini
+candidate, as JSON: the SDK objects of autotrace's chunks as the SDK dumps them, so the response hashes.
+
+    said(kind, response) -> [{"kind": "reasoning" | "text", "form": "full" | "summary" | "encrypted" | "withheld",
+                              "text": str, "tools": [ids of the tool uses right after it, before the next segment]}]
+
+in the response's order: what the model said before each tool use. `form`: the model's own reasoning text (`full`: an
+open model's reasoning_content, a Responses reasoning item's content), a summary of it (Anthropic thinking, which
+current Claude models return summarized; a Responses reasoning summary; Gemini thought parts), only the provider's
+sealed form (`encrypted`: an empty thinking block's signature, redacted_thinking, encrypted_content, a Gemini
+thought_signature), or none of it (`withheld`: reasoning happened, nothing of it came back). The ids are `parse`'s.
 """
+import base64
 import hashlib
 import uuid
 
@@ -42,6 +54,13 @@ def _get(obj, *path, default=None):
         else:
             obj = getattr(obj, p, None)
     return default if obj is None else obj
+
+
+def _plain(x):
+    """What a stream keeps of an SDK object (autotrace's chunks: a Responses item, a Gemini part, usage) as JSON, as
+    the gateway's chunks are, so the response can be hashed and kept: the SDK's own JSON dump (bytes as base64)."""
+    f = getattr(x, "model_dump", None)
+    return f(mode="json") if callable(f) else x
 
 
 def _list(obj, *path):
@@ -118,15 +137,33 @@ def _append(d, field, piece):
         d.setdefault("\0" + field, []).append(piece)
 
 
+# lean: characters of text and reasoning one streamed response keeps, as much as a model_event body can carry (half a
+# frame); past it the rest is dropped and the response marked "truncated". Raise it with the frame size.
+MAX_TEXT = 1 << 19
+
+
+def _text(acc, d, field, piece):
+    """_append for what the model said, within MAX_TEXT characters per response (`acc`)."""
+    if not isinstance(piece, str):
+        return
+    left = acc.get("\0left", MAX_TEXT)
+    if len(piece) > left:
+        acc["truncated"], piece = True, piece[:left]
+    acc["\0left"] = left - len(piece)
+    _append(d, field, piece)
+
+
 def _joined(node):
-    """Turn every collected piece list back into its field."""
+    """Turn every collected piece list back into its field (and drop the text budget)."""
     if isinstance(node, list):
         for x in node:
             _joined(x)
     elif isinstance(node, dict):
         for k in [k for k in node if isinstance(k, str) and k.startswith("\0")]:
-            field = k[1:]
-            node[field] = (node[field] if isinstance(node.get(field), str) else "") + "".join(node.pop(k))
+            pieces = node.pop(k)
+            if isinstance(pieces, list):
+                field = k[1:]
+                node[field] = (node[field] if isinstance(node.get(field), str) else "") + "".join(pieces)
         for v in node.values():
             _joined(v)
 
@@ -134,11 +171,14 @@ def _joined(node):
 def _openai_chat_chunk(acc, chunk):
     for k in ("id", "model", "usage"):
         if _get(chunk, k) is not None:
-            acc[k] = _get(chunk, k)
+            acc[k] = _plain(_get(chunk, k))
     for c in _list(chunk, "choices"):
         choice = _at(acc.setdefault("choices", []), _get(c, "index", default=0))
         if _get(c, "finish_reason"):
             choice["finish_reason"] = _get(c, "finish_reason")
+        for field in ("content", "reasoning_content", "reasoning"):   # reasoning: vLLM, DeepSeek; OpenRouter, Ollama
+            if isinstance(_get(c, "delta", field), str):
+                _text(acc, choice.setdefault("message", {}), field, _get(c, "delta", field))
         for tc in _list(c, "delta", "tool_calls"):
             call = _at(choice.setdefault("message", {}).setdefault("tool_calls", []), _get(tc, "index", default=0))
             for k in ("id", "type"):
@@ -173,6 +213,8 @@ def openai_responses(resp, request=None):
     uses = []
     for item in _list(resp, "output"):
         typ = _get(item, "type")
+        if not isinstance(typ, str):   # an item type is a name: anything else is no item this parser knows
+            continue
         if (typ == "shell_call" and _get(item, "environment", "type") == "container_reference"
                 or typ == "tool_search_call" and _get(item, "execution") == "server"):   # hosted: the provider runs it
             _, field, source = CLIENT_ITEMS[typ]
@@ -194,11 +236,11 @@ def openai_responses(resp, request=None):
 def _openai_responses_event(acc, ev):
     typ = _get(ev, "type") or ""
     if typ == "response.output_item.done":   # kept for a stream that never completes
-        acc.setdefault("output", []).append(_get(ev, "item"))
+        acc.setdefault("output", []).append(_plain(_get(ev, "item")))
     elif _get(ev, "response") is not None:
         acc.update(id=_get(ev, "response", "id"), model=_get(ev, "response", "model"))
         if typ in ("response.completed", "response.incomplete", "response.failed"):
-            acc["final"] = _get(ev, "response")
+            acc["final"] = _plain(_get(ev, "response"))
 
 
 # ------------------------------------------------------------------ Anthropic Messages
@@ -231,13 +273,21 @@ def _anthropic_event(acc, ev):
         usage = _get(m, "usage")
     elif typ == "content_block_start":
         b = _get(ev, "content_block")
-        _at(acc.setdefault("content", []), _get(ev, "index", default=0)).update(
-            {k: _get(b, k) for k in ("type", "id", "name", "input")})
+        blk = _at(acc.setdefault("content", []), _get(ev, "index", default=0))
+        blk.update({k: _get(b, k) for k in ("type", "id", "name", "input")})
+        for k in ("text", "thinking", "signature", "data"):   # data: a redacted_thinking block, whole
+            if isinstance(_get(b, k), str):
+                blk[k] = ""
+                _text(acc, blk, k, _get(b, k))
     elif typ == "content_block_delta" and _get(ev, "delta", "partial_json"):
         b = _at(acc.setdefault("content", []), _get(ev, "index", default=0))
         if not isinstance(b.get("input"), str):
             b["input"] = ""
         _append(b, "input", _get(ev, "delta", "partial_json"))
+    elif typ == "content_block_delta":   # text_delta, thinking_delta, signature_delta
+        b = _at(acc.setdefault("content", []), _get(ev, "index", default=0))
+        for k in ("text", "thinking", "signature"):
+            _text(acc, b, k, _get(ev, "delta", k))
     elif typ == "message_delta":
         acc["stop_reason"] = _get(ev, "delta", "stop_reason") or acc.get("stop_reason")
         usage = _get(ev, "usage")
@@ -267,13 +317,32 @@ def gemini(resp, request=None):
 def _gemini_chunk(acc, chunk):
     for k in ("response_id", "model_version", "usage_metadata"):
         if _get(chunk, k) is not None:
-            acc[k] = _get(chunk, k)
+            acc[k] = _plain(_get(chunk, k))
     for i, c in enumerate(_list(chunk, "candidates")):
         cand = _at(acc.setdefault("candidates", []), i)
         if _get(c, "finish_reason") is not None:
-            cand["finish_reason"] = _get(c, "finish_reason")
+            fr = _get(c, "finish_reason")
+            cand["finish_reason"] = getattr(fr, "value", fr)   # the SDK's enum: its JSON value
         parts = cand.setdefault("content", {"parts": []})["parts"]
-        parts.extend(p for p in _list(c, "content", "parts") if _get(p, "function_call") is not None)
+        for p in _list(c, "content", "parts"):
+            sig = _get(p, "thought_signature")
+            if isinstance(sig, bytes):   # the SDK's object; its JSON dump is base64
+                sig = base64.b64encode(sig).decode()
+            fc = _get(p, "function_call") is not None
+            if not (fc or isinstance(_get(p, "text"), str) or sig):
+                continue
+            # text and thought parts: a run of one kind joined
+            last = None if fc else parts[-1] if parts and isinstance(parts[-1], dict) and "\0text" in parts[-1] else None
+            if last is None or sig or bool(last.get("thought")) != bool(_get(p, "thought")):
+                if len(parts) >= MAX_INDEX:   # a part per chunk (one flipping `thought`): past this, dropped
+                    acc["truncated"] = True
+                    continue
+                last = _plain(p) if fc else {"text": "", "\0text": [], **({"thought": True} if _get(p, "thought") else {})}
+                parts.append(last)
+            if not fc:
+                if isinstance(sig, str):
+                    last["thought_signature"] = sig
+                _text(acc, last, "text", _get(p, "text"))
 
 
 # ------------------------------------------------------------------ dispatch
@@ -327,6 +396,99 @@ def parse(kind, response, request=None):
     for i, t in enumerate(out["tool_uses"]):
         if t["id"] is None:
             t.update(id=_id(f"{kind.split(':')[0]}:{nonce}:{i}"), id_synthetic=True)
+    return out
+
+
+# ------------------------------------------------------------------ what the model said
+
+TOOL = None   # a tool use, in a _said_* walk
+
+
+def _seg(kind, form, text=""):
+    return {"kind": kind, "form": form, "text": text if isinstance(text, str) else "", "tools": []}
+
+
+def _sealed(sealed):
+    return _seg("reasoning", "encrypted" if sealed else "withheld")
+
+
+def _said_anthropic(resp):
+    for b in _list(resp, "content"):
+        typ = _get(b, "type")
+        if typ == "thinking":   # current models summarize it; display "omitted" leaves only the signature
+            text = _get(b, "thinking", default="")
+            yield _seg("reasoning", "summary", text) if text else _sealed(_get(b, "signature"))
+        elif typ == "redacted_thinking":
+            yield _sealed(_get(b, "data"))
+        elif typ == "text" and _get(b, "text"):
+            yield _seg("text", "full", _get(b, "text"))
+        elif typ in ("tool_use", *PROVIDER_BLOCKS):
+            yield TOOL
+
+
+def _said_chat(resp):
+    for c in _list(resp, "choices"):
+        m = _get(c, "message")
+        for field in ("reasoning_content", "reasoning"):
+            if isinstance(_get(m, field), str) and _get(m, field):
+                yield _seg("reasoning", "full", _get(m, field))
+        text = _get(m, "content")
+        if isinstance(text, str) and text.lstrip().startswith("<think>") and "</think>" in text:   # inline, open models
+            think, _, text = text.lstrip()[len("<think>"):].partition("</think>")
+            yield _seg("reasoning", "full", think)
+        if isinstance(text, str) and text.strip():
+            yield _seg("text", "full", text)
+        for _ in _list(m, "tool_calls"):
+            yield TOOL
+
+
+def _said_responses(resp):
+    for item in _list(resp, "output"):
+        typ = _get(item, "type")
+        if not isinstance(typ, str):
+            continue
+        if typ == "reasoning":
+            full = "\n".join(t for t in (_get(x, "text") for x in _list(item, "content")) if isinstance(t, str) and t)
+            summary = "\n".join(t for t in (_get(x, "text") for x in _list(item, "summary")) if isinstance(t, str) and t)
+            yield _seg("reasoning", "full", full) if full else _seg("reasoning", "summary", summary) if summary \
+                else _sealed(_get(item, "encrypted_content"))
+        elif typ == "message":
+            text = "".join(t for t in (_get(x, "text") for x in _list(item, "content")) if isinstance(t, str))
+            if text:
+                yield _seg("text", "full", text)
+        elif typ in CLIENT_ITEMS or typ in PROVIDER_ITEMS:
+            yield TOOL
+
+
+def _said_gemini(resp):
+    for c in _list(resp, "candidates"):
+        for p in _list(c, "content", "parts"):
+            text = _get(p, "text")
+            if _get(p, "thought"):   # a thought summary (include_thoughts)
+                yield _seg("reasoning", "summary", text) if text else _sealed(_get(p, "thought_signature"))
+                continue
+            if _get(p, "thought_signature"):   # the reasoning behind this part, sealed
+                yield _sealed(True)
+            if _get(p, "function_call") is not None:
+                yield TOOL
+            elif isinstance(text, str) and text:
+                yield _seg("text", "full", text)
+
+
+SAID = {"openai:chat": _said_chat, "openai:responses": _said_responses, "anthropic:messages": _said_anthropic,
+        "gemini:generate_content": _said_gemini}
+
+
+def said(kind, response):
+    """What the model said in `response`, in order (see the module docstring)."""
+    ids, out = iter([t["id"] for t in parse(kind, response)["tool_uses"]]), []
+    for s in SAID[kind](response):
+        if s is not TOOL:
+            out.append(s)
+            continue
+        tid = next(ids, None)
+        if out and tid:
+            out[-1]["tools"].append(tid)
     return out
 
 

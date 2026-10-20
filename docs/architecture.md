@@ -29,7 +29,11 @@ flowchart LR
 
 Everything that reports to the signer, none of it trusted: the SDK client (`tracekit.sdk.client`) and the framework
 integrations built on it (`tracekit/integrations/`, [quickstarts](quickstart-v2.md)), the Claude Code hook and the
-transcript tailer (`tracekit.integrations.claude_code`, `tracekit.tailer`), and the out-of-process recorders: the
+transcript tailer (`tracekit.integrations.claude_code`, `tracekit.tailer`; the tailer reports every prompt and model
+line, which `tracekit analyze --v2` reads back from the content vault to compare what was asked, said and done; the hook
+also records each prompt as the harness submitted it, so a prompt line the agent writes into its own transcript stands
+out, and sends the constraints it states as [live constraints](policy-v2.md#live-constraints)), and
+the out-of-process recorders: the
 [LLM gateway](gateway.md) and T2 executors ([approvals](approvals.md#tiers-t1-and-t2-executors)). A client registers a run, asks the signer to `decide` each tool call
 before it runs and reports it `complete` after. Clients hold a run token, never a signing key.
 
@@ -68,6 +72,27 @@ The store (`tracekit/storage/`: files with fsync, or Postgres) holds the records
   can't (log and run chains, key records, that every run has its registry leaf, rollbacks and forks), and signs a
   report.
 
+## Analyzers and findings runs
+
+`tracekit analyze --v2` and `tracekit why` are operator tools, not the agent's clients. They run as an identity
+signer.yaml `analyzers` lists, read a finished run (its records and, with the `content_read` grant, the content vault,
+each read a signed `content.accessed`), and write what they found into a **findings run** of their own:
+`register_run` with `analyzes: <run id>`, which the signer allows only an `analyzers` identity, for a run of its
+tenant that is not itself a findings or replay run. Nothing is written into the analysed run. `review_finding` signs each finding as a `review` record that cites
+records of the analysed run by `run_seq` and hash; its closed schema keeps text of the run (excerpts, paths, reasons)
+out of signed records, which can't be erased. The finding's author is the identity the signer measured when the
+findings run registered. `tracekit export --v2 --run R --with-findings` bundles a run with its findings runs; the
+verifier checks each citation and labels the author ([verdicts](verdicts.md#reviews)), and prints the findings on a
+`Findings:` line of their own: an opinion of the run, never part of its integrity. The analyzer's effect checks
+(TK-X206, TK-X207, `tracekit/findings_effects.py`) join each kernel sensor effect to the call that explains it, by the
+call the process names, the process that started it, or the call's window on the signer's clock, and flag what none
+explains and calls that caused nothing the sensor saw ([findings](findings.md#effects-what-a-kernel-sensor-saw)).
+
+Live constraints go the other way: a limit the person's request states ("don't touch billing.py", "don't push") is
+sent by the hook as `constraint_add` and kept in the run's state (a `constraint.added` record holds the kind and a
+commitment to the file name). After its policy, the signer raises a later call of the run that breaks one to an ask
+(`TK-CONSTRAINT`), never lowering a decision, so prevention needs no trust in whoever added the constraint.
+
 ## Bundles and the verifier
 
 `tracekit export --v2` (`tracekit/bundle_v2.py`) writes one run, or a tenant's run-set, as a `.tkb`: the records,
@@ -75,7 +100,8 @@ inclusion proofs into a checkpoint, its Rekor and timestamp anchors, and the pol
 incidents are checked against. It holds no verification code.
 
 `tracekit verify` (`tracekit/verify/v2.py`) checks it offline against a **trust config** the verifier brings: the
-pinned log keys, witnesses and their quorum, and optionally a monitor. Nothing in the bundle is trusted for that. The
+pinned log keys, witnesses and their quorum, optionally a monitor, and the analyzers whose findings it takes as
+independent. Nothing in the bundle is trusted for that. The
 report gives `Integrity` (are these the signed records) and `Assurance` (who vouches for the checkpoint)
 ([verdicts](verdicts.md), [auditor guide](auditor-guide.md)). v1 bundles go to the frozen v1 verifier
 (`tracekit/verify/v1.py`).

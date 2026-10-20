@@ -1,6 +1,7 @@
 """L3 model-response parsers (tracekit/parsers.py) against the recorded shapes in tests/vectors/parsers/: each vector is
 parsed as a plain dict and, when the provider SDK is installed, as the SDK's own typed objects; both must give
-`expect`, and every tool use must be one the signer's model_event accepts."""
+`expect` (and `said`, what the model said, where the vector has it), and every tool use must be one the signer's
+model_event accepts."""
 import glob
 import importlib
 import json
@@ -31,13 +32,18 @@ def _typed(path):
         return None
 
 
-def _parse(kind, case, response=lambda d: d, item=lambda d: d):
+def _body(kind, case, response=lambda d: d, item=lambda d: d):
+    """The response as parse reads it: the case's, or its stream accumulated."""
     if "stream" not in case:
-        return parsers.parse(kind, response(case["response"]), case["request"])
+        return response(case["response"])
     s = parsers.Stream(kind)
     for chunk in case["stream"]:
         s.add(item(chunk))
-    return s.parse(case["request"])
+    return s.content()
+
+
+def _parse(kind, case, response=lambda d: d, item=lambda d: d):
+    return parsers.parse(kind, _body(kind, case, response, item), case["request"])
 
 
 class Vectors(unittest.TestCase):
@@ -62,6 +68,17 @@ class Vectors(unittest.TestCase):
                 continue
             with self.subTest(kind=kind, case=case["name"]):
                 self.assertEqual(_parse(kind, case, response, chunk), case["expect"])
+
+    def test_said(self):
+        cases = [(k, r, i, c) for k, r, i, c in self.cases() if "said" in c]
+        self.assertEqual({k for k, *_ in cases}, set(parsers.SAID))   # every provider has said vectors
+        for kind, resp, item, case in cases:
+            for typed in (False, True):
+                response, chunk = (_typed(resp), _typed(item)) if typed else (lambda d: d, lambda d: d)
+                if response is None:
+                    continue
+                with self.subTest(kind=kind, case=case["name"], typed=typed):
+                    self.assertEqual(parsers.said(kind, _body(kind, case, response, chunk)), case["said"])
 
     def test_tool_uses_fit_the_rpc(self):
         schema = rpc_schema.REQUESTS["model_event"]["properties"]["tool_uses"]
@@ -91,6 +108,13 @@ class HostileStreams(unittest.TestCase):
             a.add(ev)
         self.assertLessEqual(len(a.acc.get("content", [])), 1)
 
+    def test_a_gemini_stream_flipping_thought_every_chunk_keeps_a_bounded_number_of_parts(self):
+        g = parsers.Stream("gemini:generate_content")
+        for i in range(5000):   # each flip starts a part
+            g.add({"candidates": [{"content": {"parts": [{"text": "g", "thought": bool(i % 2)}]}}]})
+        body = g.content()
+        self.assertEqual((len(body["candidates"][0]["content"]["parts"]), body["truncated"]), (parsers.MAX_INDEX, True))
+
     def test_streamed_arguments_accumulate_in_linear_time(self):
         import time
         piece = '"abcdefghijklmn",'
@@ -114,6 +138,46 @@ class HostileStreams(unittest.TestCase):
 
             with self.subTest(kind):   # 8x the pieces (1.7 MB in 17-byte pieces): 8x the time; appended to a str, 25x+
                 self.assertLess(took(100_000), 16 * took(12_500))
+
+
+class Reasoning(unittest.TestCase):
+    def case(self, name):
+        with open(os.path.join(VECTORS, "anthropic_messages.json"), encoding="utf-8") as f:
+            return next(c for c in json.load(f) if c["name"].startswith(name))
+
+    def test_a_stream_keeps_thinking_and_the_sealed_reasoning_byte_exact(self):
+        case, plain = self.case("said, stream:"), self.case("said: a thinking")
+        s = parsers.Stream("anthropic:messages")
+        for ev in case["stream"]:
+            s.add(ev)
+        blocks = s.content()["content"]
+        sig, red = plain["response"]["content"][0]["signature"], plain["response"]["content"][1]["data"]
+        self.assertEqual([(b["type"], b.get("thinking"), b.get("signature"), b.get("data"), b.get("text"))
+                          for b in blocks[:3]],
+                         [("thinking", "Read pager.py, then fix the off-by-one.", sig, None, None),
+                          ("redacted_thinking", None, None, red, None), ("text", None, None, None, "Reading pager.py.")])
+        self.assertEqual(blocks[4]["signature"], sig)
+
+    def test_text_past_max_text_is_dropped_and_marked_and_tool_uses_are_unchanged(self):
+        start = {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}
+        s = parsers.Stream("anthropic:messages")
+        s.add(start)
+        for _ in range(3):
+            s.add({"type": "content_block_delta", "index": 0,
+                   "delta": {"type": "thinking_delta", "thinking": "x" * (parsers.MAX_TEXT // 2)}})
+        s.add({"type": "content_block_start", "index": 1,
+               "content_block": {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}})
+        s.add({"type": "content_block_delta", "index": 1, "delta": {"partial_json": '{"command": "ls"}'}})
+        body = s.content()
+        self.assertEqual((len(body["content"][0]["thinking"]), body["truncated"]), (parsers.MAX_TEXT, True))
+        self.assertEqual(s.parse()["tool_uses"], [parsers.tool_use("t1", "Bash", '{"command": "ls"}', "raw")])
+        self.assertNotIn("\0left", body)
+        json.dumps(body)   # the budget leaves nothing a body can't carry
+
+    def test_said_reads_odd_shapes_without_raising(self):
+        for kind in parsers.SAID:
+            for resp in (None, {}, {"content": 5, "choices": [None], "output": [None], "candidates": [{"content": 1}]}):
+                self.assertEqual(parsers.said(kind, resp), [], (kind, resp))
 
 
 class Rules(unittest.TestCase):

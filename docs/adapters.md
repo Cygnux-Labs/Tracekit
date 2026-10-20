@@ -1,5 +1,9 @@
 # Adapters
 
+> **Experimental (v1):** these adapters record through the v1 laptop signer. They work and are tested, but may
+> change and get less hardening than the [stable core](support.md); new agents use the v2
+> [integrations](integrations.md).
+
 An adapter routes a framework's real tool calls through the SDK, so each one is policy-checked **before** it runs
 and its result is recorded. Anything the framework does outside the adapter is not seen.
 

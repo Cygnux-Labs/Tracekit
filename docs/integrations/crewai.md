@@ -12,7 +12,8 @@ outcome.
 pip install tracekit-ai "crewai>=1.15.27,<1.16"
 ```
 
-Tested with CrewAI 1.15.27.
+Tested in CI against a stand-in for CrewAI's tool hooks, not the real library. The
+[case study](../case-study-oss-agents.md) ran CrewAI 1.15.27 with hand-written hook glue, not this module.
 
 ## Setup
 
@@ -43,6 +44,12 @@ register_after_tool_call_hook(after)
   for a tool the policy lists as untrusted (provenance).
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) before the call; then it is
   blocked with the approval's state.
+
+## What the model said
+
+Not recorded by the integration: CrewAI's after-LLM hook sees a text answer only, never a response that asks for a
+tool, and no reasoning; its tool hooks carry no call id. Record the model calls with `tracekit.instrument()` or the
+[LLM gateway](../gateway.md); they pair with the calls by arguments only. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
 
 ## Not covered
 

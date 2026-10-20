@@ -13,19 +13,25 @@ reads Tracekit's reason as an error tool result and the run goes on. A result is
 an untrusted tool's structured value is observed too, for provenance. A tool's exception, which LlamaIndex turns into an
 error result, is recorded as an error. A tool that waits for an event (`ctx.wait_for_event`) runs again from its start
 when the event comes: it is decided again then, as the call's next attempt.
+Each model message (the AgentOutput a workflow parses) is recorded first (tracekit.integrations.said): its thinking,
+text and tool calls, under the ids they are decided by. A message that can't be recorded only warns.
 """
 import asyncio
 import copy
 import uuid
 import warnings
+from typing import Union
 
-from llama_index.core.agent.workflow import AgentWorkflow, BaseWorkflowAgent, ToolCall, ToolCallResult
+from llama_index.core.agent.workflow import (AgentInput, AgentOutput, AgentWorkflow, BaseWorkflowAgent, ToolCall,
+                                             ToolCallResult)
+from llama_index.core.base.llms.types import TextBlock, ThinkingBlock
 from llama_index.core.tools import ToolOutput
-from llama_index.core.workflow import Context, step
+from llama_index.core.workflow import Context, StopEvent, step
 from pydantic_core import to_jsonable_python
 from workflows.runtime.types.results import WaitingForEvent
 
 from tracekit.autowire import DECIDED_UPSTREAM
+from tracekit.integrations import said
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -40,6 +46,7 @@ class Tracekit:
         # lean: one entry per call this object ran, for its life; prune them at run end if agents run for days
         self._attempts = {}   # tool_id -> the attempt its next execution is (a step LlamaIndex runs again)
         self._classes = {}   # a gated object's own class -> its subclass that overrides call_tool
+        self.said = said.Said(lambda **f: self.run.call("model_event", **f), lambda: self.run.client.status({}))
 
     def gate(self, workflow):
         """`workflow`, the agent or AgentWorkflow you run, with every tool call it makes gated; returned for chaining.
@@ -63,9 +70,7 @@ class Tracekit:
 
     async def _call(self, call_tool, ctx, ev):
         tool, args = ev.tool_name, ev.tool_kwargs   # a dict, {} for no arguments
-        # Ollama's and Google's integrations name the call by its tool (and some by nothing): two calls of one tool
-        # would share an id, so the signer gets one of its own
-        call_id = ev.tool_id if ev.tool_id and ev.tool_id != tool else str(uuid.uuid4())
+        call_id = _id(ev) or str(uuid.uuid4())
         attempt = self._attempts.get(call_id, 0)
         d, why = await gate_call(self.run, call_id, attempt, tool, args, who="the workflow")
         if why is not None:   # as call_tool reports a tool the agent doesn't have: an error result, and the run goes on
@@ -119,8 +124,31 @@ class Tracekit:
             warnings.warn(f"tracekit: the result of {call_id} was not observed: {type(e).__name__}: {e}", stacklevel=2)
 
 
+def _id(ev):
+    """The id a call is decided under, or None for one of the gate's own: Ollama's and Google's integrations name the
+    call by its tool (and some by nothing), so two calls of one tool would share an id."""
+    return ev.tool_id if ev.tool_id and ev.tool_id != ev.tool_name else None
+
+
+def _said(ev):
+    """What the model said in an AgentOutput: its message's thinking and text blocks, then its tool calls."""
+    for b in ev.response.blocks:
+        if isinstance(b, ThinkingBlock):
+            yield said.thought(b.content)
+        elif isinstance(b, TextBlock):
+            yield said.text(b.text)
+    for t in ev.tool_calls:
+        yield said.call(_id(t), t.tool_name, t.tool_kwargs)
+
+
 class _Gated:
     """Put ahead of a gated object's own class by Tracekit.gate."""
+
+    @step
+    async def parse_agent_output(self, ctx: Context, ev: AgentOutput) -> Union[StopEvent, AgentInput, ToolCall, None]:
+        tk = self.__tracekit__
+        await asyncio.to_thread(tk.said, _said(ev), getattr(ev.raw, "model", None))
+        return await super().parse_agent_output(ctx, ev)
 
     @step
     async def call_tool(self, ctx: Context, ev: ToolCall) -> ToolCallResult:

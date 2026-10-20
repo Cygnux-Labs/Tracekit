@@ -17,7 +17,7 @@ npm install @cygnuxlabs/tracekit ai@7
 
 npm also installs the signer package for your platform (`@cygnuxlabs/tracekit-signer-<platform>`: Apple Silicon
 macOS, Linux x64 and arm64 with glibc, Windows x64), which bundles a Python, so a dev signer starts without one. On an
-Intel Mac or Alpine there is none: `pip install 'tracekit-ai[signer]'`.
+Intel Mac or Alpine there is none: `pip install tracekit-ai`.
 
 Tested by the TypeScript adapter contract against the real signer, and in CI by
 [`examples/v2_vercel_ai.mjs`](../../sdk/typescript/examples/v2_vercel_ai.mjs) against `ai` 7 with a mock model (no API
@@ -71,6 +71,11 @@ MCP tools (`@ai-sdk/mcp`): `tk.tools(await client.tools(), { mcp: "filesystem" }
 `toolApproval: tk.toolApprovalWith(mine)` asks the policy first, and your answer applies only to a call the policy
 allows (a call you deny is recorded as refused; one you answer `user-approval` and then deny in your own UI stays
 decided and not completed); `tk.toolApproval` alone replaces yours.
+
+## What the model said
+
+`tk.middleware` commits to each response's content, its reasoning parts included, but doesn't send the content: the
+reasoning isn't readable from this record. Use the [LLM gateway](../gateway.md) for readable reasoning. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
 
 ## Not covered
 

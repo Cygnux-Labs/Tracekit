@@ -1,13 +1,14 @@
 # Coding pack (policy v2): the shell, files and harness self-protection rules of tracekit/policy/default.yaml,
 # ported to the RE2 subset and to signer-side classes. Rule ids are kept where the meaning is the same.
 #
-# Shell rules without a field match each command's argv (wrappers, paths and quoting resolved by policy2/shell.py);
-# `field: command` matches the raw command line; `field: line` matches it and each line policy2/shell.py normalised
-# (quotes and escapes resolved, redirections kept). File rules match the signer-normalised `path` (and, with `..`, the lexically
-# normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
-# protection is the signer, its storage and the witnesses.
+# Shell rules without a field match each command's argv (wrappers, paths, quoting and the program name's case resolved
+# by policy2/shell.py); `field: command` matches the raw command line; `field: line` matches it and each line
+# policy2/shell.py normalised (quotes and escapes resolved, redirections kept), as typed and again with its program
+# names in lower case. File rules match the signer-normalised `path` (and, with `..`, the lexically normalised one),
+# with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
+# is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-8'
+version: '2026.10-v2-21'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -29,6 +30,7 @@ tools:
   Glob: fs
   WebFetch: http
   WebSearch: http
+  'srt:request': http        # a request srt-proxy asks about (tracekit srt-decider)
   'mcp__*': mcp
   'mcp:*/*': mcp
 
@@ -39,51 +41,66 @@ deny:
   # --- shell ---
   - id: TK-D001
     class: shell
-    pattern: '^(sudo|sudoedit|doas|pkexec)( |$)|^su (.* )?(-c|root)( |$)'
+    pattern: '^(sudo|sudoedit|doas|pkexec)( |$)|^su (.*? )?(-c|root)( |$)'
     reason: privilege escalation
+    remedy: Run the command as the agent's own user, without sudo; a person runs what needs root, or gives the agent a sandbox where it is root.
     rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
   - id: TK-D002
     class: shell
     field: line
     pattern: '(curl|wget)[^|;&]*\|\s*(sudo\s+)?(\S*/)?((ba|z|da)?sh|python3?|perl|ruby|node)\b|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(curl|wget)\b[^\n]*(&&|;)\s*(sudo\s+)?((ba|z|da)?sh\s+\S|\./\S|chmod\s+\+x[^\n]*(&&|;)\s*\./)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
     reason: running a downloaded script
+    remedy: Download the script to a file and show it for review instead of piping it into a shell; a person runs it once they have read it.
     rationale: Remote code execution without review.
   - id: TK-D003
     class: shell
-    field: line
-    # global options may come before `push` (git -C dir push); -f may be bundled (-uf)
-    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|--mirror\b|\s\+\S)'
+    # each command's argv, as TK-A002: a later command (`git push origin main && ls -f`), a heredoc after the push or
+    # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push,
+    # git --work-tree dir push); -f may sit in a short-option cluster before any `o` (`-uf`, `-4f`; `-of` is -o's
+    # value); --mirror may be abbreviated (`--m`: push's only option starting with m); a `+` refspec forces too.
+    # `[\w\W]*?` crosses a newline inside an argument; anchored and lazy, so the fallback engine stays linear
+    pattern: '^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
     reason: force push
+    remedy: Push without --force, --mirror or a + refspec (rebase onto the remote branch, or push a new branch); a person rewrites shared history themselves.
     rationale: Rewrites shared history.
   - id: TK-D004
     class: shell
     pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find / .*-delete( |$)'
     reason: recursive delete of root or home
+    remedy: Delete only the project's own paths, named in full; a person deletes anything at / or the home directory themselves.
     rationale: Irrecoverable data loss.
   - id: TK-D010
     class: shell
-    field: line
-    # every .env variant, templates included: a whole command can name several files, so no `unless` here
-    pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
+    field: target
+    # each command (a wrapper's or a nested shell's too) and each redirection target on its own, anchored and lazy, so
+    # the fallback engine stays linear: cp, mv or install with a credentials file last, tee with one among its files,
+    # or a redirection into one (a read redirected from one, `< .env`, too: the target doesn't say which way it goes).
+    # Every .env variant, templates included: a whole command can name several files, so no `unless` here. A suffix
+    # after `.env` (`.env.local`) only on a file named so: after any prefix too (`a.env.env…`), it would rescan
+    pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$'
     reason: writing to a credentials file from the shell
+    remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011
     class: shell
     field: line
     pattern: '\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
     reason: sending credential files off the machine
+    remedy: Keep keys and cloud credentials on the machine; a person shares access through the deployment's secret store.
     rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
   - id: TK-D006
     class: shell
     field: line
-    pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
+    pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|\b(curl|wget|http|nc|ncat|scp|rsync)(\s[^\n]*)?(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
     reason: uploading a secrets file
+    remedy: Send only the values the request needs, never the .env file; a person shares secrets through the deployment's secret store.
     rationale: Sending .env off the machine is exfiltration.
   - id: TK-D008
     class: shell
     field: line
     pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
     reason: modifying the agent harness's transcripts
+    remedy: Leave the harness's transcripts as they are (reading them is fine); a person removes them once the run's evidence is exported.
     rationale: Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
 
   # --- files ---
@@ -94,6 +111,7 @@ deny:
     pattern: '(^|/)(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|credentials)$|(^|/)\.ssh/|(^|/)\.aws/'
     unless: '(^|/)\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     reason: writing to a credentials file
+    remedy: Write a template with placeholders (.env.example) instead; a person fills in the real credentials file.
     rationale: Credential files are high-value and rarely a legitimate agent target.
   - id: TK-D009
     class: fs
@@ -103,6 +121,7 @@ deny:
     # Claude Code keeps the agent's own memory notes beside its transcripts: those it may write
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     reason: writing to the agent harness's transcripts
+    remedy: Write notes in the project or the agent's memory folder; the harness's transcripts stay as it wrote them.
     rationale: Same as TK-D008, for the file-editing tools.
 
   # --- harness self-protection ---
@@ -113,16 +132,125 @@ deny:
     # installed packs too
     pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|AppData[/\\]Local[/\\]tracekit|LOCALAPPDATA%?[/\\]tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
     reason: touching Tracekit's own files or signer
+    remedy: Leave Tracekit's files, signer and policy alone; a person changes them through the signer's own configuration.
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
   - id: TK-D013
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit|tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
+    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit(-[0-9a-f]+)?|tmp/(tracekit|tk)-[0-9]+(-[0-9a-f]+)?|(site|dist)-packages/tracekit/policy2/packs)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
     reason: writing Tracekit's own files, signer state or policy
+    remedy: Leave Tracekit's files, signer state and policy alone; a person changes them through the signer's own configuration.
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
+  - id: TK-D020
+    class: shell
+    field: argv
+    # security's global options (-q, -v, -p prompt …) may come before its command; `pass grep` decrypts every entry
+    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* dump-keychain\b|^secret-tool\s+search\b[^\n]*?--all\b|^pass\s+grep\b'
+    reason: dumping an entire operating-system credential store
+    remedy: Look up only the one credential the task needs; a person exports a whole credential store themselves.
+    rationale: A whole-store export exposes credentials unrelated to the task; a person must authorize it.
+  - id: TK-D021
+    class: shell
+    field: argv
+    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*https?://'
+    reason: installing a package directly from a URL
+    remedy: Install the package by name from the configured index; a person adds a URL source after reviewing it.
+    rationale: A URL bypasses the configured package source and can install unreviewed code.
 
 ask:
+  - id: TK-A020
+    class: fs
+    tool: Read|Grep
+    field: path
+    # in lower case: the path is also matched casefolded, and macOS and Windows ignore case
+    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(login data|cookies|web data|network/cookies)$'
+    reason: reading an operating-system or browser credential store
+    remedy: Wait for a person to approve the held read, or ask the person for the one credential the task needs.
+    rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
+  - id: TK-A021
+    class: shell
+    field: target
+    # security's global options may come before its command; `pass NAME` shows NAME as `pass show NAME` does, so every
+    # pass command but those that don't decrypt an entry (`unless`; grep is TK-D020's). Paths in lower case: the target
+    # is also matched casefolded
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add\s+-L)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
+    unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)'
+    reason: reading credentials from an operating-system or browser store, or listing an SSH agent's keys
+    remedy: Wait for a person to approve the held call, or ask the person for the one credential or key the task needs.
+    rationale: These commands can read saved credentials or list the keys an SSH agent holds; a person confirms the access.
+  - id: TK-A022
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)etc/docker/daemon\.json$|(^|/)var/run/docker\.sock$|(^|/)run/docker\.sock$'
+    reason: changing Docker's host-level configuration or control socket
+    remedy: Wait for a person to approve the held write, or describe the Docker setting the task needs for a person to apply.
+    rationale: The daemon configuration and socket can grant a container full host access; reading them is allowed.
+  - id: TK-A023
+    class: shell
+    field: container_host_access
+    pattern: '^host-access$'
+    reason: starting a container with host-level privileges or mounts
+    remedy: Wait for a person to approve the held call, or run the container without --privileged, host namespaces or a root mount.
+    rationale: These options expose the host disk, process space or device access to the container; a person confirms it.
+  - id: TK-A024
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)(\.npmrc|pip\.conf|\.pypirc)$|(^|/)etc/apt/sources\.list(\.d/[^/]+\.(list|sources))?$|(^|/)etc/yum\.repos\.d/[^/]+\.repo$'
+    reason: changing a package manager's source configuration
+    remedy: Wait for a person to approve the held write, or install from the package source already configured.
+    rationale: Package source settings can redirect future installs to an untrusted index; reading configuration is allowed.
+  - id: TK-A025
+    class: shell
+    field: package_index
+    pattern: '^'
+    reason: installing packages through an explicitly selected index
+    remedy: Wait for a person to approve the held call, or install from the package index already configured.
+    rationale: The signer cannot establish whether a custom index is trusted; a person confirms the source.
+  - id: TK-A026
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # in lower case: the path is also matched casefolded (PowerShell's ConsoleHost_history.txt)
+    pattern: '(^|/)(\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|(^|/)var/log(/|$)'
+    reason: modifying shell history or system logs
+    remedy: Wait for a person to approve the held write, or keep notes in the project instead of history or log files.
+    rationale: These files may be evidence of earlier activity; writing to them is held while reading stays allowed.
+  - id: TK-A027
+    class: shell
+    field: effects
+    # TK-A026 for the shell: a file a command writes or deletes (a redirection, rm, mv, cp, ln, tee, truncate, dd, sed
+    # -i, perl -i, find -delete or -exec rm), each also casefolded, so the pattern is in lower case. Anchored and lazy,
+    # so the fallback engine stays linear
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*?/)?(?:\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):(?:/private)?/var/log(?:/|$)'
+    reason: clearing shell history or system logs
+    remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
+    rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
+  - id: TK-A029
+    class: shell
+    field: target
+    # history -c (alone or in a cluster, after other options), turning the history file off, vacuuming the journal
+    pattern: '^history\s(?:[^\n]*?\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*?--vacuum-[^\s=]+(?:=|\s|$)'
+    reason: clearing shell history or system logs
+    remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
+    rationale: Clearing the history, turning it off or vacuuming the journal can hide earlier activity; a person confirms it.
+  - id: TK-A030
+    class: shell
+    field: effects
+    # TK-A024 for the shell: a file a command writes (a redirection, cp, mv, install, ln, tee, dd, sed -i …)
+    pattern: '^WRITE_TARGET:(?:[^\n]*?/)?(?:\.npmrc|pip\.conf|\.pypirc)$|^WRITE_TARGET:(?:[^\n]*?/)?etc/apt/sources\.list(?:\.d/[^/]+\.(?:list|sources))?$|^WRITE_TARGET:(?:[^\n]*?/)?etc/yum\.repos\.d/[^/]+\.repo$'
+    reason: changing a package manager's source configuration
+    remedy: Wait for a person to approve the held call, or install from the package source already configured.
+    rationale: Package source settings can redirect future installs to an untrusted index; reading configuration is allowed.
+  - id: TK-A028
+    class: shell
+    field: argv
+    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*git\+(https?|ssh)://'
+    reason: installing a package directly from a version-control source
+    remedy: Wait for a person to approve the held call, or install a released version from the configured index.
+    rationale: Version-control installs are common but their source and revision need human review.
   - id: TK-A001
     class: shell
     # each command's argv, so `echo terraform destroy`, a grep for it or a commit message naming it don't match. The
@@ -132,26 +260,101 @@ ask:
     # options (with a value) may come before it for pulumi and `railway`/`heroku run`, up to four for terraform, fly
     # and the npx-style launchers; a mutation needs its call parenthesis, so a URL or file named serviceDelete.json
     # doesn't.
-    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.* )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) .*\b(volume|service|environment|project|database)Delete\s*\()'
+    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.*? )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) .*?\b(volume|service|environment|project|database)Delete\s*\()'
     # each of these CLIs prints its help and exits on --help (-h is dropdb's host). Only a last `--help` after at most
     # two short lower-case words counts: the subject joins argv with spaces, so `-m ' --help'` must not read as one
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
     reason: destroying a deployment, database or volume
+    remedy: Wait for a person to approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
     rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
   - id: TK-A002
     class: shell
     # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. No dry-run exemption: `-o` takes the next
     # word as its value, so `git push -d origin main -o --dry-run` deletes main. Also held: a long-option prefix (`--del`,
     # `--pru`), `d` in a short-option cluster before any `o` (`-4d`, `-doci.skip`; the class leaves `d` out so a long word
-    # can't backtrack) and an all-zero source object id
-    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b.*( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)|0{40}:)'
+    # can't backtrack) and an all-zero source object id (SHA-1 or SHA-256). `[\w\W]*?` crosses a newline inside an
+    # argument (`--repo=$'x\ny'`) but never reaches another command, which is its own subject; lazy, so the fallback
+    # engine stays linear
+    pattern: '^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
+    remedy: Wait for a person to approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
+  - id: TK-A003
+    # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
+    # in bypassPermissions mode or under a matching allow rule nobody is asked
+    # (docs/integrations/claude-code-sandbox.md); true in any case, as JSON or as a string, as TK-F008 reads it
+    field: dangerouslyDisableSandbox
+    pattern: '^[Tt][Rr][Uu][Ee]$'
+    reason: running a command outside Claude Code's sandbox
+    remedy: Wait for a person to approve the held call, or run the command inside the sandbox, without dangerouslyDisableSandbox.
+    rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that leaves it.
+  - id: TK-A014
+    # TK-A003's twin for Claude Code's auto mode: a Bash, PowerShell or Monitor call's allowed_domains opens those hosts
+    # to that one command inside the sandbox. Matched as canonical JSON: any list with an entry (or a value that isn't
+    # a list); an empty list opens nothing and isn't held
+    field: allowed_domains
+    pattern: '^(\[[^\]]|[^\[])'
+    reason: opening network hosts beyond Claude Code's sandbox for one command
+    remedy: Wait for a person to approve the held call, or run the command with the sandbox's own network allow list, without allowed_domains.
+    rationale: The sandbox limits which hosts a command can reach; a person confirms each command that asks for more.
+  - id: TK-A004
+    # Gemini CLI's sandbox expansion: with security.toolSandboxing on, a run_shell_command call's additional_permissions
+    # gives the command network access or more paths to read or write, and in YOLO mode Gemini asks nobody
+    # (docs/integrations/gemini-sandbox.md). Matched as canonical JSON, or as the JSON text a string holds (spaces
+    # allowed); a request that turns nothing on isn't held.
+    field: additional_permissions
+    pattern: '"network":\s*true|"(read|write)":\s*\[\s*"'
+    reason: running a command with more than Gemini CLI's sandbox allows
+    remedy: Wait for a person to approve the held call, or run the command with the sandbox's own permissions, without additional_permissions.
+    rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that asks for more.
+
+  # --- autostart locations: what runs at every login or boot ---
+  - id: TK-A010
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)library/launch(agents|daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init\.d|rc\.local|xdg/autostart)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
+    reason: adding something that runs at every login or boot
+    remedy: Wait for a person to approve the held call, or keep the file in the project and start the program when it is needed.
+    rationale: Startup items and service definitions outlive the agent's session; a person confirms each one.
+  - id: TK-A011
+    class: shell
+    field: target
+    # the TK-A010 locations as where a command writes, copies or links to (cp, install, mv or ln: the last word, or
+    # -t's directory; tee, sed -i, dd of=: any of its files) or as a redirection target, and turning a startup item on
+    # (systemctl enable, reenable, preset or add-wants after any options); each command and target on its own,
+    # anchored and lazy, as TK-D010, and casefolded (lower-case places). Listing them, copying out of them and reading
+    # them stay unheld (but for a read redirected with `<`), and so does managing an existing service (`systemctl
+    # restart`)
+    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^tee [\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^dd ([\w\W]*? )?of=[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^[^ =]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^launchctl (load|bootstrap|enable)\b|^systemctl (-[^ ]+ ([^- ][^ ]* )?)*(enable|reenable|preset|preset-all|add-wants|add-requires)( |$)'
+    reason: adding something that runs at every login or boot
+    remedy: Wait for a person to approve the held call, or run the program directly for this session; a person installs and enables services.
+    rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
+
+  # --- Git hooks: code that runs on every commit, checkout or push in the repository ---
+  - id: TK-A012
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)\.git/hooks/'
+    reason: writing a Git hook
+    remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
+    rationale: A hook runs on every developer's commit or push in this clone; a person confirms it.
+  - id: TK-A013
+    class: shell
+    field: target
+    # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
+    # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
+    # held
+    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
+    reason: writing a Git hook or moving where hooks live
+    remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
+    rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
 
 flag:
   - id: TK-F001
     class: shell
-    field: command
+    field: line
     pattern: '\b(curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp)\b'
     label: network
   - id: TK-F002
@@ -160,12 +363,12 @@ flag:
     label: network
   - id: TK-F003
     class: shell
-    field: command
+    field: line
     pattern: '\b(rm|mv|chmod|chown|dd|truncate|shred|unlink)\b'
     label: destructive
   - id: TK-F004
     class: shell
-    field: command
+    field: line
     pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
@@ -174,7 +377,7 @@ flag:
     # template path (no space: never a whole command) is exempt
     field: target
     pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
-    unless: '^([^ ]*/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
+    unless: '^([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
     class: mcp
@@ -182,17 +385,26 @@ flag:
     label: external_tool
   - id: TK-F007
     class: shell
+    field: line
+    # lean: tmux's -d within 200 characters of `new`, so each tmux on a long line scans a bounded stretch on the
+    # fallback engine; widen it if a real command puts more before -d
+    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]{0,200}?-d|\bdaemonize\b|\bwhile\s+(true|:)'
+    label: background_spawn
+  - id: TK-F014
+    class: shell
     field: command
-    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|&\s*$|&\s*;|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]*-d|\bdaemonize\b|\bwhile\s+(true|:)'
+    # a trailing `&`: the raw command, where a quoted `&` (`echo 'x &'`) is still quoted
+    pattern: '&\s*$|&\s*;'
     label: background_spawn
   - id: TK-F008
     tool: Bash
     field: run_in_background
-    pattern: '^(true|True|TRUE)$'
+    pattern: '^[Tt][Rr][Uu][Ee]$'
     label: background_spawn
   - id: TK-F009
     tool: Bash|Write|Edit|MultiEdit
-    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
+    # the harnesses' settings, hooks and sandboxes: Claude Code's, Codex's, Gemini CLI's, Cursor's hooks
+    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|\.gemini/|\.cursor/hooks\.json|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
     label: harness_config
   - id: TK-F010
     class: shell
@@ -202,7 +414,7 @@ flag:
   - id: TK-F011
     class: shell
     field: command
-    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|bash_profile)\b'
     label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with

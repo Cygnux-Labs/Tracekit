@@ -6,6 +6,7 @@ import os
 import sys
 
 from . import __version__
+from .wiki import wiki_url
 
 NUDGE_WAIT_S = 5.0
 LAST_WAIT_S = 15.0   # `tracekit last`: how long a run that just closed may take to be finalised (the grace window is 5 s)
@@ -22,7 +23,7 @@ def experimental_gate(enabled, what):
 
 def experimental(what):
     """The one line each experimental command or server prints when it starts (docs/support.md)."""
-    print(f"tracekit: {what} is experimental: it works and is tested, but may change (docs/support.md)", file=sys.stderr)
+    print(f"tracekit: {what} is experimental: it works and is tested, but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
 
 
 def _signer_home(a):
@@ -35,13 +36,20 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
               "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
-              "why": "why.cli", "reviewer": "reviewer"}  # subcommands with their own parsers
+              "ext-mcp": "ext_mcp",
+              "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
+              "openshell-middleware": "openshell", "follow": "follow",
+              "sensor": "sensor", "ingest": "ingest"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
+                 "openshell-middleware": "the OpenShell middleware",
+                 "ext-mcp": "agentgateway's ext_mcp processor",
                  "issuer": "the record-key issuer", "witness": "the witness", "public-witness": "the public witness",
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
-                 "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)"}
+                 "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
+                 "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
+                 "sensor": "the kernel sensor import"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -78,7 +86,7 @@ def main(argv=None):
 
     p = sub.add_parser("init", help="install the signer and Claude Code hooks")
     p.add_argument("--remote", metavar="URL", help="agent on another machine: with --v2, send to this signer's HTTPS "
-                                                   "transport; without, to the deprecated ingest gateway (docs/remote-ingest.md)")
+                                                   f"transport; without, to the deprecated ingest gateway ({wiki_url('docs/remote-ingest.md')})")
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN without "
                                         "--v2); with --v2 it is read on every call, so a rotated token needs no restart")
     p.add_argument("--ca", help="with --remote --v2: the CA bundle the signer's certificate must chain to (pinned)")
@@ -90,13 +98,16 @@ def main(argv=None):
                                       "$SUDO_USER, the admin running init)")
     p.add_argument("--policy", help="with --v2, system mode: the signer's policy file (root-owned; default: its own pack)")
     p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
-                                                                 "the signer's logs (docs/witnesses.md; it sees origins, "
+                                                                 f"the signer's logs ({wiki_url('docs/witnesses.md')}; it sees origins, "
                                                                  "sizes, roots and timing, never content)")
     p.add_argument("--egress", action="store_true", help="with --v2, system mode on Linux: the agent user's outside "
                                                          "traffic only through a local egress observer (an owner-match "
-                                                         "firewall rule; undone by uninstall; docs/egress.md)")
+                                                         f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
+    p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2: leave Claude Code's "
+                   "showThinkingSummaries and Codex's model_reasoning_summary alone (init turns them on so `tracekit "
+                   "analyze --v2` can read the model's reasoning)")
     p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable; default: the last init's, else a local clone)")
     p.add_argument("--checkpoint-every", type=int, help="records between checkpoints (default: the last init's, else 50)")
     p.add_argument("--user", help="system mode: the user whose agents are traced (default: $SUDO_USER)")
@@ -129,7 +140,7 @@ def main(argv=None):
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
-    p = sub.add_parser("doctor", help="check this setup (v1/v2 system mode, the dev signer); docs/doctor.md")
+    p = sub.add_parser("doctor", help=f"check this setup (v1/v2 system mode, the dev signer); {wiki_url('docs/doctor.md')}")
     p.add_argument("--json", action="store_true", help="print [{id, status, detail, fix}]")
     p.add_argument("--config", help="check the v2 signer of this signer.yaml")
     p.add_argument("--k8s", action="store_true", help="check the Kubernetes pod doctor runs in (or --manifests)")
@@ -144,7 +155,8 @@ def main(argv=None):
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger", add_help=False)
+    p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger "
+                       "(--v2: check a v2 run's request, reasoning and actions)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("cost", help="token usage (and cost, with your price table) per run or model", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -166,6 +178,9 @@ def main(argv=None):
     p = sub.add_parser("egress", help="egress observer for the v2 signer: `egress serve --config egress.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("sensor", help="kernel sensor import for the v2 signer: `sensor import --config sensor.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("reviewer", help="the reference agent approver: `reviewer serve|eval --config reviewer.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -175,8 +190,19 @@ def main(argv=None):
     p = sub.add_parser("mcp-gateway", help="MCP gateway for the v2 signer: `mcp-gateway serve --config mcp-gateway.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("srt-decider", help="decide every request srt-proxy (Anthropic's sandbox-runtime) asks about: "
+                                           "`srt-decider --allow-domain HOST -- srt-proxy ...`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("openshell-middleware", help="NVIDIA OpenShell supervisor middleware for the v2 signer: "
+                       "`openshell-middleware serve --config openshell-middleware.yaml`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("ext-mcp", help="agentgateway's ext_mcp processor for the v2 signer: `ext-mcp serve`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("issuer", help="record-key issuer for v2 signers: `issuer serve|revoke|vkey --config issuer.yaml`",
                        add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("follow", help="follow agentsh's audit log into the v2 signer as it is written: "
+                       "`follow agentsh --log PATH`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -211,7 +237,7 @@ def main(argv=None):
         q = acts.add_parser(name, help=f"{name} a pending approval")
         q.add_argument("approval_id")
         q.add_argument("--reason")
-    q = acts.add_parser("slack", help="the Slack approvals bridge (docs/approvals.md#slack)")
+    q = acts.add_parser("slack", help=f"the Slack approvals bridge ({wiki_url('docs/approvals.md', 'slack')})")
     q.add_argument("slack_action", choices=["serve"])
     q.add_argument("--config", required=True, help="slack.yaml")
 
@@ -233,8 +259,8 @@ def main(argv=None):
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
     p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
-    p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's `tracekit why` "
-                   "findings and their replay runs, which the verifier counts")
+    p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's findings runs "
+                   "(`tracekit analyze --v2`, `tracekit why`) and replay runs, which the verifier checks")
 
     p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
                                     "and verify it")
@@ -335,12 +361,14 @@ def _init_remote_v2(a, url):
     hooks = None if a.no_hooks or a.agent != "claude" else (
         os.path.join(os.getcwd(), ".claude", "settings.json") if a.project else install.user_settings())
     try:
-        if hooks:
-            install.install_hooks(hooks, module=install.V2_HOOK, signer=env)
+        on = hooks and install.install_hooks(hooks, module=install.V2_HOOK, signer=env,
+                                             thinking=not a.no_thinking_summaries)
     except install.SettingsError as e:
         print(f"tracekit: {e}", file=sys.stderr)
         return 1
     print(f"remote v2 signer configured: {url}; v2 hooks: {hooks or 'not installed'}")
+    if hooks and not a.no_thinking_summaries:
+        print(install.thinking_line(hooks, on))
     print("for SDK clients, set:\n" + "\n".join(f"  export {k}={v}" for k, v in env.items()))
     return 0
 
@@ -351,9 +379,6 @@ def _match_pending(pend, prefix):
 
 
 def _run(a):
-    if a.cmd == "ingest":
-        from . import ingest
-        return ingest.main(a.rest)
     if a.cmd == "init" and a.remote:
         return _init_remote(a)
     if a.cmd == "init":
@@ -404,7 +429,7 @@ def _run(a):
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
                                                         a.allow_privileged, a.agent, a.harness, a.public_witness,
-                                                        a.egress)
+                                                        a.egress, not a.no_thinking_summaries)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -420,10 +445,13 @@ def _run(a):
                 return 2
             try:
                 path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
+                summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"v2 {a.agent} hooks:", path or "not installed")
+            if summary:
+                print(agent_hooks.reasoning_line(*summary))
             return 0
         if a.dev and a.agent != "claude":
             from . import agent_hooks
@@ -451,14 +479,22 @@ def _run(a):
                     print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {plugin}, runs them "
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
                           f"/plugin disable {install.PLUGIN}, then run init again")
+                    if not a.no_thinking_summaries:
+                        try:
+                            print(install.thinking_line(hooks, install.thinking_on(hooks)))
+                        except install.SettingsError as e:
+                            print(f"tracekit: {e}", file=sys.stderr)
+                            return 1
                     return 0
                 try:
-                    if hooks:
-                        install.install_hooks(hooks, module=install.V2_HOOK)
+                    on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
+                                                         thinking=not a.no_thinking_summaries)
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1
                 print("v2 hooks:", hooks or "not installed")
+                if hooks and not a.no_thinking_summaries:
+                    print(install.thinking_line(hooks, on))
                 return 0
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
@@ -621,7 +657,8 @@ def _run(a):
             integrity, assurance = mod.integrity(rep, code), mod.assurance(rep)
         if a.json:
             print(json.dumps({"exit_code": code, "checks": rep.checks, "failures": rep.failures, "warnings": rep.warnings,
-                              "integrity": integrity, "assurance": assurance, "notes": rep.notes},
+                              "integrity": integrity, "assurance": assurance, "notes": rep.notes,
+                              **({"findings": rep.findings} if getattr(rep, "findings", None) else {})},
                              indent=2))
         else:
             mod.print_report(rep, code)
@@ -868,11 +905,12 @@ def _otel_v2(a, bundle):
     --otel-endpoint sent there; returns the file's path."""
     import zipfile
 
+    from .bundle_v2 import run_files
     from .otel import parse_headers, push
     from .signer.otel import payload
     with zipfile.ZipFile(bundle) as z:
-        doc = {"resourceSpans": [rs for n in sorted(z.namelist()) if n.startswith("runs/") for rs in payload(
-            [json.loads(line) for line in z.read(n).splitlines()])["resourceSpans"]]}
+        doc = {"resourceSpans": [rs for parts in run_files(z.namelist()).values() for rs in payload(
+            [json.loads(line) for n in parts for line in z.read(n).splitlines()])["resourceSpans"]]}
     path = os.path.splitext(bundle)[0] + ".otel.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f)

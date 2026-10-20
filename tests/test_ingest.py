@@ -15,7 +15,7 @@ from http.server import ThreadingHTTPServer
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tracekit import client, ingest, install  # noqa: E402
+from tracekit import cli, client, ingest, install  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from factories import ledger_records, patch_env  # noqa: E402
 
@@ -99,6 +99,16 @@ class RemovedClient(unittest.TestCase):
         post(b)
         self.assertNotIn("box-a", handler.buckets)
         self.assertNotIn("box-a", handler.receivers)
+
+
+class Help(unittest.TestCase):
+    def test_ingest_help_is_the_ingest_parsers(self):
+        """`tracekit ingest --help` reached the top-level parser, which refused --help."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as cm:
+            cli.main(["ingest", "--help"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("usage: tracekit ingest", out.getvalue())
 
 
 class Tokens(unittest.TestCase):

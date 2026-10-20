@@ -39,12 +39,17 @@ OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20tk_..." python my_agen
 | Span | Recognised by | Ledger events |
 |---|---|---|
 | Model call | `gen_ai.operation.name` = `chat`, `text_completion`, `generate_content`; OpenLLMetry `llm.request.type`; OpenInference `LLM` | `model.exchange` request + response: model, provider, finish reason, tool calls the model asked for, error, duration; prompt and output hashed (or clear with `content_capture: full`) |
-| Tool execution | `execute_tool`; OpenLLMetry `traceloop.span.kind=tool`; OpenInference `TOOL` | `tool.call`, `policy.decision`, `tool.result` |
+| Tool execution | `execute_tool`; OpenLLMetry `traceloop.span.kind=tool`; OpenInference `TOOL`; `mcp.method.name` = `tools/call` without `agentgateway.outbound.*` ([agentgateway](integrations/agentgateway.md)'s request span: named `mcp:<mcp.target>/<gen_ai.tool.name>`, failed when `mcp.error.code` is set) | `tool.call`, `policy.decision`, `tool.result` |
 | Root span | no parent | `run.end` (`error: ...` when the span failed) |
 | Anything else | HTTP, DB, framework internals | counted and skipped |
 
 Each trace is one run, `otel:<service.name>:<trace_id>` (prefixed `remote:<client>:` through the gateway). A
 `run.start` is written the first time a trace is seen, with the policy snapshot attached.
+
+The Vercel AI SDK's spans need no mapping: with `experimental_telemetry` enabled they go to the receiver unchanged.
+Provider calls (`ai.*.doGenerate`, `ai.*.doStream`) become model exchanges with the tool calls they requested and token
+usage, and `ai.toolCall` spans become tool calls with their arguments and results. To gate the AI SDK's tool calls
+before they run, use its v2 integration instead ([Vercel AI SDK](integrations/vercel-ai.md)).
 
 ### What it means
 
@@ -137,8 +142,11 @@ authorize: {"mtls:spiffe://acme/collector": [otlp_import]}
   run for what was allowed; the import is what the framework said it did.
 - **Retries write nothing twice.** A (span id, record type) is written once per run, and the set is part of the run's
   state, so it survives restarts and snapshots: a re-sent batch writes nothing, and no second `run.registered` appears.
-- **Lifecycle.** An imported run closes like any other: after `idle_s` without spans, `run.closing{idle_timeout}`, then
-  `run.final`. Spans for a final run are rejected (`partialSuccess`).
+- **Lifecycle.** An imported run closes when its trace's root span (one with no parent) arrives, since an exporter
+  sends a span once it ends and the root ends last: `run.closing{close_run}`, then `run.final` after `grace_s`. A
+  trace whose root never comes (its root is in another process, or not sampled) closes after `idle_s` without spans,
+  `run.closing{idle_timeout}`. Spans for a final run are rejected (`partialSuccess`): a span that ends after its
+  root and comes more than `grace_s` behind it is not recorded.
 - **Refusals.** No accepted credential: `401`; no `otlp_import`: `403`; a malformed body (nested too deep, a protobuf array or
   attribute list over 512 entries, or any decoding error): `400`, with nothing written. A request is written whole or
   not at all. The identity's event rate and open-run quotas apply (`503` with `Retry-After`, so exporters retry).

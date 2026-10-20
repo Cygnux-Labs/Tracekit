@@ -5,8 +5,9 @@ exports each run with bundle_v2 and checks it with verify.v2, the code `tracekit
 that pins --log-vkey, else the store's own log key (data_dir/log.vkey, or on Postgres the vkey the signer stored there,
 so the viewer needs no access to the signer's data dir). The page, server
 and security are the observer's (observe.py): each run's verifier report is an alert on the run's lane, followed by its
-events only when it verifies; a run that fails is shown only as the failure report. A run whose last record no
-checkpoint covers yet waits for the signer's next note (at most CHECKPOINT_S). The viewer never opens a signing key.
+events only when it verifies; a run that fails is shown only as the failure report. A run is shown up to the newest
+checkpoint note that covers its records (a run still being written grows with each note). The viewer never opens a
+signing key.
 Every request needs the token in the printed URL ($TRACEKIT_VIEW_TOKEN, else a random one), exchanged once for a
 session cookie, also on loopback, where any local user or process could otherwise connect. With the config's
 `view.oidc` section, /login also signs people in with an issuer of its `http.oidc` section (OidcLogin; docs/identity.md):
@@ -20,6 +21,12 @@ identity (`authorize` grants it approval_decide_on_behalf), and the signer decid
 
 Dev assurance: the pinned log key is read from the directory being checked, so a run that verifies matches the key of
 whoever can write that directory, the same user as the dev signer and this viewer.
+
+With the dev signer's content (dev_content_source) a model exchange shows what was asked (a person's prompt) and what
+the model said before each call (parsers.said: its reasoning, labelled full, summary or withheld, and its text),
+self-reported, never proof; without it, that something was said and committed. Once a run is final its intent,
+reasoning and action checks (tracekit analyze --v2, dev_analysis) add a FINDING alert each and the run review's
+findings and monitorability lines, beside its integrity, never in it.
 
 With why logs (`--why DIR`, else WHY_DIR in the data dir when present) the page also investigates them
 (why.server.Store, docs/viewer.md#why): their alerts, the why provenance of each call's arguments, the WHY, GRAPH,
@@ -35,6 +42,7 @@ bundle once it verifies (what `tracekit observe` runs), on this server, token an
 import argparse
 import atexit
 import base64
+import bisect
 import collections
 import functools
 import glob
@@ -57,6 +65,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
+from . import findings_v2, parsers
 from .bundle_v2 import export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -74,6 +83,10 @@ from .verify import v2
 from .why.server import Store
 
 POLL_S = 1.0
+BACKOFF = 4   # a run being written is verified again no sooner than BACKOFF x its last check's time after that check
+RECHECK_S = 300   # a run that did not grow is verified again this long after its last check, one run a pass
+MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
+KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
 STREAMS, STREAMS_PER_IP = 256, 64   # a team may share one address
@@ -266,21 +279,65 @@ class ApprovalDesk:
 
 ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PARSE": "SQL no dialect reads",
                 "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE": "a shell command that does not parse",
+                "TK-ENGINE-ERROR": "the policy engine failed on these arguments, so the call was denied",
                 "TK-LIMIT-SUM": "a sum limit counts this call: send the amount as a non-negative integer in minor "
-                                "units, with its three-letter currency code"}
+                                "units, with its three-letter currency code",
+                "TK-CONSTRAINT": "the person's request in this run said not to do this, so a person must approve it",
+                "TK-HOLD": "the run is held by an incident: every call waits for a person",
+                "TK-QUARANTINE": "the run is quarantined by an incident: its calls are refused",
+                "TK-ARGS-INVALID": "arguments the signer could not read, so it refused the call"}
+# a signed gap's kind in words (the kind itself stays on the row, for its tooltip and DETAIL)
+GAP_WORDS = {
+    "signer_unavailable": "the signer was unreachable: calls may be missing",
+    "client_counter_gap": "events the client sent never arrived",
+    "retry_conflict": "a retried event differed from the first one",
+    "run_abandoned": "the run stopped without closing",
+    "witness_late": "a witness countersigned late", "witness_failed": "a witness did not countersign",
+    "degraded_unanchored": "checkpoints no witness countersigned",
+    "format_upgrade": "the record format was upgraded during the run",
+    "policy_timeout": "the policy ran out of time to decide",
+    "decision_flip": "the same call got a different decision",
+    "class_mismatch": "a tool's class differs from the one the run declared",
+    "args_coerced": "arguments were converted before they were checked",
+    "reconcile.hook_missing": "a call the model asked for was never decided",
+    "reconcile.fabricated": "a decided call that no model message asked for",
+    "reconcile.args_mismatch": "a call's arguments differ between what was asked and what was decided",
+    "reconcile.result_without_call": "a result for a call that was never decided",
+    "reconcile.unexplained_effect": "the run reached a host that no call explains",
+    "state_tamper": "the agent's saved state was changed outside the run",
+    "tailer_lost": "the transcript reader stopped: model messages may be missing",
+    "rollback": "the store went back to an earlier state",
+    "clock_skew": "a clock disagreed with the signer's",
+    "key_retired": "a signing key was retired", "key_revoked": "a signing key was revoked",
+    "log_closed": "the log was closed", "quota_refused": "events refused over the rate limit",
+    "identity_refused": "events refused from an identity that may not write them",
+    "approval_expired": "an approval expired",
+    "executed_against_policy": "a call ran that the policy refused",
+    "decision_mismatch": "a call ran under a different decision than the one recorded",
+    "decided_not_completed": "a call was allowed but its result never came back",
+    "late_activity": "writes came in after the run was final",
+    "concurrent_run": "another run of the same agent process was open",
+    "tailer_redelegated": "a second transcript reader took over",
+    "reask_after_reject": "a rejected call was asked again",
+    "held_call_unresolved": "a held call was never resolved",
+    "observer_lost": "the network or process observer stopped reporting",
+    "effect_outside_run": "an effect that no open run holds",
+    "result_unchecked": "a tool result nothing compared",
+    "constraint_refused": "a constraint from the person's request the run had no room for"}
 SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamper", "rollback", "key_revoked",
                "decision_flip", "executed_against_denial", "concurrent_run"}
 
 
 def policy_reasons(paths=()):
-    """policy_hash -> {rule id: reason} of the shipped packs and the policy files `paths`: a decision's rule reasons
-    are shown only from the policy whose hash it records."""
+    """policy_hash -> {rule id: {reason[, remedy]}} of the shipped packs and the policy files `paths`: a decision's
+    rule reasons are shown only from the policy whose hash it records."""
     out = {}
     for p in sorted(glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))) + list(paths):
         pol, errors = policy_compile.build(p)
         if not errors:
-            out[policy_compile.policy_hash(pol)] = {r["id"]: r.get("reason") or r.get("label") or ""
-                                                    for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
+            out[policy_compile.policy_hash(pol)] = {
+                r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
+                for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out
 
 
@@ -305,25 +362,30 @@ class Translator(observe.Translator):
     def __init__(self, reasons=None):
         super().__init__()
         self.reasons = reasons or {}
-        # approval_id -> (tool, rule ids), and shadow suggestions: the newest MAX_RUNS_KEPT each, like agent_names
+        # approval_id -> (tool, rule ids, tool call id), and shadow suggestions: the newest MAX_RUNS_KEPT each, like agent_names
         self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
                                          observe._Bounded(observe.MAX_RUNS_KEPT))
         self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
         self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
+        # a findings run -> (the run its findings are about, its author: the identity the signer measured)
+        self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
 
     def _base(self, e, rec, event):
         return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent")}
 
     def rules(self, d):
         known = self.reasons.get(d.get("policy_hash"), {})
-        return [{"id": i, "reason": known.get(i) or ENGINE_RULES.get(i, "")} for i in d.get("rule_ids") or []]
+        return [{"id": i, "reason": known.get(i, {}).get("reason") or ENGINE_RULES.get(i, ""),
+                 **{k: v for k, v in known.get(i, {}).items() if k == "remedy"}} for i in d.get("rule_ids") or []]
 
     def feed(self, rec):
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
         out = self._v2(e, rec, t, d)
+        # an approval's later records (one that expired at run.final names no call) are its request's call's
         info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": d.get("tool_use_id")
-                or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")}
+                or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
+                or self.requests.get(d.get("approval_id"), ("", [], None))[2]}
         for x in out:
             x["v2"] = {**info, **x.get("v2", {})}
             if e["run_id"] == SIGNER_RUN[1]:
@@ -333,14 +395,48 @@ class Translator(observe.Translator):
     def _v2(self, e, rec, t, d):
         def alert(sev, title, text, tape, **v2):
             return [{**self.alert(e, rec, sev, title, text, tape), "v2": v2}]
+
+        def note(title, text, tape, **v2):   # a signed record that is a row of the tape, not an alert
+            return [{**self._base(e, rec, "tk_note"), "title": title, "text": text, "tape": tape, "v2": v2}]
         if t == "run.registered":
             self.agent_names[e["run_id"]] = (d.get("agent") or {}).get("name") or "agent"
+            if d.get("analyzes"):
+                self.analyzes[e["run_id"]] = d["analyzes"], _who(d.get("identity"))
             return [{**self._base(e, rec, "SessionStart"),
-                     "source": f"{d.get('signer_isolation')} signer · {_who(d.get('identity'))}"}]
+                     "source": f"{d.get('signer_isolation')} signer · {_who(d.get('identity'))}"
+                               + (f" · findings about run {d['analyzes']}" if d.get("analyzes") else "")}]
+        if t == "input.observed":
+            return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
+                                                       "only its commitment", "INPUT", trust=d.get("trust"))
+        if t == "content.accessed":
+            seqs = d.get("seqs") or []
+            return note("CONTENT READ", f"{d.get('principal')} read the kept content of {len(seqs)} record"
+                                        f"{'s' * (len(seqs) != 1)} of run {d.get('run_id')} · “{d.get('purpose')}”",
+                        "SIGNER")
+        if t == "review":   # a signed finding of a findings run, about the run it analyzes
+            v, (about, author) = d.get("verdict") or {}, self.analyzes.get(e["run_id"], (None, "?"))
+            rule = v.get("rule", "")
+            if v.get("kind") == "coverage":
+                checks = v.get("checks") or {}
+                return alert("info", f"FINDINGS COVERAGE · {sum(c.get('checked', 0) for c in checks.values())} "
+                             f"checks ran", "what the analyzer could and could not check"
+                             + "".join(f"\n{r}: not checkable for {g.get('n')}: "
+                                       + findings_v2.REASONS.get(g.get("reason"), (g.get("reason"),))[0]
+                                       for r, c in sorted(checks.items()) for g in c.get("not_checkable") or ()),
+                             "FINDING", finding=v, about=about)
+            why, todo = findings_v2.WHY.get(rule, ("", ""))
+            return alert({"critical": "high", "high": "high", "medium": "med"}.get(v.get("severity"), "low"),
+                         f"FINDING {rule} · {v.get('title') or findings_v2.TITLES.get(rule, '')}",
+                         (f"Why it matters: {why}\nWhat to do: {todo}\n" if why else "")
+                         + f"Written by {author}, reviewer {d.get('reviewer')} (its own claim), about run "
+                         f"{about or '?'}", "FINDING",
+                         finding=v, cites=d.get("cites") or [], about=about)
         if t == "run.closing":
             return [{**self._base(e, rec, "SessionEnd"), "reason": {"close_run": "closed by the agent",
                                                                     "idle_timeout": "closed after the idle timeout"}
                      .get(d.get("reason"), d.get("reason"))}]
+        if t == "model.exchange":
+            return self._exchange(e, rec, d)
         if t == "run.final":
             cov = d.get("coverage") or {}
             line = (f"final · head run_seq {d.get('head_run_seq')} · coverage {'+'.join(cov.get('layers') or []) or 'none'}"
@@ -364,10 +460,10 @@ class Translator(observe.Translator):
                          **{k: d[k] for k in ("provenance", "provenance_state") if k in d}})
             return [r]
         aid = d.get("approval_id")
-        tool, rule_ids = self.requests.get(aid, ("", []))
+        tool, rule_ids, _ = self.requests.get(aid, ("", [], None))
         if t == "approval.request":
             tool = (d.get("binding") or {}).get("tool", "")
-            self.requests[aid] = (tool, d.get("rule_ids") or [])
+            self.requests[aid] = (tool, d.get("rule_ids") or [], (d.get("binding") or {}).get("tool_call_id"))
             rules = self.rules(d)
             return alert("med", f"APPROVAL REQUESTED · {tool}",
                          f"requested by {d.get('requester')} · rules "
@@ -409,11 +505,13 @@ class Translator(observe.Translator):
             text = (f"by {'agent ' if agent else ''}{_who(who) if who else d.get('approver')}{model}"
                     + (f" · vouched for by {_who(d['via'])} via {d.get('channel')}" if d.get("via") else "")
                     + (f" · “{d['reason']}”" if d.get("reason") else "")
-                    + (" · SELF-APPROVED" if d.get("self_approved") else " · not self-approved")
+                    # only an approval can be a self-approval: the requester rejecting their own call is no risk
+                    + ((" · SELF-APPROVED" if d.get("self_approved") else " · not self-approved") if dec == "approve"
+                       else " · by the requester" if d.get("self_approved") else "")
                     + (" · BREAK-GLASS" if d.get("break_glass") else "") + (" · passkey" if d.get("passkey") else "")
                     + shadow)
             sev = "high" if dec == "self_approval_refused" or d.get("break_glass") else \
-                "med" if d.get("self_approved") or agent else "info"
+                "med" if d.get("self_approved") and dec == "approve" or agent else "info"
             word = {"approve": "APPROVED", "reject": "REJECTED", "timeout": "TIMED OUT",
                     "self_approval_refused": "SELF-APPROVAL REFUSED"}.get(dec, str(dec).upper())
             return alert(sev, f"{'AGENT ' if agent else ''}{word} · {tool or d.get('tool_use_id')}", text,
@@ -436,8 +534,8 @@ class Translator(observe.Translator):
             text += f" · {d['missed_events']} events missed" if d.get("missed_events") else ""
             text += f" · {_hms(d.get('from_ts'))}–{_hms(d.get('to_ts'))}" if d.get("from_ts") else ""
             sev = "high" if t.startswith("reconcile.") or kind in SEVERE_GAPS else "med"
-            return alert(sev, f"GAP · {kind}", text.strip(" ·") or "signed gap: records may be missing", "GAP",
-                         kind=kind)
+            return alert(sev, f"GAP · {GAP_WORDS.get(kind, kind)}", text.strip(" ·") or "signed gap: records may be "
+                         "missing", "GAP", kind=kind)
         if t == "signer.epoch":
             keys = d.get("keys") or []
             return alert("info", "SIGNER EPOCH", f"{len(keys)} signing key(s): " + ", ".join(
@@ -478,10 +576,72 @@ class Translator(observe.Translator):
                     "incident.response": f"response engine {'on' if d.get('enabled') else 'paused'} by {d.get('by')}",
                     "identity.suspension": f"{d.get('identity')} {d.get('state')} by {d.get('by')}"}[t]
             return alert("med", t.upper().replace(".", " · "), text, "ALERT", incident=d.get("incident_id"))
+        if t == "constraint.added":   # a live constraint (#309): the person's request said not to do this
+            return alert("info", f"CONSTRAINT · {CONSTRAINTS.get(d.get('kind'), d.get('kind'))}",
+                         "a later call that breaks it waits for a person's approval (TK-CONSTRAINT)"
+                         + (": the file is committed, not named" if d.get("object_commitment") else ""), "HOLD",
+                         constraint=d.get("kind"))
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
+        if t == "effect.observed" and d.get("sensor") == "openshell":   # what OpenShell reported of its sandbox
+            k, who, by = d.get("kind"), f"{d.get('binary')} (pid {d.get('pid')})", f" · OpenShell's report, via " \
+                                                                                  f"{d.get('observer')}"
+            target = f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("binary")
+            if d.get("denied"):
+                return alert("med", f"BLOCKED BY OPENSHELL · {k} {target}", f"OpenShell's policy blocked {who} from "
+                             + (f"connecting to {target}" if k == "connect" else "starting") + by, "BLOCK")
+            return alert("info", f"OPENSHELL · {k} {target}", (
+                f"{who} connected to {target}; OpenShell's policy allowed it" if k == "connect" else
+                f"OpenShell started {who} in the sandbox" if k == "exec" else
+                f"{who} ended" + (f" with status {d['status']}" if "status" in d else "")) + by, "EFFECT")
+        if t == "ext" and d.get("name") == "openshell.policy":   # OpenShell changed the sandbox's policy
+            return alert("med", f"OPENSHELL POLICY · {d.get('change')}",
+                         "OpenShell reported a change of the sandbox's policy or configuration"
+                         + (f" by {d['by']}" if d.get("by") else "")
+                         + (f" · policy {str(d['policy_hash'])[:16]}" if d.get("policy_hash") else "")
+                         + f" · via {d.get('observer')}; its message is committed, not shown", "STATE")
+        if t == "effect.observed" and d.get("sensor"):   # what a kernel sensor saw; the run's analysis joins it to a call
+            k = d.get("kind")
+            target = (f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("path") if k == "file" else
+                      f"{d.get('binary')} status {d.get('status')}" if k == "exit" else d.get("binary"))
+            claim = d.get("tool_call_id")
+            return alert("info", f"EFFECT · {k} {target}",
+                         f"{d.get('binary')} pid {d.get('pid')} · {d.get('sensor')} via {d.get('observer')}"
+                         + (f" · names call {claim} (the process's claim, which the run's analysis checks)"
+                            if claim else ""), "EFFECT", effect={"kind": k, "target": target, "claim": claim})
         return super().feed(rec) or alert("info", t, json.dumps(d, ensure_ascii=False)[:200], "ALERT")
+
+
+    def _exchange(self, e, rec, d):
+        """A model exchange: a person's prompt (UserPromptSubmit), what the model said (a model_turn whose blocks name
+        their form), a response's tool uses (observe's model line); without retained content, what is committed."""
+        body = self.content.pop((e["run_id"], e.get("run_seq")), None)
+        out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []   # a transcript line has neither
+        x = {"exchange_id": d.get("exchange_id"), "tool_ids": [u["id"] for u in d.get("tool_uses") or ()]}
+        for r in out:
+            r["v2"] = x
+        if d.get("phase") == "request":
+            prompt = findings_v2._tailer(body) and findings_v2._prompt(body)
+            return [{**self._base(e, rec, "UserPromptSubmit"), "prompt": prompt[0], "v2": x}] if prompt else []
+        calls = []   # the message's tool uses in order; each block says how many came before it (`after`)
+        if body is None:
+            blocks = [] if d.get("tool_uses") else [{"kind": "committed", "text": "said something here; it is "
+                                                     "committed, and this viewer reads no content"}]
+        else:
+            blocks = []
+            for s in parsers.said(*findings_v2._message(body, d)):
+                if s["text"] or s["kind"] == "reasoning":
+                    blocks.append({"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] ==
+                                   "reasoning" else "text", "text": s["text"], "form": s["form"], "after": len(calls)})
+                calls += s["tools"]
+        turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "calls": calls,
+                 "message_id": d.get("exchange_id"), "v2": x}]
+        return (turn if blocks else []) + out
+
+
+CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only certain files",
+               "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
 
 
 def review(records, rep, verdict):
@@ -490,7 +650,7 @@ def review(records, rep, verdict):
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
-           "incidents": [],
+           "incidents": [], "constraints": [], "constraint_holds": 0,
            "state": "open", "first": {}}
     for rec in records:
         e = rec["event"]
@@ -500,9 +660,14 @@ def review(records, rep, verdict):
         key = None
         if t == "run.registered":
             out["agent"] = (d.get("agent") or {}).get("name") or "agent"
+            if d.get("analyzes"):
+                out["analyzes"] = d["analyzes"]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
+            out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
+        elif t == "constraint.added":
+            out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
             who = _who(d["approver_identity"]) if d.get("approver_identity") else d.get("approver")
             out["approvals"].append({"decision": d.get("decision"), "tool_use_id": d.get("tool_use_id"),
@@ -514,6 +679,7 @@ def review(records, rep, verdict):
         elif t == "capture.gap" or t.startswith("reconcile."):
             key = "gap:" + (d.get("kind") or t)
             out["gaps"][key[4:]] += 1
+            out.setdefault("gap_words", {})[key[4:]] = GAP_WORDS.get(key[4:], key[4:])
         elif t == "incident.opened":
             out["incidents"].append({"incident_id": d.get("incident_id"), "trigger": d.get("trigger"), "seq": e.get("seq"),
                                      "rule_ids": d.get("rule_ids") or [], "mode": d.get("mode"),
@@ -539,21 +705,24 @@ def review(records, rep, verdict):
 
 
 def dev_content_source():
-    """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions, read with
-    `content_get` (the dev signer keeps them and grants this user content_read: service.dev_content). Each read is one
-    signed content.accessed record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for
-    good, said once; while the signer is down it reads nothing."""
+    """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
+    model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
+    service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
+    doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed
+    record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the
+    signer is down it reads nothing."""
+    from .why.signed import vault_content
     state = {"client": None, "off": False}
 
-    def read(run_id, seqs):
+    def read(run_id, records):
         if state["off"]:
             return {}
         out = {}
         try:
             state["client"] = state["client"] or Client()
-            for i in range(0, len(seqs), 1000):
-                got = state["client"].call("content_get", run_id=run_id, seqs=seqs[i:i + 1000], purpose="tracekit view")
-                out.update((x["seq"], x["content"]) for x in got["items"] if "content" in x)
+            # content redaction changed opens no commitment: not shown as what the record holds
+            out = {seq: content for seq, content, opened in vault_content(state["client"], records, "tracekit view")
+                   if opened}
         except RPCError as e:
             state["off"] = True
             print(f"tracekit view: calls show their rules, not their arguments: the dev signer keeps none for this "
@@ -564,13 +733,35 @@ def dev_content_source():
     return read
 
 
+def dev_analysis():
+    """StoreFeed's `analyze` for the dev signer's store: tracekit analyze --v2 over a final run, its content read with
+    content_get and each item opening its record's commitment (why.signed.vault_content). A signer that gives no
+    content leaves the checks that read it not checkable; one whose content does not open its record is an alert."""
+    from .why.signed import vault_content
+
+    def run(records):
+        client = Client()
+        try:
+            def content(recs):
+                try:
+                    yield from vault_content(client, recs, "tracekit view")
+                except (RPCError, SignerUnavailable, OSError):
+                    return
+            return findings_v2.analyze(records, content)
+        finally:
+            client.close()
+    return run
+
+
 class StoreFeed:
     """What observe.make_handler serves (records, base, lock, verify()), from the store of a v2 signer's config.
     `on_run(tenant, run_id, records, reasons)`: called once a client run's records are on the tape, each time it grows
-    and verifies (records), and when it fails verification (None): mirror_run. `content(run_id, run_seqs)`: the
-    retained arguments of those decisions ({run_seq: arguments}), for the tape to show (dev_content)."""
+    and verifies (records), and when it fails verification (None): mirror_run. `content(run_id, records)`: the
+    retained arguments of those decisions and content of those model exchanges ({run_seq: content}), for the tape to
+    show (dev_content_source; EvidenceAlert when the content does not open its record: a CONTENT NOT SHOWN alert).
+    `analyze(records)`: a final run's findings (dev_analysis), once per run."""
 
-    def __init__(self, cfg, log_vkey=None, on_run=None, content=None):
+    def __init__(self, cfg, log_vkey=None, on_run=None, content=None, analyze=None):
         self.cfg, self.pg = cfg, bool(cfg.get("storage"))
         self.store = "the Postgres store" if self.pg else os.path.join(cfg["data_dir"], "store")
         self.note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if self.pg else DEV_NOTE
@@ -588,35 +779,71 @@ class StoreFeed:
         self.records, self.base, self.lock = [], 0, threading.Condition()
         # past it the oldest records leave the live view (base counts them), as observe.Feed's
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
-        self.runs = {}   # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report}
+        # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report, "checked": when
+        # its last check ended, "took": the CPU time it took}
+        self.runs = {}
+        self.memo = set()   # verify.v2's memo: a run is checked again at each checkpoint, its new records only in full
+        self.due = 0   # when a run put off (BACKOFF, RECHECK_S) is due, so _watch refreshes with no store change
+        # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
+        # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
+        self.latest, self.kept = {}, collections.OrderedDict()
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
-        self.on_run, self.content = on_run, content
+        self.stopped = None   # why the watch thread ended, when it did: the page then says verification stopped
+        self.on_run, self.content, self.analyze = on_run, content, analyze
+        # (tenant, run_id) -> the newest records of a run to mirror (on_run), off the watch thread: the tape never
+        # waits for a graph, and a run that grew twice meanwhile is mirrored once
+        self._mirror, self._mlock = {}, threading.Condition()
+        self._stop, self.threads = threading.Event(), []   # close()
+        if on_run:
+            self.threads.append(threading.Thread(target=self._mirrors, daemon=True))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
-        threading.Thread(target=self._watch, daemon=True).start()
+        self.threads.append(threading.Thread(target=self._watch, daemon=True))
+        for t in self.threads:
+            t.start()
+
+    def close(self):
+        """Stop the watch and mirror threads, once a refresh or mirror under way ends: a feed over a store that goes
+        away (a test's) then never reports it."""
+        self._stop.set()
+        with self._mlock:
+            self._mlock.notify_all()
+        for t in self.threads:
+            t.join()
 
     def _watch(self):
         seen = None
-        while True:
-            stamp = []
-            for name in () if self.pg else ("records.jsonl", NOTE):
-                try:
-                    st = os.stat(os.path.join(self.store, name))
-                    stamp.append((st.st_size, st.st_mtime_ns))
-                except FileNotFoundError:
-                    stamp.append(None)
-            # lean: a Postgres store is read again every POLL_S; compare its latest note first if that loads the server
-            if stamp != seen or self.pg:
-                seen = stamp
-                try:
-                    self.refresh()
-                except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
-                    print(f"tracekit view: cannot read {self.store}: {e}", file=sys.stderr, flush=True)
-            time.sleep(POLL_S)
+        try:
+            while not self._stop.is_set():
+                stamp = []
+                for name in () if self.pg else ("records.jsonl", NOTE):
+                    try:
+                        st = os.stat(os.path.join(self.store, name))
+                        stamp.append((st.st_size, st.st_mtime_ns))
+                    except FileNotFoundError:
+                        stamp.append(None)
+                # lean: a Postgres store is read again every POLL_S; compare its latest note first if that loads it
+                if stamp != seen or self.pg or time.time() >= self.due:
+                    seen = stamp
+                    try:
+                        self.refresh()
+                    except Exception as e:   # the store unreadable, or a bug: said, and tried again
+                        print(f"tracekit view: cannot check {self.store}: {e!r}", file=sys.stderr, flush=True)
+                self._stop.wait(POLL_S)
+        except BaseException as e:   # whatever ends the watch but close(): the page stops saying LIVE
+            self.stopped = f"verification stopped ({type(e).__name__}: {e}): no run is checked until tracekit view " \
+                           "restarts"
+            raise
 
     def refresh(self):
-        """Verify every run that grew since it was last verified and a checkpoint now covers."""
+        """Verify every run with records a checkpoint covers that were not verified yet: a run still being written is
+        shown up to the newest checkpoint, not only once it stops, and checked again no sooner than BACKOFF times its
+        last check's time after it. A run that did not grow is checked again RECHECK_S after its last check (the run
+        checked longest ago, one a pass), so a later edit of its records shows."""
+        now, stale = time.time(), None
+        due = [now + RECHECK_S]
+        self.due = due[0]   # a store that cannot be read is tried again when it changes, not every POLL_S
         r = reader(self.cfg)
         try:
             note = r.checkpoint_latest()
@@ -624,24 +851,63 @@ class StoreFeed:
                 r.close()
                 r = reader(self.cfg)   # opened after the note: holds every record it covers
             for key, run in list(r.runs.items()):
-                if note and run["seqs"][-1] < note[0] and len(run["seqs"]) != self.runs.get(key, {}).get("count"):
-                    self._verify(r, note[1], key, len(run["seqs"]))
+                covered = bisect.bisect_left(run["seqs"], note[0]) if note else 0   # its records the note covers
+                state = self.runs.get(key, {})
+                if covered and covered != state.get("count"):
+                    at = state.get("checked", 0) + BACKOFF * state.get("took", 0)
+                    if at > now:
+                        due.append(at)
+                    else:
+                        self._check(r, note[1], key, covered)
+                elif covered:
+                    due.append(state["checked"] + RECHECK_S)
+                    if state["checked"] + RECHECK_S <= now and (stale is None or state["checked"] < stale[1]):
+                        stale = key, state["checked"], covered
                 elif key not in self.runs and key[1] != SIGNER_RUN[1]:   # no checkpoint covers it yet: listed as pending
-                    first = next(iter(r.iter_run(*key)), None)
-                    name = first and ((first["event"].get("data") or {}).get("agent") or {}).get("name")
+                    # its first record, unverified: the agent's name only if it is one
+                    name = parsers._get(next(iter(r.iter_run(*key)), None), "event", "data", "agent", "name")
+                    name = name if isinstance(name, str) else None
                     with self.lock:
                         self.runs[key] = {"count": 0, "shown": 0, "failed": None}
-                        self.records.append({**self.tr._base({"run_id": key[1]}, {}, "tk_run"), "tenant": key[0],
-                                             "review": {"verdict": "pending", "agent": name, "label": OPERATOR_SIDE}})
-                        self._trim()
-                        self.lock.notify_all()
+                        self._append([{**self.tr._base({"run_id": key[1]}, {}, "tk_run"), "tenant": key[0],
+                                       "analysis": True, "review": {"verdict": "pending", "agent": name,
+                                                                    "label": OPERATOR_SIDE}}], key)
+            if stale:
+                self._check(r, note[1], stale[0], stale[2])
         finally:
             r.close()
+        self.due = min(due)
+
+    def _check(self, reader, note, key, count):
+        """_verify, where an error gives the run a "not checked" row and is tried again as a run that did not grow
+        is: one run never stops the others being checked."""
+        try:
+            self._verify(reader, note, key, count)
+        except Exception as x:
+            why = f"{type(x).__name__}: {x}"[:1024]
+            print(f"tracekit view: run {key[1]} not checked: {why}", file=sys.stderr, flush=True)
+            row = self._own({"run_id": key[1]}, "high", f"RUN {key[1]} · NOT CHECKED: error",
+                            f"{OPERATOR_SIDE}\n\nThe viewer could not check this run ({why}); it tries again in "
+                            f"{RECHECK_S // 60} minutes or when the run grows.", "VERIFY")
+            row["review"] = {"verdict": "error", "integrity": "NOT CHECKED", "assurance": "none",
+                             "label": OPERATOR_SIDE, "agent": None}
+            with self.lock:
+                self.runs[key] = dict(self.runs.get(key) or {"count": 0, "shown": 0}, count=count,
+                                      failed="NOT CHECKED (error)", checked=time.time())
+                self._append([dict(row, tenant=key[0])], key)
 
     def _verify(self, reader, note, key, count):
         tenant, run_id = key
-        rep, code, text = check(reader, tenant, run_id, note, self.trust, os.path.join(self.tmp, "run.tkb"))
-        state = self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}
+        t = time.thread_time()   # its own CPU time: not the time it waited for the mirror thread
+        rep, code, text = check(reader, tenant, run_id, note, self.trust, os.path.join(self.tmp, "run.tkb"), self.memo)
+        if len(self.memo) > MEMO_MAX:   # lean: forgets every run's records at once; an LRU if big stores re-check often
+            self.memo.clear()
+        state = dict(self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}, checked=time.time(),
+                     took=time.thread_time() - t)
+        if not code and count == state["count"] and not state["failed"]:   # checked again, unchanged: nothing new
+            with self.lock:
+                self.runs[key] = state
+            return
         e = {"run_id": run_id}
         if code:
             rv = {"verdict": "failed", "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
@@ -650,43 +916,157 @@ class StoreFeed:
                 e["ts"] = collections.deque(reader.iter_run(tenant, run_id), 1)[0]["event"]["ts"]
             except (ValueError, KeyError, IndexError, TypeError, StorageCorrupt):
                 pass
-            new = [self.tr.alert(e, {}, "high", f"RUN {run_id} · Integrity {rep.integrity}",
-                                 f"{OPERATOR_SIDE}\n\n{text}", "VERIFY")]
-            state = dict(state, count=count, failed=rep.integrity)
+            new = [self._own(e, "high", f"RUN {run_id} · Integrity {rep.integrity}", f"{OPERATOR_SIDE}\n\n{text}",
+                             "VERIFY")]
+            # its rows of when it verified leave the tape (shown again from the start, findings too, if it verifies
+            # again)
+            state = dict(state, count=count, shown=0, failed=rep.integrity, analyzed=False)
             records = None   # a mirror of it, from when it verified, goes
         else:
-            records = list(reader.iter_run(tenant, run_id))
+            records = list(itertools.islice(reader.iter_run(tenant, run_id), count))   # what the checkpoint covers
             e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
-            seqs = [r["event"]["run_seq"] for r in records[state["shown"]:] if self.content
-                    and r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")]
-            if seqs:   # one content_get, one content.accessed record, per run and refresh
-                self.tr.content.update({(run_id, s): c for s, c in self.content(run_id, seqs).items()})
-            new = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
+            want = [r for r in records[state["shown"]:] if self.content and (
+                r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")
+                or r["event"]["type"] == "model.exchange" and (r["event"].get("data") or {}).get("content_digest"))]
+            from .why.signed import EvidenceAlert
+            new = []
+            if want:   # content_get per run and refresh, each a content.accessed record
+                try:
+                    self.tr.content.update({(run_id, s): c for s, c in self.content(run_id, want).items()})
+                except EvidenceAlert as x:   # the vault's content does not open its record: none of it shown
+                    new = [self._own(e, "high", "CONTENT NOT SHOWN", str(x)[:1024], "ALERT")]
+            new += [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
             rv = review(records, rep, "verified")
-            summary = (f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
+            summary = (f"tenant {tenant} · the signer's own records" if run_id == SIGNER_RUN[1] else
+                       f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
                        + (", ".join(f"{v} {n}" for v, n in sorted(rv["decisions"].items())) or "none")
                        + f" · approvals {len(rv['approvals'])} · gaps {sum(rv['gaps'].values())}")
-            new.append(self.tr.alert(e, records[-1], "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance "
-                                     f"{rv['assurance']}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}", "VERIFY"))
-            state = dict(state, count=count, shown=len(records), failed=None)
+            # the verifier's report is a row when the run is first shown and when it is final; as a run still being
+            # written grows to each checkpoint, only its review (the run list's verdict and counts) is updated
+            new.append(self._own(e, "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance {rv['assurance']}",
+                                 f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}", "VERIFY")
+                       if not state["shown"] or rv["state"] == "final" or state.get("failed") else
+                       {**self.tr._base(e, {}, "tk_run"), "analysis": True})
+            # a findings run is the analysis of another run: its signed findings are shown, never analysed again
+            analyze = bool(self.analyze) and rv["state"] == "final" and not rv.get("analyzes") \
+                and not state.get("analyzed")
+            state = dict(state, count=count, shown=len(records), failed=None,
+                         analyzed=state.get("analyzed") or analyze)
         new[-1]["review"] = rv
         if key[1] == SIGNER_RUN[1]:
             new[-1].update(signer=True, agent="signer")
         with self.lock:
             self.runs[key] = state
-            self.records.extend(dict(x, tenant=tenant) for x in new)
-            self._trim()
-            self.lock.notify_all()
+            if code:   # its records, and the reports and findings of when it verified
+                for i, x in enumerate(self.records):
+                    if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key:
+                        self.records[i] = observe.RETRACTED
+            self._append([dict(x, tenant=tenant) for x in new], key)
         if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape
+            with self._mlock:
+                self._mirror[key] = records
+                self._mlock.notify()
+        if not code and analyze:   # after its rows too: the analysis reads the run's content, which takes a while
+            found = self._findings(e, records)
+            row = {**self.tr._base(e, {}, "tk_run"), "analysis": True,
+                   "review": dict(rv, findings=found[-1].pop("summary"))}
+            with self.lock:
+                self._append([dict(x, tenant=tenant) for x in found + [row]], key)
+
+    def _mirrors(self):
+        """The mirror thread: on_run for each run that changed, with its newest records. A run is imported whole each
+        time, so a growing run is mirrored again no sooner than BACKOFF times its last mirror's time after it; a run
+        that failed or left the live view (records None) loses its mirror at once."""
+        # lean: BACKOFF counts the import, not the why server's analysis of it on its own thread (about as long again);
+        # count both if a growing run's graph costs too much CPU
+        due = {}   # (tenant, run_id) -> when it may be mirrored again
+        while True:
+            with self._mlock:
+                while True:
+                    if self._stop.is_set():
+                        return
+                    now = time.time()
+                    ready = next((k for k, v in self._mirror.items() if v is None or due.get(k, 0) <= now), None)
+                    if ready:
+                        break
+                    self._mlock.wait(min(due[k] for k in self._mirror) - now if self._mirror else None)
+                records = self._mirror.pop(ready)
+            t, cpu = time.time(), time.thread_time()
             try:
-                self.on_run(tenant, run_id, records, self.tr.reasons)
+                self.on_run(*ready, records, self.tr.reasons)
             except Exception as e:   # the run's own view does not depend on its graph
-                print(f"tracekit view: no graph for run {run_id}: {e}", file=sys.stderr, flush=True)
+                print(f"tracekit view: no graph for run {ready[1]}: {e}", file=sys.stderr, flush=True)
+            due = {k: v for k, v in due.items() if v > t}   # only runs still put off
+            due[ready] = time.time() + BACKOFF * (time.thread_time() - cpu)
+
+    def _own(self, e, sev, title, text, tape):
+        """A row the viewer makes (a verifier report, a finding of its analysis): no record of the log, so no seq and
+        no hash, and labelled as the viewer's analysis."""
+        return {**self.tr.alert(e, {}, sev, title, text, tape), "analysis": True}
+
+    def _findings(self, e, records):
+        """A final run's findings as FINDING alerts, each with its cited records; the last carries the run review's
+        findings and monitorability lines (`summary`)."""
+        try:
+            out = self.analyze(records)
+        except Exception as x:   # an EvidenceAlert: the vault's content does not open its record
+            return [{**self._own(e, "high", "FINDINGS NOT RUN", str(x)[:1024], "ALERT"),
+                     "summary": {"line": f"not run: {str(x)[:256]}"}}]
+        alerts = []
+        for f, d in zip(out["findings"], out["shown"]["details"]):
+            v = f["verdict"]
+            why, todo = findings_v2.WHY[v["rule"]]
+            alerts.append({**self._own(
+                e, {"critical": "high", "high": "high", "medium": "med"}.get(v["severity"], v["severity"]),
+                f"FINDING {v['rule']} · {findings_v2.TITLES[v['rule']]}",
+                f"{d['what']}\nWhy it matters: {why}\nWhat to do: {todo}\nRelied on: {', '.join(d['tiers'])}",
+                "FINDING"), "v2": {"finding": v, "cites": f["cites"]}})
+        actions, readable = findings_v2.monitorability(out["coverage"]["verdict"])
+        cov = out["coverage"]["verdict"]
+        # each check that could not run, in words (its reason code is the tooltip)
+        gaps = [{"rule": r, "code": g["reason"], "n": g["n"],
+                 "text": findings_v2.REASONS.get(g["reason"], (g["reason"],))[0]}
+                for r, c in cov["checks"].items() for g in c["not_checkable"]]
+        said = out["summary"].split(": ", 1)[1]
+        if gaps:   # "no problems found" only when every check could run
+            said = said.replace("no problems found", "nothing found in what could be checked")
+        line = {"line": said, "not_checkable": gaps, "monitorability": (
+            f"reasoning readable before {readable} of {actions} actions · "
+            + ", ".join(f"{k} {n}" for k, n in cov["reasoning"].items()))}
+        alerts.append({**self._own(e, "info", "FINDINGS · " + said,
+                                   f"{line['monitorability']}\nnot checkable: "
+                                   + ("".join(f"\n  {g['rule']} for {g['n']}: {g['text']}" for g in gaps) or "none")
+                                   + "\nfindings are the analyzer's opinion of the run, not part of its integrity",
+                                   "FINDING"), "summary": line,
+                       "v2": {"effects": out["shown"].get("effects", {})}})   # each sensor effect's call (TK-X206)
+        return alerts
+
+    def _append(self, rows, key):
+        """Under self.lock: add `rows`, the last of them run `key`'s review, and wake the event streams."""
+        self.records.extend(rows)
+        self.latest[key] = rows[-1]
+        self.kept.pop(key, None)
+        self._trim()
+        self.lock.notify_all()
 
     def _trim(self):
-        """Under self.lock: drop the oldest records past max_records, counted in base (what /api/snapshot calls dropped)."""
+        """Under self.lock: drop the oldest records past max_records, counted in base (what /api/snapshot calls dropped);
+        a run's latest review among them goes to kept, which keeps KEPT_MAX runs' and drops a failed run's last, and
+        the run's graph goes (on_run), so the graphs too are of the runs on the live view only."""
         over = len(self.records) - self.max_records
         if over > 0:
+            for x in self.records[:over]:
+                key = x is not observe.RETRACTED and x.get("review") and (x.get("tenant"), x["session_id"])
+                if key and self.latest.get(key) is x:
+                    del self.latest[key]
+                    self.kept[key] = x
+                    if self.on_run and key[1] != SIGNER_RUN[1]:
+                        with self._mlock:
+                            self._mirror[key] = None
+                            self._mlock.notify()
+            while len(self.kept) > KEPT_MAX:
+                self.kept.pop(next((k for k, x in self.kept.items() if x["review"]["verdict"] != "failed"),
+                                   next(iter(self.kept))))
             del self.records[:over]
             self.base += over
 
@@ -695,13 +1075,15 @@ class StoreFeed:
         with self.lock:
             runs = {k: s for k, s in self.runs.items() if tenant is None or k[0] == tenant}
             return (sum(s["shown"] for s in runs.values() if not s["failed"]),
-                    [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]], None)
+                    [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]]
+                    + [self.stopped] * bool(self.stopped), None)
 
 
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):
     """Import one verified v2 run as a why run under `why_dir` (why.import_v2, from the records only), replacing an
     earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs; with `records` None (the
-    run failed verification), remove its import. A reader sees the old import or the new one, never part of either."""
+    run failed verification), remove its import. A reader sees the old import, the new one or, between the two
+    renames, neither: never part of one."""
     # lean: the whole run is imported again each time it grows; import only the new records if long runs make it slow
     from .why.import_v2 import _target, import_records
     target = _target(why_dir, run_id, tenant)
@@ -724,12 +1106,12 @@ def write_trust(path, vkeys):
     return path
 
 
-def check(reader, tenant, run_id, note, trust, out):
+def check(reader, tenant, run_id, note, trust, out, memo=None):
     """(report, exit code, printed report) of verify.v2 on the run's bundle, exported from `reader` with `note` to
-    `out`."""
+    `out`; `memo`: verify.v2's, kept across checks."""
     try:
         export(reader, tenant, run_id, note, out)
-        rep, code = v2.verify(out, trust)
+        rep, code = v2.verify(out, trust, memo=memo)
     except ValueError as e:   # the store does not match its own checkpoint
         rep, code = v2.Report(), v2.EXIT_FAIL
         rep.integrity, rep.assurance = "FAILED", "none"
@@ -981,8 +1363,9 @@ def main(argv=None):
                 return code
             feed = observe.Feed(ledger, source="bundle" if a.bundle else None)
         else:
-            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, None if a.config or a.data_dir
-                                                        else dev_content_source())
+            dev = not (a.config or a.data_dir)
+            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
+                                                        dev_analysis() if dev else None)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -995,6 +1378,7 @@ def main(argv=None):
     print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
           + (f"  ({len(runs.logs)} Postgres logs, read-only)" if runs else
+             f"  (bundle: {a.bundle}, verified, read-only)" if a.bundle else
              f"  (ledger: {feed.path}, read-only)" if v1 else f"  (why logs alone: {why.root})" if alone else
              f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
     if why and mirror:

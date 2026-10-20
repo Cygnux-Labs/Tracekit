@@ -1,6 +1,7 @@
 # FAQ and limits
 
-Every known limit and trade-off, from all the docs, is listed in one place: [known limits](limits.md).
+Every known limit and trade-off, from all the docs, is listed in one place: [known limits](limits.md). How the whole
+system works, one concept per page: [how Tracekit works](concepts/README.md).
 
 ## What does a verified bundle prove?
 
@@ -11,8 +12,8 @@ that checkpoint (witnesses, Rekor, a monitor). [Reading a verify report](verdict
 ## What can't Tracekit prove?
 
 - **Intent.** A record says a call was made, not why.
-- **That everything was recorded.** An action that crosses no capture layer (a subprocess the hook never sees, app
-  code that skips the adapter, a call outside a gateway that isn't mandatory) leaves no record. The report lists which
+- **That everything was recorded.** An action that crosses no capture layer (a subprocess the hook never sees and
+  no [kernel sensor import](integrations/tetragon.md) covers, app code that skips the adapter, a call outside a gateway that isn't mandatory) leaves no record. The report lists which
   layers ran, the tier of each tool call, and the signed gaps; it never says "complete".
 - **That what the agent reported is true.** In-process capture (tier T1: hooks, adapters, SDKs) proves what the agent
   process *reported*; out-of-process capture (T2: the [LLM gateway](gateway.md), a T2 executor you run) proves
@@ -53,9 +54,9 @@ Details: [threat model: laptop](threat-model-laptop.md#two-properties-kept-apart
 
 ## How much does it slow an agent down?
 
-The only signer numbers committed in this repository are from `eval/e9_signer_perf.py --quick --storage postgres` on
-macOS (12 CPUs, Python 3.11, Postgres store; `eval/results/e9_signer_perf_postgres.json`), measured through the real
-Unix socket with the Python client:
+The signer numbers below are from `eval/e9_signer_perf.py --quick --storage postgres` on macOS (12 CPUs, Python 3.11,
+Postgres store; `eval/results/e9_signer_perf_postgres.json`; the file store's are in `eval/results/e9_signer_perf.json`),
+measured through the real Unix socket with the Python client:
 
 | Measure | Result |
 |---|---|
@@ -64,7 +65,7 @@ Unix socket with the Python client:
 | throughput, 4 client processes for 5 s, ack-on-write | 3,954 events/s |
 
 The gates (p99 ≤ 5 ms added per tool call at ack-on-write, ≥ 1,000 events/s) are enforced on Linux only; on macOS,
-and with `--quick`, the numbers are informational, and this run missed the latency gate. Run `make eval` on Linux
+and with `--quick`, the numbers are informational, and this Postgres run missed the latency gate. Run `make eval` on Linux
 (it runs E9 `--quick`) or `eval/e9_signer_perf.py` for your own machine. Not measured: a separate-user signer, the
 HTTPS transport, and throughput across hosts ([evaluation](evaluation.md#what-is-not-measured)).
 
@@ -86,6 +87,21 @@ signer closes the run after its idle timeout. `eval/e14_outage.py` checks each o
 
 Yes. Verifiers are frozen per format version and formats only grow: a v1 bundle verifies with `tracekit verify
 --key`, a v2 bundle with `--trust`, and a v1 ledger bridged into a v2 log with `--v1-ledger` ([migration](migration.md)).
+
+## What does `UNVERIFIABLE (needs tracekit >= x)` mean?
+
+The bundle was written by a newer Tracekit than your verifier; nothing failed. Verify it with a newer verifier, using
+your own paths and the version the message names:
+
+```sh
+uvx --from "tracekit-ai>=1.4.0" tracekit verify run.tkb --trust trust.json
+npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json
+```
+
+or open https://cygnux-labs.github.io/Tracekit/verify/ and choose the bundle and your trust config: the page verifies
+them in your browser and sends nothing ([verdicts](verdicts.md#a-bundle-that-needs-a-newer-verifier)). From 1.4.0,
+what an older verifier can leave unread is non-critical: a 1.4.0 verifier verifies a later bundle and names what it
+didn't interpret on a `not interpreted` warning.
 
 ## Does my data leave the machine?
 

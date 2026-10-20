@@ -26,7 +26,9 @@ wires every framework it finds installed: OpenAI Agents SDK tools, LangGraph / L
 `create_agent` builds), Claude Agent SDK hooks, MCP `ClientSession.call_tool`, Browser Use's `Tools` (which an `Agent`
 builds), CrewAI's tool hooks, Pydantic AI `Agent`s (the `Tracekit` capability), and the OpenAI, Anthropic and Google Gen AI clients' model calls. Each tool call is decided by the signer
 before it runs (`allow`, `deny`, `ask`) and recorded after. A denied call reaches the model as a refusal and the agent
-goes on. Calling it again returns the same run. With none of these installed it warns and does nothing. TypeScript:
+goes on. Each model response is committed to and, with the signer's content vault on (the dev signer keeps it), kept
+in the vault, so `tracekit analyze --v2` can read what the model said before and after each call ([findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)).
+Calling it again returns the same run. With none of these installed it warns and does nothing. TypeScript:
 `const tk = await instrument()` from `@cygnuxlabs/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents
 JS) to the framework.
 
@@ -82,7 +84,9 @@ refuses the call. An unanswered approval expires after an hour.
 
 You don't start anything yourself. The first client that needs a signer starts one in the background and later
 clients reuse it (`tracekit up` / `tracekit down` do the same by hand). The signer's keys and store live in your user's
-data dir. It listens on a Unix socket in a private runtime dir. On Windows it listens on a loopback TCP port instead,
+data dir, one per `HOME`. It listens on a Unix socket in a private runtime dir; where two of your `HOME`s share that
+dir (macOS's `/tmp` fallback for a long `HOME`, Linux's `$XDG_RUNTIME_DIR`), each gets its own signer, the second in a
+sibling dir named after its data dir. On Windows it listens on a loopback TCP port instead,
 and publishes the port and a token in `%LOCALAPPDATA%\tracekit\run\endpoint.json`, which only you can read. Each side
 proves it holds the token before any request is answered.
 

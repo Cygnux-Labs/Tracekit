@@ -1,4 +1,4 @@
-# Walkthrough: Tracekit 1.2.0 end to end
+# Walkthrough: Tracekit end to end (recorded on 1.2.0)
 
 Everything on this page was recorded on a clean install of 1.2.0 (macOS, Python 3.9 and 3.11), with no API key: the
 commands are real, the output is real (paths shortened to `~/demo`), and the screenshots are the viewer as it ran.

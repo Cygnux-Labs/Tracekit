@@ -17,8 +17,9 @@ http:
   key: tls/privkey.pem
   authenticators: [token]      # also k8s_sa, mtls
   tokens: tokens.json          # named tokens, managed below
-authorize:
-  "token:*": [register_run, decide, complete, state_write, model_event, close_run, status, read]
+authorize:   # + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
+  "token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
+              state_write, status, read, observe, constraint_add]   # observe, constraint_add: the coding-agent hooks
 tenants:
   "token:build-agent": acme    # or give the token a tenant with --tenant
 ```
@@ -50,7 +51,9 @@ tracekit init --remote https://tracekit.example:8443 --v2 --token-file /etc/trac
 
 This wires the v2 Claude Code hooks to the remote signer and prints the environment SDK clients need:
 `TRACEKIT_SIGNER` (the URL), `TRACEKIT_SIGNER_TOKEN_FILE` (read on every call: rotate by rewriting the file) and
-`TRACEKIT_SIGNER_CA` (the CA the signer's certificate must chain to).
+`TRACEKIT_SIGNER_CA` (the CA the signer's certificate must chain to). The hooks record each prompt (`observe`) and send
+the live constraints it states (`constraint_add`): without both grants the hook reports an error at each prompt,
+records none and holds no constraint.
 
 ## What changes in the evidence
 

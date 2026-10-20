@@ -1,0 +1,51 @@
+# The agent in a Kubernetes agent-sandbox Sandbox (agents.x-k8s.io/v1beta1; docs/integrations/agent-sandbox.md). The
+# pod holds no Tracekit key and no API token: it sends the signer in namespace tracekit a projected token of audience
+# tracekit-signer, so the signer knows it as k8s_sa:system:serviceaccount:agents:support-agent. Before applying, create
+# namespace agents and in it ConfigMaps `support-agent` (agent.py) and `tracekit-ca` (ca.crt, the CA of the signer's
+# certificate).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: support-agent
+  namespace: agents
+automountServiceAccountToken: false
+---
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: support-agent
+  namespace: agents
+spec:
+  podTemplate:
+    metadata:
+      labels: {app: support-agent}
+    spec:
+      serviceAccountName: support-agent
+      automountServiceAccountToken: false   # no API token in the pod; the projected token below is for Tracekit only
+      # runtimeClassName: gvisor            # a RuntimeClass your nodes have (gVisor, Kata, Kata with Firecracker)
+      containers:
+        - name: agent
+          image: tracekit-signer:local      # any image with tracekit-ai installed; pin yours by digest
+          command: [python, /agent/agent.py]
+          env:
+            - {name: TRACEKIT_SIGNER, value: "https://tk.tracekit.svc:8443"}
+            - {name: TRACEKIT_SIGNER_TOKEN_FILE, value: /var/run/secrets/tracekit/token}
+            - {name: TRACEKIT_SIGNER_CA, value: /etc/tracekit-ca/ca.crt}
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: agent, mountPath: /agent, readOnly: true}
+            - {name: tracekit-token, mountPath: /var/run/secrets/tracekit, readOnly: true}
+            - {name: tracekit-ca, mountPath: /etc/tracekit-ca, readOnly: true}
+      volumes:
+        - {name: agent, configMap: {name: support-agent}}
+        - name: tracekit-token
+          projected:
+            sources: [{serviceAccountToken: {audience: tracekit-signer, expirationSeconds: 3600, path: token}}]
+        - {name: tracekit-ca, configMap: {name: tracekit-ca}}

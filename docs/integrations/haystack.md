@@ -71,6 +71,12 @@ the sub-agent's own hooks decide the calls the sub-agent makes (give it the same
 - **Covers every tool Haystack runs.** `Agent.run` and `Agent.run_async`, sync and async tools, `ComponentTool`,
   `PipelineTool`, `AgentTool` and the tools of a `Toolset` all reach the same hooks.
 
+## What the model said
+
+At `before_tool`, before deciding the calls, the hook records the message: its reasoning (with OpenAI's
+`encrypted_content`), text and tool calls under the ids they are decided by (the one Tracekit gives a call that has
+none). The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - With `raise_on_tool_invocation_failure=True`, a tool that raises ends the agent run before `after_tool`: the calls of

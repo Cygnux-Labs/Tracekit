@@ -86,6 +86,12 @@ no API key): [`examples/v2/llama_index`](../../examples/v2/llama_index/README.md
 - **Decides MCP calls once.** A tool from an MCP server (`llama-index-tools-mcp`) is decided under its LlamaIndex name;
   the `ClientSession` that `instrument()` wires doesn't decide it again.
 
+## What the model said
+
+The gate records each `AgentOutput` before its calls run: its `ThinkingBlock`s (summaries), text and tool calls
+under the `tool_id`s they are decided by. A call decided under the gate's own UUID (a model integration that names
+the call by its tool, or gives no id) is in it without an id, so it pairs by its arguments only. The message itself is kept only when the signer's content vault is on; without it the record holds a commitment. A message that can't be recorded only warns. Which frameworks and providers return readable reasoning, and how to turn it on: [reasoning](../reasoning.md).
+
 ## Not covered
 
 - Only what you gate: an agent or workflow you didn't gate, an agent inside an `AgentWorkflow` you gated only by itself,

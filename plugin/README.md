@@ -1,5 +1,8 @@
 # Tracekit plugin for Claude Code
 
+> **Experimental:** the plugin works and is tested, but may change and gets less hardening than the
+> [stable core](https://github.com/Cygnux-Labs/Tracekit/wiki/Support). The same hooks wired by `tracekit init --dev --v2` are stable.
+
 Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-status`, `/tracekit-verify` and
 `/tracekit-pending`.
 
@@ -22,7 +25,7 @@ policy's decision on it, and your prompts as hashes. In dev mode the signer also
 and the result it was sent, encrypted, for 7 days, so `tracekit view --dev` can show them; `TRACEKIT_DEV_CONTENT=0`,
 set before the dev signer starts, keeps none. Exported bundles hold only the hashes. Everything stays with the local
 signer (dev mode: a store under your own user; system mode: the signer's own user); the plugin sends nothing off the
-machine. Field by field: [privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md).
+machine. Field by field: [privacy](https://github.com/Cygnux-Labs/Tracekit/wiki/Privacy).
 
 ## The plugin or `tracekit init`, not both
 
@@ -76,7 +79,7 @@ tracekit init --dev --v2 --no-hooks
 ```
 
 If the v2 signer has already recorded something, the bridge refuses and the two logs stay separate; both keep
-verifying. Details: [migrating](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/migration.md#laptop-v1--v2-signer).
+verifying. Details: [migrating](https://github.com/Cygnux-Labs/Tracekit/wiki/Migration#laptop-v1--v2-signer).
 
 ## Platforms
 

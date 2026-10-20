@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler
 from . import client
 from .core import now_ts
 from .netserver import Server
+from .wiki import wiki_url
 
 TOKENS_FILE = "ingest-tokens.json"
 MAX_BODY = 1024 * 1024
@@ -45,7 +46,7 @@ ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")   # no ':', so remote:<client>:<run> names one client
 DEPRECATION = ("tracekit ingest is deprecated and is removed in tracekit 0.5: serve remote clients from the v2 signer's "
                "HTTPS transport instead (`tracekit signer token add`, `tracekit init --remote URL --v2`; "
-               "docs/remote-ingest.md)")
+               f"{wiki_url('docs/remote-ingest.md')})")
 RATE_PER_S, BURST = 100.0, 300.0
 MAX_OTLP_RUNS = 4096   # per client: the runs whose OTLP event counter the gateway keeps
 

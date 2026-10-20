@@ -386,10 +386,11 @@ check that the client's per-run context never leaks a call into another run.
 | run set | 3 | yes |
 | run token | 10 | yes |
 | control: own identity, own run | 1 | went through |
+| node async local storage: 8 x 20 calls, calls in another run / runs missing calls | 0 / 0 | - |
 | python asyncio tasks: 8 x 20 calls, calls in another run / runs missing calls | 0 / 0 | - |
 | python threads: 8 x 20 calls, calls in another run / runs missing calls | 0 / 0 | - |
 
-Skipped: node async local storage. Platform: darwin, Python 3.11.15.
+Skipped: none. Platform: darwin, Python 3.11.15.
 <!-- /table -->
 
 ## 4.7 Outage behaviour (E14)
@@ -418,9 +419,9 @@ Latency of a tool call under the partition (scenario d):
 <!-- table e14-partition -->
 | Phase | Calls | p50 ms | p95 ms | added p50 ms | added p99 ms |
 |---|---|---|---|---|---|
-| baseline | 200 | 1.85 | 2.23 | - | - |
-| during | 40 | 1003.18 | 1003.32 | 1001.32 | 1001.58 |
-| after | 200 | 1.8 | 2.04 | -0.06 | 0.57 |
+| baseline | 200 | 1.97 | 2.18 | - | - |
+| during | 40 | 1004.47 | 1006.13 | 1002.5 | 1005.35 |
+| after | 200 | 1.97 | 3.03 | 0.01 | 4.5 |
 
 Client timeout: 1000.0 ms.
 <!-- /table -->
@@ -455,7 +456,7 @@ expects the named check to fail or warn; the clean layout must pass. Without roo
 <!-- table e16 -->
 | Suite | Broken layouts | Flagged | Skipped | Clean layout passes | Checks exercised |
 |---|---|---|---|---|---|
-| system mode layout | 30 | 29 | 1 | yes | D-AGENT-PRIV, D-AGENT-PROBE, D-CLOCK-SKEW, D-CODE-TRUST, D-CONFIG, D-DATA-FS, D-DURABILITY, D-FAIL-MODES, D-HOOKS-PRESENT, D-HOOKS-TIMEOUT, D-HOOKS-VENV, D-KEY-HYGIENE, D-KEYS-DISTINCT, D-KEYS-MODE, D-POLICY-ENGINE, D-POLICY-TRUST, D-PROCESS-BOUNDARY, D-SIGNER-ENV, D-UNIT-HARDENING, D-WITNESS-CONFIGURED, D-WITNESS-FRESH, D-WITNESS-OWNERSHIP |
+| system mode layout | 34 | 33 | 1 | yes | D-AGENT-PRIV, D-AGENT-PROBE, D-ANALYZER-AGENT, D-CLOCK-SKEW, D-CODE-TRUST, D-CONFIG, D-CONTENT-VAULT, D-DATA-FS, D-DURABILITY, D-FAIL-MODES, D-HOOKS-EVENT, D-HOOKS-PRESENT, D-HOOKS-TIMEOUT, D-HOOKS-VENV, D-KEY-HYGIENE, D-KEYS-DISTINCT, D-KEYS-MODE, D-POLICY-ENGINE, D-POLICY-TRUST, D-PROCESS-BOUNDARY, D-SIGNER-ENV, D-THINKING-SUMMARIES, D-UNIT-HARDENING, D-WITNESS-CONFIGURED, D-WITNESS-FRESH, D-WITNESS-OWNERSHIP |
 | Kubernetes manifests | 19 | 19 | 0 | yes | D-K8S-HOST-ACCESS, D-K8S-RUN-AS-USER, D-K8S-SA-TOKEN, D-K8S-SECURITY-CONTEXT, D-K8S-SHARED-VOLUME, D-K8S-SIGNER-DATA, D-K8S-WORKLOAD-IDENTITY, D-K8S-WORKLOADS |
 | Postgres roles | 5 | 5 | 0 | yes | D-PG-READER-ROLES, D-PG-SIGNER-ROLE |
 <!-- /table -->

@@ -140,3 +140,39 @@
 {"tool": "Bash", "args": {"command": "git push origin main:main"}, "expect": "allow", "note": "updating a remote ref with a non-empty source"}
 {"tool": "Bash", "args": {"command": "git push -u origin add-delete-button"}, "expect": "allow", "note": "a branch name containing -delete"}
 {"tool": "Bash", "args": {"command": "git push -o merge_request.draft origin feature"}, "expect": "allow", "note": "a push option whose value contains d"}
+{"tool": "Bash", "args": {"command": "git push origin release-0000000000000000000000000000000000000000:x"}, "expect": "allow", "note": "a branch name ending in forty zeros is not the all-zero object id"}
+{"tool": "Bash", "args": {"command": "git push origin main\nrm -d build"}, "expect": "allow", "note": "a push and, on the next line, another command's -d"}
+{"tool": "Bash", "args": {"command": "git push origin main\necho :b1"}, "expect": "allow", "note": "a push and, on the next line, another command's :word"}
+{"tool": "Bash", "args": {"command": "grep -rn 'Git push --force' docs"}, "expect": "allow", "note": "searching for a force push: an argument keeps its case"}
+{"tool": "Bash", "args": {"command": "echo \"a&\""}, "expect": "allow", "note": "a quoted & is no background job"}
+{"tool": "Bash", "args": {"command": "echo 'x &'"}, "expect": "allow", "note": "a quoted trailing & is no background job"}
+{"tool": "Bash", "args": {"command": "curl 'https://x.example/?a=1&'"}, "expect": "allow", "note": "a URL ending in & is no background job"}
+{"tool": "Bash", "args": {"command": "npm install", "dangerouslyDisableSandbox": false}, "expect": "allow", "note": "a sandboxed call that names the parameter"}
+{"tool": "run_shell_command", "args": {"command": "npm test", "additional_permissions": {"network": false}}, "expect": "allow", "note": "a sandboxed Gemini CLI call that asks for nothing more"}
+{"tool": "Bash", "args": {"command": "launchctl list"}, "expect": "allow", "note": "listing login items"}
+{"tool": "Bash", "args": {"command": "systemctl status nginx"}, "expect": "allow", "note": "a service's status"}
+{"tool": "Bash", "args": {"command": "ls ~/Library/LaunchAgents"}, "expect": "allow", "note": "listing login items"}
+{"tool": "Bash", "args": {"command": "ls .git/hooks"}, "expect": "allow", "note": "listing Git hooks"}
+{"tool": "Bash", "args": {"command": "git config user.name dev"}, "expect": "allow", "note": "ordinary Git config"}
+{"tool": "Bash", "args": {"command": "npm test", "allowed_domains": []}, "expect": "allow", "note": "a sandboxed call with an empty per-command allow list"}
+{"tool": "Bash", "args": {"command": "docker run alpine"}, "expect": "allow", "note": "ordinary container"}
+{"tool": "Bash", "args": {"command": "docker container run alpine"}, "expect": "allow", "note": "uncovered container subcommand"}
+{"tool": "Bash", "args": {"command": "pip install requests"}, "expect": "allow", "note": "configured package source"}
+{"tool": "Bash", "args": {"command": "pip install --index-url https://pypi.org/simple demo"}, "expect": "allow", "note": "explicit standard Python index"}
+{"tool": "Bash", "args": {"command": "npm install --registry=https://registry.npmjs.org demo"}, "expect": "allow", "note": "explicit standard npm registry"}
+{"tool": "Bash", "args": {"command": "pip config set global.index-url https://pypi.org/simple"}, "expect": "allow", "note": "standard Python index setting"}
+{"tool": "Bash", "args": {"command": "npm config set registry https://registry.npmjs.org/"}, "expect": "allow", "note": "standard npm registry setting"}
+{"tool": "Bash", "args": {"command": "history"}, "expect": "allow", "note": "read shell history"}
+{"tool": "Bash", "args": {"command": "cat /var/log/app.log; echo done"}, "expect": "allow", "note": "read a log then run an unrelated command"}
+{"tool": "Bash", "args": {"command": "cat < ~/.bash_history"}, "expect": "allow", "note": "read history through input redirection"}
+{"tool": "Bash", "args": {"command": "sed -n '1,10p' /var/log/app.log"}, "expect": "allow", "note": "read a log with sed"}
+{"tool": "Bash", "args": {"command": "cat /repo/Cookies"}, "expect": "allow", "note": "ordinary project file named Cookies"}
+{"tool": "Bash", "args": {"command": "rm -rf /repo/var/log"}, "expect": "allow", "note": "project path resembling a system-log path"}
+{"tool": "Bash", "args": {"command": "echo 'security dump-keychain'"}, "expect": "allow", "note": "mention a risky command as text"}
+{"tool": "Bash", "args": {"command": "printf 'pip install https://packages.example.test/demo.whl'"}, "expect": "allow", "note": "mention a package URL as text"}
+{"tool": "Bash", "args": {"command": "echo 'docker run --privileged alpine'"}, "expect": "allow", "note": "mention a container option as text"}
+{"tool": "Bash", "args": {"command": "npm publish --registry=https://npm.pkg.github.com/"}, "expect": "allow", "note": "publishing to a chosen registry"}
+{"tool": "Bash", "args": {"command": "docker run alpine ls --privileged"}, "expect": "allow", "note": "an option of the container's command"}
+{"tool": "Bash", "args": {"command": "find /var/log -type f -exec cat {} +"}, "expect": "allow", "note": "read system logs through find"}
+{"tool": "Bash", "args": {"command": "cp -r /var/log /tmp/logs"}, "expect": "allow", "note": "copy system logs out"}
+{"tool": "Bash", "args": {"command": "history -w"}, "expect": "allow", "note": "write shell history to its file"}

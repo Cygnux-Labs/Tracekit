@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 import test_signer_service as ts
 from factories import wait_for
@@ -18,6 +19,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.signer import otel as signer_otel
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
+from tracekit.verify import v2
 
 APP = CallerIdentity("token", "http", True)
 JSON = "application/json"
@@ -115,6 +117,7 @@ class TestImport(Signer):
             if not snapshot:   # replay the log in full
                 shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
             s = self.open()
+            self.assertEqual(s._beats, {})   # no follower sends an OTLP import's run heartbeats: none is awaited
             self.assertEqual(self.post(s, data), (200, {}))
             s.close()
             self.assertEqual(len(self.events()), n, snapshot)
@@ -123,7 +126,9 @@ class TestImport(Signer):
 
     def test_an_idle_import_run_closes_and_goes_final(self):
         s = self.open(idle_s=0, grace_s=0)
-        self.post(s, json.dumps(agent_trace()).encode())
+        rootless = agent_trace()
+        rootless["resourceSpans"][0]["scopeSpans"][0]["spans"].pop()   # its root span not sent (yet)
+        self.post(s, json.dumps(rootless).encode())
         s.sweep(now=time.monotonic() + 1)
         s.sweep(now=time.monotonic() + 2)
         run = [e for e in self.events() if e["run_id"] == f"otel:{TRACE}"]
@@ -132,6 +137,20 @@ class TestImport(Signer):
         self.assertEqual(run[-2]["data"]["reason"], "idle_timeout")
         self.assertNotIn("coverage", run[-1]["data"])   # an import is not reconciled
         self.assertEqual(self.post(s, json.dumps(agent_trace()).encode())[1]["partialSuccess"]["rejectedSpans"], "2")
+
+    def test_a_traces_root_span_closes_its_run(self):
+        """agentgateway sends each MCP request as a trace of its own: a run open per trace until idle_s would spend
+        its open_runs (100) in 100 calls, and every batch after be refused."""
+        s = self.open(grace_s=0)
+        call = {"mcp.method.name": "tools/call", "mcp.target": "everything", "gen_ai.tool.name": "echo",
+                "http.method": "POST", "http.path": "/mcp"}
+        for i in range(150):
+            sp = span(f"{i + 1:016x}", "tools/call", call, parent=None, trace=f"{i + 1:032x}")
+            self.assertEqual(self.post(s, json.dumps(payload(sp, service="agentgateway")).encode()), (200, {}), i)
+        self.assertEqual(len(self.events("run.closing")), 150)
+        self.assertEqual({e["data"]["reason"] for e in self.events("run.closing")}, {"close_run"})
+        s.sweep(now=time.monotonic() + 1)
+        self.assertEqual(len(self.events("run.final")), 150)
 
     def test_deep_json_is_a_400_and_writes_nothing(self):
         s = self.open()
@@ -156,6 +175,33 @@ class TestImport(Signer):
         n = len(self.events())
         self.assertEqual(self.post(s, request(otlp_wire.MAX_ATTRS + 1), "application/x-protobuf")[0], 400)
         self.assertEqual(len(self.events()), n)
+
+    def test_agentgateway_mcp_request_spans_import_as_tool_calls(self):
+        # what agentgateway emits per MCP request (crates/agentgateway/src/telemetry/{log,trc}.rs, mcp/upstream/mod.rs,
+        # httpproxy.rs start_grpc_span): a SERVER span named for the method, with CLIENT children under it
+        call = {"mcp.method.name": "tools/call", "mcp.target": "everything", "gen_ai.tool.name": "echo"}
+        req = {"gateway": "bind/3000", "listener": "listener0", "http.method": "POST", "http.host": "localhost:3000",
+               "http.path": "/mcp", "http.status": 200, "mcp.session.id": "4f6c1c7e-1d4e-4d0a-9a43-0b7c0e3c2b11"}
+        spans = [span("aaaaaaaaaaaaaaaa", "tools/call", {**req, **call}, parent=None, end=12),
+                 span("bbbbbbbbbbbbbbbb", "Guardrail", {**call, "agentgateway.outbound.kind": "Policy",
+                                                        "agentgateway.outbound.subtype": "Guardrail", "http.method": "POST",
+                                                        "http.host": "127.0.0.1",
+                                                        "http.path": "/agentgateway.dev.ext_mcp.ExtMcp/CheckRequest",
+                                                        "grpc.status": 0}, parent="aaaaaaaaaaaaaaaa", start=1, end=2),
+                 span("cccccccccccccccc", "tools/call everything_echo", {**call, "agentgateway.outbound.kind": "Primary",
+                                                                         "agentgateway.outbound.subtype": "Mcp"},
+                      parent="aaaaaaaaaaaaaaaa", start=3, end=11),
+                 span("dddddddddddddddd", "tools/call", {**req, **call, "mcp.error.code": -32001,
+                                                         "mcp.error.message": "denied by policy: R-WIPE"},
+                      parent=None, start=20, end=21, trace="7" * 32),
+                 span("eeeeeeeeeeeeeeee", "tools/list", {**req, "mcp.method.name": "tools/list"}, parent=None)]
+        for sp in spans:
+            sp["kind"] = 3 if sp["name"] in ("Guardrail", "tools/call everything_echo") else 2
+        status, out = self.post(self.open(), body(*spans, service="agentgateway"))
+        self.assertEqual((status, out), (200, {}))
+        self.assertEqual([(e["span_id"], e["data"]["name"], e["tier"]) for e in self.events("tool.call")],
+                         [("aaaaaaaaaaaaaaaa", "mcp:everything/echo", "T3"), ("dddddddddddddddd", "mcp:everything/echo", "T3")])
+        self.assertEqual([e["data"]["ok"] for e in self.events("tool.result")], [True, False])
 
     def test_span_count_cap(self):
         s = self.open(otlp={"max_spans": 1})
@@ -237,8 +283,17 @@ class TestExport(Signer):
         out = os.path.join(self.dir, "run.tkb")
         self.assertEqual(cli.main(["export", "--v2", "--config", cfg, "--run", f"otel:{TRACE}", "--otel", "-o", out]), 0)
         with open(os.path.join(self.dir, "run.otel.json")) as f:
-            spans = json.load(f)["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            doc = json.load(f)
+        spans = doc["resourceSpans"][0]["scopeSpans"][0]["spans"]
         self.assertEqual([x["name"] for x in spans], ["invoke_agent research-bot", "execute_tool Bash"])
+        # a run in parts (the per-file limit lowered to split it): the same spans, its parts read as one run
+        run = max(len(b) for n, b in v2.read_zip(out).items() if n.startswith("runs/"))
+        with mock.patch.object(v2, "MAX_ENTRY", run - 1):
+            self.assertEqual(cli.main(["export", "--v2", "--config", cfg, "--run", f"otel:{TRACE}", "--otel", "-o",
+                                       os.path.join(self.dir, "parts.tkb")]), 0)
+        self.assertTrue([n for n in v2.read_zip(os.path.join(self.dir, "parts.tkb")) if ".part-" in n])
+        with open(os.path.join(self.dir, "parts.otel.json")) as f:
+            self.assertEqual(json.load(f), doc)
 
     def test_otel_out_sends_final_runs_off_the_writer_and_counts_drops(self):
         got = []

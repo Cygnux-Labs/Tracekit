@@ -13,6 +13,7 @@ import warnings
 from unittest import mock
 
 import adapter_contract as ac
+import test_said as ts
 
 HAVE = importlib.util.find_spec("strands") is not None
 if HAVE:
@@ -76,7 +77,7 @@ def run(decision="allow", rule_ids=(), consume=True, state="approved", **more):
     r.call.side_effect = lambda m, **f: {"approval_request": {"approval_id": "apr-1"},
                                          "approval_wait": {"state": state}, "approval_abandon": {}}[m]
     r.approval_consume.return_value = {"ok": consume, "rule_ids": list(rule_ids)}
-    return r
+    return ts.vault(r, on=False)
 
 
 def agent(r, *tools, uses=(CLOSE,), **kw):
@@ -131,7 +132,8 @@ class Hook(unittest.TestCase):
     def test_an_unanswered_approval_is_withdrawn(self):
         r = run("ask", ["A1"], state="requested")
         self.assertIn("not approved: requested", str(agent(r, self.tool())("close it")))
-        self.assertEqual([c.args[0] for c in r.call.call_args_list][-1], "approval_abandon")
+        self.assertEqual([c.args[0] for c in r.call.call_args_list if c.args[0] != "model_event"][-1],
+                         "approval_abandon")
 
     def test_a_refusal_is_an_error_result_naming_the_rules_but_not_the_unknown_tool_flag(self):
         a = agent(run("deny", ["TK-D001", "TK-UNKNOWN-TOOL"]), self.tool())
@@ -298,7 +300,7 @@ class Hook(unittest.TestCase):
                 return {"state": "abandoned" if abandoned.is_set() else "approved"}
             if method == "approval_abandon":
                 abandoned.set()
-            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}}[method]
+            return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}, "model_event": {}}[method]
         r.call.side_effect = call
         return r
 
@@ -321,6 +323,60 @@ class Hook(unittest.TestCase):
         self.assertIn("approval_abandon", [c.args[0] for c in r.call.call_args_list])
         r.approval_consume.assert_not_called()
         self.assertEqual(self.ran, [])
+
+
+if HAVE:
+    class Thinking(Scripted):
+        """Scripted, with signed reasoning and a sentence before the first turn's tool uses."""
+
+        async def stream(self, messages, *a, **k):
+            first = not any("toolResult" in c for m in messages for c in m["content"])
+            async for e in super().stream(messages, *a, **k):
+                if first and "messageStart" in e:
+                    yield e
+                    for delta in ({"reasoningContent": {"text": "the user wants ACC-9 closed"}},
+                                  {"reasoningContent": {"signature": "sig-1"}}):
+                        yield {"contentBlockDelta": {"delta": delta}}
+                    yield {"contentBlockStop": {}}
+                    yield {"contentBlockDelta": {"delta": {"text": "Closing ACC-9."}}}
+                    yield {"contentBlockStop": {}}
+                else:
+                    yield e
+
+
+@unittest.skipUnless(HAVE, "strands not installed")
+class Said(unittest.TestCase):
+    """Each model message is recorded: reasoning (with its signature), text and tool uses under their toolUseIds; the
+    message itself only with the vault; a failure to record changes nothing for the agent."""
+
+    def answer(self, r):
+        @tool
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return f"closed {account}"
+        a = Agent(model=Thinking([CLOSE]), tools=[close_account], hooks=[Tracekit(r)], callback_handler=None)
+        return str(a("close it")).strip()
+
+    def test_the_reasoning_before_a_call_is_linked_to_it(self):
+        r = ts.vault(run())
+        self.assertEqual(self.answer(r), "closed ACC-9")
+        first, last = ts.recorded(r)
+        self.assertEqual([t["id"] for t in first["tool_uses"]], ["call-1"])
+        self.assertEqual(r.decide.call_args.args[0], "call-1")
+        self.assertEqual(ts.segments(first), [("reasoning", "summary", "the user wants ACC-9 closed", []),
+                                              ("text", "full", "Closing ACC-9.", ["call-1"])])
+        self.assertEqual(first["body"]["output"][0]["encrypted_content"], "sig-1")
+        self.assertEqual(ts.segments(last), [("text", "full", "closed ACC-9", [])])
+
+    def test_without_the_vault_only_the_commitment(self):
+        r = run()
+        self.answer(r)
+        self.assertTrue(all("body" not in f and f["content_digest"] for f in ts.recorded(r)))
+
+    def test_a_failure_to_record_changes_nothing_for_the_agent(self):
+        r = ts.failing(run())
+        with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
+            self.assertEqual(self.answer(r), "closed ACC-9")
 
 
 @unittest.skipUnless(HAVE, "strands not installed")
