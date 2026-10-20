@@ -2,7 +2,7 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 1.4.0 (2026-10-DD) — sandboxes, and what was asked, said and done
+## 1.4.0 (2026-10-20) — sandboxes, and what was asked, said and done
 
 Tracekit now works with the sandbox an agent runs in (#308): it holds Claude Code's and Gemini CLI's requests to run a
 command outside or beyond their sandbox until a person approves, decides each request or MCP call that NVIDIA
@@ -258,6 +258,11 @@ with a 1.4 verifier (see Upgrade notes); every existing bundle verifies as befor
   recorded (11 of 16).
 
 ### Security
+- **The shell parser's cost is bounded** (all versions before 1.4.0): a crafted command of up to 64 KiB, a
+  `sed` script of newlines or a program text full of process-call lists, could make one policy decision take from
+  seconds to minutes and gigabytes of memory, stalling the signer. Its work budget now covers that text, and past it
+  the call fails closed (`TK-SHELL-PARSE`, as `on_parse_error` says). A `]` inside a quoted list string no longer ends
+  the list early, which had let a denied command in such a list be decided as a flag. Upgrade the signer.
 - **Program names in any case** (#258): on a case-insensitive file system `Git push --force` runs git, and the coding
   pack allowed it. The command-line rules now read program names in any case, and shell paths casefolded.
 - An agent's `decide` labelled `args_source: coerced` no longer skips the comparison with the LLM gateway's own record
