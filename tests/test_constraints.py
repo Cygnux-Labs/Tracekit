@@ -263,6 +263,10 @@ class Grammar(unittest.TestCase):
                            ("Don't touch billing.py yet. Feel free to change it after the refactor.", []),
                            ("Don't touch billing.py for now. Feel free to change it.", []),
                            ("Don't touch billing.py. If tests fail, fix them.", []),
+                           # delta review D-L5
+                           ("settings.py is frozen in production, but locally you can edit it.", []),
+                           ("Leave settings.py alone in prod, but you're free to edit it locally.", []),
+                           ("Don't touch billing.py for now. Later you can update it.", []),
                            ("Don't touch billing.py. Go ahead and fix it, but don't push before I review.",
                             [("no_push", None)])):
             with self.subTest(text):

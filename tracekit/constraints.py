@@ -180,10 +180,10 @@ LEAD = frozenset(("please", "just", "and", "but", "though", "so", "also", "then"
 ASKING = LEAD | frozenset(("you", "i", "let's", "lets", "should", "must", "shall", "will", "would", "can", "could",
                            "really", "absolutely", "definitely", "do", "i'd", "rather"))
 # what may come before a change word, in its base form, that asks the agent for the change ("you can edit it", "feel
-# free to change it", "go ahead and fix it"; not "ask me before you change it", "I'll update it myself", "you may need
-# to change it")
-ALLOWING = LEAD | frozenset(("you", "can", "may", "could", "should", "must", "feel", "free", "to", "go", "ahead",
-                             "now"))
+# free to change it", "go ahead and fix it", "later you can update it", "locally you can edit it", "you're free to
+# edit it"; not "ask me before you change it", "I'll update it myself", "you may need to change it")
+ALLOWING = LEAD | frozenset(("you", "you're", "can", "may", "could", "should", "must", "feel", "free", "to", "go",
+                             "ahead", "now", "later", "locally"))
 # what may follow a refused push and still refuse every push ("don't push the branch", "don't push it yet"); another
 # word scopes it ("don't push to main", "never push secrets"): no constraint
 PUSHED = frozenset(("anything", "it", "them", "this", "that", "these", "those", "yet", "please", "now", "the", "any",
