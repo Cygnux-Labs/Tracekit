@@ -7,7 +7,6 @@ import hmac
 import json
 import os
 import time
-import unittest
 import uuid
 from unittest import mock
 
@@ -315,7 +314,6 @@ class TestAgentsh(Followed):
         [gap] = self.gaps()
         self.assertIn("the log follower stopped or was killed", gap)
 
-    @unittest.skipIf(os.name == "nt", "Windows refuses to rename a log the follower holds open")
     def test_a_rotated_log_is_followed_into_the_new_one(self):
         al, log = self.agentsh()
         al.write(SHADOW)

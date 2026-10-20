@@ -328,7 +328,8 @@ class Detect(unittest.TestCase):
                           doctor._managed()])
 
     def test_the_gemini_settings_read_are_the_ones_gemini_ranks(self):
-        d = "/Library/Application Support/GeminiCli" if sys.platform == "darwin" else "/etc/gemini-cli"
+        d = {"darwin": "/Library/Application Support/GeminiCli", "win32": r"C:\ProgramData\gemini-cli"}.get(
+            sys.platform, "/etc/gemini-cli")
         defaults, system = os.path.join(d, "system-defaults.json"), os.path.join(d, "settings.json")
         self.assertEqual(self.collect(None)[1].call_args.kwargs["gemini_settings"],
                          [defaults, os.path.join(os.path.expanduser("~"), ".gemini", "settings.json"),
@@ -340,6 +341,20 @@ class Detect(unittest.TestCase):
         self.assertEqual(v2.call_args.kwargs["gemini_settings"],
                          [defaults, os.path.join("/home/a", ".gemini", "settings.json"), "/srv/app/.gemini/settings.json",
                           system])
+
+    def test_gemini_system_settings_on_windows_and_where_its_variables_move_them(self):
+        """Windows looked in /etc/gemini-cli; Gemini CLI reads C:\\ProgramData\\gemini-cli there, and the system
+        files from GEMINI_CLI_SYSTEM_SETTINGS_PATH and GEMINI_CLI_SYSTEM_DEFAULTS_PATH on any platform."""
+        d = r"C:\ProgramData\gemini-cli"
+        with mock.patch.object(doctor.sys, "platform", "win32"), mock.patch.dict(os.environ, clear=True):
+            self.assertEqual(doctor._gemini(None, None),
+                             [os.path.join(d, "system-defaults.json"), os.path.join(d, "settings.json")])
+        with mock.patch.dict(os.environ, {"GEMINI_CLI_SYSTEM_SETTINGS_PATH": "/opt/g/settings.json"}, clear=True):
+            self.assertEqual(doctor._gemini(None, None),
+                             [os.path.join("/opt/g", "system-defaults.json"), "/opt/g/settings.json"])
+        with mock.patch.dict(os.environ, {"GEMINI_CLI_SYSTEM_SETTINGS_PATH": "/opt/g/settings.json",
+                                          "GEMINI_CLI_SYSTEM_DEFAULTS_PATH": "/opt/d.json"}, clear=True):
+            self.assertEqual(doctor._gemini(None, None), ["/opt/d.json", "/opt/g/settings.json"])
 
     def test_config_flag(self):
         ids, v2 = self.collect(None, "/etc/other.yaml")

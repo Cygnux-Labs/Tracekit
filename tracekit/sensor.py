@@ -36,6 +36,7 @@ import time
 import uuid
 
 from tracekit import yamlmini
+from tracekit._logfile import open_rotating_log
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer.rpc_schema import ID, IDENTITY, MAX_CALLERS, REQUESTS, RPCError, validate
 from tracekit.signer.service import HEARTBEAT_S
@@ -289,7 +290,7 @@ def _follow(f, path):
         if st and st.st_ino != os.fstat(f.fileno()).st_ino:   # rotated: the rest of the old file, then the new one
             part += f.read()
             f.close()
-            f = open(path, "rb")
+            f = open_rotating_log(path)
         elif st and st.st_size < f.tell():   # truncated in place
             f.seek(0)
         else:
@@ -344,7 +345,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         cfg = load_config(a.config)
-        f = open(a.file, "rb") if a.file else sys.stdin.buffer
+        f = open_rotating_log(a.file) if a.file else sys.stdin.buffer
         lines = _follow(f, a.file) if a.follow and a.file else f
     except (OSError, ValueError) as e:
         print(f"tracekit sensor: {e}", file=sys.stderr)
