@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import time
+import tracemalloc
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -618,7 +619,7 @@ class Speed(unittest.TestCase):
                 start = time.perf_counter()
                 d = e.decide(tool, args)
                 self.assertNotIn("nondeterministic", d)
-                # the slowest, 64 KiB of one-word lines, is ~0.4 s on a laptop under Python 3.9, nearly all the parse
+                # 64 KiB of one-word lines is ~0.4 s on a laptop under Python 3.9, nearly all the parse
                 self.assertLess(time.perf_counter() - start, 2)
 
     def test_the_corpus_decides_within_budget(self):
@@ -741,6 +742,55 @@ class Shell(unittest.TestCase):
             shell.parse(cmd)
         # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s; a coverage run traces every line, about 3x slower
         self.assertLess(time.monotonic() - start, 6 if "coverage" in sys.modules else 2)
+
+    def test_lists_after_process_calls_count_toward_the_parse_budget(self):
+        """Each `run([` in interpreter code copied the rest of the code and took every string up to the next `]` as
+        its argv, uncharged: 64 KiB of `run(["a",` took 4 s to parse into 26 M argv words, then 10 s and 1.9 GB to
+        decide, and re2 allowed it; `run([` took 1.2 s to parse. The last case has no `]`, so it charges the tail of
+        an unclosed list."""
+        pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        for unit, tail in (("run([", "]'"), ('run(["a",', "]'"), ("run([", "'")):
+            cmd = "python3 -c '" + unit * ((MAX_SUBJECT - 14) // len(unit)) + tail
+            with self.subTest(unit=unit, tail=tail):
+                start = time.perf_counter()
+                with self.assertRaises(shell.ParseError):
+                    shell.parse(cmd)
+                self.assertLess(time.perf_counter() - start, 0.5)   # ~5 ms on a laptop
+                for e in (Engine(pol), Engine(pol, "regex")):
+                    tracemalloc.start()
+                    try:
+                        start = time.perf_counter()
+                        d = e.decide("Bash", {"command": cmd})
+                        took, peak = time.perf_counter() - start, tracemalloc.get_traced_memory()[1]
+                    finally:
+                        tracemalloc.stop()
+                    self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
+                    self.assertLess(took, 0.5)          # ~15 ms traced on a laptop
+                    self.assertLess(peak, 32 << 20)     # ~4 MB
+
+    def test_a_bracket_in_a_list_string_does_not_truncate_the_argv(self):
+        """Finding the list end with `code.find("]")` stopped at a `]` inside a quoted string, dropping the rest of
+        the argv: a subprocess.run whose shell string held a recursive delete then `#]` fell from deny (TK-D004) to
+        flag. The end is now found past string literals."""
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
+        cmd = 'python3 -c \'import subprocess; subprocess.run(["sh", "-c", "rm -rf ~ #]"])\''
+        self.assertEqual(find(cmd, ["rm", "-rf", "~"])[0]["via"], ["python3 code", "sh -c"])
+        d = e.decide("Bash", {"command": cmd})
+        self.assertEqual(d["verdict"], "deny")
+        self.assertIn("TK-D004", d["rule_ids"])
+
+    def test_sed_addresses_do_not_rescan_from_each_newline(self):
+        """`_SED_ADDR`'s whitespace runs matched `\\n`, so a sed script of only newlines was re-scanned from each one:
+        64 KiB took 86 s to decide and was allowed. The runs now stop at `\\n`, one match per newline as before."""
+        pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        cmd = "sed -e '" + "\n" * (MAX_SUBJECT - 10) + "'"
+        start = time.perf_counter()
+        shell.parse(cmd)
+        self.assertLess(time.perf_counter() - start, 0.5)       # ~5 ms on a laptop
+        for e in (Engine(pol), Engine(pol, "regex")):
+            start = time.perf_counter()
+            e.decide("Bash", {"command": cmd})
+            self.assertLess(time.perf_counter() - start, 0.5)   # ~60 ms on a laptop
 
     def test_backslashes_and_brackets_parse_in_linear_time(self):
         for cmd, limit in (("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'", 0.1),
