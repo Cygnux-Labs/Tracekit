@@ -32,8 +32,8 @@ EXCLUDED = {
 }
 # the sidebar: docs paths in order; a glob adds the pages it matches that no earlier entry placed, sorted
 SECTIONS = [
-    ("Get started", ["quickstart-v2.md", "quickstarts/README.md", "quickstarts/*.md", "walkthrough.md",
-                     "coding-agents.md", "doctor.md"]),
+    ("Get started", ["quickstart-v2.md", "quickstarts/README.md", "quickstarts/*.md", "coding-agents.md", "doctor.md",
+                     "walkthrough.md"]),
     ("How it works", ["concepts/README.md", "concepts/overview.md", "concepts/tool-call-lifecycle.md",
                       "concepts/evidence-format.md", "concepts/verification.md", "concepts/witnesses-and-monitoring.md",
                       "concepts/policy.md", "concepts/approvals.md", "concepts/containment.md",
