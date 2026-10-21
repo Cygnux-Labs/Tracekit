@@ -18,7 +18,7 @@ ask:
     # production data; the server pack inherits from the coding pack, not this one, so server agents that publish to
     # buckets aren't held. lean: an rclone remote (name:path) can't be told from a local path cheaply, so rclone
     # uploads aren't read; upgrade: a structural argv rule
-    pattern: '^(?:gsutil (?:-[^ ]+ (?:[^- ][^ ]* )?)*(?:cp|mv|rsync) (?:.* )?gs://[^ ]*(?: -[^ ]*(?: [^- ][^ ]*)?)*$|gcloud (?:-[^ ]+ (?:[^- ][^ ]* )?)*(?:(?:alpha|beta) )?storage (?:cp|mv|rsync) (?:.* )?gs://[^ ]*(?: -[^ ]*(?: [^- ][^ ]*)?)*$|aws (?:-[^ ]+ (?:[^- ][^ ]* )?)*s3 (?:cp|mv|sync) (?:.* )?s3://[^ ]*(?: -[^ ]*(?: [^- ][^ ]*)?)*$|az storage blob (?:upload|upload-batch|sync)(?: |$))'
+    pattern: '^(?:gsutil (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:cp|mv|rsync) (?:.* )?gs://[^ ]*(?: -[^ ]+(?: [^- ][^ ]*)?)*$|gcloud (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:(?:alpha|beta) )?storage (?:cp|mv|rsync) (?:.* )?gs://[^ ]*(?: -[^ ]+(?: [^- ][^ ]*)?)*$|aws (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}s3 (?:cp|mv|sync) (?:.* )?s3://[^ ]*(?: -[^ ]+(?: [^- ][^ ]*)?)*$|az storage blob (?:upload|upload-batch|sync)(?: |$))'
     reason: uploading to cloud storage
     remedy: Wait for a person to approve the held call, or write the files locally and let a person upload them.
     rationale: A bucket can hold production data or serve the public; a person confirms what a coding agent writes there.

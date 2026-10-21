@@ -123,12 +123,15 @@ class CodingPack(unittest.TestCase):
         purges = ["gsutil -m rm -a gs://prod-assets/products/**", "gsutil -m rm gs://prod-assets/products/**",
                   "gsutil rm -r gs://b/x", "gsutil rb gs://b", "gcloud storage rm --all-versions gs://b/products/**",
                   "gcloud storage rm 'gs://b/products/*'", "aws s3 rm s3://b/x --recursive",
-                  "aws s3api delete-object --bucket b --key k --version-id 3HL4kqtJ", "aws s3api delete-objects --bucket b "
+                  "aws s3api delete-object --bucket b --key k --version-id 3HL4kqtJ", "aws s3 rm --recursive s3://b/x",
+                  "aws s3api delete-object --version-id v1 --bucket b --key k", "gsutil rm -Ra gs://b/x", "gsutil -m rm -I",
+                  "gcloud storage rm --read-paths-from-stdin", "aws s3api delete-objects --bucket b "
                   "--delete file://keys.json", "az storage blob delete-batch -s logs", "rclone purge gcs:prod-assets"]
         uploads = ["gsutil -m cp -r ./assets/images gs://prod-assets/products/", "gcloud storage cp report.csv gs://b/",
                    "aws s3 cp /srv/data s3://b/ --recursive --acl public-read", "aws s3 sync ./site s3://b/",
                    "az storage blob upload -f a.zip -c c -n a.zip"]
         routine = ["gsutil cp gs://b/a.csv .", "aws s3 sync s3://b/backups ./restore", "gsutil ls gs://b",
+                   "aws s3 cp s3://b/f.gz - --quiet", "gsutil cp gs://b/f -",
                    "gsutil rm gs://b/scratch.txt", "aws s3 rm s3://b/scratch.txt", "git rm -r --cached build"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml"):
             for engine in ("re2", "regex"):
