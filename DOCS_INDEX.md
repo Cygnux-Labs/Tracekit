@@ -50,4 +50,3 @@ Code with no design doc:
 Superseded docs: marked here, not deleted.
 
 - `docs/design-partner-kit.md` — contradicts the self-serve direction; scheduled for removal
-- `paper/main.tex` — describes v0.1; frozen artifact
