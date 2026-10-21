@@ -391,7 +391,18 @@ supported line. Report vulnerabilities privately as
 
 ## Cite
 
+The paper: [Tracekit-v2-paper.pdf](paper/Tracekit-v2-paper.pdf) ([arXiv:2609.35659](https://arxiv.org/abs/2609.35659)).
+
 ```bibtex
+@misc{ghosh2026tracekit,
+  author        = {Bravish Ghosh},
+  title         = {Tracekit: Tamper-Evident Intent-Reasoning-Action Auditing for AI Agents},
+  year          = {2026},
+  eprint        = {2609.35659},
+  archivePrefix = {arXiv},
+  url           = {https://arxiv.org/abs/2609.35659}
+}
+
 @software{tracekit2026,
   author = {{Cygnux Labs}},
   title  = {Tracekit: the tamper-evident flight recorder for AI agents},

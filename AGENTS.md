@@ -49,7 +49,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tests/` | pytest suite (real daemons); `tests/conftest.py` (markers, env isolation), `tests/factories.py` (shared builders), `tests/golden/` (frozen verifier corpus) | [HIGH CONFIDENCE] |
 | `eval/` | Experiments E1–E22 (`eval/e*.py`; E7 is `contrib/query/e7_sql_scale.py`; no E13 script); E8 (insider attacks, v1 and v2) gates CI on Linux; CI also runs E9, E15 and an offline `evals` job (most of `make eval`, results compared with `eval/results/`); `.github/workflows/nightly-evals.yml` runs E2, E7, E9/E16 on Postgres, full E14 and E22 | [HIGH CONFIDENCE] |
 | `docs/` | User docs; `docs/sample/` holds the shipped sample bundles | [HIGH CONFIDENCE] |
-| `paper/` | v0.1 paper — frozen artifact, don't update | [HIGH CONFIDENCE] |
+| `paper/` | the v2 paper (`Tracekit-v2-paper.pdf`, Tracekit 1.4.1); the owner's, don't edit | [HIGH CONFIDENCE] |
 
 ## Commands
 
