@@ -400,14 +400,8 @@ The paper: [Tracekit-v2-paper.pdf](paper/Tracekit-v2-paper.pdf) ([arXiv:2609.356
   year          = {2026},
   eprint        = {2609.35659},
   archivePrefix = {arXiv},
-  url           = {https://arxiv.org/abs/2609.35659}
-}
-
-@software{tracekit2026,
-  author = {{Cygnux Labs}},
-  title  = {Tracekit: the tamper-evident flight recorder for AI agents},
-  year   = {2026},
-  url    = {https://github.com/Cygnux-Labs/Tracekit}
+  url           = {https://arxiv.org/abs/2609.35659},
+  note          = {Code: \url{https://github.com/Cygnux-Labs/Tracekit}}
 }
 ```
 
