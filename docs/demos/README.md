@@ -21,6 +21,7 @@ In story order: what the agent did, how it is controlled, the proof, and why it 
 | Control | [Prompt injection](prompt-injection/README.md) | A planted instruction to email data out is held because its recipient came only from a fetched page (provenance) |
 | Control | [Agent approvers](agent-approvers/README.md) | A reviewer agent clears only calls within its bounds; people answer the rest, and a person's reject sticks |
 | Control | [Detection and containment](containment/README.md) | A secret read then an upload opens a signed incident; the run is held until a person resumes it |
+| Control | [A production bucket](cloud-storage/README.md) | After a public incident: a coding agent's upload to a production bucket, its delete and its purge of every version all wait for a person |
 | Proof | [Completeness and tamper evidence](completeness/README.md) | A call decided but never completed becomes a signed gap; one byte changed in the bundle fails verification |
 | Proof | [Network coverage](egress/README.md) | An egress observer outside the agent records the hosts a run reached; one no call explains is flagged |
 | Why | [Why](why/README.md) | Of three untrusted inputs that all reached an exfiltration email, replays show which one caused it |
@@ -32,7 +33,7 @@ cd docs/demos/containment && tracekit verify run.tkb --trust trust.json
 ```
 
 Run a demo yourself: the command is in its README (from a checkout, after `pip install -e .`, which needs pip 21.3 or newer). The demos that start a
-signer from their own `signer.yaml` (prompt injection, agent approvers, containment, egress) need macOS or Linux: you
+signer from their own `signer.yaml` (prompt injection, agent approvers, containment, a production bucket, egress) need macOS or Linux: you
 reach that signer as your uid on a Unix socket.
 
 Regenerate every folder, each demo against a fresh signer in a temp dir (never your own), or check them without

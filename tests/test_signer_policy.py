@@ -117,6 +117,34 @@ class CodingPack(unittest.TestCase):
         for args in ({"command": "npm install", "dangerouslyDisableSandbox": False}, {"command": "npm install"}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
 
+    def test_cloud_storage_purges_and_bulk_deletes_ask_and_the_dev_pack_holds_uploads(self):
+        """A public incident: told "no new upload", an agent uploaded to a production bucket, then deleted the objects
+        and purged every version of them. Every pack only flagged the deletes and allowed the upload."""
+        purges = ["gsutil -m rm -a gs://prod-assets/products/**", "gsutil -m rm gs://prod-assets/products/**",
+                  "gsutil rm -r gs://b/x", "gsutil rb gs://b", "gcloud storage rm --all-versions gs://b/products/**",
+                  "gcloud storage rm 'gs://b/products/*'", "aws s3 rm s3://b/x --recursive",
+                  "aws s3api delete-object --bucket b --key k --version-id 3HL4kqtJ", "aws s3 rm --recursive s3://b/x",
+                  "aws s3api delete-object --version-id v1 --bucket b --key k", "gsutil rm -Ra gs://b/x", "gsutil -m rm -I",
+                  "gcloud storage rm --read-paths-from-stdin", "aws s3api delete-objects --bucket b "
+                  "--delete file://keys.json", "az storage blob delete-batch -s logs", "rclone purge gcs:prod-assets"]
+        uploads = ["gsutil -m cp -r ./assets/images gs://prod-assets/products/", "gcloud storage cp report.csv gs://b/",
+                   "aws s3 cp /srv/data s3://b/ --recursive --acl public-read", "aws s3 sync ./site s3://b/",
+                   "az storage blob upload -f a.zip -c c -n a.zip"]
+        routine = ["gsutil cp gs://b/a.csv .", "aws s3 sync s3://b/backups ./restore", "gsutil ls gs://b",
+                   "aws s3 cp s3://b/f.gz - --quiet", "gsutil cp gs://b/f -",
+                   "gsutil rm gs://b/scratch.txt", "aws s3 rm s3://b/scratch.txt", "git rm -r --cached build"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in purges + uploads + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        held = {r for r in d["rule_ids"] if r in ("TK-A031", "TK-A032")}
+                        want = {"TK-A031"} if cmd in purges else {"TK-A032"} if cmd in uploads and pack == "dev.yaml" else set()
+                        self.assertEqual(held, want, d)
+                        if want:
+                            self.assertEqual(d["verdict"], "ask", d)
+
     def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
         dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
         d = dev.decide("Bash", {"command": "npm install", "allowed_domains": ["registry.example.org"]})

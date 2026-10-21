@@ -30,6 +30,7 @@ SCENARIOS = {
     "mcp": (["examples/v2/mcp/agent.py", "--scripted"], ("mcp",), False),
     "agent-approvers": (["examples/v2/demos/agent_approvers.py"], (), True),
     "containment": (["examples/v2/demos/containment.py"], (), True),
+    "cloud-storage": (["examples/v2/demos/cloud_storage.py"], (), True),
     "completeness": (["examples/v2/demos/completeness.py"], (), False),
     "egress": (["examples/v2/demos/egress.py"], (), True),
     "why": (["tracekit", "why", "demo", "--out", "$TMP/why", "--n", "10"], (), False),
