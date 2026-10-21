@@ -134,7 +134,7 @@ class CodingPack(unittest.TestCase):
                    "aws s3 cp s3://b/f.gz - --quiet", "gsutil cp gs://b/f -",
                    "gsutil rm gs://b/scratch.txt", "aws s3 rm s3://b/scratch.txt", "git rm -r --cached build"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml"):
-            for engine in ("re2", "regex"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
                 for cmd in purges + uploads + routine:
                     with self.subTest(pack=pack, engine=engine, cmd=cmd):
