@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-21'
+version: '2026.10-v2-22'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -267,6 +267,15 @@ ask:
     reason: destroying a deployment, database or volume
     remedy: Wait for a person to approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
     rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
+  - id: TK-A031
+    class: shell
+    # each command's argv: a version purge (gsutil rm -a, gcloud storage rm --all-versions, an S3 object version), a
+    # recursive or wildcard delete, a batch delete or a bucket delete in GCS, S3, Azure Blob or through rclone. One
+    # object's delete is left to TK-F003's flag: server agents clear their own objects routinely
+    pattern: '^(?:gsutil (?:-[^ ]+ (?:[^- ][^ ]* )?)*(?:rb(?: |$)|rm(?:(?: .*)?(?: -a| -r| -R| -ar| -ra| -rf| -fr| -Rf| -fR| -af| -fa| -arf| -raf| -rfa| -far)(?: |$)| .*[*]))|gcloud (?:-[^ ]+ (?:[^- ][^ ]* )?)*(?:(?:alpha|beta) )?storage (?:buckets delete(?: |$)|rm(?:(?: .*)?(?: --all-versions| --recursive)(?: |=|$)|(?: .*)?(?: -a| -r| -R| -ar| -ra| -rf| -fr| -Rf| -fR| -af| -fa| -arf| -raf| -rfa| -far)(?: |$)| .*[*]))|aws (?:-[^ ]+ (?:[^- ][^ ]* )?)*(?:s3 (?:rb(?: |$)|rm .* --recursive(?: |=|$))|s3api (?:delete-objects|delete-bucket)(?: |$)|s3api delete-object .* --version-id(?: |=|$))|az storage (?:blob delete-batch|container delete)(?: |$)|rclone (?:-[^ ]+ (?:[^- ][^ ]* )?)*(?:purge|delete|rmdirs|cleanup)(?: |$))'
+    reason: destroying cloud storage data (a version purge, a bulk or wildcard delete, or a bucket)
+    remedy: Wait for a person to approve the held call; a person deletes bucket data or its version history themselves.
+    rationale: Bulk deletes and version purges in object storage can't be undone, and a bucket's version history is often the only copy left.
   - id: TK-A002
     class: shell
     # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. No dry-run exemption: `-o` takes the next

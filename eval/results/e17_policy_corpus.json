@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:3fdc602fa95043af687c16649d57b62897ba5eba70f69afb83b7a923011f65e8",
+  "policy_hash": "sha256:aabeaab5fb1266fe65cff2904f9df5fe472342fda14a848b08b845d3aeb3f6ff",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -154,8 +154,8 @@
     "deny/cloud:36": "deny TK-C002 TK-F006",
     "deny/cloud:37": "ask TK-C010",
     "deny/cloud:38": "ask TK-C010",
-    "deny/cloud:39": "ask TK-C010",
-    "deny/cloud:40": "ask TK-C010 TK-F003",
+    "deny/cloud:39": "ask TK-A031 TK-C010",
+    "deny/cloud:40": "ask TK-A031 TK-C010 TK-F003",
     "deny/cloud:41": "ask TK-C010",
     "deny/cloud:42": "ask TK-C010",
     "deny/cloud:43": "ask TK-C010",
@@ -166,9 +166,9 @@
     "deny/cloud:48": "ask TK-C010",
     "deny/cloud:49": "ask TK-C010",
     "deny/cloud:50": "ask TK-C010",
-    "deny/cloud:51": "ask TK-C010 TK-F003",
-    "deny/cloud:52": "ask TK-C010 TK-F003",
-    "deny/cloud:53": "ask TK-C010",
+    "deny/cloud:51": "ask TK-A031 TK-C010 TK-F003",
+    "deny/cloud:52": "ask TK-A031 TK-C010 TK-F003",
+    "deny/cloud:53": "ask TK-A031 TK-C010",
     "deny/cloud:54": "ask TK-C010",
     "deny/cloud:55": "ask TK-C010",
     "deny/cloud:56": "ask TK-C010",
