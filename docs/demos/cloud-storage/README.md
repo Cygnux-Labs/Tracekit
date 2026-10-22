@@ -13,7 +13,8 @@ tracekit verify run.tkb --trust trust.json
 ```
 
 **What the record shows.** For each held call, its `policy.decision` (`ask` and the rule ids) before anything ran,
-and the person's `approval` (reject, with the reason they gave); no `tool.result` for any of the three. A call the
+the person's `approval` (reject, with the reason they gave), then the signer's `approval.refused`
+(`TK-APPROVAL-REJECTED`) when the agent tries to run it anyway; no `tool.result` for any of the three. A call the
 person approves would show the approval, then its result.
 
 **Why it matters.** The request said "no new upload", but the person's words aren't what stops the upload here: the
