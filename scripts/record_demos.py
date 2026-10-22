@@ -31,6 +31,7 @@ SCENARIOS = {
     "agent-approvers": (["examples/v2/demos/agent_approvers.py"], (), True),
     "containment": (["examples/v2/demos/containment.py"], (), True),
     "cloud-storage": (["examples/v2/demos/cloud_storage.py"], (), True),
+    "pocketos": (["examples/v2/demos/pocketos.py"], (), True),
     "completeness": (["examples/v2/demos/completeness.py"], (), False),
     "egress": (["examples/v2/demos/egress.py"], (), True),
     "why": (["tracekit", "why", "demo", "--out", "$TMP/why", "--n", "10"], (), False),
