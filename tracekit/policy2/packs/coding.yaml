@@ -288,6 +288,20 @@ ask:
     reason: deleting a remote Git ref
     remedy: Wait for a person to approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
+  - id: TK-A033
+    class: shell
+    # a public incident: an agent merged eight pull requests with no human review, past branch protection, with an admin
+    # identity. Held: gh pr merge (--auto and --admin too) and glab mr merge or accept, with up to four options before
+    # each word; a merge endpoint (GitHub's pulls/N/merge, GitLab's merge_requests/N/merge, the number possibly a
+    # variable) or GitHub's GraphQL merge, auto-merge or merge-queue mutation, or GitLab's mergeRequestAccept, through
+    # gh, glab or hub api, curl, wget, HTTPie or xh. A local `git merge` isn't held. No --help exemption: gh and glab
+    # take the next word as an option's value, so `gh pr merge 42 --body --help` merges. Lazy, so the fallback engine
+    # stays linear
+    # lean: any request to a merge endpoint is held, a status check (GET) too; match the method when one gets in the way
+    pattern: '^(?:gh (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}pr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}merge(?: |$)|glab (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}mr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:merge|accept)(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) .*?(?:/(?:pulls|merge_requests)/[^/ ]+/merge(?:[ ?#/]|$)|(?:mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeRequestAccept)\b))'
+    reason: merging a pull request
+    remedy: Wait for a person to approve the held call, or leave the pull request open for a person to review and merge.
+    rationale: A merge lands code on a shared branch, often with a deploy behind it; a person confirms it.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
     # in bypassPermissions mode or under a matching allow rule nobody is asked
