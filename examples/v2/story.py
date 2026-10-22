@@ -9,7 +9,6 @@ import json
 import os
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -64,14 +63,11 @@ class Signer:
         shutil.copytree(PACKS, os.path.join(self.dir, "packs"))
         with open(os.path.join(self.dir, "policy.yaml"), "w") as f:
             f.write(policy)
-        with socket.socket() as s:   # lean: another process may take the port before the signer binds it; run again
-            s.bind(("127.0.0.1", 0))
-            self.url = f"http://127.0.0.1:{s.getsockname()[1]}"
         me = f"uid:{os.getuid()}"
         self.config = os.path.join(self.dir, "signer.yaml")
         with open(self.config, "w") as f:   # JSON is YAML
             json.dump({"data_dir": "data", "socket": "s.sock", "policy": "policy.yaml", "grace_s": 1,
-                       "http": {"listen": self.url[len("http://"):], "insecure_loopback": True,
+                       "http": {"listen": "127.0.0.1:0", "insecure_loopback": True,   # a free port, told when serving
                                 "authenticators": ["token"], "tokens": "tokens.json"},
                        "approvals": {"approvers": [me], "persons": {me: "alice"},
                                      **({"agents": [f"token:{n}" for n in reviewers]} if reviewers else {})},
@@ -81,8 +77,10 @@ class Signer:
                 f.write(tracekit("signer", "token", "add", name, "--config", self.config).stdout)
         self.proc = subprocess.Popen([sys.executable, "-m", "tracekit", "signer", "serve", "--config", self.config],
                                      stdout=subprocess.PIPE, text=True)
-        if "serving" not in self.proc.stdout.readline():
+        line = self.proc.stdout.readline()
+        if " serving on " not in line:
             sys.exit(f"the signer did not start: tracekit signer serve --config {self.config}")
+        self.url = "http://" + line.rsplit(" on ", 1)[1].strip()
         os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "s.sock")
 
     def token(self, name):
