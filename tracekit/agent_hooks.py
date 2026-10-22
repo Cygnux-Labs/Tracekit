@@ -21,6 +21,7 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
 What each harness exposes decides what Tracekit can see: Gemini CLI does not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order; Cursor reports failures through postToolUseFailure. Reasoning
 capture reads Claude Code's transcript format only and is off for these harnesses."""
+import contextlib
 import hashlib
 import io
 import json
@@ -233,10 +234,19 @@ def run(harness, raw, stdout=None, stderr=None):
     finally:
         sys.stdin, sys.stderr = real_stdin, real_stderr
     if code and harness == "gemini" and is_pre and q.get("tool_use_id"):   # a blocked call gets no AfterTool
-        _gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
+        with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
+            _gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     msg = err.getvalue().strip()
     _reply(harness, stdout, code == 0, msg, is_pre)
-    return 2 if code else 0
+    return _exit(harness, 2 if code else 0, is_pre)
+
+
+def _exit(harness, code, is_pre):
+    """The exit status that carries a hook's answer (code: 0 allowed, else blocked). Codex blocks a pre-tool call at
+    exit 2 with a reason on stderr, whatever a shell startup file printed to stdout; on Windows its hooks run under
+    PowerShell, which hands it 2 as 1, so there the JSON deny _reply writes carries the block, at exit 0, the only
+    status at which Codex reads it."""
+    return 0 if harness == "codex" and is_pre and os.name == "nt" else code
 
 
 def _reply(harness, stdout, allowed, msg, is_pre):
@@ -250,7 +260,7 @@ def _reply(harness, stdout, allowed, msg, is_pre):
         stdout.write(json.dumps({} if allowed else {"decision": "deny", "reason": msg[:500]}))  # stdout must be JSON only
     elif harness == "codex" and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                                        "permissionDecisionReason": msg[:500]}}))
+                                                        "permissionDecisionReason": msg[:500] or "Blocked by tracekit"}}))
     stdout.flush()
 
 
@@ -379,8 +389,16 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     new, removed = "v2" if v2 else "v1", set()
 
     def cmd(ev):   # the v2 hook names its event, so it can block a pre-tool payload it cannot read
-        return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness, ev) if v2 else (harness,),
-                             python, ev in PRE)
+        c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness, ev) if v2 else (harness,),
+                          python, ev in PRE)
+        # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
+        # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
+        # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
+        # which both run
+        if os.name != "nt" or harness == "cursor":
+            return c
+        m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
+        return m.group(1) + c[m.end():] if m else f"& {c}"
 
     def ours(cmds):
         vs = {_version(c) for c in cmds} - {None}
@@ -437,6 +455,12 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     return path
 
 
+def stdin_text():
+    """A hook's payload, UTF-8 JSON: read as bytes where stdin has them, since Windows decodes a pipe with its ANSI
+    code page."""
+    return sys.stdin.buffer.read().decode("utf-8", "replace") if hasattr(sys.stdin, "buffer") else sys.stdin.read()
+
+
 def entry(harness=None):
     harness = harness or (sys.argv[1] if len(sys.argv) > 1 else "")
     if harness not in HARNESSES:
@@ -444,13 +468,19 @@ def entry(harness=None):
         print(f"usage: python -m tracekit.agent_hooks {{{'|'.join(HARNESSES)}}}; "
               + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
         return 2 if closed else 0
+    raw = ""
     try:
-        return run(harness, sys.stdin.read())
+        raw = stdin_text()
+        return run(harness, raw)
     except Exception as e:
         closed = H.fail_closed()
+        try:
+            pre = json.loads(raw).get("hook_event_name") in PRE
+        except Exception:
+            pre = True   # unreadable: answered as a tool call
         print(f"[tracekit] {harness} hook error ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
-        _reply(harness, sys.stdout, not closed, str(e), True)
-        return 2 if closed else 0
+        _reply(harness, sys.stdout, not closed, str(e), pre)
+        return _exit(harness, 2 if closed else 0, pre)
 
 
 if __name__ == "__main__":

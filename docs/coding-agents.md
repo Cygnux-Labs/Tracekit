@@ -18,7 +18,7 @@ into the Claude Code hook shape and runs the same pipeline as the Claude Code ho
 |---|---|---|---|
 | Hook events used | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | preToolUse, postToolUse, postToolUseFailure, beforeSubmitPrompt, sessionStart, sessionEnd | BeforeTool, AfterTool, BeforeAgent, SessionStart, SessionEnd |
 | Run id | `session_id` | `conversation_id` | `session_id` |
-| Blocking a call | exit 2 + `permissionDecision: deny` | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` |
+| Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` |
 | Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out |
 | Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`, `Delete`; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `web_fetch`, `google_web_search` |
 

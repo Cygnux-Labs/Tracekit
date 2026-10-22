@@ -47,7 +47,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     try:
         p = json.loads(raw) if raw.strip() else {}
-    except ValueError:
+    except (ValueError, RecursionError):   # nested too deep to read
         p = None
     if not isinstance(p, dict) and event:
         pre = event in agent_hooks.PRE
@@ -55,7 +55,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
             "tool call blocked" if pre else "event not recorded")
         print(msg, file=stderr)
         agent_hooks._reply(harness, stdout, not pre, msg, pre)
-        return 2 if pre else 0
+        return agent_hooks._exit(harness, 2 if pre else 0, pre)
     p = dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {}
     is_pre = p.get("hook_event_name") in agent_hooks.PRE
     err, q = agent_hooks.Tee(stderr), None
@@ -75,9 +75,10 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
               + ("blocking" if is_pre else "event not recorded"), file=err)
         code = 2 if is_pre else 1
     if code and harness == "gemini" and is_pre and q and q.get("tool_use_id"):   # a blocked call gets no AfterTool
-        agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
+        with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
+            agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     agent_hooks._reply(harness, stdout, code == 0, err.getvalue().strip(), is_pre)
-    return code
+    return agent_hooks._exit(harness, code, is_pre)
 
 
 def said_since(harness, p, stderr):
@@ -249,7 +250,7 @@ def entry(harness=None, event=None):
         print(f"usage: python -m tracekit.integrations.harness_hooks {{{'|'.join(agent_hooks.HARNESSES)}}} [EVENT]; "
               "blocking", file=sys.stderr)
         return 2
-    return run(harness, sys.stdin.read(), event=event)
+    return run(harness, agent_hooks.stdin_text(), event=event)
 
 
 if __name__ == "__main__":
