@@ -273,6 +273,20 @@ class Installer(unittest.TestCase):
         self.assertIn("no tool_use_id", out["permissionDecisionReason"])   # Codex ignores a deny without a reason
         self.assertIn("no tool_use_id", p.stderr)
 
+    def test_a_utf8_payload_is_read_under_any_console_code_page(self):
+        # Windows decodes a pipe with its ANSI code page: cp1252 has no byte 0x81, so "\u00c1" (C3 81) failed to decode,
+        # the hook exited 1 and the harness ran the call
+        payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "Bash",
+                              "tool_input": {"command": "echo \u00c1"}}, ensure_ascii=False).encode("utf-8")
+        for name, call, code in (("codex", lambda: harness_hooks.entry("codex", "PreToolUse"), 0),
+                                 ("claude", lambda: claude_code._entry("PreToolUse"), 2)):
+            with self.subTest(hook=name):
+                err = io.StringIO()
+                with mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(payload), encoding="cp1252")), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    self.assertEqual(call(), code, err.getvalue())   # blocked: no tool_use_id
+                self.assertIn("tool_use_id", err.getvalue())
+
     def installed_pre(self, harness, d):
         with contextlib.redirect_stdout(io.StringIO()):
             agent_hooks.install(harness, d, v2=True)
@@ -287,7 +301,8 @@ class Installer(unittest.TestCase):
         for harness, cmd in cmds.items():
             self.assertTrue(cmd.startswith('& "'), cmd)
             self.assertEqual(agent_hooks._version(cmd), "v2")
-        self.assertFalse(self.installed_pre("codex", d).startswith("&"))   # POSIX shells: unchanged
+        with mock.patch("os.name", "posix"):
+            self.assertFalse(self.installed_pre("codex", d).startswith("&"))   # POSIX shells: unchanged
 
     @unittest.skipUnless(os.name == "nt", "Codex and Gemini CLI run hooks through PowerShell on Windows")
     def test_under_powershell_the_installed_hook_blocks(self):
@@ -298,7 +313,7 @@ class Installer(unittest.TestCase):
             with self.subTest(harness=harness):
                 p = subprocess.run(["powershell", "-NoProfile", "-Command", self.installed_pre(harness, d) + tail],
                                    cwd=d, input="not json", capture_output=True, text=True, timeout=120, env=env)
-                self.assertIn("tool call blocked", p.stderr)   # reached the hook: blocked before any signer
+                self.assertIn("not a JSON object", p.stderr)   # PowerShell passed the payload through to the hook
                 out = json.loads(p.stdout)
                 if harness == "codex":
                     self.assertEqual(p.returncode, 0, p.stderr)

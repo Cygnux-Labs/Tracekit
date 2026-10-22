@@ -447,6 +447,12 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     return path
 
 
+def stdin_text():
+    """A hook's payload, UTF-8 JSON: read as bytes where stdin has them, since Windows decodes a pipe with its ANSI
+    code page."""
+    return sys.stdin.buffer.read().decode("utf-8", "replace") if hasattr(sys.stdin, "buffer") else sys.stdin.read()
+
+
 def entry(harness=None):
     harness = harness or (sys.argv[1] if len(sys.argv) > 1 else "")
     if harness not in HARNESSES:
@@ -454,13 +460,19 @@ def entry(harness=None):
         print(f"usage: python -m tracekit.agent_hooks {{{'|'.join(HARNESSES)}}}; "
               + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
         return 2 if closed else 0
+    raw = ""
     try:
-        return run(harness, sys.stdin.read())
+        raw = stdin_text()
+        return run(harness, raw)
     except Exception as e:
         closed = H.fail_closed()
+        try:
+            pre = json.loads(raw).get("hook_event_name") in PRE
+        except Exception:
+            pre = True   # unreadable: answered as a tool call
         print(f"[tracekit] {harness} hook error ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
-        _reply(harness, sys.stdout, not closed, str(e), True)
-        return _exit(harness, 2 if closed else 0, True)
+        _reply(harness, sys.stdout, not closed, str(e), pre)
+        return _exit(harness, 2 if closed else 0, pre)
 
 
 if __name__ == "__main__":

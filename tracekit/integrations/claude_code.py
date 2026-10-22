@@ -458,7 +458,9 @@ def _handle(client, p, name, sid, tid):
 
 def _entry(event=None):
     """`event`: the hook event from the command line, or None."""
-    raw = sys.stdin.read()
+    # UTF-8 JSON, read as bytes where stdin has them (as agent_hooks.stdin_text): Windows decodes a pipe with its ANSI
+    # code page
+    raw = sys.stdin.buffer.read().decode("utf-8", "replace") if hasattr(sys.stdin, "buffer") else sys.stdin.read()
     try:
         p = json.loads(raw) if raw.strip() else {}
     except ValueError:
