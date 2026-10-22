@@ -162,10 +162,14 @@ class CodingPack(unittest.TestCase):
                   "curl -s -X POST https://api.github.com/graphql -d 'mutation { enqueuePullRequest(input: {}) { clientMutationId } }'",
                   "wget --method=PUT https://api.github.com/repos/o/r/pulls/5/merge",
                   "http PUT https://api.github.com/repos/o/r/pulls/6/merge/", "hub api -X PUT repos/o/r/pulls/7/merge",
-                  "gh api -H 'Accept: application/vnd.github+json' graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'"]
+                  "gh api -H 'Accept: application/vnd.github+json' graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+                  # --help as an option's value: these merge
+                  "gh pr merge 42 --body --help", "gh pr merge 42 -t --help", "glab mr merge 3 -m --help",
+                  "gh pr merge 42 --subject 'Document --help flag'",
+                  "gh api -X PUT repos/o/r/pulls/42/merge -f commit_title='fix --help'"]
         routine = ["gh pr view 42", "gh pr create --fill", "gh pr checks 42", "gh pr list --state merged", "git merge feature",
                    "gh api repos/o/r/pulls/42", "gh api repos/o/r/pulls/42/merges", "echo gh pr merge 42",
-                   "git commit -m 'gh pr merge after review'", "gh pr merge --help", "glab mr list",
+                   "git commit -m 'gh pr merge after review'", "gh pr view --help", "glab mr list",
                    "gh pr view 42 --json mergeable", "curl -s https://api.github.com/repos/o/r/pulls/42"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
