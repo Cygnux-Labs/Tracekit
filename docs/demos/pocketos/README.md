@@ -11,9 +11,10 @@ python examples/v2/demos/pocketos.py   # POSIX
 tracekit verify run.tkb --trust trust.json
 ```
 
-**What the record shows.** The `curl`'s `policy.decision` (`ask` and the rule ids) before anything ran, and the
-person's `approval` (reject, with the reason they gave); no `tool.result` for it. A call the person approves would show
-the approval, then its result.
+**What the record shows.** The `curl`'s `policy.decision` (`ask` and the rule ids) before anything ran, the person's
+`approval` (reject, with the reason they gave), then the signer's `approval.refused` (`TK-APPROVAL-REJECTED`) when the
+agent tries to run it anyway; no `tool.result` for it. A call the person approves would show the approval, then its
+result.
 
 **Why it matters.** The rule reads the command's arguments, not what the model says it is doing: a mutation named
 `volumeDelete` with its call parenthesis is held however the request is worded. A URL or file named
