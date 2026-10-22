@@ -288,6 +288,17 @@ ask:
     reason: deleting a remote Git ref
     remedy: Wait for a person to approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
+  - id: TK-A033
+    class: shell
+    # a public incident: an agent merged eight pull requests with no human review, past branch protection, with an admin
+    # identity. Held: gh pr merge (--auto and --admin too), glab mr merge, GitHub's and GitLab's merge endpoints through
+    # gh api, glab api or curl, and GitHub's GraphQL merge and auto-merge mutations. A local `git merge` isn't held.
+    # lean: any request to a merge endpoint is held, a status check (GET) too; match the method when one gets in the way
+    # lazy, so the fallback engine stays linear
+    pattern: '^(?:(?:gh pr|glab mr) merge(?: |$)|(?:gh api|glab api|curl) .*?/(?:pulls|merge_requests)/[0-9]+/merge(?:[ ?]|$)|gh api graphql .*?(?:mergePullRequest|enablePullRequestAutoMerge))'
+    reason: merging a pull request
+    remedy: Wait for a person to approve the held call, or leave the pull request open for a person to review and merge.
+    rationale: A merge lands code on a shared branch, often with a deploy behind it; a person confirms it.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
     # in bypassPermissions mode or under a matching allow rule nobody is asked

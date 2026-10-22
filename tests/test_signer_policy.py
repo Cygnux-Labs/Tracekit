@@ -145,6 +145,29 @@ class CodingPack(unittest.TestCase):
                         if want:
                             self.assertEqual(d["verdict"], "ask", d)
 
+    def test_merging_a_pull_request_asks_in_every_pack(self):
+        """A public incident: an agent merged eight pull requests with no human review, past branch protection, with an
+        admin identity. Every pack allowed the merges."""
+        merges = ["gh pr merge 42 --squash", "gh pr merge --admin --merge 7", "gh pr merge --auto --squash", "gh pr merge",
+                  "/usr/local/bin/GH pr merge 3 -d", "glab mr merge 12", "gh api -X PUT repos/o/r/pulls/42/merge",
+                  "gh api repos/o/r/pulls/42/merge --method PUT -f merge_method=squash",
+                  "curl -s -X PUT -H 'Authorization: Bearer t' https://api.github.com/repos/o/r/pulls/42/merge",
+                  "glab api -X PUT projects/1/merge_requests/2/merge",
+                  "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"P\"}) { clientMutationId } }'",
+                  "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"P\"}) { clientMutationId } }'"]
+        routine = ["gh pr view 42", "gh pr create --fill", "gh pr checks 42", "gh pr list --state merged", "git merge feature",
+                   "gh api repos/o/r/pulls/42", "gh api repos/o/r/pulls/42/merges", "echo gh pr merge 42",
+                   "git commit -m 'gh pr merge after review'"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in merges + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A033" in d["rule_ids"], cmd in merges, d)
+                        if cmd in merges:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
         dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
         d = dev.decide("Bash", {"command": "npm install", "allowed_domains": ["registry.example.org"]})
