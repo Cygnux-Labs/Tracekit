@@ -1,4 +1,4 @@
-"""A coding agent and a production volume, after a public incident report: in May 2026 a coding agent that hit a
+"""A coding agent and a production volume, after a public incident report: in 2026 a coding agent that hit a
 credential mismatch deleted PocketOS's production database with one call to Railway's GraphQL API (volumeDelete). Here
 a scripted coding agent makes that call as a Bash tool call under the dev pack: the curl waits for a person (TK-A001),
 the person rejects it and the curl never runs, the agent's other calls run, and the run is exported and verified.
