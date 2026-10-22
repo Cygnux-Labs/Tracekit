@@ -1,0 +1,46 @@
+$ python examples/v2/demos/pocketos.py
+tracekit: the signer's http setting(s) are experimental: they work and are tested, but may change (https://github.com/Cygnux-Labs/Tracekit/wiki/Support)
+
+Bash 'railway status': allow
+  ran
+
+Bash 'railway volume list': allow
+  ran
+
+Bash 'curl -X POST https://backboard.railway.app/graphql/v2 -H "Authorization: Bearer $RAILWAY_TOKEN" -H \'Content-Type: application/json\' -d \'{"query":"mutation { volumeDelete(volumeId: \\"3d2c42fb-b1f0-4b43-9a2c-ffb8c1a0e5d1\\") }"}\'': ask TK-A001 TK-F001 TK-F012 TK-F013
+  destroying a deployment, database or volume; network; egress; egress. Wait for a person to approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
+
+the person at the terminal:
+$ tracekit approvals reject apr-ffd787592f2fcba4d72c3cf1173d8a12 --reason 'don'"'"'t delete the volume; fix the credential mismatch'
+rejected: apr-ffd787592f2fcba4d72c3cf1173d8a12
+
+the agent: the call was rejected
+
+Bash 'git status': allow
+  ran
+
+$ tracekit verify 267361c0260f138521f373c8f3d53600.tkb --trust trust.json
+[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/2af65fc8c95862e3c254324dceed4229 at tree size 14, signed by its pinned log key
+[PASS] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[PASS] signatures — 13 record(s), keys valid at their position
+[PASS] run chain — run '267361c0260f138521f373c8f3d53600' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 14
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 4 tool call(s): T1 0, T2 0, T3 0, untiered 4
+[PASS] args source — 4 record(s): raw 0, parsed 4, coerced 0
+[PASS] isolation — signer-reported: remote 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2af65fc8c95862e3c254324dceed4229); no witness cosignature; key retirements not proven complete.
+
+the held call and the person's answer, as signed records:
+  #1 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-1"}
+  #3 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-2"}
+  #5 policy.decision {"decision": "ask", "rule_ids": ["TK-A001", "TK-F001", "TK-F012", "TK-F013"], "tool": "Bash", "tool_use_id": "call-3"}
+  #7 approval {"approval_id": "apr-ffd787592f2fcba4d72c3cf1173d8a12", "approver": "uid:1000", "decision": "reject", "person": "alice", "reason": "don't delete the volume; fix the credential mismatch", "self_approved": false, "tool_use_id": "call-3"}
+  #9 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-4"}
