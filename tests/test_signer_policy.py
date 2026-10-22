@@ -154,10 +154,19 @@ class CodingPack(unittest.TestCase):
                   "curl -s -X PUT -H 'Authorization: Bearer t' https://api.github.com/repos/o/r/pulls/42/merge",
                   "glab api -X PUT projects/1/merge_requests/2/merge",
                   "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"P\"}) { clientMutationId } }'",
-                  "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"P\"}) { clientMutationId } }'"]
+                  "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"P\"}) { clientMutationId } }'",
+                  # the incident's bulk form, a number from a variable or xargs; options before the subcommand; other senders
+                  "for n in 1 2 3; do gh api -X PUT repos/o/r/pulls/$n/merge; done",
+                  "gh pr list --json number -q '.[].number' | xargs -I% gh api -X PUT repos/o/r/pulls/%/merge",
+                  "gh pr -R o/r merge 1", "gh --repo o/r pr merge 9", "glab -R o/r mr merge 3", "glab mr accept 4",
+                  "curl -s -X POST https://api.github.com/graphql -d 'mutation { enqueuePullRequest(input: {}) { clientMutationId } }'",
+                  "wget --method=PUT https://api.github.com/repos/o/r/pulls/5/merge",
+                  "http PUT https://api.github.com/repos/o/r/pulls/6/merge/", "hub api -X PUT repos/o/r/pulls/7/merge",
+                  "gh api -H 'Accept: application/vnd.github+json' graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'"]
         routine = ["gh pr view 42", "gh pr create --fill", "gh pr checks 42", "gh pr list --state merged", "git merge feature",
                    "gh api repos/o/r/pulls/42", "gh api repos/o/r/pulls/42/merges", "echo gh pr merge 42",
-                   "git commit -m 'gh pr merge after review'"]
+                   "git commit -m 'gh pr merge after review'", "gh pr merge --help", "glab mr list",
+                   "gh pr view 42 --json mergeable", "curl -s https://api.github.com/repos/o/r/pulls/42"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)

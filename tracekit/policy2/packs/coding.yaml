@@ -291,11 +291,14 @@ ask:
   - id: TK-A033
     class: shell
     # a public incident: an agent merged eight pull requests with no human review, past branch protection, with an admin
-    # identity. Held: gh pr merge (--auto and --admin too), glab mr merge, GitHub's and GitLab's merge endpoints through
-    # gh api, glab api or curl, and GitHub's GraphQL merge and auto-merge mutations. A local `git merge` isn't held.
+    # identity. Held: gh pr merge (--auto and --admin too) and glab mr merge or accept, with up to four options before
+    # each word; a merge endpoint (GitHub's pulls/N/merge, GitLab's merge_requests/N/merge, the number possibly a
+    # variable) or GitHub's GraphQL merge, auto-merge or merge-queue mutation, or GitLab's mergeRequestAccept, through
+    # gh, glab or hub api, curl, wget, HTTPie or xh. A local `git merge` isn't held; nor is a gh or glab call asking
+    # for --help (it merges nothing). Lazy, so the fallback engine stays linear
     # lean: any request to a merge endpoint is held, a status check (GET) too; match the method when one gets in the way
-    # lazy, so the fallback engine stays linear
-    pattern: '^(?:(?:gh pr|glab mr) merge(?: |$)|(?:gh api|glab api|curl) .*?/(?:pulls|merge_requests)/[0-9]+/merge(?:[ ?]|$)|gh api graphql .*?(?:mergePullRequest|enablePullRequestAutoMerge))'
+    pattern: '^(?:gh (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}pr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}merge(?: |$)|glab (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}mr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:merge|accept)(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) .*?(?:/(?:pulls|merge_requests)/[^/ ]+/merge(?:[ ?#/]|$)|(?:mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeRequestAccept)\b))'
+    unless: '^(?:gh|glab) (?:.*? )?--help(?: |$)'
     reason: merging a pull request
     remedy: Wait for a person to approve the held call, or leave the pull request open for a person to review and merge.
     rationale: A merge lands code on a shared branch, often with a deploy behind it; a person confirms it.
