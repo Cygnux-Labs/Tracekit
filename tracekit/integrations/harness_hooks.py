@@ -75,7 +75,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
               + ("blocking" if is_pre else "event not recorded"), file=err)
         code = 2 if is_pre else 1
     if code and harness == "gemini" and is_pre and q and q.get("tool_use_id"):   # a blocked call gets no AfterTool
-        agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
+        with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
+            agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     agent_hooks._reply(harness, stdout, code == 0, err.getvalue().strip(), is_pre)
     return agent_hooks._exit(harness, code, is_pre)
 

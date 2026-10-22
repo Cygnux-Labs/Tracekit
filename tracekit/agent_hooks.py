@@ -394,7 +394,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         # which both run
         if os.name != "nt" or harness == "cursor":
             return c
-        m = re.match(r'"([A-Za-z0-9_.:\\/-]+)"', c)
+        m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
         return m.group(1) + c[m.end():] if m else f"& {c}"
 
     def ours(cmds):

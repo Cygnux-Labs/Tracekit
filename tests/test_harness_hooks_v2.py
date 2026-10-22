@@ -298,6 +298,7 @@ class Installer(unittest.TestCase):
     def test_on_windows_the_codex_and_gemini_commands_run_under_powershell_and_cmd(self):
         d = ac.tmpdir(self)
         for exe, start in (("C:\\Python312\\python.exe", "C:\\Python312\\python.exe -I "),   # bare: both shells run it
+                           ("C:/msys64/ucrt64/bin/python.exe", '& "C:/msys64/'),   # cmd.exe ends a program word at /
                            ("C:\\Program Files\\Python312\\python.exe", '& "C:\\Program Files\\')):   # PowerShell's form
             with mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", exe):
                 cmds = {h: self.installed_pre(h, d) for h in ("codex", "gemini")}
@@ -326,7 +327,7 @@ class Installer(unittest.TestCase):
                 else:
                     self.assertEqual(out["decision"], "deny")
         # Codex falls back to cmd.exe when PowerShell isn't found
-        p = subprocess.run(["cmd", "/d", "/c", self.installed_pre("codex", d)], cwd=d, input="not json",
+        p = subprocess.run(f'cmd /d /c "{self.installed_pre("codex", d)}"', cwd=d, input="not json",   # as Codex quotes it
                            capture_output=True, text=True, timeout=120, env=env)
         self.assertEqual((p.returncode, json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"]), (0, "deny"),
                          p.stderr)
@@ -336,11 +337,13 @@ class Installer(unittest.TestCase):
         for name, call, code in (("codex", lambda: harness_hooks.run("codex", deep, event="PreToolUse"), 0),
                                  ("claude", lambda: claude_code._entry("PreToolUse"), 2)):
             with self.subTest(hook=name):
-                err = io.StringIO()
-                with mock.patch.object(sys, "stdin", io.StringIO(deep)), contextlib.redirect_stdout(io.StringIO()), \
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.object(sys, "stdin", io.StringIO(deep)), contextlib.redirect_stdout(out), \
                         contextlib.redirect_stderr(err):
                     self.assertEqual(call(), code)
                 self.assertIn("not a JSON object", err.getvalue())
+                if name == "codex":   # at exit 0 the JSON deny is what blocks
+                    self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_the_v1_hooks_error_path_answers_each_event_as_itself(self):
         for event, code, denied in (("PreToolUse", 0, True), ("UserPromptSubmit", 2, False)):
