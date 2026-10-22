@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -547,27 +548,11 @@ class TestCommand(unittest.TestCase):
         self.assertEqual(sensor.run(imp, lines()), 1)
 
     def test_follow_reads_across_rotation(self):
-        d = tempfile.TemporaryDirectory()
-        self.addCleanup(d.cleanup)
-        path = os.path.join(d.name, "tetragon.log")
-        with open(path, "w") as f:
-            f.write("old\n")   # before the import started: not read
+        path = self.log("tetragon.log")
+        _append(path, "old\n")   # before the import started: not read
         steps = [lambda: _append(path, "a\nb"), lambda: _append(path, "\n"),
                  lambda: (os.rename(path, path + ".1"), _append(path + ".1", "c\n"), _append(path, "d\n"))]
-
-        def sleep(_):
-            if not steps:
-                raise InterruptedError
-            steps.pop(0)()
-        got, f = [], sensor.open_rotating_log(path)
-        self.addCleanup(f.close)
-        with mock.patch.object(sensor.time, "sleep", sleep):
-            try:
-                for text in sensor._follow(f, path):
-                    got.append(text)
-            except InterruptedError:
-                pass
-        self.assertEqual(got, [b"a\n", b"b\n", b"c\n", b"d\n"])
+        self.assertEqual(self.follow(path, steps), [b"a\n", b"b\n", b"c\n", b"d\n"])
 
     def log(self, name):
         d = tempfile.TemporaryDirectory()
@@ -576,16 +561,24 @@ class TestCommand(unittest.TestCase):
         return os.path.join(d.name, name)
 
     def follow(self, path, steps, stat_hook=lambda: None):
-        """_follow's lines while `steps` run, one at each of its sleeps; `stat_hook` runs before each of its stats."""
-        got, f, stat = [], sensor.open_rotating_log(path), os.stat
+        """_follow's lines while `steps` run, one at each of its sleeps; `stat_hook` runs before each of its stats.
+        time.sleep and os.stat are patched for the whole process: another test's thread still running (a viewer's
+        tail) gets the real ones, or it would take steps out of order."""
+        got, f, stat, real_sleep, me = [], sensor.open_rotating_log(path), os.stat, time.sleep, threading.current_thread()
         self.addCleanup(f.close)
 
-        def sleep(_):
+        def sleep(s):
+            if threading.current_thread() is not me:
+                return real_sleep(s)
             if not steps:
                 raise InterruptedError
             steps.pop(0)()
-        with mock.patch.object(sensor.time, "sleep", sleep), \
-                mock.patch.object(sensor.os, "stat", lambda p: (stat_hook(), stat(p))[1]):
+
+        def stat_(p):
+            if threading.current_thread() is me:
+                stat_hook()
+            return stat(p)
+        with mock.patch.object(sensor.time, "sleep", sleep), mock.patch.object(sensor.os, "stat", stat_):
             try:
                 for text in sensor._follow(f, path):
                     got.append(text)

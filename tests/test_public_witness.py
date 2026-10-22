@@ -40,7 +40,7 @@ class Server(unittest.TestCase):
         threading.Thread(target=self.srv.serve_forever, args=(0.05,), daemon=True).start()
         self.addCleanup(self.stop)
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
-        self.client = TlogWitness(self.url, self.vkey, timeout=2)
+        self.client = TlogWitness(self.url, self.vkey)
 
     def stop(self):
         self.srv.shutdown()

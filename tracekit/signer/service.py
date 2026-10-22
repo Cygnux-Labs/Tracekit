@@ -21,6 +21,7 @@ signer.yaml:
     socket_mode: "0666"                      # chmod the socket after bind (default: as the umask leaves it)
     tcp_endpoint: /run/tracekit/endpoint.json   # loopback TCP dev transport (token, mutual HMAC)
     http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls, oidc or token identity (tracekit/transport/http.py)
+                                             # port 0: a free one, named on the start line ("serving on host:port")
     durability: ack-on-write                 # or ack-on-fsync
     log_key: {aws_kms: {key_id: alias/tracekit-log, region: eu-west-1}}   # the log key in AWS KMS
                                              # (tracekit.signer.logkey); default keys/log.key
@@ -4940,7 +4941,12 @@ def main(argv=None):
         service.close()
         print(f"tracekit signer: {e}", file=sys.stderr)
         return 1
-    print(f"tracekit signer {__version__} serving", flush=True)
+    where = ""
+    if cfg.get("http"):   # the address it bound: http.listen may ask for port 0, and a script reads the port here
+        from tracekit.transport.http import HttpServer
+        host, port = next(s for s in servers if isinstance(s, HttpServer)).server_address[:2]
+        where = f" on {host}:{port}"
+    print(f"tracekit signer {__version__} serving{where}", flush=True)
     try:
         while not stop.wait(1):
             pass

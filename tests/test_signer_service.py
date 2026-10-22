@@ -426,6 +426,26 @@ class TestCli(unittest.TestCase):
         out = subprocess.run(cmd + ["fsck", "--config", cfg], cwd=ROOT, capture_output=True, timeout=30)
         self.assertEqual((out.returncode, out.stdout.strip()), (0, b"ok"))
 
+    def test_serve_names_the_http_port_it_bound(self):
+        """http.listen with port 0 takes a free port, and the serving line names it: a script that picked a free port
+        itself raced every other process for it (the demos' signer failed with Address already in use)."""
+        d = tmpdir(self)
+        cfg = os.path.join(d, "signer.yaml")
+        with open(cfg, "w") as f:   # JSON is YAML
+            json.dump({"data_dir": "data", "socket": "s.sock", "http": {
+                "listen": "127.0.0.1:0", "insecure_loopback": True, "authenticators": ["token"], "tokens": "tokens.json"}}, f)
+        p = subprocess.Popen([sys.executable, "-m", "tracekit", "signer", "serve", "--config", cfg], cwd=ROOT,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(p.kill)
+        line = p.stdout.readline()
+        if " serving on 127.0.0.1:" not in line:
+            self.fail(line + p.communicate(timeout=30)[1])
+        port = int(line.rsplit(":", 1)[1])
+        self.assertNotEqual(port, 0)
+        socket.create_connection(("127.0.0.1", port), timeout=10).close()   # the signer listens there
+        p.terminate()
+        self.assertEqual(p.wait(30), 0)
+
 
 @pytest.mark.perf
 @unittest.skipUnless(sys.platform.startswith("linux"), "the S1 gates are Linux-only")
