@@ -39,7 +39,7 @@ class Harnesses(DaemonCase):
                                              "tool_input": {"patch": patch}})[0], 0)
         code, out, err = self.hook("codex", {**base, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "c3",
                                              "tool_input": {"command": "sudo rm -rf /"}})
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 0)   # Codex reads the deny from the JSON (agent_hooks._exit)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertIn("Blocked by tracekit policy", err)
         evs = self.events("cx-1")

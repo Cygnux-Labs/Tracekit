@@ -55,7 +55,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
             "tool call blocked" if pre else "event not recorded")
         print(msg, file=stderr)
         agent_hooks._reply(harness, stdout, not pre, msg, pre)
-        return 2 if pre else 0
+        return agent_hooks._exit(harness, 2 if pre else 0, pre)
     p = dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {}
     is_pre = p.get("hook_event_name") in agent_hooks.PRE
     err, q = agent_hooks.Tee(stderr), None
@@ -77,7 +77,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     if code and harness == "gemini" and is_pre and q and q.get("tool_use_id"):   # a blocked call gets no AfterTool
         agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     agent_hooks._reply(harness, stdout, code == 0, err.getvalue().strip(), is_pre)
-    return code
+    return agent_hooks._exit(harness, code, is_pre)
 
 
 def said_since(harness, p, stderr):

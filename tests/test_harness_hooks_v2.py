@@ -151,7 +151,7 @@ class Mapping(HarnessCase):
                             "tool_input": {"command": "ls"}}, "decision")):
             with self.subTest(harness=harness):
                 code, out, err = self.hook(harness, payload)
-                self.assertEqual(code, 2)
+                self.assertEqual(code, 0 if harness == "codex" else 2)   # Codex reads the deny from the JSON
                 self.assertIn("deny", json.dumps(json.loads(out)))
                 self.assertIn(reply, out)
                 self.assertIn("tool call blocked", err)
@@ -161,7 +161,7 @@ class Mapping(HarnessCase):
     def test_signer_unreachable_is_fail_closed_by_default(self):
         os.environ["TRACEKIT_SIGNER"] = os.path.join(os.environ["HOME"], "nowhere.sock")
         code, out, err = self.hook("codex", cases("codex")[0]["payload"])
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertIn("blocking (fail-closed)", err)
 
@@ -174,7 +174,8 @@ class Mapping(HarnessCase):
         self.assertIn("event not recorded", err)
         with mock.patch.object(claude_code, "handle", side_effect=RuntimeError("boom")):
             self.assertEqual(self.hook("codex", prompt)[0], 1)
-            self.assertEqual(self.hook("codex", cases("codex")[0]["payload"])[0], 2)
+            code, out, _ = self.hook("codex", cases("codex")[0]["payload"])
+            self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (0, "deny"))
 
     def test_a_refusal_blocks(self):
         with mock.patch.object(self.signer, "decide", side_effect=RPCError("quota_exceeded", "streams_per_run")):
@@ -199,12 +200,12 @@ class OnTheDevPolicy(HarnessCase):
             code, out, err = self.hook("codex", {"session_id": "s", "hook_event_name": "PreToolUse",
                                                  "tool_name": "apply_patch", "tool_use_id": f"p{i}",
                                                  "tool_input": {"command": patch.format(target)}})
-            self.assertEqual(code, 0 if target == "src/b.py" else 2, target)
-            if code:
+            self.assertEqual((code, bool(out)), (0, target != "src/b.py"), target)   # a deny is Codex's JSON
+            if out:
                 self.assertIn("TK-D005", err)
-        code, _, err = self.hook("codex", {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
-                                           "tool_use_id": "w1", "tool_input": {"session_id": 1, "chars": "sudo -i\n"}})
-        self.assertEqual(code, 2)
+        code, out, err = self.hook("codex", {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
+                                             "tool_use_id": "w1", "tool_input": {"session_id": 1, "chars": "sudo -i\n"}})
+        self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (0, "deny"))
         self.assertIn("TK-D001", err)
 
     def test_a_gemini_sandbox_expansion_waits_for_a_person(self):
@@ -246,7 +247,8 @@ class Installer(unittest.TestCase):
                     self.assertEqual(len(cmds), 8 if harness == "cursor" else 5)   # Cursor: and what its model said
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
-                    self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
+                    self.assertEqual(cmd.startswith("& "), os.name == "nt" and harness != "cursor", cmd)
+                    self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "))[0]), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
                     if harness == "cursor":
                         self.assertTrue(all(h["failClosed"] for h in hooks))
@@ -265,9 +267,45 @@ class Installer(unittest.TestCase):
         p = subprocess.run(cmd, shell=True, cwd=d, input=json.dumps({"hook_event_name": "PreToolUse", "session_id": "s"}),
                            capture_output=True, text=True, timeout=60,
                            env=dict(os.environ, TRACEKIT_RUNTIME_DIR=os.path.join(d, "run"), HOME=d))
-        self.assertEqual(p.returncode, 2, p.stderr)   # no tool_use_id: blocked before reaching any signer
-        self.assertEqual(json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(p.returncode, 0, p.stderr)   # no tool_use_id: blocked before reaching any signer
+        out = json.loads(p.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn("no tool_use_id", out["permissionDecisionReason"])   # Codex ignores a deny without a reason
         self.assertIn("no tool_use_id", p.stderr)
+
+    def installed_pre(self, harness, d):
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install(harness, d, v2=True)
+        with open(agent_hooks.config_path(harness, d)) as f:
+            groups = json.load(f)["hooks"]["PreToolUse" if harness == "codex" else "BeforeTool"]
+        return groups[0]["hooks"][0]["command"]
+
+    def test_on_windows_the_codex_and_gemini_commands_use_powershells_call_operator(self):
+        d = ac.tmpdir(self)
+        with mock.patch("os.name", "nt"):
+            cmds = {h: self.installed_pre(h, d) for h in ("codex", "gemini")}
+        for harness, cmd in cmds.items():
+            self.assertTrue(cmd.startswith('& "'), cmd)
+            self.assertEqual(agent_hooks._version(cmd), "v2")
+        self.assertFalse(self.installed_pre("codex", d).startswith("&"))   # POSIX shells: unchanged
+
+    @unittest.skipUnless(os.name == "nt", "Codex and Gemini CLI run hooks through PowerShell on Windows")
+    def test_under_powershell_the_installed_hook_blocks(self):
+        d = ac.tmpdir(self)
+        env = dict(os.environ, TRACEKIT_RUNTIME_DIR=os.path.join(d, "run"), HOME=d, USERPROFILE=d)
+        # Gemini CLI appends `exit $LASTEXITCODE` and reads the JSON at any exit status; Codex reads it at exit 0
+        for harness, tail in (("codex", ""), ("gemini", "; exit $LASTEXITCODE")):
+            with self.subTest(harness=harness):
+                p = subprocess.run(["powershell", "-NoProfile", "-Command", self.installed_pre(harness, d) + tail],
+                                   cwd=d, input="not json", capture_output=True, text=True, timeout=120, env=env)
+                self.assertIn("tool call blocked", p.stderr)   # reached the hook: blocked before any signer
+                out = json.loads(p.stdout)
+                if harness == "codex":
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                    self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+                    self.assertTrue(out["hookSpecificOutput"]["permissionDecisionReason"])
+                else:
+                    self.assertEqual(out["decision"], "deny")
 
 
 

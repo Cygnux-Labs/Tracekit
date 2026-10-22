@@ -236,7 +236,14 @@ def run(harness, raw, stdout=None, stderr=None):
         _gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     msg = err.getvalue().strip()
     _reply(harness, stdout, code == 0, msg, is_pre)
-    return 2 if code else 0
+    return _exit(harness, 2 if code else 0, is_pre)
+
+
+def _exit(harness, code, is_pre):
+    """The exit status that carries a hook's answer (code: 0 allowed, else blocked). Codex reads a pre-tool call's deny
+    from the JSON _reply writes, at exit 0, on every platform; under PowerShell, which runs its hooks on Windows, an exit
+    status of 2 reaches it as 1."""
+    return 0 if harness == "codex" and is_pre else code
 
 
 def _reply(harness, stdout, allowed, msg, is_pre):
@@ -250,7 +257,7 @@ def _reply(harness, stdout, allowed, msg, is_pre):
         stdout.write(json.dumps({} if allowed else {"decision": "deny", "reason": msg[:500]}))  # stdout must be JSON only
     elif harness == "codex" and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                                        "permissionDecisionReason": msg[:500]}}))
+                                                        "permissionDecisionReason": msg[:500] or "Blocked by tracekit"}}))
     stdout.flush()
 
 
@@ -379,8 +386,11 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     new, removed = "v2" if v2 else "v1", set()
 
     def cmd(ev):   # the v2 hook names its event, so it can block a pre-tool payload it cannot read
-        return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness, ev) if v2 else (harness,),
-                             python, ev in PRE)
+        c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness, ev) if v2 else (harness,),
+                          python, ev in PRE)
+        # Codex and Gemini CLI run a hook's command under PowerShell on Windows, which runs a quoted program path only
+        # through its call operator
+        return f"& {c}" if os.name == "nt" and harness != "cursor" else c
 
     def ours(cmds):
         vs = {_version(c) for c in cmds} - {None}
@@ -450,7 +460,7 @@ def entry(harness=None):
         closed = H.fail_closed()
         print(f"[tracekit] {harness} hook error ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
         _reply(harness, sys.stdout, not closed, str(e), True)
-        return 2 if closed else 0
+        return _exit(harness, 2 if closed else 0, True)
 
 
 if __name__ == "__main__":

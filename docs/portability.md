@@ -51,6 +51,9 @@ Windows has no peer-credential call that Python exposes. Because the signer shar
 deployment's evidence is only as strong as its witness: point `--witness` at a repository or share the agent's user
 cannot rewrite (docs/witnesses.md).
 
+Codex and Gemini CLI run hooks through PowerShell on Windows, so `tracekit init` writes their hook commands with
+PowerShell's call operator (`& "<python>" -I ...`).
+
 ## Python versions
 
 3.9 to 3.13 are declared, and CI runs 3.9, 3.12 and 3.13. The LangChain adapter's tests need Python 3.10 or newer (LangChain's own requirement)
