@@ -18,7 +18,7 @@
    "decision": "deny",
    "request": {"tool": "Bash", "tool_call_id": "call_3",
                "args": {"session_id": 7, "chars": "rm -rf build\n", "command": "rm -rf build\n"}},
-   "exit": 0,
+   "exit": 2,
    "stdout": {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                      "permissionDecisionReason": "Blocked by tracekit policy: R-1"}}},
   {"name": "apply_patch: add, update with move, delete; held and approved",

@@ -21,6 +21,7 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
 What each harness exposes decides what Tracekit can see: Gemini CLI does not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order; Cursor reports failures through postToolUseFailure. Reasoning
 capture reads Claude Code's transcript format only and is off for these harnesses."""
+import contextlib
 import hashlib
 import io
 import json
@@ -233,17 +234,19 @@ def run(harness, raw, stdout=None, stderr=None):
     finally:
         sys.stdin, sys.stderr = real_stdin, real_stderr
     if code and harness == "gemini" and is_pre and q.get("tool_use_id"):   # a blocked call gets no AfterTool
-        _gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
+        with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
+            _gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     msg = err.getvalue().strip()
     _reply(harness, stdout, code == 0, msg, is_pre)
     return _exit(harness, 2 if code else 0, is_pre)
 
 
 def _exit(harness, code, is_pre):
-    """The exit status that carries a hook's answer (code: 0 allowed, else blocked). Codex reads a pre-tool call's deny
-    from the JSON _reply writes, at exit 0, on every platform; under PowerShell, which runs its hooks on Windows, an exit
-    status of 2 reaches it as 1."""
-    return 0 if harness == "codex" and is_pre else code
+    """The exit status that carries a hook's answer (code: 0 allowed, else blocked). Codex blocks a pre-tool call at
+    exit 2 with a reason on stderr, whatever a shell startup file printed to stdout; on Windows its hooks run under
+    PowerShell, which hands it 2 as 1, so there the JSON deny _reply writes carries the block, at exit 0, the only
+    status at which Codex reads it."""
+    return 0 if harness == "codex" and is_pre and os.name == "nt" else code
 
 
 def _reply(harness, stdout, allowed, msg, is_pre):
