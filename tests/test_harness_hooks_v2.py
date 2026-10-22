@@ -238,6 +238,11 @@ class OnTheDevPolicy(HarnessCase):
 
 
 class Installer(unittest.TestCase):
+    def setUp(self):
+        agent = mock.patch.object(claude_code, "AGENT", claude_code.AGENT)   # the in-process hooks below set it
+        agent.start()
+        self.addCleanup(agent.stop)
+
     def cli(self, *argv):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
