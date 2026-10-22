@@ -388,9 +388,14 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     def cmd(ev):   # the v2 hook names its event, so it can block a pre-tool payload it cannot read
         c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness, ev) if v2 else (harness,),
                           python, ev in PRE)
-        # Codex and Gemini CLI run a hook's command under PowerShell on Windows, which runs a quoted program path only
-        # through its call operator
-        return f"& {c}" if os.name == "nt" and harness != "cursor" else c
+        # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
+        # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
+        # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
+        # which both run
+        if os.name != "nt" or harness == "cursor":
+            return c
+        m = re.match(r'"([A-Za-z0-9_.:\\/-]+)"', c)
+        return m.group(1) + c[m.end():] if m else f"& {c}"
 
     def ours(cmds):
         vs = {_version(c) for c in cmds} - {None}

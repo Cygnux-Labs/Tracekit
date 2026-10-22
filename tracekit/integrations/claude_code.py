@@ -463,7 +463,7 @@ def _entry(event=None):
     raw = sys.stdin.buffer.read().decode("utf-8", "replace") if hasattr(sys.stdin, "buffer") else sys.stdin.read()
     try:
         p = json.loads(raw) if raw.strip() else {}
-    except ValueError:
+    except (ValueError, RecursionError):   # nested too deep to read
         p = None
     if not isinstance(p, dict) and event:
         pre = event == "PreToolUse"

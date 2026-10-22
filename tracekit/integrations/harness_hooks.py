@@ -47,7 +47,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     try:
         p = json.loads(raw) if raw.strip() else {}
-    except ValueError:
+    except (ValueError, RecursionError):   # nested too deep to read
         p = None
     if not isinstance(p, dict) and event:
         pre = event in agent_hooks.PRE

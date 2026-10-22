@@ -247,8 +247,9 @@ class Installer(unittest.TestCase):
                     self.assertEqual(len(cmds), 8 if harness == "cursor" else 5)   # Cursor: and what its model said
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
-                    self.assertEqual(cmd.startswith("& "), os.name == "nt" and harness != "cursor", cmd)
-                    self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "))[0]), cmd)
+                    if os.name == "nt" and harness != "cursor":   # PowerShell can't start a quoted first word
+                        self.assertFalse(cmd.startswith('"'), cmd)
+                    self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
                     if harness == "cursor":
                         self.assertTrue(all(h["failClosed"] for h in hooks))
@@ -294,13 +295,16 @@ class Installer(unittest.TestCase):
             groups = json.load(f)["hooks"]["PreToolUse" if harness == "codex" else "BeforeTool"]
         return groups[0]["hooks"][0]["command"]
 
-    def test_on_windows_the_codex_and_gemini_commands_use_powershells_call_operator(self):
+    def test_on_windows_the_codex_and_gemini_commands_run_under_powershell_and_cmd(self):
         d = ac.tmpdir(self)
-        with mock.patch("os.name", "nt"):
-            cmds = {h: self.installed_pre(h, d) for h in ("codex", "gemini")}
-        for harness, cmd in cmds.items():
-            self.assertTrue(cmd.startswith('& "'), cmd)
-            self.assertEqual(agent_hooks._version(cmd), "v2")
+        for exe, start in (("C:\\Python312\\python.exe", "C:\\Python312\\python.exe -I "),   # bare: both shells run it
+                           ("C:\\Program Files\\Python312\\python.exe", '& "C:\\Program Files\\')):   # PowerShell's form
+            with mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", exe):
+                cmds = {h: self.installed_pre(h, d) for h in ("codex", "gemini")}
+            for harness, cmd in cmds.items():
+                with self.subTest(exe=exe, harness=harness):
+                    self.assertTrue(cmd.startswith(start), cmd)
+                    self.assertEqual(agent_hooks._version(cmd), "v2")
         with mock.patch("os.name", "posix"):
             self.assertFalse(self.installed_pre("codex", d).startswith("&"))   # POSIX shells: unchanged
 
@@ -321,6 +325,33 @@ class Installer(unittest.TestCase):
                     self.assertTrue(out["hookSpecificOutput"]["permissionDecisionReason"])
                 else:
                     self.assertEqual(out["decision"], "deny")
+        # Codex falls back to cmd.exe when PowerShell isn't found
+        p = subprocess.run(["cmd", "/d", "/c", self.installed_pre("codex", d)], cwd=d, input="not json",
+                           capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual((p.returncode, json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"]), (0, "deny"),
+                         p.stderr)
+
+    def test_a_payload_nested_too_deep_to_read_is_blocked(self):
+        deep = "[" * 100_000
+        for name, call, code in (("codex", lambda: harness_hooks.run("codex", deep, event="PreToolUse"), 0),
+                                 ("claude", lambda: claude_code._entry("PreToolUse"), 2)):
+            with self.subTest(hook=name):
+                err = io.StringIO()
+                with mock.patch.object(sys, "stdin", io.StringIO(deep)), contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(err):
+                    self.assertEqual(call(), code)
+                self.assertIn("not a JSON object", err.getvalue())
+
+    def test_the_v1_hooks_error_path_answers_each_event_as_itself(self):
+        for event, code, denied in (("PreToolUse", 0, True), ("UserPromptSubmit", 2, False)):
+            with self.subTest(event=event):
+                out = io.StringIO()
+                with mock.patch.object(agent_hooks, "run", side_effect=RuntimeError("boom")), \
+                        mock.patch.object(agent_hooks.H, "fail_closed", return_value=True), \
+                        mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"hook_event_name": event}))), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(agent_hooks.entry("codex"), code)
+                self.assertEqual("deny" in out.getvalue(), denied, out.getvalue())
 
 
 

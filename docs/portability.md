@@ -51,8 +51,9 @@ Windows has no peer-credential call that Python exposes. Because the signer shar
 deployment's evidence is only as strong as its witness: point `--witness` at a repository or share the agent's user
 cannot rewrite (docs/witnesses.md).
 
-Codex and Gemini CLI run hooks through PowerShell on Windows, so `tracekit init` writes their hook commands with
-PowerShell's call operator (`& "<python>" -I ...`).
+Codex and Gemini CLI run hooks through PowerShell on Windows (Codex through cmd.exe when PowerShell isn't found), so
+`tracekit init` writes the interpreter's path in their hook commands bare when it needs no quotes, which both shells
+run, and otherwise with PowerShell's call operator (`& "<python>" -I ...`).
 
 ## Python versions
 
