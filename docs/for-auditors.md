@@ -30,7 +30,8 @@ of the party supplying the evidence.
    Failure means a check failed. `UNVERIFIABLE` or `UNUSABLE BUNDLE` means the verifier cannot decide.
 2. `Assurance:` The sample's `dev` warns that the agent could rewrite the record.
    In v2, `dev` and `local` provide no independent checkpoint assurance.
-   `witnessed` needs witnesses you trust as independent, even if isolation is `same-user`.
+   `witnessed` means a witness you trust as independent cosigned the checkpoint; it can show even when
+   isolation is `same-user`.
    `witnessed+monitored` also checks a monitor's report.
 3. `coverage` (a check line above the summaries): Read its warnings about missing
    calls and unseen actions. V2's `coverage matrix` also names actions only reported or not covered.
