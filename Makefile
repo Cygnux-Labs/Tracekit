@@ -43,7 +43,7 @@ verify-page:
 	@echo "browser verifier: sdk/typescript/dist/verify.html"
 
 lint:
-	$(PY) -m pyflakes tracekit tracekit_sdk.py tests eval examples contrib
+	$(PY) -m pyflakes tracekit tracekit_sdk.py tests eval examples contrib integrations
 
 build:
 	$(PY) -m pip install -q build twine

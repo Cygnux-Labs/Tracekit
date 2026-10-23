@@ -7,6 +7,7 @@ recursive-include tracekit/ui *.html
 recursive-include tests *.py *.jsonl *.json *.tkb *.pub *.html
 recursive-include docs *.md *.png *.tkb *.pub *.html
 recursive-include plugin *
+recursive-include integrations *.py *.yaml *.md
 include .claude-plugin/marketplace.json server.json action.yml Makefile CONTRIBUTING.md sdk/typescript/package.json
 recursive-include examples *.py
 prune paper
