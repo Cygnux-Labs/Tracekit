@@ -1,8 +1,9 @@
-"""Hooks for Codex CLI, Cursor and Gemini CLI, on the same pipeline as the Claude Code hook.
+"""Hooks for Codex CLI, Cursor, Gemini CLI and OpenCode, on the same pipeline as the Claude Code hook.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
     tracekit init --dev --agent gemini       # ~/.gemini/settings.json
+    tracekit init --dev --agent opencode     # ~/.config/opencode/plugins/tracekit.js
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -33,8 +34,8 @@ from . import hook as H
 from .core import canon
 from .locking import lock_file, unlock_file
 
-HARNESSES = ("codex", "cursor", "gemini")
-AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli"}
+HARNESSES = ("codex", "cursor", "gemini", "opencode")
+AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode"}
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
@@ -42,7 +43,14 @@ GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_fil
                 "glob": "Glob", "search_file_content": "Grep", "list_directory": "LS", "web_fetch": "WebFetch",
                 "google_web_search": "WebSearch", "save_memory": "Memory"}
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Delete", "Task": "Task", "Edit": "Edit"}
+OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
+                  "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Task",
+                  "todowrite": "TodoWrite"}
 PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
+OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path"}
+# OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
+OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
+JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
 
 
 def _input(v):
@@ -92,6 +100,16 @@ def tool(harness, name, ti):
             if m:
                 ti["url"] = m.group(0)
         return GEMINI_TOOLS.get(name, name), ti
+    if harness == "opencode":
+        # the path the tool itself reads decides, never another path key the model sent beside it (OpenCode drops
+        # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
+        if name in OPENCODE_PATH_ARG:
+            ti["file_path"] = ti.get(OPENCODE_PATH_ARG[name])
+        if name == "apply_patch":   # every file OpenCode's parser finds, whatever paths the model sent
+            files = [JS_TRIM.sub("", f) for f in OPENCODE_PATCH_FILE.findall(str(ti.get("patchText") or ""))]
+            ti["paths"] = files
+            ti["file_path"] = files[0] if files else None
+        return OPENCODE_TOOLS.get(name, name), ti
     return name, ti
 
 
@@ -195,6 +213,16 @@ def normalise(harness, p):
         if ev == "SessionEnd":
             return dict(out, hook_event_name="SessionEnd", reason=p.get("reason") or "session end")
         return None
+    if harness == "opencode":
+        out["session_id"] = p.get("session_id")
+        if ev in ("tool.execute.before", "tool.execute.after"):
+            out["hook_event_name"] = "PreToolUse" if ev == "tool.execute.before" else "PostToolUse"
+            out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
+            out["tool_use_id"] = p.get("tool_use_id")
+            if ev == "tool.execute.after":
+                out["tool_response"] = p.get("tool_response")
+            return out
+        return None
     raise ValueError(f"unknown harness {harness!r}")
 
 
@@ -210,7 +238,7 @@ class Tee(io.StringIO):
         return super().write(s)
 
 
-PRE = ("PreToolUse", "preToolUse", "BeforeTool")
+PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
 
 
 def run(harness, raw, stdout=None, stderr=None):
@@ -266,10 +294,14 @@ def _reply(harness, stdout, allowed, msg, is_pre):
 
 # ------------------------------------------------------------------ installer
 
-def config_path(harness, project=None):
-    base = project if project else os.path.expanduser("~")
+def config_path(harness, project=None, home=None):
+    """The hook config of `harness`: a project's (project) or a user's (home, default ~), which differ for OpenCode."""
+    base = project or home or os.path.expanduser("~")
     return {"codex": os.path.join(base, ".codex", "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
-            "gemini": os.path.join(base, ".gemini", "settings.json")}[harness]
+            "gemini": os.path.join(base, ".gemini", "settings.json"),
+            "opencode": os.path.join(base, ".opencode", "plugins", "tracekit.js") if project else
+                        os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
+                                     os.path.join(base, ".config"), "opencode", "plugins", "tracekit.js")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -366,11 +398,103 @@ def _version(cmd):
     return "v2" if V2_MODULE in cmd else "v1" if "tracekit.agent_hooks" in cmd else None
 
 
+OPENCODE_MARKER = "// Installed by Tracekit; tracekit uninstall --agent opencode removes this file."
+
+
+def _opencode_plugin(python, v2):
+    """The local OpenCode plugin. OpenCode runs plugins with Bun, whose synchronous child process API lets a
+    before hook wait for Tracekit's allow/deny (or a person's approval) before returning to the tool executor."""
+    module = V2_MODULE if v2 else "tracekit.agent_hooks"
+    args = [python or sys.executable, "-I", "-m", module, "opencode"]
+    return f'''{OPENCODE_MARKER}
+const python = {json.dumps(args)};
+const decoder = new TextDecoder();
+
+function tracekit(event, input, toolInput, toolResponse) {{
+  const command = [...python];
+  if ({str(v2).lower()}) command.push(event);
+  const payload = {{
+    hook_event_name: event,
+    session_id: input.sessionID,
+    tool_use_id: input.callID,
+    tool_name: input.tool,
+    tool_input: toolInput,
+    tool_response: toolResponse,
+    cwd: input.cwd,
+  }};
+  try {{
+    const result = Bun.spawnSync({{
+      cmd: command,
+      cwd: input.cwd,
+      stdin: new TextEncoder().encode(JSON.stringify(payload)),
+      stdout: "pipe",
+      stderr: "pipe",
+    }});
+    return {{ code: result.exitCode, message: decoder.decode(result.stderr).trim() }};
+  }} catch (error) {{
+    return {{ code: 1, message: `[tracekit] OpenCode hook error (${{error}})` }};
+  }}
+}}
+
+export const TracekitPlugin = async ({{ directory }}) => ({{
+  "tool.execute.before": async (input, output) => {{
+    const result = tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
+    if (result.code !== 0) {{   // blocked (2), or the hook could not decide the call: it doesn't run
+      throw new Error(result.message || "Blocked by Tracekit: the hook could not decide this call");
+    }}
+  }},
+  "tool.execute.after": async (input, output) => {{
+    const result = tracekit("tool.execute.after", {{ ...input, cwd: directory }}, input.args, output);
+    if (result.code !== 0) console.error(result.message);
+  }},
+}});
+'''
+
+
+def _install_opencode(path, uninstall=False, v2=False, python=None):
+    """Install one owned local plugin without overwriting an OpenCode plugin that is not Tracekit's."""
+    from .deploy import files
+    from .install import SettingsError
+    path = os.path.abspath(path)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        d = files.open_dir(os.path.dirname(path))
+        try:
+            name = os.path.basename(path)
+            raw = files.read(d, name)
+            try:
+                text = raw.decode("utf-8") if raw is not None else ""
+            except UnicodeDecodeError as e:
+                raise SettingsError(f"{path} is not UTF-8; Tracekit did not change it.") from e
+            if raw is not None and OPENCODE_MARKER not in text:
+                raise SettingsError(f"{path} is not Tracekit's plugin; Tracekit did not change it.")
+            old = _version(text)
+            if raw is not None:
+                files.backup(d, name, raw)
+            if uninstall:
+                if raw is not None:
+                    target = name if isinstance(d, int) else path
+                    os.unlink(target, **({"dir_fd": d} if isinstance(d, int) else {}))
+            else:
+                files.write(d, name, _opencode_plugin(python, v2).encode("utf-8"), 0o600)
+        finally:
+            files.close(d)
+    except (files.UnsafePath, OSError) as e:
+        raise SettingsError(f"{path}: {e}") from e
+    new = "v2" if v2 else "v1"
+    if old and (uninstall or old != new):
+        print(f"Tracekit {old} hooks removed from {path}" if uninstall else
+              f"Tracekit {old} hooks replaced by {new} hooks in {path}")
+    return path
+
+
 def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
     """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
     from .install import SettingsError, _atomic_write_json, _backup, _hook_command
     path = path or config_path(harness, project)
+    if harness == "opencode":
+        return _install_opencode(path, uninstall, v2, python)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     s = {}
     if os.path.exists(path):

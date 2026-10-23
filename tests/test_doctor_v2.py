@@ -653,11 +653,14 @@ class CodingAgentReasoning(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         from tracekit import agent_hooks
-        with mock.patch.dict(os.environ, {"HOME": d}), mock.patch("os.getcwd", return_value=d), \
-                contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.dict(os.environ, {"HOME": d, "XDG_CONFIG_HOME": os.path.join(d, ".config")}), \
+                mock.patch("os.getcwd", return_value=d), contextlib.redirect_stdout(io.StringIO()):
             agent_hooks.install("codex", v2=True)
             agent_hooks.install("gemini")   # v1: not checked
             self.assertEqual(doctor._dev_harnesses(), {"codex": agent_hooks.config_path("codex")})
+            agent_hooks.install("opencode", v2=True)   # a JavaScript plugin, read as one
+            self.assertEqual(doctor._dev_harnesses(), {"codex": agent_hooks.config_path("codex"),
+                                                       "opencode": agent_hooks.config_path("opencode")})
 
 
 @unittest.skipIf(os.name == "nt", "POSIX modes")

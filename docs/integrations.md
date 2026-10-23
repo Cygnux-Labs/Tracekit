@@ -34,7 +34,7 @@ Another agent: record its calls with the SDK's run handle ([custom agent](quicks
 |---|---|---|
 | Claude Code hooks (`tracekit init --dev --v2`) | Stable | [quickstart](quickstart-v2.md) |
 | The Claude Code plugin | Experimental | [plugin](../plugin/README.md) |
-| Codex CLI, Cursor, Gemini CLI | Experimental | [coding agents](coding-agents.md) |
+| Codex CLI, Cursor, Gemini CLI, OpenCode | Experimental | [coding agents](coding-agents.md) |
 
 ## Sandboxes, gateways and sensors
 

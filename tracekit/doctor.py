@@ -157,6 +157,13 @@ def _dev_harnesses():
     out = {}
     for harness in agent_hooks.HARNESSES:
         for path in (agent_hooks.config_path(harness), agent_hooks.config_path(harness, os.getcwd())):
+            if harness == "opencode":   # a JavaScript plugin, not a JSON hook config
+                try:
+                    if agent_hooks._version(install.agent_file(path).decode("utf-8", "replace")) == "v2":
+                        out.setdefault(harness, path)
+                except OSError:
+                    pass
+                continue
             try:
                 hooks = (_json(path) or {}).get("hooks") or {}
                 cmds = [h.get("command") for lst in hooks.values() for g in lst
