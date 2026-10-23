@@ -73,8 +73,8 @@ class Hermes:
                 results.append(out["value"])
         return results
 
-    def call(self, name, args, tool_call_id="call-1", session_id="s1"):
-        """One tool call: (what the model reads, whether the tool ran)."""
+    def call(self, name, args, tool_call_id="call-1", session_id="s1", run=tool):
+        """One tool call, the tool run by `run`: (what the model reads, whether the tool ran)."""
         ids = {"task_id": "", "session_id": session_id, "tool_call_id": tool_call_id, "turn_id": "turn-1",
                "api_request_id": "req-1", "middleware_trace": [], "telemetry_schema_version": 1}
         block, modified = None, None
@@ -90,7 +90,7 @@ class Hermes:
             self.invoke("post_tool_call", tool_name=name, args=args, result=result, duration_ms=0, status="blocked",
                         error_type="plugin_block", error_message=block, **ids)
             return result, False
-        result = tool(name, args)
+        result = run(name, args)
         error = json.loads(result).get("error")
         self.invoke("post_tool_call", tool_name=name, args=args, result=result, duration_ms=1,
                     status="error" if error else "ok", error_type="tool_error" if error else None, error_message=error,
@@ -282,6 +282,22 @@ class Plugin(unittest.TestCase):
         self.assertEqual(len(self.made), 3)
         self.assertEqual([len([e for e in self.service.log.storage.iter_run("default", r)
                                if e["event"]["type"] == "tool.result"]) for r in self.runs()], [1, 1, 1])
+
+    def test_two_sessions_calls_under_one_id_are_recorded_apart(self):
+        """A provider may number its calls per response: one session's call_0 doesn't complete another's."""
+        started, release = threading.Event(), threading.Event()
+
+        def slow(name, args):
+            started.set()
+            release.wait(30)
+            return tool(name, args)
+        t = threading.Thread(target=self.hermes.call, args=("echo", {"text": "slow"}, "call_0", "s1", slow))
+        t.start()
+        started.wait(30)
+        self.hermes.call("echo", {"text": "fast"}, "call_0", session_id="s2")
+        release.set()
+        t.join(30)
+        self.assertEqual([r["ok"] for r in self.events("tool.result")], [True, True])
 
     def test_concurrent_first_calls_of_a_session_share_one_run(self):
         threads = [threading.Thread(target=self.hermes.call, args=("echo", {"text": str(i)}, f"call-{i}"))

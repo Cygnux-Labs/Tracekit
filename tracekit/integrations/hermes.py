@@ -50,7 +50,7 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
     """(pre_tool_call, post_tool_call) for Hermes's `ctx.register_hook`. `token()`: a tcp:// signer's token (the plugin
     reads it from Hermes's secret scope at each run's registration), None for $TRACEKIT_SIGNER_TOKEN; `timeout_s()`:
     Hermes's callback timeout (hook_timeout_s). The signer is the one tracekit.sdk.client.Client finds."""
-    clients, runs, calls, lock = {}, {}, {}, threading.Lock()   # calls: tool_call_id -> (run, decision, args)
+    clients, runs, calls, lock = {}, {}, {}, threading.Lock()   # calls: (session, call id) -> (run, decision, args)
 
     def run_of(session_id):
         # lean: a run per Hermes session id for the process's life; drop closed ones if a gateway serves many sessions
@@ -113,15 +113,15 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
                 return _block("Tool call blocked by Tracekit: the arguments the signer approved are not the call's")
         except Exception as e:   # no decision: the call doesn't run
             return _block(f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})")
-        with lock:
-            calls[tool_call_id] = run, d, args
+        with lock:   # by session too: a provider may number its calls per response (call_0, call_1, ...)
+            calls[session_id, tool_call_id] = run, d, args
             if len(calls) > MAX_OPEN_CALLS:   # lean: the oldest call never got its post_tool_call; dropped, not recorded
                 calls.pop(next(iter(calls)))
         return None
 
-    def post_tool_call(args=None, result=None, tool_call_id="", status="", error_message=None, **_):
+    def post_tool_call(args=None, result=None, tool_call_id="", session_id="", status="", error_message=None, **_):
         with lock:
-            call = calls.pop(tool_call_id, None)
+            call = calls.pop((session_id, tool_call_id), None)
         if call is None:   # not let through by pre_tool_call: nothing to bind the result to
             return
         run, d, decided = call
