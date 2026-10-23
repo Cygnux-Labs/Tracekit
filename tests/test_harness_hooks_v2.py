@@ -1,4 +1,4 @@
-"""The v2 hooks of Codex CLI, Cursor and Gemini CLI (tracekit/integrations/harness_hooks.py).
+"""The v2 hooks of Codex CLI, Cursor, Gemini CLI and OpenCode (tracekit/integrations/harness_hooks.py).
 
 The mapping tables are checked against recorded sample payloads (tests/data/harness/<harness>.json): each case is the
 harness's PreToolUse payload, the decision the signer gives, the exact `decide` request the hook must send (tool,
@@ -111,6 +111,9 @@ class Mapping(HarnessCase):
     def test_gemini(self):
         self.check("gemini")
 
+    def test_opencode(self):
+        self.check("opencode")
+
     def test_results_complete_the_decided_call(self):
         for harness, pre, post in (
                 ("codex", {"session_id": "s-codex", "hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -121,10 +124,14 @@ class Mapping(HarnessCase):
                  {"hook_event_name": "postToolUseFailure", "error_message": "exit 1"}),
                 ("gemini", {"session_id": "s-gemini", "hook_event_name": "BeforeTool",
                             "tool_name": "run_shell_command", "tool_input": {"command": "ls"}},
-                 {"hook_event_name": "AfterTool", "tool_response": {"llmContent": "a.txt"}})):
+                 {"hook_event_name": "AfterTool", "tool_response": {"llmContent": "a.txt"}}),
+                ("opencode", {"session_id": "s-opencode", "hook_event_name": "tool.execute.before",
+                              "tool_name": "read", "tool_use_id": "c1", "tool_input": {"filePath": "a.txt"}},
+                 {"hook_event_name": "tool.execute.after", "tool_response": {"title": "a.txt", "output": "a"}})):
             with self.subTest(harness=harness):
                 self.assertEqual(self.hook(harness, pre)[0], 0)
-                self.assertEqual(self.hook(harness, dict(pre, **post))[:2], (0, "{}" if harness != "codex" else ""))
+                self.assertEqual(self.hook(harness, dict(pre, **post))[:2],
+                                 (0, "{}" if harness in ("cursor", "gemini") else ""))
                 run = self.signer._runs[claude_code._load(claude_code._state("s-" + harness))["run_id"]]
                 self.assertEqual(run["events"][0]["data"]["agent"]["name"], agent_hooks.AGENT_NAMES[harness])
                 result = run["events"][-1]
@@ -159,6 +166,11 @@ class Mapping(HarnessCase):
                 self.assertIn("tool call blocked", err)
         self.assertEqual(self.sent, [])
         self.assertFalse(os.path.exists(os.environ["TRACEKIT_CLIENT_HOME"]))   # no Gemini id was paired
+
+        code, out, err = self.hook("opencode", {"session_id": "s", "hook_event_name": "tool.execute.before",
+                                                 "tool_name": "bash", "tool_input": {"command": "ls"}})
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("tool call blocked", err)
 
     def test_signer_unreachable_is_fail_closed_by_default(self):
         os.environ["TRACEKIT_SIGNER"] = os.path.join(os.environ["HOME"], "nowhere.sock")
@@ -259,6 +271,19 @@ class Installer(unittest.TestCase):
                     code, out = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")
                     self.assertEqual(code, 0)
                     self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {path}", out)
+                    if harness == "opencode":
+                        with open(path) as f:
+                            plugin = f.read()
+                        self.assertEqual(agent_hooks._version(plugin), "v2")
+                        self.assertIn('"-I", "-m", "tracekit.integrations.harness_hooks", "opencode"', plugin)
+                        self.assertIn('command.push(event)', plugin)
+                        again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
+                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
+                        code, out = self.cli("uninstall", "--agent", harness, "--project")
+                        self.assertEqual(code, 0)
+                        self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
+                        self.assertFalse(os.path.exists(path))
+                        continue
                     with open(path) as f:
                         blob = json.load(f)
                     hooks = [h for hs in blob["hooks"].values() for h in hs]

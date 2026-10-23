@@ -621,7 +621,8 @@ def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=N
     return cfg
 
 
-HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agent", "gemini": "gemini"}
+HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agent", "gemini": "gemini",
+                    "opencode": "opencode"}
 
 
 def resolve_harness(spec, agent="claude"):

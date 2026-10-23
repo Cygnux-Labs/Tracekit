@@ -6,7 +6,7 @@ Tracekit makes one claim:
 
 It does **not** prove intent, complete coverage, or that a reported tool result is real. Every verifier report ends with that sentence.
 
-Scope: coding agents on a developer's machine. Capture paths: Claude Code, Codex CLI, Cursor and Gemini CLI hooks;
+Scope: coding agents on a developer's machine. Capture paths: Claude Code, Codex CLI, Cursor, Gemini CLI and OpenCode hooks;
 the Python and TypeScript SDKs and the adapters built on them (calls made through the wrapper only); the model proxy and
 the OpenTelemetry receiver (both experimental, opt-in). Platforms: dev mode (same-user signer) on Linux, macOS and
 Windows; system mode (separate signer user) on Linux, with an experimental macOS port, because caller identity comes from

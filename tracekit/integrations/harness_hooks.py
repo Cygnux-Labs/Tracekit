@@ -1,6 +1,6 @@
-"""Codex CLI, Cursor and Gemini CLI hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI and OpenCode hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
