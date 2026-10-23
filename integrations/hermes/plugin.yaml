@@ -1,0 +1,17 @@
+name: tracekit
+version: "0.1.0"
+description: "Tracekit gates and records every tool call: a Tracekit signer outside the agent decides each call before it runs (a deny blocks it, an ask waits for a person) and signs it and its outcome into a tamper-evident run you can verify offline."
+author: Cygnux Labs
+license: MIT
+homepage: https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Hermes
+requires_hermes: ">=0.22.5"
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+requires_env:
+  - name: TRACEKIT_SIGNER_TOKEN
+    description: "Only for a signer on tcp:// (Tracekit's loopback dev transport): its token. Leave it empty for the local signer."
+    url: https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Hermes
+    secret: true
+python_dependencies:
+  - "tracekit-ai>=1.4.2,<1.5"

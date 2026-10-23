@@ -279,11 +279,12 @@ if hasattr(os, "register_at_fork"):
 class Client:
     """Thread-safe. Methods named after the RPCs (`decide`, `status`, ...) take the request dict and return the
     response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing. `token_file`:
-    an http(s) signer's bearer token file, in place of $TRACEKIT_SIGNER_TOKEN_FILE."""
+    an http(s) signer's bearer token file, in place of $TRACEKIT_SIGNER_TOKEN_FILE; `token`: a tcp:// signer's token,
+    in place of $TRACEKIT_SIGNER_TOKEN."""
 
-    def __init__(self, signer=None, timeout=30.0, token_file=None):
+    def __init__(self, signer=None, timeout=30.0, token_file=None, token=None):
         self.signer = signer or _default_signer()
-        self.timeout, self.hello = timeout, None
+        self.timeout, self.hello, self.token = timeout, None, token
         http = (self.signer or "").startswith(("https://", "http://"))
         self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
@@ -435,7 +436,7 @@ class Client:
 
     def _dial(self):
         if self.signer:
-            sock, rfile, self.hello = connect(self.signer)
+            sock, rfile, self.hello = connect(self.signer, token=self.token)
         else:
             from tracekit.sdk import autospawn
             sock, rfile, self.hello = autospawn.ensure()

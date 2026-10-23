@@ -313,6 +313,15 @@ class Transports(unittest.TestCase):
                     client.connect(f"tcp://{host}:7000", token="t")
         self.assertEqual(dial.call_count, 3)
 
+    def test_a_tcp_signers_token_given_to_the_client_is_the_one_it_proves(self):
+        """The Hermes plugin hands the client the token it reads from Hermes's secret scope."""
+        with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER_TOKEN": "from-env"}), \
+                mock.patch.object(client.tcp_dev, "dial", side_effect=OSError("refused")) as dial:
+            for token, proved in (("given", "given"), (None, "from-env")):
+                with self.assertRaises(client.SignerUnavailable):
+                    Client("tcp://127.0.0.1:7000", timeout=1, token=token).status()
+                self.assertEqual(dial.call_args.args[2], proved)
+
     def test_missing_token_file_is_signer_unavailable(self):
         with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER_TOKEN_FILE": os.path.join(tempfile.gettempdir(), "no-such")}):
             c = Client("https://127.0.0.1:1", timeout=1)
