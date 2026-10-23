@@ -328,6 +328,23 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
         self.assertEqual((d["verdict"], "TK-A002" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
+    def test_terragrunt_destroy_asks_like_terraform_destroy_in_the_old_and_new_cli_syntax(self):
+        self.verdicts([("terragrunt destroy", "TK-A001"), ("terragrunt run-all destroy", "TK-A001"),
+                       ("terragrunt run --all -- destroy", "TK-A001"), ("terragrunt run --graph destroy", "TK-A001"),
+                       ("terragrunt stack run destroy", "TK-A001"), ("terragrunt apply -destroy", "TK-A001"),
+                       ("terragrunt stack --working-dir ./live run destroy", "TK-A001"),
+                       ("terragrunt run --all -- apply -var 'note=a\nb' -destroy", "TK-A001"),
+                       ("terragrunt --working-dir ./live/prod destroy", "TK-A001"),
+                       ("terragrunt run --all --out-dir /tmp/a destroy", "TK-A001"),
+                       ("terragrunt.exe destroy", "TK-A001"), ("railway run terragrunt destroy", "TK-A001")])
+        for command in ("terragrunt plan", "terragrunt plan -destroy", "terragrunt run --all -- plan", "terragrunt apply",
+                        "terragrunt destroy --help", "echo terragrunt destroy"):
+            self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "allow", command)
+
+    def test_a_long_command_after_terragrunt_is_decided_without_the_fallback_timeout(self):
+        d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})
+        self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
+
     def test_remote_ref_deletion_past_a_newline_in_an_argument_but_not_in_the_next_command(self):
         # `.` stopped at a newline inside an earlier argument; macOS runs git for `Git`; git takes any prefix of
         # --mirror (`--m`); a long name holding forty zeros is no all-zero object id

@@ -698,40 +698,40 @@
   },
   "by_form": {
     "bash-c": {
-      "contained": 254,
+      "contained": 266,
       "missed": 0,
       "rate": 1.0,
-      "total": 254
+      "total": 266
     },
     "cd-dot-and": {
-      "contained": 261,
+      "contained": 274,
       "missed": 0,
       "rate": 1.0,
-      "total": 261
+      "total": 274
     },
     "command-prefix": {
-      "contained": 235,
+      "contained": 247,
       "missed": 0,
       "rate": 1.0,
-      "total": 235
+      "total": 247
     },
     "env-bash-c": {
-      "contained": 254,
+      "contained": 266,
       "missed": 0,
       "rate": 1.0,
-      "total": 254
+      "total": 266
     },
     "original": {
-      "contained": 570,
+      "contained": 583,
       "missed": 0,
       "rate": 1.0,
-      "total": 570
+      "total": 583
     },
     "true-semi": {
-      "contained": 261,
+      "contained": 274,
       "missed": 0,
       "rate": 1.0,
-      "total": 261
+      "total": 274
     }
   },
   "engine_mismatches": [],
@@ -747,6 +747,14 @@
       ],
       "reason": "stateful builtin: cd",
       "source": "cloud.jsonl:84"
+    },
+    {
+      "forms": [
+        "bash-c",
+        "env-bash-c"
+      ],
+      "reason": "stateful builtin: cd",
+      "source": "cloud.jsonl:125"
     },
     {
       "forms": [
@@ -808,14 +816,14 @@
   "per_rule": {
     "bash-c": {
       "TK-A001": {
-        "contained": 38,
+        "contained": 50,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 38,
+        "covered_by_rule_or_parse": 50,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 38,
+        "same_rule": 50,
         "same_rule_rate": 1.0,
-        "total": 38
+        "total": 50
       },
       "TK-A002": {
         "contained": 16,
@@ -1120,14 +1128,14 @@
     },
     "cd-dot-and": {
       "TK-A001": {
-        "contained": 39,
+        "contained": 52,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 39,
+        "covered_by_rule_or_parse": 52,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 39,
+        "same_rule": 52,
         "same_rule_rate": 1.0,
-        "total": 39
+        "total": 52
       },
       "TK-A002": {
         "contained": 16,
@@ -1432,14 +1440,14 @@
     },
     "command-prefix": {
       "TK-A001": {
-        "contained": 38,
+        "contained": 50,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 38,
+        "covered_by_rule_or_parse": 50,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 38,
+        "same_rule": 50,
         "same_rule_rate": 1.0,
-        "total": 38
+        "total": 50
       },
       "TK-A002": {
         "contained": 15,
@@ -1714,14 +1722,14 @@
     },
     "env-bash-c": {
       "TK-A001": {
-        "contained": 38,
+        "contained": 50,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 38,
+        "covered_by_rule_or_parse": 50,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 38,
+        "same_rule": 50,
         "same_rule_rate": 1.0,
-        "total": 38
+        "total": 50
       },
       "TK-A002": {
         "contained": 16,
@@ -2026,14 +2034,14 @@
     },
     "true-semi": {
       "TK-A001": {
-        "contained": 39,
+        "contained": 52,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 39,
+        "covered_by_rule_or_parse": 52,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 39,
+        "same_rule": 52,
         "same_rule_rate": 1.0,
-        "total": 39
+        "total": 52
       },
       "TK-A002": {
         "contained": 16,
@@ -2337,12 +2345,12 @@
       }
     }
   },
-  "policy_hash": "sha256:5f82431787e2f0c5fa77e72b07397b7c16a8dbb7b43c9de588cecf64758d2182",
+  "policy_hash": "sha256:7637b8a2fc0fa02e36fec6e615ee1a695378394e3d3024574db170f84443fde5",
   "regressions": [],
   "rewrite_missed": [],
-  "rewritten_cases": 261,
+  "rewritten_cases": 274,
   "rule_missed": [],
-  "source_cases": 570,
+  "source_cases": 583,
   "source_missed": [],
   "transformations": {
     "bash-c": "Run the unchanged command text as a Bash command. This preserves Bash syntax such as here-strings; shlex quoting passes it as one -c argument.",
