@@ -1369,7 +1369,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                          f"\nsigner: {json.dumps(sock)}\n").encode())
     from . import agent_hooks
     settings = None if not hooks else (os.path.join(project or owner.pw_dir, ".claude", "settings.json")
-                                       if agent == "claude" else agent_hooks.config_path(agent, project or owner.pw_dir))
+                                       if agent == "claude" else agent_hooks.config_path(agent, project, owner.pw_dir))
     sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
     # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
     _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),

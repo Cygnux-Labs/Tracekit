@@ -291,8 +291,9 @@ def _reply(harness, stdout, allowed, msg, is_pre):
 
 # ------------------------------------------------------------------ installer
 
-def config_path(harness, project=None):
-    base = project if project else os.path.expanduser("~")
+def config_path(harness, project=None, home=None):
+    """The hook config of `harness`: a project's (project) or a user's (home, default ~), which differ for OpenCode."""
+    base = project or home or os.path.expanduser("~")
     return {"codex": os.path.join(base, ".codex", "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "opencode": os.path.join(base, ".opencode", "plugins", "tracekit.js") if project else
@@ -434,10 +435,9 @@ function tracekit(event, input, toolInput, toolResponse) {{
 export const TracekitPlugin = async ({{ directory }}) => ({{
   "tool.execute.before": async (input, output) => {{
     const result = tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
-    if (result.code === 2 || ({str(v2).lower()} && result.code !== 0)) {{
-      throw new Error(result.message || "Blocked by Tracekit");
+    if (result.code !== 0) {{   // blocked (2), or the hook could not decide the call: it doesn't run
+      throw new Error(result.message || "Blocked by Tracekit: the hook could not decide this call");
     }}
-    if (result.code !== 0) console.error(result.message);
   }},
   "tool.execute.after": async (input, output) => {{
     const result = tracekit("tool.execute.after", {{ ...input, cwd: directory }}, input.args, output);

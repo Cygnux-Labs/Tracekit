@@ -219,14 +219,19 @@ class Installer(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         path = agent_hooks.config_path("opencode", d)
         self.assertEqual(path, os.path.join(d, ".opencode", "plugins", "tracekit.js"))
+        # a user's plugin (system mode passes the agent's home) is the global one OpenCode loads, not a project's
+        self.assertEqual(agent_hooks.config_path("opencode", None, d),
+                         os.path.join(d, ".config", "opencode", "plugins", "tracekit.js"))
         agent_hooks.install("opencode", d, python="/opt/tracekit/python")
         agent_hooks.install("opencode", d, python="/opt/tracekit/python")
         with open(path) as f:
             plugin = f.read()
         self.assertIn(agent_hooks.OPENCODE_MARKER, plugin)
         self.assertIn('["/opt/tracekit/python", "-I", "-m", "tracekit.agent_hooks", "opencode"]', plugin)
-        self.assertIn('"tool.execute.before"', plugin)
-        self.assertIn("throw new Error", plugin)
+        # fail closed, v1 as v2: any exit but 0 (blocked, a crash, Python missing) stops the call before it runs
+        before = plugin.split('"tool.execute.before"', 1)[1].split('"tool.execute.after"', 1)[0]
+        self.assertRegex(before, r"if \(result\.code !== 0\) \{[^}]*throw new Error")
+        self.assertNotIn("result.code === 2", before)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             agent_hooks.install("opencode", d, uninstall=True)
