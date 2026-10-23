@@ -186,9 +186,12 @@ class CodingPack(unittest.TestCase):
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
                    "cd sub && applypatch < p", 'apply_patch "$(cat p)"', "/usr/local/bin/apply_patch < p",
                    'bash -lc "apply_patch < p"', "env applypatch < p", "codex --codex-run-as-apply-patch PATCH",
-                   "Apply_Patch.exe < p", "apply_patch.bat < p", "cat p | apply_patch"]
+                   "Apply_Patch.exe < p", "apply_patch.bat < p", "cat p | apply_patch",
+                   "/opt/x/codex-aarch64-apple-darwin --codex-run-as-apply-patch PATCH",
+                   "node /usr/lib/node_modules/@openai/codex/bin/codex.js --codex-run-as-apply-patch PATCH"]
         routine = ["grep apply_patch", "git apply x.diff", "cat apply_patch.md", "rg applypatch src/", "python apply_patch.py",
-                   "codex exec 'fix the tests'", "patch -p1 < x.diff", "echo apply_patch"]
+                   "codex exec 'fix the tests'", "patch -p1 < x.diff", "echo apply_patch",
+                   "codex -c a=b --codex-run-as-apply-patch PATCH"]   # Codex reads the flag only as its first argument
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)

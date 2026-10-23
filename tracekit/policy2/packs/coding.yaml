@@ -305,12 +305,13 @@ ask:
   - id: TK-A034
     class: shell
     # each command's argv: Codex applies a patch itself when the shell runs apply_patch or applypatch (it puts both on
-    # PATH, codex-rs/arg0, as .bat on Windows) or `codex --codex-run-as-apply-patch PATCH`, so the files the patch
-    # writes reach no file rule. argv[0] is a basename in lower case without .exe
+    # PATH, codex-rs/arg0, as .bat on Windows), or its binary under any name with --codex-run-as-apply-patch first (or
+    # after the script of its npm launcher: `node codex.js`), so the files the patch writes reach no file rule. argv[0]
+    # is a basename in lower case without .exe
     # lean: every patch run from the shell is held, an ordinary file's too; decide Codex's own form (`[cd D &&]
     # apply_patch <<EOF`) by the patch's files, as the apply_patch tool is, when models that edit through the shell
     # get in the way
-    pattern: '^(apply_?patch(\.(bat|cmd))?|codex --codex-run-as-apply-patch)( |$)'
+    pattern: '^(apply_?patch(\.(bat|cmd))?|[^ ]+( [^- ][^ ]*)? --codex-run-as-apply-patch)( |$)'
     reason: applying a patch through the shell
     remedy: Wait for a person to approve the held call, or edit files with the apply_patch tool, which Tracekit decides file by file.
     rationale: A patch applied from the shell writes files that no file rule reads; a person confirms it.
