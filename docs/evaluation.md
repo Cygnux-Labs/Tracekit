@@ -530,7 +530,7 @@ and false positive: `eval/results/e21_policy_robustness.json`. The two engines d
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.9%
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.13% default; 10.9%, 10.0%, 4.8%
 strict); p99 stays within 25% of its on the same machine (re-measured once before failing). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
 (default 4.2%, strict 10.9%) and on strict's sessions (10.0%).
