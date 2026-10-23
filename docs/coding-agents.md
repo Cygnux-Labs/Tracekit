@@ -23,7 +23,7 @@ Claude Code hook.
 | Run id | `session_id` | `conversation_id` | `session_id` | `sessionID` |
 | Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) |
 | Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` |
-| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`, `Delete`; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `web_fetch`, `google_web_search` | `bash` → `Bash`; `read`, `write`, `edit`, `apply_patch`, `glob`, `grep`, `list`, `webfetch`, `websearch`, `task` |
+| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`, `Delete`; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `web_fetch`, `google_web_search` | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` → `Edit` (`paths`: every file its headers name); `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools |
 
 What is the same as Claude Code: the policy gate runs before the tool (deny blocks; ask holds the call until someone
 approves it from another terminal), events are signed by the same signer, and the harness's transcript is hashed at
@@ -49,6 +49,8 @@ v2 Claude Code hook's core (the signer decides; approvals; the run's fail mode, 
 system mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error.
 On any other event (a prompt, a tool result, a session event) a hook that fails exits 1, not 2, which
 would block a prompt, and the event isn't recorded.
+
+OpenCode (1.x) sends no session or prompt events to plugins: its run closes at the signer's idle timeout, and no prompts, live constraints or model text are recorded. A call that fails, that you decline in OpenCode's own permission prompt, or that you abort runs no `tool.execute.after`, so it stays a `decided_not_completed` gap. While a call waits for a person, OpenCode waits too: list the held call with `tracekit approvals list` ([limits](limits.md#signer-and-capture)).
 
 A session is one run, open until the session ends. To watch it, `tracekit view --dev` (each call with what it ran);
 to verify it as it stands, `tracekit last --open`.

@@ -44,9 +44,13 @@ GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_fil
                 "google_web_search": "WebSearch", "save_memory": "Memory"}
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Delete", "Task": "Task", "Edit": "Edit"}
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
-                  "glob": "Glob", "grep": "Grep", "list": "LS", "webfetch": "WebFetch", "websearch": "WebSearch",
-                  "task": "Task", "todowrite": "TodoWrite", "todoread": "TodoRead"}
+                  "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Task",
+                  "todowrite": "TodoWrite"}
 PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
+OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path"}
+# OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
+OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
+JS_TRIM = re.compile(r"^[\s﻿]+|[\s﻿]+$")
 
 
 def _input(v):
@@ -97,15 +101,14 @@ def tool(harness, name, ti):
                 ti["url"] = m.group(0)
         return GEMINI_TOOLS.get(name, name), ti
     if harness == "opencode":
-        for k in ("filePath", "path"):
-            if k in ti and "file_path" not in ti:
-                ti["file_path"] = ti[k]
-        if name == "apply_patch":
-            patch = ti.get("patchText") or ti.get("patch") or ""
-            files = [f.strip() for f in PATCH_FILE.findall(str(patch))]
-            if files:
-                ti.setdefault("file_path", files[0])
-                ti["paths"] = files
+        # the path the tool itself reads decides, never another path key the model sent beside it (OpenCode drops
+        # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
+        if name in OPENCODE_PATH_ARG:
+            ti["file_path"] = ti.get(OPENCODE_PATH_ARG[name])
+        if name == "apply_patch":   # every file OpenCode's parser finds, whatever paths the model sent
+            files = [JS_TRIM.sub("", f) for f in OPENCODE_PATCH_FILE.findall(str(ti.get("patchText") or ""))]
+            ti["paths"] = files
+            ti["file_path"] = files[0] if files else None
         return OPENCODE_TOOLS.get(name, name), ti
     return name, ti
 
@@ -297,7 +300,8 @@ def config_path(harness, project=None, home=None):
     return {"codex": os.path.join(base, ".codex", "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "opencode": os.path.join(base, ".opencode", "plugins", "tracekit.js") if project else
-                        os.path.join(base, ".config", "opencode", "plugins", "tracekit.js")}[harness]
+                        os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
+                                     os.path.join(base, ".config"), "opencode", "plugins", "tracekit.js")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -452,8 +456,8 @@ def _install_opencode(path, uninstall=False, v2=False, python=None):
     from .deploy import files
     from .install import SettingsError
     path = os.path.abspath(path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         d = files.open_dir(os.path.dirname(path))
         try:
             name = os.path.basename(path)
@@ -475,7 +479,7 @@ def _install_opencode(path, uninstall=False, v2=False, python=None):
                 files.write(d, name, _opencode_plugin(python, v2).encode("utf-8"), 0o600)
         finally:
             files.close(d)
-    except files.UnsafePath as e:
+    except (files.UnsafePath, OSError) as e:
         raise SettingsError(f"{path}: {e}") from e
     new = "v2" if v2 else "v1"
     if old and (uninstall or old != new):

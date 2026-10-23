@@ -213,15 +213,43 @@ class Installer(unittest.TestCase):
             with open(path) as f:
                 self.assertEqual(json.load(f), {"hooks": {ev: bad}}, h)
 
+    def test_opencode_decides_the_path_its_tool_uses(self):
+        # OpenCode's tools drop argument keys they don't take, and its patch parser reads any text after a header's
+        # colon: a decoy path key, or a header without the space, must not move the decision off the real file
+        from tracekit.signer.service import load_policy
+        pol = load_policy()
+
+        def verdict(name, args):
+            return pol.decide(*agent_hooks.tool("opencode", name, args))["verdict"]
+        patch = "*** Begin Patch\n*** Add File:{}.env\n+A=1\n*** End Patch"
+        for name, real, decoy in [
+                ("write", {"filePath": "/w/.env", "content": "A=1"}, {"file_path": "/w/notes.txt"}),
+                ("edit", {"filePath": "/home/u/.ssh/authorized_keys", "oldString": "a", "newString": "b"},
+                 {"file_path": "/w/a.py"}),
+                ("grep", {"pattern": "x", "path": "/home/u/.password-store"}, {"filePath": "/w/a.py"}),
+                ("grep", {"pattern": "x", "path": "/home/u/.password-store"}, {"file_path": "/w/a.py"}),
+                ("apply_patch", {"patchText": patch.format(" ")}, {"paths": ["/w/ok.txt"], "file_path": "/w/ok"})]:
+            with self.subTest(name=name, decoy=decoy):
+                want = verdict(name, real)
+                self.assertIn(want, ("deny", "ask"))
+                self.assertEqual(verdict(name, {**real, **decoy}), want)
+        for sep in ("", "\t", " ﻿"):
+            with self.subTest(header=repr(sep)):
+                self.assertEqual(verdict("apply_patch", {"patchText": patch.format(sep)}), "deny")
+
     def test_opencode_plugin_install_upgrade_uninstall_and_collision(self):
         from tracekit.install import SettingsError
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         path = agent_hooks.config_path("opencode", d)
         self.assertEqual(path, os.path.join(d, ".opencode", "plugins", "tracekit.js"))
-        # a user's plugin (system mode passes the agent's home) is the global one OpenCode loads, not a project's
-        self.assertEqual(agent_hooks.config_path("opencode", None, d),
-                         os.path.join(d, ".config", "opencode", "plugins", "tracekit.js"))
+        # a user's plugin (system mode passes the agent's home) is the global one OpenCode loads, not a project's;
+        # a dev install follows XDG_CONFIG_HOME as OpenCode does
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": os.path.join(d, "xdg")}):
+            self.assertEqual(agent_hooks.config_path("opencode", None, d),
+                             os.path.join(d, ".config", "opencode", "plugins", "tracekit.js"))
+            self.assertEqual(agent_hooks.config_path("opencode"),
+                             os.path.join(d, "xdg", "opencode", "plugins", "tracekit.js"))
         agent_hooks.install("opencode", d, python="/opt/tracekit/python")
         agent_hooks.install("opencode", d, python="/opt/tracekit/python")
         with open(path) as f:
