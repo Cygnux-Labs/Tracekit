@@ -373,6 +373,7 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 
 | To | Start here |
 |---|---|
+| Read your first verify report | [Tracekit for auditors](https://github.com/Cygnux-Labs/Tracekit/wiki/For-Auditors) |
 | See every step on a clean install | [walkthrough (recorded on 1.2.0)](https://github.com/Cygnux-Labs/Tracekit/wiki/Walkthrough) · [recorded demos](https://github.com/Cygnux-Labs/Tracekit/wiki/Demos) · [viewer tour](https://github.com/Cygnux-Labs/Tracekit/wiki/Viewer#tour) |
 | Wire up an agent | [v2 quickstart](https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstart) · [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) · [TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md) |
 | Put the signer out of reach | [deployment](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) · [compose](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Compose) · [container](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Container) · [Kubernetes](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Kubernetes) · [agent-sandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Agent-Sandbox) · [doctor](https://github.com/Cygnux-Labs/Tracekit/wiki/Doctor) |
