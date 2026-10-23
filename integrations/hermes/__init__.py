@@ -19,7 +19,8 @@ def register(ctx):
         def post_tool_call(**_):
             return None
     else:
-        pre_tool_call, post_tool_call = hooks(lambda: get_secret("TRACEKIT_SIGNER_TOKEN"),
+        # "" when the profile has none: never the process environment's, which may be another profile's
+        pre_tool_call, post_tool_call = hooks(lambda: get_secret("TRACEKIT_SIGNER_TOKEN", ""),
                                               lambda: hook_timeout_s(load_config_readonly()))
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("post_tool_call", post_tool_call)

@@ -1,7 +1,7 @@
 """The Hermes Agent plugin (integrations/hermes/) and its hooks (tracekit.integrations.hermes), against a stand-in for
-Hermes's plugin hook dispatch as hermes-agent v0.22.5 defines it (Hermes is not a test dependency), on a real signer:
-the plugin is loaded and registered as Hermes loads it, and every tool call goes through its pre_tool_call and
-post_tool_call as Hermes runs them."""
+the sequential path of Hermes's agent loop as hermes-agent v0.22.5 defines it (Hermes is not a test dependency), on a
+real signer: the plugin is loaded and registered as Hermes loads it, and every tool call goes through its pre_tool_call
+and post_tool_call as that path runs them."""
 import contextvars
 import importlib.util
 import json
@@ -26,6 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLUGIN = os.path.join(ROOT, "integrations", "hermes")
 HERMES_VERSION, HERMES_COMMIT = "0.22.5", "bf0203a794a07aac3ff764972ab9087baa4e4f4e"   # what the stand-in follows
 TIMED_OUT = "pre_tool_call plugin callback timed out or is still running"   # hermes_cli/plugins_dispatch.py
+PAY = {"to": "acct-42"}
 
 
 def tool(name, args):
@@ -35,14 +36,20 @@ def tool(name, args):
 
 
 class Hermes:
-    """One Hermes process's plugin hooks as hermes-agent v0.22.5 runs them: PluginContext.register_hook;
-    PluginDispatchMixin.invoke_hook (each callback on a worker thread in a copy of the context, waited on for
-    plugins.hook_callback_timeout; for pre_tool_call a timeout or an exception is a block); the directives of
-    _get_pre_tool_call_directive_details (the first block wins, modify merges over the arguments); and
-    model_tools.handle_function_call (post_tool_call after the tool, or with status "blocked" instead of it)."""
+    """One Hermes process's plugin hooks as hermes-agent v0.22.5 runs them on its agent loop's sequential path:
+    - PluginContext.register_hook, and PluginDispatchMixin.invoke_hook (hermes_cli/plugins_dispatch.py): each callback on
+      a worker thread in a copy of the context, waited on for plugins.hook_callback_timeout; for pre_tool_call a timeout
+      or an exception is a block;
+    - agent/tool_executor.py: _run_sequential_tool_execution_middleware runs the call on a worker thread and waits for
+      it until the tool deadline (timeouts.tools.sequential_call, else concurrent_batch, else 420 s) or a /stop, then
+      emits post_tool_call with status timeout or cancelled and leaves the worker running, which reports nothing more
+      unless it is blocked; on the worker, _dispatch_authorized_once applies pre_tool_call's directives
+      (_get_pre_tool_call_directive_details: the first block wins, modify merges over the arguments) and emits
+      post_tool_call with status blocked for a blocked call, else runs the tool; _publish_sequential_result emits
+      post_tool_call for a call that finished, with the arguments it ran with and the status read from its result."""
 
     def __init__(self, config):
-        self.config, self.hooks = config, {}
+        self.config, self.hooks, self.workers = config, {}, []
 
     def register_hook(self, name, callback):
         self.hooks.setdefault(name, []).append(callback)
@@ -73,32 +80,62 @@ class Hermes:
                 results.append(out["value"])
         return results
 
-    def call(self, name, args, tool_call_id="call-1", session_id="s1", run=tool):
-        """One tool call, the tool run by `run`: (what the model reads, whether the tool ran)."""
+    def deadline(self):
+        tools = self.config.get("timeouts", {}).get("tools", {})
+        t = tools.get("sequential_call", tools.get("concurrent_batch", 420))
+        return t if t > 0 else None
+
+    def call(self, name, args, tool_call_id="call-1", session_id="s1", run=tool, stop=None):
+        """One tool call, the tool run by `run`; `stop` (an Event) is the person's /stop. (what the model reads, whether
+        the tool ran by then)."""
         ids = {"task_id": "", "session_id": session_id, "tool_call_id": tool_call_id, "turn_id": "turn-1",
                "api_request_id": "req-1", "middleware_trace": [], "telemetry_schema_version": 1}
-        block, modified = None, None
-        for r in self.invoke("pre_tool_call", tool_name=name, args=args, **ids):
-            if r.get("action") == "modify" and isinstance(r.get("args"), dict) and r["args"]:
-                modified = {**(args if modified is None else modified), **r["args"]}
-            elif r.get("action") == "block" and r.get("message"):
-                block = r["message"]
-                break
-        args = args if modified is None else modified
-        if block is not None:
-            result = json.dumps({"error": block})
-            self.invoke("post_tool_call", tool_name=name, args=args, result=result, duration_ms=0, status="blocked",
-                        error_type="plugin_block", error_message=block, **ids)
-            return result, False
-        result = run(name, args)
-        error = json.loads(result).get("error")
-        self.invoke("post_tool_call", tool_name=name, args=args, result=result, duration_ms=1,
-                    status="error" if error else "ok", error_type="tool_error" if error else None, error_message=error,
-                    **ids)
-        return result, True
+        out, done = {}, threading.Event()
+
+        def post(result, call_args, **outcome):
+            self.invoke("post_tool_call", tool_name=name, args=call_args, result=result, **outcome, **ids)
+
+        def dispatch():
+            block, modified = None, None
+            for r in self.invoke("pre_tool_call", tool_name=name, args=args, **ids):
+                if r.get("action") == "modify" and isinstance(r.get("args"), dict) and r["args"]:
+                    modified = {**(args if modified is None else modified), **r["args"]}
+                elif r.get("action") == "block" and r.get("message"):
+                    block = r["message"]
+                    break
+            out["args"] = args if modified is None else modified
+            if block is not None:
+                out["result"], out["ran"] = json.dumps({"error": block}), False
+                post(out["result"], out["args"], status="blocked", error_type="plugin_block", error_message=block)
+            else:
+                out["result"], out["ran"] = run(name, out["args"]), True
+            done.set()
+        worker = threading.Thread(target=dispatch, daemon=True)
+        worker.start()
+        self.workers.append(worker)
+        end = time.monotonic() + self.deadline() if self.deadline() else None
+        while not done.wait(0.02):
+            if stop is not None and stop.is_set():
+                message = f"[Tool execution cancelled — {name} was abandoned: interrupt requested]"
+                post(message, args, status="cancelled", error_type="tool_interrupted",
+                     error_message="Tool execution cancelled: interrupt requested")
+                return message, False
+            if end is not None and time.monotonic() > end:
+                message = f"Error executing tool '{name}': timed out after {self.deadline():.1f}s"
+                post(message, args, status="timeout", error_type="tool_timeout", error_message=message)
+                return message, False
+        if out["ran"]:
+            error = json.loads(out["result"]).get("error")
+            post(out["result"], out["args"], duration_ms=1, status="error" if error else "ok",
+                 error_type="tool_error" if error else None, error_message=error)
+        return out["result"], out["ran"]
+
+    def join(self):
+        for w in self.workers:
+            w.join(60)
 
 
-def load(config, secret=lambda name, default=None: None, secret_scope=True):
+def load(config, secret=lambda name, default=None: os.environ.get(name, default), secret_scope=True):
     """A Hermes with the plugin loaded as Hermes loads a directory plugin (hermes_plugins.<name>) and registered, with
     the public Hermes modules it imports (agent.secret_scope, hermes_cli.config) standing in."""
     stubs = {n: types.ModuleType(n) for n in ("agent", "agent.secret_scope", "hermes_cli", "hermes_cli.config")}
@@ -128,6 +165,7 @@ class Plugin(unittest.TestCase):
         self.addCleanup(self.client.close)
         self.config = {"plugins": {"hook_callback_timeout": 60}}
         self.hermes = load(self.config)
+        self.addCleanup(self.hermes.join)
         self.made, self.completed = [], []   # each run the plugin registered; (tool_call_id, status, error) completed
         run, complete = Client.run, RunHandle.complete
 
@@ -150,10 +188,10 @@ class Plugin(unittest.TestCase):
         return [r["event"]["data"] for run in self.runs() for r in self.service.log.storage.iter_run("default", run)
                 if r["event"]["type"] == typ]
 
-    def held(self, tool_call_id="call-1"):
+    def held(self, tool_call_id="call-1", stop=None):
         """Calls pay in a thread of its own; (the approval id it waits for, the thread, its outcome)."""
         out = []
-        t = threading.Thread(target=lambda: out.append(self.hermes.call("pay", {"to": "acct-42"}, tool_call_id)))
+        t = threading.Thread(target=lambda: out.append(self.hermes.call("pay", PAY, tool_call_id, stop=stop)))
         t.start()
         for _ in range(500):
             waiting = [a for a in self.client.approval_list({"state": "requested"})["approvals"]
@@ -216,37 +254,106 @@ class Plugin(unittest.TestCase):
         self.assertIn("the arguments the signer approved are not the call's", json.loads(out[0][0])["error"])
 
     def test_an_unanswered_hold_is_blocked_and_withdrawn_before_hermes_gives_up(self):
-        self.config["plugins"]["hook_callback_timeout"] = 2
-        with mock.patch.object(hermes, "MARGIN_S", 1.5):
-            seen, ran = self.hermes.call("pay", {"to": "acct-42"})
-        self.assertFalse(ran)
-        self.assertIn("not approved: requested", json.loads(seen)["error"])   # Tracekit's answer, not TIMED_OUT
-        self.assertEqual(len(self.events("approval.abandoned")), 1)
+        for limit in ({"plugins": {"hook_callback_timeout": 2}}, {"timeouts": {"tools": {"sequential_call": 2}}}):
+            with self.subTest(limit=limit):
+                self.config.update(limit)
+                with mock.patch.object(hermes, "MARGIN_S", 1.5):
+                    seen, ran = self.hermes.call("pay", PAY, f"call-{len(self.events('approval.abandoned'))}")
+                self.assertFalse(ran)
+                self.assertIn("not approved: requested", json.loads(seen)["error"])   # not Hermes's timeout
+                self.config.update({"plugins": {"hook_callback_timeout": 60}, "timeouts": {}})
+        self.assertEqual(len(self.events("approval.abandoned")), 2)
+
+    def test_a_hold_hermes_stopped_waiting_for_never_runs_even_once_approved(self):
+        stop = threading.Event()
+        with mock.patch.object(hermes, "POLL_S", 30):   # the approval, not the poll, ends the wait
+            aid, t, out = self.held(stop=stop)
+            stop.set()
+            t.join(30)   # the loop moved on: post_tool_call says cancelled; the hook still waits
+            self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+            self.hermes.join()
+        self.assertEqual((out[0][1], ac.RAN), (False, []))
+        self.assertEqual((len(self.events("approval.abandoned")), self.events("approval.consumed")), (1, []))
+
+    def test_a_hold_hermes_stopped_waiting_for_is_withdrawn_at_once(self):
+        stop = threading.Event()
+        with mock.patch.object(hermes, "POLL_S", 0.2):
+            aid, t, out = self.held(stop=stop)
+            started = time.monotonic()
+            stop.set()
+            self.hermes.join()
+        self.assertLess(time.monotonic() - started, 10)   # not the 55 s left of Hermes's limits
+        self.assertEqual((ac.RAN, len(self.events("approval.abandoned"))), ([], 1))
 
     def test_the_hold_lasts_as_long_as_hermes_lets_the_hook_run(self):
-        self.assertEqual([hermes.hook_timeout_s(c) for c in (
-            None, {}, {"plugins": None}, {"plugins": {"hook_callback_timeout": None}},
-            {"plugins": {"hook_callback_timeout": "soon"}}, {"plugins": {"hook_callback_timeout": -1}},
-            {"plugins": {"hook_callback_timeout": 0}}, {"plugins": {"hook_callback_timeout": 120}},
-            {"plugins": {"hook_callback_timeout": 900}})], [30, 30, 30, 30, 30, 30, 0, 120, 600])
+        def limit(hook=None, sequential=None, batch=None, env=None):
+            config = {"plugins": {} if hook is None else {"hook_callback_timeout": hook},
+                      "timeouts": {"tools": {k: v for k, v in (("sequential_call", sequential),
+                                                               ("concurrent_batch", batch)) if v is not None}}}
+            return hermes.hook_timeout_s(config, {} if env is None else {"HERMES_CONCURRENT_TOOL_TIMEOUT_S": env})
+        self.assertEqual([hermes.hook_timeout_s(c, {}) for c in (
+            None, {}, {"plugins": None, "timeouts": None}, {"timeouts": {"tools": []}})], [30, 30, 30, 30])
+        self.assertEqual([
+            limit("soon"), limit(-1), limit(True), limit(120), limit(600), limit(900),   # the hook's own limit
+            limit(600, 600, 600), limit(600, batch=500), limit(600, 500, 600), limit(600, env="300"),
+            limit(600, batch=0, sequential=450), limit(0), limit(0, batch=0), limit(600, "x", 0),
+            limit(600, env="later")], [
+            30, 30, 1, 120, 420, 420,
+            600, 500, 500, 300,
+            450, 420, 0, 600,
+            420])
 
     def test_a_signer_that_cannot_be_reached_blocks_the_call(self):
         self.hermes.call("echo", {"text": "hi"})   # its session's run is registered
         os.environ["TRACEKIT_SIGNER"] = os.path.join(ac.tmpdir(self), "none.sock")
-        seen, ran = load(self.config).call("echo", {"text": "hi"})   # none can be
+        seen, ran = load(self.config).call("echo", {"text": "hi"})   # none can be: blocked, whatever the fail mode
         self.assertFalse(ran)
         self.assertIn("Tracekit could not decide it (SignerUnavailable", json.loads(seen)["error"])
         with mock.patch.object(Client, "call", side_effect=SignerUnavailable("down")), warnings.catch_warnings():
             warnings.simplefilter("ignore")
             seen, ran = self.hermes.call("echo", {"text": "hi"}, "call-2")
-        self.assertFalse(ran)
-        self.assertIn("refused by Tracekit: signer unavailable", json.loads(seen)["error"])
+            self.assertFalse(ran)
+            self.assertIn("refused by Tracekit: signer unavailable", json.loads(seen)["error"])
+            self.made[0].registered["fail_modes"] = {"default": "open"}   # as the signer's policy may say
+            self.assertTrue(self.hermes.call("echo", {"text": "hi"}, "call-3")[1])   # runs, unrecorded
+        self.assertEqual([c[0] for c in self.completed], ["call-1"])
 
     def test_a_failed_tool_is_recorded_as_an_error(self):
         self.assertTrue(self.hermes.call("fail", {"why": "x"})[1])
         [r] = self.events("tool.result")
         self.assertFalse(r["ok"])
-        self.assertEqual(self.completed, [("call-1", "error", "boom")])
+        self.assertEqual(self.completed, [("call-1", "error", "error: boom")])
+
+    def test_a_call_hermes_times_out_or_stops_while_it_runs_is_recorded_as_an_error(self):
+        started, release, stop = threading.Event(), threading.Event(), threading.Event()
+
+        def slow(name, args):
+            started.set()
+            release.wait(30)
+            return tool(name, args)
+        self.config["timeouts"] = {"tools": {"sequential_call": 2}}   # the decision takes well under that
+        self.assertFalse(self.hermes.call("echo", {"text": "a"}, "call-1", run=slow)[1])
+        del self.config["timeouts"]
+        started.clear()
+        t = threading.Thread(target=self.hermes.call, args=("echo", {"text": "b"}, "call-2", "s1", slow, stop))
+        t.start()
+        started.wait(30)
+        stop.set()
+        t.join(30)
+        release.set()
+        self.hermes.join()
+        self.assertEqual([(c[0], c[1], c[2].split(":")[0]) for c in self.completed],
+                         [("call-1", "error", "timeout"), ("call-2", "error", "cancelled")])
+        self.assertEqual([r["ok"] for r in self.events("tool.result")], [False, False])
+
+    def test_a_refused_consume_of_an_allowed_call_is_recorded_as_not_run(self):
+        refused = {"ok": False, "rule_ids": ["TK-HOLD"], "reason": "held by an incident"}
+        with mock.patch.object(RunHandle, "approval_consume", return_value=refused):
+            seen, ran = self.hermes.call("echo", {"text": "hi"})
+        self.assertEqual((ran, ac.RAN), (False, []))
+        self.assertIn("held by an incident", json.loads(seen)["error"])
+        self.assertEqual(self.completed, [("call-1", "error", "not run: held by an incident")])
+        self.assertEqual([r["ok"] for r in self.events("tool.result")], [False])
 
     def test_a_call_another_plugin_blocks_after_tracekit_allowed_it_is_recorded_as_not_run(self):
         self.hermes.register_hook("pre_tool_call", lambda **_: {"action": "block", "message": "not today"})
@@ -270,6 +377,7 @@ class Plugin(unittest.TestCase):
                                           for i in range(2)])
 
     def test_a_call_without_a_tool_call_id_is_blocked(self):
+        """execute_code's scripts call tools with no tool_call_id (tools/code_execution_rpc.py)."""
         seen, ran = self.hermes.call("echo", {"text": "hi"}, tool_call_id="")
         self.assertFalse(ran)
         self.assertIn("no tool_call_id", json.loads(seen)["error"])
@@ -310,9 +418,15 @@ class Plugin(unittest.TestCase):
         self.assertEqual(len(self.events("tool.result")), 6)
 
     def test_the_signer_token_comes_from_hermess_secret_scope(self):
+        asked = []
+
+        def secret(name, default=None):
+            asked.append((name, default))
+            return f"secret:{name}"
         with mock.patch.object(hermes, "Client", side_effect=RuntimeError("stop")) as made:
-            seen, _ = load(self.config, secret=lambda name, default=None: f"secret:{name}").call("echo", {"text": "hi"})
+            seen, _ = load(self.config, secret=secret).call("echo", {"text": "hi"})
         made.assert_called_once_with(token="secret:TRACEKIT_SIGNER_TOKEN")
+        self.assertEqual(asked, [("TRACEKIT_SIGNER_TOKEN", "")])   # "": none, never the process environment's
         self.assertIn("could not decide it (RuntimeError: stop)", json.loads(seen)["error"])
 
 

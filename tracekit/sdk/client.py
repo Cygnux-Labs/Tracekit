@@ -107,14 +107,14 @@ def _encode(method, req):
 def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
     """(socket, rfile, hello) for the signer at `path`, after checking its protocol range. `path` is a Unix socket, or
     `tcp://host:port` for a signer on the loopback TCP transport, which must prove it holds `token`
-    ($TRACEKIT_SIGNER_TOKEN by default) before we prove it too (transport/tcp_dev.py)."""
+    ($TRACEKIT_SIGNER_TOKEN when None; "" is none) before we prove it too (transport/tcp_dev.py)."""
     sock = None
     try:
         if path.startswith("tcp://"):
             host, _, port = path[len("tcp://"):].rpartition(":")
             if host not in ("127.0.0.1", "::1", "localhost"):   # frames after the handshake are plaintext
                 raise SignerUnavailable(f"{path}: tcp:// signers must be on loopback (127.0.0.1, ::1 or localhost)")
-            token = token or os.environ.get("TRACEKIT_SIGNER_TOKEN")
+            token = token if token is not None else os.environ.get("TRACEKIT_SIGNER_TOKEN")
             if not token:
                 raise SignerUnavailable(f"{path}: tcp:// signers need TRACEKIT_SIGNER_TOKEN")
             sock, rfile = tcp_dev.dial(host, int(port), token, timeout)
@@ -280,7 +280,7 @@ class Client:
     """Thread-safe. Methods named after the RPCs (`decide`, `status`, ...) take the request dict and return the
     response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing. `token_file`:
     an http(s) signer's bearer token file, in place of $TRACEKIT_SIGNER_TOKEN_FILE; `token`: a tcp:// signer's token,
-    in place of $TRACEKIT_SIGNER_TOKEN."""
+    in place of $TRACEKIT_SIGNER_TOKEN ("": none, the environment's is not read)."""
 
     def __init__(self, signer=None, timeout=30.0, token_file=None, token=None):
         self.signer = signer or _default_signer()
