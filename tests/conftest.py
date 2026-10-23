@@ -32,7 +32,7 @@ MARKERS = {
 
 # settings a developer's shell may carry that would change what the signer, hook or client does under test
 SHELL_ENV = ("TRACEKIT_POLICY", "TRACEKIT_SOCKET", "TRACEKIT_CLIENT_HOME", "CLAUDE_CONFIG_DIR",
-             "GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_CLI_SYSTEM_DEFAULTS_PATH")
+             "GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", "XDG_CONFIG_HOME")
 PROXIES = urllib.request.getproxies()
 
 

@@ -50,7 +50,7 @@ PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$"
 OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path"}
 # OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
 OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
-JS_TRIM = re.compile(r"^[\s﻿]+|[\s﻿]+$")
+JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
 
 
 def _input(v):

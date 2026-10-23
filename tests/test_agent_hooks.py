@@ -233,7 +233,7 @@ class Installer(unittest.TestCase):
                 want = verdict(name, real)
                 self.assertIn(want, ("deny", "ask"))
                 self.assertEqual(verdict(name, {**real, **decoy}), want)
-        for sep in ("", "\t", " ﻿"):
+        for sep in ("", "\t", " \ufeff"):
             with self.subTest(header=repr(sep)):
                 self.assertEqual(verdict("apply_patch", {"patchText": patch.format(sep)}), "deny")
 

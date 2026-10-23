@@ -6,7 +6,7 @@
 tracekit init --dev --agent codex      # ~/.codex/hooks.json
 tracekit init --dev --agent cursor     # ~/.cursor/hooks.json
 tracekit init --dev --agent gemini     # ~/.gemini/settings.json
-tracekit init --dev --agent opencode   # ~/.config/opencode/plugins/tracekit.js
+tracekit init --dev --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugins/tracekit.js; system mode: the agent's ~/.config
 # --project writes the project-level file instead; tracekit uninstall --agent X removes it
 tracekit demo --agent codex            # the scripted demo, sent as Codex's own hook payloads (also cursor, gemini)
 ```
