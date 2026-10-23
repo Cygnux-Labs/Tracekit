@@ -285,6 +285,30 @@ class Plugin(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 10)   # not the 55 s left of Hermes's limits
         self.assertEqual((ac.RAN, len(self.events("approval.abandoned"))), ([], 1))
 
+    def test_a_call_hermes_gave_up_on_before_its_hook_ran_is_blocked_undecided(self):
+        """A /stop while the call waited behind another call's hold: Hermes's post_tool_call comes first."""
+        [post] = self.hermes.hooks["post_tool_call"]
+        post(tool_name="echo", args={"text": "hi"}, result="[cancelled]", tool_call_id="call-9", session_id="s1",
+             status="cancelled", error_message="Tool execution cancelled.")
+        seen, ran = self.hermes.call("echo", {"text": "hi"}, "call-9")
+        self.assertEqual((ran, ac.RAN), (False, []))
+        self.assertEqual(json.loads(seen)["error"], f"Tool call blocked by Tracekit: {hermes.GONE}")
+        self.assertEqual(self.events("policy.decision"), [])
+
+    def test_a_call_hermes_gives_up_on_during_its_consume_does_not_run(self):
+        [post] = self.hermes.hooks["post_tool_call"]
+        consume = RunHandle.approval_consume
+
+        def late(handle, tool_call_id, *a, **kw):
+            post(tool_name="echo", args={"text": "hi"}, result="timed out", tool_call_id=tool_call_id, session_id="s1",
+                 status="timeout", error_message="timed out")
+            return consume(handle, tool_call_id, *a, **kw)
+        with mock.patch.object(RunHandle, "approval_consume", late):
+            seen, ran = self.hermes.call("echo", {"text": "hi"})
+        self.assertEqual((ran, ac.RAN), (False, []))
+        self.assertEqual(json.loads(seen)["error"], f"Tool call blocked by Tracekit: {hermes.GONE}")
+        self.assertEqual(self.completed, [("call-1", "error", f"not run: {hermes.GONE}")])
+
     def test_the_hold_lasts_as_long_as_hermes_lets_the_hook_run(self):
         def limit(hook=None, sequential=None, batch=None, env=None):
             config = {"plugins": {} if hook is None else {"hook_callback_timeout": hook},

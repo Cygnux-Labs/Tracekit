@@ -58,7 +58,8 @@ session's next call.
 - **Keeps approvals with the signer.** An `ask` is answered in Tracekit (`tracekit approvals`, the viewer, an
   approver the signer knows), never by Hermes's own approval prompt. An approval still unanswered when the hook's time
   is up is withdrawn, so no one approves a call that never ran. So is one whose call Hermes stopped waiting for (its
-  tool deadline, a `/stop`), answered or not: the hook sees Hermes's `post_tool_call` for it, and the call never runs.
+  tool deadline, a `/stop`), answered or not: the hook sees Hermes's `post_tool_call` for it, before or while it
+  decides, and the call never runs.
 - **Records the outcome.** `post_tool_call` completes the call against its decision with Hermes's status: `ok` with
   the result the tool returned (in full for a tool the policy lists as untrusted, for provenance; otherwise its
   digest), or `error` for Hermes's `error`, `timeout` and `cancelled`, with its message. A call another plugin blocked

@@ -8,9 +8,10 @@ call in the signer under the model's tool_call_id and never raises: it returns H
 `{"action": "block", "message": ...}` for anything but an allowed call or an approved ask (a deny, an approval not given
 in time, a refused consume, a signer refusal, a missing tool_call_id, an outage under a closed fail mode, an error of
 its own). An `ask` waits for a person inside the callback until MARGIN_S before the earlier of the two limits
-(hook_timeout_s); an approval still unanswered then is withdrawn, and so is one whose call Hermes stopped waiting for
-(its post_tool_call came first: a concurrent batch's deadline, a /stop). It never answers Hermes's `approve`: the
-approval stays with the signer.
+(hook_timeout_s); an approval still unanswered then is withdrawn. A call Hermes stopped waiting for (its
+post_tool_call, timeout or cancelled, came before the hook let it through: a concurrent batch's deadline, a /stop,
+before the hook started or while it ran) is blocked, its approval withdrawn, answered or not. It never answers
+Hermes's `approve`: the approval stays with the signer.
 
 post_tool_call completes a call pre_tool_call let through, by its session and tool_call_id: `ok` with the result the
 tool returned; `error` for Hermes's error, timeout and cancelled statuses; as not run when another plugin blocked it
@@ -131,8 +132,14 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
         if not tool_call_id:   # never made up: the call's result could not be bound to its decision
             return _block("Tool call blocked by Tracekit: Hermes gave the call no tool_call_id to decide it under")
         args = copy.deepcopy(args) if isinstance(args, dict) else {}   # as decided, whatever changes Hermes's dict
-        with lock:   # an earlier call under this id (a provider numbering calls per response) is no concern of this one
-            gone.pop(key, None)
+        # Hermes gave up on this very call before its hook ran (a /stop while it waited behind another call's hold):
+        # tool_call_ids are unique in a session (agent/turn_tool_validation.py)
+        # lean: should an id repeat (compaction dropped the call that used it first), that one call is blocked: fail
+        # closed; key the marks by turn too if that happens in practice
+        with lock:
+            first = gone.pop(key, None)
+        if first:
+            return _block(f"Tool call blocked by Tracekit: {GONE}")
         try:
             end = start + (timeout_s() or MAX_TIMEOUT_S) - MARGIN_S
             run, d = decide(session_id, tool_call_id, tool_name, args)
@@ -169,10 +176,15 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
                 return _block("Tool call blocked by Tracekit: the arguments the signer approved are not the call's")
         except Exception as e:   # no decision: the call doesn't run
             return _block(f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})")
-        with lock:   # by session too: a provider may number its calls per response (call_0, call_1, ...)
-            calls[key] = run, d, args
-            if len(calls) > MAX_OPEN_CALLS:   # lean: the oldest call never got its post_tool_call; dropped, not recorded
-                calls.pop(next(iter(calls)))
+        with lock:   # with the registration: a post_tool_call during the consume finds the one or the other
+            late = gone.pop(key, None)
+            if not late:   # by session too: ids are unique only within one (some providers name every call call_0)
+                calls[key] = run, d, args
+                if len(calls) > MAX_OPEN_CALLS:   # lean: the oldest never got its post_tool_call; dropped, not recorded
+                    calls.pop(next(iter(calls)))
+        if late:
+            run.complete(tool_call_id, "error", error=f"not run: {GONE}")
+            return _block(f"Tool call blocked by Tracekit: {GONE}")
         return None
 
     def post_tool_call(args=None, result=None, tool_call_id="", session_id="", status="", error_message=None, **_):
