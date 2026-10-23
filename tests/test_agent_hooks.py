@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import agent_hooks, client  # noqa: E402
+from tracekit.signer.service import load_policy  # noqa: E402
 from factories import DaemonCase, ledger_records, patch_env  # noqa: E402
 
 
@@ -152,6 +153,30 @@ class Harnesses(DaemonCase):
             self.assertEqual(code, 0, h)
         p = subprocess.run([sys.executable, "-m", "tracekit.agent_hooks", "nope"], input="{}", capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(p.returncode, 0)
+
+
+class CodexPatchHeaders(unittest.TestCase):
+    """Codex (codex-rs/apply-patch) reads a hunk header after Begin Patch, an Add or a Delete hunk from the line with its
+    Unicode whitespace trimmed, so an indented header names a file Codex writes."""
+
+    def test_an_indented_header_is_decided_as_the_plain_one(self):
+        dev = load_policy()
+        for ws in (" ", "\t", "\u00a0", "\u3000", "\u2028", "\x0b", "\x0c", "\x85"):
+            for body, files in ((f"{ws}*** Add File: .env\n+A=1", [".env"]),
+                                (f"{ws}*** Update File: .env\n@@\n-A=1\n+A=2", [".env"]),
+                                (f"{ws}*** Delete File: .env", [".env"]),
+                                (f"*** Add File: notes.txt\n+x\n{ws}*** Add File: .env\n+A=1", ["notes.txt", ".env"]),
+                                (f"*** Delete File: old.txt\n{ws}*** Update File: .env\n@@\n-A=1\n+A=2", ["old.txt", ".env"]),
+                                (f"<<'EOF'\n*** Begin Patch\n{ws}*** Add File: .env\n+A=1\n*** End Patch\nEOF", [".env"])):
+                patch = body if body.startswith("<<") else f"*** Begin Patch\n{body}\n*** End Patch"
+                with self.subTest(ws=ws, patch=patch):
+                    tool, args = agent_hooks.tool("codex", "apply_patch", {"command": patch})
+                    self.assertEqual(args.get("paths"), files)
+                    plain = agent_hooks.tool("codex", "apply_patch", {"command": patch.replace(ws + "***", "***")})
+                    want = dev.decide(*plain)
+                    self.assertEqual(want["verdict"], "deny")
+                    self.assertEqual({k: dev.decide(tool, args)[k] for k in ("verdict", "rule_ids")},
+                                     {k: want[k] for k in ("verdict", "rule_ids")})
 
 
 class ReasoningCaptureOn(DaemonCase):

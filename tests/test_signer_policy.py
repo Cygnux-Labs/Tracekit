@@ -181,6 +181,24 @@ class CodingPack(unittest.TestCase):
                         if cmd in merges:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
+        """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
+        patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
+                   "cd sub && applypatch < p", 'apply_patch "$(cat p)"', "/usr/local/bin/apply_patch < p",
+                   'bash -lc "apply_patch < p"', "env applypatch < p", "codex --codex-run-as-apply-patch PATCH",
+                   "Apply_Patch.exe < p", "apply_patch.bat < p", "cat p | apply_patch"]
+        routine = ["grep apply_patch", "git apply x.diff", "cat apply_patch.md", "rg applypatch src/", "python apply_patch.py",
+                   "codex exec 'fix the tests'", "patch -p1 < x.diff", "echo apply_patch"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in patches + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A034" in d["rule_ids"], cmd in patches, d)
+                        if cmd in patches:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
         dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
         d = dev.decide("Bash", {"command": "npm install", "allowed_domains": ["registry.example.org"]})

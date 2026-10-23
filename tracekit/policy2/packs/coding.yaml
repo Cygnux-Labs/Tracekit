@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-23'
+version: '2026.10-v2-24'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -302,6 +302,18 @@ ask:
     reason: merging a pull request
     remedy: Wait for a person to approve the held call, or leave the pull request open for a person to review and merge.
     rationale: A merge lands code on a shared branch, often with a deploy behind it; a person confirms it.
+  - id: TK-A034
+    class: shell
+    # each command's argv: Codex applies a patch itself when the shell runs apply_patch or applypatch (it puts both on
+    # PATH, codex-rs/arg0, as .bat on Windows) or `codex --codex-run-as-apply-patch PATCH`, so the files the patch
+    # writes reach no file rule. argv[0] is a basename in lower case without .exe
+    # lean: every patch run from the shell is held, an ordinary file's too; decide Codex's own form (`[cd D &&]
+    # apply_patch <<EOF`) by the patch's files, as the apply_patch tool is, when models that edit through the shell
+    # get in the way
+    pattern: '^(apply_?patch(\.(bat|cmd))?|codex --codex-run-as-apply-patch)( |$)'
+    reason: applying a patch through the shell
+    remedy: Wait for a person to approve the held call, or edit files with the apply_patch tool, which Tracekit decides file by file.
+    rationale: A patch applied from the shell writes files that no file rule reads; a person confirms it.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
     # in bypassPermissions mode or under a matching allow rule nobody is asked

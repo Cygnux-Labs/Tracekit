@@ -235,6 +235,17 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
         self.assertIn("TK-D001", err)
 
+    def test_an_indented_patch_header_and_a_cursor_delete_are_decided_as_file_writes(self):
+        code, out, err = self.hook("codex", {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+                                             "tool_use_id": "p1", "tool_input": {
+                                                 "command": "*** Begin Patch\n\t*** Add File: config/.env\n+A=1\n*** End Patch"}})
+        self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
+        self.assertIn("TK-D005", err)
+        code, out, err = self.hook("cursor", {"conversation_id": "c", "hook_event_name": "preToolUse", "tool_name": "Delete",
+                                              "tool_use_id": "d1", "tool_input": {"file_path": "/w/.env"}})
+        self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
+        self.assertIn("TK-D005", err)
+
     def test_a_gemini_sandbox_expansion_waits_for_a_person(self):
         pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
                "tool_input": {"command": "npm install", "additional_permissions": {"network": True}}}
