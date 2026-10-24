@@ -331,7 +331,9 @@ ask:
     class: mcp
     # TK-A035's commands as the cli_command, command or cmd argument of an MCP tool (the AWS API MCP server's
     # call_aws), starting with the program (leading spaces are read). The scan for the decryption flag
-    # stops at the end of that value, so each occurrence rescans only it
+    # stops at the end of that value, so each occurrence rescans only it. Only for a tool named for running a
+    # command: a rule on every MCP call makes each call over 64 KiB ask (TK-OVERSIZE)
+    tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Aa]ws|[Cc]li|[Cc]ommand|[Cc]md|[Ee]xec(ute)?|[Rr]un|[Ss]hell|[Bb]ash|[Tt]erminal)|mcp(:[^/]+/|__).*(Aws|Cli|Command|Cmd|Exec|Execute|Run|Shell|Bash|Terminal)'
     pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":" *(aws (-[^ ]+ ([^- ][^ ]* )?){0,8}(secretsmanager (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( ([^"\\]|\\.)*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ ([^- ][^ ]* )?){0,8}((alpha|beta) (-[^ ]+ ([^- ][^ ]* )?){0,8})?secrets (-[^ ]+ ([^- ][^ ]* )?){0,8}versions (-[^ ]+ ([^- ][^ ]* )?){0,8}access(["]| |$)|az (-[^ ]+ ([^- ][^ ]* )?){0,8}keyvault (-[^ ]+ ([^- ][^ ]* )?){0,8}secret (-[^ ]+ ([^- ][^ ]* )?){0,8}(show|show-deleted|download)(["]| |$))'
     reason: reading a secret's value from a cloud secret store through an MCP tool
     remedy: Wait for a person to approve the held call, or ask the person for the one value the task needs.

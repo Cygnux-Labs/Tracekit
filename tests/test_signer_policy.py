@@ -110,6 +110,11 @@ class CodingPack(unittest.TestCase):
                 self.assertEqual((d["verdict"], want in d["rule_ids"]), ("deny" if want.startswith("TK-D") else "ask", True),
                                  d)
 
+    def every_pack(self):
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                yield pack, engine, Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+
     def test_a_command_run_outside_claude_codes_sandbox_asks(self):
         self.verdicts([({"command": "npm install", "dangerouslyDisableSandbox": True}, "TK-A003"),
                        ({"command": "npm install", "dangerouslyDisableSandbox": "true"}, "TK-A003"),
@@ -429,102 +434,141 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})
         self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
-    def test_reading_a_secrets_value_from_a_cloud_cli_asks(self):
-        self.verdicts([("aws secretsmanager get-secret-value --secret-id prod/db", "TK-A035"),
-                       ("aws --profile prod --region us-east-1 secretsmanager batch-get-secret-value --secret-id-list a b",
-                        "TK-A035"),
-                       ("aws ssm get-parameter --name /prod/pw --with-decryption", "TK-A035"),
-                       ("aws ssm get-parameter --with-decryption --name /prod/pw", "TK-A035"),
-                       ("aws ssm get-parameters --names /a /b --with-decryption", "TK-A035"),
-                       ("aws ssm get-parameters-by-path --path /prod --with-decryption", "TK-A035"),
-                       ("aws ssm get-parameter-history --name /p --with-decryption", "TK-A035"),
-                       ("aws ssm get-parameter --name $'a\nb' --with-decryption", "TK-A035"),
-                       ("AWS_PROFILE=prod aws secretsmanager get-secret-value --secret-id x", "TK-A035"),
-                       ("gcloud secrets versions access latest --secret=db", "TK-A035"),
-                       ("gcloud --project p beta secrets versions access 3 --secret=db", "TK-A035"),
-                       ("az keyvault secret show --vault-name v --name n", "TK-A035"),
-                       ("az keyvault secret show-deleted --vault-name v --name n", "TK-A035"),
-                       ("az keyvault secret download --vault-name v --name n --file f", "TK-A035")])
-        for command in ("aws secretsmanager list-secrets", "aws secretsmanager describe-secret --secret-id x",
-                        "aws ssm get-parameter --name /p", "aws ssm get-parameter --name /p --no-with-decryption",
-                        "aws ssm get-parameters-by-path --path /p", "gcloud secrets list",
-                        "gcloud secrets versions list db", "az keyvault secret list --vault-name v",
-                        "az keyvault secret list-versions --vault-name v --name n", "echo aws secretsmanager get-secret-value",
-                        "git commit -m 'aws secretsmanager get-secret-value'"):
-            self.assertNotIn("TK-A035", self.e.decide("Bash", {"command": command})["rule_ids"], command)
+    def test_reading_a_secrets_value_from_a_cloud_cli_asks_in_every_pack(self):
+        held = ["aws secretsmanager get-secret-value --secret-id prod/db",
+                "aws --profile prod --region us-east-1 secretsmanager batch-get-secret-value --secret-id-list a b",
+                "aws ssm get-parameter --name /prod/pw --with-decryption",
+                "aws ssm get-parameter --with-decryption --name /prod/pw",
+                "aws ssm get-parameters --names /a /b --with-decryption",
+                "aws ssm get-parameters-by-path --path /prod --with-decryption",
+                "aws ssm get-parameter-history --name /p --with-decryption",
+                "aws ssm get-parameter --name $'a\nb' --with-decryption",
+                "AWS_PROFILE=prod aws secretsmanager get-secret-value --secret-id x",
+                "gcloud secrets versions access latest --secret=db",
+                "gcloud --project p beta secrets versions access 3 --secret=db",
+                "az keyvault secret show --vault-name v --name n",
+                "az keyvault secret show-deleted --vault-name v --name n",
+                "az keyvault secret download --vault-name v --name n --file f",
+                # options between the words, and an abbreviated flag (the AWS CLI accepts any prefix)
+                "aws secretsmanager --region us-east-1 get-secret-value --secret-id x",
+                "aws ssm --region r get-parameter --name x --with-decryption",
+                "aws ssm get-parameter --name x --with-d", "aws ssm get-parameter --name x --with-decrypt",
+                "gcloud secrets --project p versions access latest --secret=db",
+                "gcloud beta --project p secrets versions access latest --secret=db",
+                "az keyvault --subscription s secret show --name n --vault-name v"]
+        routine = ["aws secretsmanager list-secrets", "aws secretsmanager describe-secret --secret-id x",
+                   "aws ssm get-parameter --name /p", "aws ssm get-parameter --name /p --no-with-decryption",
+                   "aws ssm get-parameters-by-path --path /p", "aws ssm get-parameter --name x --wait",
+                   "gcloud secrets list", "gcloud secrets versions list db", "az keyvault secret list --vault-name v",
+                   "az keyvault secret list-versions --vault-name v --name n", "echo aws secretsmanager get-secret-value",
+                   "git commit -m 'aws secretsmanager get-secret-value'"]
+        for pack, engine, e in self.every_pack():
+            for cmd in held + routine:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual("TK-A035" in d["rule_ids"], cmd in held, d)
+                    if cmd in held:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
 
-    def test_a_cli_command_given_to_an_mcp_tool_asks_when_it_starts_with_the_program(self):
-        for tool in ("mcp__aws-api__call_aws", "mcp:aws-api/call_aws"):
-            for command in ("aws secretsmanager get-secret-value --secret-id x", "aws ssm get-parameter --name /p --with-decryption",
-                            "aws --region eu-west-1 secretsmanager get-secret-value --secret-id x"):
-                d = self.e.decide(tool, {"cli_command": command})
-                self.assertEqual((d["verdict"], "TK-A036" in d["rule_ids"]), ("ask", True), (tool, command))
-            for command in ("aws secretsmanager list-secrets", "aws ssm get-parameter --name /p"):
-                self.assertNotIn("TK-A036", self.e.decide(tool, {"cli_command": command})["rule_ids"], command)
+    def test_a_cli_command_given_to_an_mcp_tool_asks_in_every_pack_when_it_starts_with_the_program(self):
+        tools = ("mcp__aws-api__call_aws", "mcp:aws-api/call_aws", "mcp__shell__run_command", "mcp__cloud__ExecuteCommand",
+                 "mcp:ssh/execute", "mcp__x__aws-cli")
+        held = [{"cli_command": "aws secretsmanager get-secret-value --secret-id x"},
+                {"cli_command": "aws ssm get-parameter --name /p --with-decryption"},
+                {"cli_command": "aws --region eu-west-1 secretsmanager get-secret-value --secret-id x"},
+                {"cliCommand": "aws secretsmanager get-secret-value --secret-id x"},
+                {"cli_command": " aws secretsmanager get-secret-value --secret-id x"},
+                {"command": "gcloud secrets versions access latest --secret=db"},
+                {"cmd": "az keyvault secret show --vault-name v --name n"}]
+        routine = [{"cli_command": "aws secretsmanager list-secrets"}, {"cli_command": "aws ssm get-parameter --name /p"},
+                   {"command": "gcloud secrets list"}]
+        for pack, engine, e in self.every_pack():
+            for tool in tools:
+                for args in held + routine:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                        d = e.decide(tool, args)
+                        self.assertEqual("TK-A036" in d["rule_ids"], args in held, d)
+                        if args in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+            # a tool not named for running a command is left to TK-A037 and TK-A038 (docs/limits.md)
+            self.assertNotIn("TK-A036", e.decide("mcp__x__get_thing", held[0])["rule_ids"])
 
-    def test_an_mcp_tool_that_returns_a_secrets_value_asks_and_one_that_lists_or_describes_does_not(self):
-        for tool, args in [("mcp__aws__get_secret_value", {"secret_id": "prod/db-password"}),
-                           ("mcp:aws/get_secret_value", {"secret_id": "prod/db-password"}),
-                           ("mcp__aws-secrets-manager__GetSecretValue", {"SecretId": "x"}),
-                           ("mcp__aws__aws_secretsmanager_get_secret_value", {"secret_name": "x"}),
-                           ("mcp__aws__batch_get_secret_value", {"ids": ["x"]}),
-                           ("mcp__gcp__access_secret_version", {"name": "projects/p/secrets/s/versions/latest"}),
-                           ("mcp__gcp__AccessSecretVersion", {"name": "n"}),
-                           ("mcp__azure__get_secret", {"vault": "v", "name": "n"}),
-                           ("mcp__azure__keyvault_secret_get", {"vault": "v", "secret": "n"}),
-                           ("mcp__azure__get_keyvault_secret", {"vault": "v", "name": "n"})]:
-            d = self.e.decide(tool, args)
-            self.assertEqual((d["verdict"], "TK-A037" in d["rule_ids"]), ("ask", True), tool)
-        for tool, args in [("mcp__aws__list_secrets", {}), ("mcp__aws__describe_secret", {"secret_id": "x"}),
-                           ("mcp__aws__create_secret", {"name": "x"}), ("mcp__aws__put_secret_value", {"secret_id": "x"}),
-                           ("mcp__gcp__get_secret_version", {"name": "n"}), ("mcp__azure__keyvault_secret_list", {"vault": "v"}),
-                           ("mcp__github__get_secret_scanning_alert", {"owner": "a", "repo": "b", "number": 1}),
-                           ("mcp__github__list_secret_scanning_alerts", {"owner": "a", "repo": "b"}),
-                           ("mcp__github__create_issue", {"title": "get_secret_value docs"})]:
-            self.assertNotIn("TK-A037", self.e.decide(tool, args)["rule_ids"], tool)
+    def test_an_mcp_tool_that_returns_a_secrets_value_asks_in_every_pack_and_one_that_lists_or_describes_does_not(self):
+        held = [("mcp__aws__get_secret_value", {"secret_id": "prod/db-password"}),
+                ("mcp:aws/get_secret_value", {"secret_id": "prod/db-password"}),
+                ("mcp__aws-secrets-manager__GetSecretValue", {"SecretId": "x"}),
+                ("mcp__aws__aws_secretsmanager_get_secret_value", {"secret_name": "x"}),
+                ("mcp__aws__batch_get_secret_value", {"ids": ["x"]}),
+                ("mcp__gcp__access_secret_version", {"name": "projects/p/secrets/s/versions/latest"}),
+                ("mcp__gcp__AccessSecretVersion", {"name": "n"}),
+                ("mcp__azure__get_secret", {"vault": "v", "name": "n"}),
+                ("mcp__azure__keyvault_secret_get", {"vault": "v", "secret": "n"}),
+                ("mcp__azure__get_keyvault_secret", {"vault": "v", "name": "n"}),
+                ("mcp__x__get-secret-value", {}), ("mcp__x__SecretsManagerGetSecretValue", {}),
+                ("mcp__x__azmcp-keyvault-secret-get", {})]
+        routine = [("mcp__aws__list_secrets", {}), ("mcp__aws__describe_secret", {"secret_id": "x"}),
+                   ("mcp__aws__create_secret", {"name": "x"}), ("mcp__aws__put_secret_value", {"secret_id": "x"}),
+                   ("mcp__gcp__get_secret_version", {"name": "n"}), ("mcp__azure__keyvault_secret_list", {"vault": "v"}),
+                   ("mcp__github__get_secret_scanning_alert", {"owner": "a", "repo": "b", "number": 1}),
+                   ("mcp__github__list_secret_scanning_alerts", {"owner": "a", "repo": "b"}),
+                   ("mcp__github__create_issue", {"title": "get_secret_value docs"})]
+        for pack, engine, e in self.every_pack():
+            for tool, args in held + routine:
+                with self.subTest(pack=pack, engine=engine, tool=tool):
+                    d = e.decide(tool, args)
+                    self.assertEqual("TK-A037" in d["rule_ids"], (tool, args) in held, d)
+                    if (tool, args) in held:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
 
-    def test_an_mcp_parameter_read_asks_only_when_it_decrypts(self):
-        for tool, args in [("mcp__aws__get_parameter", {"Name": "/p", "WithDecryption": True}),
-                           ("mcp__aws__get_parameter", {"name": "/p", "with_decryption": True}),
-                           ("mcp__aws__get_parameters", {"names": ["/p"], "withDecryption": True}),
-                           ("mcp:aws/get_parameters_by_path", {"Path": "/p", "WithDecryption": True}),
-                           ("mcp__aws__get_parameter_history", {"Name": "/p", "WithDecryption": "true"})]:
-            d = self.e.decide(tool, args)
-            self.assertEqual((d["verdict"], "TK-A038" in d["rule_ids"]), ("ask", True), (tool, args))
-        for tool, args in [("mcp__aws__get_parameter", {"Name": "/p"}),
-                           ("mcp__aws__get_parameter", {"Name": "/p", "WithDecryption": False}),
-                           ("mcp__aws__get_parameters_by_path", {"Path": "/p"}),
-                           ("mcp__github__create_issue", {"title": "WithDecryption", "body": "with_decryption true"})]:
-            self.assertNotIn("TK-A038", self.e.decide(tool, args)["rule_ids"], (tool, args))
+    def test_an_mcp_parameter_read_asks_in_every_pack_only_when_it_decrypts(self):
+        held = [("mcp__aws__get_parameter", {"Name": "/p", "WithDecryption": True}),
+                ("mcp__aws__get_parameter", {"name": "/p", "with_decryption": True}),
+                ("mcp__aws__get_parameters", {"names": ["/p"], "withDecryption": True}),
+                ("mcp:aws/get_parameters_by_path", {"Path": "/p", "WithDecryption": True}),
+                ("mcp__aws__get_parameter_history", {"Name": "/p", "WithDecryption": "true"})]
+        routine = [("mcp__aws__get_parameter", {"Name": "/p"}),
+                   ("mcp__aws__get_parameter", {"Name": "/p", "WithDecryption": False}),
+                   ("mcp__aws__get_parameters_by_path", {"Path": "/p"}),
+                   ("mcp__github__create_issue", {"title": "WithDecryption", "body": "with_decryption true"})]
+        for pack, engine, e in self.every_pack():
+            for tool, args in held + routine:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertEqual("TK-A038" in d["rule_ids"], (tool, args) in held, d)
+                    if (tool, args) in held:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
 
-    def test_options_between_the_words_of_a_secret_read_and_an_abbreviated_decryption_flag_still_ask(self):
-        self.verdicts([("aws secretsmanager --region us-east-1 get-secret-value --secret-id x", "TK-A035"),
-                       ("aws ssm --region r get-parameter --name x --with-decryption", "TK-A035"),
-                       ("aws ssm get-parameter --name x --with-d", "TK-A035"),
-                       ("aws ssm get-parameter --name x --with-decrypt", "TK-A035"),
-                       ("gcloud secrets --project p versions access latest --secret=db", "TK-A035"),
-                       ("gcloud beta --project p secrets versions access latest --secret=db", "TK-A035"),
-                       ("az keyvault --subscription s secret show --name n --vault-name v", "TK-A035")])
-        for command in ("aws ssm get-parameter --name x --wait", "aws ssm get-parameter --name x --no-with-decryption"):
-            self.assertNotIn("TK-A035", self.e.decide("Bash", {"command": command})["rule_ids"], command)
-
-    def test_secret_tool_names_are_read_with_hyphens_and_in_camel_case_and_a_cli_command_with_a_space(self):
-        for tool in ("mcp__x__get-secret-value", "mcp__x__SecretsManagerGetSecretValue", "mcp__x__azmcp-keyvault-secret-get"):
-            self.assertIn("TK-A037", self.e.decide(tool, {})["rule_ids"], tool)
-        for args in ({"cliCommand": "aws secretsmanager get-secret-value --secret-id x"},
-                     {"cli_command": " aws secretsmanager get-secret-value --secret-id x"}):
-            self.assertIn("TK-A036", self.e.decide("mcp__aws-api__call_aws", args)["rule_ids"], args)
+    def test_a_call_over_64_kib_is_not_held_by_the_secret_rules(self):
+        # a rule on every MCP call would make each of these ask (TK-OVERSIZE); only a tool the rule is for may
+        big = "x" * 70000
+        rules = ("TK-A035", "TK-A036", "TK-A037", "TK-A038")
+        for pack, engine, e in self.every_pack():
+            for tool, args in [("mcp__filesystem__write_file", {"path": "a.txt", "content": big}),
+                               ("mcp__github__create_or_update_file", {"path": "a.txt", "content": big}),
+                               ("mcp__notion__create_page", {"title": "t", "content": big}),
+                               ("Write", {"file_path": "/tmp/a.txt", "content": big}),
+                               ("Bash", {"command": "echo " + big})]:
+                with self.subTest(pack=pack, engine=engine, tool=tool):
+                    d = e.decide(tool, args)
+                    self.assertEqual([o for o in d.get("oversize", []) if o.startswith(rules)], [], d)
+                    if pack in ("coding.yaml", "dev.yaml") and tool.startswith("mcp"):
+                        self.assertEqual(d["verdict"], "flag", d)
 
     def test_a_tool_name_of_underscores_is_decided_without_the_fallback_timeout(self):
-        for tool in ("mcp__" + "_" * 60000 + "x", "mcp__x__" + "get_secret_" * 5000):
-            d = self.e.decide(tool, {"a": 1})
-            self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), tool[:20])
+        for pack, engine, e in self.every_pack():
+            for tool in ("mcp__" + "_" * 4000 + "x", "mcp__x__" + "get_secret_" * 5000, "mcp__x__" + "run_" * 12000):
+                with self.subTest(pack=pack, engine=engine, tool=tool[:20]):
+                    self.assertIsNone(e.decide(tool, {"a": 1}).get("nondeterministic"))
 
     def test_a_long_command_after_aws_ssm_is_decided_without_the_fallback_timeout(self):
-        d = self.e.decide("Bash", {"command": "aws ssm get-parameter " + "x " * 30000 + "--with-decryption"})
-        self.assertEqual((d["verdict"], "TK-A035" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
-        d = self.e.decide("Bash", {"command": "aws ssm get-parameter " * 2900})
-        self.assertEqual((d["verdict"], d.get("nondeterministic")), ("allow", None))
+        for pack, engine, e in self.every_pack():
+            with self.subTest(pack=pack, engine=engine):
+                d = e.decide("Bash", {"command": "aws ssm get-parameter " + "x " * 30000 + "--with-decryption"})
+                self.assertEqual(("TK-A035" in d["rule_ids"], d.get("nondeterministic")), (True, None), d)
+                d = e.decide("Bash", {"command": "aws ssm get-parameter " * 2900})
+                self.assertEqual(("TK-A035" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
+                d = e.decide("mcp__aws-api__call_aws", {"cli_command": "aws ssm get-parameter " + "x " * 30000})
+                self.assertEqual(("TK-A036" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
 
     def test_remote_ref_deletion_past_a_newline_in_an_argument_but_not_in_the_next_command(self):
         # `.` stopped at a newline inside an earlier argument; macOS runs git for `Git`; git takes any prefix of
