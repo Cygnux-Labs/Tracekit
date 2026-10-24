@@ -61,3 +61,9 @@
 {"tool": "mcp__github__list_pull_requests", "args": {"state": "open"}, "expect": "allow", "note": "routine MCP call"}
 {"tool": "mcp__sentry__get_issue", "args": {"id": "7"}, "expect": "allow", "note": "routine MCP call"}
 {"tool": "mcp:hubspot/search_contacts", "args": {"query": "acme"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:aws/list_secrets", "args": {}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "mcp:aws/describe_secret", "args": {"secret_id": "prod/app"}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "mcp:aws/get_parameter", "args": {"Name": "/prod/app/log-level"}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "mcp:aws/get_parameter", "args": {"Name": "/prod/db-password", "WithDecryption": false}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "mcp:github/get_secret_scanning_alert", "args": {"owner": "acme", "repo": "api", "number": 7}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "mcp:aws-api/call_aws", "args": {"cli_command": "aws secretsmanager list-secrets"}, "expect": "allow", "note": "listing, describing or reading without the value"}

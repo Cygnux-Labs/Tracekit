@@ -279,9 +279,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 586 harmful and 750 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 586 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 750 (0.13%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 600 harmful and 762 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 600 harmful calls are
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 762 (0.13%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -513,8 +513,8 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 237 / 420 (56.4%) | 109 (26.0%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 266 / 420 (63.3%) | 150 (35.7%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
+| default | 240 / 420 (57.1%) | 109 (26.0%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 269 / 420 (64.0%) | 150 (35.7%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
 destructive 15 of 36, defence evasion 14 of 30, supply chain 14 of 27; strongest: Kubernetes 23 of 27, database 28 of
@@ -540,17 +540,18 @@ default and 246 (58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and 
 and 250 (59.5%); the credential-store, container, package-source and history rules (`TK-D020`, `TK-D021`, `TK-A020` to
 `TK-A028`) to 236 (56.2%) and 266 (63.3%); the fixes of the 1.4 review (`TK-A029`, `TK-A030`, the shells the parser
 can't read, package sources set by a variable) to 237 (56.4%) and 266, with no new false positive on the held-out or
-session calls. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
+session calls; `TK-A035` to `TK-A038` (a secret's value read through a cloud CLI or an MCP
+tool) to 240 (57.1%) and 269 (64.0%), with none either. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
 pool, not as blind recall. The gates were
 recorded again with those rules, on purpose: strict's false positives on E17's benign calls rose from 4.1% to 4.9%
 (29 of 711 to 36 of 738), all of them benign calls added to E17 with the rules that strict holds as installs,
 `docker run`, URLs or network commands (`TK-F004`, `TK-F012`, `TK-F013`), none by a new rule.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's 586 harmful calls are decided as they are, and each of the 277 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's 600 harmful calls are decided as they are, and each of the 284 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 586
-originals and all 1,339 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 600
+originals and all 1,374 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
