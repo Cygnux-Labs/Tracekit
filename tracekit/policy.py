@@ -245,26 +245,29 @@ def _matches(r, tool, ti):
 
 def evaluate(pol, tool, ti, cwd=None):
     """Return {'decision', 'rule_ids', 'reasons', 'flags'}; decision in allow|deny|ask|flag.
-    Precedence: deny > ask > flag > allow."""
+    Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's) is decided on each
+    one as its file_path: a rule that matches any of them applies."""
     if not isinstance(ti, dict):
         ti = {} if ti is None else {"value": ti}
+    paths = ti.get("paths") if FIELD_FOR_TOOL.get(tool) == "file_path" else None
+    calls = [ti] + [dict(ti, file_path=p) for p in paths] if isinstance(paths, list) else [ti]
     rule_ids, reasons, flags = [], [], []
     deny = ask = False
     for r in pol.get("deny", []):
-        if _matches(r, tool, ti):
+        if any(_matches(r, tool, c) for c in calls):
             deny = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("ask", []):
-        if ASKABLE.match(tool or "") and _matches(r, tool, ti):
+        if ASKABLE.match(tool or "") and any(_matches(r, tool, c) for c in calls):
             ask = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("flag", []):
-        if _matches(r, tool, ti):
+        if any(_matches(r, tool, c) for c in calls):
             if r["id"] not in rule_ids:
                 rule_ids.append(r["id"])
             flags.append(r.get("label", "flag"))
-    if tool in WRITE_TOOLS and cwd:
-        p = str(ti.get("file_path") or ti.get("notebook_path") or "")
+    for c in calls if tool in WRITE_TOOLS and cwd else ():
+        p = str(c.get("file_path") or c.get("notebook_path") or "")
         if p:
             try:
                 if "\x00" in p:  # not a real path; whether realpath rejects it varies by Python version and OS
@@ -275,5 +278,6 @@ def evaluate(pol, tool, ti, cwd=None):
                 inside = False
             if not inside:
                 flags.append("out_of_scope_write"); rule_ids.append("TK-SCOPE")
+                break
     decision = "deny" if deny else ("ask" if ask else ("flag" if flags else "allow"))
     return {"decision": decision, "rule_ids": rule_ids, "reasons": reasons, "flags": sorted(set(flags))}

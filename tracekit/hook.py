@@ -391,8 +391,8 @@ def _entry():
     try:
         return main()
     except Exception as e:  # a crash in Tracekit must follow the configured fail mode
-        closed = fail_closed()
-        print(f"[tracekit] hook error ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
+        closed = isinstance(e, RecursionError) or fail_closed()   # a payload nested too deep to read can't be decided
+        print(f"[tracekit] hook error ({e}); " + ("blocking" if closed else "allowing (fail-open)"), file=sys.stderr)
         return 2 if closed else 0
 
 

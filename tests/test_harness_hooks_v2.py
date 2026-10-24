@@ -286,8 +286,10 @@ class Installer(unittest.TestCase):
                         with open(path) as f:
                             plugin = f.read()
                         self.assertEqual(agent_hooks._version(plugin), "v2")
-                        self.assertIn('"-I", "-m", "tracekit.integrations.harness_hooks", "opencode"', plugin)
-                        self.assertIn('command.push(event)', plugin)
+                        commands = json.loads(plugin.split("const commands = ", 1)[1].split(";\n", 1)[0])
+                        self.assertEqual(commands, {ev: install._dev_hook_argv(harness_hooks.__name__, "entry",
+                                                                               (harness, ev))
+                                                    for ev in ("tool.execute.before", "tool.execute.after")})
                         again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
                         self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
                         code, out = self.cli("uninstall", "--agent", harness, "--project")

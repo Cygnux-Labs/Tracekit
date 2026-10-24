@@ -19,6 +19,8 @@ from tracekit import agent_hooks, client  # noqa: E402
 from tracekit.signer.service import load_policy  # noqa: E402
 from factories import DaemonCase, ledger_records, patch_env  # noqa: E402
 
+PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: {}\n@@\n-A=1\n+A=2\n*** End Patch"
+
 
 class Harnesses(DaemonCase):
 
@@ -154,6 +156,66 @@ class Harnesses(DaemonCase):
         p = subprocess.run([sys.executable, "-m", "tracekit.agent_hooks", "nope"], input="{}", capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(p.returncode, 0)
 
+    def raw(self, argv, data, **env):
+        p = subprocess.run([sys.executable, "-m", *argv], input=data, capture_output=True, cwd=ROOT,
+                           env=dict(os.environ, PYTHONPATH=ROOT, **env), timeout=60)
+        return p.returncode, p.stderr.decode()
+
+    def test_a_call_whose_payload_cant_be_read_doesnt_run(self):
+        # fail open, the default. OpenCode's plugin names its event and passes the model's own arguments: a pre-tool
+        # payload that isn't a JSON object blocks. In every hook, so does one nested too deep to read
+        before = ["tracekit.agent_hooks", "opencode", "tool.execute.before"]
+        deep = json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "tool_use_id": "c", "tool_name": "Bash",
+                           "tool_input": {"command": "ls", "x": "DEEP"}}).replace('"DEEP"', "[" * 5000 + "]" * 5000)
+        for argv, data in ((before, b"not json"), (before, deep.encode()), (["tracekit.hook"], deep.encode()),
+                           *((["tracekit.agent_hooks", h], deep.encode()) for h in ("codex", "cursor", "gemini"))):
+            with self.subTest(argv=argv, data=data[:20]):
+                code, err = self.raw(argv, data)
+                self.assertEqual(code, agent_hooks._exit(argv[1], 2, True) if len(argv) > 1 else 2, err)
+        self.assertEqual(self.raw(before[:2] + ["tool.execute.after"], b"not json")[0], 0)
+        # Codex, Cursor and Gemini CLI write their payloads: one that isn't JSON follows the fail mode
+        self.assertEqual(self.raw(["tracekit.agent_hooks", "codex"], b"not json")[0], 0)
+        self.assertEqual(self.raw(["tracekit.agent_hooks", "codex"], b"not json", TRACEKIT_FAIL_CLOSED="1")[0],
+                         agent_hooks._exit("codex", 2, True))
+        # a byte order mark before the JSON is dropped, so the call is decided
+        bom = b"\xef\xbb\xbf" + json.dumps({"session_id": "oc-bom", "cwd": self.d, "hook_event_name": "tool.execute.before",
+                                            "tool_name": "bash", "tool_use_id": "b1",
+                                            "tool_input": {"command": "rm -rf ~"}}).encode()
+        code, err = self.raw(before, bom)
+        self.assertEqual(code, 2)
+        self.assertIn("Blocked by tracekit policy: TK-D004", err)
+
+    @unittest.skipUnless(shutil.which("node"), "runs the OpenCode plugin under Node, with Bun's spawnSync stood in")
+    def test_the_opencode_plugin_decides_each_call_and_blocks_a_batch(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "tracekit.mjs"), "w") as f:
+            f.write(agent_hooks._opencode_plugin(None, False))
+        with open(os.path.join(d, "drive.mjs"), "w") as f:
+            f.write('import { spawnSync } from "node:child_process";\n'
+                    'globalThis.Bun = { spawnSync: ({ cmd, cwd, stdin }) => {\n'
+                    '  const r = spawnSync(cmd[0], cmd.slice(1), { cwd, input: stdin });\n'
+                    '  return { exitCode: r.status, stderr: r.stderr };\n} };\n'
+                    'const { TracekitPlugin } = await import("./tracekit.mjs");\n'
+                    'const hooks = await TracekitPlugin({ directory: process.argv[2] });\n'
+                    'const out = [];\n'
+                    'for (const [tool, args] of JSON.parse(process.argv[3])) {\n'
+                    '  try {\n'
+                    '    await hooks["tool.execute.before"]({ tool, sessionID: "oc-node", callID: `n${out.length}` }, { args });\n'
+                    '    out.push("ran");\n'
+                    '  } catch (e) { out.push(e.message); }\n}\n'
+                    'process.stdout.write(JSON.stringify(out));\n')
+        calls = [["batch", {"tool_calls": [{"tool": "bash", "parameters": {"command": "rm -rf ~"}}]}],
+                 ["bash", {"command": "rm -rf ~"}], ["bash", {"command": "ls"}]]
+        p = subprocess.run(["node", os.path.join(d, "drive.mjs"), self.d, json.dumps(calls)], capture_output=True,
+                           text=True, timeout=120)
+        batch, denied, ls = json.loads(p.stdout or "null") or self.fail(p.stderr)
+        self.assertIn("batch tool runs its calls without plugin hooks", batch)
+        self.assertIn("Blocked by tracekit policy: TK-D004", denied)
+        self.assertEqual(ls, "ran")
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.events("oc-node") if e["type"] == "tool.call"],
+                         ["n1", "n2"])
+
 
 class CodexPatchHeaders(unittest.TestCase):
     """Codex (codex-rs/apply-patch) reads a hunk header after Begin Patch, an Add or a Delete hunk from the line with its
@@ -261,28 +323,59 @@ class Installer(unittest.TestCase):
         for sep in ("", "\t", " \ufeff"):
             with self.subTest(header=repr(sep)):
                 self.assertEqual(verdict("apply_patch", {"patchText": patch.format(sep)}), "deny")
+        # OpenCode 1.2.0 reads a header up to its next ':' (split(":", 2)): this patch writes .env
+        self.assertEqual(verdict("apply_patch", {"patchText": PATCH.format(".env:x")}), "deny")
+
+    def test_the_v1_policy_decides_every_file_a_patch_names(self):
+        from tracekit import policy
+        pol = policy.load(policy.DEFAULT_POLICY)[0]
+        for harness, key, second in (("codex", "command", ".env"), ("opencode", "patchText", ".env"),
+                                     ("opencode", "patchText", ".env:x")):
+            with self.subTest(harness=harness, second=second):
+                tool, args = agent_hooks.tool(harness, "apply_patch", {key: PATCH.format(second)})
+                self.assertEqual(args["file_path"], "notes.txt")
+                d = policy.evaluate(pol, tool, args, "/w")
+                self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-D005"]))
+        d = policy.evaluate(pol, "Edit", {"file_path": "a.txt", "paths": ["a.txt", "../out.txt"]}, "/w")
+        self.assertEqual((d["decision"], d["rule_ids"]), ("flag", ["TK-SCOPE"]))   # one file outside the project
+
+    def test_the_opencode_plugin_runs_tracekit_as_the_other_hooks_do(self):
+        import site
+        from tracekit import install
+        user = os.path.join(site.getusersitepackages(), "tracekit", "__init__.py")   # pip install --user, which -I hides
+        events = ("tool.execute.before", "tool.execute.after")
+        with mock.patch("importlib.util.find_spec", return_value=mock.Mock(origin=user)):
+            plugin = agent_hooks._opencode_plugin(None, False)
+            want = {ev: install._dev_hook_argv("tracekit.agent_hooks", "entry", ("opencode", ev)) for ev in events}
+        self.assertEqual(json.loads(plugin.split("const commands = ", 1)[1].split(";\n", 1)[0]), want)
+        self.assertEqual(want[events[0]][2], "-c")
 
     def test_opencode_plugin_install_upgrade_uninstall_and_collision(self):
         from tracekit.install import SettingsError
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         path = agent_hooks.config_path("opencode", d)
-        self.assertEqual(path, os.path.join(d, ".opencode", "plugins", "tracekit.js"))
+        # OpenCode 1.0 loads plugins from plugin/ only, and refuses to start with a plugins/ directory; 1.1.1 on read both
+        self.assertEqual(path, os.path.join(d, ".opencode", "plugin", "tracekit.js"))
         # a user's plugin (system mode passes the agent's home) is the global one OpenCode loads, not a project's;
         # a dev install follows XDG_CONFIG_HOME as OpenCode does
         with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": os.path.join(d, "xdg")}):
             self.assertEqual(agent_hooks.config_path("opencode", None, d),
-                             os.path.join(d, ".config", "opencode", "plugins", "tracekit.js"))
+                             os.path.join(d, ".config", "opencode", "plugin", "tracekit.js"))
             self.assertEqual(agent_hooks.config_path("opencode"),
-                             os.path.join(d, "xdg", "opencode", "plugins", "tracekit.js"))
+                             os.path.join(d, "xdg", "opencode", "plugin", "tracekit.js"))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            agent_hooks.install("opencode", d, uninstall=True)   # nothing installed: nothing made
+        self.assertEqual((out.getvalue(), os.path.exists(os.path.join(d, ".opencode"))), ("", False))
         agent_hooks.install("opencode", d, python="/opt/tracekit/python")
         agent_hooks.install("opencode", d, python="/opt/tracekit/python")
         with open(path) as f:
             plugin = f.read()
         self.assertIn(agent_hooks.OPENCODE_MARKER, plugin)
-        self.assertIn('["/opt/tracekit/python", "-I", "-m", "tracekit.agent_hooks", "opencode"]', plugin)
+        self.assertIn('["/opt/tracekit/python", "-I", "-m", "tracekit.agent_hooks", "opencode", "tool.execute.before"]',
+                      plugin)
         # fail closed, v1 as v2: any exit but 0 (blocked, a crash, Python missing) stops the call before it runs
-        before = plugin.split('"tool.execute.before"', 1)[1].split('"tool.execute.after"', 1)[0]
+        before = plugin.split('"tool.execute.before": async', 1)[1].split('"tool.execute.after": async', 1)[0]
         self.assertRegex(before, r"if \(result\.code !== 0\) \{[^}]*throw new Error")
         self.assertNotIn("result.code === 2", before)
         out = io.StringIO()
