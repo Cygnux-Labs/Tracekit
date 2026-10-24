@@ -51,7 +51,7 @@ every bundle verifies as before, with 1.4.0 and 1.4.1 verifiers too.
 - **Destroying cloud storage data waits for a person (`TK-A031`, every pack)**: a version purge (`gsutil rm -a`,
   `gcloud storage rm --all-versions`, `aws s3api delete-object --version-id`), a recursive or wildcard delete, a batch
   delete or a bucket delete, in GCS, S3, Azure Blob and Files, through rclone or s3cmd, also with options between the
-  service and its verb (`aws s3 --profile p rm ... --recursive`). Deleting one object stays a flag (`TK-F003`).
+  service and its verb (`aws s3 --profile p rm ... --recursive`). Deleting one object stays a flag (`TK-F003`), except with s3cmd, which isn't flagged.
   **The dev pack holds uploads to cloud storage (`TK-A032`)**: `gsutil` and `gcloud storage` cp, mv and rsync to
   `gs://`, `aws s3` cp, mv and sync to `s3://`, and `az storage blob upload`. The server pack doesn't extend the dev
   pack, so server agents that publish to buckets aren't held (#336).
