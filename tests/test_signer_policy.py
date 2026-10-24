@@ -362,6 +362,24 @@ class CodingPack(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertIn("TK-F009", self.e.decide(tool, args)["rule_ids"])
 
+    def test_opencode_config_changes_are_flagged_but_reads_and_near_names_are_allowed(self):
+        for tool, path in (("Write", "/repo/.opencode/commands/deploy.md"),
+                           ("Write", "/repo/.opencode/plugin/tracekit.ts"),
+                           ("Edit", "/repo/.opencode/plugins/tracekit.ts"),
+                           ("Write", "/repo/opencode.json"),
+                           ("Edit", "/repo/opencode.jsonc"),
+                           ("Write", r"C:\repo\.opencode\plugin\x.ts"),
+                           ("Edit", r"C:\repo\.opencode\plugins\x.ts"),
+                           ("Edit", r"C:\repo\opencode.json")):
+            with self.subTest(tool=tool, path=path):
+                self.assertIn("TK-F009", self.e.decide(tool, {"file_path": path})["rule_ids"])
+        for tool, path in (("Read", "/repo/.opencode/AGENTS.md"),
+                           ("Read", "/repo/opencode.json"),
+                           ("Write", "/repo/opencode.json.backup"),
+                           ("Write", r"C:\repo\opencode.json.backup")):
+            with self.subTest(tool=tool, path=path):
+                self.assertNotIn("TK-F009", self.e.decide(tool, {"file_path": path})["rule_ids"])
+
     def test_other_harnesses_shell_tools_and_the_server_pack(self):
         for tool in ("run_shell_command", "shell", "local_shell", "run_terminal_cmd", "container.exec"):
             with self.subTest(tool=tool):
