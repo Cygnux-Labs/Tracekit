@@ -58,7 +58,8 @@ every bundle verifies as before, with 1.4.0 and 1.4.1 verifiers too.
 - **`terragrunt destroy` waits for a person (`TK-A001`, #356, by @ritamgh)**, as `terraform destroy` does: `destroy`
   and `apply -destroy`, also after `run-all`, `run` or `stack run`, the older `destroy-all` and `apply-all -destroy`,
   after up to four global options, as `terragrunt.exe`, and under `railway run` or `heroku run`. Plans, `init`,
-  `output` and `terragrunt destroy --help` aren't held.
+  `output` and `terragrunt destroy --help` aren't held. A platform API mutation (`volumeDelete(`, `serviceDelete(`)
+  written over several lines in a `curl` or `railway api` request now waits for a person too, as one on one line did.
 - **A Codex patch applied through the shell waits for a person (`TK-A034`, v2 packs)**: `apply_patch`, `applypatch`
   or `codex --codex-run-as-apply-patch` run as a command, which Codex applies as a patch.
 - **Cursor's `Delete`** is decided as an `Edit` of its file, so the file rules (credentials, transcripts) read it.

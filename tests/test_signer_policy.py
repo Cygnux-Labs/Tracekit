@@ -134,6 +134,7 @@ class CodingPack(unittest.TestCase):
                   "gcloud storage --project=p rm -r gs://b", "gcloud storage buckets --project=p delete gs://b",
                   "aws s3 rm s3://b/logs --exclude 'keep\n' --recursive", "gsutil rm 'gs://b/a\nb' 'gs://b/*'",
                   "s3cmd del --recursive --force s3://b", "s3cmd rb --recursive --force s3://b", "s3cmd rm -rf s3://b",
+                  "s3cmd -r del s3://b", "s3cmd --recursive del s3://b/", "s3cmd -c cfg -r rm s3://b", "s3cmd del 's3://b/*'",
                   "az storage fs delete -n fs", "az storage fs directory delete -f fs -n dir",
                   "az storage file delete-batch -s share", "az storage remove -c c --recursive"]
         uploads = ["gsutil -m cp -r ./assets/images gs://prod-assets/products/", "gcloud storage cp report.csv gs://b/",
@@ -144,7 +145,8 @@ class CodingPack(unittest.TestCase):
                    "aws s3 cp s3://b/f.gz - --quiet", "gsutil cp gs://b/f -",
                    "gsutil rm gs://b/scratch.txt", "aws s3 rm s3://b/scratch.txt", "git rm -r --cached build",
                    "aws s3 --profile p ls s3://b", "gcloud storage --project=p ls gs://b", "aws s3 --profile p cp s3://b/k f",
-                   "aws s3 --profile p rm s3://b/one.txt", "s3cmd del s3://b/k", "az storage remove -c c -n b"]
+                   "aws s3 --profile p rm s3://b/one.txt", "s3cmd del s3://b/k", "az storage remove -c c -n b",
+                   "s3cmd -r get s3://b/d ./d", "s3cmd -r put ./d s3://b/d"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
@@ -208,7 +210,9 @@ class CodingPack(unittest.TestCase):
                    "Apply_Patch.exe < p", "apply_patch.bat < p", "cat p | apply_patch",
                    "/opt/x/codex-aarch64-apple-darwin --codex-run-as-apply-patch PATCH",
                    "node /usr/lib/node_modules/@openai/codex/bin/codex.js --codex-run-as-apply-patch PATCH",
-                   "exec -a apply_patch codex < p", "env --argv0=apply_patch codex < p"]
+                   "exec -a apply_patch codex < p", "env --argv0=apply_patch codex < p",
+                   "exec -a /tmp/apply_patch codex < p", "node --no-warnings codex.js --codex-run-as-apply-patch PATCH",
+                   "/usr/bin/node --no-warnings codex.js --codex-run-as-apply-patch PATCH"]
         routine = ["grep apply_patch", "git apply x.diff", "cat apply_patch.md", "rg applypatch src/", "python apply_patch.py",
                    "codex exec 'fix the tests'", "patch -p1 < x.diff", "echo apply_patch",
                    "exec -a myname python x.py",
@@ -384,6 +388,12 @@ class CodingPack(unittest.TestCase):
                         "terragrunt destroy --help", "echo terragrunt destroy",
                         "terragrunt apply-all", "terragrunt plan-all -destroy"):
             self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "allow", command)
+
+    def test_a_platform_mutation_written_over_several_lines_asks(self):
+        body = 'mutation {\n  volumeDelete(volumeId: "v1")\n}'
+        for command in (f"curl -X POST https://backboard.railway.app/graphql/v2 -d '{body}'", f"railway api '{body}'"):
+            d = self.e.decide("Bash", {"command": command})
+            self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"]), ("ask", True), command)
 
     def test_a_long_command_after_terragrunt_is_decided_without_the_fallback_timeout(self):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})
