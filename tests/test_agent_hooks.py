@@ -325,6 +325,7 @@ class Installer(unittest.TestCase):
                 self.assertEqual(verdict("apply_patch", {"patchText": patch.format(sep)}), "deny")
         # OpenCode 1.2.0 reads a header up to its next ':' (split(":", 2)): this patch writes .env
         self.assertEqual(verdict("apply_patch", {"patchText": PATCH.format(".env:x")}), "deny")
+        self.assertEqual(verdict("patch", {"patchText": patch.format(" ")}), "deny")   # OpenCode 1.0's patch tool
 
     def test_the_v1_policy_decides_every_file_a_patch_names(self):
         from tracekit import policy

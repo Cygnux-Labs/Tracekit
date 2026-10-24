@@ -45,8 +45,8 @@ GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_fil
 # a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
-                  "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Task",
-                  "todowrite": "TodoWrite"}
+                  "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
+                  "task": "Task", "todowrite": "TodoWrite"}
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -108,8 +108,9 @@ def tool(harness, name, ti):
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
         if name in OPENCODE_PATH_ARG:
             ti["file_path"] = ti.get(OPENCODE_PATH_ARG[name])
-        if name == "apply_patch":   # every file OpenCode's parser finds, whatever paths the model sent; releases of
-            # 2026-01-18 to 2026-02-23 (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
+        if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
+            # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
+            # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
             files = [JS_TRIM.sub("", g) for f in OPENCODE_PATCH_FILE.findall(str(ti.get("patchText") or ""))
                      for g in dict.fromkeys((f, f.split(":")[0]))]
             ti["paths"] = files
