@@ -163,12 +163,21 @@ class Harnesses(DaemonCase):
 
     def test_a_call_whose_payload_cant_be_read_doesnt_run(self):
         # fail open, the default. OpenCode's plugin names its event and passes the model's own arguments: a pre-tool
-        # payload that isn't a JSON object blocks. In every hook, so does one nested too deep to read
+        # payload that isn't a JSON object blocks. In every hook, so does one nested too deep to read, and one that
+        # Python can read (3.12 on) is decided: either way a denied command doesn't run
         before = ["tracekit.agent_hooks", "opencode", "tool.execute.before"]
-        deep = json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "tool_use_id": "c", "tool_name": "Bash",
-                           "tool_input": {"command": "ls", "x": "DEEP"}}).replace('"DEEP"', "[" * 5000 + "]" * 5000)
-        for argv, data in ((before, b"not json"), (before, deep.encode()), (["tracekit.hook"], deep.encode()),
-                           *((["tracekit.agent_hooks", h], deep.encode()) for h in ("codex", "cursor", "gemini"))):
+
+        def deep(event, tool, **ids):   # each harness's own pre-tool payload
+            return json.dumps({"hook_event_name": event, "tool_name": tool, "cwd": self.d, **ids,
+                               "tool_input": {"command": "rm -rf ~", "x": "DEEP"}}).replace(
+                '"DEEP"', "[" * 5000 + "]" * 5000).encode()
+        claude = deep("PreToolUse", "Bash", session_id="s", tool_use_id="c")
+        for argv, data in ((before, b"not json"),
+                           (before, deep("tool.execute.before", "bash", session_id="o", tool_use_id="o1")),
+                           (["tracekit.hook"], claude), (["tracekit.agent_hooks", "codex"], claude),
+                           (["tracekit.agent_hooks", "cursor"],
+                            deep("preToolUse", "Shell", conversation_id="cu", generation_id="g", tool_use_id="u1")),
+                           (["tracekit.agent_hooks", "gemini"], deep("BeforeTool", "run_shell_command", session_id="ge"))):
             with self.subTest(argv=argv, data=data[:20]):
                 code, err = self.raw(argv, data)
                 self.assertEqual(code, agent_hooks._exit(argv[1], 2, True) if len(argv) > 1 else 2, err)
