@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-22'
+version: '2026.10-v2-23'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -427,7 +427,7 @@ flag:
   - id: TK-F009
     tool: Bash|Write|Edit|MultiEdit
     # the harnesses' settings, hooks and sandboxes: Claude Code's, Codex's, Gemini CLI's, Cursor's hooks
-    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|\.gemini/|\.cursor/hooks\.json|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
+    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|\.gemini/|\.cursor/hooks\.json|(^|[/\\\s"=])\.opencode[/\\]|(^|[/\\\s"=])opencode\.jsonc?($|[/\\\s";&|])|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
     label: harness_config
   - id: TK-F010
     class: shell
