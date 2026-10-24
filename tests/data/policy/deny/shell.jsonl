@@ -227,3 +227,12 @@
 {"tool": "Bash", "args": {"command": "sqlite3 app.db \"SELECT 1;\\n    DROP TABLE users;\""}, "expect": "ask", "note": "indented SQL, 4 spaces"}
 {"tool": "Bash", "args": {"command": "sqlite3 app.db \"SELECT 1;\\n        DROP TABLE users;\""}, "expect": "ask", "note": "indented SQL, 8 spaces"}
 {"tool": "Bash", "args": {"command": "psql -c \"SELECT 1; -- note\\n\\tDROP TABLE users;\""}, "expect": "ask", "note": "a tab escape after a line comment before the DROP"}
+{"tool": "Bash", "args": {"command": "cdk destroy"}, "expect": "ask", "note": "CDK stack destruction without confirmation flags"}
+{"tool": "Bash", "args": {"command": "npx cdk destroy --force --all"}, "expect": "ask", "note": "CDK destruction through npx with confirmation bypassed"}
+{"tool": "Bash", "args": {"command": "bunx cdk destroy"}, "expect": "ask", "note": "CDK destruction through bunx"}
+{"tool": "Bash", "args": {"command": "pnpm dlx cdk destroy"}, "expect": "ask", "note": "CDK destruction through pnpm dlx"}
+{"tool": "Bash", "args": {"command": "yarn dlx cdk destroy"}, "expect": "ask", "note": "CDK destruction through yarn dlx"}
+{"tool": "Bash", "args": {"command": "npm exec -- cdk destroy"}, "expect": "ask", "note": "CDK destruction through npm exec"}
+{"tool": "Bash", "args": {"command": "pulumi stack rm prod --force --yes"}, "expect": "ask", "note": "remove Pulumi stack state while resources may still exist"}
+{"tool": "Bash", "args": {"command": "terraform state rm aws_db_instance.prod"}, "expect": "ask", "note": "remove a live database binding from Terraform state"}
+{"tool": "Bash", "args": {"command": "tofu state rm aws_db_instance.prod"}, "expect": "ask", "note": "remove a live database binding from OpenTofu state"}
