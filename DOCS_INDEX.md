@@ -10,7 +10,7 @@ Last full scan: 2026-10-08 · 22 docs · 9 stale (41%)
 | Changelog | `CHANGELOG.md` | active | 2026-10-08 |
 | Contributing | `CONTRIBUTING.md` | active | 2026-10-02 |
 | Security policy | `SECURITY.md` | active | 2026-10-02 |
-| Coding agents (Codex, Cursor, Gemini) | `docs/coding-agents.md` | active | 2026-10-07 |
+| Coding agents (Codex, Cursor, Gemini, OpenCode) | `docs/coding-agents.md` | active | 2026-10-07 |
 | Privacy | `docs/privacy.md` | active | 2026-10-07 |
 | Proof pack | `docs/proofpack.md` | active | 2026-10-07 |
 | Findings detectors | `docs/findings.md` | active | 2026-10-07 |
