@@ -104,3 +104,4 @@
 {"tool": "terminal", "args": {"command": "terragrunt destroy --help"}, "expect": "allow", "note": "names a destroy word without destroying"}
 {"tool": "bash", "args": {"command": "terragrunt workspace select destroy-test"}, "expect": "allow", "note": "names a destroy word without destroying"}
 {"tool": "run_shell_command", "args": {"command": "echo 'remember: never run terragrunt destroy on prod'"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "Bash", "args": {"command": "terraform plan -var 'x\ny' -destroy"}, "expect": "allow", "note": "read, list or create"}
