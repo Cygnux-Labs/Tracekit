@@ -19,8 +19,13 @@ def register(ctx):
         def post_tool_call(**_):
             return None
     else:
-        # "" when the profile has none: never the process environment's, which may be another profile's
+        # "" when the profile has none: with several profiles (multiplexing) Hermes never reads it from the process
+        # environment, which may be another profile's; with one, it does
+        try:   # the type repair a concurrent batch's call runs with
+            from tools.arg_coercion import coerce_tool_args
+        except Exception:
+            coerce_tool_args = None
         pre_tool_call, post_tool_call = hooks(lambda: get_secret("TRACEKIT_SIGNER_TOKEN", ""),
-                                              lambda: hook_timeout_s(load_config_readonly()))
+                                              lambda: hook_timeout_s(load_config_readonly()), coerce_tool_args)
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("post_tool_call", post_tool_call)

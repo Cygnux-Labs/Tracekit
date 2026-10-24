@@ -2,6 +2,112 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.4.2 (2026-10-24) — OpenCode, Hermes Agent, and merges wait for a person
+
+A patch for 1.4. OpenCode and Hermes Agent can now be gated and recorded (both experimental). Every policy pack holds a
+pull-request merge, a terragrunt destroy and a bulk delete or version purge in cloud storage until a person approves,
+and the dev pack holds uploads to buckets. The coding-agent hooks decide every file a patch names and read Codex's
+patches as Codex does, and Codex and Gemini CLI hooks work on Windows. Bundles and the signer protocol are unchanged:
+every bundle verifies as before, with 1.4.0 and 1.4.1 verifiers too.
+
+### Upgrade notes
+- **Policy packs.** Coding `2026.10-v2-24` (from `2026.10-v2-21`). The dev pack (the dev signer's default policy) and
+  the server and strict packs extend it, so on a laptop and on a server these now hold calls 1.4.1 allowed (below).
+  Upgrade the signer to get them. On the policy corpus (E17) the server pack stops 583 of 583 harmful calls and raises
+  1 false alarm in 749 (1.4.1: 570 of 570, 1 in 738). What each new rule doesn't read is in
+  [limits](docs/limits.md#policy).
+- **Codex and Gemini CLI on Windows.** Run `tracekit init --dev --v2 --agent codex` (or `gemini`) again, as you first
+  ran it, so the hook command takes the form PowerShell and cmd.exe run (Security, below).
+- **v1 coding-agent hooks** answer a payload that isn't JSON by the fail mode (`fail_mode` in the policy), as the docs
+  said; it was allowed. A payload too deeply nested to read is blocked.
+
+### Added
+- **OpenCode hooks (experimental, #350, by @YaoSong808).** `tracekit init --dev --agent opencode` (with `--v2` for the
+  v2 signer, `--project` for one project) installs a local OpenCode plugin, `plugin/tracekit.js`, that asks Tracekit
+  before each tool call and records the result: a denied or held call stops before it runs. Every file an
+  `apply_patch` (or 1.0's `patch`) names is decided; the experimental `batch` tool, whose calls OpenCode runs without
+  plugin hooks, is blocked. `tracekit uninstall --agent opencode` removes it, and init won't overwrite a `tracekit.js`
+  it didn't write. OpenCode 1.x sends plugins no prompts or session ends, so a run closes at the signer's idle timeout
+  and holds no prompts, live constraints or model text; a call that fails, is declined in OpenCode's own prompt or is
+  aborted stays a `decided_not_completed` gap; and OpenCode 2.0 doesn't load 1.x plugins
+  ([coding agents](docs/coding-agents.md), [limits](docs/limits.md#signer-and-capture)).
+- **Hermes Agent plugin (experimental, #355).** `hermes plugins install Cygnux-Labs/Tracekit/integrations/hermes`
+  gates every tool call Hermes makes: its `pre_tool_call` hook asks the signer, an `ask` waits for a person inside the
+  hook, and `post_tool_call` records the outcome (`error`, `timeout` and `cancelled` as errors; a call run with
+  Hermes's repair of its argument types as run). A missing call id, an unreachable signer, a hold that outlasts
+  Hermes's own time limits or a call Hermes stopped waiting for blocks the call. Raise `plugins.hook_callback_timeout`
+  and Hermes's tool timeouts to 600 s for approvals; with the defaults a person has about 25 s. Needs `tracekit-ai`
+  1.4.2 ([Hermes Agent](docs/integrations/hermes.md), [limits](docs/limits.md#one-line-setup-tracekitinstrument)).
+- **The Python SDK's `Client(token=...)`** takes a `tcp://` signer's token in place of `$TRACEKIT_SIGNER_TOKEN` (`""`
+  reads no token from the environment).
+
+### Changed
+- **Merging a pull request waits for a person (`TK-A033`, every pack).** `gh pr merge` (with `--auto` and `--admin`
+  too), `glab mr merge` and `accept`, a request to GitHub's or GitLab's merge endpoint through `gh`, `glab` or `hub
+  api`, `curl`, `wget`, HTTPie or `xh`, and the GraphQL `mergePullRequest`, `enablePullRequestAutoMerge`,
+  `enqueuePullRequest` and `mergeRequestAccept`, also written over several lines (#339). A local `git merge` isn't
+  held. Keep a token that can't merge or bypass branch protection on the agent too: the rule doesn't read a query in a
+  file, a variable, a script, an alias or other forges.
+- **Destroying cloud storage data waits for a person (`TK-A031`, every pack)**: a version purge (`gsutil rm -a`,
+  `gcloud storage rm --all-versions`, `aws s3api delete-object --version-id`), a recursive or wildcard delete, a batch
+  delete or a bucket delete, in GCS, S3, Azure Blob and Files, through rclone or s3cmd, also with options between the
+  service and its verb (`aws s3 --profile p rm ... --recursive`). Deleting one object stays a flag (`TK-F003`), except with s3cmd, which isn't flagged.
+  **The dev pack holds uploads to cloud storage (`TK-A032`)**: `gsutil` and `gcloud storage` cp, mv and rsync to
+  `gs://`, `aws s3` cp, mv and sync to `s3://`, and `az storage blob upload`. The server pack doesn't extend the dev
+  pack, so server agents that publish to buckets aren't held (#336).
+- **`terragrunt destroy` waits for a person (`TK-A001`, #356, by @ritamgh)**, as `terraform destroy` does: `destroy`
+  and `apply -destroy`, also after `run-all`, `run` or `stack run`, the older `destroy-all` and `apply-all -destroy`,
+  after up to four global options, as `terragrunt.exe`, and under `railway run` or `heroku run`. Plans, `init`,
+  `output` and `terragrunt destroy --help` aren't held. A platform API mutation (`volumeDelete(`, `serviceDelete(`)
+  written over several lines in a `curl` or `railway api` request now waits for a person too, as one on one line did.
+- **A Codex patch applied through the shell waits for a person (`TK-A034`, v2 packs)**: `apply_patch`, `applypatch`
+  or `codex --codex-run-as-apply-patch` run as a command, which Codex applies as a patch.
+- **Cursor's `Delete`** is decided as an `Edit` of its file, so the file rules (credentials, transcripts) read it.
+- **`tracekit signer serve`** names the address its HTTPS listener bound on its start line (`serving on host:port`),
+  so `http.listen` can ask for port 0.
+
+### Fixed
+- **`tracekit follow agentsh` and `tracekit sensor import --follow` on Windows** no longer stop the followed log from
+  being rotated: agentsh renames its audit log to rotate it, which failed (WinError 32) while Tracekit had it open
+  (#324).
+- **`tracekit doctor` reads Gemini CLI's system settings where Gemini CLI does**: `C:\ProgramData\gemini-cli` on
+  Windows, and `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and `GEMINI_CLI_SYSTEM_DEFAULTS_PATH` on any platform (#324).
+- **Coding-agent hooks** read a payload that starts with a byte-order mark; the v1 hook's error path answers each event
+  as that event; and a Gemini CLI id file the hook can't update no longer stops it from answering a blocked call
+  (#340).
+
+### Security
+- **Coding-agent hooks decide every file a patch names** (versions before 1.4.2): the v1 hooks (`tracekit init --dev`
+  without `--v2`) decided a Codex `apply_patch` on the first file it named only, so a policy rule on a later file in the
+  same patch (a credentials file) didn't apply; the v2 hooks read every file. Codex also applies a patch whose file
+  headers are indented, which the hooks didn't read as headers. Both hooks now decide every file, headers read as
+  Codex reads them.
+- **A v1 hook payload too deeply nested to read** (versions before 1.4.2) was answered by the fail mode, open by
+  default, and a payload that wasn't JSON was allowed: both are now blocked or answered as the docs say (Upgrade
+  notes).
+- **Codex and Gemini CLI hooks on Windows** (versions before 1.4.2): both run hook commands through PowerShell there
+  (Codex through cmd.exe when PowerShell isn't found). The command `tracekit init` wrote quoted Python's path, which
+  PowerShell doesn't run as a command, so there the hook didn't start and calls ran unrecorded; PowerShell also hands
+  Codex a hook's exit status 2 as 1, which Codex doesn't read as a block; and a payload with a character outside the
+  console's code page stopped any hook. Init now writes the path bare where it needs no quotes and with PowerShell's
+  call operator otherwise, Codex's hook blocks on Windows with the JSON deny at exit 0, and every hook reads its
+  payload as UTF-8. A hook that can't start (its Python moved) still isn't wrapped to fail closed on Windows
+  ([limits](docs/limits.md#platforms)). Run `tracekit init` again (Upgrade notes) (#340).
+
+### Release
+- The npm job skips a package version already on npm and tries each upload up to 3 times, so re-running a release
+  whose publish stopped partway finishes it (#330).
+
+### Docs
+- **For auditors (#346, by @gezerui888).** [docs/for-auditors.md](docs/for-auditors.md) explains a first `verify`
+  report: integrity, isolation and witnesses, the three report lines to check first, and the shipped sample verified
+  in two commands.
+- **Demos.** `docs/demos/cloud-storage/` replays an incident where a coding agent uploaded files to a production
+  bucket, then deleted them and purged their versions: each call is held and rejected, and the README names the
+  signer's `approval.refused` after each reject (#336, #343). `docs/demos/pocketos/` replays a coding agent's Railway
+  `volumeDelete` call, held by `TK-A001` and rejected (#342, by @ritamgh).
+- The [v2 paper](paper/Tracekit-v2-paper.pdf) replaces the v0.1 draft, and the README cites it (#335).
+
 ## 1.4.1 (2026-10-21) — shell parser hardening
 
 A patch for 1.4 that finishes the shell parser hardening 1.4.0 began. Bundles are unchanged.

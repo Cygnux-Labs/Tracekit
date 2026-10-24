@@ -235,6 +235,17 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
         self.assertIn("TK-D001", err)
 
+    def test_an_indented_patch_header_and_a_cursor_delete_are_decided_as_file_writes(self):
+        code, out, err = self.hook("codex", {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+                                             "tool_use_id": "p1", "tool_input": {
+                                                 "command": "*** Begin Patch\n\t*** Add File: config/.env\n+A=1\n*** End Patch"}})
+        self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
+        self.assertIn("TK-D005", err)
+        code, out, err = self.hook("cursor", {"conversation_id": "c", "hook_event_name": "preToolUse", "tool_name": "Delete",
+                                              "tool_use_id": "d1", "tool_input": {"file_path": "/w/.env"}})
+        self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
+        self.assertIn("TK-D005", err)
+
     def test_a_gemini_sandbox_expansion_waits_for_a_person(self):
         pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
                "tool_input": {"command": "npm install", "additional_permissions": {"network": True}}}
@@ -275,8 +286,10 @@ class Installer(unittest.TestCase):
                         with open(path) as f:
                             plugin = f.read()
                         self.assertEqual(agent_hooks._version(plugin), "v2")
-                        self.assertIn('"-I", "-m", "tracekit.integrations.harness_hooks", "opencode"', plugin)
-                        self.assertIn('command.push(event)', plugin)
+                        commands = json.loads(plugin.split("const commands = ", 1)[1].split(";\n", 1)[0])
+                        self.assertEqual(commands, {ev: install._dev_hook_argv(harness_hooks.__name__, "entry",
+                                                                               (harness, ev))
+                                                    for ev in ("tool.execute.before", "tool.execute.after")})
                         again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
                         self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
                         code, out = self.cli("uninstall", "--agent", harness, "--project")

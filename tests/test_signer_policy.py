@@ -126,13 +126,27 @@ class CodingPack(unittest.TestCase):
                   "aws s3api delete-object --bucket b --key k --version-id 3HL4kqtJ", "aws s3 rm --recursive s3://b/x",
                   "aws s3api delete-object --version-id v1 --bucket b --key k", "gsutil rm -Ra gs://b/x", "gsutil -m rm -I",
                   "gcloud storage rm --read-paths-from-stdin", "aws s3api delete-objects --bucket b "
-                  "--delete file://keys.json", "az storage blob delete-batch -s logs", "rclone purge gcs:prod-assets"]
+                  "--delete file://keys.json", "az storage blob delete-batch -s logs", "rclone purge gcs:prod-assets",
+                  # options between the service and its verb; a newline in an earlier argument; s3cmd, Azure Files and
+                  # Data Lake
+                  "aws s3 --profile p rm s3://b --recursive", "aws s3 --region r rb s3://b --force",
+                  "aws s3api --region r delete-bucket --bucket b", "gcloud storage --project=p buckets delete gs://b",
+                  "gcloud storage --project=p rm -r gs://b", "gcloud storage buckets --project=p delete gs://b",
+                  "aws s3 rm s3://b/logs --exclude 'keep\n' --recursive", "gsutil rm 'gs://b/a\nb' 'gs://b/*'",
+                  "s3cmd del --recursive --force s3://b", "s3cmd rb --recursive --force s3://b", "s3cmd rm -rf s3://b",
+                  "s3cmd -r del s3://b", "s3cmd --recursive del s3://b/", "s3cmd -c cfg -r rm s3://b", "s3cmd del 's3://b/*'",
+                  "az storage fs delete -n fs", "az storage fs directory delete -f fs -n dir",
+                  "az storage file delete-batch -s share", "az storage remove -c c --recursive"]
         uploads = ["gsutil -m cp -r ./assets/images gs://prod-assets/products/", "gcloud storage cp report.csv gs://b/",
                    "aws s3 cp /srv/data s3://b/ --recursive --acl public-read", "aws s3 sync ./site s3://b/",
-                   "az storage blob upload -f a.zip -c c -n a.zip"]
+                   "az storage blob upload -f a.zip -c c -n a.zip", "aws s3 --profile p cp f s3://b/k",
+                   "gcloud storage --project=p cp f gs://b", "aws s3 cp --metadata 'note=line one\nline two' f s3://b/k"]
         routine = ["gsutil cp gs://b/a.csv .", "aws s3 sync s3://b/backups ./restore", "gsutil ls gs://b",
                    "aws s3 cp s3://b/f.gz - --quiet", "gsutil cp gs://b/f -",
-                   "gsutil rm gs://b/scratch.txt", "aws s3 rm s3://b/scratch.txt", "git rm -r --cached build"]
+                   "gsutil rm gs://b/scratch.txt", "aws s3 rm s3://b/scratch.txt", "git rm -r --cached build",
+                   "aws s3 --profile p ls s3://b", "gcloud storage --project=p ls gs://b", "aws s3 --profile p cp s3://b/k f",
+                   "aws s3 --profile p rm s3://b/one.txt", "s3cmd del s3://b/k", "az storage remove -c c -n b",
+                   "s3cmd -r get s3://b/d ./d", "s3cmd -r put ./d s3://b/d"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
@@ -166,11 +180,18 @@ class CodingPack(unittest.TestCase):
                   # --help as an option's value: these merge
                   "gh pr merge 42 --body --help", "gh pr merge 42 -t --help", "glab mr merge 3 -m --help",
                   "gh pr merge 42 --subject 'Document --help flag'",
-                  "gh api -X PUT repos/o/r/pulls/42/merge -f commit_title='fix --help'"]
+                  "gh api -X PUT repos/o/r/pulls/42/merge -f commit_title='fix --help'", "gh pr merge --help",
+                  # a newline in an earlier argument: a multi-line GraphQL query, as GitHub's docs write them
+                  "gh api graphql -f query='\n  mutation($id: ID!) {\n    enablePullRequestAutoMerge(input: {pullRequestId: "
+                  "$id}) {\n      clientMutationId\n    }\n  }' -f id=P",
+                  "gh api -X PUT -f commit_message='line one\nline two' repos/o/r/pulls/1/merge",
+                  "glab api graphql -f query='\nmutation {\n  mergeRequestAccept(input: {projectPath: \"g/r\", iid: \"2\"}) "
+                  "{ errors }\n}'"]
         routine = ["gh pr view 42", "gh pr create --fill", "gh pr checks 42", "gh pr list --state merged", "git merge feature",
                    "gh api repos/o/r/pulls/42", "gh api repos/o/r/pulls/42/merges", "echo gh pr merge 42",
                    "git commit -m 'gh pr merge after review'", "gh pr view --help", "glab mr list",
-                   "gh pr view 42 --json mergeable", "curl -s https://api.github.com/repos/o/r/pulls/42"]
+                   "gh pr view 42 --json mergeable", "curl -s https://api.github.com/repos/o/r/pulls/42",
+                   "gh api repos/o/r/pulls/42 --jq '.title\n.body'"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
@@ -179,6 +200,31 @@ class CodingPack(unittest.TestCase):
                         d = e.decide("Bash", {"command": cmd})
                         self.assertEqual("TK-A033" in d["rule_ids"], cmd in merges, d)
                         if cmd in merges:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
+        """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
+        patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
+                   "cd sub && applypatch < p", 'apply_patch "$(cat p)"', "/usr/local/bin/apply_patch < p",
+                   'bash -lc "apply_patch < p"', "env applypatch < p", "codex --codex-run-as-apply-patch PATCH",
+                   "Apply_Patch.exe < p", "apply_patch.bat < p", "cat p | apply_patch",
+                   "/opt/x/codex-aarch64-apple-darwin --codex-run-as-apply-patch PATCH",
+                   "node /usr/lib/node_modules/@openai/codex/bin/codex.js --codex-run-as-apply-patch PATCH",
+                   "exec -a apply_patch codex < p", "env --argv0=apply_patch codex < p",
+                   "exec -a /tmp/apply_patch codex < p", "node --no-warnings codex.js --codex-run-as-apply-patch PATCH",
+                   "/usr/bin/node --no-warnings codex.js --codex-run-as-apply-patch PATCH"]
+        routine = ["grep apply_patch", "git apply x.diff", "cat apply_patch.md", "rg applypatch src/", "python apply_patch.py",
+                   "codex exec 'fix the tests'", "patch -p1 < x.diff", "echo apply_patch",
+                   "exec -a myname python x.py",
+                   "codex -c a=b --codex-run-as-apply-patch PATCH"]   # Codex reads the flag only as its first argument
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in patches + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A034" in d["rule_ids"], cmd in patches, d)
+                        if cmd in patches:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
     def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
@@ -336,10 +382,18 @@ class CodingPack(unittest.TestCase):
                        ("terragrunt run --all -- apply -var 'note=a\nb' -destroy", "TK-A001"),
                        ("terragrunt --working-dir ./live/prod destroy", "TK-A001"),
                        ("terragrunt run --all --out-dir /tmp/a destroy", "TK-A001"),
-                       ("terragrunt.exe destroy", "TK-A001"), ("railway run terragrunt destroy", "TK-A001")])
+                       ("terragrunt.exe destroy", "TK-A001"), ("railway run terragrunt destroy", "TK-A001"),
+                       ("terragrunt destroy-all", "TK-A001"), ("terragrunt apply-all -destroy", "TK-A001")])
         for command in ("terragrunt plan", "terragrunt plan -destroy", "terragrunt run --all -- plan", "terragrunt apply",
-                        "terragrunt destroy --help", "echo terragrunt destroy"):
+                        "terragrunt destroy --help", "echo terragrunt destroy",
+                        "terragrunt apply-all", "terragrunt plan-all -destroy"):
             self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "allow", command)
+
+    def test_a_platform_mutation_written_over_several_lines_asks(self):
+        body = 'mutation {\n  volumeDelete(volumeId: "v1")\n}'
+        for command in (f"curl -X POST https://backboard.railway.app/graphql/v2 -d '{body}'", f"railway api '{body}'"):
+            d = self.e.decide("Bash", {"command": command})
+            self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"]), ("ask", True), command)
 
     def test_a_long_command_after_terragrunt_is_decided_without_the_fallback_timeout(self):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})

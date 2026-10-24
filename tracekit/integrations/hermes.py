@@ -9,19 +9,21 @@ call in the signer under the model's tool_call_id and never raises: it returns H
 in time, a refused consume, a signer refusal, a missing tool_call_id, an outage under a closed fail mode, an error of
 its own). An `ask` waits for a person inside the callback until MARGIN_S before the earlier of the two limits
 (hook_timeout_s); an approval still unanswered then is withdrawn. A call Hermes stopped waiting for (its
-post_tool_call, timeout or cancelled, came before the hook let it through: a concurrent batch's deadline, a /stop,
-before the hook started or while it ran) is blocked, its approval withdrawn, answered or not. It never answers
+post_tool_call came before the hook let it through: a concurrent batch's deadline, a /stop, or Hermes's own block once
+the hook outlived plugins.hook_callback_timeout, before the hook started or while it ran) is blocked, its approval
+withdrawn, answered or not. It never answers
 Hermes's `approve`: the approval stays with the signer.
 
 post_tool_call completes a call pre_tool_call let through, by its session and tool_call_id: `ok` with the result the
 tool returned; `error` for Hermes's error, timeout and cancelled statuses; as not run when another plugin blocked it
-after Tracekit allowed it; as an error when the arguments it ran with are not the decided ones (another plugin's
-`modify`, or an edit in place).
+after Tracekit allowed it; as an error when the arguments it ran with are neither the decided ones nor those Hermes's
+type repair makes of them (another plugin's `modify`, or an edit in place).
 
 Each Hermes session is a run (agent "hermes"), registered at its first tool call and closed when Hermes exits; a run
 the signer closed after it was idle is replaced at the next call.
 """
 import atexit
+import contextlib
 import copy
 import os
 import threading
@@ -81,13 +83,14 @@ def _block(message):
     return {"action": "block", "message": message[:4096]}
 
 
-def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
+def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
     """(pre_tool_call, post_tool_call) for Hermes's `ctx.register_hook`. `token()`: a tcp:// signer's token (the plugin
     reads it from Hermes's secret scope at each run's registration), "" for none, None for $TRACEKIT_SIGNER_TOKEN;
-    `timeout_s()`: how long Hermes lets the hook run (hook_timeout_s). The signer is the one tracekit.sdk.client.Client
-    finds."""
+    `timeout_s()`: how long Hermes lets the hook run (hook_timeout_s); `coerce(tool, args)`: Hermes's repair of a
+    call's argument types (tools/arg_coercion.py coerce_tool_args), which a concurrent batch's call runs with after
+    its pre_tool_call saw the model's own. The signer is the one tracekit.sdk.client.Client finds."""
     clients, runs, registering, lock = {}, {}, {}, threading.Lock()
-    calls, gone = {}, {}   # (session, call id) -> (run, decision, args) let through; calls Hermes gave up on
+    calls, gone = {}, {}   # (session, call id) -> (run, decision, args, tool) let through; calls Hermes gave up on
 
     def run_of(session_id):
         with lock:
@@ -127,6 +130,12 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
                 pass
     atexit.register(close)
 
+    def repaired(tool, args):
+        try:
+            return coerce(tool, copy.deepcopy(args)) if coerce else None
+        except Exception:   # unrepaired: compared as decided
+            return None
+
     def pre_tool_call(tool_name="", args=None, tool_call_id="", session_id="", **_):
         start, key = time.monotonic(), (session_id, tool_call_id)
         if not tool_call_id:   # never made up: the call's result could not be bound to its decision
@@ -140,6 +149,7 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
             first = gone.pop(key, None)
         if first:
             return _block(f"Tool call blocked by Tracekit: {GONE}")
+        run, aid = None, None
         try:
             end = start + (timeout_s() or MAX_TIMEOUT_S) - MARGIN_S
             run, d = decide(session_id, tool_call_id, tool_name, args)
@@ -148,7 +158,6 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
                 return None if d["decision"] == "allow" else _block(f"Tool call refused by Tracekit: {d['reason']}")
             if d["decision"] == "deny":
                 return _block(f"Tool call blocked by Tracekit policy: {why}")
-            aid = None
             if d["decision"] == "ask":
                 r = run.call("approval_request", tool_call_id=tool_call_id)
                 aid, state = r["approval_id"], r["state"]
@@ -175,11 +184,14 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
                 run.complete(tool_call_id, "error", error="not run: the arguments the signer approved are not the call's")
                 return _block("Tool call blocked by Tracekit: the arguments the signer approved are not the call's")
         except Exception as e:   # no decision: the call doesn't run
+            if aid is not None:   # withdrawn, so no one approves a call that never ran
+                with contextlib.suppress(Exception):
+                    run.call("approval_abandon", approval_id=aid, reason="Tracekit could not finish deciding the call")
             return _block(f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})")
         with lock:   # with the registration: a post_tool_call during the consume finds the one or the other
             late = gone.pop(key, None)
             if not late:   # by session too: ids are unique only within one (some providers name every call call_0)
-                calls[key] = run, d, args
+                calls[key] = run, d, args, tool_name
                 if len(calls) > MAX_OPEN_CALLS:   # lean: the oldest never got its post_tool_call; dropped, not recorded
                     calls.pop(next(iter(calls)))
         if late:
@@ -191,17 +203,18 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S):
         key = (session_id, tool_call_id)
         with lock:
             call = calls.pop(key, None)
-            if call is None and status in ("timeout", "cancelled"):   # a decision still being made must not let it run
-                gone[key] = True
+            if call is None:   # a decision still being made must not let it run: Hermes's timeout, a /stop, or its block
+                gone[key] = True   # once the hook outlived plugins.hook_callback_timeout
                 if len(gone) > MAX_OPEN_CALLS:
                     gone.pop(next(iter(gone)))
         if call is None:   # not let through by pre_tool_call: nothing to bind the result to
             return
-        run, d, decided = call
+        run, d, decided, tool = call
+        ran = args if isinstance(args, dict) else {}
         try:
             if status == "blocked":   # another plugin's block won over Tracekit's allow
                 run.complete(tool_call_id, "error", error=f"not run: {error_message or 'blocked'}"[:4096])
-            elif (args if isinstance(args, dict) else {}) != decided:   # another plugin's `modify`, or an edit in place
+            elif ran != decided and ran != repaired(tool, decided):   # another plugin's `modify`, or an edit in place
                 run.complete(tool_call_id, "error", error="the call's arguments changed after the decision")
             elif status != "ok":   # error, and Hermes's own timeout and cancelled
                 run.complete(tool_call_id, "error", error=f"{status}: {error_message or result}"[:4096])

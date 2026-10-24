@@ -283,7 +283,9 @@ def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None, p
     return _blocking(cmd, pre=pre) if module in V2_HOOKS and os.name != "nt" else cmd
 
 
-def _dev_hook_command(module, func, args):
+def _dev_hook_argv(module, func, args):
+    """argv that runs `module.func(*args)` with this interpreter under -I: -m where tracekit is installed in a
+    site-packages -I keeps, else with the directory tracekit is in (a checkout, a --user install) put on sys.path."""
     try:
         import importlib.util
         import site
@@ -293,13 +295,19 @@ def _dev_hook_command(module, func, args):
                          and not spec.origin.startswith(user_site))
     except Exception:
         installed = False
-    py = f'"{sys.executable}"' if os.name == "nt" else shlex.quote(sys.executable)
     if installed:
-        return " ".join([py, "-I", "-m", module, *args])
+        return [sys.executable, "-I", "-m", module, *args]
     encoded_root = base64.b64encode(ROOT.encode("utf-8")).decode("ascii")
-    code = (f"import base64,sys; sys.path.insert(0, base64.b64decode('{encoded_root}').decode('utf-8')); "
-            f"from {module} import {func}; raise SystemExit({func}({', '.join(repr(a) for a in args)}))")
-    return f'{py} -I -c "{code}"' if os.name == "nt" else f"{py} -I -c {shlex.quote(code)}"
+    return [sys.executable, "-I", "-c", f"import base64,sys; sys.path.insert(0, base64.b64decode('{encoded_root}')"
+            f".decode('utf-8')); from {module} import {func}; raise SystemExit({func}({', '.join(map(repr, args))}))"]
+
+
+def _dev_hook_command(module, func, args):
+    argv = _dev_hook_argv(module, func, args)
+    py = f'"{argv[0]}"' if os.name == "nt" else shlex.quote(argv[0])
+    if argv[2] == "-m":
+        return " ".join([py, *argv[1:]])
+    return f'{py} -I -c "{argv[3]}"' if os.name == "nt" else f"{py} -I -c {shlex.quote(argv[3])}"
 
 
 def _hook_version(group):

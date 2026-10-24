@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-23'
+version: '2026.10-v2-24'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -258,9 +258,9 @@ ask:
     # subcommand position and ends a word, so `--service delete-worker`, `fly logs -a delete-me`, `pulumi up -m 'tear
     # down'` or `railway run rm -rf dist` (railway's one word before the verb is never run) don't match; any number of
     # options (with a value) may come before it for pulumi and `railway`/`heroku run`, up to four for terraform,
-    # terragrunt (also after run, run-all or stack run), fly and the npx-style launchers; a mutation needs its call
-    # parenthesis, so a URL or file named serviceDelete.json doesn't.
-    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.*? )?--?destroy)|terragrunt(\.exe)? (-[^ ]+ ([^- ][^ ]* )?){0,4}((run-all|stack (-[^ ]+ ([^- ][^ ]* )?){0,4}run|run) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(destroy|apply ([\w\W]*? )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) .*?\b(volume|service|environment|project|database)Delete\s*\()'
+    # terragrunt (also after run, run-all or stack run, and its older destroy-all and apply-all), fly and the npx-style
+    # launchers; a mutation needs its call parenthesis, so a URL or file named serviceDelete.json doesn't.
+    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.*? )?--?destroy)|terragrunt(\.exe)? (-[^ ]+ ([^- ][^ ]* )?){0,4}((run-all|stack (-[^ ]+ ([^- ][^ ]* )?){0,4}run|run) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(destroy(-all)?|apply(-all)? ([\w\W]*? )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) [\w\W]*?\b(volume|service|environment|project|database)Delete\s*\()'
     # each of these CLIs prints its help and exits on --help (-h is dropdb's host). Only a last `--help` after at most
     # two short lower-case words counts: the subject joins argv with spaces, so `-m ' --help'` must not read as one
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
@@ -270,9 +270,11 @@ ask:
   - id: TK-A031
     class: shell
     # each command's argv: a version purge (gsutil rm -a, gcloud storage rm --all-versions, an S3 object version), a
-    # recursive or wildcard delete, a batch delete or a bucket delete in GCS, S3, Azure Blob or through rclone. One
-    # object's delete is left to TK-F003's flag: server agents clear their own objects routinely
-    pattern: '^(?:gsutil (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:rb(?: |$)|rm(?:(?: .*)?(?: -[A-HJ-QS-Zb-qs-z]*[aIrR][A-Za-z]*| --read-paths-from-stdin)(?: |$)| .*[*]))|gcloud (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:(?:alpha|beta) )?storage (?:buckets delete(?: |$)|rm(?:(?: .*)?(?: --all-versions| --recursive)(?: |=|$)|(?: .*)?(?: -[A-HJ-QS-Zb-qs-z]*[aIrR][A-Za-z]*| --read-paths-from-stdin)(?: |$)| .*[*]))|aws (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:s3 (?:rb(?: |$)|rm(?: .*)? --recursive(?: |=|$))|s3api (?:delete-objects|delete-bucket)(?: |$)|s3api delete-object(?: .*)? --version-id(?: |=|$))|az storage (?:blob delete-batch|container delete)(?: |$)|rclone (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:purge|delete|rmdirs|cleanup)(?: |$))'
+    # recursive or wildcard (`*`) delete, a batch delete or a bucket delete in GCS, S3, Azure Blob, Azure Files or Data
+    # Lake, or through rclone or s3cmd; up to eight options (with a value) before the service and again before its verb.
+    # One object's delete is left to TK-F003's flag: server agents clear their own objects routinely. `[\w\W]*?` crosses
+    # a newline inside an argument; lazy, so the fallback engine stays linear
+    pattern: '^(?:gsutil (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:rb(?: |$)|rm(?:(?: [\w\W]*?)?(?: -[A-HJ-QS-Zb-qs-z]*[aIrR][A-Za-z]*| --read-paths-from-stdin)(?: |$)| [\w\W]*?[*]))|gcloud (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:(?:alpha|beta) )?storage (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:buckets (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}delete(?: |$)|rm(?:(?: [\w\W]*?)?(?: --all-versions| --recursive)(?: |=|$)|(?: [\w\W]*?)?(?: -[A-HJ-QS-Zb-qs-z]*[aIrR][A-Za-z]*| --read-paths-from-stdin)(?: |$)| [\w\W]*?[*]))|aws (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:s3 (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:rb(?: |$)|rm(?: [\w\W]*?)? --recursive(?: |=|$))|s3api (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:(?:delete-objects|delete-bucket)(?: |$)|delete-object(?: [\w\W]*?)? --version-id(?: |=|$)))|az storage (?:(?:blob|file) delete-batch|container delete|fs delete|fs directory delete)(?: |$)|az storage remove(?: [\w\W]*?)? (?:-r|--recursive)(?: |$)|rclone (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:purge|delete|rmdirs|cleanup)(?: |$)|s3cmd (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:rb(?: |$)|(?:del|rm)(?:(?: [\w\W]*?)? (?:-[A-Za-qs-z]*r[A-Za-z]*|--recursive)(?: |$)| [\w\W]*?[*]))|s3cmd (?:-[^ ]+ (?:[^- ][^ ]* )?){0,7}(?:-[A-Za-qs-z]*r[A-Za-z]*|--recursive) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,7}(?:del|rm)(?: |$))'
     reason: destroying cloud storage data (a version purge, a bulk or wildcard delete, or a bucket)
     remedy: Wait for a person to approve the held call; a person deletes bucket data or its version history themselves.
     rationale: Bulk deletes and version purges in object storage can't be undone, and a bucket's version history is often the only copy left.
@@ -295,13 +297,26 @@ ask:
     # each word; a merge endpoint (GitHub's pulls/N/merge, GitLab's merge_requests/N/merge, the number possibly a
     # variable) or GitHub's GraphQL merge, auto-merge or merge-queue mutation, or GitLab's mergeRequestAccept, through
     # gh, glab or hub api, curl, wget, HTTPie or xh. A local `git merge` isn't held. No --help exemption: gh and glab
-    # take the next word as an option's value, so `gh pr merge 42 --body --help` merges. Lazy, so the fallback engine
-    # stays linear
+    # take the next word as an option's value, so `gh pr merge 42 --body --help` merges. `[\w\W]*?` crosses a newline
+    # inside an argument (a multi-line GraphQL query); lazy, so the fallback engine stays linear
     # lean: any request to a merge endpoint is held, a status check (GET) too; match the method when one gets in the way
-    pattern: '^(?:gh (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}pr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}merge(?: |$)|glab (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}mr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:merge|accept)(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) .*?(?:/(?:pulls|merge_requests)/[^/ ]+/merge(?:[ ?#/]|$)|(?:mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeRequestAccept)\b))'
+    pattern: '^(?:gh (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}pr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}merge(?: |$)|glab (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}mr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:merge|accept)(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:/(?:pulls|merge_requests)/[^/ ]+/merge(?:[ ?#/]|$)|(?:mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeRequestAccept)\b))'
     reason: merging a pull request
     remedy: Wait for a person to approve the held call, or leave the pull request open for a person to review and merge.
     rationale: A merge lands code on a shared branch, often with a deploy behind it; a person confirms it.
+  - id: TK-A034
+    class: shell
+    # each command's argv: Codex applies a patch itself when the shell runs apply_patch or applypatch (it puts both on
+    # PATH, codex-rs/arg0, as .bat on Windows), or its binary under any name with --codex-run-as-apply-patch first (or
+    # after the script of its npm launcher: `node codex.js`), or its binary started as apply_patch (`exec -a`, `env
+    # --argv0`), so the files the patch writes reach no file rule. argv[0] is a basename in lower case without .exe
+    # lean: every patch run from the shell is held, an ordinary file's too; decide Codex's own form (`[cd D &&]
+    # apply_patch <<EOF`) by the patch's files, as the apply_patch tool is, when models that edit through the shell
+    # get in the way
+    pattern: '^(apply_?patch(\.(bat|cmd))?|[^ ]+( [^- ][^ ]*)? --codex-run-as-apply-patch|(node|bun|deno)(\.exe)? (-[^ ]+ ){1,8}[^- ][^ ]* --codex-run-as-apply-patch|(exec|env) (-[^ ]+ )*?(-a|--argv0)[ =]([^ ]*/)?apply_?patch)( |$)'
+    reason: applying a patch through the shell
+    remedy: Wait for a person to approve the held call, or edit files with the apply_patch tool, which Tracekit decides file by file.
+    rationale: A patch applied from the shell writes files that no file rule reads; a person confirms it.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
     # in bypassPermissions mode or under a matching allow rule nobody is asked
