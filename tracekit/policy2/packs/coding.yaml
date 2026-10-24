@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-26'
+version: '2026.10-v2-27'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -318,6 +318,40 @@ ask:
     reason: applying a patch through the shell
     remedy: Wait for a person to approve the held call, or edit files with the apply_patch tool, which Tracekit decides file by file.
     rationale: A patch applied from the shell writes files that no file rule reads; a person confirms it.
+  - id: TK-A035
+    class: shell
+    # each command's argv: AWS Secrets Manager's get-secret-value, SSM Parameter Store's reads with --with-decryption
+    # (a word of its own or any prefix of it: --no-with-decryption is not it), gcloud's `secrets versions access` and
+    # az's `keyvault secret show`. Up to eight options (with a value) before the service and again before each word
+    pattern: '^(aws (-[^ ]+ ([^- ][^ ]* )?){0,8}(secretsmanager (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( [\w\W]*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ ([^- ][^ ]* )?){0,8}((alpha|beta) (-[^ ]+ ([^- ][^ ]* )?){0,8})?secrets (-[^ ]+ ([^- ][^ ]* )?){0,8}versions (-[^ ]+ ([^- ][^ ]* )?){0,8}access(["]| |$)|az (-[^ ]+ ([^- ][^ ]* )?){0,8}keyvault (-[^ ]+ ([^- ][^ ]* )?){0,8}secret (-[^ ]+ ([^- ][^ ]* )?){0,8}(show|show-deleted|download)(["]| |$))'
+    reason: reading a secret's value from a cloud secret store
+    remedy: Wait for a person to approve the held call, or ask the person for the one value the task needs.
+    rationale: An agent that can read a live password or key can use it or send it anywhere; listing secrets, describing one and reading a parameter without decryption stay allowed.
+  - id: TK-A036
+    class: mcp
+    # TK-A035's commands as the cli_command, command or cmd argument of an MCP tool (the AWS API MCP server's
+    # call_aws), starting with the program (leading spaces are read). The scan for the decryption flag
+    # stops at the end of that value, so each occurrence rescans only it
+    pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":" *(aws (-[^ ]+ ([^- ][^ ]* )?){0,8}(secretsmanager (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( ([^"\\]|\\.)*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ ([^- ][^ ]* )?){0,8}((alpha|beta) (-[^ ]+ ([^- ][^ ]* )?){0,8})?secrets (-[^ ]+ ([^- ][^ ]* )?){0,8}versions (-[^ ]+ ([^- ][^ ]* )?){0,8}access(["]| |$)|az (-[^ ]+ ([^- ][^ ]* )?){0,8}keyvault (-[^ ]+ ([^- ][^ ]* )?){0,8}secret (-[^ ]+ ([^- ][^ ]* )?){0,8}(show|show-deleted|download)(["]| |$))'
+    reason: reading a secret's value from a cloud secret store through an MCP tool
+    remedy: Wait for a person to approve the held call, or ask the person for the one value the task needs.
+    rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same commands are held, listing and describing stay allowed.
+  - id: TK-A037
+    class: mcp
+    # a tool whose name ends in a word for reading a secret, as `mcp__<server>__<tool>` or `mcp:<server>/<tool>`, with
+    # `_` or `-` between words, or in CamelCase. One `.*` per branch: `__.*__(.*_)?` backtracked over runs of `_`
+    tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])(([Bb]atch[_-]?)?([Gg]et|[Rr]ead|[Ff]etch|[Rr]etrieve|[Rr]eveal|[Ss]how)[_-]?([Kk]ey[_-]?[Vv]ault[_-]?)?[Ss]ecret([_-]?[Vv]alue)?|[Aa]ccess[_-]?[Ss]ecret[_-]?[Vv]ersion|[Kk]ey[_-]?[Vv]ault[_-]?[Ss]ecret[_-]?([Gg]et|[Ss]how|[Rr]ead))|mcp(:[^/]+/|__).*((Batch)?(Get|Read|Fetch|Retrieve|Reveal|Show)(Key[_-]?Vault)?Secret(Value)?|AccessSecretVersion|KeyVaultSecret(Get|Show|Read))'
+    pattern: '^'
+    reason: reading a secret's value through an MCP tool
+    remedy: Wait for a person to approve the held call, or ask the person for the one value the task needs.
+    rationale: The MCP twin of TK-A035, for a tool whose name says it returns a secret (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault); a tool that lists or describes secrets is not held.
+  - id: TK-A038
+    class: mcp
+    tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])[Gg]et[_-]?[Pp]arameters?([_-]?[Bb]y[_-]?[Pp]ath|[_-]?[Hh]istory)?|mcp(:[^/]+/|__).*Get(Parameters?)(ByPath|History)?'
+    pattern: '"([Ww]ith_?[Dd]ecrypt(ion)?|with-decryption|[Dd]ecrypt(ion)?)":(true|"true"|"True"|"TRUE"|1)'
+    reason: reading a decrypted parameter through an MCP tool
+    remedy: Wait for a person to approve the held call, or read the parameter without decryption.
+    rationale: SSM Parameter Store returns a SecureString's plaintext only when asked to decrypt it; the call that asks is the one a person confirms.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
     # in bypassPermissions mode or under a matching allow rule nobody is asked

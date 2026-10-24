@@ -105,3 +105,9 @@
 {"tool": "bash", "args": {"command": "terragrunt workspace select destroy-test"}, "expect": "allow", "note": "names a destroy word without destroying"}
 {"tool": "run_shell_command", "args": {"command": "echo 'remember: never run terragrunt destroy on prod'"}, "expect": "allow", "note": "read, list or create"}
 {"tool": "Bash", "args": {"command": "terraform plan -var 'x\ny' -destroy"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "Bash", "args": {"command": "aws secretsmanager list-secrets"}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "bash", "args": {"command": "aws secretsmanager describe-secret --secret-id prod/app"}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "shell", "args": {"command": "aws ssm get-parameter --name /prod/app/log-level"}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "terminal", "args": {"command": "aws ssm get-parameter --name /prod/db-password --no-with-decryption"}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "run_shell_command", "args": {"command": "gcloud secrets versions list prod-db-password"}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "local_shell", "args": {"command": "az keyvault secret list --vault-name prod-kv"}, "expect": "allow", "note": "listing, describing or reading without the value"}
