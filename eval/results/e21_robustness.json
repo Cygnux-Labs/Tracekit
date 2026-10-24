@@ -2345,7 +2345,7 @@
       }
     }
   },
-  "policy_hash": "sha256:7637b8a2fc0fa02e36fec6e615ee1a695378394e3d3024574db170f84443fde5",
+  "policy_hash": "sha256:2d7ea448c7717531286da4b45ed548843a28d3da89b9109c1ed7fefe659c894f",
   "regressions": [],
   "rewrite_missed": [],
   "rewritten_cases": 274,
