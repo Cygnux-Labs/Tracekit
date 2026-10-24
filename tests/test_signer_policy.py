@@ -407,11 +407,23 @@ class CodingPack(unittest.TestCase):
                         "terragrunt apply-all", "terragrunt plan-all -destroy"):
             self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "allow", command)
 
+    def test_terraform_apply_destroy_asks_when_an_earlier_argument_holds_a_newline(self):
+        self.verdicts([("terraform apply -var 'x\ny' -destroy", "TK-A001"),
+                       ("terraform apply -var 'x\ny' -auto-approve --destroy", "TK-A001"),
+                       ("tofu apply -var 'x\ny' -destroy", "TK-A001"),
+                       ("terraform -chdir=infra apply -var 'x\ny' -destroy", "TK-A001")])
+        for command in ("terraform plan -var 'x\ny' -destroy", "terraform apply -var 'x\ny' -destroy-test.tfvars"):
+            self.assertNotIn("TK-A001", self.e.decide("Bash", {"command": command})["rule_ids"], command)
+
     def test_a_platform_mutation_written_over_several_lines_asks(self):
         body = 'mutation {\n  volumeDelete(volumeId: "v1")\n}'
         for command in (f"curl -X POST https://backboard.railway.app/graphql/v2 -d '{body}'", f"railway api '{body}'"):
             d = self.e.decide("Bash", {"command": command})
             self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"]), ("ask", True), command)
+
+    def test_a_long_command_after_terraform_is_decided_without_the_fallback_timeout(self):
+        d = self.e.decide("Bash", {"command": "terraform apply " + "x " * 30000 + "-destroy"})
+        self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
     def test_a_long_command_after_terragrunt_is_decided_without_the_fallback_timeout(self):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})

@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:262b16eb0823e2aa9d32f43562722ae866b166f7f8e48b91390217ff6000937f",
+  "policy_hash": "sha256:5452fb84a4456a6f48d8d5c08c3fe043c2dc657738035d6c4f04041debd9a79c",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -12,9 +12,9 @@
       "fp": 0
     },
     "cloud": {
-      "deny": 125,
-      "caught": 125,
-      "benign": 106,
+      "deny": 128,
+      "caught": 128,
+      "benign": 107,
       "fp": 0
     },
     "email": {
@@ -241,6 +241,9 @@
     "deny/cloud:123": "ask TK-A001",
     "deny/cloud:124": "ask TK-A001",
     "deny/cloud:125": "ask TK-A001",
+    "deny/cloud:126": "ask TK-A001 TK-F004",
+    "deny/cloud:127": "ask TK-A001",
+    "deny/cloud:128": "ask TK-A001",
     "deny/email:1": "ask TK-M003",
     "deny/email:2": "ask TK-M003",
     "deny/email:3": "ask TK-M003",
@@ -808,6 +811,7 @@
     "benign/cloud:104": "allow",
     "benign/cloud:105": "allow",
     "benign/cloud:106": "allow",
+    "benign/cloud:107": "allow",
     "benign/email:1": "allow",
     "benign/email:2": "allow",
     "benign/email:3": "allow",
@@ -1428,6 +1432,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0013351134846461949,
+  "benign_fp_rate": 0.0013333333333333333,
   "ok": true
 }

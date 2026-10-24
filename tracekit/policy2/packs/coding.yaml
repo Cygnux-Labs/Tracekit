@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-25'
+version: '2026.10-v2-26'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -259,8 +259,9 @@ ask:
     # down'` or `railway run rm -rf dist` (railway's one word before the verb is never run) don't match; any number of
     # options (with a value) may come before it for pulumi and `railway`/`heroku run`, up to four for terraform,
     # terragrunt (also after run, run-all or stack run, and its older destroy-all and apply-all), fly and the npx-style
-    # launchers; a mutation needs its call parenthesis, so a URL or file named serviceDelete.json doesn't.
-    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply (.*? )?--?destroy)|terragrunt(\.exe)? (-[^ ]+ ([^- ][^ ]* )?){0,4}((run-all|stack (-[^ ]+ ([^- ][^ ]* )?){0,4}run|run) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(destroy(-all)?|apply(-all)? ([\w\W]*? )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) [\w\W]*?\b(volume|service|environment|project|database)Delete\s*\()'
+    # launchers; a mutation needs its call parenthesis, so a URL or file named serviceDelete.json doesn't. `[\w\W]*?`
+    # crosses a newline inside an argument before `apply -destroy`; lazy, so the fallback engine stays linear.
+    pattern: '^((((railway|heroku) run(:detached)? (-[^ ]+ ([^- ][^ ]* )?)*)?((terraform|tofu)(\.exe)? (-[^ ]+ ){0,4}(destroy|apply ([\w\W]*? )?--?destroy)|terragrunt(\.exe)? (-[^ ]+ ([^- ][^ ]* )?){0,4}((run-all|stack (-[^ ]+ ([^- ][^ ]* )?){0,4}run|run) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(destroy(-all)?|apply(-all)? ([\w\W]*? )?--?destroy)|pulumi(\.exe)? (-[^ ]+ ([^- ][^ ]* )?)*(destroy|down|dn)|dropdb)|((npx|bunx|pnpm dlx|yarn dlx|npm exec) (-[^ ]+ ([^- ][^ ]* )?){0,4})?(@railway/cli|railway) (([a-qs-z]|r[a-tv-z])[a-z]* )?(delete|remove|rm|down)|(fly|flyctl) (-[^ ]+ ([^- ][^ ]* )?){0,4}([a-z]+ )?(destroy|delete|remove|rm)|heroku ((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) [\w\W]*?\b(volume|service|environment|project|database)Delete\s*\()'
     # each of these CLIs prints its help and exits on --help (-h is dropdb's host). Only a last `--help` after at most
     # two short lower-case words counts: the subject joins argv with spaces, so `-m ' --help'` must not read as one
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
@@ -441,7 +442,8 @@ flag:
     label: background_spawn
   - id: TK-F009
     tool: Bash|Write|Edit|MultiEdit
-    # the harnesses' settings, hooks and sandboxes: Claude Code's, Codex's, Gemini CLI's, Cursor's hooks
+    # the harnesses' settings, hooks and sandboxes: Claude Code's, Codex's, Gemini CLI's, Cursor's hooks, OpenCode's
+    # project config and plugins (.opencode/, opencode.json)
     pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|\.gemini/|\.cursor/hooks\.json|(^|[/\\\s"=])\.opencode[/\\]|(^|[/\\\s"=])opencode\.jsonc?($|[/\\\s";&|])|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
     label: harness_config
   - id: TK-F010
