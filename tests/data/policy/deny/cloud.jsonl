@@ -123,3 +123,6 @@
 {"tool": "run_shell_command", "args": {"command": "terragrunt.exe destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
 {"tool": "Bash", "args": {"command": "railway run terragrunt destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
 {"tool": "local_shell", "args": {"command": "cd live/prod && terragrunt run-all destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (after another command)"}
+{"tool": "Bash", "args": {"command": "terraform apply -var 'x\ny' -destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (a newline in an earlier argument)"}
+{"tool": "terminal", "args": {"command": "tofu apply -var 'x\ny' -auto-approve --destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (a newline in an earlier argument)"}
+{"tool": "Bash", "args": {"command": "terraform -chdir=infra apply -var 'x\ny' -destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (a newline in an earlier argument)"}
