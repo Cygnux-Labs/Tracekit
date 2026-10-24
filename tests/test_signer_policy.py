@@ -359,9 +359,11 @@ class CodingPack(unittest.TestCase):
                        ("terragrunt run --all -- apply -var 'note=a\nb' -destroy", "TK-A001"),
                        ("terragrunt --working-dir ./live/prod destroy", "TK-A001"),
                        ("terragrunt run --all --out-dir /tmp/a destroy", "TK-A001"),
-                       ("terragrunt.exe destroy", "TK-A001"), ("railway run terragrunt destroy", "TK-A001")])
+                       ("terragrunt.exe destroy", "TK-A001"), ("railway run terragrunt destroy", "TK-A001"),
+                       ("terragrunt destroy-all", "TK-A001"), ("terragrunt apply-all -destroy", "TK-A001")])
         for command in ("terragrunt plan", "terragrunt plan -destroy", "terragrunt run --all -- plan", "terragrunt apply",
-                        "terragrunt destroy --help", "echo terragrunt destroy"):
+                        "terragrunt destroy --help", "echo terragrunt destroy",
+                        "terragrunt apply-all", "terragrunt plan-all -destroy"):
             self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "allow", command)
 
     def test_a_long_command_after_terragrunt_is_decided_without_the_fallback_timeout(self):
