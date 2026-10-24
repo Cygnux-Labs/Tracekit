@@ -13,7 +13,7 @@
 Tamper-evident tracing for AI agents: every tool call is recorded as an Ed25519-signed, hash-chained event by a signer
 the agent can't control, checkpointed to witnesses, gated by a policy engine, and exported as offline-verifiable `.tkb`
 bundles. Today's code (1.4) has two generations: the v1 laptop path (tracekitd, the
-JSONL ledger, Claude Code / Codex / Cursor / Gemini hooks) and the v2 signer service for server-hosted agents (evidence
+JSONL ledger, Claude Code / Codex / Cursor / Gemini / OpenCode hooks) and the v2 signer service for server-hosted agents (evidence
 format v2 at 1.4, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
 observation), with Python and TypeScript SDKs and framework integrations. [HIGH CONFIDENCE — read
 `tracekit/signer/service.py`, `tracekit/signer/pipeline.py`, `tracekit/verify/v2.py`, `tracekit/daemon.py`,
@@ -28,7 +28,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/verify/` | Offline verifiers: `v2.py`, and `v1.py` re-exporting the v1 one (an independent TS verifier is in `sdk/typescript/src/verify/`) | [HIGH CONFIDENCE] |
 | `tracekit/policy2/` | v2 policy engine, compiler/lint and packs (`packs/*.yaml`) | [HIGH CONFIDENCE] |
 | `tracekit/sdk/`, `tracekit/autowire.py` | Python v2 client (`RunHandle`), dev-signer autospawn, `tracekit.instrument()` | [HIGH CONFIDENCE] |
-| `tracekit/integrations/` | v2 framework integrations (OpenAI Agents, LangChain/LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent Framework, Strands Agents, Claude Code and harness hooks) | [HIGH CONFIDENCE] |
+| `tracekit/integrations/` | v2 framework integrations (OpenAI Agents, LangChain/LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent Framework, Strands Agents, Hermes Agent, Claude Code and harness hooks) | [HIGH CONFIDENCE] |
 | `tracekit/gateway.py`, `tracekit/executor.py`, `tracekit/mcp_gateway.py`, `tracekit/egress.py` | LLM gateway, T2 tool executor, MCP gateway, egress observer | [HIGH CONFIDENCE] |
 | `tracekit/why/` | `tracekit why`: causal investigation and replay | [HIGH CONFIDENCE] |
 | `tracekit/findings_v2.py`, `tracekit/findings_text.py`, `tracekit/findings_effects.py`, `tracekit/parsers.py`, `tracekit/review_model.py` | `tracekit analyze --v2`: intent, reasoning and action checks (TK-X200..X204, X208) over a v2 run and its content vault, the text checks (TK-X205 and v1's say-vs-do checks) and the effect checks (TK-X206, TK-X207: kernel sensor effects joined to calls); `parsers.said()` reads what a model said before each tool use; `--review`: the reviewer model (TK-X210, warn only) | [HIGH CONFIDENCE] |
@@ -37,7 +37,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/ledger.py` | v1 append-only JSONL ledger, file key, v1 record envelope | [HIGH CONFIDENCE] |
 | `tracekit/core.py` | Canonical JSON, hashing, v1 signature message, scrub | [HIGH CONFIDENCE] |
 | `tracekit/schema/tracekit.event.v1.json` | Frozen v1 event schema (validated by `tracekit/schema.py`) | [HIGH CONFIDENCE] |
-| `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini hook capture | [HIGH CONFIDENCE] |
+| `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini / OpenCode hook capture | [HIGH CONFIDENCE] |
 | `tracekit/agent_sdk.py`, `tracekit/autotrace.py`, `tracekit/adapters/` | Python SDK, model-SDK autotrace, framework adapters | [HIGH CONFIDENCE] |
 | `tracekit/policy.py`, `tracekit/policy/` | v1 regex policy engine and its YAML rule packs | [HIGH CONFIDENCE] |
 | `tracekit/bundle.py` | v1 bundle export and the frozen v1 verifier (`tracekit/verify/v1.py` re-exports it; its `Report` is shared with v2) | [HIGH CONFIDENCE] |
@@ -81,7 +81,7 @@ There is no typecheck step.
 - `tracekit/policy.py` (module) and `tracekit/policy/` (data dir) share a name; importing works only because the module wins.
 - Tests marked root-only and the harness-binding tests (Linux `/proc`) skip on a normal laptop; CI runs Linux as the
   merge gate, macOS/Windows are advisory. A green local run isn't proof for those paths.
-- `make test` takes ~10–11 minutes (about 2,800 tests): many start a real signer daemon and spawn hook processes. Run
+- `make test` takes ~10–11 minutes (about 3,500 tests): many start a real signer daemon and spawn hook processes. Run
   single files while iterating.
 - `agent-flow gates run` runs in the main checkout, not the worktree you call it from. In a worktree run the gates
   there: `PYTHONPATH=$PWD make test-ts lint build test PY=<repo>/.venv/bin/python` (the venv's editable install points

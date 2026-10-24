@@ -498,19 +498,17 @@ class Prefilter(unittest.TestCase):
 class Speed(unittest.TestCase):
     """The fallback engine (`regex`) on 64 KiB built to make a pattern back off or rescan."""
     BUDGET_S = 0.15   # the slowest shipped pattern: ~20 ms on an M-series Mac, ~60 ms on CI runners; a rescan, 0.3 s+
-    FILLERS = (" -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@")
+    FILLERS = (" -", " -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@")
     # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
     # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
     # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-D008 a writer, then a
-    # transcript path; TK-C010 kubectl delete, then --all, or aws s3 rm, then --recursive; TK-A031 a storage delete,
-    # then a recursive, version or wildcard argument, and TK-A032 a storage copy, then a bucket destination, anchored
-    # but backing off over the rest of the command) or in an SQL statement
+    # transcript path; TK-C010 kubectl delete, then --all, or aws s3 rm, then --recursive; TK-A032 a storage copy, then
+    # a bucket destination, anchored but backing off over the rest of the command) or in an SQL statement
     # (TK-DB003 DELETE FROM, then an always-true WHERE): a backtracking engine rescans that text from each occurrence of
     # their first word, so 64 KiB repeating it in one command or statement spends the fallback's 1 s and denies
     # (nondeterministic). RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade:
     # structural pipeline and argv rules
-    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D008", "TK-D011", "TK-DB003", "TK-C010", "TK-A031",
-              "TK-A032"}
+    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D008", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4

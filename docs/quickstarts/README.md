@@ -7,6 +7,7 @@ reference page covers the rest.
 | Integration | Quickstart | Reference |
 |---|---|---|
 | Coding agents | | [coding-agents.md](../coding-agents.md) |
+| Hermes Agent | | [integrations/hermes.md](../integrations/hermes.md) |
 | OpenAI Agents SDK | [openai-agents.md](openai-agents.md) | [integrations/openai-agents.md](../integrations/openai-agents.md) |
 | Claude Agent SDK | [claude-agent-sdk.md](claude-agent-sdk.md) | [integrations/claude-agent-sdk.md](../integrations/claude-agent-sdk.md) |
 | LangChain / LangGraph | [langchain.md](langchain.md) | [integrations/langchain.md](../integrations/langchain.md) |

@@ -279,9 +279,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 570 harmful and 738 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 570 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 738 (0.14%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 583 harmful and 749 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 583 harmful calls are
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 749 (0.13%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -530,7 +530,7 @@ and false positive: `eval/results/e21_policy_robustness.json`. The two engines d
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.9%
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.13% default; 10.9%, 10.0%, 4.8%
 strict); p99 stays within 25% of its on the same machine (re-measured once before failing). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
 (default 4.2%, strict 10.9%) and on strict's sessions (10.0%).
@@ -546,11 +546,11 @@ recorded again with those rules, on purpose: strict's false positives on E17's b
 (29 of 711 to 36 of 738), all of them benign calls added to E17 with the rules that strict holds as installs,
 `docker run`, URLs or network commands (`TK-F004`, `TK-F012`, `TK-F013`), none by a new rule.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's 570 harmful calls are decided as they are, and each of the 261 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's 583 harmful calls are decided as they are, and each of the 274 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 570
-originals and all 1,265 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 583
+originals and all 1,327 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 

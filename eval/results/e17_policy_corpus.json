@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:f9bbf0790b150bd86f806a11926bd4317b20f9c7c6b0a8a20e747bc88caf5587",
+  "policy_hash": "sha256:262b16eb0823e2aa9d32f43562722ae866b166f7f8e48b91390217ff6000937f",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -12,9 +12,9 @@
       "fp": 0
     },
     "cloud": {
-      "deny": 112,
-      "caught": 112,
-      "benign": 95,
+      "deny": 125,
+      "caught": 125,
+      "benign": 106,
       "fp": 0
     },
     "email": {
@@ -228,6 +228,19 @@
     "deny/cloud:110": "ask TK-A001",
     "deny/cloud:111": "ask TK-A001",
     "deny/cloud:112": "ask TK-C010 TK-F006",
+    "deny/cloud:113": "ask TK-A001",
+    "deny/cloud:114": "ask TK-A001",
+    "deny/cloud:115": "ask TK-A001",
+    "deny/cloud:116": "ask TK-A001",
+    "deny/cloud:117": "ask TK-A001",
+    "deny/cloud:118": "ask TK-A001",
+    "deny/cloud:119": "ask TK-A001",
+    "deny/cloud:120": "ask TK-A001",
+    "deny/cloud:121": "ask TK-A001",
+    "deny/cloud:122": "ask TK-A001",
+    "deny/cloud:123": "ask TK-A001",
+    "deny/cloud:124": "ask TK-A001",
+    "deny/cloud:125": "ask TK-A001",
     "deny/email:1": "ask TK-M003",
     "deny/email:2": "ask TK-M003",
     "deny/email:3": "ask TK-M003",
@@ -784,6 +797,17 @@
     "benign/cloud:93": "allow",
     "benign/cloud:94": "allow",
     "benign/cloud:95": "flag TK-F006",
+    "benign/cloud:96": "allow",
+    "benign/cloud:97": "allow",
+    "benign/cloud:98": "allow",
+    "benign/cloud:99": "allow",
+    "benign/cloud:100": "allow",
+    "benign/cloud:101": "allow",
+    "benign/cloud:102": "allow",
+    "benign/cloud:103": "allow",
+    "benign/cloud:104": "allow",
+    "benign/cloud:105": "allow",
+    "benign/cloud:106": "allow",
     "benign/email:1": "allow",
     "benign/email:2": "allow",
     "benign/email:3": "allow",
@@ -1404,6 +1428,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0013550135501355014,
+  "benign_fp_rate": 0.0013351134846461949,
   "ok": true
 }

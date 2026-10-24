@@ -110,3 +110,16 @@
 {"tool": "Bash", "args": {"command": "pulumi --non-interactive --emoji --logflow --logtostderr --color never destroy --yes"}, "expect": "ask", "note": "destroying a deployment, database or volume (five options before the verb)"}
 {"tool": "Bash", "args": {"command": "railway run -s api -e prod -p x -v -q dropdb main"}, "expect": "ask", "note": "destroying a deployment, database or volume (railway run with five options)"}
 {"tool": "mcp:aws/call_aws", "args": {"cli_command": "pulumi -C a -s b -e -v --yes destroy"}, "expect": "ask", "note": "deleting cloud resources (five options before the verb)"}
+{"tool": "Bash", "args": {"command": "terragrunt destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume"}
+{"tool": "shell", "args": {"command": "terragrunt destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume"}
+{"tool": "terminal", "args": {"command": "terragrunt run-all destroy --terragrunt-non-interactive"}, "expect": "ask", "note": "destroying a deployment, database or volume (the older multi-unit form)"}
+{"tool": "bash", "args": {"command": "terragrunt run --all destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (the newer multi-unit form)"}
+{"tool": "run_shell_command", "args": {"command": "terragrunt run --all -- destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume (the newer multi-unit form)"}
+{"tool": "local_shell", "args": {"command": "terragrunt run --graph destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (the newer multi-unit form)"}
+{"tool": "Bash", "args": {"command": "terragrunt stack run destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (the newer multi-unit form)"}
+{"tool": "shell", "args": {"command": "terragrunt apply -destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume"}
+{"tool": "terminal", "args": {"command": "terragrunt run-all apply -destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (the older multi-unit form)"}
+{"tool": "bash", "args": {"command": "terragrunt --terragrunt-working-dir ./live/prod destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (an option with a value first)"}
+{"tool": "run_shell_command", "args": {"command": "terragrunt.exe destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "Bash", "args": {"command": "railway run terragrunt destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "local_shell", "args": {"command": "cd live/prod && terragrunt run-all destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (after another command)"}

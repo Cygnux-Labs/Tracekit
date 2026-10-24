@@ -6,16 +6,17 @@
 tracekit init --dev --agent codex      # ~/.codex/hooks.json
 tracekit init --dev --agent cursor     # ~/.cursor/hooks.json
 tracekit init --dev --agent gemini     # ~/.gemini/settings.json
-tracekit init --dev --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugins/tracekit.js; system mode: the agent's ~/.config
+tracekit init --dev --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
 # --project writes the project-level file instead; tracekit uninstall --agent X removes it
 tracekit demo --agent codex            # the scripted demo, sent as Codex's own hook payloads (also cursor, gemini)
 ```
 
 For Codex, Cursor and Gemini CLI the installer merges into existing settings: other hooks and settings are kept, a
 backup is written first, and running it twice changes nothing. For OpenCode it writes its own `tracekit.js` local
-plugin and refuses to overwrite a file it did not install. Every hook calls `python -I -m tracekit.agent_hooks
-<agent>`, which translates the harness's payload into the Claude Code hook shape and runs the same pipeline as the
-Claude Code hook.
+plugin and refuses to overwrite a file it did not install (in `plugin/`, which every OpenCode 1.x loads; 1.0 doesn't
+read `plugins/`). Every hook calls `python -I -m tracekit.agent_hooks <agent>` (OpenCode's plugin adds the event),
+which translates the harness's payload into the Claude Code hook shape and runs the same pipeline as the Claude Code
+hook.
 
 | | Codex CLI | Cursor | Gemini CLI | OpenCode |
 |---|---|---|---|---|
@@ -23,7 +24,7 @@ Claude Code hook.
 | Run id | `session_id` | `conversation_id` | `session_id` | `sessionID` |
 | Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) |
 | Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` |
-| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`, `Delete`; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `web_fetch`, `google_web_search` | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` → `Edit` (`paths`: every file its headers name); `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools |
+| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `web_fetch`, `google_web_search` | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools |
 
 What is the same as Claude Code: the policy gate runs before the tool (deny blocks; ask holds the call until someone
 approves it from another terminal), events are signed by the same signer, and the harness's transcript is hashed at
@@ -34,8 +35,12 @@ proxy fronts the Anthropic API only, so model-side cross-checks need `tracekit_s
 Hook formats come from each harness's published documentation (October 2026); a harness that changes its payload may
 need an update here.
 
-Broken input never blocks an agent: an unparseable payload or an unknown harness name is reported on stderr and the
-call is allowed, unless `TRACEKIT_FAIL_CLOSED=1` or the policy says `fail_mode: closed`.
+A call on several files (a patch's `paths`) is decided on each file: a rule that matches any of them applies.
+
+An unparseable payload or an unknown harness name is reported on stderr and the call is allowed, unless
+`TRACEKIT_FAIL_CLOSED=1` or the policy says `fail_mode: closed`. Two exceptions block the call whatever the fail mode:
+an OpenCode call its hook can't decide (the plugin passes the model's arguments before OpenCode checks them), and, in
+every hook, a payload nested too deep to read.
 
 ## On the v2 signer
 
