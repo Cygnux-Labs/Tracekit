@@ -37,7 +37,8 @@ The plugin uses the signer Tracekit's client finds, as `tracekit.instrument()` d
 the same-user dev signer, started at the first tool call if none is running; in system mode
 (`/etc/tracekit/client.json`), the system signer. To use another signer, set `TRACEKIT_SIGNER` in the environment Hermes
 starts with: a Unix socket path, `tcp://127.0.0.1:PORT` (its token in `TRACEKIT_SIGNER_TOKEN`, which the plugin reads
-through Hermes's secret scope, and never from the process environment when the profile has none), or an `https://` URL
+through Hermes's secret scope: with several profiles, never from the process environment when the profile has none;
+with one, Hermes falls back to the process environment), or an `https://` URL
 (its bearer token file in `TRACEKIT_SIGNER_TOKEN_FILE`).
 
 Each Hermes session is a run (agent `hermes`), registered at its first tool call and closed when Hermes exits. Then
@@ -58,7 +59,7 @@ session's next call.
 - **Keeps approvals with the signer.** An `ask` is answered in Tracekit (`tracekit approvals`, the viewer, an
   approver the signer knows), never by Hermes's own approval prompt. An approval still unanswered when the hook's time
   is up is withdrawn, so no one approves a call that never ran. So is one whose call Hermes stopped waiting for (its
-  tool deadline, a `/stop`), answered or not: the hook sees Hermes's `post_tool_call` for it, before or while it
+  tool deadline, a `/stop`, its own block once the hook outlived its callback timeout), answered or not: the hook sees Hermes's `post_tool_call` for it, before or while it
   decides, and the call never runs.
 - **Records the outcome.** `post_tool_call` completes the call against its decision with Hermes's status: `ok` with
   the result the tool returned (in full for a tool the policy lists as untrusted, for provenance; otherwise its
@@ -85,7 +86,9 @@ pair with the calls by the model's tool-call ids.
 - A hold longer than Hermes's limits. The hook blocks the call and withdraws the approval 5 s before the smaller of
   `plugins.hook_callback_timeout` and the tool deadline, so a hold lasts at most about 7 minutes with the default tool
   deadline (420 s), about 10 with every limit at 600. A hook that runs over its callback timeout (a signer that doesn't
-  answer in time) is blocked by Hermes itself, which then skips it, and so blocks every tool call, for 60 s.
+  answer in time) is blocked by Hermes itself, which then skips it, and so blocks every tool call, for 60 s. A `post_tool_call` that runs
+  over it (a signer slow to record an outcome) is skipped the same way, for 60 s: outcomes in that time aren't
+  recorded, and a call Hermes stops waiting for meanwhile isn't withdrawn from its hook.
 - Tools an `execute_code` script calls: Hermes runs them with no `tool_call_id`, so the plugin blocks every one.
 - Tool calls that fire no `pre_tool_call`: those another plugin makes with `ctx.dispatch_tool`, and every call while
   Hermes runs in safe mode, which loads no plugins.

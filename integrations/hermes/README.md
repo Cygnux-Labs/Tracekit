@@ -54,6 +54,7 @@ Details, and what Tracekit doesn't see: [Hermes Agent](https://github.com/Cygnux
   client reads to find its signer: `TRACEKIT_SIGNER`,
   `TRACEKIT_SIGNER_TOKEN_FILE`, `TRACEKIT_SIGNER_CA`, `TRACEKIT_SIGNER_CERT`, `TRACEKIT_SIGNER_KEY`, and in Tracekit's
   system mode `/etc/tracekit/client.json`.
-- **Credentials:** `TRACEKIT_SIGNER_TOKEN` is read with Hermes's `get_secret`; a profile without one uses none. The
+- **Credentials:** `TRACEKIT_SIGNER_TOKEN` is read with Hermes's `get_secret`; with several profiles, a profile without one uses
+  none (with one profile, Hermes falls back to the process environment). The
   plugin stores nothing.
 - **Approvals:** the plugin never answers Hermes's own approval prompt; Tracekit's approvals are answered in Tracekit.

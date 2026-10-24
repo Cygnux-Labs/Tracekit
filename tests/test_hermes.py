@@ -135,10 +135,14 @@ class Hermes:
             w.join(60)
 
 
-def load(config, secret=lambda name, default=None: os.environ.get(name, default), secret_scope=True):
+def load(config, secret=lambda name, default=None: os.environ.get(name, default), secret_scope=True, coerce=None):
     """A Hermes with the plugin loaded as Hermes loads a directory plugin (hermes_plugins.<name>) and registered, with
-    the public Hermes modules it imports (agent.secret_scope, hermes_cli.config) standing in."""
+    the Hermes modules it imports (agent.secret_scope, hermes_cli.config, and with `coerce` tools.arg_coercion)
+    standing in."""
     stubs = {n: types.ModuleType(n) for n in ("agent", "agent.secret_scope", "hermes_cli", "hermes_cli.config")}
+    if coerce is not None:
+        stubs["tools"], stubs["tools.arg_coercion"] = types.ModuleType("tools"), types.ModuleType("tools.arg_coercion")
+        stubs["tools.arg_coercion"].coerce_tool_args = coerce
     if secret_scope:
         stubs["agent.secret_scope"].get_secret = secret
     stubs["hermes_cli.config"].load_config_readonly = lambda: config
@@ -399,6 +403,44 @@ class Plugin(unittest.TestCase):
         self.assertEqual([r["ok"] for r in self.events("tool.result")], [False, False])
         self.assertEqual(self.completed, [(f"call-{i}", "error", "the call's arguments changed after the decision")
                                           for i in range(2)])
+
+    def test_a_call_hermes_repaired_the_argument_types_of_is_recorded_as_run(self):
+        """A concurrent batch's call runs with Hermes's repair of the model's argument types, which its post_tool_call
+        reports; its pre_tool_call saw the model's own."""
+        h = load(self.config, coerce=lambda tool, args: {k: int(v) if str(v).isdigit() else v for k, v in args.items()})
+        ids = {"tool_call_id": "call-1", "session_id": "s1"}
+        self.assertEqual(h.invoke("pre_tool_call", tool_name="search", args={"n": "5"}, **ids), [])
+        h.invoke("post_tool_call", tool_name="search", args={"n": 5}, result="{}", status="ok", **ids)
+        self.assertEqual(self.completed, [("call-1", "ok", None)])
+
+    def test_a_call_hermes_blocked_once_its_hook_outlived_the_callback_timeout_is_recorded_as_not_run(self):
+        decide = RunHandle.decide
+
+        def slow(*a, **k):
+            time.sleep(1.5)
+            return decide(*a, **k)
+        self.config["plugins"]["hook_callback_timeout"] = 0.5
+        with mock.patch.object(RunHandle, "decide", slow):
+            seen, ran = self.hermes.call("echo", {"text": "hi"})
+            self.assertEqual((ran, json.loads(seen)["error"]), (False, TIMED_OUT))
+            for _ in range(250):   # the hook goes on deciding after Hermes's block
+                if self.completed:
+                    break
+                time.sleep(0.02)
+        self.assertEqual((ac.RAN, self.completed), ([], [("call-1", "error", f"not run: {hermes.GONE}")]))
+
+    def test_a_hold_whose_wait_fails_is_withdrawn(self):
+        call = RunHandle.call
+
+        def failing(handle, method, **fields):
+            if method == "approval_wait":
+                raise ConnectionError("the signer went away")
+            return call(handle, method, **fields)
+        with mock.patch.object(RunHandle, "call", failing):
+            seen, ran = self.hermes.call("pay", PAY)
+        self.assertFalse(ran)
+        self.assertIn("could not decide it (ConnectionError", json.loads(seen)["error"])
+        self.assertEqual(len(self.events("approval.abandoned")), 1)
 
     def test_a_call_without_a_tool_call_id_is_blocked(self):
         """execute_code's scripts call tools with no tool_call_id (tools/code_execution_rpc.py)."""
