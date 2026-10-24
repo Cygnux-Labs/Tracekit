@@ -93,3 +93,14 @@
 {"tool": "Bash", "args": {"command": "pulumi config set note 'scale down at night'"}, "expect": "allow", "note": "names a destroy word without destroying"}
 {"tool": "local_shell", "args": {"command": "heroku logs -a destroy"}, "expect": "allow", "note": "names a destroy word without destroying"}
 {"tool": "mcp:aws/call_aws", "args": {"cli_command": "terraform plan -destroy"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "Bash", "args": {"command": "terragrunt plan"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "shell", "args": {"command": "terragrunt run-all plan"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "terminal", "args": {"command": "terragrunt run --all plan"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "bash", "args": {"command": "terragrunt run --all -- plan"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "run_shell_command", "args": {"command": "terragrunt plan -destroy"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "local_shell", "args": {"command": "terragrunt apply"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "Bash", "args": {"command": "terragrunt init"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "shell", "args": {"command": "terragrunt output"}, "expect": "allow", "note": "read, list or create"}
+{"tool": "terminal", "args": {"command": "terragrunt destroy --help"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "bash", "args": {"command": "terragrunt workspace select destroy-test"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "run_shell_command", "args": {"command": "echo 'remember: never run terragrunt destroy on prod'"}, "expect": "allow", "note": "read, list or create"}
