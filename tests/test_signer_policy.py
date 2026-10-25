@@ -1201,8 +1201,18 @@ class CodingPack(unittest.TestCase):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
 
+    def every_pack_verdicts(self, cases):
+        for pack, engine, e in self.every_pack():
+            for command, want in cases:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"] != "allow", want in d["rule_ids"]), (True, True), d)
+
     def test_infrastructure_removal_cdk_launchers_ask(self):
-        self.verdicts([
+        self.every_pack_verdicts([
+            ("npx aws-cdk destroy", "TK-A001"),
+            ("npx aws-cdk@2 destroy --force", "TK-A001"),
+            ("npx cdk@latest destroy", "TK-A001"),
             ("cdk destroy", "TK-A001"),
             ("npx cdk destroy", "TK-A001"),
             ("bunx cdk destroy", "TK-A001"),
@@ -1212,7 +1222,7 @@ class CodingPack(unittest.TestCase):
         ])
 
     def test_infrastructure_removal_cdk_options_ask(self):
-        self.verdicts([
+        self.every_pack_verdicts([
             ("cdk destroy --force", "TK-A001"),
             ("cdk destroy --all", "TK-A001"),
             ("cdk destroy --force --all", "TK-A001"),
@@ -1223,7 +1233,8 @@ class CodingPack(unittest.TestCase):
         ])
 
     def test_infrastructure_removal_pulumi_options_ask(self):
-        self.verdicts([
+        self.every_pack_verdicts([
+            ("pulumi stack -s prod rm --yes", "TK-A001"),
             ("pulumi stack rm prod", "TK-A001"),
             ("pulumi stack rm prod --force", "TK-A001"),
             ("pulumi stack rm prod --yes", "TK-A001"),
@@ -1232,8 +1243,9 @@ class CodingPack(unittest.TestCase):
         ])
 
     def test_infrastructure_removal_state_options_ask(self):
+        self.every_pack_verdicts([("terragrunt state rm aws_db_instance.prod", "TK-A001")])
         for program in ("terraform", "tofu"):
-            self.verdicts([
+            self.every_pack_verdicts([
                 (f"{program} -chdir=infra state rm aws_db_instance.prod", "TK-A001"),
                 (f"{program} state rm -lock-timeout=30s aws_db_instance.prod", "TK-A001"),
                 (f"{program} state rm aws_s3_bucket.assets", "TK-A001"),
@@ -1251,9 +1263,9 @@ class CodingPack(unittest.TestCase):
             "echo cdk destroy",
             "cdk destroy --help",
         ):
-            with self.subTest(command=command):
-                result = self.e.decide("Bash", {"command": command})
-                self.assertEqual(result["verdict"], "allow", result)
+            for pack, engine, e in self.every_pack():
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-A001", e.decide("Bash", {"command": command})["rule_ids"])
 
 
 class PackReading(unittest.TestCase):

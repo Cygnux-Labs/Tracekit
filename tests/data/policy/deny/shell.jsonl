@@ -236,3 +236,6 @@
 {"tool": "Bash", "args": {"command": "pulumi stack rm prod --force --yes"}, "expect": "ask", "note": "remove Pulumi stack state while resources may still exist"}
 {"tool": "Bash", "args": {"command": "terraform state rm aws_db_instance.prod"}, "expect": "ask", "note": "remove a live database binding from Terraform state"}
 {"tool": "Bash", "args": {"command": "tofu state rm aws_db_instance.prod"}, "expect": "ask", "note": "remove a live database binding from OpenTofu state"}
+{"tool": "Bash", "args": {"command": "npx aws-cdk destroy --force"}, "expect": "ask", "note": "CDK through its aws-cdk package name"}
+{"tool": "Bash", "args": {"command": "terragrunt state rm aws_db_instance.prod"}, "expect": "ask", "note": "terragrunt removing a resource from state"}
+{"tool": "Bash", "args": {"command": "pulumi stack -s prod rm --yes"}, "expect": "ask", "note": "pulumi stack rm with an option before rm"}
