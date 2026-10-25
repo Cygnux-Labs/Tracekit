@@ -150,11 +150,6 @@ All limits, across every doc: [limits.md](limits.md).
 - **Harness binding is opt-in and Linux-only:** without it (`tracekit init --v2 --harness NAME=PATH`), a process
   outside the agent's harness, running as the agent's user, can register a run of its own (E8v2.6). The run is
   labelled with the identity that registered it. With it, see [what binding does not stop](faq.md#what-does-harness-binding-not-stop).
-- The coding pack flags harness configuration writes through file-tool paths (`TK-F009`) and recognized shell
-  write or delete targets (`TK-F015`). Both include casefolded paths. Reads and file content that only names these paths
-  do not match. `TK-F016` keeps the existing argv/raw-argument check for `ANTHROPIC_BASE_URL`.
-  These flags do not prevent configuration changes. Writes through variables or scripts can evade them
-  ([limits](limits.md)).
 - **Monitor reports cover one view:** `tracekit monitor` sees the log the signer serves it; a bundle's checkpoint
   smaller than the report's tree is not proven consistent with it, so a split view shows only at equal sizes or to
   witnesses.

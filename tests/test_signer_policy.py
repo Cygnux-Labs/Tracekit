@@ -465,10 +465,12 @@ class CodingPack(unittest.TestCase):
                     r"cp x 'C:\repo\.opencode\plugin\x.js'", r"echo x > '.opencode\plugin\x.js'",
                     r"cp x 'C:\repo\OpenCode.json'", r"cp x 'C:\repo\.claude\settings.json'",
                     r"echo x > '.gemini\settings.json'", r"cp x 'C:\repo\.codex\config.toml'",
-                    "rm -rf ~/.claude", "rm -rf .opencode", "mv ~/.gemini /tmp/g", "cp settings.json ~/.gemini")
+                    "rm -rf ~/.claude", "rm -rf .opencode", "mv ~/.gemini /tmp/g", "cp settings.json ~/.gemini",
+                    "cp x 'a\n/../.claude/settings.json'", "tee 'a\n/../.mcp.json'")
         benign = [("Bash", {"command": c}) for c in (
             "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
-            "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup")]
+            "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
+            "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt")]
         benign += [(tool, args) for tool, args in (
             ("Read", {"file_path": "opencode.json"}),
             ("Write", {"file_path": "notes.md", "content": " ".join(paths)}),
