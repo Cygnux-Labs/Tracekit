@@ -1,10 +1,11 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode and goose, on the same pipeline as the Claude Code hook.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose and Qwen Code, on the same pipeline as the Claude Code hook.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
     tracekit init --dev --agent gemini       # ~/.gemini/settings.json
     tracekit init --dev --agent opencode     # ~/.config/opencode/plugin/tracekit.js
     tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
+    tracekit init --dev --agent qwen         # ~/.qwen/settings.json
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -23,10 +24,12 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             -> Bash, Write, Edit, LS, Read (WebFetch for an http(s) source), mcp__<extension>__<tool> (goose's
             payload names its event `event` and its
             working directory `working_dir`, and sends no tool result or error text: see docs/limits.md)
+    Qwen Code (a Gemini CLI fork) sends Claude Code's payloads and names its events as Claude Code does, with Gemini's
+            tool names and its own edit, grep_search and agent -> Edit, Grep, Task
 
 What each harness exposes decides what Tracekit can see: Gemini CLI does not give tool calls an id, so pre and post
-events are paired by (tool, arguments) in order; Cursor reports failures through postToolUseFailure. Reasoning
-capture reads Claude Code's transcript format only and is off for these harnesses."""
+events are paired by (tool, arguments) in order; Cursor and Qwen Code report failures through postToolUseFailure.
+Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
 import hashlib
 import io
@@ -41,14 +44,19 @@ from . import __version__, hook as H
 from .core import canon
 from .locking import lock_file, unlock_file
 
-HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose")
-AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose"}
+HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen")
+AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
+               "qwen": "qwen-code"}
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
 GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_files": "Read", "write_file": "Write", "replace": "Edit",
                 "glob": "Glob", "search_file_content": "Grep", "list_directory": "LS", "web_fetch": "WebFetch",
                 "google_web_search": "WebSearch", "save_memory": "Memory"}
+# Qwen Code keeps Gemini CLI's names, except where it renamed a tool (its docs: tools/file-system, tools/introduction)
+# (monitor runs its `command` in a shell, as run_shell_command does; notebook_edit writes `notebook_path`)
+QWEN_TOOLS = {**GEMINI_TOOLS, "edit": "Edit", "grep_search": "Grep", "web_search": "WebSearch", "todo_write": "TodoWrite",
+              "agent": "Task", "monitor": "Bash", "notebook_edit": "NotebookEdit"}
 # a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
@@ -106,14 +114,15 @@ def tool(harness, name, ti):
             if k in ti and "file_path" not in ti:
                 ti["file_path"] = ti[k]
         return CURSOR_TOOLS.get(name, name), ti
-    if harness == "gemini":
-        if "absolute_path" in ti and "file_path" not in ti:
-            ti["file_path"] = ti["absolute_path"]
+    if harness in ("gemini", "qwen"):
+        for k in ("absolute_path", "notebook_path"):   # Gemini's read_file (Qwen's before 0.13), Qwen's notebook_edit
+            if k in ti and "file_path" not in ti:
+                ti["file_path"] = ti[k]
         if name == "web_fetch" and "url" not in ti and isinstance(ti.get("prompt"), str):
             m = re.search(r"https?://\S+", ti["prompt"])
             if m:
                 ti["url"] = m.group(0)
-        return GEMINI_TOOLS.get(name, name), ti
+        return (QWEN_TOOLS if harness == "qwen" else GEMINI_TOOLS).get(name, name), ti
     if harness == "opencode":
         # the path the tool itself reads decides, never another path key the model sent beside it (OpenCode drops
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
@@ -190,18 +199,22 @@ def normalise(harness, p):
     ev = p.get("hook_event_name") or ""
     out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
-    if harness == "codex":
+    if harness in ("codex", "qwen"):   # both send Claude Code's payloads; Qwen Code adds PostToolUseFailure
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
              "SessionStart": "SessionStart", "SessionEnd": "SessionEnd"}
+        if harness == "qwen":
+            m["PostToolUseFailure"] = "PostToolUseFailure"
         if ev not in m:
             return None
         out["hook_event_name"] = m[ev]
-        if ev in ("PreToolUse", "PostToolUse"):
+        if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
             out["tool_use_id"] = p.get("tool_use_id")
-            if ev == "PostToolUse":
+            if ev != "PreToolUse":
                 out["tool_response"] = p.get("tool_response")
+            if ev == "PostToolUseFailure":
+                out["error"] = p.get("error")
         if ev == "UserPromptSubmit":
             out["prompt"] = p.get("prompt")
         if ev == "SessionEnd":
@@ -368,6 +381,7 @@ def config_path(harness, project=None, home=None):
     return {"codex": os.path.join(base, ".codex", "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
+            "qwen": os.path.join(base, ".qwen", "settings.json"),
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
                         os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
                                      os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js")}[harness]
@@ -715,15 +729,17 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 hooks.pop(ev, None)
     else:
         events = (["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
-                  else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
-        tools = {"PreToolUse", "PostToolUse", "BeforeTool", "AfterTool"}
+                  else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
+                  if harness == "qwen" else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
+        tools = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "BeforeTool", "AfterTool"}
         for ev in events:
             groups = [g for g in entries(ev) if not (isinstance(g, dict) and ours(
                 [h.get("command") for h in g.get("hooks", []) if isinstance(h, dict)]))]
             if not uninstall:
                 h = {"type": "command", "command": cmd(ev)}
-                if harness == "gemini":
-                    h.update(name="tracekit", timeout=600_000 if ev == "BeforeTool" else 30_000)  # ms; holds wait for approval
+                # ms for Gemini CLI; newer Qwen Code reads seconds, but 1000 or more still as ms, so 600 s in both
+                if harness in ("gemini", "qwen"):   # holds wait for approval (Qwen Code's default is 60 s)
+                    h.update(name="tracekit", timeout=600_000 if ev in PRE else 30_000)
                 else:
                     h["timeout"] = 600 if ev == "PreToolUse" else 30
                 groups.append({"matcher": "*", "hooks": [h]} if ev in tools else {"hooks": [h]})

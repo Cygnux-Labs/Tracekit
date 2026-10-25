@@ -663,6 +663,8 @@ class CodingAgentReasoning(unittest.TestCase):
             agent_hooks.install("opencode", v2=True)   # a JavaScript plugin, read as one
             self.assertEqual(doctor._dev_harnesses(), {"codex": agent_hooks.config_path("codex"),
                                                        "opencode": agent_hooks.config_path("opencode")})
+            agent_hooks.install("qwen", v2=True)
+            self.assertEqual(doctor._dev_harnesses()["qwen"], agent_hooks.config_path("qwen"))
 
 
 @unittest.skipIf(os.name == "nt", "POSIX modes")

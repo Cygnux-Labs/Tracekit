@@ -1,6 +1,6 @@
-"""Codex CLI, Cursor, Gemini CLI, OpenCode and goose hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode, goose and Qwen Code hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose|qwen EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -88,6 +88,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
+    if harness == "qwen":   # lean: Qwen Code's transcript format is not read; its model's text goes unrecorded
+        return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
     ev, path, model = p.get("hook_event_name"), p.get("transcript_path"), p.get("model")

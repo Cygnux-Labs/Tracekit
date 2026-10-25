@@ -133,6 +133,9 @@ class Mapping(HarnessCase):
         self.assertEqual((code, out), (2, ""))   # the name before goose 1.56, prefixed
         self.assertEqual(self.sent, [])
 
+    def test_qwen(self):
+        self.check("qwen")
+
     def test_results_complete_the_decided_call(self):
         for harness, pre, post in (
                 ("codex", {"session_id": "s-codex", "hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -348,7 +351,7 @@ class Installer(unittest.TestCase):
                     hooks = [h for hs in blob["hooks"].values() for h in hs]
                     cmds = [h["command"] if harness == "cursor" else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
-                    self.assertEqual(len(cmds), 8 if harness == "cursor" else 5)   # Cursor: and what its model said
+                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6}.get(harness, 5))   # Cursor: and what its model said
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     if os.name == "nt" and harness != "cursor":   # PowerShell can't start a quoted first word
