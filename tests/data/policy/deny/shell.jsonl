@@ -184,3 +184,6 @@
 {"tool": "Bash", "args": {"command": "https DELETE api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "HTTPie (https) DELETE to a repository URL without a scheme"}
 {"tool": "Bash", "args": {"command": "xh DELETE api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "xh DELETE to a repository URL without a scheme"}
 {"tool": "Bash", "args": {"command": "xhs DELETE api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "xhs DELETE to a repository URL without a scheme"}
+{"tool": "Bash", "args": {"command": "vercel project remove prod-app --yes"}, "expect": "ask", "note": "vercel project remove, the subcommand rm is an alias of"}
+{"tool": "Bash", "args": {"command": "gh api --method DELETE -H \"Accept: application/vnd.github+json\" -H \"X-GitHub-Api-Version: 2022-11-28\" -H \"Authorization: token x\" /repos/OWNER/REPO"}, "expect": "ask", "note": "GitHub's REST docs example with one more header: nine option words around the method"}
+{"tool": "Bash", "args": {"command": "http delete api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "HTTPie with a lowercase method still sends DELETE"}

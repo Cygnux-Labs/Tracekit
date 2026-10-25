@@ -167,7 +167,7 @@ tracekit policy backtest --policy policy.yaml --store DATA_DIR/store   # replay 
 
 Rules are tripwires, not a sandbox. A determined agent can phrase a command so no rule matches: the
 [evaluation](../evaluation.md#e3-policy-gate) lists misses such as `X=rm; $X -rf ~` and a base64 payload piped to a
-shell. On the shipped packs' own test corpus (634 harmful and 770 benign calls across 11 classes, written by the
+shell. On the shipped packs' own test corpus (637 harmful and 770 benign calls across 11 classes, written by the
 project) every harmful call is denied or held, with one false alarm. On E21's held-out pool (420 harmful and 432
 benign calls, written blind to the rules), the only blind run caught 211 harmful calls (50.2%) with the server pack and
 246 (58.6%) with the strict pack. With rules added since, written while the misses were known, they catch 240 (57.1%)

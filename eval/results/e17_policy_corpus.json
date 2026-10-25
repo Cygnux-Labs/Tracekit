@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:35ff098ee259daf7ff2074285c98ba9db4c50a1eb556a88457a2f3edc6af3a5a",
+  "policy_hash": "sha256:959e01fceb1ee275602138dfce66ee84ba1719842e4122a57a8912912f4be05f",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -60,8 +60,8 @@
       "fp": 0
     },
     "shell": {
-      "deny": 186,
-      "caught": 186,
+      "deny": 189,
+      "caught": 189,
       "benign": 186,
       "fp": 0
     },
@@ -658,6 +658,9 @@
     "deny/shell:184": "ask TK-A042",
     "deny/shell:185": "ask TK-A042",
     "deny/shell:186": "ask TK-A042",
+    "deny/shell:187": "ask TK-A042",
+    "deny/shell:188": "ask TK-A042",
+    "deny/shell:189": "ask TK-A042",
     "deny/sql:1": "deny TK-DB001",
     "deny/sql:2": "deny TK-DB001",
     "deny/sql:3": "deny TK-DB001",

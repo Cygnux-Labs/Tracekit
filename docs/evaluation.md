@@ -279,8 +279,8 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 634 harmful and 770 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 634 harmful calls are
+- **Policy packs** (`eval/e17_policy_corpus.py`): 637 harmful and 770 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 637 harmful calls are
   denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 770 (0.13%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
@@ -544,16 +544,16 @@ session calls; `TK-A035` to `TK-A038` (a secret's value read through a cloud CLI
 tool) to 240 (57.1%) and 269 (64.0%), with none either. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
 pool, not as blind recall. The gates were
 recorded again with those rules, on purpose: strict's false positives on E17's benign calls rose from 4.1% to 4.9%
-(29 of 711 to 36 of 738), and with the repository-deletion rule's benign cases to 4.7% (36 of 770): the new cases are `gh`/`glab`/`vercel`
-calls, which strict does not hold, so the count stayed at 36 while the pool grew. All 36 are benign calls strict
+(29 of 711 to 36 of 738). The benign cases added since, with the secret-read and repository-deletion rules, are
+calls strict does not hold, so the count stayed at 36 while the pool grew to 770 (4.7%). All 36 are benign calls strict
 holds: 23 as a push, publish, install or apply (`TK-F004`), 12 as a network command (`TK-F013`), and 1 draft email
 to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's 634 harmful calls are decided as they are, and each of the 318 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's 637 harmful calls are decided as they are, and each of the 321 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 634
-originals and all 1,543 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 637
+originals and all 1,558 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
