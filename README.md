@@ -15,7 +15,7 @@ and gives you one `.tkb` file per run that anyone can verify offline.**
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>600 of 600</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 762 (E17)</sub></td>
+<td align="center" width="25%"><h3>637 of 637</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 770 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -240,7 +240,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 |---|---|---|
 | **E1** tamper detection | 120-record signed logs, 8 attacks, 60 trials each, re-run on 1.2 | 6 of 8 caught by the log alone, **8 of 8 with a witness** |
 | **E8** insider attacks | Real unprivileged users against a Linux system-mode signer: a decoy signer, a stopped signer, a swapped policy, fabricated runs | **8 of 8 caught**, a merge gate on every pull request |
-| **E17** policy packs | 600 harmful and 762 benign tool calls in 11 classes, decided by both regex engines | **600 of 600 stopped**; 1 false alarm, a draft email held for a person |
+| **E17** policy packs | 637 harmful and 770 benign tool calls in 11 classes, decided by both regex engines | **637 of 637 stopped**; 1 false alarm, a draft email held for a person |
 | **E21** policy robustness | 420 harmful and 432 benign calls written blind to the rules; 130 developer-session calls | server pack: 211 of 420 stopped or held on the one blind run, 240 after rules were added that target the pool (read since); 18 of 432 false alarms, 2 of 130 in sessions; p99 150 µs |
 | **E10** reconciliation | 30 runs, 12 with a seeded discrepancy: a missing hook, a fabricated call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **E9** overhead | Signer round trip over a Unix socket, file storage, macOS quick run | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |

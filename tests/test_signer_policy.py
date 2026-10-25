@@ -207,6 +207,73 @@ class CodingPack(unittest.TestCase):
                         if cmd in merges:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_deleting_a_repository_or_project_asks_in_every_pack(self):
+        """Deleting a whole repository or project through a platform's API is held for a person; reading one or
+        deleting a single sub-resource is not. The blind E21 pool showed these deletes only flagged, never held."""
+        deletes = ["curl -X DELETE https://api.github.com/repos/acme/prod-service -H 'Authorization: Bearer <redacted>'",
+                   "curl --request DELETE \"https://gitlab.com/api/v4/projects/42\" -H \"PRIVATE-TOKEN: $GL_TOKEN\"",
+                   "curl -X DELETE https://api.vercel.com/v9/projects/prod-app -H 'Authorization: Bearer <redacted>'",
+                   "curl -X POST https://api.github.com/graphql -H 'Authorization: Bearer <redacted>' -d '{\"query\": \"mutation { deleteRepository(input: {repositoryId: \\\"R_1\\\"}) { clientMutationId } }\"}'",
+                   "gh api -X DELETE repos/acme/prod-service",
+                   "gh api repos/acme/prod-service -X DELETE",
+                   "glab api projects/42 -X DELETE",
+                   "hub api -X DELETE repos/acme/prod-service",
+                   "gh repo delete acme/prod-service --yes",
+                   "glab repo delete acme/prod-service --yes",
+                   "vercel remove prod-app --yes",
+                   "glab api -X DELETE projects/42",
+                   "gh api graphql -f query='mutation { deleteRepository(input: {repositoryId: \"R_1\"}) { clientMutationId } }'",
+                   # a newline in an earlier argument: a multi-line GraphQL query, as GitHub's docs write them
+                   "gh api graphql -f query='\n  mutation {\n    deleteRepository(input: {repositoryId: \"R_1\"}) {\n      clientMutationId\n    }\n  }'",
+                   "wget --method=DELETE https://gitlab.com/api/v4/projects/42",
+                   "http DELETE https://api.vercel.com/v9/projects/prod-app",
+                   "curl https://api.github.com/repos/acme/prod-service -X DELETE",
+                   "curl -X DELETE https://api.github.com/repos/acme/prod-service/",
+                   # the review's covered misses
+                   "vercel rm prod-app --yes",
+                   "vercel project rm prod-app",
+                   "vercel projects rm",
+                   "glab project delete acme/svc --yes",
+                   "hub delete -y acme/svc",
+                   "http -A bearer -a tok DELETE https://api.github.com/repos/acme/prod-service",
+                   # the second review's anchored misses: options before the method flag or
+                   # before a bare path, and schemeless HTTPie URLs
+                   "gh api --method DELETE -H \"Accept: application/vnd.github+json\" -H \"X-GitHub-Api-Version: 2022-11-28\" /repos/acme/prod-service",
+                   "gh api -H 'Accept: x' -X DELETE repos/o/r",
+                   "gh api --hostname ghe.corp -X DELETE repos/o/r",
+                   "gh api --paginate -X DELETE repos/acme/svc",
+                   "glab api -H 'X: y' -X DELETE projects/42",
+                   "hub api -H 'X: y' -X DELETE repos/o/r",
+                   "gh api -H 'X: y' repos/o/r -X DELETE",
+                   "http DELETE api.github.com/repos/acme/prod-service",
+                   "https DELETE api.github.com/repos/acme/prod-service",
+                   "xh DELETE api.github.com/repos/acme/prod-service",
+                   "xhs DELETE api.github.com/repos/acme/prod-service"]
+        routine = ["curl -s https://api.github.com/repos/acme/prod-service",
+                   "curl -s https://gitlab.com/api/v4/projects/42",
+                   "curl -s https://api.vercel.com/v9/projects/prod-app",
+                   "curl -X DELETE https://api.github.com/repos/o/r/issues/comments/1 -H 'Authorization: Bearer <redacted>'",
+                   "curl -X DELETE https://api.github.com/repos/o/r/pulls/1",
+                   "curl -X POST https://api.github.com/graphql -H 'Authorization: Bearer <redacted>' -d '{\"query\": \"query { repository(owner: \\\"o\\\", name: \\\"r\\\") { name } }\"}'",
+                   "gh api repos/acme/prod-service", "gh repo view acme/prod-service", "gh repo list",
+                   # the review's false positives: a branch or file under a repository, a classic
+                   # project board, and removing a repository from a team are not repository deletes
+                   "gh api repos/acme/svc/git/refs/heads/projects/q4 -X DELETE",
+                   "gh api repos/acme/svc/contents/projects/readme.md -X DELETE",
+                   "gh api projects/123 -X DELETE",
+                   "gh api -X DELETE orgs/acme/teams/devs/repos/acme/svc",
+                   "echo gh repo delete acme/prod-service",
+                   "git commit -m 'gh repo delete after review'"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in deletes + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A042" in d["rule_ids"], cmd in deletes, d)
+                        if cmd in deletes:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
