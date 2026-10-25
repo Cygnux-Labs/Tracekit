@@ -1,4 +1,4 @@
-"""The v2 hooks of Codex CLI, Cursor, Gemini CLI and OpenCode (tracekit/integrations/harness_hooks.py).
+"""The v2 hooks of Codex CLI, Cursor, Gemini CLI, OpenCode and goose (tracekit/integrations/harness_hooks.py).
 
 The mapping tables are checked against recorded sample payloads (tests/data/harness/<harness>.json): each case is the
 harness's PreToolUse payload, the decision the signer gives, the exact `decide` request the hook must send (tool,
@@ -113,6 +113,20 @@ class Mapping(HarnessCase):
 
     def test_opencode(self):
         self.check("opencode")
+
+    def test_goose(self):
+        self.check("goose")
+
+    def test_goose_execute_javascript_is_denied_before_the_signer(self):
+        # goose's Code Mode runs shell calls through dispatch_tool with no PreToolUse hook, so the hook denies
+        # execute_javascript itself, before any decide request is sent
+        code, out, err = self.hook("goose", {"session_id": "go-9", "working_dir": "/w", "event": "PreToolUse",
+                                             "tool_name": "execute_javascript", "tool_call_id": "go-9",
+                                             "tool_input": {"code": "tools.call('shell', {command: 'ls'})"}})
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("execute_javascript", err)
+        self.assertIn("no PreToolUse hook", err)
+        self.assertEqual(self.sent, [])
 
     def test_results_complete_the_decided_call(self):
         for harness, pre, post in (
@@ -296,6 +310,26 @@ class Installer(unittest.TestCase):
                         self.assertEqual(code, 0)
                         self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
                         self.assertFalse(os.path.exists(path))
+                        continue
+                    if harness == "goose":
+                        with open(path) as f:
+                            blob = json.load(f)
+                        hooks = [h for hs in blob["hooks"].values() for h in hs]
+                        cmds = [h["hooks"][0]["command"] for h in hooks]
+                        self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
+                        self.assertEqual(len(cmds), 3)   # goose installs 3 events, not 5
+                        cmd = cmds[0]
+                        self.assertIn(" -I ", cmd)
+                        if os.name == "nt":   # PowerShell can't start a quoted first word
+                            self.assertFalse(cmd.startswith('"'), cmd)
+                        self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
+                        self.assertIn(harness_hooks.__name__, cmd)
+                        again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
+                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")   # idempotent: nothing replaced
+                        code, out = self.cli("uninstall", "--agent", harness, "--project")
+                        self.assertEqual(code, 0)
+                        self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
+                        self.assertFalse(os.path.exists(path))   # uninstall removes the plugin's files
                         continue
                     with open(path) as f:
                         blob = json.load(f)

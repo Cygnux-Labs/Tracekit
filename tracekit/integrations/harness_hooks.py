@@ -64,8 +64,12 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         if q is not None or p.get("hook_event_name") in agent_hooks.CURSOR_SAID:
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]   # a run said() registers is the harness's
             said_since(harness, p, stderr)
+        reason = agent_hooks._blocked_goose_tool(q["tool_name"]) if q is not None and harness == "goose" and is_pre else None
         if q is None:   # an event Tracekit does not record
             code = 0
+        elif reason is not None:   # a goose tool that runs calls the hook never sees: denied before the signer
+            print(reason, file=err)
+            code = 2
         else:
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]
             with contextlib.redirect_stderr(err):

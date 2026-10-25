@@ -274,6 +274,14 @@ class Tee(io.StringIO):
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
 
 
+def _blocked_goose_tool(tool_name):
+    """The reason a goose tool is denied in the hook itself (it runs calls the hook never sees), else None."""
+    if tool_name == "execute_javascript":
+        return ("Blocked by Tracekit: goose's execute_javascript runs shell calls through dispatch_tool with no "
+                "PreToolUse hook, so Tracekit can't decide them; make the shell call itself instead.")
+    return None
+
+
 def run(harness, raw, stdout=None, stderr=None):
     """Handle one hook invocation. -> exit code. Writes the harness's expected stdout. A payload that is not a JSON
     object raises: entry answers it."""
@@ -286,6 +294,11 @@ def run(harness, raw, stdout=None, stderr=None):
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
+    reason = _blocked_goose_tool(q["tool_name"]) if harness == "goose" and is_pre else None
+    if reason is not None:
+        print(reason, file=stderr)
+        _reply(harness, stdout, False, reason, is_pre)
+        return _exit(harness, 2, is_pre)
     H.AGENT_NAME = AGENT_NAMES[harness]
     err = Tee(stderr)
     real_stdin, real_stderr = sys.stdin, sys.stderr

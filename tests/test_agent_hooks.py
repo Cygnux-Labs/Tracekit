@@ -178,6 +178,17 @@ class Harnesses(DaemonCase):
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"],
                          ["allow", "deny", "allow"])
 
+    def test_goose_execute_javascript_is_denied_in_the_hook(self):
+        # goose's Code Mode runs tools.call("shell", ...) through dispatch_tool with no PreToolUse hook, so
+        # Tracekit sees only execute_javascript: the hook denies it itself, the way OpenCode's batch is denied
+        base = {"session_id": "go-2", "working_dir": self.d}
+        code, out, err = self.hook("goose", {**base, "event": "PreToolUse", "tool_name": "execute_javascript",
+                                             "tool_call_id": "g9",
+                                             "tool_input": {"code": "tools.call('shell', {command: 'ls'})"}})
+        self.assertEqual((code, out), (2, ""))   # goose blocks on exit 2, with the reason on stderr
+        self.assertIn("execute_javascript", err)
+        self.assertIn("no PreToolUse hook", err)
+
     def test_broken_input_never_blocks(self):
         for h in agent_hooks.HARNESSES:
             code, out, _ = self.hook(h, "not json at all")
