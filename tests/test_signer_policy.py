@@ -207,6 +207,73 @@ class CodingPack(unittest.TestCase):
                         if cmd in merges:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_deleting_a_repository_or_project_asks_in_every_pack(self):
+        """Deleting a whole repository or project through a platform's API is held for a person; reading one or
+        deleting a single sub-resource is not. The blind E21 pool showed these deletes only flagged, never held."""
+        deletes = ["curl -X DELETE https://api.github.com/repos/acme/prod-service -H 'Authorization: Bearer <redacted>'",
+                   "curl --request DELETE \"https://gitlab.com/api/v4/projects/42\" -H \"PRIVATE-TOKEN: $GL_TOKEN\"",
+                   "curl -X DELETE https://api.vercel.com/v9/projects/prod-app -H 'Authorization: Bearer <redacted>'",
+                   "curl -X POST https://api.github.com/graphql -H 'Authorization: Bearer <redacted>' -d '{\"query\": \"mutation { deleteRepository(input: {repositoryId: \\\"R_1\\\"}) { clientMutationId } }\"}'",
+                   "gh api -X DELETE repos/acme/prod-service",
+                   "gh api repos/acme/prod-service -X DELETE",
+                   "glab api projects/42 -X DELETE",
+                   "hub api -X DELETE repos/acme/prod-service",
+                   "gh repo delete acme/prod-service --yes",
+                   "glab repo delete acme/prod-service --yes",
+                   "vercel remove prod-app --yes",
+                   "glab api -X DELETE projects/42",
+                   "gh api graphql -f query='mutation { deleteRepository(input: {repositoryId: \"R_1\"}) { clientMutationId } }'",
+                   # a newline in an earlier argument: a multi-line GraphQL query, as GitHub's docs write them
+                   "gh api graphql -f query='\n  mutation {\n    deleteRepository(input: {repositoryId: \"R_1\"}) {\n      clientMutationId\n    }\n  }'",
+                   "wget --method=DELETE https://gitlab.com/api/v4/projects/42",
+                   "http DELETE https://api.vercel.com/v9/projects/prod-app",
+                   "curl https://api.github.com/repos/acme/prod-service -X DELETE",
+                   "curl -X DELETE https://api.github.com/repos/acme/prod-service/",
+                   # the review's covered misses
+                   "vercel rm prod-app --yes",
+                   "vercel project rm prod-app",
+                   "vercel projects rm",
+                   "glab project delete acme/svc --yes",
+                   "hub delete -y acme/svc",
+                   "http -A bearer -a tok DELETE https://api.github.com/repos/acme/prod-service",
+                   # the second review's anchored misses: options before the method flag or
+                   # before a bare path, and schemeless HTTPie URLs
+                   "gh api --method DELETE -H \"Accept: application/vnd.github+json\" -H \"X-GitHub-Api-Version: 2022-11-28\" /repos/acme/prod-service",
+                   "gh api -H 'Accept: x' -X DELETE repos/o/r",
+                   "gh api --hostname ghe.corp -X DELETE repos/o/r",
+                   "gh api --paginate -X DELETE repos/acme/svc",
+                   "glab api -H 'X: y' -X DELETE projects/42",
+                   "hub api -H 'X: y' -X DELETE repos/o/r",
+                   "gh api -H 'X: y' repos/o/r -X DELETE",
+                   "http DELETE api.github.com/repos/acme/prod-service",
+                   "https DELETE api.github.com/repos/acme/prod-service",
+                   "xh DELETE api.github.com/repos/acme/prod-service",
+                   "xhs DELETE api.github.com/repos/acme/prod-service"]
+        routine = ["curl -s https://api.github.com/repos/acme/prod-service",
+                   "curl -s https://gitlab.com/api/v4/projects/42",
+                   "curl -s https://api.vercel.com/v9/projects/prod-app",
+                   "curl -X DELETE https://api.github.com/repos/o/r/issues/comments/1 -H 'Authorization: Bearer <redacted>'",
+                   "curl -X DELETE https://api.github.com/repos/o/r/pulls/1",
+                   "curl -X POST https://api.github.com/graphql -H 'Authorization: Bearer <redacted>' -d '{\"query\": \"query { repository(owner: \\\"o\\\", name: \\\"r\\\") { name } }\"}'",
+                   "gh api repos/acme/prod-service", "gh repo view acme/prod-service", "gh repo list",
+                   # the review's false positives: a branch or file under a repository, a classic
+                   # project board, and removing a repository from a team are not repository deletes
+                   "gh api repos/acme/svc/git/refs/heads/projects/q4 -X DELETE",
+                   "gh api repos/acme/svc/contents/projects/readme.md -X DELETE",
+                   "gh api projects/123 -X DELETE",
+                   "gh api -X DELETE orgs/acme/teams/devs/repos/acme/svc",
+                   "echo gh repo delete acme/prod-service",
+                   "git commit -m 'gh repo delete after review'"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in deletes + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A042" in d["rule_ids"], cmd in deletes, d)
+                        if cmd in deletes:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
@@ -492,7 +559,7 @@ class CodingPack(unittest.TestCase):
                            ("Write", {"file_path": "/home/u/.cursor/hooks.json", "content": "{}"}),
                            ("Bash", {"command": "sed -i s/true/false/ ~/.gemini/settings.json"})):
             with self.subTest(args=args):
-                self.assertIn("TK-F009", self.e.decide(tool, args)["rule_ids"])
+                self.assertIn("TK-F015" if tool == "Bash" else "TK-F009", self.e.decide(tool, args)["rule_ids"])
 
     def test_opencode_config_changes_are_flagged_but_reads_and_near_names_are_allowed(self):
         for tool, path in (("Write", "/repo/.opencode/commands/deploy.md"),
@@ -511,6 +578,54 @@ class CodingPack(unittest.TestCase):
                            ("Write", r"C:\repo\opencode.json.backup")):
             with self.subTest(tool=tool, path=path):
                 self.assertNotIn("TK-F009", self.e.decide(tool, {"file_path": path})["rule_ids"])
+
+    def test_harness_flags_match_write_and_delete_targets_in_every_pack(self):
+        paths = (".claude/settings.json", ".claude/settings.local.json", "/home/u/.claude/hooks/x.sh",
+                 ".codex/config.toml", ".gemini/settings.json", ".cursor/hooks.json", ".mcp.json",
+                 "managed-settings.json", ".opencode/plugin/a.js", ".OpenCode/plugin/x.js",
+                 "OpenCode.json", "opencode.jsonc", "config with spaces/opencode.json", ".claude", ".gemini", ".codex", ".opencode")
+        commands = ("echo x > .opencode/plugin/a.js", "echo '{}' > .claude/settings.json",
+                    "cat > .gemini/settings.json <<'EOF'\n{}\nEOF", "echo x > .OpenCode/plugin/x.js",
+                    "echo '{}' > OpenCode.json", "tee opencode.json", "cp x .codex/config.toml",
+                    "mv x .cursor/hooks.json", "sed -i s/true/false/ .gemini/settings.json",
+                    "rm .claude/settings.json", "rm -rf ~/.claude/hooks", "mv ~/.gemini/settings.json /tmp/g",
+                    r"cp x 'C:\repo\.opencode\plugin\x.js'", r"echo x > '.opencode\plugin\x.js'",
+                    r"cp x 'C:\repo\OpenCode.json'", r"cp x 'C:\repo\.claude\settings.json'",
+                    r"echo x > '.gemini\settings.json'", r"cp x 'C:\repo\.codex\config.toml'",
+                    "rm -rf ~/.claude", "rm -rf .opencode", "mv ~/.gemini /tmp/g", "cp settings.json ~/.gemini",
+                    "cp x 'a\n/../.claude/settings.json'", "tee 'a\n/../.mcp.json'")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
+            "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
+            "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt")]
+        benign += [(tool, args) for tool, args in (
+            ("Read", {"file_path": "opencode.json"}),
+            ("Write", {"file_path": "notes.md", "content": " ".join(paths)}),
+            ("Edit", {"file_path": "notes.md", "old_string": ".gemini/settings.json", "new_string": "opencode.json"}),
+            ("MultiEdit", {"file_path": "notes.md", "edits": [{"old_string": ".opencode/plugin/a.js",
+                                                              "new_string": ".mcp.json"}]}))]
+        for pack, engine, e in self.every_pack():
+            for path in paths + (r"C:\repo\.OpenCode\plugin\x.js", r"C:\repo\OpenCode.json"):
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-F016"} & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_harness_base_url_keeps_its_existing_raw_subjects(self):
+        calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),
+                 ("Write", {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"}),
+                 ("Edit", {"file_path": "config.env", "old_string": "ANTHROPIC_BASE_URL", "new_string": "x"}),
+                 ("MultiEdit", {"file_path": "config.env", "edits": [{"old_string": "ANTHROPIC_BASE_URL",
+                                                                     "new_string": "x"}]}))
+        for pack, engine, e in self.every_pack():
+            for tool, args in calls:
+                with self.subTest(pack=pack, engine=engine, tool=tool):
+                    self.assertIn("TK-F016", e.decide(tool, args)["rule_ids"])
 
     def test_other_harnesses_shell_tools_and_the_server_pack(self):
         for tool in ("run_shell_command", "shell", "local_shell", "run_terminal_cmd", "container.exec"):
