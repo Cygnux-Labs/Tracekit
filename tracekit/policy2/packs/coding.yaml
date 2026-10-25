@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-27'
+version: '2026.10-v2-28'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -477,10 +477,22 @@ flag:
     pattern: '^[Tt][Rr][Uu][Ee]$'
     label: background_spawn
   - id: TK-F009
+    class: fs
+    tool: Write|Edit|MultiEdit
+    field: path
+    # Only the normalized path, including its casefolded form, not the file's content.
+    pattern: '(^|/)\.(claude|codex|gemini|opencode)(/|$)|\.cursor/hooks\.json|(^|/)opencode\.jsonc?$|managed-settings|\.mcp\.json'
+    label: harness_config
+  - id: TK-F015
+    class: shell
+    field: effects
+    # Each recognized write or delete target, including redirects and its casefolded form.
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode)(?:[/\\]|$)|opencode\.jsonc?$)|^(?:WRITE_TARGET|DELETE_TARGET):[^\n]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
+    label: harness_config
+  - id: TK-F016
     tool: Bash|Write|Edit|MultiEdit
-    # the harnesses' settings, hooks and sandboxes: Claude Code's, Codex's, Gemini CLI's, Cursor's hooks, OpenCode's
-    # project config and plugins (.opencode/, opencode.json)
-    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|\.gemini/|\.cursor/hooks\.json|(^|[/\\\s"=])\.opencode[/\\]|(^|[/\\\s"=])opencode\.jsonc?($|[/\\\s";&|])|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
+    # Keep the original argv/raw-argument check for this environment variable, which is not a path.
+    pattern: 'ANTHROPIC_BASE_URL'
     label: harness_config
   - id: TK-F010
     class: shell
