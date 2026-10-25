@@ -126,6 +126,24 @@ class Harnesses(DaemonCase):
         self.assertTrue(any(c.kwargs.get("drop") for c in m.call_args_list))
         self.assertEqual((code, json.loads(out.getvalue())["decision"]), (2, "deny"))
 
+    def test_gemini_failed_non_tool_event_does_not_deny(self):
+        base = {"session_id": "ge-4", "cwd": self.d, "timestamp": "2026-10-07T00:00:00Z"}
+        for event, payload in (("BeforeAgent", {"hook_event_name": "BeforeAgent", "prompt": "hi"}),
+                               ("AfterTool", {"hook_event_name": "AfterTool", "tool_name": "run_shell_command",
+                                              "tool_input": {"command": "ls"}, "tool_response": "ok"})):
+            with self.subTest(event=event):
+                out = io.StringIO()
+                with mock.patch.object(agent_hooks.H, "main", return_value=2):
+                    code = agent_hooks.run("gemini", json.dumps({**base, **payload}), stdout=out, stderr=io.StringIO())
+                self.assertEqual((code, json.loads(out.getvalue())), (2, {}))
+        # BeforeTool failure must continue to deny
+        out = io.StringIO()
+        with mock.patch.object(agent_hooks.H, "main", return_value=2):
+            code = agent_hooks.run("gemini", json.dumps({**base, "hook_event_name": "BeforeTool",
+                                                         "tool_name": "run_shell_command", "tool_input": {"command": "ls"}}),
+                                   stdout=out, stderr=io.StringIO())
+        self.assertEqual((code, json.loads(out.getvalue())["decision"]), (2, "deny"))
+
     def test_opencode_maps_tools_records_results_and_blocks_denied_calls(self):
         base = {"session_id": "oc-1", "cwd": self.d}
         code, out, _ = self.hook("opencode", {**base, "hook_event_name": "tool.execute.before", "tool_name": "read",

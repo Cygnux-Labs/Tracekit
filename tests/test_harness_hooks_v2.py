@@ -190,6 +190,21 @@ class Mapping(HarnessCase):
             self.assertEqual(self.hook("codex", prompt)[0], 1)
             code, out, _ = self.hook("codex", cases("codex")[0]["payload"])
             self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
+        # Gemini: BeforeAgent and AfterTool failures must not write a deny; BeforeTool continues to block
+        ge_prompt = {"session_id": "s-ge", "hook_event_name": "BeforeAgent", "prompt": "hi"}
+        ge_post = {"session_id": "s-ge", "hook_event_name": "AfterTool", "tool_name": "run_shell_command",
+                   "tool_input": {"command": "ls"}, "tool_response": {"llmContent": "ok"}}
+        code, out, err = self.hook("gemini", ge_prompt)
+        self.assertEqual((code, json.loads(out)), (1, {}))
+        self.assertIn("event not recorded", err)
+        code, out, err = self.hook("gemini", cases("gemini")[0]["payload"])
+        self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
+        self.assertIn("blocking (fail-closed)", err)
+        with mock.patch.object(claude_code, "handle", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.hook("gemini", ge_prompt)[:2], (1, "{}"))
+            self.assertEqual(self.hook("gemini", ge_post)[:2], (1, "{}"))
+            code, out, _ = self.hook("gemini", cases("gemini")[0]["payload"])
+            self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
 
     def test_a_refusal_blocks(self):
         with mock.patch.object(self.signer, "decide", side_effect=RPCError("quota_exceeded", "streams_per_run")):
@@ -412,13 +427,22 @@ class Installer(unittest.TestCase):
 
     def test_the_v1_hooks_error_path_answers_each_event_as_itself(self):
         for event, code, denied in (("PreToolUse", CODEX_DENY, True), ("UserPromptSubmit", 2, False)):
-            with self.subTest(event=event):
+            with self.subTest(harness="codex", event=event):
                 out = io.StringIO()
                 with mock.patch.object(agent_hooks, "run", side_effect=RuntimeError("boom")), \
                         mock.patch.object(agent_hooks.H, "fail_closed", return_value=True), \
                         mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"hook_event_name": event}))), \
                         contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(agent_hooks.entry("codex"), code)
+                self.assertEqual("deny" in out.getvalue(), denied, out.getvalue())
+        for event, code, denied in (("BeforeTool", 2, True), ("BeforeAgent", 2, False), ("AfterTool", 2, False)):
+            with self.subTest(harness="gemini", event=event):
+                out = io.StringIO()
+                with mock.patch.object(agent_hooks, "run", side_effect=RuntimeError("boom")), \
+                        mock.patch.object(agent_hooks.H, "fail_closed", return_value=True), \
+                        mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"hook_event_name": event}))), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(agent_hooks.entry("gemini"), code)
                 self.assertEqual("deny" in out.getvalue(), denied, out.getvalue())
 
 

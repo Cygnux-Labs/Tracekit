@@ -291,7 +291,7 @@ def _reply(harness, stdout, allowed, msg, is_pre):
         else:
             stdout.write("{}")
     elif harness == "gemini":
-        stdout.write(json.dumps({} if allowed else {"decision": "deny", "reason": msg[:500]}))  # stdout must be JSON only
+        stdout.write(json.dumps({} if allowed or not is_pre else {"decision": "deny", "reason": msg[:500]}))  # stdout must be JSON only
     elif harness == "codex" and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                         "permissionDecisionReason": msg[:500] or "Blocked by tracekit"}}))
