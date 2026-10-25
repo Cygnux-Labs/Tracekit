@@ -189,6 +189,25 @@ class Harnesses(DaemonCase):
         self.assertIn("execute_javascript", err)
         self.assertIn("no PreToolUse hook", err)
 
+    def test_goose_code_mode_is_denied_under_every_name(self):
+        # Code Mode was execute_typescript and execute_bash before goose 1.56, and any of them may come prefixed
+        base = {"session_id": "go-3", "working_dir": self.d}
+        for name in ("execute_typescript", "execute_bash", "code_execution__execute_javascript",
+                     "code_execution__execute_typescript"):
+            with self.subTest(name=name):
+                code, out, err = self.hook("goose", {**base, "event": "PreToolUse", "tool_name": name,
+                                                     "tool_call_id": "g-" + name, "tool_input": {"code": "x"}})
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(name.removeprefix("code_execution__"), err)
+
+    def test_goose_read_image_of_a_url_is_a_web_fetch_and_working_dir_is_gooses_alone(self):
+        self.assertEqual(agent_hooks.tool("goose", "read_image", {"source": "HTTPS://x.test/a.png"}),
+                         ("WebFetch", {"source": "HTTPS://x.test/a.png", "url": "HTTPS://x.test/a.png"}))
+        self.assertEqual(agent_hooks.tool("goose", "read_image", {"source": "img/a.png"})[0], "Read")
+        call = {"tool_name": "shell", "tool_input": {"command": "ls"}, "working_dir": "/w"}
+        self.assertEqual(agent_hooks.normalise("goose", {**call, "event": "PreToolUse"})["cwd"], "/w")
+        self.assertIsNone(agent_hooks.normalise("codex", {**call, "hook_event_name": "PreToolUse"})["cwd"])
+
     def test_broken_input_never_blocks(self):
         for h in agent_hooks.HARNESSES:
             code, out, _ = self.hook(h, "not json at all")

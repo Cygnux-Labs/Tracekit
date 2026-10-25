@@ -127,6 +127,11 @@ class Mapping(HarnessCase):
         self.assertIn("execute_javascript", err)
         self.assertIn("no PreToolUse hook", err)
         self.assertEqual(self.sent, [])
+        code, out, err = self.hook("goose", {"session_id": "go-9", "working_dir": "/w", "event": "PreToolUse",
+                                             "tool_name": "code_execution__execute_typescript",
+                                             "tool_call_id": "go-10", "tool_input": {"code": "x"}})
+        self.assertEqual((code, out), (2, ""))   # the name before goose 1.56, prefixed
+        self.assertEqual(self.sent, [])
 
     def test_results_complete_the_decided_call(self):
         for harness, pre, post in (

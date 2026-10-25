@@ -61,6 +61,11 @@ would block a prompt, and the event isn't recorded.
 
 OpenCode (1.x) sends no session or prompt events to plugins: its run closes at the signer's idle timeout, and no prompts, live constraints or model text are recorded. A call that fails, that you decline in OpenCode's own permission prompt, or that you abort runs no `tool.execute.after`, so it stays a `decided_not_completed` gap. While a call waits for a person, OpenCode waits too: list the held call with `tracekit approvals list` ([limits](limits.md#signer-and-capture)).
 
+goose support is experimental: tested through goose's hook payloads and Tracekit's installer, not yet in a live goose
+session. It needs goose 1.48.0 or later (when `on_failure` arrived). goose runs hooks with `sh -c` on every platform,
+so on Windows it needs `sh` on PATH (Git Bash); without it every call is blocked. Code Mode (`execute_javascript`,
+and `execute_typescript` or `execute_bash` before goose 1.56) is denied: it runs tool calls no goose hook sees.
+
 goose's installed hooks likewise carry no session or prompt events (only PreToolUse, PostToolUse and PostToolUseFailure are installed), so no prompts, live constraints or model text are recorded for goose, and goose sends no tool result or error text with its post-tool events ([limits](limits.md#signer-and-capture)).
 
 A session is one run, open until the session ends. To watch it, `tracekit view --dev` (each call with what it ran);

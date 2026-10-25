@@ -20,7 +20,8 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     Gemini  run_shell_command, read_file, write_file, replace, glob, search_file_content, web_fetch, google_web_search
             -> Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch
     goose   shell, write, edit, tree, read_image, <extension>__<tool>
-            -> Bash, Write, Edit, LS, Read, mcp__<extension>__<tool> (goose's payload names its event `event` and its
+            -> Bash, Write, Edit, LS, Read (WebFetch for an http(s) source), mcp__<extension>__<tool> (goose's
+            payload names its event `event` and its
             working directory `working_dir`, and sends no tool result or error text: see docs/limits.md)
 
 What each harness exposes decides what Tracekit can see: Gemini CLI does not give tool calls an id, so pre and post
@@ -125,6 +126,8 @@ def tool(harness, name, ti):
             ti["file_path"] = files[0] if files else None
         return OPENCODE_TOOLS.get(name, name), ti
     if harness == "goose":
+        if name == "read_image" and str(ti.get("source") or "").lower().startswith(("http://", "https://")):
+            return "WebFetch", {**ti, "url": ti["source"]}
         if name in GOOSE_PATH_ARG:
             ti["file_path"] = ti.get(GOOSE_PATH_ARG[name])
         if "__" in name and not name.startswith("mcp__"):   # an extension/MCP tool, as goose namespaces it
@@ -175,7 +178,7 @@ def _gemini_ids(run_id, tool_name, ti, phase, drop=None):
 def normalise(harness, p):
     """Harness payload -> Claude Code-shaped payload for tracekit.hook, or None for events Tracekit ignores."""
     ev = p.get("hook_event_name") or ""
-    out = {"cwd": p.get("cwd") or p.get("working_dir") or (p.get("workspace_roots") or [None])[0],
+    out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
     if harness == "codex":
         out["session_id"] = p.get("session_id")
@@ -247,6 +250,7 @@ def normalise(harness, p):
         # goose names its event `event`, not `hook_event_name` (the v2 hook's command-line event arrives as the
         # latter, so it wins when both are present); its payload carries no tool result or error text
         ev = p.get("hook_event_name") or p.get("event") or ""
+        out["cwd"] = out["cwd"] or p.get("working_dir")
         out["session_id"] = p.get("session_id")
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["hook_event_name"] = ev
@@ -274,11 +278,18 @@ class Tee(io.StringIO):
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
 
 
+# goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
+# as code_execution__<name>; each runs tool calls through dispatch_tool, which runs no hooks
+GOOSE_CODE_MODE = ("execute_javascript", "execute_typescript", "execute_bash")
+
+
 def _blocked_goose_tool(tool_name):
-    """The reason a goose tool is denied in the hook itself (it runs calls the hook never sees), else None."""
-    if tool_name == "execute_javascript":
-        return ("Blocked by Tracekit: goose's execute_javascript runs shell calls through dispatch_tool with no "
-                "PreToolUse hook, so Tracekit can't decide them; make the shell call itself instead.")
+    """The reason a goose tool is denied in the hook itself (it runs calls the hook never sees), else None.
+    tool_name: goose's own name for the tool, before it is mapped."""
+    name = tool_name.removeprefix("code_execution__")
+    if name in GOOSE_CODE_MODE:
+        return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
+                "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
     return None
 
 
@@ -294,7 +305,7 @@ def run(harness, raw, stdout=None, stderr=None):
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
-    reason = _blocked_goose_tool(q["tool_name"]) if harness == "goose" and is_pre else None
+    reason = _blocked_goose_tool(str(p.get("tool_name") or "")) if harness == "goose" and is_pre else None
     if reason is not None:
         print(reason, file=stderr)
         _reply(harness, stdout, False, reason, is_pre)
