@@ -163,7 +163,9 @@ def _dev_harnesses():
                     pass
                 continue
             try:
-                hooks = (_json(path) or {}).get("hooks") or {}
+                config = _json(path) or {}
+                hooks = ({ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config} if harness == "droid"
+                         else config.get("hooks") or {})
                 cmds = [h.get("command") for lst in hooks.values() for g in lst
                         for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
             except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
@@ -215,11 +217,13 @@ def _harness_hook_checks(add, harnesses, prod):
     from . import agent_hooks
     from .integrations.claude_code import APPROVAL_WAIT_S
     for harness, path in sorted((harnesses or {}).items()):
-        if harness not in ("codex", "cursor", "gemini", "goose"):
+        if harness not in ("codex", "cursor", "gemini", "goose", "droid"):
             continue
         fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
         try:
-            hooks = (_json(path) or {}).get("hooks") or {}
+            config = _json(path) or {}
+            hooks = ({ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config} if harness == "droid"
+                     else config.get("hooks") or {})
             cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
                     for h in (g.get("hooks") or () if "hooks" in g else [g])
                     if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
