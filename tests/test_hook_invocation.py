@@ -100,7 +100,7 @@ class PluginShim(unittest.TestCase):
             version = json.load(f)["version"]
         for name in ("scripts/tracekit-hook", "README.md"):
             with open(os.path.join(ROOT, "plugin", name), encoding="utf-8") as f:
-                pins = re.findall(r"pip install (?:-U )?tracekit-ai(==[\w.]+)?", f.read())
+                pins = re.findall(r"tracekit-ai([^\s)'\"]*)", f.read())
             with self.subTest(file=name):
                 self.assertTrue(pins)
                 self.assertEqual(set(pins), {"==" + version})
