@@ -353,7 +353,10 @@ def _exit(harness, code, is_pre):
     """The exit status that carries a hook's answer (code: 0 allowed, else blocked). Codex blocks a pre-tool call at
     exit 2 with a reason on stderr, whatever a shell startup file printed to stdout; on Windows its hooks run under
     PowerShell, which hands it 2 as 1, so there the JSON deny _reply writes carries the block, at exit 0, the only
-    status at which Codex reads it."""
+    status at which Codex reads it. Only a tool call is blocked: a failed prompt or result exits 1, since at 2 Gemini
+    CLI erases the prompt or hides the result, and Codex and Cursor block them."""
+    if code and not is_pre:
+        return 1
     return 0 if harness == "codex" and is_pre and os.name == "nt" else code
 
 
@@ -365,7 +368,8 @@ def _reply(harness, stdout, allowed, msg, is_pre):
         else:
             stdout.write("{}")
     elif harness == "gemini":
-        stdout.write(json.dumps({} if allowed else {"decision": "deny", "reason": msg[:500]}))  # stdout must be JSON only
+        # stdout must be JSON only; a deny only for a tool call
+        stdout.write(json.dumps({} if allowed or not is_pre else {"decision": "deny", "reason": msg[:500]}))
     elif harness == "codex" and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                         "permissionDecisionReason": msg[:500] or "Blocked by tracekit"}}))
@@ -789,7 +793,8 @@ def entry(harness=None, event=None):
         # OpenCode's plugin passes the model's arguments unchecked: a call its hook can't decide doesn't run, as when
         # the hook can't start; nor, in any hook, one whose payload nests too deep to read
         closed = event in PRE or isinstance(e, RecursionError) or H.fail_closed()
-        print(f"[tracekit] {harness} hook error ({e}); " + ("blocking" if closed else "allowing (fail-open)"), file=sys.stderr)
+        print(f"[tracekit] {harness} hook error ({e}); "
+              + ("allowing (fail-open)" if not closed else "blocking" if pre else "event not recorded"), file=sys.stderr)
         _reply(harness, sys.stdout, not closed, str(e), pre)
         return _exit(harness, 2 if closed else 0, pre)
 
