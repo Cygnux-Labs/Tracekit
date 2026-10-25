@@ -1,6 +1,6 @@
-"""Codex CLI, Cursor, Gemini CLI and OpenCode hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode and goose hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -57,7 +57,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         agent_hooks._reply(harness, stdout, not pre, msg, pre)
         return agent_hooks._exit(harness, 2 if pre else 0, pre)
     p = dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {}
-    is_pre = p.get("hook_event_name") in agent_hooks.PRE
+    is_pre = p.get("hook_event_name") in agent_hooks.PRE or (harness == "goose" and p.get("event") in agent_hooks.PRE)
     err, q = agent_hooks.Tee(stderr), None
     try:
         q = agent_hooks.normalise(harness, p)

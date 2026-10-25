@@ -7,6 +7,7 @@ tracekit init --dev --agent codex      # ~/.codex/hooks.json
 tracekit init --dev --agent cursor     # ~/.cursor/hooks.json
 tracekit init --dev --agent gemini     # ~/.gemini/settings.json
 tracekit init --dev --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
+tracekit init --dev --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.json (plus plugin.json beside it)
 # --project writes the project-level file instead; tracekit uninstall --agent X removes it
 tracekit demo --agent codex            # the scripted demo, sent as Codex's own hook payloads (also cursor, gemini)
 ```
@@ -14,17 +15,20 @@ tracekit demo --agent codex            # the scripted demo, sent as Codex's own 
 For Codex, Cursor and Gemini CLI the installer merges into existing settings: other hooks and settings are kept, a
 backup is written first, and running it twice changes nothing. For OpenCode it writes its own `tracekit.js` local
 plugin and refuses to overwrite a file it did not install (in `plugin/`, which every OpenCode 1.x loads; 1.0 doesn't
-read `plugins/`). Every hook calls `python -I -m tracekit.agent_hooks <agent>` (OpenCode's plugin adds the event),
+read `plugins/`). For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
+to install into a plugin whose `plugin.json` is not Tracekit's. A goose rule carries no matcher (goose silently skips
+a rule whose matcher is a bare `*`, which is an invalid regex); the PreToolUse action carries `timeout: 600` and
+`on_failure: block`, the post-tool actions `timeout: 30`. Every hook calls `python -I -m tracekit.agent_hooks <agent>` (OpenCode's plugin adds the event),
 which translates the harness's payload into the Claude Code hook shape and runs the same pipeline as the Claude Code
 hook.
 
-| | Codex CLI | Cursor | Gemini CLI | OpenCode |
-|---|---|---|---|---|
-| Hook events used | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | preToolUse, postToolUse, postToolUseFailure, beforeSubmitPrompt, sessionStart, sessionEnd | BeforeTool, AfterTool, BeforeAgent, SessionStart, SessionEnd | tool.execute.before, tool.execute.after |
-| Run id | `session_id` | `conversation_id` | `session_id` | `sessionID` |
-| Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) |
-| Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` |
-| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `web_fetch`, `google_web_search` | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools |
+| | Codex CLI | Cursor | Gemini CLI | OpenCode | goose |
+|---|---|---|---|---|---|
+| Hook events used | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | preToolUse, postToolUse, postToolUseFailure, beforeSubmitPrompt, sessionStart, sessionEnd | BeforeTool, AfterTool, BeforeAgent, SessionStart, SessionEnd | tool.execute.before, tool.execute.after | PreToolUse, PostToolUse, PostToolUseFailure |
+| Run id | `session_id` | `conversation_id` | `session_id` | `sessionID` | `session_id` |
+| Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) | exit 2 + a reason on stderr, stdout empty (a stray stdout line reads as no decision to goose) |
+| Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` | `tool_call_id`, from the harness |
+| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `web_fetch`, `google_web_search` | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools | `shell` → `Bash`; `write` → `Write` (path: `path`); `edit` → `Edit` (path: `path`); `tree` → `LS` (path: `path`); `read_image` → `Read` (path: `source`, not `path`); `<extension>__<tool>` → `mcp__<extension>__<tool>`; other names pass through unchanged, which the policy treats as unknown tools |
 
 What is the same as Claude Code: the policy gate runs before the tool (deny blocks; ask holds the call until someone
 approves it from another terminal), events are signed by the same signer, and the harness's transcript is hashed at
@@ -45,7 +49,7 @@ every hook, a payload nested too deep to read.
 ## On the v2 signer
 
 ```bash
-tracekit init --dev --v2 --agent codex                   # or cursor, gemini, opencode; replaces a v1 hook
+tracekit init --dev --v2 --agent codex                   # or cursor, gemini, opencode, goose; replaces a v1 hook
 sudo tracekit init --v2 --user AGENT --agent codex       # system mode: the signer as its own user
 ```
 
@@ -56,6 +60,8 @@ On any other event (a prompt, a tool result, a session event) a hook that fails 
 would block a prompt, and the event isn't recorded.
 
 OpenCode (1.x) sends no session or prompt events to plugins: its run closes at the signer's idle timeout, and no prompts, live constraints or model text are recorded. A call that fails, that you decline in OpenCode's own permission prompt, or that you abort runs no `tool.execute.after`, so it stays a `decided_not_completed` gap. While a call waits for a person, OpenCode waits too: list the held call with `tracekit approvals list` ([limits](limits.md#signer-and-capture)).
+
+goose's installed hooks likewise carry no session or prompt events (only PreToolUse, PostToolUse and PostToolUseFailure are installed), so no prompts, live constraints or model text are recorded for goose, and goose sends no tool result or error text with its post-tool events ([limits](limits.md#signer-and-capture)).
 
 A session is one run, open until the session ends. To watch it, `tracekit view --dev` (each call with what it ran);
 to verify it as it stands, `tracekit last --open`.
@@ -106,13 +112,13 @@ checks it after the run (TK-X204).
 
 `tracekit init` writes each hook command with the event it's configured for as its last argument (the Claude Code
 hook: `... -m tracekit.integrations.claude_code PreToolUse`; Codex `PreToolUse`, Cursor `preToolUse`, Gemini CLI
-`BeforeTool`, and so on for every event). So a payload that can't be parsed at all is still known to be a pre-tool
+`BeforeTool`, goose `PreToolUse`, and so on for every event). So a payload that can't be parsed at all is still known to be a pre-tool
 event: the call is blocked, with the reason on stderr. On any other event it is reported on stderr and not recorded;
 an allowed call whose post-tool payload was lost is completed as an error at the session's next Stop, prompt or end
 (below).
 
 Hooks installed before 1.2 have no event argument and keep working as before: an unparseable payload passes,
-unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code's; for Codex, Cursor and Gemini CLI it doesn't
+unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code's; for Codex, Cursor, Gemini CLI and goose it doesn't
 check, so re-run `tracekit init --agent NAME` after upgrading.
 
 ### What the signer records as a gap
