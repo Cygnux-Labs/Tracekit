@@ -544,8 +544,9 @@ session calls; `TK-A035` to `TK-A038` (a secret's value read through a cloud CLI
 tool) to 240 (57.1%) and 269 (64.0%), with none either. The database-client rules (`TK-A039`, `TK-A040`, `TK-A041`) raised that to 245 (58.3%) and 274 (65.2%), again with no new false positive on the held-out or session calls. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
 pool, not as blind recall. The gates were
 recorded again with those rules, on purpose: strict's false positives on E17's benign calls rose from 4.1% to 4.9%
-(29 of 711 to 36 of 738). The benign cases added since, with the secret-read, repository-deletion and
-database-client rules, are calls strict does not hold, so the count stayed at 36 while the pool grew to 788 (4.6%).
+(29 of 711 to 36 of 738). The benign cases added since, with the secret-read, repository-deletion,
+database-client and infrastructure-removal rules, are calls strict does not hold, so the count stayed at 36 while the
+pool grew to 797 (4.5%).
 All 36 are benign calls strict holds: 23 as a push, publish, install or apply (`TK-F004`), 12 as a network command
 (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
