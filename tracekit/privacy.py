@@ -18,10 +18,9 @@ SECRET_PATTERNS = [
     ("github_token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})")),
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("slack_token", re.compile(r"\bxox[abposr]-[A-Za-z0-9\-]{10,}")),
-    # a header segment starting a run is unbounded; one after "-" (many such starts can share a run) is bounded.
-    # lean: a JWT header over 512 chars right after "-" is not redacted; scan runs in code if that shows up
-    ("jwt", re.compile(r"\beyJ(?:(?<!-eyJ)[A-Za-z0-9_\-]{8,}|[A-Za-z0-9_\-]{8,512})"
-                       r"\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
+    # a run of token characters and two more dot-separated segments, from the run's start only; _redact_jwts()
+    # finds where in the run the header starts
+    ("jwt", re.compile(r"(?<![A-Za-z0-9_\-])[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
     # scheme://user: only; _redact_connections() finds the password and host without backtracking
     ("connection_string", re.compile(r"\b[a-z][a-z0-9+.\-]{0,31}://[^\s:/@]{0,256}:", re.I)),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
@@ -55,6 +54,8 @@ def redact_text(s):
             continue
         if name == "connection_string":
             out, n = _redact_connections(pat, out)
+        elif name == "jwt":
+            out, n = _redact_jwts(pat, out)
         elif pat.groups:  # keep the label part (e.g. "Authorization: Bearer "), drop the secret
             out, n = pat.subn(lambda m, name=name: m.group(1) + f"[REDACTED:{name}]", out)
         else:
@@ -93,6 +94,36 @@ def _redact_connections(prefix, s):
                 n += 1
                 continue
         pos = m.start() + 1
+    out.append(s[last:])
+    return "".join(out), n
+
+
+_WORD = re.compile(r"\w")
+
+
+def _redact_jwts(run, s):
+    """Redact header.payload.signature tokens. run finds a run of token characters followed by two more
+    dot-separated segments; the header starts at the run's leftmost "eyJ" after a non-word character (inside the
+    run, a "-") and is at least 8 characters more. Each run is read once, so the scan stays linear however many
+    "eyJ-" the input repeats."""
+    out, last, n, pos = [], 0, 0, 0
+    while True:
+        m = run.search(s, pos)
+        if not m:
+            break
+        dot = s.index(".", m.start())
+        at = s.find("eyJ", m.start(), dot)
+        while at != -1 and dot - at - 3 >= 8:
+            after_non_word = s[at - 1] == "-" if at > m.start() else not (at and _WORD.match(s, at - 1))
+            if after_non_word:
+                break
+            at = s.find("eyJ", at + 1, dot)
+        if at == -1 or dot - at - 3 < 8:
+            pos = dot + 1
+            continue
+        out += [s[last:at], "[REDACTED:jwt]"]
+        last = pos = m.end()
+        n += 1
     out.append(s[last:])
     return "".join(out), n
 
