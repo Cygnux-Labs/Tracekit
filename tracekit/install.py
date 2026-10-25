@@ -250,6 +250,7 @@ V2_HOOK = "tracekit.integrations.claude_code"
 SIGNER_ENV = ("TRACEKIT_SIGNER", "TRACEKIT_SIGNER_TOKEN_FILE", "TRACEKIT_SIGNER_CA")   # what init --remote --v2 sets
 V2_HOOKS = (V2_HOOK, "tracekit.integrations.harness_hooks")   # Claude Code's, the other harnesses' (agent_hooks.V2_MODULE)
 PLUGIN = "tracekit@tracekit"   # the Claude Code plugin, as enabledPlugins names it
+PLUGIN_NAME = "tracekit"
 
 
 def _blocking(run, unless="", pre=True):
@@ -390,19 +391,86 @@ def agent_file(path):
 def plugin_enabled(user=None):
     """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
     or None. Reads `user` (default user_settings_all()), the working directory's project and local settings, then the
-    managed settings: a later file's enabledPlugins entry wins, as in Claude Code."""
-    # lean: enabledPlugins only; a plugin on through --plugin-dir, --settings or its defaultEnabled with no entry goes
-    # unseen; read Claude Code's installed-plugins state too if users hit that
-    found, managed = None, MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    managed settings: a later file's enabledPlugins entry wins, as in Claude Code. -> (settings path, plugin key)."""
+    # lean: enabledPlugins plus Claude Code's install state; a plugin on through --plugin-dir, --settings or its
+    # defaultEnabled with no entry, or from a claude.ai-synced marketplace (no known_marketplaces.json entry), goes
+    # unseen; read those too if users hit that
+    active, order, managed = {}, 0, MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
     project = [os.path.join(os.getcwd(), ".claude", f) for f in ("settings.json", "settings.local.json")]
     for p in (*(user or user_settings_all()), *project, managed):
         try:
-            v = json.loads(agent_file(p)).get("enabledPlugins", {}).get(PLUGIN)
+            enabled = json.loads(agent_file(p)).get("enabledPlugins", {})
         except (OSError, ValueError, AttributeError):   # missing, or not a settings file
             continue
-        if isinstance(v, bool):
-            found = p if v else None
-    return found
+        if not isinstance(enabled, dict):
+            continue
+        for key, value in enabled.items():
+            if (key == PLUGIN or key.rpartition("@")[0] == PLUGIN_NAME and
+                    _installed_tracekit_plugin(key, p)) and isinstance(value, bool):
+                order += 1
+                if value:
+                    active[key] = (p, key, order)
+                else:
+                    active.pop(key, None)
+    return max(active.values(), key=lambda found: found[2])[:2] if active else None
+
+
+def _plugin_config_dirs(settings_path):
+    """The Claude config root whose plugins/ holds the install state for a plugin enabled in settings_path: a user
+    settings file's own directory (another user's too: system-mode doctor reads the agent's), else this user's.
+    Claude Code never writes plugin state into a project's .claude."""
+    parent = os.path.dirname(os.path.abspath(settings_path))
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    project = os.path.join(os.path.abspath(os.getcwd()), ".claude")
+    if (os.path.basename(parent) == ".claude" and parent != project) or (config and parent == os.path.abspath(config)):
+        return [os.path.realpath(parent)]
+    return [os.path.realpath(config or os.path.join(os.path.expanduser("~"), ".claude"))]
+
+
+def _installed_tracekit_plugin(plugin_id, settings_path):
+    """True only when Claude's install record and marketplace catalog point at Tracekit's plugin directory."""
+    def tracekit_repo(value):
+        if not isinstance(value, str):
+            return False
+        value = value.removeprefix("https://github.com/").removeprefix("http://github.com/")
+        value = value.removeprefix("git@github.com:").rstrip("/").removesuffix(".git")
+        return value == "Cygnux-Labs/Tracekit"
+
+    marketplace = plugin_id.rpartition("@")[2]
+    for config_dir in _plugin_config_dirs(settings_path):
+        try:
+            installed = json.loads(agent_file(os.path.join(config_dir, "plugins", "installed_plugins.json")))
+            records = installed.get("plugins", {}).get(plugin_id)
+            records = records if isinstance(records, list) else [records]
+            if not any(isinstance(record, dict) and isinstance(record.get("installPath"), str)
+                       and record.get("installPath")
+                       for record in records):
+                continue
+            known = json.loads(agent_file(os.path.join(config_dir, "plugins", "known_marketplaces.json")))
+            market = known.get(marketplace)
+            location = market.get("installLocation") if isinstance(market, dict) else None
+            location = location if isinstance(location, str) and os.path.isabs(location) else None
+            source = market.get("source") if isinstance(market, dict) else None
+            manifest_path = os.path.join(location, ".claude-plugin", "marketplace.json") if location else None
+            manifest = json.loads(agent_file(manifest_path)) if manifest_path else {}
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+        plugins = manifest.get("plugins", ()) if isinstance(manifest, dict) else ()
+        entry = next((p for p in plugins if isinstance(p, dict) and p.get("name") == PLUGIN_NAME), None) \
+            if isinstance(plugins, list) else None
+        plugin_source = entry.get("source") if entry else None
+        if isinstance(plugin_source, str):
+            repo = source.get("repo") if isinstance(source, dict) and source.get("source") == "github" else None
+            path = plugin_source.replace("\\", "/").removeprefix("./").strip("/")
+            if tracekit_repo(repo) and path == "plugin":
+                return True
+        elif isinstance(plugin_source, dict):
+            repo = plugin_source.get("repo") or plugin_source.get("url")
+            path = plugin_source.get("path")
+            path = path.replace("\\", "/").strip("/") if isinstance(path, str) else ""
+            if plugin_source.get("source") == "git-subdir" and tracekit_repo(repo) and path == "plugin":
+                return True
+    return False
 
 
 def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
