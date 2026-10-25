@@ -75,8 +75,6 @@ def collect(config=None, issuer_key=None):
         h = (sc or {}).get("hooks") or {}
         unit = (os.path.join(install.LAUNCHD_DIR, install.V2_LABEL + ".plist") if sys.platform == "darwin"
                 else os.path.join(install.SYSTEMD_DIR, install.V2_UNIT + ".service"))
-        # lean: the hook checks read Claude Code's settings only; a Codex, Cursor or Gemini config gets the reasoning
-        # checks alone (D-HOOKS-PRESENT names the config client.json records, unread) until doctor learns their formats
         agent_name = h.get("agent", "claude")
         settings = h.get("settings") if agent_name == "claude" else None
         agent = _user(h.get("user"))
@@ -212,6 +210,37 @@ def _reasoning_checks(add, harnesses, vault, fix):
                 f"modelConfigs in {path} (Gemini CLI's default includes thoughts)", bad=WARN)
 
 
+def _harness_hook_checks(add, harnesses, prod):
+    """Event arguments and approval timeouts of the other coding agents' v2 command hooks."""
+    from . import agent_hooks
+    from .integrations.claude_code import APPROVAL_WAIT_S
+    for harness, path in sorted((harnesses or {}).items()):
+        if harness not in ("codex", "cursor", "gemini", "goose"):
+            continue
+        fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
+        try:
+            hooks = (_json(path) or {}).get("hooks") or {}
+            cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
+                    for h in (g.get("hooks") or () if "hooks" in g else [g])
+                    if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
+        except (OSError, ValueError, AttributeError, TypeError) as e:
+            add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
+            continue
+        unnamed = sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
+        add("D-HOOKS-EVENT", bool(cmds) and not unnamed,
+            f"{harness} hooks in {path}: {', '.join(unnamed)} command(s) do not name their configured event; "
+            "a pre-tool payload the hook cannot read can pass unrecorded" if unnamed else
+            f"each {harness} hook command in {path} names its event" if cmds else
+            f"no v2 {harness} hook commands found in {path}", fix, bad=WARN)
+        scale, unit = (1000, "ms") if harness == "gemini" else (1, "s")
+        pre = [h.get("timeout", 60 * scale) for ev, h in cmds if ev in agent_hooks.PRE]
+        pre = [t if type(t) in (int, float) and 0 <= t < float("inf") else 0 for t in pre]
+        if pre:
+            add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
+                f"{harness} pre-tool timeout {min(pre)} {unit} in {path}, approval wait {APPROVAL_WAIT_S * scale} {unit}",
+                fix, bad=WARN)
+
+
 def _json(path):
     """A settings file the agent's user controls, parsed (install.agent_file: a FIFO or a device can't hang or flood
     doctor)."""
@@ -335,7 +364,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     (settings file, plugin key) returned by install.plugin_enabled, whose hooks are init's;
     sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox);
     gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini); harnesses: {coding agent: its hook
-    config} of the other agents with v2 hooks (agent_hooks), whose reasoning settings are checked."""
+    config} of the other agents with v2 hooks (agent_hooks), whose hooks and reasoning settings are checked."""
     from . import agent_hooks
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
@@ -595,6 +624,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 'remove tools.sandbox and set "toolSandboxing": true under "security" '
                 f"({wiki_url('docs/integrations/gemini-sandbox.md')})", bad=WARN)
 
+    _harness_hook_checks(add, harnesses, prod)
     _reasoning_checks(add, harnesses, isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True,
                       REINIT if prod else "tracekit init --dev --v2")
 

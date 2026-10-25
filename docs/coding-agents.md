@@ -128,8 +128,11 @@ an allowed call whose post-tool payload was lost is completed as an error at the
 (below).
 
 Hooks installed before 1.2 have no event argument and keep working as before: an unparseable payload passes,
-unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code's; for Codex, Cursor, Gemini CLI, Qwen Code and goose it doesn't
-check, so re-run `tracekit init --agent NAME` after upgrading.
+unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code, Codex, Cursor, Gemini CLI and goose when a command
+doesn't name its configured event, and `D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s approval
+wait (540000 ms for Gemini CLI). Re-run init for the active mode to repair the other coding agents' hooks
+(`tracekit init --dev --v2 --agent NAME` in dev, or `sudo tracekit init --v2 --user AGENT --agent NAME` in system
+mode). Qwen Code and OpenCode's JavaScript plugin aren't checked; re-run init after upgrading.
 
 ### What the signer records as a gap
 

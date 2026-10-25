@@ -66,6 +66,166 @@ class E16(unittest.TestCase):
         self.assertEqual(got["D-PROCESS-BOUNDARY"]["status"], "fail")
 
 
+class CodingAgentHooks(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def installed(self, harness):
+        from tracekit import agent_hooks
+        path = os.path.join(self.d, harness, "hooks.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install(harness, path=path, v2=True)
+        with open(path) as f:
+            return path, json.load(f)
+
+    def check(self, harness, path, settings):
+        with open(path, "w") as f:
+            json.dump(settings, f)
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev", harnesses={harness: path})}
+
+    def entries(self, settings):
+        return [(ev, h) for ev, groups in settings["hooks"].items() for group in groups
+                for h in (group["hooks"] if "hooks" in group else [group])]
+
+    def test_installed_hooks_name_their_event_and_wait_for_approval(self):
+        for harness in ("codex", "cursor", "gemini", "goose"):
+            with self.subTest(harness=harness):
+                path, settings = self.installed(harness)
+                got = self.check(harness, path, settings)
+                for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
+                    self.assertIn(rid, got)
+                    self.assertEqual(got[rid]["status"], "ok")
+                    self.assertIn(harness, got[rid]["detail"])
+                    self.assertIn(path, got[rid]["detail"])
+
+    def test_a_command_without_its_event_warns(self):
+        for harness in ("codex", "cursor", "gemini", "goose"):
+            with self.subTest(harness=harness):
+                path, settings = self.installed(harness)
+                ev, h = self.entries(settings)[0]
+                h["command"] = h["command"].replace(ev, "")
+                got = self.check(harness, path, settings)
+                self.assertIn("D-HOOKS-EVENT", got)
+                self.assertEqual(got["D-HOOKS-EVENT"]["status"], "warn")
+                self.assertIn(ev, got["D-HOOKS-EVENT"]["detail"])
+                self.assertIn(path, got["D-HOOKS-EVENT"]["detail"])
+                self.assertEqual(got["D-HOOKS-EVENT"]["fix"], f"tracekit init --dev --v2 --agent {harness}")
+
+    def test_production_hook_advice_uses_system_init_for_the_harness(self):
+        harness = "codex"
+        path, settings = self.installed(harness)
+        ev, hook = self.entries(settings)[0]
+        hook["command"] = hook["command"].replace(ev, "")
+        with open(path, "w") as f:
+            json.dump(settings, f)
+        got = {r["id"]: r for r in doctor.v2_checks(
+            {"data_dir": self.d}, "production", harnesses={harness: path})}
+        self.assertEqual(got["D-HOOKS-EVENT"]["fix"], doctor.REINIT + f" --agent {harness}")
+
+    def test_a_short_pre_tool_timeout_warns_in_the_harness_unit(self):
+        from tracekit import agent_hooks
+        for harness in ("codex", "cursor", "gemini", "goose"):
+            with self.subTest(harness=harness):
+                path, settings = self.installed(harness)
+                for ev, h in self.entries(settings):
+                    if ev in agent_hooks.PRE:
+                        h["timeout"] = 539_999 if harness == "gemini" else 539
+                got = self.check(harness, path, settings)
+                self.assertIn("D-HOOKS-TIMEOUT", got)
+                self.assertEqual(got["D-HOOKS-TIMEOUT"]["status"], "warn")
+                self.assertIn(path, got["D-HOOKS-TIMEOUT"]["detail"])
+                self.assertEqual(got["D-HOOKS-TIMEOUT"]["fix"], f"tracekit init --dev --v2 --agent {harness}")
+
+    def test_only_v2_tracekit_commands_are_checked_even_in_a_shared_group(self):
+        from tracekit import agent_hooks
+        for harness in ("codex", "cursor", "gemini", "goose"):
+            with self.subTest(harness=harness):
+                path, settings = self.installed(harness)
+                ev = next(ev for ev in settings["hooks"] if ev in agent_hooks.PRE)
+                unrelated = [{"command": "echo unrelated", "timeout": 1},
+                             {"command": "python -m tracekit.agent_hooks " + harness, "timeout": 1}]
+                if harness == "cursor":
+                    settings["hooks"][ev].extend(unrelated)
+                else:
+                    settings["hooks"][ev][0]["hooks"].extend(unrelated)
+                got = self.check(harness, path, settings)
+                self.assertEqual(got["D-HOOKS-EVENT"]["status"], "ok")
+                self.assertEqual(got["D-HOOKS-TIMEOUT"]["status"], "ok")
+
+    def test_missing_invalid_and_boundary_timeouts(self):
+        from tracekit import agent_hooks
+        from tracekit.integrations.claude_code import APPROVAL_WAIT_S
+        for harness in ("codex", "cursor", "gemini", "goose"):
+            scale = 1000 if harness == "gemini" else 1
+            for value in (None, "600000", False, -1, float("nan"), APPROVAL_WAIT_S * scale):
+                with self.subTest(harness=harness, timeout=value):
+                    path, settings = self.installed(harness)
+                    for ev, h in self.entries(settings):
+                        if ev in agent_hooks.PRE:
+                            if value is None:
+                                h.pop("timeout")
+                            else:
+                                h["timeout"] = value
+                    got = self.check(harness, path, settings)["D-HOOKS-TIMEOUT"]
+                    self.assertEqual(got["status"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
+
+    def test_a_wrong_event_and_an_event_missing_from_a_post_hook_warn(self):
+        for harness in ("codex", "cursor", "gemini", "goose"):
+            for replacement in ("", "AnotherEvent"):
+                with self.subTest(harness=harness, replacement=replacement):
+                    path, settings = self.installed(harness)
+                    ev, h = self.entries(settings)[1]
+                    h["command"] = h["command"].replace(ev, replacement)
+                    got = self.check(harness, path, settings)["D-HOOKS-EVENT"]
+                    self.assertEqual(got["status"], "warn")
+                    self.assertIn(ev, got["detail"])
+
+    def test_each_agents_results_name_its_file(self):
+        harnesses = {}
+        for harness in ("codex", "gemini"):
+            path, settings = self.installed(harness)
+            harnesses[harness] = path
+        got = doctor.v2_checks({"data_dir": self.d}, "dev", harnesses=harnesses)
+        for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
+            checks = [r for r in got if r["id"] == rid]
+            self.assertEqual(len(checks), 2)
+            self.assertTrue(all(r["status"] == "ok" for r in checks))
+            for harness, path in harnesses.items():
+                self.assertEqual(sum(harness in r["detail"] and path in r["detail"] for r in checks), 1)
+
+    def test_an_unreadable_or_malformed_file_warns_instead_of_passing(self):
+        for text in ("not json", "[]", '{"hooks": {"PreToolUse": 5}}'):
+            with self.subTest(text=text):
+                path = os.path.join(self.d, "hooks.json")
+                with open(path, "w") as f:
+                    f.write(text)
+                got = doctor.v2_checks({"data_dir": self.d}, "dev", harnesses={"codex": path})
+                checks = [r for r in got if r["id"] == "D-HOOKS-EVENT"]
+                self.assertEqual(len(checks), 1)
+                self.assertEqual(checks[0]["status"], "warn")
+                self.assertIn(path, checks[0]["detail"])
+                os.unlink(path)
+                got = doctor.v2_checks({"data_dir": self.d}, "dev", harnesses={"codex": path})
+                self.assertEqual(next(r for r in got if r["id"] == "D-HOOKS-EVENT")["status"], "warn")
+
+    def test_opencode_is_not_read_as_a_hook_config(self):
+        path = os.path.join(self.d, "tracekit.js")
+        got = doctor.v2_checks({"data_dir": self.d}, "dev", harnesses={"opencode": path})
+        self.assertFalse(any(r["id"] in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT") for r in got))
+
+    def test_installer_commands_with_windows_and_posix_quoting_pass(self):
+        for platform, python in (("nt", r"C:\Program Files\Python\python.exe"),
+                                 ("posix", "/opt/tracekit env/bin/python")):
+            for harness in ("codex", "cursor", "gemini", "goose"):
+                with self.subTest(platform=platform, harness=harness):
+                    with mock.patch.object(os, "name", platform), mock.patch.object(sys, "executable", python):
+                        path, settings = self.installed(harness)
+                    got = self.check(harness, path, settings)
+                    self.assertEqual(got["D-HOOKS-EVENT"]["status"], "ok")
+                    self.assertEqual(got["D-HOOKS-TIMEOUT"]["status"], "ok")
+
+
 class DevFresh(unittest.TestCase):
     def test_a_dev_signer_that_never_started_gets_dev_advice(self):
         """On a fresh home doctor said "run doctor as root" for the missing keys and "add a witness in signer.yaml" at
