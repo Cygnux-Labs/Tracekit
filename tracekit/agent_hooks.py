@@ -54,8 +54,9 @@ GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_fil
                 "glob": "Glob", "search_file_content": "Grep", "list_directory": "LS", "web_fetch": "WebFetch",
                 "google_web_search": "WebSearch", "save_memory": "Memory"}
 # Qwen Code keeps Gemini CLI's names, except where it renamed a tool (its docs: tools/file-system, tools/introduction)
+# (monitor runs its `command` in a shell, as run_shell_command does; notebook_edit writes `notebook_path`)
 QWEN_TOOLS = {**GEMINI_TOOLS, "edit": "Edit", "grep_search": "Grep", "web_search": "WebSearch", "todo_write": "TodoWrite",
-              "agent": "Task"}
+              "agent": "Task", "monitor": "Bash", "notebook_edit": "NotebookEdit"}
 # a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
@@ -114,8 +115,9 @@ def tool(harness, name, ti):
                 ti["file_path"] = ti[k]
         return CURSOR_TOOLS.get(name, name), ti
     if harness in ("gemini", "qwen"):
-        if "absolute_path" in ti and "file_path" not in ti:
-            ti["file_path"] = ti["absolute_path"]
+        for k in ("absolute_path", "notebook_path"):   # Gemini's read_file (Qwen's before 0.26), Qwen's notebook_edit
+            if k in ti and "file_path" not in ti:
+                ti["file_path"] = ti[k]
         if name == "web_fetch" and "url" not in ti and isinstance(ti.get("prompt"), str):
             m = re.search(r"https?://\S+", ti["prompt"])
             if m:
@@ -735,7 +737,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 [h.get("command") for h in g.get("hooks", []) if isinstance(h, dict)]))]
             if not uninstall:
                 h = {"type": "command", "command": cmd(ev)}
-                if harness in ("gemini", "qwen"):   # ms (Qwen Code's default is 60 s); holds wait for approval
+                # ms for Gemini CLI; Qwen Code reads seconds from 0.26, but 1000 or more still as ms, so 600 s in both
+                if harness in ("gemini", "qwen"):   # holds wait for approval (Qwen Code's default is 60 s)
                     h.update(name="tracekit", timeout=600_000 if ev in PRE else 30_000)
                 else:
                     h["timeout"] = 600 if ev == "PreToolUse" else 30
