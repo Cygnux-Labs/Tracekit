@@ -1,9 +1,10 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI and OpenCode, on the same pipeline as the Claude Code hook.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode and goose, on the same pipeline as the Claude Code hook.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
     tracekit init --dev --agent gemini       # ~/.gemini/settings.json
     tracekit init --dev --agent opencode     # ~/.config/opencode/plugin/tracekit.js
+    tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -18,6 +19,10 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t
     Gemini  run_shell_command, read_file, write_file, replace, glob, search_file_content, web_fetch, google_web_search
             -> Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch
+    goose   shell, write, edit, tree, read_image, <extension>__<tool>
+            -> Bash, Write, Edit, LS, Read (WebFetch for an http(s) source), mcp__<extension>__<tool> (goose's
+            payload names its event `event` and its
+            working directory `working_dir`, and sends no tool result or error text: see docs/limits.md)
 
 What each harness exposes decides what Tracekit can see: Gemini CLI does not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order; Cursor reports failures through postToolUseFailure. Reasoning
@@ -27,15 +32,17 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import sys
+import urllib.parse
 
-from . import hook as H
+from . import __version__, hook as H
 from .core import canon
 from .locking import lock_file, unlock_file
 
-HARNESSES = ("codex", "cursor", "gemini", "opencode")
-AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode"}
+HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose")
+AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose"}
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
@@ -47,6 +54,10 @@ CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
                   "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
                   "task": "Task", "todowrite": "TodoWrite"}
+# goose's hooks guide, Tool Input Keys: the path a tool itself reads decides, as for OpenCode (read_image reads
+# `source`, not `path`: a decoy `path` beside it must not move the decision)
+GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
+GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -116,6 +127,22 @@ def tool(harness, name, ti):
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
         return OPENCODE_TOOLS.get(name, name), ti
+    if harness == "goose":
+        if name == "read_image":
+            # decided by scheme, as goose's url::Url::parse reads the source: tabs and newlines dropped, outer spaces and
+            # controls trimmed, backslashes read as slashes in a web URL (https:x.example/a, HTTPS:\\x.example\a)
+            src = re.sub(r"[\t\n\r]", "", str(ti.get("source") or "")).strip("".join(map(chr, range(33))))
+            parts = urllib.parse.urlsplit(src.replace("\\", "/"))
+            if parts.scheme.lower() in ("http", "https"):
+                return "WebFetch", {**ti, "url": src.replace("\\", "/")}
+            if parts.scheme.lower() == "file":   # goose reads a file: URL's path, made absolute (file:etc/x is /etc/x)
+                ti["file_path"] = posixpath.normpath("/" + urllib.parse.unquote(parts.path).lstrip("/"))
+                return GOOSE_TOOLS[name], ti
+        if name in GOOSE_PATH_ARG:
+            ti["file_path"] = ti.get(GOOSE_PATH_ARG[name])
+        if "__" in name and not name.startswith("mcp__"):   # an extension/MCP tool, as goose namespaces it
+            return "mcp__" + name, ti
+        return GOOSE_TOOLS.get(name, name), ti
     return name, ti
 
 
@@ -161,8 +188,8 @@ def _gemini_ids(run_id, tool_name, ti, phase, drop=None):
 def normalise(harness, p):
     """Harness payload -> Claude Code-shaped payload for tracekit.hook, or None for events Tracekit ignores."""
     ev = p.get("hook_event_name") or ""
-    out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0], "transcript_path": p.get("transcript_path"),
-           "model": p.get("model")}
+    out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
+           "transcript_path": p.get("transcript_path"), "model": p.get("model")}
     if harness == "codex":
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
@@ -229,6 +256,20 @@ def normalise(harness, p):
                 out["tool_response"] = p.get("tool_response")
             return out
         return None
+    if harness == "goose":
+        # goose names its event `event`, not `hook_event_name` (the v2 hook's command-line event arrives as the
+        # latter, so it wins when both are present); its payload carries no tool result or error text
+        ev = p.get("hook_event_name") or p.get("event") or ""
+        out["cwd"] = out["cwd"] or p.get("working_dir")
+        out["session_id"] = p.get("session_id")
+        if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+            out["hook_event_name"] = ev
+            out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
+            out["tool_use_id"] = p.get("tool_call_id")
+            out["tool_response"] = p.get("tool_response")
+            out["error"] = p.get("error")
+            return out
+        return None
     raise ValueError(f"unknown harness {harness!r}")
 
 
@@ -247,6 +288,21 @@ class Tee(io.StringIO):
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
 
 
+# goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
+# as code_execution__<name>; each runs tool calls through dispatch_tool, which runs no hooks
+GOOSE_CODE_MODE = ("execute_javascript", "execute_typescript", "execute_bash")
+
+
+def _blocked_goose_tool(tool_name):
+    """The reason a goose tool is denied in the hook itself (it runs calls the hook never sees), else None.
+    tool_name: goose's own name for the tool, before it is mapped."""
+    name = tool_name.removeprefix("code_execution__")
+    if name in GOOSE_CODE_MODE:
+        return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
+                "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
+    return None
+
+
 def run(harness, raw, stdout=None, stderr=None):
     """Handle one hook invocation. -> exit code. Writes the harness's expected stdout. A payload that is not a JSON
     object raises: entry answers it."""
@@ -254,11 +310,16 @@ def run(harness, raw, stdout=None, stderr=None):
     p = json.loads(raw) if raw.strip() else {}
     if not isinstance(p, dict):
         raise ValueError("the hook payload is not a JSON object")
-    is_pre = p.get("hook_event_name") in PRE
+    is_pre = p.get("hook_event_name") in PRE or (harness == "goose" and p.get("event") in PRE)
     q = normalise(harness, p)
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
+    reason = _blocked_goose_tool(str(p.get("tool_name") or "")) if harness == "goose" and is_pre else None
+    if reason is not None:
+        print(reason, file=stderr)
+        _reply(harness, stdout, False, reason, is_pre)
+        return _exit(harness, 2, is_pre)
     H.AGENT_NAME = AGENT_NAMES[harness]
     err = Tee(stderr)
     real_stdin, real_stderr = sys.stdin, sys.stderr
@@ -306,6 +367,7 @@ def config_path(harness, project=None, home=None):
     base = project or home or os.path.expanduser("~")
     return {"codex": os.path.join(base, ".codex", "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
+            "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
                         os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
                                      os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js")}[harness]
@@ -502,6 +564,94 @@ def _install_opencode(path, uninstall=False, v2=False, python=None):
     return path
 
 
+GOOSE_PLUGIN = {"name": "tracekit", "version": __version__,
+                "description": "Tracekit hooks: policy gates and signed records for goose tool calls."}
+GOOSE_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
+
+
+def _install_goose(path, uninstall=False, v2=False, python=None):
+    """Install one owned goose plugin without overwriting a plugin that is not Tracekit's. goose runs a rule with no
+    matcher for every tool (a bare "*" matcher is an invalid regex goose silently skips), its timeout is in seconds,
+    and only a PreToolUse action carries on_failure: block."""
+    from .install import SettingsError, _atomic_write_json, _backup, _hook_command
+    path = os.path.abspath(path)
+    plugin_dir = os.path.dirname(os.path.dirname(path))   # <plugin>/hooks/hooks.json
+    manifest = os.path.join(plugin_dir, "plugin.json")
+    if uninstall and not os.path.lexists(path) and not os.path.lexists(manifest):   # nothing made for it either
+        return path
+    if os.path.exists(manifest):   # collision first, before changing anything
+        try:
+            with open(manifest, encoding="utf-8") as f:
+                owned = json.load(f)
+        except (OSError, ValueError) as e:
+            raise SettingsError(f"{manifest} is not valid JSON ({e}); Tracekit did not change it.") from e
+        if not isinstance(owned, dict) or owned.get("name") != "tracekit":
+            raise SettingsError(f"{manifest} is not Tracekit's plugin; Tracekit did not change it.")
+    s, txt = {}, ""
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                txt = f.read()
+            s = json.loads(txt) if txt.strip() else {}
+        except (OSError, ValueError) as e:
+            raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
+        if not isinstance(s, dict):
+            raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
+        _backup(path, txt.encode("utf-8"))
+    hooks = s.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
+    new, removed = "v2" if v2 else "v1", set()
+
+    def ours(cmds):
+        vs = {_version(c) for c in cmds} - {None}
+        removed.update(vs)
+        return bool(vs)
+
+    def cmd(ev):
+        return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
+                             ("goose", ev) if v2 else ("goose",), python, ev == "PreToolUse")
+    for ev in GOOSE_EVENTS:
+        lst = hooks.get(ev)
+        if lst is not None and not isinstance(lst, list):
+            raise SettingsError(f"hooks.{ev} in {path} must be a list; Tracekit did not change it.")
+        kept = [g for g in (lst or []) if not (isinstance(g, dict) and ours(
+            [h.get("command") for h in (g.get("hooks") or []) if isinstance(h, dict)]))]
+        if not uninstall:
+            action = {"type": "command", "command": cmd(ev), "timeout": 600 if ev == "PreToolUse" else 30}
+            if ev == "PreToolUse":   # a hook that can't run blocks the call; other events ignore on_failure
+                action["on_failure"] = "block"
+            kept.append({"hooks": [action]})   # no matcher: goose matches every tool of the event
+        if kept:
+            hooks[ev] = kept
+        else:
+            hooks.pop(ev, None)
+    if hooks:
+        s["hooks"] = hooks
+    else:
+        s.pop("hooks", None)
+    if uninstall and not s:
+        # the only content was Tracekit's hooks: remove the plugin's files, not other content (a file with other
+        # keys falls through to the write below, and its manifest stays)
+        if os.path.lexists(path):
+            os.unlink(path)
+        if os.path.exists(manifest):   # validated above as Tracekit's, when present
+            os.unlink(manifest)
+        old = " and ".join(sorted(removed))
+        if old:
+            print(f"Tracekit {old} hooks removed from {path}")
+        return path
+    if not uninstall:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not os.path.exists(manifest):
+            _atomic_write_json(manifest, GOOSE_PLUGIN)
+    _atomic_write_json(path, s)
+    old = " and ".join(sorted(removed if uninstall else removed - {new}))
+    if old:
+        print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")
+    return path
+
+
 def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
     """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
@@ -509,6 +659,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     path = path or config_path(harness, project)
     if harness == "opencode":
         return _install_opencode(path, uninstall, v2, python)
+    if harness == "goose":
+        return _install_goose(path, uninstall, v2, python)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     s = {}
     if os.path.exists(path):
@@ -613,7 +765,9 @@ def entry(harness=None, event=None):
         return run(harness, raw)
     except Exception as e:
         try:
-            pre = (event or json.loads(raw).get("hook_event_name")) in PRE
+            parsed = json.loads(raw)
+            pre = (event or parsed.get("hook_event_name")
+                   or (parsed.get("event") if harness == "goose" else None)) in PRE
         except Exception:
             pre = True   # unreadable: answered as a tool call
         # OpenCode's plugin passes the model's arguments unchecked: a call its hook can't decide doesn't run, as when

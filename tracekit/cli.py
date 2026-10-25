@@ -119,7 +119,7 @@ def main(argv=None):
     p.add_argument("--fail-closed", action="store_true", help="proxy: refuse to forward when the signer can't record")
     p.add_argument("--managed", action="store_true", help="system mode: install hooks in Claude Code's admin-managed settings")
     p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly")
-    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode"), default="claude",
+    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose"), default="claude",
                    help="which coding agent's hooks to install (default: Claude Code)")
     p.add_argument("--harness", action="append", default=[], metavar="[NAME=]PATH",
                    help="system mode (0.3): the agent program whose processes may send events, e.g. /usr/local/bin/claude "
@@ -151,7 +151,7 @@ def main(argv=None):
     p.add_argument("--project", action="store_true")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
-    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode"), default="claude")
+    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose"), default="claude")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
