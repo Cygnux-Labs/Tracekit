@@ -253,6 +253,16 @@ class CodingPack(unittest.TestCase):
             'psql -c "BEGIN;" -c "DROP TABLE users; ROLLBACK;"',
             'psql -c "BEGIN; -- note\n DROP TABLE users; ROLLBACK;"',
             'psql -c "BEGIN; /* note */ DROP TABLE users; ROLLBACK;"',
+            # a comment hiding the ROLLBACK: with -1 or --single-transaction the DELETE commits
+            'psql -1 -c "BEGIN; DELETE FROM users; SELECT 1 -- ; ROLLBACK;"',
+            'psql --single-transaction -c "BEGIN; DELETE FROM users; SELECT 1 -- ; ROLLBACK;"',
+            'psql -1 -c "BEGIN; DELETE FROM users; SELECT 1 /* ; ROLLBACK;"',
+            # escapes and multi-line statements no longer hide the destructive one
+            'psql -c "SELECT \'a\\b\'; DROP TABLE users"',
+            'psql -c "CREATE TABLE t (\\n  a INT,\\n  b INT,\\n  c INT,\\n  d INT,\\n  e INT,\\n  f INT,\\n  g INT,\\n  h INT\\n);\\nDROP TABLE users;"',
+            'sqlite3 app.db "SELECT 1;\\n    DROP TABLE users;"',
+            'sqlite3 app.db "SELECT 1;\\n        DROP TABLE users;"',
+            'psql -c "SELECT 1; -- note\\n\\tDROP TABLE users;"',
             # the pinned literal limitation: a `;` inside quotes reads as a statement boundary
             'psql postgresql://app@db.internal:5432/shop -c "SELECT \'a; DROP TABLE x\'"',
             # the covered cheap misses
@@ -275,6 +285,9 @@ class CodingPack(unittest.TestCase):
             # DML-only transactions stay exempt, whatever the options before the flag
             'psql -c "BEGIN; DELETE FROM users; ROLLBACK;"',
             'psql -c "BEGIN; SELECT 1; ROLLBACK;"',
+            # a lone minus or slash inside DML is not a comment: still exempt
+            'psql -c "BEGIN; UPDATE t SET x = a/-5; ROLLBACK;"',
+            'psql -c "BEGIN; UPDATE t SET x = a/b; ROLLBACK;"',
             'psql -h my-host -c "BEGIN; DELETE FROM users; ROLLBACK;"',
             'psql --host=db.internal -c "BEGIN; DELETE FROM users; ROLLBACK;"',
             'psql --csv -c "BEGIN; DELETE FROM users; ROLLBACK;"',
@@ -294,6 +307,11 @@ class CodingPack(unittest.TestCase):
             # tool names the round-1 list missed: postgresql and pg are SQL tools too
             ("mcp__postgresql__query", {"sql": "DROP TABLE users"}),
             ("mcp__pg__query", {"sql": "DROP TABLE users"}),
+            # JSON escapes and indentation no longer hide the destructive one
+            ("mcp__postgres__query", {"query": 'SELECT * FROM "Users"; DROP TABLE users'}),
+            ("mcp__postgres__query", {"query": "SELECT 1;\tDROP TABLE users"}),
+            ("mcp__postgres__query", {"query": "SELECT 1;\n    DROP TABLE users;"}),
+            ("mcp__postgres__query", {"query": "SELECT 1;\n        DROP TABLE users;"}),
         ]
         routine_mcp = [
             # ordinary searches are not SQL calls, even with a destructive-looking text

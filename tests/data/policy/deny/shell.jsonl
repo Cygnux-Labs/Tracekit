@@ -182,3 +182,11 @@
 {"tool": "Bash", "args": {"command": "valkey-cli -h cache.internal FLUSHDB"}, "expect": "ask", "note": "a cache flush through valkey-cli with options"}
 {"tool": "Bash", "args": {"command": "echo FLUSHDB | valkey-cli -h cache.internal"}, "expect": "ask", "note": "a flush piped into valkey-cli"}
 {"tool": "Bash", "args": {"command": "psql -c \"SELECT 1;\\nDROP TABLE users\""}, "expect": "ask", "note": "an escaped newline between statements"}
+{"tool": "Bash", "args": {"command": "psql -1 -c \"BEGIN; DELETE FROM users; SELECT 1 -- ; ROLLBACK;\""}, "expect": "ask", "note": "a comment hiding the ROLLBACK under -1"}
+{"tool": "Bash", "args": {"command": "psql --single-transaction -c \"BEGIN; DELETE FROM users; SELECT 1 -- ; ROLLBACK;\""}, "expect": "ask", "note": "a comment hiding the ROLLBACK under --single-transaction"}
+{"tool": "Bash", "args": {"command": "psql -1 -c \"BEGIN; DELETE FROM users; SELECT 1 /* ; ROLLBACK;\""}, "expect": "ask", "note": "an unclosed block comment hiding the ROLLBACK under -1"}
+{"tool": "Bash", "args": {"command": "psql -c \"SELECT 'a\\b'; DROP TABLE users\""}, "expect": "ask", "note": "a backslash inside a quoted literal before the DROP"}
+{"tool": "Bash", "args": {"command": "psql -c \"CREATE TABLE t (\\n  a INT,\\n  b INT,\\n  c INT,\\n  d INT,\\n  e INT,\\n  f INT,\\n  g INT,\\n  h INT\\n);\\nDROP TABLE users;\""}, "expect": "ask", "note": "a multi-line statement before the DROP"}
+{"tool": "Bash", "args": {"command": "sqlite3 app.db \"SELECT 1;\\n    DROP TABLE users;\""}, "expect": "ask", "note": "indented SQL, 4 spaces"}
+{"tool": "Bash", "args": {"command": "sqlite3 app.db \"SELECT 1;\\n        DROP TABLE users;\""}, "expect": "ask", "note": "indented SQL, 8 spaces"}
+{"tool": "Bash", "args": {"command": "psql -c \"SELECT 1; -- note\\n\\tDROP TABLE users;\""}, "expect": "ask", "note": "a tab escape after a line comment before the DROP"}
