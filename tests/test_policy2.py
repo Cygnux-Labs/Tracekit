@@ -583,6 +583,42 @@ class Speed(unittest.TestCase):
                     slow.append(f"{rid} {key} {took * 1e3:.0f} ms on {s[:24]!r}")
         self.assertEqual(slow, [])
 
+    def test_multiline_selects_decide_fast_on_the_fallback_engine(self):
+        """TK-A039/TK-A041: a benign multi-line SELECT used to spend the fallback engine's whole 1 s budget and
+        deny as nondeterministic: `[^;]*` crossed an escaped newline, so the ways to split the text grew with the
+        line count. The statement skip now reads a backslash and the character after it as one pair, and the same
+        shapes decide in milliseconds."""
+        pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        e = Engine(pol, "regex")
+        bs = chr(92)
+        sel12 = "SELECT id," + bs + "n" + ("," + bs + "n").join(f" c{i}" for i in range(10)) + bs + "n FROM t"
+        sel22 = "SELECT id," + bs + "n" + ("," + bs + "n").join(f" c{i}" for i in range(20)) + bs + "n FROM t"
+        calls = [
+            ("Bash", {"command": 'sqlite3 app.db "' + sel12 + '"'}),
+            ("Bash", {"command": 'psql -c "' + sel22 + '"'}),
+            ("mcp__postgres__query", {"sql": sel22.replace(bs + "n", "\n")}),
+        ]
+        for tool, args in calls:
+            with self.subTest(tool=tool):
+                start = time.perf_counter()
+                d = e.decide(tool, args)
+                took = time.perf_counter() - start
+                self.assertNotIn("TK-A039", d["rule_ids"], d)
+                self.assertNotIn("TK-A041", d["rule_ids"], d)
+                self.assertLess(took, self.BUDGET_S, d)
+
+    def test_an_indented_select_in_a_sqlite3_argument_decides_fast_on_the_fallback_engine(self):
+        """TK-A039's sqlite3 branch took the space before the SQL with `\\s+`, so ~60 KiB of SELECT indented 32 spaces
+        a line spent the fallback engine's whole 1 s and denied as nondeterministic. argv is joined with single
+        spaces, so one `\\s` reads the same calls."""
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
+        cols = ",\n".join(" " * 32 + f"c{i}" for i in range(1600))
+        start = time.perf_counter()
+        d = e.decide("Bash", {"command": 'sqlite3 app.db "SELECT\n' + cols + '\nFROM t;"'})
+        took = time.perf_counter() - start
+        self.assertEqual((d["verdict"], d.get("nondeterministic")), ("allow", None), d)
+        self.assertLess(took, 0.5 * SLOWER)   # ~80 ms on an M-series laptop
+
     def search(self, rx, s):
         start = time.perf_counter()
         try:

@@ -25,3 +25,13 @@
 {"tool": "mcp:aws/get_parameter", "args": {"Name": "/prod/db-password", "WithDecryption": true}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
 {"tool": "mcp:aws/get_parameters_by_path", "args": {"Path": "/prod", "WithDecryption": true}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
 {"tool": "mcp:aws-api/call_aws", "args": {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db-password"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "mcp__postgres__query", "args": {"sql": "DROP SCHEMA public CASCADE;"}, "expect": "ask", "note": "drop a schema through the MCP database tool"}
+{"tool": "mcp__postgres__query", "args": {"sql": "TRUNCATE TABLE invoices RESTART IDENTITY;"}, "expect": "ask", "note": "truncate through the MCP database tool"}
+{"tool": "mcp__postgres__query", "args": {"sql": "DROP TABLE x; ROLLBACK;"}, "expect": "ask", "note": "a bare ROLLBACK after a committed DROP does not exempt it"}
+{"tool": "mcp__postgres__query", "args": {"query": "DROP TABLE users", "sql": "BEGIN; SELECT 1; ROLLBACK;"}, "expect": "ask", "note": "a destructive statement in one argument is not undone by a transaction in another"}
+{"tool": "mcp__postgres__query", "args": {"sql": "SELECT 1;\nDROP TABLE users"}, "expect": "ask", "note": "an escaped newline between statements"}
+{"tool": "mcp__postgres__query", "args": {"sql": "DROP\nTABLE users"}, "expect": "ask", "note": "an escaped newline between DROP and its object word"}
+{"tool": "mcp__postgres__query", "args": {"query": "SELECT * FROM \"Users\"; DROP TABLE users"}, "expect": "ask", "note": "escaped quotes before the DROP"}
+{"tool": "mcp__postgres__query", "args": {"query": "SELECT 1;\tDROP TABLE users"}, "expect": "ask", "note": "a tab escape before the DROP"}
+{"tool": "mcp__postgres__query", "args": {"query": "SELECT 1;\n    DROP TABLE users;"}, "expect": "ask", "note": "indented SQL, 4 spaces"}
+{"tool": "mcp__postgres__query", "args": {"query": "SELECT 1;\n        DROP TABLE users;"}, "expect": "ask", "note": "indented SQL, 8 spaces"}

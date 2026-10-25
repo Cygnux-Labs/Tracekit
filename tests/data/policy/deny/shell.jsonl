@@ -187,3 +187,43 @@
 {"tool": "Bash", "args": {"command": "vercel project remove prod-app --yes"}, "expect": "ask", "note": "vercel project remove, the subcommand rm is an alias of"}
 {"tool": "Bash", "args": {"command": "gh api --method DELETE -H \"Accept: application/vnd.github+json\" -H \"X-GitHub-Api-Version: 2022-11-28\" -H \"Authorization: token x\" /repos/OWNER/REPO"}, "expect": "ask", "note": "GitHub's REST docs example with one more header: nine option words around the method"}
 {"tool": "Bash", "args": {"command": "http delete api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "HTTPie with a lowercase method still sends DELETE"}
+{"tool": "Bash", "args": {"command": "psql postgresql://admin@db.internal:5432/orders -c \"DROP DATABASE orders;\""}, "expect": "ask", "note": "drop a database through psql"}
+{"tool": "Bash", "args": {"command": "psql postgresql://admin@db.internal:5432/billing -c \"TRUNCATE TABLE payments;\""}, "expect": "ask", "note": "truncate a table through psql"}
+{"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u root -e \"DROP TABLE users;\" shop"}, "expect": "ask", "note": "drop a table through mysql"}
+{"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u root -e \"DELETE FROM audit_log;\" shop"}, "expect": "ask", "note": "delete every row through mysql, no WHERE"}
+{"tool": "Bash", "args": {"command": "mongosh \"mongodb://db.internal:27017/shop\" --quiet --eval \"db.dropDatabase()\""}, "expect": "ask", "note": "drop a database through mongosh"}
+{"tool": "Bash", "args": {"command": "mongosh \"mongodb://db.internal:27017/shop\" --quiet --eval \"db.sessions.deleteMany({})\""}, "expect": "ask", "note": "delete every document through mongosh, empty filter"}
+{"tool": "Bash", "args": {"command": "redis-cli -h cache.internal FLUSHALL"}, "expect": "ask", "note": "flush every key through redis-cli"}
+{"tool": "Bash", "args": {"command": "echo \"FLUSHDB\" | redis-cli -h cache.internal -n 0"}, "expect": "ask", "note": "flush piped into redis-cli instead of typed as an argument"}
+{"tool": "Bash", "args": {"command": "printf 'FLUSHALL\\n' | redis-cli -h cache.internal"}, "expect": "ask", "note": "flush printed into redis-cli"}
+{"tool": "Bash", "args": {"command": "echo FLUSHDB | tee flush.log | redis-cli -h cache.internal"}, "expect": "ask", "note": "flush piped through tee into redis-cli"}
+{"tool": "Bash", "args": {"command": "psql postgresql://app@db.internal:5432/shop -c \"DROP TABLE x; ROLLBACK;\""}, "expect": "ask", "note": "a bare ROLLBACK after a committed DROP does not exempt it"}
+{"tool": "Bash", "args": {"command": "psql postgresql://app@db.internal:5432/shop -c \"DROP TABLE x; BEGIN; SELECT 1; ROLLBACK;\""}, "expect": "ask", "note": "a DROP before the transaction opens is not inside it"}
+{"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u root -e \"BEGIN; DROP TABLE x; ROLLBACK;\" shop"}, "expect": "ask", "note": "DROP inside BEGIN...ROLLBACK is held: on MySQL DDL commits implicitly, so ROLLBACK does not undo it"}
+{"tool": "Bash", "args": {"command": "mysql -D shop -e \"START TRANSACTION; DROP TABLE users; ROLLBACK;\""}, "expect": "ask", "note": "MySQL commits DDL implicitly, so a DROP inside START TRANSACTION...ROLLBACK is not undone"}
+{"tool": "Bash", "args": {"command": "psql -c \"BEGIN; DROP TABLE users; COMMIT; ROLLBACK;\""}, "expect": "ask", "note": "a COMMIT before ROLLBACK does not save the DROP"}
+{"tool": "Bash", "args": {"command": "psql -c \"BEGIN; DROP TABLE users; END; ROLLBACK;\""}, "expect": "ask", "note": "an END before ROLLBACK does not save the DROP, as COMMIT does not"}
+{"tool": "Bash", "args": {"command": "psql -c \"DROP TABLE users\" -c \"BEGIN; ROLLBACK;\""}, "expect": "ask", "note": "a DROP in one -c is held even with a transaction in another"}
+{"tool": "Bash", "args": {"command": "psql --command \"DROP TABLE x\" -c \"BEGIN; DELETE FROM users; ROLLBACK;\""}, "expect": "ask", "note": "a DROP in one --command is held even with a transaction in another -c"}
+{"tool": "Bash", "args": {"command": "psql -e -c \"BEGIN; DELETE FROM users; ROLLBACK;\""}, "expect": "ask", "note": "psql's boolean -e before the flag does not exempt the transaction"}
+{"tool": "Bash", "args": {"command": "psql -tAc \"DROP TABLE users\""}, "expect": "ask", "note": "a -c inside a short-option cluster"}
+{"tool": "Bash", "args": {"command": "mysql -Nse \"DROP TABLE users\""}, "expect": "ask", "note": "an -e inside a short-option cluster"}
+{"tool": "Bash", "args": {"command": "mysql -e\"DROP TABLE users\""}, "expect": "ask", "note": "an -e carrying its value attached"}
+{"tool": "Bash", "args": {"command": "psql -c \"DELETE FROM users\" -d prod"}, "expect": "ask", "note": "an option after the statement"}
+{"tool": "Bash", "args": {"command": "docker exec db psql -c \"DROP TABLE users\""}, "expect": "ask", "note": "psql through docker exec"}
+{"tool": "Bash", "args": {"command": "kubectl exec -n ns pod -- psql -c \"DROP TABLE users\""}, "expect": "ask", "note": "psql through kubectl exec"}
+{"tool": "Bash", "args": {"command": "sqlite3 app.db \"DROP TABLE users\""}, "expect": "ask", "note": "a destructive statement as sqlite3's bare SQL argument"}
+{"tool": "Bash", "args": {"command": "clickhouse-client --query \"DROP TABLE users\""}, "expect": "ask", "note": "a destructive statement through clickhouse-client --query"}
+{"tool": "Bash", "args": {"command": "mongo --eval \"db.dropDatabase()\""}, "expect": "ask", "note": "a destructive statement through the legacy mongo shell"}
+{"tool": "Bash", "args": {"command": "valkey-cli FLUSHALL"}, "expect": "ask", "note": "a cache flush through valkey-cli"}
+{"tool": "Bash", "args": {"command": "valkey-cli -h cache.internal FLUSHDB"}, "expect": "ask", "note": "a cache flush through valkey-cli with options"}
+{"tool": "Bash", "args": {"command": "echo FLUSHDB | valkey-cli -h cache.internal"}, "expect": "ask", "note": "a flush piped into valkey-cli"}
+{"tool": "Bash", "args": {"command": "psql -c \"SELECT 1;\\nDROP TABLE users\""}, "expect": "ask", "note": "an escaped newline between statements"}
+{"tool": "Bash", "args": {"command": "psql -1 -c \"BEGIN; DELETE FROM users; SELECT 1 -- ; ROLLBACK;\""}, "expect": "ask", "note": "a comment hiding the ROLLBACK under -1"}
+{"tool": "Bash", "args": {"command": "psql --single-transaction -c \"BEGIN; DELETE FROM users; SELECT 1 -- ; ROLLBACK;\""}, "expect": "ask", "note": "a comment hiding the ROLLBACK under --single-transaction"}
+{"tool": "Bash", "args": {"command": "psql -1 -c \"BEGIN; DELETE FROM users; SELECT 1 /* ; ROLLBACK;\""}, "expect": "ask", "note": "an unclosed block comment hiding the ROLLBACK under -1"}
+{"tool": "Bash", "args": {"command": "psql -c \"SELECT 'a\\b'; DROP TABLE users\""}, "expect": "ask", "note": "a backslash inside a quoted literal before the DROP"}
+{"tool": "Bash", "args": {"command": "psql -c \"CREATE TABLE t (\\n  a INT,\\n  b INT,\\n  c INT,\\n  d INT,\\n  e INT,\\n  f INT,\\n  g INT,\\n  h INT\\n);\\nDROP TABLE users;\""}, "expect": "ask", "note": "a multi-line statement before the DROP"}
+{"tool": "Bash", "args": {"command": "sqlite3 app.db \"SELECT 1;\\n    DROP TABLE users;\""}, "expect": "ask", "note": "indented SQL, 4 spaces"}
+{"tool": "Bash", "args": {"command": "sqlite3 app.db \"SELECT 1;\\n        DROP TABLE users;\""}, "expect": "ask", "note": "indented SQL, 8 spaces"}
+{"tool": "Bash", "args": {"command": "psql -c \"SELECT 1; -- note\\n\\tDROP TABLE users;\""}, "expect": "ask", "note": "a tab escape after a line comment before the DROP"}
