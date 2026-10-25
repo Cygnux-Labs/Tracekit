@@ -1201,6 +1201,72 @@ class CodingPack(unittest.TestCase):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
 
+    def every_pack_verdicts(self, cases):
+        for pack, engine, e in self.every_pack():
+            for command, want in cases:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"] != "allow", want in d["rule_ids"]), (True, True), d)
+
+    def test_infrastructure_removal_cdk_launchers_ask(self):
+        self.every_pack_verdicts([
+            ("npx aws-cdk destroy", "TK-A001"),
+            ("npx aws-cdk@2 destroy --force", "TK-A001"),
+            ("npx cdk@latest destroy", "TK-A001"),
+            ("cdk destroy", "TK-A001"),
+            ("npx cdk destroy", "TK-A001"),
+            ("bunx cdk destroy", "TK-A001"),
+            ("pnpm dlx cdk destroy", "TK-A001"),
+            ("yarn dlx cdk destroy", "TK-A001"),
+            ("npm exec -- cdk destroy", "TK-A001"),
+        ])
+
+    def test_infrastructure_removal_cdk_options_ask(self):
+        self.every_pack_verdicts([
+            ("cdk destroy --force", "TK-A001"),
+            ("cdk destroy --all", "TK-A001"),
+            ("cdk destroy --force --all", "TK-A001"),
+            ("cdk destroy --all --force", "TK-A001"),
+            ("cdk --app infra/app.js destroy prod", "TK-A001"),
+            ("npx --yes cdk destroy", "TK-A001"),
+            ("npx cdk destroy --force --all", "TK-A001"),
+        ])
+
+    def test_infrastructure_removal_pulumi_options_ask(self):
+        self.every_pack_verdicts([
+            ("pulumi stack -s prod rm --yes", "TK-A001"),
+            ("pulumi stack rm prod", "TK-A001"),
+            ("pulumi stack rm prod --force", "TK-A001"),
+            ("pulumi stack rm prod --yes", "TK-A001"),
+            ("pulumi stack rm prod --force --yes", "TK-A001"),
+            ("pulumi --cwd infra stack rm prod", "TK-A001"),
+        ])
+
+    def test_infrastructure_removal_state_options_ask(self):
+        self.every_pack_verdicts([("terragrunt state rm aws_db_instance.prod", "TK-A001")])
+        for program in ("terraform", "tofu"):
+            self.every_pack_verdicts([
+                (f"{program} -chdir=infra state rm aws_db_instance.prod", "TK-A001"),
+                (f"{program} state rm -lock-timeout=30s aws_db_instance.prod", "TK-A001"),
+                (f"{program} state rm aws_s3_bucket.assets", "TK-A001"),
+            ])
+
+    def test_infrastructure_removal_benign_commands_are_allowed(self):
+        for command in (
+            "cdk diff",
+            "cdk synth",
+            "pulumi stack ls",
+            "terraform state list",
+            "terraform state show aws_db_instance.prod",
+            "tofu state list",
+            "tofu state show aws_db_instance.prod",
+            "echo cdk destroy",
+            "cdk destroy --help",
+        ):
+            for pack, engine, e in self.every_pack():
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-A001", e.decide("Bash", {"command": command})["rule_ids"])
+
 
 class PackReading(unittest.TestCase):
     """How the shipped packs read SQL, hosts, paths and commands an agent can spell more than one way."""

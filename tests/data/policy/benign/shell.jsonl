@@ -199,3 +199,12 @@
 {"tool": "Bash", "args": {"command": "grep -r FLUSHDB . | redis-cli -h cache.internal -n 0"}, "expect": "allow", "note": "grep hits piped into redis-cli, not a flush command"}
 {"tool": "Bash", "args": {"command": "cat flush.txt | redis-cli -h cache.internal"}, "expect": "allow", "note": "file content piped into redis-cli is not read"}
 {"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u app -e \"START TRANSACTION; DELETE FROM audit_log WHERE created_at < '2020-01-01'; ROLLBACK;\" shop"}, "expect": "allow", "note": "scoped DELETE inside a rolled-back transaction with a trailing database name"}
+{"tool": "Bash", "args": {"command": "cdk diff"}, "expect": "allow", "note": "inspect CDK changes without destroying stacks"}
+{"tool": "Bash", "args": {"command": "cdk synth"}, "expect": "allow", "note": "synthesize a CDK template without destroying stacks"}
+{"tool": "Bash", "args": {"command": "pulumi stack ls"}, "expect": "allow", "note": "list Pulumi stacks without removing them"}
+{"tool": "Bash", "args": {"command": "terraform state list"}, "expect": "allow", "note": "list Terraform state without removing bindings"}
+{"tool": "Bash", "args": {"command": "terraform state show aws_db_instance.prod"}, "expect": "allow", "note": "inspect a Terraform state binding"}
+{"tool": "Bash", "args": {"command": "tofu state list"}, "expect": "allow", "note": "list OpenTofu state without removing bindings"}
+{"tool": "Bash", "args": {"command": "tofu state show aws_db_instance.prod"}, "expect": "allow", "note": "inspect an OpenTofu state binding"}
+{"tool": "Bash", "args": {"command": "echo cdk destroy"}, "expect": "allow", "note": "mention CDK destruction as text"}
+{"tool": "Bash", "args": {"command": "cdk destroy --help"}, "expect": "allow", "note": "read CDK destruction help without running it"}

@@ -5,7 +5,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:4ea59b313b1a18cb3a6dc43f8f1535426eb2eaa2757e2938dd0bc200d8242491",
+      "policy_hash": "sha256:32b6777078d106764daf7a2026748dd3a954089936ba6ab49dd89af664a16457",
       "heldout": {
         "recall": 0.5833333333333334,
         "deny_recall": 0.25952380952380955,
@@ -2122,27 +2122,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0012690355329949238,
+        "fp_rate": 0.0012547051442910915,
         "totals": {
-          "benign": 788,
+          "benign": 797,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 788,
+              "benign": 797,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 788,
+              "benign": 797,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 788,
+              "benign": 797,
               "fp": 1
             }
           }
@@ -2163,7 +2163,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:aa59dbd877b744d5cb8b6d17801754914a3a304644bbc59724897a203c7469ae",
+      "policy_hash": "sha256:a77d61197968d63f5d5266e135985701fe65f4c7f99529603dbf1a852e36dec1",
       "heldout": {
         "recall": 0.6523809523809524,
         "deny_recall": 0.35714285714285715,
@@ -4325,27 +4325,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.04568527918781726,
+        "fp_rate": 0.0451693851944793,
         "totals": {
-          "benign": 788,
+          "benign": 797,
           "fp": 36
         },
         "by": {
           "category": {
             "none": {
-              "benign": 788,
+              "benign": 797,
               "fp": 36
             }
           },
           "severity": {
             "none": {
-              "benign": 788,
+              "benign": 797,
               "fp": 36
             }
           },
           "evasion": {
             "none": {
-              "benign": 788,
+              "benign": 797,
               "fp": 36
             }
           }
