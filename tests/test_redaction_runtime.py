@@ -28,10 +28,9 @@ ADVERSARIAL = {
 }
 
 
-# the regex privacy._redact_jwts() replaced (#375): the same tokens, but every "eyJ" after a "-" read up to 512
-# characters, too slow on a busy runner
-JWT_REGEX = re.compile(r"\beyJ(?:(?<!-eyJ)[A-Za-z0-9_\-]{8,}|[A-Za-z0-9_\-]{8,512})"
-                       r"\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")
+# what privacy._redact_jwts() redacts, as a regex (#375): too slow to ship, since every "eyJ" after a "-" in a
+# long run of token characters reads to the run's end
+JWT_REGEX = re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")
 
 
 def repeated(prefix):

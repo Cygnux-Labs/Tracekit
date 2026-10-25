@@ -103,9 +103,9 @@ _WORD = re.compile(r"\w")
 
 def _redact_jwts(run, s):
     """Redact header.payload.signature tokens. run finds a run of token characters followed by two more
-    dot-separated segments; the header starts at the run's leftmost "eyJ" after a non-word character, and one
-    after a "-" (where many can share a run) is at most 512 characters. Each run is read once, so the scan stays
-    linear however many "eyJ-" the input repeats."""
+    dot-separated segments; the header starts at the run's leftmost "eyJ" after a non-word character (inside the
+    run, a "-") and is at least 8 characters more. Each run is read once, so the scan stays linear however many
+    "eyJ-" the input repeats."""
     out, last, n, pos = [], 0, 0, 0
     while True:
         m = run.search(s, pos)
@@ -113,14 +113,12 @@ def _redact_jwts(run, s):
             break
         dot = s.index(".", m.start())
         at = s.find("eyJ", m.start(), dot)
-        while at != -1:
-            size = dot - at - 3
-            if at == m.start() and size >= 8 and not (at and _WORD.match(s, at - 1)):
-                break
-            if at > m.start() and s[at - 1] == "-" and 8 <= size <= 512:
+        while at != -1 and dot - at - 3 >= 8:
+            after_non_word = s[at - 1] == "-" if at > m.start() else not (at and _WORD.match(s, at - 1))
+            if after_non_word:
                 break
             at = s.find("eyJ", at + 1, dot)
-        if at == -1:
+        if at == -1 or dot - at - 3 < 8:
             pos = dot + 1
             continue
         out += [s[last:at], "[REDACTED:jwt]"]
