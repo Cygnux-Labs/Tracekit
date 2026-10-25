@@ -18,3 +18,10 @@
 {"tool": "mcp:ci/run_job", "args": {"script": "deploy.sh prod"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
 {"tool": "mcp:aws-iam/put_user_policy", "args": {"user": "x"}, "expect": "deny", "note": "command, delete or access change through an MCP tool"}
 {"tool": "mcp:gcp/add_iam_policy_binding", "args": {"member": "user:x"}, "expect": "deny", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp__aws__get_secret_value", "args": {"secret_id": "prod/db-password"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "mcp:aws/get_secret_value", "args": {"secret_id": "prod/db-password"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "mcp:gcp/access_secret_version", "args": {"name": "projects/acme/secrets/db-password/versions/latest"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "mcp:azure/get_secret", "args": {"vault": "prod-kv", "name": "db-password"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "mcp:aws/get_parameter", "args": {"Name": "/prod/db-password", "WithDecryption": true}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "mcp:aws/get_parameters_by_path", "args": {"Path": "/prod", "WithDecryption": true}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "mcp:aws-api/call_aws", "args": {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db-password"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}

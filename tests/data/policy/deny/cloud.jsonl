@@ -126,3 +126,10 @@
 {"tool": "Bash", "args": {"command": "terraform apply -var 'x\ny' -destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (a newline in an earlier argument)"}
 {"tool": "terminal", "args": {"command": "tofu apply -var 'x\ny' -auto-approve --destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (a newline in an earlier argument)"}
 {"tool": "Bash", "args": {"command": "terraform -chdir=infra apply -var 'x\ny' -destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (a newline in an earlier argument)"}
+{"tool": "Bash", "args": {"command": "aws secretsmanager get-secret-value --secret-id prod/db-password"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "bash", "args": {"command": "aws --profile prod --region us-east-1 secretsmanager batch-get-secret-value --secret-id-list prod/a prod/b"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "shell", "args": {"command": "aws ssm get-parameter --name /prod/db-password --with-decryption"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "terminal", "args": {"command": "aws ssm get-parameters-by-path --path /prod --recursive --with-decryption"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "run_shell_command", "args": {"command": "gcloud secrets versions access latest --secret=prod-db-password"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "local_shell", "args": {"command": "az keyvault secret show --vault-name prod-kv --name db-password"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}
+{"tool": "Bash", "args": {"command": "az keyvault secret download --vault-name prod-kv --name db-password --file /tmp/pw"}, "expect": "ask", "note": "reading a secret's value from a cloud secret store"}

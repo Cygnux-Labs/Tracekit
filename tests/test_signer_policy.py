@@ -110,6 +110,11 @@ class CodingPack(unittest.TestCase):
                 self.assertEqual((d["verdict"], want in d["rule_ids"]), ("deny" if want.startswith("TK-D") else "ask", True),
                                  d)
 
+    def every_pack(self):
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                yield pack, engine, Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+
     def test_a_command_run_outside_claude_codes_sandbox_asks(self):
         self.verdicts([({"command": "npm install", "dangerouslyDisableSandbox": True}, "TK-A003"),
                        ({"command": "npm install", "dangerouslyDisableSandbox": "true"}, "TK-A003"),
@@ -200,6 +205,73 @@ class CodingPack(unittest.TestCase):
                         d = e.decide("Bash", {"command": cmd})
                         self.assertEqual("TK-A033" in d["rule_ids"], cmd in merges, d)
                         if cmd in merges:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_deleting_a_repository_or_project_asks_in_every_pack(self):
+        """Deleting a whole repository or project through a platform's API is held for a person; reading one or
+        deleting a single sub-resource is not. The blind E21 pool showed these deletes only flagged, never held."""
+        deletes = ["curl -X DELETE https://api.github.com/repos/acme/prod-service -H 'Authorization: Bearer <redacted>'",
+                   "curl --request DELETE \"https://gitlab.com/api/v4/projects/42\" -H \"PRIVATE-TOKEN: $GL_TOKEN\"",
+                   "curl -X DELETE https://api.vercel.com/v9/projects/prod-app -H 'Authorization: Bearer <redacted>'",
+                   "curl -X POST https://api.github.com/graphql -H 'Authorization: Bearer <redacted>' -d '{\"query\": \"mutation { deleteRepository(input: {repositoryId: \\\"R_1\\\"}) { clientMutationId } }\"}'",
+                   "gh api -X DELETE repos/acme/prod-service",
+                   "gh api repos/acme/prod-service -X DELETE",
+                   "glab api projects/42 -X DELETE",
+                   "hub api -X DELETE repos/acme/prod-service",
+                   "gh repo delete acme/prod-service --yes",
+                   "glab repo delete acme/prod-service --yes",
+                   "vercel remove prod-app --yes",
+                   "glab api -X DELETE projects/42",
+                   "gh api graphql -f query='mutation { deleteRepository(input: {repositoryId: \"R_1\"}) { clientMutationId } }'",
+                   # a newline in an earlier argument: a multi-line GraphQL query, as GitHub's docs write them
+                   "gh api graphql -f query='\n  mutation {\n    deleteRepository(input: {repositoryId: \"R_1\"}) {\n      clientMutationId\n    }\n  }'",
+                   "wget --method=DELETE https://gitlab.com/api/v4/projects/42",
+                   "http DELETE https://api.vercel.com/v9/projects/prod-app",
+                   "curl https://api.github.com/repos/acme/prod-service -X DELETE",
+                   "curl -X DELETE https://api.github.com/repos/acme/prod-service/",
+                   # the review's covered misses
+                   "vercel rm prod-app --yes",
+                   "vercel project rm prod-app",
+                   "vercel projects rm",
+                   "glab project delete acme/svc --yes",
+                   "hub delete -y acme/svc",
+                   "http -A bearer -a tok DELETE https://api.github.com/repos/acme/prod-service",
+                   # the second review's anchored misses: options before the method flag or
+                   # before a bare path, and schemeless HTTPie URLs
+                   "gh api --method DELETE -H \"Accept: application/vnd.github+json\" -H \"X-GitHub-Api-Version: 2022-11-28\" /repos/acme/prod-service",
+                   "gh api -H 'Accept: x' -X DELETE repos/o/r",
+                   "gh api --hostname ghe.corp -X DELETE repos/o/r",
+                   "gh api --paginate -X DELETE repos/acme/svc",
+                   "glab api -H 'X: y' -X DELETE projects/42",
+                   "hub api -H 'X: y' -X DELETE repos/o/r",
+                   "gh api -H 'X: y' repos/o/r -X DELETE",
+                   "http DELETE api.github.com/repos/acme/prod-service",
+                   "https DELETE api.github.com/repos/acme/prod-service",
+                   "xh DELETE api.github.com/repos/acme/prod-service",
+                   "xhs DELETE api.github.com/repos/acme/prod-service"]
+        routine = ["curl -s https://api.github.com/repos/acme/prod-service",
+                   "curl -s https://gitlab.com/api/v4/projects/42",
+                   "curl -s https://api.vercel.com/v9/projects/prod-app",
+                   "curl -X DELETE https://api.github.com/repos/o/r/issues/comments/1 -H 'Authorization: Bearer <redacted>'",
+                   "curl -X DELETE https://api.github.com/repos/o/r/pulls/1",
+                   "curl -X POST https://api.github.com/graphql -H 'Authorization: Bearer <redacted>' -d '{\"query\": \"query { repository(owner: \\\"o\\\", name: \\\"r\\\") { name } }\"}'",
+                   "gh api repos/acme/prod-service", "gh repo view acme/prod-service", "gh repo list",
+                   # the review's false positives: a branch or file under a repository, a classic
+                   # project board, and removing a repository from a team are not repository deletes
+                   "gh api repos/acme/svc/git/refs/heads/projects/q4 -X DELETE",
+                   "gh api repos/acme/svc/contents/projects/readme.md -X DELETE",
+                   "gh api projects/123 -X DELETE",
+                   "gh api -X DELETE orgs/acme/teams/devs/repos/acme/svc",
+                   "echo gh repo delete acme/prod-service",
+                   "git commit -m 'gh repo delete after review'"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in deletes + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A042" in d["rule_ids"], cmd in deletes, d)
+                        if cmd in deletes:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
@@ -360,7 +432,7 @@ class CodingPack(unittest.TestCase):
                            ("Write", {"file_path": "/home/u/.cursor/hooks.json", "content": "{}"}),
                            ("Bash", {"command": "sed -i s/true/false/ ~/.gemini/settings.json"})):
             with self.subTest(args=args):
-                self.assertIn("TK-F009", self.e.decide(tool, args)["rule_ids"])
+                self.assertIn("TK-F015" if tool == "Bash" else "TK-F009", self.e.decide(tool, args)["rule_ids"])
 
     def test_opencode_config_changes_are_flagged_but_reads_and_near_names_are_allowed(self):
         for tool, path in (("Write", "/repo/.opencode/commands/deploy.md"),
@@ -379,6 +451,54 @@ class CodingPack(unittest.TestCase):
                            ("Write", r"C:\repo\opencode.json.backup")):
             with self.subTest(tool=tool, path=path):
                 self.assertNotIn("TK-F009", self.e.decide(tool, {"file_path": path})["rule_ids"])
+
+    def test_harness_flags_match_write_and_delete_targets_in_every_pack(self):
+        paths = (".claude/settings.json", ".claude/settings.local.json", "/home/u/.claude/hooks/x.sh",
+                 ".codex/config.toml", ".gemini/settings.json", ".cursor/hooks.json", ".mcp.json",
+                 "managed-settings.json", ".opencode/plugin/a.js", ".OpenCode/plugin/x.js",
+                 "OpenCode.json", "opencode.jsonc", "config with spaces/opencode.json", ".claude", ".gemini", ".codex", ".opencode")
+        commands = ("echo x > .opencode/plugin/a.js", "echo '{}' > .claude/settings.json",
+                    "cat > .gemini/settings.json <<'EOF'\n{}\nEOF", "echo x > .OpenCode/plugin/x.js",
+                    "echo '{}' > OpenCode.json", "tee opencode.json", "cp x .codex/config.toml",
+                    "mv x .cursor/hooks.json", "sed -i s/true/false/ .gemini/settings.json",
+                    "rm .claude/settings.json", "rm -rf ~/.claude/hooks", "mv ~/.gemini/settings.json /tmp/g",
+                    r"cp x 'C:\repo\.opencode\plugin\x.js'", r"echo x > '.opencode\plugin\x.js'",
+                    r"cp x 'C:\repo\OpenCode.json'", r"cp x 'C:\repo\.claude\settings.json'",
+                    r"echo x > '.gemini\settings.json'", r"cp x 'C:\repo\.codex\config.toml'",
+                    "rm -rf ~/.claude", "rm -rf .opencode", "mv ~/.gemini /tmp/g", "cp settings.json ~/.gemini",
+                    "cp x 'a\n/../.claude/settings.json'", "tee 'a\n/../.mcp.json'")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
+            "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
+            "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt")]
+        benign += [(tool, args) for tool, args in (
+            ("Read", {"file_path": "opencode.json"}),
+            ("Write", {"file_path": "notes.md", "content": " ".join(paths)}),
+            ("Edit", {"file_path": "notes.md", "old_string": ".gemini/settings.json", "new_string": "opencode.json"}),
+            ("MultiEdit", {"file_path": "notes.md", "edits": [{"old_string": ".opencode/plugin/a.js",
+                                                              "new_string": ".mcp.json"}]}))]
+        for pack, engine, e in self.every_pack():
+            for path in paths + (r"C:\repo\.OpenCode\plugin\x.js", r"C:\repo\OpenCode.json"):
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-F016"} & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_harness_base_url_keeps_its_existing_raw_subjects(self):
+        calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),
+                 ("Write", {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"}),
+                 ("Edit", {"file_path": "config.env", "old_string": "ANTHROPIC_BASE_URL", "new_string": "x"}),
+                 ("MultiEdit", {"file_path": "config.env", "edits": [{"old_string": "ANTHROPIC_BASE_URL",
+                                                                     "new_string": "x"}]}))
+        for pack, engine, e in self.every_pack():
+            for tool, args in calls:
+                with self.subTest(pack=pack, engine=engine, tool=tool):
+                    self.assertIn("TK-F016", e.decide(tool, args)["rule_ids"])
 
     def test_other_harnesses_shell_tools_and_the_server_pack(self):
         for tool in ("run_shell_command", "shell", "local_shell", "run_terminal_cmd", "container.exec"):
@@ -428,6 +548,142 @@ class CodingPack(unittest.TestCase):
     def test_a_long_command_after_terragrunt_is_decided_without_the_fallback_timeout(self):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})
         self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
+
+    def test_reading_a_secrets_value_from_a_cloud_cli_asks_in_every_pack(self):
+        held = ["aws secretsmanager get-secret-value --secret-id prod/db",
+                "aws --profile prod --region us-east-1 secretsmanager batch-get-secret-value --secret-id-list a b",
+                "aws ssm get-parameter --name /prod/pw --with-decryption",
+                "aws ssm get-parameter --with-decryption --name /prod/pw",
+                "aws ssm get-parameters --names /a /b --with-decryption",
+                "aws ssm get-parameters-by-path --path /prod --with-decryption",
+                "aws ssm get-parameter-history --name /p --with-decryption",
+                "aws ssm get-parameter --name $'a\nb' --with-decryption",
+                "AWS_PROFILE=prod aws secretsmanager get-secret-value --secret-id x",
+                "gcloud secrets versions access latest --secret=db",
+                "gcloud --project p beta secrets versions access 3 --secret=db",
+                "az keyvault secret show --vault-name v --name n",
+                "az keyvault secret show-deleted --vault-name v --name n",
+                "az keyvault secret download --vault-name v --name n --file f",
+                # options between the words, and an abbreviated flag (the AWS CLI accepts any prefix)
+                "aws secretsmanager --region us-east-1 get-secret-value --secret-id x",
+                "aws ssm --region r get-parameter --name x --with-decryption",
+                "aws ssm get-parameter --name x --with-d", "aws ssm get-parameter --name x --with-decrypt",
+                "gcloud secrets --project p versions access latest --secret=db",
+                "gcloud beta --project p secrets versions access latest --secret=db",
+                "az keyvault --subscription s secret show --name n --vault-name v"]
+        routine = ["aws secretsmanager list-secrets", "aws secretsmanager describe-secret --secret-id x",
+                   "aws ssm get-parameter --name /p", "aws ssm get-parameter --name /p --no-with-decryption",
+                   "aws ssm get-parameters-by-path --path /p", "aws ssm get-parameter --name x --wait",
+                   "gcloud secrets list", "gcloud secrets versions list db", "az keyvault secret list --vault-name v",
+                   "az keyvault secret list-versions --vault-name v --name n", "echo aws secretsmanager get-secret-value",
+                   "git commit -m 'aws secretsmanager get-secret-value'"]
+        for pack, engine, e in self.every_pack():
+            for cmd in held + routine:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual("TK-A035" in d["rule_ids"], cmd in held, d)
+                    if cmd in held:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_a_cli_command_given_to_an_mcp_tool_asks_in_every_pack_when_it_starts_with_the_program(self):
+        tools = ("mcp__aws-api__call_aws", "mcp:aws-api/call_aws", "mcp__shell__run_command", "mcp__cloud__ExecuteCommand",
+                 "mcp:ssh/execute", "mcp__x__aws-cli")
+        held = [{"cli_command": "aws secretsmanager get-secret-value --secret-id x"},
+                {"cli_command": "aws ssm get-parameter --name /p --with-decryption"},
+                {"cli_command": "aws --region eu-west-1 secretsmanager get-secret-value --secret-id x"},
+                {"cliCommand": "aws secretsmanager get-secret-value --secret-id x"},
+                {"cli_command": " aws secretsmanager get-secret-value --secret-id x"},
+                {"command": "gcloud secrets versions access latest --secret=db"},
+                {"cmd": "az keyvault secret show --vault-name v --name n"}]
+        routine = [{"cli_command": "aws secretsmanager list-secrets"}, {"cli_command": "aws ssm get-parameter --name /p"},
+                   {"command": "gcloud secrets list"}]
+        for pack, engine, e in self.every_pack():
+            for tool in tools:
+                for args in held + routine:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                        d = e.decide(tool, args)
+                        self.assertEqual("TK-A036" in d["rule_ids"], args in held, d)
+                        if args in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+            # a tool not named for running a command is left to TK-A037 and TK-A038 (docs/limits.md)
+            self.assertNotIn("TK-A036", e.decide("mcp__x__get_thing", held[0])["rule_ids"])
+
+    def test_an_mcp_tool_that_returns_a_secrets_value_asks_in_every_pack_and_one_that_lists_or_describes_does_not(self):
+        held = [("mcp__aws__get_secret_value", {"secret_id": "prod/db-password"}),
+                ("mcp:aws/get_secret_value", {"secret_id": "prod/db-password"}),
+                ("mcp__aws-secrets-manager__GetSecretValue", {"SecretId": "x"}),
+                ("mcp__aws__aws_secretsmanager_get_secret_value", {"secret_name": "x"}),
+                ("mcp__aws__batch_get_secret_value", {"ids": ["x"]}),
+                ("mcp__gcp__access_secret_version", {"name": "projects/p/secrets/s/versions/latest"}),
+                ("mcp__gcp__AccessSecretVersion", {"name": "n"}),
+                ("mcp__azure__get_secret", {"vault": "v", "name": "n"}),
+                ("mcp__azure__keyvault_secret_get", {"vault": "v", "secret": "n"}),
+                ("mcp__azure__get_keyvault_secret", {"vault": "v", "name": "n"}),
+                ("mcp__x__get-secret-value", {}), ("mcp__x__SecretsManagerGetSecretValue", {}),
+                ("mcp__x__azmcp-keyvault-secret-get", {})]
+        routine = [("mcp__aws__list_secrets", {}), ("mcp__aws__describe_secret", {"secret_id": "x"}),
+                   ("mcp__aws__create_secret", {"name": "x"}), ("mcp__aws__put_secret_value", {"secret_id": "x"}),
+                   ("mcp__gcp__get_secret_version", {"name": "n"}), ("mcp__azure__keyvault_secret_list", {"vault": "v"}),
+                   ("mcp__github__get_secret_scanning_alert", {"owner": "a", "repo": "b", "number": 1}),
+                   ("mcp__github__list_secret_scanning_alerts", {"owner": "a", "repo": "b"}),
+                   ("mcp__github__create_issue", {"title": "get_secret_value docs"})]
+        for pack, engine, e in self.every_pack():
+            for tool, args in held + routine:
+                with self.subTest(pack=pack, engine=engine, tool=tool):
+                    d = e.decide(tool, args)
+                    self.assertEqual("TK-A037" in d["rule_ids"], (tool, args) in held, d)
+                    if (tool, args) in held:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_an_mcp_parameter_read_asks_in_every_pack_only_when_it_decrypts(self):
+        held = [("mcp__aws__get_parameter", {"Name": "/p", "WithDecryption": True}),
+                ("mcp__aws__get_parameter", {"name": "/p", "with_decryption": True}),
+                ("mcp__aws__get_parameters", {"names": ["/p"], "withDecryption": True}),
+                ("mcp:aws/get_parameters_by_path", {"Path": "/p", "WithDecryption": True}),
+                ("mcp__aws__get_parameter_history", {"Name": "/p", "WithDecryption": "true"})]
+        routine = [("mcp__aws__get_parameter", {"Name": "/p"}),
+                   ("mcp__aws__get_parameter", {"Name": "/p", "WithDecryption": False}),
+                   ("mcp__aws__get_parameters_by_path", {"Path": "/p"}),
+                   ("mcp__github__create_issue", {"title": "WithDecryption", "body": "with_decryption true"})]
+        for pack, engine, e in self.every_pack():
+            for tool, args in held + routine:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertEqual("TK-A038" in d["rule_ids"], (tool, args) in held, d)
+                    if (tool, args) in held:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_a_call_over_64_kib_is_not_held_by_the_secret_rules(self):
+        # a rule on every MCP call would make each of these ask (TK-OVERSIZE); only a tool the rule is for may
+        big = "x" * 70000
+        rules = ("TK-A035", "TK-A036", "TK-A037", "TK-A038")
+        for pack, engine, e in self.every_pack():
+            for tool, args in [("mcp__filesystem__write_file", {"path": "a.txt", "content": big}),
+                               ("mcp__github__create_or_update_file", {"path": "a.txt", "content": big}),
+                               ("mcp__notion__create_page", {"title": "t", "content": big}),
+                               ("Write", {"file_path": "/tmp/a.txt", "content": big}),
+                               ("Bash", {"command": "echo " + big})]:
+                with self.subTest(pack=pack, engine=engine, tool=tool):
+                    d = e.decide(tool, args)
+                    self.assertEqual([o for o in d.get("oversize", []) if o.startswith(rules)], [], d)
+                    if pack in ("coding.yaml", "dev.yaml") and tool.startswith("mcp"):
+                        self.assertEqual(d["verdict"], "flag", d)
+
+    def test_a_tool_name_of_underscores_is_decided_without_the_fallback_timeout(self):
+        for pack, engine, e in self.every_pack():
+            for tool in ("mcp__" + "_" * 4000 + "x", "mcp__x__" + "get_secret_" * 5000, "mcp__x__" + "run_" * 12000):
+                with self.subTest(pack=pack, engine=engine, tool=tool[:20]):
+                    self.assertIsNone(e.decide(tool, {"a": 1}).get("nondeterministic"))
+
+    def test_a_long_command_after_aws_ssm_is_decided_without_the_fallback_timeout(self):
+        for pack, engine, e in self.every_pack():
+            with self.subTest(pack=pack, engine=engine):
+                d = e.decide("Bash", {"command": "aws ssm get-parameter " + "x " * 30000 + "--with-decryption"})
+                self.assertEqual(("TK-A035" in d["rule_ids"], d.get("nondeterministic")), (True, None), d)
+                d = e.decide("Bash", {"command": "aws ssm get-parameter " * 2900})
+                self.assertEqual(("TK-A035" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
+                d = e.decide("mcp__aws-api__call_aws", {"cli_command": "aws ssm get-parameter " + "x " * 30000})
+                self.assertEqual(("TK-A036" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
 
     def test_remote_ref_deletion_past_a_newline_in_an_argument_but_not_in_the_next_command(self):
         # `.` stopped at a newline inside an earlier argument; macOS runs git for `Git`; git takes any prefix of
