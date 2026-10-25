@@ -432,7 +432,7 @@ class CodingPack(unittest.TestCase):
                            ("Write", {"file_path": "/home/u/.cursor/hooks.json", "content": "{}"}),
                            ("Bash", {"command": "sed -i s/true/false/ ~/.gemini/settings.json"})):
             with self.subTest(args=args):
-                self.assertIn("TK-F009", self.e.decide(tool, args)["rule_ids"])
+                self.assertIn("TK-F015" if tool == "Bash" else "TK-F009", self.e.decide(tool, args)["rule_ids"])
 
     def test_opencode_config_changes_are_flagged_but_reads_and_near_names_are_allowed(self):
         for tool, path in (("Write", "/repo/.opencode/commands/deploy.md"),
@@ -451,6 +451,54 @@ class CodingPack(unittest.TestCase):
                            ("Write", r"C:\repo\opencode.json.backup")):
             with self.subTest(tool=tool, path=path):
                 self.assertNotIn("TK-F009", self.e.decide(tool, {"file_path": path})["rule_ids"])
+
+    def test_harness_flags_match_write_and_delete_targets_in_every_pack(self):
+        paths = (".claude/settings.json", ".claude/settings.local.json", "/home/u/.claude/hooks/x.sh",
+                 ".codex/config.toml", ".gemini/settings.json", ".cursor/hooks.json", ".mcp.json",
+                 "managed-settings.json", ".opencode/plugin/a.js", ".OpenCode/plugin/x.js",
+                 "OpenCode.json", "opencode.jsonc", "config with spaces/opencode.json", ".claude", ".gemini", ".codex", ".opencode")
+        commands = ("echo x > .opencode/plugin/a.js", "echo '{}' > .claude/settings.json",
+                    "cat > .gemini/settings.json <<'EOF'\n{}\nEOF", "echo x > .OpenCode/plugin/x.js",
+                    "echo '{}' > OpenCode.json", "tee opencode.json", "cp x .codex/config.toml",
+                    "mv x .cursor/hooks.json", "sed -i s/true/false/ .gemini/settings.json",
+                    "rm .claude/settings.json", "rm -rf ~/.claude/hooks", "mv ~/.gemini/settings.json /tmp/g",
+                    r"cp x 'C:\repo\.opencode\plugin\x.js'", r"echo x > '.opencode\plugin\x.js'",
+                    r"cp x 'C:\repo\OpenCode.json'", r"cp x 'C:\repo\.claude\settings.json'",
+                    r"echo x > '.gemini\settings.json'", r"cp x 'C:\repo\.codex\config.toml'",
+                    "rm -rf ~/.claude", "rm -rf .opencode", "mv ~/.gemini /tmp/g", "cp settings.json ~/.gemini",
+                    "cp x 'a\n/../.claude/settings.json'", "tee 'a\n/../.mcp.json'")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
+            "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
+            "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt")]
+        benign += [(tool, args) for tool, args in (
+            ("Read", {"file_path": "opencode.json"}),
+            ("Write", {"file_path": "notes.md", "content": " ".join(paths)}),
+            ("Edit", {"file_path": "notes.md", "old_string": ".gemini/settings.json", "new_string": "opencode.json"}),
+            ("MultiEdit", {"file_path": "notes.md", "edits": [{"old_string": ".opencode/plugin/a.js",
+                                                              "new_string": ".mcp.json"}]}))]
+        for pack, engine, e in self.every_pack():
+            for path in paths + (r"C:\repo\.OpenCode\plugin\x.js", r"C:\repo\OpenCode.json"):
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-F016"} & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_harness_base_url_keeps_its_existing_raw_subjects(self):
+        calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),
+                 ("Write", {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"}),
+                 ("Edit", {"file_path": "config.env", "old_string": "ANTHROPIC_BASE_URL", "new_string": "x"}),
+                 ("MultiEdit", {"file_path": "config.env", "edits": [{"old_string": "ANTHROPIC_BASE_URL",
+                                                                     "new_string": "x"}]}))
+        for pack, engine, e in self.every_pack():
+            for tool, args in calls:
+                with self.subTest(pack=pack, engine=engine, tool=tool):
+                    self.assertIn("TK-F016", e.decide(tool, args)["rule_ids"])
 
     def test_other_harnesses_shell_tools_and_the_server_pack(self):
         for tool in ("run_shell_command", "shell", "local_shell", "run_terminal_cmd", "container.exec"):
