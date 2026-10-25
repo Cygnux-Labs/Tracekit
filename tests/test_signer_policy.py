@@ -310,6 +310,10 @@ class CodingPack(unittest.TestCase):
             'psql -c "BEGIN; DROP TABLE users; END; ROLLBACK;"',
             'psql -c "DROP TABLE users" -c "BEGIN; ROLLBACK;"',
             'psql --command "DROP TABLE x" -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            # DML with a COMMIT or END inside the block
+            'psql -c "BEGIN; DELETE FROM users; COMMIT; ROLLBACK;"',
+            'psql -c "BEGIN; DELETE FROM users; END; ROLLBACK;"',
+            'mysql -e "START TRANSACTION; DELETE FROM audit_log; COMMIT; ROLLBACK;"',
             # a bare ROLLBACK after a committed DROP, and a DROP before the transaction opens
             'psql postgresql://app@db.internal:5432/shop -c "DROP TABLE x; ROLLBACK;"',
             'psql postgresql://app@db.internal:5432/shop -c "DROP TABLE x; BEGIN; SELECT 1; ROLLBACK;"',
@@ -365,7 +369,7 @@ class CodingPack(unittest.TestCase):
             # SELECT-only and UPDATE-only transactions still don't match: the rule holds DROP, TRUNCATE
             # and unscoped DELETE only, whatever the options before the flag
             'psql -c "BEGIN; SELECT 1; ROLLBACK;"',
-            # a lone minus or slash inside DML is not a comment: still exempt
+            # a lone minus or slash inside an UPDATE is not a comment, and an UPDATE isn't held
             'psql -c "BEGIN; UPDATE t SET x = a/-5; ROLLBACK;"',
             'psql -c "BEGIN; UPDATE t SET x = a/b; ROLLBACK;"',
             # listed, not covered: the SQL never reaches argv
