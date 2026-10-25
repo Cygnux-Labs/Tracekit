@@ -185,8 +185,8 @@ while True:
     elif not (mode == "silent" and req["op"] in ("model_begin", "tool_begin")):
         reply({"id": req["id"], "ok": True})
 `);
-const fakeStart = (mode, failMode, timeoutMs) =>
-  Tracekit.start({ timeoutMs, approvalTimeoutMs: timeoutMs, env: { PYTHONPATH: fake, FAKE_MODE: mode, FAKE_FAIL_MODE: failMode } });
+const fakeStart = (mode, failMode) =>
+  Tracekit.start({ env: { PYTHONPATH: fake, FAKE_MODE: mode, FAKE_FAIL_MODE: failMode } });
 
 for (const mode of ["exit", "close"]) {
   test(`a bridge that ${mode === "exit" ? "exits mid-write" : "closes its stdin"} never crashes the host; the call follows the fail mode`, async () => {
@@ -228,7 +228,9 @@ test("a failed start does not leave the bridge running", () => {
 });
 
 test("fail_mode=open: an unanswered model_begin lets the model call proceed unrecorded", async () => {
-  const tk = await fakeStart("silent", "open", 200);
+  const tk = await fakeStart("silent", "open");
+  tk.timeoutMs = 200;
+  tk.approvalTimeoutMs = 200;
   const client = instrumentAnthropic({ messages: { create: async () => ({ content: [], stop_reason: "end_turn" }) } }, tk);
   assert.equal((await client.messages.create({ model: "m", messages: [] })).stop_reason, "end_turn");
   await assert.rejects(tk.tool("Bash", { command: "ls" }, () => "ran"), /timed out/);  // tool_begin still refuses
