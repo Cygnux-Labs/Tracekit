@@ -150,3 +150,37 @@
 {"tool": "Bash", "args": {"command": "npm set registry https://packages.example.test/"}, "expect": "ask", "note": "npm set alias for config set"}
 {"tool": "Bash", "args": {"command": "docker run --privileged=1 alpine"}, "expect": "ask", "note": "privileged container, value form"}
 {"tool": "Bash", "args": {"command": "sqlite3 'C:/Users/u/AppData/Local/Microsoft/Edge/User Data/Default/Login Data'"}, "expect": "ask", "note": "Windows Edge saved logins"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE https://api.github.com/repos/acme/prod-service -H \"Authorization: Bearer $GH_TOKEN\""}, "expect": "ask", "note": "delete a repository through GitHub's API"}
+{"tool": "Bash", "args": {"command": "curl --request DELETE \"https://gitlab.com/api/v4/projects/42\" -H \"PRIVATE-TOKEN: $GL_TOKEN\""}, "expect": "ask", "note": "delete a project through GitLab's API"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE https://api.vercel.com/v9/projects/prod-app -H \"Authorization: Bearer $VERCEL_TOKEN\""}, "expect": "ask", "note": "delete a project through Vercel's API"}
+{"tool": "Bash", "args": {"command": "curl -X POST https://api.github.com/graphql -H \"Authorization: Bearer $GH_TOKEN\" -d '{\"query\": \"mutation { deleteRepository(input: {repositoryId: \\\"R_1\\\"}) { clientMutationId } }\"}'"}, "expect": "ask", "note": "delete a repository through GitHub's GraphQL API"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE repos/acme/prod-service"}, "expect": "ask", "note": "delete a repository through gh api"}
+{"tool": "Bash", "args": {"command": "gh api repos/acme/prod-service -X DELETE"}, "expect": "ask", "note": "delete a repository through gh api, method after the URL"}
+{"tool": "Bash", "args": {"command": "hub api -X DELETE repos/acme/prod-service"}, "expect": "ask", "note": "delete a repository through hub api"}
+{"tool": "Bash", "args": {"command": "gh repo delete acme/prod-service --yes"}, "expect": "ask", "note": "delete a repository with gh repo delete"}
+{"tool": "Bash", "args": {"command": "glab repo delete acme/prod-service --yes"}, "expect": "ask", "note": "delete a project with glab repo delete"}
+{"tool": "Bash", "args": {"command": "vercel remove prod-app --yes"}, "expect": "ask", "note": "delete a project with vercel remove"}
+{"tool": "Bash", "args": {"command": "glab api -X DELETE projects/42"}, "expect": "ask", "note": "delete a project through glab api"}
+{"tool": "Bash", "args": {"command": "gh api graphql -f query='mutation { deleteRepository(input: {repositoryId: \"R_1\"}) { clientMutationId } }'"}, "expect": "ask", "note": "delete a repository through a gh api GraphQL mutation"}
+{"tool": "Bash", "args": {"command": "gh api graphql -f query='\n  mutation {\n    deleteRepository(input: {repositoryId: \"R_1\"}) {\n      clientMutationId\n    }\n  }'"}, "expect": "ask", "note": "delete a repository through a multi-line GraphQL mutation"}
+{"tool": "Bash", "args": {"command": "wget --method=DELETE https://gitlab.com/api/v4/projects/42"}, "expect": "ask", "note": "delete a project through wget"}
+{"tool": "Bash", "args": {"command": "http DELETE https://api.vercel.com/v9/projects/prod-app"}, "expect": "ask", "note": "delete a project through HTTPie"}
+{"tool": "Bash", "args": {"command": "curl https://api.github.com/repos/acme/prod-service -X DELETE"}, "expect": "ask", "note": "delete a repository, method after the URL"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE https://api.github.com/repos/acme/prod-service/"}, "expect": "ask", "note": "delete a repository, trailing slash"}
+{"tool": "Bash", "args": {"command": "vercel rm prod-app --yes"}, "expect": "ask", "note": "vercel rm removes a project, as remove does"}
+{"tool": "Bash", "args": {"command": "vercel project rm prod-app"}, "expect": "ask", "note": "vercel project rm removes a project"}
+{"tool": "Bash", "args": {"command": "vercel projects rm"}, "expect": "ask", "note": "vercel projects rm removes a project"}
+{"tool": "Bash", "args": {"command": "glab project delete acme/svc --yes"}, "expect": "ask", "note": "glab project delete deletes a project"}
+{"tool": "Bash", "args": {"command": "hub delete -y acme/svc"}, "expect": "ask", "note": "hub delete deletes a repository"}
+{"tool": "Bash", "args": {"command": "http -A bearer -a tok DELETE https://api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "an HTTPie DELETE to a repository URL, with options before the method"}
+{"tool": "Bash", "args": {"command": "gh api --method DELETE -H \"Accept: application/vnd.github+json\" -H \"X-GitHub-Api-Version: 2022-11-28\" /repos/acme/prod-service"}, "expect": "ask", "note": "the docs' gh api example: options before the method, then a repository path"}
+{"tool": "Bash", "args": {"command": "gh api -H 'Accept: x' -X DELETE repos/o/r"}, "expect": "ask", "note": "options before the method flag, bare repository path"}
+{"tool": "Bash", "args": {"command": "gh api --hostname ghe.corp -X DELETE repos/o/r"}, "expect": "ask", "note": "an option and its value before the method flag, bare repository path"}
+{"tool": "Bash", "args": {"command": "gh api --paginate -X DELETE repos/acme/svc"}, "expect": "ask", "note": "an option before the method flag, bare repository path"}
+{"tool": "Bash", "args": {"command": "glab api -H 'X: y' -X DELETE projects/42"}, "expect": "ask", "note": "options before the method flag, bare project path"}
+{"tool": "Bash", "args": {"command": "hub api -H 'X: y' -X DELETE repos/o/r"}, "expect": "ask", "note": "options before the method flag, bare repository path"}
+{"tool": "Bash", "args": {"command": "gh api -H 'X: y' repos/o/r -X DELETE"}, "expect": "ask", "note": "options before a bare repository path, method after it"}
+{"tool": "Bash", "args": {"command": "http DELETE api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "HTTPie DELETE to a repository URL without a scheme"}
+{"tool": "Bash", "args": {"command": "https DELETE api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "HTTPie (https) DELETE to a repository URL without a scheme"}
+{"tool": "Bash", "args": {"command": "xh DELETE api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "xh DELETE to a repository URL without a scheme"}
+{"tool": "Bash", "args": {"command": "xhs DELETE api.github.com/repos/acme/prod-service"}, "expect": "ask", "note": "xhs DELETE to a repository URL without a scheme"}
