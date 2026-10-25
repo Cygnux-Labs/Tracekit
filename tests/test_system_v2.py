@@ -276,31 +276,43 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.d, install.V2_EGRESS + ".service")))
 
     def test_init_and_uninstall_wire_a_harness_hook(self):
-        home = os.path.join(self.d, "home")
-        agent = types.SimpleNamespace(**dict(vars(AGENT), pw_dir=home))
-        run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
-        with mock.patch.object(install.pwd, "getpwnam", return_value=agent), \
-                mock.patch.object(install.pwd, "getpwuid", return_value=self.me), \
-                mock.patch.dict(os.environ, {"SUDO_UID": str(self.me.pw_uid)}), \
-                mock.patch.object(install, "_privileges", return_value=[]), \
-                mock.patch.object(install, "_install_source", return_value=None), \
-                mock.patch.object(install, "_system_user", return_value=self.me), \
-                mock.patch.object(install, "_install_venv"), \
-                mock.patch.object(install.subprocess, "run", run), \
-                mock.patch.object(install.client, "system_config", return_value={}), \
-                mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
-                mock.patch.object(install.files, "as_user", lambda pw, fn, *a, errors=(): fn(*a)):
-            sock, settings = install.init_system_v2("agent", agent="codex")
-            self.assertEqual(settings, agent_hooks.config_path("codex", home))
-            with open(os.path.join(home, ".codex", "config.toml")) as f:   # its reasoning summaries, on
-                self.assertEqual(f.read(), agent_hooks.CODEX_LINE)
-            with open(settings) as f:
-                self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.integrations.harness_hooks codex PreToolUse; s=$?", f.read())
-            sc = sys_cfg.call_args.args[0]
-            self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": "codex"})
-            self.uninstall(sc)
-            with open(settings) as f:
-                self.assertNotIn("tracekit", f.read())
+        for harness in ("codex", "opencode"):
+            with self.subTest(agent=harness):
+                home = os.path.join(self.d, harness)
+                agent = types.SimpleNamespace(**dict(vars(AGENT), pw_dir=home))
+                run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
+                with mock.patch.object(install.pwd, "getpwnam", return_value=agent), \
+                        mock.patch.object(install.pwd, "getpwuid", return_value=self.me), \
+                        mock.patch.dict(os.environ, {"SUDO_UID": str(self.me.pw_uid)}), \
+                        mock.patch.object(install, "_privileges", return_value=[]), \
+                        mock.patch.object(install, "_install_source", return_value=None), \
+                        mock.patch.object(install, "_system_user", return_value=self.me), \
+                        mock.patch.object(install, "_install_venv"), \
+                        mock.patch.object(install.subprocess, "run", run), \
+                        mock.patch.object(install.client, "system_config", return_value={}), \
+                        mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
+                        mock.patch.object(install.files, "as_user", lambda pw, fn, *a, errors=(): fn(*a)):
+                    sock, settings = install.init_system_v2("agent", agent=harness)
+                    self.assertEqual(settings, agent_hooks.config_path(harness, home=home))
+                    with open(settings) as f:
+                        hook = f.read()
+                    if harness == "codex":
+                        with open(os.path.join(home, ".codex", "config.toml")) as f:   # its reasoning summaries, on
+                            self.assertEqual(f.read(), agent_hooks.CODEX_LINE)
+                        self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.integrations.harness_hooks codex PreToolUse; s=$?", hook)
+                    else:
+                        self.assertEqual(settings, os.path.join(home, ".config", "opencode", "plugin", "tracekit.js"))
+                        for event in ("tool.execute.before", "tool.execute.after"):
+                            self.assertIn(json.dumps([install.OPT_PYTHON, "-I", "-m",
+                                                      "tracekit.integrations.harness_hooks", harness, event]), hook)
+                    sc = sys_cfg.call_args.args[0]
+                    self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": harness})
+                    self.uninstall(sc)
+                    if harness == "opencode":
+                        self.assertFalse(os.path.exists(settings))
+                    else:
+                        with open(settings) as f:
+                            self.assertNotIn("tracekit", f.read())
 
     def uninstall(self, sc, purge=False):
         run = mock.Mock(return_value=mock.Mock(returncode=0))
