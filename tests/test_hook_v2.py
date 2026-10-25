@@ -384,7 +384,8 @@ class InitV2(unittest.TestCase):
     def setUp(self):   # init reads the user's Claude Code settings and makes the dev signer's data dir
         self.home = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.home, True)
-        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home, "CLAUDE_CONFIG_DIR": "",   # Windows' ~
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,   # USERPROFILE: Windows' ~
+                                           "CLAUDE_CONFIG_DIR": "",
                                            "XDG_DATA_HOME": os.path.join(self.home, "data")})
         env.start()
         self.addCleanup(env.stop)
@@ -435,6 +436,12 @@ class InitV2(unittest.TestCase):
         path = self.enable_installed_plugin(key, {"source": "git-subdir", "url": "someone-else/Tracekit",
                                                    "path": "plugin"}, version=1)
         self.assertIsNone(install.plugin_enabled([path]))
+        path = self.enable_installed_plugin(key, {"source": "git-subdir", "url": "someone-else/Tracekit",
+                                                   "path": "plugin"})
+        self.assertIsNone(install.plugin_enabled([path]))   # another vendor's, in the v2 record format
+        path = self.enable_installed_plugin(key, {"source": "git-subdir", "url": "Cygnux-Labs/Tracekit",
+                                                   "path": "plugins/other"})
+        self.assertIsNone(install.plugin_enabled([path]))   # our repo, another directory
 
         path = os.path.join(self.home, ".claude", "legacy.json")
         with open(path, "w") as f:

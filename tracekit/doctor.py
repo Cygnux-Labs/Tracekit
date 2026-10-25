@@ -493,7 +493,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                              else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
 
     hook_fix = REINIT if prod else "tracekit init --dev --v2"
-    plugin_settings, plugin_key = plugin if isinstance(plugin, tuple) else (plugin, install.PLUGIN)
+    plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
     from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin_settings}"
     others = "v2 hooks for " + ", ".join(f"{h} in {p}" for h, p in sorted((harnesses or {}).items()))
     if not settings:

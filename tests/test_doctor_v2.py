@@ -497,7 +497,7 @@ class PluginHooks(unittest.TestCase):
 
     def test_the_plugins_hooks_count_and_init_is_not_suggested(self):
         for settings in (self.settings, None):   # dev mode; system mode with no hooks recorded in client.json
-            got = self.hooks_present(settings, self.plugin)
+            got = self.hooks_present(settings, (self.plugin, install.PLUGIN))
             self.assertEqual((got["status"], got["fix"]), ("ok", ""), settings)
             self.assertIn("Claude Code plugin", got["detail"])
         self.assertIn("tracekit init --dev --v2", self.hooks_present(self.settings, None)["fix"])
@@ -608,8 +608,9 @@ class HostileSettings(unittest.TestCase):
         with mock.patch.object(install, "user_settings", return_value=dev):
             t = threading.Thread(target=lambda: out.extend(doctor.v2_checks(
                 {"data_dir": d, "content": {"retain": True}}, "dev", settings=fifo, sandbox_settings=[fifo, dev],
-                plugin=dev, gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
-                                                                    "gemini": fifo})), daemon=True)
+                plugin=(dev, install.PLUGIN),
+                gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
+                                                        "gemini": fifo})), daemon=True)
             t.start()
             t.join(5)
         self.assertFalse(t.is_alive(), "doctor blocked on the FIFO")

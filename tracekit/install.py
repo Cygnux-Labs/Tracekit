@@ -391,7 +391,10 @@ def agent_file(path):
 def plugin_enabled(user=None):
     """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
     or None. Reads `user` (default user_settings_all()), the working directory's project and local settings, then the
-    managed settings: a later file's enabledPlugins entry wins, as in Claude Code. Returns (settings path, plugin key)."""
+    managed settings: a later file's enabledPlugins entry wins, as in Claude Code. -> (settings path, plugin key)."""
+    # lean: enabledPlugins plus Claude Code's install state; a plugin on through --plugin-dir, --settings or its
+    # defaultEnabled with no entry, or from a claude.ai-synced marketplace (no known_marketplaces.json entry), goes
+    # unseen; read those too if users hit that
     active, order, managed = {}, 0, MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
     project = [os.path.join(os.getcwd(), ".claude", f) for f in ("settings.json", "settings.local.json")]
     for p in (*(user or user_settings_all()), *project, managed):
@@ -413,12 +416,16 @@ def plugin_enabled(user=None):
 
 
 def _plugin_config_dirs(settings_path):
-    """Claude config roots that can own the plugin installation state for this settings file."""
-    roots = []
+    """The Claude config root whose plugins/ holds the install state for a plugin enabled in settings_path: a user
+    settings file's own directory (another user's too: system-mode doctor reads the agent's), else this user's.
+    Claude Code never writes plugin state into a project's .claude."""
     parent = os.path.dirname(os.path.abspath(settings_path))
-    if os.path.basename(parent) == ".claude":
-        roots.append(parent)
-    roots.extend((os.environ.get("CLAUDE_CONFIG_DIR"), os.path.join(os.path.expanduser("~"), ".claude")))
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    project = os.path.join(os.path.abspath(os.getcwd()), ".claude")
+    if (os.path.basename(parent) == ".claude" and parent != project) or (config and parent == os.path.abspath(config)):
+        roots = [parent]
+    else:
+        roots = [config or os.path.join(os.path.expanduser("~"), ".claude")]
     out, seen = [], set()
     for root in roots:
         if root:
@@ -451,6 +458,7 @@ def _installed_tracekit_plugin(plugin_id, settings_path):
             known = json.loads(agent_file(os.path.join(config_dir, "plugins", "known_marketplaces.json")))
             market = known.get(marketplace)
             location = market.get("installLocation") if isinstance(market, dict) else None
+            location = location if isinstance(location, str) and os.path.isabs(location) else None
             source = market.get("source") if isinstance(market, dict) else None
             manifest_path = os.path.join(location, ".claude-plugin", "marketplace.json") if location else None
             manifest = json.loads(agent_file(manifest_path)) if manifest_path else {}

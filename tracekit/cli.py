@@ -477,7 +477,8 @@ def _run(a):
                 plugin = hooks and install.plugin_enabled()
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
                     settings_path, plugin_key = plugin
-                    print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings_path}, runs them "
+                    print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings_path}, "
+                          f"runs them "
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
                           f"/plugin disable {plugin_key}, then run init again")
                     if not a.no_thinking_summaries:
