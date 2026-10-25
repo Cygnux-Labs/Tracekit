@@ -384,7 +384,7 @@ class InitV2(unittest.TestCase):
     def setUp(self):   # init reads the user's Claude Code settings and makes the dev signer's data dir
         self.home = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.home, True)
-        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,   # Windows' ~
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home, "CLAUDE_CONFIG_DIR": "",   # Windows' ~
                                            "XDG_DATA_HOME": os.path.join(self.home, "data")})
         env.start()
         self.addCleanup(env.stop)
@@ -395,6 +395,51 @@ class InitV2(unittest.TestCase):
             code = cli.main(["init", *argv])
         self.out = out.getvalue()
         return code, err.getvalue()
+
+    def enable_installed_plugin(self, key, source, version=2, marketplace_repo="community/marketplace"):
+        settings_dir = os.path.join(self.home, ".claude")
+        plugins_dir = os.path.join(settings_dir, "plugins")
+        marketplace_dir = os.path.join(plugins_dir, "marketplaces", "community")
+        os.makedirs(os.path.join(marketplace_dir, ".claude-plugin"), exist_ok=True)
+        with open(os.path.join(settings_dir, "settings.json"), "w") as f:
+            json.dump({"enabledPlugins": {key: True}}, f)
+        record = {"scope": "user", "installPath": os.path.join(plugins_dir, "cache", "community", "tracekit", "1")}
+        installed = [record] if version == 2 else {"version": "1", "installedAt": "now",
+                                                   "installPath": record["installPath"]}
+        state = {"version": version, "plugins": {key: installed}}
+        with open(os.path.join(plugins_dir, "installed_plugins.json"), "w") as f:
+            json.dump(state, f)
+        with open(os.path.join(plugins_dir, "known_marketplaces.json"), "w") as f:
+            json.dump({"community": {"source": {"source": "github", "repo": marketplace_repo},
+                                      "installLocation": marketplace_dir}}, f)
+        with open(os.path.join(marketplace_dir, ".claude-plugin", "marketplace.json"), "w") as f:
+            json.dump({"plugins": [{"name": "tracekit", "source": source}]}, f)
+        return os.path.join(settings_dir, "settings.json")
+
+    def test_plugin_enabled_checks_the_installed_source_and_path(self):
+        key = "tracekit@community"
+        path = self.enable_installed_plugin(key, {"source": "git-subdir", "url": "Cygnux-Labs/Tracekit",
+                                                   "path": "plugin/"})
+        self.assertEqual(install.plugin_enabled([path]), (path, key))
+        path = self.enable_installed_plugin(key, "./plugin", marketplace_repo="Cygnux-Labs/Tracekit")
+        self.assertEqual(install.plugin_enabled([path]), (path, key))
+
+        project = os.path.join(self.home, "project")
+        project_settings = os.path.join(project, ".claude", "settings.json")
+        os.makedirs(os.path.dirname(project_settings))
+        with open(project_settings, "w") as f:
+            json.dump({"enabledPlugins": {key: False}}, f)
+        with mock.patch("os.getcwd", return_value=project):
+            self.assertIsNone(install.plugin_enabled([path]))
+
+        path = self.enable_installed_plugin(key, {"source": "git-subdir", "url": "someone-else/Tracekit",
+                                                   "path": "plugin"}, version=1)
+        self.assertIsNone(install.plugin_enabled([path]))
+
+        path = os.path.join(self.home, ".claude", "legacy.json")
+        with open(path, "w") as f:
+            json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+        self.assertEqual(install.plugin_enabled([path]), (path, install.PLUGIN))
 
     def test_init_installs_no_hooks_while_the_plugin_is_enabled(self):
         """Plugin and init hooks both decided every call, and one consumed each approval the other waited on, so
@@ -416,6 +461,15 @@ class InitV2(unittest.TestCase):
             self.init("--dev", "--v2")
         self.assertIn(f"/plugin disable {install.PLUGIN}", self.out)
         self.assertTrue(os.path.isdir(service.dev_data_dir()))   # the plugin's hook now blocks calls it can't record
+
+        key = "tracekit@community"
+        settings = self.enable_installed_plugin(key, {"source": "git-subdir", "url": "Cygnux-Labs/Tracekit",
+                                                       "path": "plugin"})
+        with mock.patch("os.getcwd", return_value=self.home):
+            self.assertEqual(self.init("--dev", "--v2")[0], 0)
+        with open(settings) as f:
+            self.assertNotIn("hooks", json.load(f))
+        self.assertIn(f"/plugin disable {key}", self.out)
 
     def test_init_turns_thinking_summaries_on_for_the_plugins_users_and_uninstall_off(self):
         """With the plugin, init returned before it set showThinkingSummaries, though doctor's fix said init does."""
@@ -469,7 +523,7 @@ class InitV2(unittest.TestCase):
             self.assertIsNone(install.plugin_enabled([os.path.join(self.home, "missing.json")]))
         with mock.patch("os.getcwd", return_value=project), \
                 mock.patch.dict(install.MANAGED_SETTINGS, darwin=managed, linux=managed):
-            self.assertEqual(install.plugin_enabled([user]), managed)
+            self.assertEqual(install.plugin_enabled([user]), (managed, install.PLUGIN))
 
     def test_init_dev_v2_writes_the_hook(self):
         d = tempfile.mkdtemp()

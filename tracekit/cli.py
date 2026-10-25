@@ -476,9 +476,10 @@ def _run(a):
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
                 plugin = hooks and install.plugin_enabled()
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
-                    print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {plugin}, runs them "
+                    settings_path, plugin_key = plugin
+                    print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings_path}, runs them "
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
-                          f"/plugin disable {install.PLUGIN}, then run init again")
+                          f"/plugin disable {plugin_key}, then run init again")
                     if not a.no_thinking_summaries:
                         try:
                             print(install.thinking_line(hooks, install.thinking_on(hooks)))

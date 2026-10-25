@@ -332,7 +332,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
     issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with; plugin: the
-    settings file that enables the Tracekit Claude Code plugin (install.plugin_enabled), whose hooks are init's;
+    (settings file, plugin key) returned by install.plugin_enabled, whose hooks are init's;
     sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox);
     gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini); harnesses: {coding agent: its hook
     config} of the other agents with v2 hooks (agent_hooks), whose reasoning settings are checked."""
@@ -493,7 +493,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                              else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
 
     hook_fix = REINIT if prod else "tracekit init --dev --v2"
-    from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin}"
+    plugin_settings, plugin_key = plugin if isinstance(plugin, tuple) else (plugin, install.PLUGIN)
+    from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin_settings}"
     others = "v2 hooks for " + ", ".join(f"{h} in {p}" for h, p in sorted((harnesses or {}).items()))
     if not settings:
         add("D-HOOKS-PRESENT", bool(plugin or harnesses), from_plugin if plugin else others if harnesses else
@@ -510,7 +511,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             both = any(hooks.values())
             add("D-HOOKS-PRESENT", not both, f"{from_plugin}, and init's v2 hooks in {settings}: every call is decided "
                 "twice, and every approved call is blocked" if both else from_plugin,
-                f"keep one: tracekit uninstall (init's hooks), or /plugin disable {install.PLUGIN}", bad=sev)
+                f"keep one: tracekit uninstall (init's hooks), or /plugin disable {plugin_key}", bad=sev)
         elif hooks is not None and harnesses and not any(hooks.values()):   # another coding agent's, not Claude's
             add("D-HOOKS-PRESENT", True, others, "")
         elif hooks is not None:

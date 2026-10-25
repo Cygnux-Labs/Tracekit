@@ -505,10 +505,10 @@ class PluginHooks(unittest.TestCase):
     def test_the_plugin_with_inits_hooks_is_flagged(self):
         with contextlib.redirect_stdout(io.StringIO()):
             install.install_hooks(self.settings, module=install.V2_HOOK)
-        got = self.hooks_present(self.settings, self.plugin)
+        got = self.hooks_present(self.settings, (self.plugin, "tracekit@community"))
         self.assertEqual(got["status"], "warn")
         self.assertIn("every approved call is blocked", got["detail"])
-        self.assertIn(f"/plugin disable {install.PLUGIN}", got["fix"])
+        self.assertIn("/plugin disable tracekit@community", got["fix"])
         self.assertEqual(self.hooks_present(self.settings, None)["status"], "ok")
 
     def test_collect_reads_enabled_plugins(self):
@@ -524,7 +524,8 @@ class PluginHooks(unittest.TestCase):
                 mock.patch.object(doctor.client, "system_config", return_value=None), \
                 mock.patch.object(doctor, "v2_checks", return_value=[]) as v2:
             doctor.collect()
-        self.assertEqual(v2.call_args.kwargs["plugin"], os.path.join(home, ".claude", "settings.json"))
+        self.assertEqual(v2.call_args.kwargs["plugin"], (os.path.join(home, ".claude", "settings.json"),
+                                                          install.PLUGIN))
 
 
 class ThinkingSummaries(unittest.TestCase):
