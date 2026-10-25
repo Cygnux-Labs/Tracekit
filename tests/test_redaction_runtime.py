@@ -1,5 +1,7 @@
 """Redaction runs inside the hook on tool arguments, so every secret pattern must stay
 fast on large adversarial input (a prefix of the pattern repeated, never completing)."""
+import random
+import re
 import time
 import timeit
 import unittest
@@ -26,6 +28,12 @@ ADVERSARIAL = {
 }
 
 
+# the regex privacy._redact_jwts() replaced (#375): the same tokens, but every "eyJ" after a "-" read up to 512
+# characters, too slow on a busy runner
+JWT_REGEX = re.compile(r"\beyJ(?:(?<!-eyJ)[A-Za-z0-9_\-]{8,}|[A-Za-z0-9_\-]{8,512})"
+                       r"\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")
+
+
 def repeated(prefix):
     return (prefix * (SIZE // len(prefix) + 1))[:SIZE]
 
@@ -45,6 +53,17 @@ class RedactionRuntimeTests(unittest.TestCase):
                 with self.subTest(pattern=name, prefix=prefix):
                     s = repeated(prefix)
                     self.assertLess(seconds(lambda: privacy.redact_text(s)), BOUND)
+
+    def test_the_jwt_scan_redacts_what_the_regex_did(self):
+        scan = dict(privacy.SECRET_PATTERNS)["jwt"]
+        cases = [f"{before}eyJ{'a' * size}.bbbbbbbb.cccccccc{after}"
+                 for before in ("", " ", "x-", "-", "é", "_", "a", "=", "eyJ-")
+                 for size in (7, 8, 511, 512, 513, 2000) for after in ("", ".", "-x", " eyJaaaaaaaa.bbbbbbbb.cc")]
+        rng = random.Random(375)
+        pieces = ("eyJ", "eyJaaaaaaaa", "-", ".", ".bbbbbbbb", "aaaaaaaa", "_", "é", " ", "=", "a" * 300)
+        cases += ["".join(rng.choice(pieces) for _ in range(rng.randint(1, 40))) for _ in range(10000)]
+        for s in cases:
+            self.assertEqual(privacy._redact_jwts(scan, s), JWT_REGEX.subn("[REDACTED:jwt]", s), s)
 
     def test_a_url_with_a_port_and_an_address_in_its_path_or_query_is_kept(self):
         """What an approver must see: the recipient in a compose page's URL is not a connection string's password."""
