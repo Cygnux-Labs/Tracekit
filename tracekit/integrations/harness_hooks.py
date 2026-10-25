@@ -88,6 +88,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
+    if harness == "qwen":   # lean: Qwen Code's transcript format is not read; its model's text goes unrecorded
+        return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
     ev, path, model = p.get("hook_event_name"), p.get("transcript_path"), p.get("model")
