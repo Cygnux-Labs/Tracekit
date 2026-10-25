@@ -34,6 +34,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 
 from . import __version__, hook as H
 from .core import canon
@@ -126,8 +127,13 @@ def tool(harness, name, ti):
             ti["file_path"] = files[0] if files else None
         return OPENCODE_TOOLS.get(name, name), ti
     if harness == "goose":
-        if name == "read_image" and str(ti.get("source") or "").lower().startswith(("http://", "https://")):
-            return "WebFetch", {**ti, "url": ti["source"]}
+        if name == "read_image":
+            # read as goose's url::Url::parse reads it: tabs and newlines dropped, outer spaces and controls trimmed
+            src = re.sub(r"[\t\n\r]", "", str(ti.get("source") or "")).strip("".join(map(chr, range(33))))
+            if src.lower().startswith(("http://", "https://")):
+                return "WebFetch", {**ti, "url": src}
+            if src.lower().startswith("file:"):   # goose reads a file: URL's path
+                ti["source"] = urllib.parse.unquote(urllib.parse.urlsplit(src).path)
         if name in GOOSE_PATH_ARG:
             ti["file_path"] = ti.get(GOOSE_PATH_ARG[name])
         if "__" in name and not name.startswith("mcp__"):   # an extension/MCP tool, as goose namespaces it
