@@ -115,7 +115,7 @@ def tool(harness, name, ti):
                 ti["file_path"] = ti[k]
         return CURSOR_TOOLS.get(name, name), ti
     if harness in ("gemini", "qwen"):
-        for k in ("absolute_path", "notebook_path"):   # Gemini's read_file (Qwen's before 0.26), Qwen's notebook_edit
+        for k in ("absolute_path", "notebook_path"):   # Gemini's read_file (Qwen's before 0.13), Qwen's notebook_edit
             if k in ti and "file_path" not in ti:
                 ti["file_path"] = ti[k]
         if name == "web_fetch" and "url" not in ti and isinstance(ti.get("prompt"), str):
@@ -737,7 +737,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 [h.get("command") for h in g.get("hooks", []) if isinstance(h, dict)]))]
             if not uninstall:
                 h = {"type": "command", "command": cmd(ev)}
-                # ms for Gemini CLI; Qwen Code reads seconds from 0.26, but 1000 or more still as ms, so 600 s in both
+                # ms for Gemini CLI; newer Qwen Code reads seconds, but 1000 or more still as ms, so 600 s in both
                 if harness in ("gemini", "qwen"):   # holds wait for approval (Qwen Code's default is 60 s)
                     h.update(name="tracekit", timeout=600_000 if ev in PRE else 30_000)
                 else:

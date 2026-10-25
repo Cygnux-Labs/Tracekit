@@ -9,7 +9,7 @@
    "decision": "deny",
    "request": {"tool": "Bash", "tool_call_id": "toolu_2", "args": {"command": "rm -rf build"}},
    "exit": 2, "stdout": ""},
-  {"name": "read_file's absolute_path (before Qwen Code 0.26) is read as file_path",
+  {"name": "read_file's absolute_path (before Qwen Code 0.13) is read as file_path",
    "payload": {"session_id": "qw-1", "cwd": "/w", "transcript_path": null, "permission_mode": "default", "hook_event_name": "PreToolUse", "tool_name": "read_file", "tool_use_id": "toolu_3", "tool_input": {"absolute_path": "/w/src/app.py"}},
    "decision": "allow",
    "request": {"tool": "Read", "tool_call_id": "toolu_3", "args": {"absolute_path": "/w/src/app.py", "file_path": "/w/src/app.py"}},
