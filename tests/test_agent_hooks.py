@@ -204,6 +204,12 @@ class Harnesses(DaemonCase):
         self.assertEqual(agent_hooks.tool("goose", "read_image", {"source": "HTTPS://x.test/a.png"}),
                          ("WebFetch", {"source": "HTTPS://x.test/a.png", "url": "HTTPS://x.test/a.png"}))
         self.assertEqual(agent_hooks.tool("goose", "read_image", {"source": "img/a.png"})[0], "Read")
+        for odd in (" https://x.test/a.png", "ht\ttps://x.test/a.png", "\x00https://x.test/a.png\n"):
+            with self.subTest(source=odd):   # goose's URL parser drops these, so goose fetches the URL
+                self.assertEqual(agent_hooks.tool("goose", "read_image", {"source": odd})[1]["url"],
+                                 "https://x.test/a.png")
+        name, ti = agent_hooks.tool("goose", "read_image", {"source": "file:///home/u/.ssh/id%5Frsa"})
+        self.assertEqual((name, ti["file_path"]), ("Read", "/home/u/.ssh/id_rsa"))
         call = {"tool_name": "shell", "tool_input": {"command": "ls"}, "working_dir": "/w"}
         self.assertEqual(agent_hooks.normalise("goose", {**call, "event": "PreToolUse"})["cwd"], "/w")
         self.assertIsNone(agent_hooks.normalise("codex", {**call, "hook_event_name": "PreToolUse"})["cwd"])
