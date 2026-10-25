@@ -423,17 +423,8 @@ def _plugin_config_dirs(settings_path):
     config = os.environ.get("CLAUDE_CONFIG_DIR")
     project = os.path.join(os.path.abspath(os.getcwd()), ".claude")
     if (os.path.basename(parent) == ".claude" and parent != project) or (config and parent == os.path.abspath(config)):
-        roots = [parent]
-    else:
-        roots = [config or os.path.join(os.path.expanduser("~"), ".claude")]
-    out, seen = [], set()
-    for root in roots:
-        if root:
-            root = os.path.realpath(root)
-            if root not in seen:
-                seen.add(root)
-                out.append(root)
-    return out
+        return [os.path.realpath(parent)]
+    return [os.path.realpath(config or os.path.join(os.path.expanduser("~"), ".claude"))]
 
 
 def _installed_tracekit_plugin(plugin_id, settings_path):

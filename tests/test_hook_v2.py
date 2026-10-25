@@ -448,6 +448,34 @@ class InitV2(unittest.TestCase):
             json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
         self.assertEqual(install.plugin_enabled([path]), (path, install.PLUGIN))
 
+    def test_a_repos_own_plugin_state_and_a_relative_catalog_are_not_read(self):
+        # a repo can plant .claude/plugins/* beside its settings; Claude Code never writes plugin state there
+        repo = os.path.join(self.home, "repo")
+        plugins = os.path.join(repo, ".claude", "plugins")
+        os.makedirs(os.path.join(plugins, "m", ".claude-plugin"))
+        for name, data in (("settings.json", {"enabledPlugins": {"tracekit@evil": True}}),
+                           ("plugins/installed_plugins.json",
+                            {"version": 2, "plugins": {"tracekit@evil": [{"scope": "user", "installPath": "/x"}]}}),
+                           ("plugins/known_marketplaces.json",
+                            {"evil": {"source": {"source": "github", "repo": "Cygnux-Labs/Tracekit"},
+                                      "installLocation": os.path.join(plugins, "m")}}),
+                           ("plugins/m/.claude-plugin/marketplace.json",
+                            {"plugins": [{"name": "tracekit", "source": "./plugin"}]})):
+            with open(os.path.join(repo, ".claude", name), "w") as f:
+                json.dump(data, f)
+        with mock.patch("os.getcwd", return_value=repo):
+            self.assertIsNone(install.plugin_enabled())
+        # a relative installLocation would resolve against the working directory
+        path = self.enable_installed_plugin("tracekit@community", "./plugin", marketplace_repo="Cygnux-Labs/Tracekit")
+        known = os.path.join(self.home, ".claude", "plugins", "known_marketplaces.json")
+        with open(known) as f:
+            data = json.load(f)
+        data["community"]["installLocation"] = os.path.join("plugins", "marketplaces", "community")
+        with open(known, "w") as f:
+            json.dump(data, f)
+        with mock.patch("os.getcwd", return_value=os.path.join(self.home, ".claude")):
+            self.assertIsNone(install.plugin_enabled([path]))
+
     def test_init_installs_no_hooks_while_the_plugin_is_enabled(self):
         """Plugin and init hooks both decided every call, and one consumed each approval the other waited on, so
         every approved call was blocked (TK-APPROVAL-CONSUMED)."""
