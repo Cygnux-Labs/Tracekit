@@ -32,6 +32,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import sys
 import urllib.parse
@@ -128,12 +129,15 @@ def tool(harness, name, ti):
         return OPENCODE_TOOLS.get(name, name), ti
     if harness == "goose":
         if name == "read_image":
-            # read as goose's url::Url::parse reads it: tabs and newlines dropped, outer spaces and controls trimmed
+            # decided by scheme, as goose's url::Url::parse reads the source: tabs and newlines dropped, outer spaces and
+            # controls trimmed, backslashes read as slashes in a web URL (https:x.example/a, HTTPS:\\x.example\a)
             src = re.sub(r"[\t\n\r]", "", str(ti.get("source") or "")).strip("".join(map(chr, range(33))))
-            if src.lower().startswith(("http://", "https://")):
-                return "WebFetch", {**ti, "url": src}
-            if src.lower().startswith("file:"):   # goose reads a file: URL's path
-                ti["source"] = urllib.parse.unquote(urllib.parse.urlsplit(src).path)
+            parts = urllib.parse.urlsplit(src.replace("\\", "/"))
+            if parts.scheme.lower() in ("http", "https"):
+                return "WebFetch", {**ti, "url": src.replace("\\", "/")}
+            if parts.scheme.lower() == "file":   # goose reads a file: URL's path, made absolute (file:etc/x is /etc/x)
+                ti["file_path"] = posixpath.normpath("/" + urllib.parse.unquote(parts.path).lstrip("/"))
+                return GOOSE_TOOLS[name], ti
         if name in GOOSE_PATH_ARG:
             ti["file_path"] = ti.get(GOOSE_PATH_ARG[name])
         if "__" in name and not name.startswith("mcp__"):   # an extension/MCP tool, as goose namespaces it
