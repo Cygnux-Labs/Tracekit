@@ -232,6 +232,102 @@ class CodingPack(unittest.TestCase):
                         if cmd in patches:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_a_destructive_statement_through_a_database_client_asks_in_every_pack(self):
+        """TK-A039/TK-A040/TK-A041: a destructive statement through a database client asks in every pack on
+        both engines, and ordinary searches no longer do: the ROLLBACK exemption covers DML statements only."""
+        held_shell = [
+            # the four ROLLBACK leaks: DDL, a COMMIT or END in between, or another flag carrying the transaction
+            'mysql -D shop -e "START TRANSACTION; DROP TABLE users; ROLLBACK;"',
+            'psql -c "BEGIN; DROP TABLE users; COMMIT; ROLLBACK;"',
+            'psql -c "BEGIN; DROP TABLE users; END; ROLLBACK;"',
+            'psql -c "DROP TABLE users" -c "BEGIN; ROLLBACK;"',
+            'psql --command "DROP TABLE x" -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            # a bare ROLLBACK after a committed DROP, and a DROP before the transaction opens
+            'psql postgresql://app@db.internal:5432/shop -c "DROP TABLE x; ROLLBACK;"',
+            'psql postgresql://app@db.internal:5432/shop -c "DROP TABLE x; BEGIN; SELECT 1; ROLLBACK;"',
+            # a DROP inside a transaction: the exemption covers DML statements only
+            'psql postgresql://app@db.internal:5432/shop -c "BEGIN; DROP TABLE staging_import; ROLLBACK;"',
+            'mysql -h prod-db.internal -u root -e "BEGIN; DROP TABLE x; ROLLBACK;" shop',
+            # transaction variants that stay held: SAVEPOINT/ROLLBACK TO, a block split across two -c, comments
+            'psql -c "BEGIN; SAVEPOINT s1; DROP TABLE users; ROLLBACK TO s1; ROLLBACK;"',
+            'psql -c "BEGIN;" -c "DROP TABLE users; ROLLBACK;"',
+            'psql -c "BEGIN; -- note\n DROP TABLE users; ROLLBACK;"',
+            'psql -c "BEGIN; /* note */ DROP TABLE users; ROLLBACK;"',
+            # the pinned literal limitation: a `;` inside quotes reads as a statement boundary
+            'psql postgresql://app@db.internal:5432/shop -c "SELECT \'a; DROP TABLE x\'"',
+            # the covered cheap misses
+            'psql -tAc "DROP TABLE users"',
+            'mysql -Nse "DROP TABLE users"',
+            'mysql -e"DROP TABLE users"',
+            'psql -c "DELETE FROM users" -d prod',
+            'docker exec db psql -c "DROP TABLE users"',
+            'kubectl exec -n ns pod -- psql -c "DROP TABLE users"',
+            'sqlite3 app.db "DROP TABLE users"',
+            'clickhouse-client --query "DROP TABLE users"',
+            'mongo --eval "db.dropDatabase()"',
+            'valkey-cli FLUSHALL',
+            'valkey-cli -h cache.internal FLUSHDB',
+            'echo FLUSHDB | valkey-cli -h cache.internal',
+            'psql -c "SELECT 1;\\nDROP TABLE users"',
+            'psql -e -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+        ]
+        routine_shell = [
+            # DML-only transactions stay exempt, whatever the options before the flag
+            'psql -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql -c "BEGIN; SELECT 1; ROLLBACK;"',
+            'psql -h my-host -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql --host=db.internal -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql --csv -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            # listed, not covered: the SQL never reaches argv
+            'cat drop.sql | psql -h db.internal',
+            'psql <<EOF\nDROP TABLE users\nEOF',
+        ]
+        held_mcp = [
+            ("mcp__postgres__query", {"query": "DROP TABLE users", "sql": "BEGIN; SELECT 1; ROLLBACK;"}),
+            ("mcp__postgres__query", {"sql": "DROP TABLE users"}),
+            ("mcp__postgres__query", {"sql": "SELECT 1;\nDROP TABLE users"}),
+            ("mcp__postgres__query", {"sql": "DROP\nTABLE users"}),
+            ("mcp__postgres__query", {"sql": "DROP SCHEMA public CASCADE;"}),
+            ("mcp__postgres__query", {"sql": "DROP TEMPORARY TABLE t;"}),
+            ("mcp__postgres__query", {"sql": "TRUNCATE TABLE invoices RESTART IDENTITY;"}),
+            ("mcp__postgres__query", {"sql": "DELETE FROM users"}),
+            # tool names the round-1 list missed: postgresql and pg are SQL tools too
+            ("mcp__postgresql__query", {"sql": "DROP TABLE users"}),
+            ("mcp__pg__query", {"sql": "DROP TABLE users"}),
+        ]
+        routine_mcp = [
+            # ordinary searches are not SQL calls, even with a destructive-looking text
+            ("mcp__brave-search__brave_web_search", {"query": "drop down menu accessibility"}),
+            ("mcp__brave-search__brave_web_search", {"query": "delete from list python"}),
+            ("mcp__github__search_issues", {"query": "drop support for node 16"}),
+            ("mcp__search__query", {"query": "DROP TABLE users"}),
+            # a pure transaction, and a destructive statement through a non-SQL-named tool
+            ("mcp__postgres__query", {"sql": "BEGIN; SELECT 1; ROLLBACK;"}),
+            ("mcp__shell__execute", {"sql": "DROP TABLE users"}),
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held_shell:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertTrue("TK-A039" in d["rule_ids"] or "TK-A040" in d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for cmd in routine_shell:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertNotIn("TK-A039", d["rule_ids"], d)
+                        self.assertNotIn("TK-A040", d["rule_ids"], d)
+                for tool, args in held_mcp:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                        d = e.decide(tool, args)
+                        self.assertIn("TK-A041", d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for tool, args in routine_mcp:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                        d = e.decide(tool, args)
+                        self.assertNotIn("TK-A041", d["rule_ids"], d)
+
     def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
         dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
         d = dev.decide("Bash", {"command": "npm install", "allowed_domains": ["registry.example.org"]})

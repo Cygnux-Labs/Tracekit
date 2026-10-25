@@ -67,3 +67,6 @@
 {"tool": "mcp:aws/get_parameter", "args": {"Name": "/prod/db-password", "WithDecryption": false}, "expect": "allow", "note": "listing, describing or reading without the value"}
 {"tool": "mcp:github/get_secret_scanning_alert", "args": {"owner": "acme", "repo": "api", "number": 7}, "expect": "allow", "note": "listing, describing or reading without the value"}
 {"tool": "mcp:aws-api/call_aws", "args": {"cli_command": "aws secretsmanager list-secrets"}, "expect": "allow", "note": "listing, describing or reading without the value"}
+{"tool": "mcp__postgres__query", "args": {"sql": "SELECT * FROM users WHERE id = 42"}, "expect": "allow", "note": "routine query through the MCP database tool"}
+{"tool": "mcp__postgres__query", "args": {"sql": "DELETE FROM users WHERE id = 42"}, "expect": "allow", "note": "delete one row through the MCP database tool, scoped WHERE"}
+{"tool": "mcp__postgres__query", "args": {"sql": "SELECT 'DROP TABLE x'"}, "expect": "allow", "note": "destructive keyword inside a quoted literal"}
