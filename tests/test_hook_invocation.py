@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -93,6 +94,17 @@ class PluginShim(unittest.TestCase):
             os.symlink(shutil.which(tool), os.path.join(self.bin, tool))
         self.home, self.data = os.path.join(self.d, "home"), os.path.join(self.d, "data")
 
+    def test_every_install_command_names_the_plugins_version(self):
+        # that package decides which calls run, so the plugin names the version it was built for
+        with open(os.path.join(ROOT, "plugin", ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            version = json.load(f)["version"]
+        for name in ("scripts/tracekit-hook", "README.md"):
+            with open(os.path.join(ROOT, "plugin", name), encoding="utf-8") as f:
+                pins = re.findall(r"tracekit-ai([^\s)'\"]*)", f.read())
+            with self.subTest(file=name):
+                self.assertTrue(pins)
+                self.assertEqual(set(pins), {"==" + version})
+
     def hook(self, event="PreToolUse", **env):
         """(exit code, stderr) of the plugin's hook for `event`, with this test's PATH, HOME and XDG_DATA_HOME."""
         r = subprocess.run(["/bin/sh", self.script, event], input="{}", capture_output=True, text=True,
@@ -120,7 +132,7 @@ class PluginShim(unittest.TestCase):
             code, err = self.hook(event)
             self.assertEqual(code, 1, event)
             self.assertIn("NOT recorded", err.splitlines()[0])   # the line Claude Code shows
-            self.assertIn("pip install tracekit-ai && tracekit init --dev --v2 --no-hooks", err)
+            self.assertIn("Ask the person to set it up: pip install tracekit-ai==1.4.2 && tracekit init --dev --v2 --no-hooks", err)
 
     def set_up_tracekit(self):
         """What `tracekit init --dev --v2` and the dev signer leave behind: the dev signer's data dir."""
@@ -165,7 +177,7 @@ class PluginShim(unittest.TestCase):
             self.assertEqual(code, want, (event, err))
             self.assertIn("tracekit 1.0.0", err.splitlines()[0])
             self.assertIn("is older than 1.2", err)
-            self.assertIn("pip install -U tracekit-ai && tracekit init --dev --v2 --no-hooks", err)
+            self.assertIn("Ask the person to run: pip install tracekit-ai==1.4.2 && tracekit init --dev --v2 --no-hooks", err)
             self.assertNotIn("Traceback", err)
 
     def test_a_tracekit_whose_hook_does_not_import_blocks_tool_calls(self):

@@ -1,6 +1,6 @@
-"""Codex CLI, Cursor, Gemini CLI and OpenCode hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode, goose and Qwen Code hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose|qwen EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -57,15 +57,20 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         agent_hooks._reply(harness, stdout, not pre, msg, pre)
         return agent_hooks._exit(harness, 2 if pre else 0, pre)
     p = dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {}
-    is_pre = p.get("hook_event_name") in agent_hooks.PRE
+    is_pre = p.get("hook_event_name") in agent_hooks.PRE or (harness == "goose" and p.get("event") in agent_hooks.PRE)
     err, q = agent_hooks.Tee(stderr), None
     try:
         q = agent_hooks.normalise(harness, p)
         if q is not None or p.get("hook_event_name") in agent_hooks.CURSOR_SAID:
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]   # a run said() registers is the harness's
             said_since(harness, p, stderr)
+        reason = (agent_hooks._blocked_goose_tool(str(p.get("tool_name") or ""))
+                  if q is not None and harness == "goose" and is_pre else None)
         if q is None:   # an event Tracekit does not record
             code = 0
+        elif reason is not None:   # a goose tool that runs calls the hook never sees: denied before the signer
+            print(reason, file=err)
+            code = 2
         else:
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]
             with contextlib.redirect_stderr(err):
@@ -83,6 +88,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
+    if harness == "qwen":   # lean: Qwen Code's transcript format is not read; its model's text goes unrecorded
+        return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
     ev, path, model = p.get("hook_event_name"), p.get("transcript_path"), p.get("model")

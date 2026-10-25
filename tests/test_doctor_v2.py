@@ -497,7 +497,7 @@ class PluginHooks(unittest.TestCase):
 
     def test_the_plugins_hooks_count_and_init_is_not_suggested(self):
         for settings in (self.settings, None):   # dev mode; system mode with no hooks recorded in client.json
-            got = self.hooks_present(settings, self.plugin)
+            got = self.hooks_present(settings, (self.plugin, install.PLUGIN))
             self.assertEqual((got["status"], got["fix"]), ("ok", ""), settings)
             self.assertIn("Claude Code plugin", got["detail"])
         self.assertIn("tracekit init --dev --v2", self.hooks_present(self.settings, None)["fix"])
@@ -505,10 +505,10 @@ class PluginHooks(unittest.TestCase):
     def test_the_plugin_with_inits_hooks_is_flagged(self):
         with contextlib.redirect_stdout(io.StringIO()):
             install.install_hooks(self.settings, module=install.V2_HOOK)
-        got = self.hooks_present(self.settings, self.plugin)
+        got = self.hooks_present(self.settings, (self.plugin, "tracekit@community"))
         self.assertEqual(got["status"], "warn")
         self.assertIn("every approved call is blocked", got["detail"])
-        self.assertIn(f"/plugin disable {install.PLUGIN}", got["fix"])
+        self.assertIn("/plugin disable tracekit@community", got["fix"])
         self.assertEqual(self.hooks_present(self.settings, None)["status"], "ok")
 
     def test_collect_reads_enabled_plugins(self):
@@ -524,7 +524,8 @@ class PluginHooks(unittest.TestCase):
                 mock.patch.object(doctor.client, "system_config", return_value=None), \
                 mock.patch.object(doctor, "v2_checks", return_value=[]) as v2:
             doctor.collect()
-        self.assertEqual(v2.call_args.kwargs["plugin"], os.path.join(home, ".claude", "settings.json"))
+        self.assertEqual(v2.call_args.kwargs["plugin"], (os.path.join(home, ".claude", "settings.json"),
+                                                          install.PLUGIN))
 
 
 class ThinkingSummaries(unittest.TestCase):
@@ -607,8 +608,9 @@ class HostileSettings(unittest.TestCase):
         with mock.patch.object(install, "user_settings", return_value=dev):
             t = threading.Thread(target=lambda: out.extend(doctor.v2_checks(
                 {"data_dir": d, "content": {"retain": True}}, "dev", settings=fifo, sandbox_settings=[fifo, dev],
-                plugin=dev, gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
-                                                                    "gemini": fifo})), daemon=True)
+                plugin=(dev, install.PLUGIN),
+                gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
+                                                        "gemini": fifo})), daemon=True)
             t.start()
             t.join(5)
         self.assertFalse(t.is_alive(), "doctor blocked on the FIFO")
@@ -661,6 +663,8 @@ class CodingAgentReasoning(unittest.TestCase):
             agent_hooks.install("opencode", v2=True)   # a JavaScript plugin, read as one
             self.assertEqual(doctor._dev_harnesses(), {"codex": agent_hooks.config_path("codex"),
                                                        "opencode": agent_hooks.config_path("opencode")})
+            agent_hooks.install("qwen", v2=True)
+            self.assertEqual(doctor._dev_harnesses()["qwen"], agent_hooks.config_path("qwen"))
 
 
 @unittest.skipIf(os.name == "nt", "POSIX modes")

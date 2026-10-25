@@ -184,3 +184,27 @@
 {"tool": "Bash", "args": {"command": "gh api graphql -f query='query { repository(owner: \"o\", name: \"r\") { name } }'"}, "expect": "allow", "note": "read-only GraphQL query"}
 {"tool": "Bash", "args": {"command": "gh api repos/acme/prod-service"}, "expect": "allow", "note": "read a repository through gh api"}
 {"tool": "Bash", "args": {"command": "gh repo view acme/prod-service"}, "expect": "allow", "note": "read a repository with gh repo view"}
+{"tool": "Bash", "args": {"command": "psql postgresql://analytics@db.internal:5432/orders -c \"SELECT count(*) FROM orders;\""}, "expect": "allow", "note": "read-only row count through psql"}
+{"tool": "Bash", "args": {"command": "psql -h db -U app -c \"EXPLAIN SELECT * FROM users WHERE id = 42;\""}, "expect": "allow", "note": "explain a query plan through psql"}
+{"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u root -e \"DELETE FROM users WHERE id = 42;\" shop"}, "expect": "allow", "note": "delete one row through mysql, scoped WHERE"}
+{"tool": "Bash", "args": {"command": "redis-cli -h cache.internal GET k"}, "expect": "allow", "note": "read one key through redis-cli"}
+{"tool": "Bash", "args": {"command": "mongosh \"mongodb://db.internal:27017/shop\" --quiet --eval \"db.users.find()\""}, "expect": "allow", "note": "read documents through mongosh"}
+{"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u app -e \"START TRANSACTION; DELETE FROM audit_log WHERE created_at < '2020-01-01'; ROLLBACK;\""}, "expect": "allow", "note": "delete inside a transaction that ends in ROLLBACK"}
+{"tool": "Bash", "args": {"command": "mongosh \"mongodb://db.internal:27017/shop\" --quiet --eval \"db.users.deleteMany({status: \\\"old\\\"})\""}, "expect": "allow", "note": "delete scoped documents through mongosh, non-empty filter"}
+{"tool": "Bash", "args": {"command": "redis-cli -h flushall GET k"}, "expect": "allow", "note": "flushall as a hostname value, not the command"}
+{"tool": "Bash", "args": {"command": "psql postgresql://app@db.internal:5432/shop -c \"SELECT 'DROP TABLE x'\""}, "expect": "allow", "note": "destructive keyword inside a quoted literal"}
+{"tool": "Bash", "args": {"command": "grep -rn \"DROP TABLE\" ."}, "expect": "allow", "note": "destructive keyword in a grep, not a client call"}
+{"tool": "Bash", "args": {"command": "git commit -m \"DROP TABLE users; TRUNCATE sessions\""}, "expect": "allow", "note": "destructive keywords in a commit message"}
+{"tool": "Bash", "args": {"command": "echo \"remember to run FLUSHDB later\" | redis-cli -h cache.internal -n 0"}, "expect": "allow", "note": "flush word inside a sentence piped into redis-cli"}
+{"tool": "Bash", "args": {"command": "grep -r FLUSHDB . | redis-cli -h cache.internal -n 0"}, "expect": "allow", "note": "grep hits piped into redis-cli, not a flush command"}
+{"tool": "Bash", "args": {"command": "cat flush.txt | redis-cli -h cache.internal"}, "expect": "allow", "note": "file content piped into redis-cli is not read"}
+{"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u app -e \"START TRANSACTION; DELETE FROM audit_log WHERE created_at < '2020-01-01'; ROLLBACK;\" shop"}, "expect": "allow", "note": "scoped DELETE inside a rolled-back transaction with a trailing database name"}
+{"tool": "Bash", "args": {"command": "cdk diff"}, "expect": "allow", "note": "inspect CDK changes without destroying stacks"}
+{"tool": "Bash", "args": {"command": "cdk synth"}, "expect": "allow", "note": "synthesize a CDK template without destroying stacks"}
+{"tool": "Bash", "args": {"command": "pulumi stack ls"}, "expect": "allow", "note": "list Pulumi stacks without removing them"}
+{"tool": "Bash", "args": {"command": "terraform state list"}, "expect": "allow", "note": "list Terraform state without removing bindings"}
+{"tool": "Bash", "args": {"command": "terraform state show aws_db_instance.prod"}, "expect": "allow", "note": "inspect a Terraform state binding"}
+{"tool": "Bash", "args": {"command": "tofu state list"}, "expect": "allow", "note": "list OpenTofu state without removing bindings"}
+{"tool": "Bash", "args": {"command": "tofu state show aws_db_instance.prod"}, "expect": "allow", "note": "inspect an OpenTofu state binding"}
+{"tool": "Bash", "args": {"command": "echo cdk destroy"}, "expect": "allow", "note": "mention CDK destruction as text"}
+{"tool": "Bash", "args": {"command": "cdk destroy --help"}, "expect": "allow", "note": "read CDK destruction help without running it"}

@@ -14,7 +14,7 @@ Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-
 The plugin only carries the hooks. The signer and the verifier are the `tracekit` Python package:
 
 ```bash
-pip install tracekit-ai
+pip install tracekit-ai==1.4.2
 tracekit init --dev --v2 --no-hooks   # same-user dev signer (starts on the first hook); hooks come from the plugin
 # or, for tamper resistance against the agent's own user (Linux):
 sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks

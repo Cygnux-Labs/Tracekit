@@ -299,6 +299,137 @@ class CodingPack(unittest.TestCase):
                         if cmd in patches:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_a_destructive_statement_through_a_database_client_asks_in_every_pack(self):
+        """TK-A039/TK-A040/TK-A041: a destructive statement through a database client asks in every pack on
+        both engines, and ordinary searches no longer do: there is no ROLLBACK exemption, so a rolled-back
+        destructive statement asks like any other."""
+        held_shell = [
+            # the four ROLLBACK leaks: DDL, a COMMIT or END in between, or another flag carrying the transaction
+            'mysql -D shop -e "START TRANSACTION; DROP TABLE users; ROLLBACK;"',
+            'psql -c "BEGIN; DROP TABLE users; COMMIT; ROLLBACK;"',
+            'psql -c "BEGIN; DROP TABLE users; END; ROLLBACK;"',
+            'psql -c "DROP TABLE users" -c "BEGIN; ROLLBACK;"',
+            'psql --command "DROP TABLE x" -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            # DML with a COMMIT or END inside the block
+            'psql -c "BEGIN; DELETE FROM users; COMMIT; ROLLBACK;"',
+            'psql -c "BEGIN; DELETE FROM users; END; ROLLBACK;"',
+            'mysql -e "START TRANSACTION; DELETE FROM audit_log; COMMIT; ROLLBACK;"',
+            # a bare ROLLBACK after a committed DROP, and a DROP before the transaction opens
+            'psql postgresql://app@db.internal:5432/shop -c "DROP TABLE x; ROLLBACK;"',
+            'psql postgresql://app@db.internal:5432/shop -c "DROP TABLE x; BEGIN; SELECT 1; ROLLBACK;"',
+            # a DROP inside a transaction is held, rolled back or not
+            'psql postgresql://app@db.internal:5432/shop -c "BEGIN; DROP TABLE staging_import; ROLLBACK;"',
+            'mysql -h prod-db.internal -u root -e "BEGIN; DROP TABLE x; ROLLBACK;" shop',
+            # transaction variants that stay held: SAVEPOINT/ROLLBACK TO, a block split across two -c, comments
+            'psql -c "BEGIN; SAVEPOINT s1; DROP TABLE users; ROLLBACK TO s1; ROLLBACK;"',
+            'psql -c "BEGIN;" -c "DROP TABLE users; ROLLBACK;"',
+            'psql -c "BEGIN; -- note\n DROP TABLE users; ROLLBACK;"',
+            'psql -c "BEGIN; /* note */ DROP TABLE users; ROLLBACK;"',
+            # a comment hiding the ROLLBACK: with -1 or --single-transaction the DELETE commits
+            'psql -1 -c "BEGIN; DELETE FROM users; SELECT 1 -- ; ROLLBACK;"',
+            'psql --single-transaction -c "BEGIN; DELETE FROM users; SELECT 1 -- ; ROLLBACK;"',
+            'psql -1 -c "BEGIN; DELETE FROM users; SELECT 1 /* ; ROLLBACK;"',
+            # escapes and multi-line statements no longer hide the destructive one
+            'psql -c "SELECT \'a\\b\'; DROP TABLE users"',
+            'psql -c "CREATE TABLE t (\\n  a INT,\\n  b INT,\\n  c INT,\\n  d INT,\\n  e INT,\\n  f INT,\\n  g INT,\\n  h INT\\n);\\nDROP TABLE users;"',
+            'sqlite3 app.db "SELECT 1;\\n    DROP TABLE users;"',
+            'sqlite3 app.db "SELECT 1;\\n        DROP TABLE users;"',
+            'psql -c "SELECT 1; -- note\\n\\tDROP TABLE users;"',
+            # the pinned literal limitation: a `;` inside quotes reads as a statement boundary
+            'psql postgresql://app@db.internal:5432/shop -c "SELECT \'a; DROP TABLE x\'"',
+            # the covered cheap misses
+            'psql -tAc "DROP TABLE users"',
+            'mysql -Nse "DROP TABLE users"',
+            'mysql -e"DROP TABLE users"',
+            'psql -c "DELETE FROM users" -d prod',
+            'docker exec db psql -c "DROP TABLE users"',
+            'kubectl exec -n ns pod -- psql -c "DROP TABLE users"',
+            'sqlite3 app.db "DROP TABLE users"',
+            'clickhouse-client --query "DROP TABLE users"',
+            'mongo --eval "db.dropDatabase()"',
+            'valkey-cli FLUSHALL',
+            'valkey-cli -h cache.internal FLUSHDB',
+            'echo FLUSHDB | valkey-cli -h cache.internal',
+            'psql -c "SELECT 1;\\nDROP TABLE users"',
+            'psql -e -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            # the \G gap: mysql/mariadb end the statement at \G, so the ROLLBACK never undoes the DELETE
+            'mysql -e "BEGIN; DELETE FROM users \\G ROLLBACK;"',
+            # a bare \G-terminated DELETE is held too, not just the rolled-back one
+            'mysql -e "DELETE FROM users \\G"',
+            # \G/\g count as statement separators in the skip
+            'mysql -e "SELECT 1 \\G DROP TABLE users"',
+            'mysql -e "SELECT 1; \\G DROP TABLE users"',
+            'mysql -e "SELECT 1 \\g DROP TABLE users"',
+            'psql --csv -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql --host=db.internal -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql -h my-host -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+        ]
+        routine_shell = [
+            # SELECT-only and UPDATE-only transactions still don't match: the rule holds DROP, TRUNCATE
+            # and unscoped DELETE only, whatever the options before the flag
+            'psql -c "BEGIN; SELECT 1; ROLLBACK;"',
+            # a lone minus or slash inside an UPDATE is not a comment, and an UPDATE isn't held
+            'psql -c "BEGIN; UPDATE t SET x = a/-5; ROLLBACK;"',
+            'psql -c "BEGIN; UPDATE t SET x = a/b; ROLLBACK;"',
+            # listed, not covered: the SQL never reaches argv
+            'cat drop.sql | psql -h db.internal',
+            'psql <<EOF\nDROP TABLE users\nEOF',
+        ]
+        held_mcp = [
+            ("mcp__postgres__query", {"query": "DROP TABLE users", "sql": "BEGIN; SELECT 1; ROLLBACK;"}),
+            ("mcp__postgres__query", {"sql": "DROP TABLE users"}),
+            ("mcp__postgres__query", {"sql": "SELECT 1;\nDROP TABLE users"}),
+            ("mcp__postgres__query", {"sql": "DROP\nTABLE users"}),
+            ("mcp__postgres__query", {"sql": "DROP SCHEMA public CASCADE;"}),
+            ("mcp__postgres__query", {"sql": "DROP TEMPORARY TABLE t;"}),
+            ("mcp__postgres__query", {"sql": "TRUNCATE TABLE invoices RESTART IDENTITY;"}),
+            ("mcp__postgres__query", {"sql": "DELETE FROM users"}),
+            # tool names the round-1 list missed: postgresql and pg are SQL tools too
+            ("mcp__postgresql__query", {"sql": "DROP TABLE users"}),
+            ("mcp__pg__query", {"sql": "DROP TABLE users"}),
+            # JSON escapes and indentation no longer hide the destructive one
+            ("mcp__postgres__query", {"query": 'SELECT * FROM "Users"; DROP TABLE users'}),
+            ("mcp__postgres__query", {"query": "SELECT 1;\tDROP TABLE users"}),
+            ("mcp__postgres__query", {"query": "SELECT 1;\n    DROP TABLE users;"}),
+            ("mcp__postgres__query", {"query": "SELECT 1;\n        DROP TABLE users;"}),
+            # a comment may come before the keyword
+            ("mcp__postgres__query", {"sql": "-- note\n DROP TABLE users"}),
+            ("mcp__postgres__query", {"sql": "/* note */ DROP TABLE users"}),
+        ]
+        routine_mcp = [
+            # ordinary searches are not SQL calls, even with a destructive-looking text
+            ("mcp__brave-search__brave_web_search", {"query": "drop down menu accessibility"}),
+            ("mcp__brave-search__brave_web_search", {"query": "delete from list python"}),
+            ("mcp__github__search_issues", {"query": "drop support for node 16"}),
+            ("mcp__search__query", {"query": "DROP TABLE users"}),
+            # a pure transaction, and a destructive statement through a non-SQL-named tool
+            ("mcp__postgres__query", {"sql": "BEGIN; SELECT 1; ROLLBACK;"}),
+            ("mcp__shell__execute", {"sql": "DROP TABLE users"}),
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held_shell:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertTrue("TK-A039" in d["rule_ids"] or "TK-A040" in d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for cmd in routine_shell:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertNotIn("TK-A039", d["rule_ids"], d)
+                        self.assertNotIn("TK-A040", d["rule_ids"], d)
+                for tool, args in held_mcp:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                        d = e.decide(tool, args)
+                        self.assertIn("TK-A041", d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for tool, args in routine_mcp:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                        d = e.decide(tool, args)
+                        self.assertNotIn("TK-A041", d["rule_ids"], d)
+
     def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
         dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
         d = dev.decide("Bash", {"command": "npm install", "allowed_domains": ["registry.example.org"]})
@@ -1069,6 +1200,72 @@ class CodingPack(unittest.TestCase):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
+
+    def every_pack_verdicts(self, cases):
+        for pack, engine, e in self.every_pack():
+            for command, want in cases:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"] != "allow", want in d["rule_ids"]), (True, True), d)
+
+    def test_infrastructure_removal_cdk_launchers_ask(self):
+        self.every_pack_verdicts([
+            ("npx aws-cdk destroy", "TK-A001"),
+            ("npx aws-cdk@2 destroy --force", "TK-A001"),
+            ("npx cdk@latest destroy", "TK-A001"),
+            ("cdk destroy", "TK-A001"),
+            ("npx cdk destroy", "TK-A001"),
+            ("bunx cdk destroy", "TK-A001"),
+            ("pnpm dlx cdk destroy", "TK-A001"),
+            ("yarn dlx cdk destroy", "TK-A001"),
+            ("npm exec -- cdk destroy", "TK-A001"),
+        ])
+
+    def test_infrastructure_removal_cdk_options_ask(self):
+        self.every_pack_verdicts([
+            ("cdk destroy --force", "TK-A001"),
+            ("cdk destroy --all", "TK-A001"),
+            ("cdk destroy --force --all", "TK-A001"),
+            ("cdk destroy --all --force", "TK-A001"),
+            ("cdk --app infra/app.js destroy prod", "TK-A001"),
+            ("npx --yes cdk destroy", "TK-A001"),
+            ("npx cdk destroy --force --all", "TK-A001"),
+        ])
+
+    def test_infrastructure_removal_pulumi_options_ask(self):
+        self.every_pack_verdicts([
+            ("pulumi stack -s prod rm --yes", "TK-A001"),
+            ("pulumi stack rm prod", "TK-A001"),
+            ("pulumi stack rm prod --force", "TK-A001"),
+            ("pulumi stack rm prod --yes", "TK-A001"),
+            ("pulumi stack rm prod --force --yes", "TK-A001"),
+            ("pulumi --cwd infra stack rm prod", "TK-A001"),
+        ])
+
+    def test_infrastructure_removal_state_options_ask(self):
+        self.every_pack_verdicts([("terragrunt state rm aws_db_instance.prod", "TK-A001")])
+        for program in ("terraform", "tofu"):
+            self.every_pack_verdicts([
+                (f"{program} -chdir=infra state rm aws_db_instance.prod", "TK-A001"),
+                (f"{program} state rm -lock-timeout=30s aws_db_instance.prod", "TK-A001"),
+                (f"{program} state rm aws_s3_bucket.assets", "TK-A001"),
+            ])
+
+    def test_infrastructure_removal_benign_commands_are_allowed(self):
+        for command in (
+            "cdk diff",
+            "cdk synth",
+            "pulumi stack ls",
+            "terraform state list",
+            "terraform state show aws_db_instance.prod",
+            "tofu state list",
+            "tofu state show aws_db_instance.prod",
+            "echo cdk destroy",
+            "cdk destroy --help",
+        ):
+            for pack, engine, e in self.every_pack():
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-A001", e.decide("Bash", {"command": command})["rule_ids"])
 
 
 class PackReading(unittest.TestCase):
