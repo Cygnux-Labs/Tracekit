@@ -162,13 +162,13 @@
 {"tool": "Bash", "args": {"command": "echo FLUSHDB | tee flush.log | redis-cli -h cache.internal"}, "expect": "ask", "note": "flush piped through tee into redis-cli"}
 {"tool": "Bash", "args": {"command": "psql postgresql://app@db.internal:5432/shop -c \"DROP TABLE x; ROLLBACK;\""}, "expect": "ask", "note": "a bare ROLLBACK after a committed DROP does not exempt it"}
 {"tool": "Bash", "args": {"command": "psql postgresql://app@db.internal:5432/shop -c \"DROP TABLE x; BEGIN; SELECT 1; ROLLBACK;\""}, "expect": "ask", "note": "a DROP before the transaction opens is not inside it"}
-{"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u root -e \"BEGIN; DROP TABLE x; ROLLBACK;\" shop"}, "expect": "ask", "note": "DROP inside BEGIN...ROLLBACK is held: on MySQL DDL commits implicitly, so ROLLBACK does not undo it; the exemption covers DML statements only"}
+{"tool": "Bash", "args": {"command": "mysql -h prod-db.internal -u root -e \"BEGIN; DROP TABLE x; ROLLBACK;\" shop"}, "expect": "ask", "note": "DROP inside BEGIN...ROLLBACK is held: on MySQL DDL commits implicitly, so ROLLBACK does not undo it"}
 {"tool": "Bash", "args": {"command": "mysql -D shop -e \"START TRANSACTION; DROP TABLE users; ROLLBACK;\""}, "expect": "ask", "note": "MySQL commits DDL implicitly, so a DROP inside START TRANSACTION...ROLLBACK is not undone"}
-{"tool": "Bash", "args": {"command": "psql -c \"BEGIN; DROP TABLE users; COMMIT; ROLLBACK;\""}, "expect": "ask", "note": "a COMMIT before ROLLBACK ends the exemption"}
-{"tool": "Bash", "args": {"command": "psql -c \"BEGIN; DROP TABLE users; END; ROLLBACK;\""}, "expect": "ask", "note": "an END before ROLLBACK ends the exemption, as COMMIT does"}
-{"tool": "Bash", "args": {"command": "psql -c \"DROP TABLE users\" -c \"BEGIN; ROLLBACK;\""}, "expect": "ask", "note": "the exemption must not reach across another -c"}
-{"tool": "Bash", "args": {"command": "psql --command \"DROP TABLE x\" -c \"BEGIN; DELETE FROM users; ROLLBACK;\""}, "expect": "ask", "note": "the exemption must not reach across another --command"}
-{"tool": "Bash", "args": {"command": "psql -e -c \"BEGIN; DELETE FROM users; ROLLBACK;\""}, "expect": "ask", "note": "psql's boolean -e before the flag keeps the transaction outside the exemption"}
+{"tool": "Bash", "args": {"command": "psql -c \"BEGIN; DROP TABLE users; COMMIT; ROLLBACK;\""}, "expect": "ask", "note": "a COMMIT before ROLLBACK does not save the DROP"}
+{"tool": "Bash", "args": {"command": "psql -c \"BEGIN; DROP TABLE users; END; ROLLBACK;\""}, "expect": "ask", "note": "an END before ROLLBACK does not save the DROP, as COMMIT does not"}
+{"tool": "Bash", "args": {"command": "psql -c \"DROP TABLE users\" -c \"BEGIN; ROLLBACK;\""}, "expect": "ask", "note": "a DROP in one -c is held even with a transaction in another"}
+{"tool": "Bash", "args": {"command": "psql --command \"DROP TABLE x\" -c \"BEGIN; DELETE FROM users; ROLLBACK;\""}, "expect": "ask", "note": "a DROP in one --command is held even with a transaction in another -c"}
+{"tool": "Bash", "args": {"command": "psql -e -c \"BEGIN; DELETE FROM users; ROLLBACK;\""}, "expect": "ask", "note": "psql's boolean -e before the flag does not exempt the transaction"}
 {"tool": "Bash", "args": {"command": "psql -tAc \"DROP TABLE users\""}, "expect": "ask", "note": "a -c inside a short-option cluster"}
 {"tool": "Bash", "args": {"command": "mysql -Nse \"DROP TABLE users\""}, "expect": "ask", "note": "an -e inside a short-option cluster"}
 {"tool": "Bash", "args": {"command": "mysql -e\"DROP TABLE users\""}, "expect": "ask", "note": "an -e carrying its value attached"}

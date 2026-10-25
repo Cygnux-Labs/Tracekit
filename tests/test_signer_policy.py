@@ -234,7 +234,8 @@ class CodingPack(unittest.TestCase):
 
     def test_a_destructive_statement_through_a_database_client_asks_in_every_pack(self):
         """TK-A039/TK-A040/TK-A041: a destructive statement through a database client asks in every pack on
-        both engines, and ordinary searches no longer do: the ROLLBACK exemption covers DML statements only."""
+        both engines, and ordinary searches no longer do: there is no ROLLBACK exemption, so a rolled-back
+        destructive statement asks like any other."""
         held_shell = [
             # the four ROLLBACK leaks: DDL, a COMMIT or END in between, or another flag carrying the transaction
             'mysql -D shop -e "START TRANSACTION; DROP TABLE users; ROLLBACK;"',
@@ -245,7 +246,7 @@ class CodingPack(unittest.TestCase):
             # a bare ROLLBACK after a committed DROP, and a DROP before the transaction opens
             'psql postgresql://app@db.internal:5432/shop -c "DROP TABLE x; ROLLBACK;"',
             'psql postgresql://app@db.internal:5432/shop -c "DROP TABLE x; BEGIN; SELECT 1; ROLLBACK;"',
-            # a DROP inside a transaction: the exemption covers DML statements only
+            # a DROP inside a transaction is held, rolled back or not
             'psql postgresql://app@db.internal:5432/shop -c "BEGIN; DROP TABLE staging_import; ROLLBACK;"',
             'mysql -h prod-db.internal -u root -e "BEGIN; DROP TABLE x; ROLLBACK;" shop',
             # transaction variants that stay held: SAVEPOINT/ROLLBACK TO, a block split across two -c, comments
@@ -280,17 +281,26 @@ class CodingPack(unittest.TestCase):
             'echo FLUSHDB | valkey-cli -h cache.internal',
             'psql -c "SELECT 1;\\nDROP TABLE users"',
             'psql -e -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            # the \G gap: mysql/mariadb end the statement at \G, so the ROLLBACK never undoes the DELETE
+            'mysql -e "BEGIN; DELETE FROM users \\G ROLLBACK;"',
+            # a bare \G-terminated DELETE is held too, not just the rolled-back one
+            'mysql -e "DELETE FROM users \\G"',
+            # \G/\g count as statement separators in the skip
+            'mysql -e "SELECT 1 \\G DROP TABLE users"',
+            'mysql -e "SELECT 1; \\G DROP TABLE users"',
+            'mysql -e "SELECT 1 \\g DROP TABLE users"',
+            'psql --csv -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql --host=db.internal -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql -h my-host -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            'psql -c "BEGIN; DELETE FROM users; ROLLBACK;"',
         ]
         routine_shell = [
-            # DML-only transactions stay exempt, whatever the options before the flag
-            'psql -c "BEGIN; DELETE FROM users; ROLLBACK;"',
+            # SELECT-only and UPDATE-only transactions still don't match: the rule holds DROP, TRUNCATE
+            # and unscoped DELETE only, whatever the options before the flag
             'psql -c "BEGIN; SELECT 1; ROLLBACK;"',
             # a lone minus or slash inside DML is not a comment: still exempt
             'psql -c "BEGIN; UPDATE t SET x = a/-5; ROLLBACK;"',
             'psql -c "BEGIN; UPDATE t SET x = a/b; ROLLBACK;"',
-            'psql -h my-host -c "BEGIN; DELETE FROM users; ROLLBACK;"',
-            'psql --host=db.internal -c "BEGIN; DELETE FROM users; ROLLBACK;"',
-            'psql --csv -c "BEGIN; DELETE FROM users; ROLLBACK;"',
             # listed, not covered: the SQL never reaches argv
             'cat drop.sql | psql -h db.internal',
             'psql <<EOF\nDROP TABLE users\nEOF',
@@ -312,6 +322,9 @@ class CodingPack(unittest.TestCase):
             ("mcp__postgres__query", {"query": "SELECT 1;\tDROP TABLE users"}),
             ("mcp__postgres__query", {"query": "SELECT 1;\n    DROP TABLE users;"}),
             ("mcp__postgres__query", {"query": "SELECT 1;\n        DROP TABLE users;"}),
+            # a comment may come before the keyword
+            ("mcp__postgres__query", {"sql": "-- note\n DROP TABLE users"}),
+            ("mcp__postgres__query", {"sql": "/* note */ DROP TABLE users"}),
         ]
         routine_mcp = [
             # ordinary searches are not SQL calls, even with a destructive-looking text
