@@ -320,8 +320,15 @@ class Installer(unittest.TestCase):
                         self.assertEqual(len(cmds), 3)   # goose installs 3 events, not 5
                         cmd = cmds[0]
                         self.assertIn(" -I ", cmd)
-                        if os.name == "nt":   # PowerShell can't start a quoted first word
-                            self.assertFalse(cmd.startswith('"'), cmd)
+                        # goose runs hooks through `sh -c` on every platform (block/goose
+                        # crates/goose/src/hooks/mod.rs, `hook_command`, v1.48.0 and main), so a quoted
+                        # interpreter on Windows is fine: sh parses it, and the quote is required when
+                        # the path has a space. No `& ` prefix either: that is PowerShell syntax, and
+                        # goose never uses PowerShell. The Windows prerequisite is an sh on PATH (Git
+                        # Bash); without one the hook fails to spawn and, with on_failure block, every
+                        # call is blocked.
+                        if os.name == "nt":
+                            self.assertFalse(cmd.startswith("& "), cmd)
                         self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                         self.assertIn(harness_hooks.__name__, cmd)
                         again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
