@@ -172,7 +172,7 @@ class Harnesses(DaemonCase):
                 out = io.StringIO()
                 with mock.patch.object(agent_hooks.H, "main", return_value=2):
                     code = agent_hooks.run("gemini", json.dumps({**base, **payload}), stdout=out, stderr=io.StringIO())
-                self.assertEqual((code, json.loads(out.getvalue())), (2, {}))
+                self.assertEqual((code, json.loads(out.getvalue())), (1, {}))
         # BeforeTool failure must continue to deny
         out = io.StringIO()
         with mock.patch.object(agent_hooks.H, "main", return_value=2):

@@ -472,10 +472,10 @@ class Installer(unittest.TestCase):
         for name, want in (("posix", 2), ("nt", 0)):
             with mock.patch("os.name", name):
                 self.assertEqual((agent_hooks._exit("codex", 2, True), agent_hooks._exit("codex", 2, False),
-                                  agent_hooks._exit("gemini", 2, True)), (want, 2, 2))
+                                  agent_hooks._exit("gemini", 2, True)), (want, 1, 2))
 
     def test_the_v1_hooks_error_path_answers_each_event_as_itself(self):
-        for event, code, denied in (("PreToolUse", CODEX_DENY, True), ("UserPromptSubmit", 2, False)):
+        for event, code, denied in (("PreToolUse", CODEX_DENY, True), ("UserPromptSubmit", 1, False)):
             with self.subTest(harness="codex", event=event):
                 out = io.StringIO()
                 with mock.patch.object(agent_hooks, "run", side_effect=RuntimeError("boom")), \
@@ -484,7 +484,7 @@ class Installer(unittest.TestCase):
                         contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(agent_hooks.entry("codex"), code)
                 self.assertEqual("deny" in out.getvalue(), denied, out.getvalue())
-        for event, code, denied in (("BeforeTool", 2, True), ("BeforeAgent", 2, False), ("AfterTool", 2, False)):
+        for event, code, denied in (("BeforeTool", 2, True), ("BeforeAgent", 1, False), ("AfterTool", 1, False)):
             with self.subTest(harness="gemini", event=event):
                 out = io.StringIO()
                 with mock.patch.object(agent_hooks, "run", side_effect=RuntimeError("boom")), \
