@@ -89,7 +89,7 @@ class CodingAgentHooks(unittest.TestCase):
                 for h in (group["hooks"] if "hooks" in group else [group])]
 
     def test_installed_hooks_name_their_event_and_wait_for_approval(self):
-        for harness in ("codex", "cursor", "gemini", "goose"):
+        for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
             with self.subTest(harness=harness):
                 path, settings = self.installed(harness)
                 got = self.check(harness, path, settings)
@@ -100,7 +100,7 @@ class CodingAgentHooks(unittest.TestCase):
                     self.assertIn(path, got[rid]["detail"])
 
     def test_a_command_without_its_event_warns(self):
-        for harness in ("codex", "cursor", "gemini", "goose"):
+        for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
             with self.subTest(harness=harness):
                 path, settings = self.installed(harness)
                 ev, h = self.entries(settings)[0]
@@ -125,12 +125,12 @@ class CodingAgentHooks(unittest.TestCase):
 
     def test_a_short_pre_tool_timeout_warns_in_the_harness_unit(self):
         from tracekit import agent_hooks
-        for harness in ("codex", "cursor", "gemini", "goose"):
+        for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
             with self.subTest(harness=harness):
                 path, settings = self.installed(harness)
                 for ev, h in self.entries(settings):
                     if ev in agent_hooks.PRE:
-                        h["timeout"] = 539_999 if harness == "gemini" else 539
+                        h["timeout"] = 539_999 if harness in ("gemini", "qwen") else 539
                 got = self.check(harness, path, settings)
                 self.assertIn("D-HOOKS-TIMEOUT", got)
                 self.assertEqual(got["D-HOOKS-TIMEOUT"]["status"], "warn")
@@ -139,7 +139,7 @@ class CodingAgentHooks(unittest.TestCase):
 
     def test_only_v2_tracekit_commands_are_checked_even_in_a_shared_group(self):
         from tracekit import agent_hooks
-        for harness in ("codex", "cursor", "gemini", "goose"):
+        for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
             with self.subTest(harness=harness):
                 path, settings = self.installed(harness)
                 ev = next(ev for ev in settings["hooks"] if ev in agent_hooks.PRE)
@@ -156,8 +156,8 @@ class CodingAgentHooks(unittest.TestCase):
     def test_missing_invalid_and_boundary_timeouts(self):
         from tracekit import agent_hooks
         from tracekit.integrations.claude_code import APPROVAL_WAIT_S
-        for harness in ("codex", "cursor", "gemini", "goose"):
-            scale = 1000 if harness == "gemini" else 1
+        for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
+            scale = 1000 if harness in ("gemini", "qwen") else 1
             for value in (None, "600000", False, -1, float("nan"), APPROVAL_WAIT_S * scale):
                 with self.subTest(harness=harness, timeout=value):
                     path, settings = self.installed(harness)
@@ -171,7 +171,7 @@ class CodingAgentHooks(unittest.TestCase):
                     self.assertEqual(got["status"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
 
     def test_a_wrong_event_and_an_event_missing_from_a_post_hook_warn(self):
-        for harness in ("codex", "cursor", "gemini", "goose"):
+        for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
             for replacement in ("", "AnotherEvent"):
                 with self.subTest(harness=harness, replacement=replacement):
                     path, settings = self.installed(harness)
@@ -217,7 +217,7 @@ class CodingAgentHooks(unittest.TestCase):
     def test_installer_commands_with_windows_and_posix_quoting_pass(self):
         for platform, python in (("nt", r"C:\Program Files\Python\python.exe"),
                                  ("posix", "/opt/tracekit env/bin/python")):
-            for harness in ("codex", "cursor", "gemini", "goose"):
+            for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
                 with self.subTest(platform=platform, harness=harness):
                     with mock.patch.object(os, "name", platform), mock.patch.object(sys, "executable", python):
                         path, settings = self.installed(harness)
@@ -815,8 +815,12 @@ class CodingAgentReasoning(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         from tracekit import agent_hooks
+        config_path = agent_hooks.config_path
+        def isolated_config_path(harness, project=None):
+            return config_path(harness, project or d)
         with mock.patch.dict(os.environ, {"HOME": d, "XDG_CONFIG_HOME": os.path.join(d, ".config")}), \
-                mock.patch("os.getcwd", return_value=d), contextlib.redirect_stdout(io.StringIO()):
+                mock.patch("os.getcwd", return_value=d), mock.patch.object(agent_hooks, "config_path", isolated_config_path), \
+                contextlib.redirect_stdout(io.StringIO()):
             agent_hooks.install("codex", v2=True)
             agent_hooks.install("gemini")   # v1: not checked
             self.assertEqual(doctor._dev_harnesses(), {"codex": agent_hooks.config_path("codex")})

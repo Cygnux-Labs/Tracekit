@@ -80,6 +80,9 @@ def collect(config=None, issuer_key=None):
         agent = _user(h.get("user"))
         home = agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
         plugin = agent and install.plugin_enabled([home])
+        # lean: another coding agent's hook config gets D-HOOKS-EVENT, D-HOOKS-TIMEOUT and the reasoning checks only;
+        # D-HOOKS-PRESENT names it without reading its events, and D-HOOKS-VENV and D-SIGNER-ENV are Claude Code's;
+        # until doctor reads them per format
         return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
                                signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
                                client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
@@ -215,7 +218,7 @@ def _harness_hook_checks(add, harnesses, prod):
     from . import agent_hooks
     from .integrations.claude_code import APPROVAL_WAIT_S
     for harness, path in sorted((harnesses or {}).items()):
-        if harness not in ("codex", "cursor", "gemini", "goose"):
+        if harness not in ("codex", "cursor", "gemini", "goose", "qwen"):
             continue
         fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
         try:
@@ -232,7 +235,7 @@ def _harness_hook_checks(add, harnesses, prod):
             "a pre-tool payload the hook cannot read can pass unrecorded" if unnamed else
             f"each {harness} hook command in {path} names its event" if cmds else
             f"no v2 {harness} hook commands found in {path}", fix, bad=WARN)
-        scale, unit = (1000, "ms") if harness == "gemini" else (1, "s")
+        scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
         pre = [h.get("timeout", 60 * scale) for ev, h in cmds if ev in agent_hooks.PRE]
         pre = [t if type(t) in (int, float) and 0 <= t < float("inf") else 0 for t in pre]
         if pre:
