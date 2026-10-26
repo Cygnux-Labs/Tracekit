@@ -639,7 +639,8 @@ class View(unittest.TestCase):
             with feed.lock:
                 return [(r["event"], r.get("tape")) for r in feed.records if r["session_id"] == "r1"]
         with mock.patch.object(view, "reader", return_value=fake), \
-                mock.patch.object(view, "check", return_value=verified) as check:
+                mock.patch.object(view, "check", return_value=verified) as check, \
+                mock.patch.object(view, "BACKOFF", 0):   # each refresh() checks the grown run (BACKOFF: its own test)
             fake.checkpoint_latest.return_value = (3, "note at 3")
             feed = store_feed(self, {"data_dir": self.d})
             self.assertTrue(wait_for(lambda: rows(), 5))
