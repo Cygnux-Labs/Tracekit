@@ -92,8 +92,18 @@ def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
     if harness == "droid":
-        if name == "ApplyPatch":   # Factory CLI --list-tools: the complete apply_patch diff is `input`
-            text = "\n".join(v for v in ti.values() if isinstance(v, str))
+        if name == "ApplyPatch":
+            def strings(value):
+                if isinstance(value, str):
+                    yield value
+                elif isinstance(value, dict):
+                    for child in value.values():
+                        yield from strings(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        yield from strings(child)
+
+            text = "\n".join(strings(ti))
             files = [f.strip() for f in PATCH_FILE.findall(text)]
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
@@ -697,16 +707,16 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         return _install_goose(path, uninstall, v2, python)
     if harness == "droid" and uninstall and not os.path.exists(path):
         return path
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    s = {}
-    read_path = path
-    if harness == "droid" and not os.path.exists(path):
+    if harness == "droid" and not uninstall and not os.path.exists(path):
         legacy = os.path.join(os.path.dirname(path), "hooks", "hooks.json")
         if os.path.exists(legacy):
-            read_path = legacy   # creating the standalone file otherwise hides Droid's legacy event map
-    if os.path.exists(read_path):
+            raise SettingsError(f"{legacy} is Droid's legacy hooks file: save once in Droid's /hooks so Droid moves it "
+                                f"to {path}, then run init again. Tracekit did not change it.")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    s = {}
+    if os.path.exists(path):
         try:
-            with open(read_path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 txt = f.read()
             s = json.loads(txt) if txt.strip() else {}
         except (OSError, ValueError) as e:
@@ -725,8 +735,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                     raise ValueError("hooks must be an object")
             except (OSError, ValueError, AttributeError) as e:
                 raise SettingsError(f"{settings}: {e}; Tracekit did not change it.") from e
-            # Droid's shallow merge makes a standalone event replace the settings event: keep its existing groups.
-            s = {**fallback, **s}
+            # Droid reads settings hooks only while the standalone file is absent; preserve them when creating it.
+            s = dict(fallback)
     # Droid's standalone hooks.json is the event map; only its settings.json nests that map under `hooks`.
     hooks = s if harness == "droid" else s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -791,7 +801,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 hooks.pop(ev, None)
     if not hooks and harness != "droid":
         s.pop("hooks", None)
-    _atomic_write_json(path, s)
+    if uninstall and harness == "droid" and not s:
+        os.unlink(path)
+    else:
+        _atomic_write_json(path, s)
     if uninstall and harness == "codex":   # init's reasoning summaries line goes with its hooks
         try:
             codex_reasoning(path, uninstall=True)

@@ -14,8 +14,10 @@ tracekit init --dev --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.
 tracekit demo --agent codex            # the scripted demo, sent as Codex's own hook payloads (also cursor, gemini)
 ```
 
-For Codex, Cursor, Gemini CLI, Qwen Code and Droid the installer merges into existing settings: other hooks and settings are kept, a
-backup is written first, and running it twice changes nothing. For OpenCode it writes its own `tracekit.js` local
+For Codex, Cursor, Gemini CLI and Qwen Code the installer merges into existing settings: other hooks and settings are kept, a
+backup is written first, and running it twice changes nothing. For Droid it writes a standalone `.factory/hooks.json`; if
+the legacy `.factory/hooks/hooks.json` exists, init refuses to proceed until you save once in Droid's `/hooks` UI to migrate
+it. For OpenCode it writes its own `tracekit.js` local
 plugin and refuses to overwrite a file it did not install (in `plugin/`, which every OpenCode 1.x loads; 1.0 doesn't
 read `plugins/`). For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
 to install into a plugin whose `plugin.json` is not Tracekit's. A goose rule carries no matcher (goose silently skips
@@ -49,8 +51,9 @@ A call on several files (a patch's `paths`) is decided on each file: a rule that
 
 Droid's [hooks reference](https://docs.factory.com/harness/hooks) documents Claude Code's event names and stdin fields.
 Its standalone `hooks.json` is keyed directly by event name, with no `hooks` wrapper (that wrapper is for declarations
-inside `settings.json`). When creating it, the installer preserves the effective hooks from `settings.json` and the
-legacy `.factory/hooks/hooks.json`, so adding Tracekit does not hide other hooks of the same event. On Windows Droid
+inside `settings.json`). When creating it, the installer copies the effective hooks from `settings.json`. If the legacy
+`.factory/hooks/hooks.json` exists, init refuses to proceed until you save once in Droid's `/hooks` UI to migrate it.
+On Windows Droid
 is assumed to run hooks under `cmd.exe`; the interpreter path stays quoted when it contains spaces.
 The documented stdin carries no tool-call id. Tracekit pairs its tool events by tool and arguments, first in first out, in a queue separate
 from Gemini CLI's. An allowed call with no `PostToolUse` (declined in Droid's permission prompt, blocked by another hook, or failed; Droid has no `PostToolUseFailure`) stays queued, so the next identical call's result can be paired to it and the call that ran closes as an error at session end. The pre-tool timeout is 600 seconds so a person can answer a held call. Factory CLI 0.249.0's
@@ -140,11 +143,11 @@ an allowed call whose post-tool payload was lost is completed as an error at the
 (below).
 
 Hooks installed before 1.2 have no event argument and keep working as before: an unparseable payload passes,
-unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code, Codex, Cursor, Gemini CLI, goose and Qwen Code when a command
+unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code, Codex, Cursor, Gemini CLI, goose, Qwen Code and Factory Droid when a command
 doesn't name its configured event, and `D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s approval
 wait (milliseconds for Gemini CLI and Qwen Code). Re-run init for the active mode to repair the other coding agents' hooks
 (`tracekit init --dev --v2 --agent NAME` in dev, or `sudo tracekit init --v2 --user AGENT --agent NAME` in system
-mode). OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
+mode). `tracekit doctor` also checks Droid's hook presence and timeout. OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
 
 ### What the signer records as a gap
 

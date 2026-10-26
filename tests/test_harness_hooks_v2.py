@@ -438,12 +438,12 @@ class Installer(unittest.TestCase):
                         self.assertNotIn("set by init", again[1])
                     code, out = self.cli("uninstall", "--agent", harness, "--project")
                     self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")   # once: the CLI repeated it
+                    if harness == "droid":
+                        self.assertFalse(os.path.exists(path))
+                        continue
                     with open(path) as f:
                         config = json.load(f)
-                        if harness == "droid":
-                            self.assertEqual(config, {})
-                        else:
-                            self.assertNotIn("hooks", config)
+                        self.assertNotIn("hooks", config)
 
     def test_the_wired_command_runs_the_hook(self):
         cmd = install._hook_command(harness_hooks.__name__, "entry", ("codex",))

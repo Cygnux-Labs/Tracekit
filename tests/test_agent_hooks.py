@@ -409,6 +409,10 @@ class DroidTools(unittest.TestCase):
                 self.assertEqual(args["file_path"], args["paths"][0])
                 self.assertNotEqual(args["file_path"], "decoy")
 
+    def test_patch_paths_include_nested_string_values(self):
+        _, args = agent_hooks.tool("droid", "ApplyPatch", {"input": [{"diff": PATCH.format(".env")}]})
+        self.assertIn(".env", args["paths"])
+
     def test_policy_decides_every_patch_path(self):
         from tracekit import policy
         pol = policy.load(policy.DEFAULT_POLICY)[0]
@@ -522,42 +526,60 @@ class Installer(unittest.TestCase):
                     with open(settings_path) as f:
                         self.assertEqual(json.load(f), settings)
 
-    def test_droid_keeps_effective_settings_and_legacy_hooks_when_creating_its_standalone_file(self):
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as d:
-                path = agent_hooks.config_path("droid", d)
-                os.makedirs(os.path.dirname(path))
-                def group(command):
-                    return [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]
-                fallback = {"PreToolUse": group("echo settings pre"), "PostToolUse": group("echo settings post")}
-                settings = {"theme": "dark", "hooks": fallback}
-                settings_path = os.path.join(d, ".factory", "settings.json")
-                with open(settings_path, "w") as f:
-                    json.dump(settings, f)
-                expected = dict(fallback)
-                if legacy:
-                    legacy_path = os.path.join(d, ".factory", "hooks", "hooks.json")
-                    os.makedirs(os.path.dirname(legacy_path))
-                    old = {"PreToolUse": group("echo legacy pre"), "Stop": group("echo legacy stop")}
-                    with open(legacy_path, "w") as f:
-                        json.dump(old, f)
-                    expected.update(old)
-                for _ in range(2):
-                    agent_hooks.install("droid", d, v2=True)
-                with open(path) as f:
-                    hooks = json.load(f)
-                for ev, groups in expected.items():
-                    self.assertEqual(hooks[ev][:len(groups)], groups)
-                if legacy:
-                    self.assertNotIn("echo settings pre", json.dumps(hooks))
-                agent_hooks.install("droid", d, uninstall=True)
-                with open(path) as f:
-                    self.assertEqual(json.load(f), expected)
-                with open(settings_path) as f:
-                    self.assertEqual(json.load(f), settings)
-                if legacy:
-                    with open(legacy_path) as f:
-                        self.assertEqual(json.load(f), old)
+    def test_droid_refuses_legacy_hooks_without_changing_legacy_or_settings(self):
+        from tracekit.install import SettingsError
+        with tempfile.TemporaryDirectory() as d:
+            path = agent_hooks.config_path("droid", d)
+            os.makedirs(os.path.dirname(path))
+            settings = {"theme": "dark", "hooks": {"PreToolUse": [{"hooks": [
+                {"type": "command", "command": "echo settings"}]}]}}
+            settings_path = os.path.join(d, ".factory", "settings.json")
+            with open(settings_path, "w") as f:
+                json.dump(settings, f)
+            legacy_path = os.path.join(d, ".factory", "hooks", "hooks.json")
+            os.makedirs(os.path.dirname(legacy_path))
+            legacy = {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo legacy"}]}]}
+            with open(legacy_path, "w") as f:
+                json.dump(legacy, f)
+            with self.assertRaisesRegex(SettingsError, "save once in Droid's /hooks"):
+                agent_hooks.install("droid", d, v2=True)
+            self.assertFalse(os.path.exists(path))
+            with open(legacy_path) as f:
+                self.assertEqual(json.load(f), legacy)
+            with open(settings_path) as f:
+                self.assertEqual(json.load(f), settings)
+
+    def test_droid_uninstall_deletes_empty_standalone_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = agent_hooks.config_path("droid", d)
+            agent_hooks.install("droid", d, v2=True)
+            agent_hooks.install("droid", d, uninstall=True)
+            self.assertFalse(os.path.exists(path))
+
+    def test_droid_creation_keeps_settings_hooks_and_uninstall_restores_them(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = agent_hooks.config_path("droid", d)
+            os.makedirs(os.path.dirname(path))
+
+            def group(command):
+                return [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]
+
+            fallback = {"PreToolUse": group("echo settings pre"), "PostToolUse": group("echo settings post")}
+            settings = {"theme": "dark", "hooks": fallback}
+            settings_path = os.path.join(d, ".factory", "settings.json")
+            with open(settings_path, "w") as f:
+                json.dump(settings, f)
+            for _ in range(2):
+                agent_hooks.install("droid", d, v2=True)
+            with open(path) as f:
+                hooks = json.load(f)
+            for ev, groups in fallback.items():
+                self.assertEqual(hooks[ev][:len(groups)], groups)
+            agent_hooks.install("droid", d, uninstall=True)
+            with open(path) as f:
+                self.assertEqual(json.load(f), fallback)
+            with open(settings_path) as f:
+                self.assertEqual(json.load(f), settings)
 
     def test_droid_does_not_migrate_inactive_settings_hooks_into_existing_file(self):
         with tempfile.TemporaryDirectory() as d:
