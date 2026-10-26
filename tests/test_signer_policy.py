@@ -587,7 +587,8 @@ class CodingPack(unittest.TestCase):
         paths = (".claude/settings.json", ".claude/settings.local.json", "/home/u/.claude/hooks/x.sh",
                  ".codex/config.toml", ".gemini/settings.json", ".cursor/hooks.json", ".mcp.json",
                  "managed-settings.json", ".opencode/plugin/a.js", ".OpenCode/plugin/x.js",
-                 "OpenCode.json", "opencode.jsonc", "config with spaces/opencode.json", ".claude", ".gemini", ".codex", ".opencode")
+                 "OpenCode.json", "opencode.jsonc", "config with spaces/opencode.json", ".claude", ".gemini", ".codex", ".opencode",
+                 ".qwen/settings.json", "/home/u/.qwen/settings.json", ".QWEN/settings.json", ".qwen")
         commands = ("echo x > .opencode/plugin/a.js", "echo '{}' > .claude/settings.json",
                     "cat > .gemini/settings.json <<'EOF'\n{}\nEOF", "echo x > .OpenCode/plugin/x.js",
                     "echo '{}' > OpenCode.json", "tee opencode.json", "cp x .codex/config.toml",
@@ -597,19 +598,27 @@ class CodingPack(unittest.TestCase):
                     r"cp x 'C:\repo\OpenCode.json'", r"cp x 'C:\repo\.claude\settings.json'",
                     r"echo x > '.gemini\settings.json'", r"cp x 'C:\repo\.codex\config.toml'",
                     "rm -rf ~/.claude", "rm -rf .opencode", "mv ~/.gemini /tmp/g", "cp settings.json ~/.gemini",
-                    "cp x 'a\n/../.claude/settings.json'", "tee 'a\n/../.mcp.json'")
+                    "cp x 'a\n/../.claude/settings.json'", "tee 'a\n/../.mcp.json'",
+                    "echo '{}' > .qwen/settings.json", "sed -i s/true/false/ ~/.qwen/settings.json", "rm -rf ~/.qwen",
+                    r"cp x 'C:\repo\.qwen\settings.json'", 'echo x > "$QWEN_HOME/settings.json"',
+                    "tee ${QWEN_HOME}/settings.json", 'rm -rf "$QWEN_HOME"')
         benign = [("Bash", {"command": c}) for c in (
             "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
             "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
-            "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt")]
+            "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt",
+            "cat .qwen/settings.json", "ls ~/.qwen", 'cat "$QWEN_HOME/settings.json"', "echo x > qwen-settings.json",
+            "cp x .qwen-backup/settings.json")]
         benign += [(tool, args) for tool, args in (
             ("Read", {"file_path": "opencode.json"}),
+            ("Read", {"file_path": "/home/u/.qwen/settings.json"}),
+            ("Write", {"file_path": "/repo/config/qwen-settings.json", "content": "{}"}),
+            ("Write", {"file_path": "/repo/.qwen-backup/settings.json", "content": "{}"}),
             ("Write", {"file_path": "notes.md", "content": " ".join(paths)}),
             ("Edit", {"file_path": "notes.md", "old_string": ".gemini/settings.json", "new_string": "opencode.json"}),
             ("MultiEdit", {"file_path": "notes.md", "edits": [{"old_string": ".opencode/plugin/a.js",
                                                               "new_string": ".mcp.json"}]}))]
         for pack, engine, e in self.every_pack():
-            for path in paths + (r"C:\repo\.OpenCode\plugin\x.js", r"C:\repo\OpenCode.json"):
+            for path in paths + (r"C:\repo\.OpenCode\plugin\x.js", r"C:\repo\OpenCode.json", r"C:\repo\.qwen\settings.json"):
                 for tool in ("Write", "Edit", "MultiEdit"):
                     with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
                         self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])

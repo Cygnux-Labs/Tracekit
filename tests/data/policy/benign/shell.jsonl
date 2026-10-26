@@ -208,3 +208,4 @@
 {"tool": "Bash", "args": {"command": "tofu state show aws_db_instance.prod"}, "expect": "allow", "note": "inspect an OpenTofu state binding"}
 {"tool": "Bash", "args": {"command": "echo cdk destroy"}, "expect": "allow", "note": "mention CDK destruction as text"}
 {"tool": "Bash", "args": {"command": "cdk destroy --help"}, "expect": "allow", "note": "read CDK destruction help without running it"}
+{"tool": "Bash", "args": {"command": "cat ~/.qwen/settings.json"}, "expect": "allow", "note": "reading Qwen Code's settings"}

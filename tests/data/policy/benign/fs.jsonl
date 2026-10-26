@@ -53,3 +53,5 @@
 {"tool": "Write", "args": {"file_path": "/repo/packages.list", "content": "one two"}, "expect": "allow", "note": "ordinary file with list suffix"}
 {"tool": "Read", "args": {"file_path": "/home/app/.bash_history"}, "expect": "allow", "note": "read shell history"}
 {"tool": "Read", "args": {"file_path": "/repo/Cookies"}, "expect": "allow", "note": "ordinary project file named Cookies"}
+{"tool": "Read", "args": {"file_path": "/home/app/.qwen/settings.json"}, "expect": "allow", "note": "reading Qwen Code's settings"}
+{"tool": "Write", "args": {"file_path": "/app/config/qwen-settings.json", "content": "{}"}, "expect": "allow", "note": "ordinary file named like Qwen Code's settings"}
