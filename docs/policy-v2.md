@@ -551,7 +551,7 @@ package install or publish, `docker run`, `terraform apply`, `kubectl apply`/`de
 `ssh`, `dig`) and an environment change (`PATH=`, `LD_PRELOAD=`, a write to a shell startup file) wait for an
 approval, and a shell command the parser can't read is denied. Two flags stay flags: `TK-F007` matches `crontab -l`,
 which only lists, and `TK-F012` (any URL a call acts on) would hold every web request and navigation (20% of E17's
-benign calls). It holds 4.5% of E17's benign calls (36 of 797; the server pack, 0.13%), 10.0% of E21's developer
+benign calls). It holds 4.5% of E17's benign calls (36 of 800; the server pack, 0.12%), 10.0% of E21's developer
 session calls (the server pack, 1.5%) and 10.9% of E21's held-out benign calls (4.2%), while catching 65.2% of E21's
 held-out harmful calls (58.3%; both measured after rule changes, on a pool no longer blind:
 [evaluation](evaluation.md#e21-policy-robustness)). Use it where a person answers holds promptly,
