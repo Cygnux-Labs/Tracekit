@@ -1,4 +1,4 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose and Qwen Code, on the same pipeline as the Claude Code hook.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code and Factory Droid, on the Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -6,6 +6,7 @@
     tracekit init --dev --agent opencode     # ~/.config/opencode/plugin/tracekit.js
     tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
     tracekit init --dev --agent qwen         # ~/.qwen/settings.json
+    tracekit init --dev --agent droid        # ~/.factory/hooks.json
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -26,8 +27,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             working directory `working_dir`, and sends no tool result or error text: see docs/limits.md)
     Qwen Code (a Gemini CLI fork) sends Claude Code's payloads and names its events as Claude Code does, with Gemini's
             tool names and its own edit, grep_search and agent -> Edit, Grep, Task
+    Droid   Execute, Create, ApplyPatch, FetchUrl -> Bash, Write, Edit (all patch file headers in paths), WebFetch
 
-What each harness exposes decides what Tracekit can see: Gemini CLI does not give tool calls an id, so pre and post
+What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order; Cursor and Qwen Code report failures through postToolUseFailure.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
@@ -44,9 +46,9 @@ from . import __version__, hook as H
 from .core import canon
 from .locking import lock_file, unlock_file
 
-HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen")
+HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid")
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
-               "qwen": "qwen-code"}
+               "qwen": "qwen-code", "droid": "droid"}
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
@@ -66,6 +68,8 @@ OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edi
 # `source`, not `path`: a decoy `path` beside it must not move the decision)
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
+DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
+DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -87,6 +91,23 @@ def _input(v):
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
+    if harness == "droid":
+        if name == "ApplyPatch":
+            def strings(value):
+                if isinstance(value, str):
+                    yield value
+                elif isinstance(value, dict):
+                    for child in value.values():
+                        yield from strings(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        yield from strings(child)
+
+            text = "\n".join(strings(ti))
+            files = [f.strip() for f in PATCH_FILE.findall(text)]
+            ti["paths"] = files
+            ti["file_path"] = files[0] if files else None
+        return DROID_TOOLS.get(name, name), ti
     if harness == "codex":
         if name == "apply_patch":
             patch = ti.get("patch") or ti.get("input") or ti.get("command") or ""
@@ -155,12 +176,13 @@ def tool(harness, name, ti):
     return name, ti
 
 
-def _gemini_ids(run_id, tool_name, ti, phase, drop=None):
-    """Gemini CLI tool events carry no call id: pair BeforeTool/AfterTool by (tool, arguments), first in first out.
-    drop: the id of a blocked BeforeTool, which gets no AfterTool; it leaves the queue."""
+def _paired_ids(harness, run_id, tool_name, ti, phase, drop=None):
+    """Tool events without a call id: pair pre/post by (tool, arguments), first in first out, per harness and session.
+    drop: the id of a blocked pre-tool call, which gets no post-tool event; it leaves the queue."""
     from . import client
     key = drop.split("_")[1] if drop else hashlib.sha256((tool_name + "|" + canon(ti)).encode()).hexdigest()[:16]
-    path = os.path.join(client.client_dir(), "runs", "gemini-" + hashlib.sha256(run_id.encode()).hexdigest()[:16] + ".json")
+    prefix = "gem" if harness == "gemini" else harness
+    path = os.path.join(client.client_dir(), "runs", harness + "-" + hashlib.sha256(run_id.encode()).hexdigest()[:16] + ".json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".lock", "a") as lk:
         lock_file(lk)
@@ -179,11 +201,11 @@ def _gemini_ids(run_id, tool_name, ti, phase, drop=None):
                     st["pending"].pop(key, None)
             elif phase == "pre":
                 st["n"] += 1
-                tid = f"gem_{key}_{st['n']}"
+                tid = f"{prefix}_{key}_{st['n']}"
                 st["pending"].setdefault(key, []).append(tid)
             else:
                 q = st["pending"].get(key) or []
-                tid = q.pop(0) if q else f"gem_{key}_unpaired"
+                tid = q.pop(0) if q else f"{prefix}_{key}_unpaired"
                 if not q:
                     st["pending"].pop(key, None)
             with open(path + ".tmp", "w", encoding="utf-8") as f:
@@ -199,7 +221,7 @@ def normalise(harness, p):
     ev = p.get("hook_event_name") or ""
     out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
-    if harness in ("codex", "qwen"):   # both send Claude Code's payloads; Qwen Code adds PostToolUseFailure
+    if harness in ("codex", "qwen", "droid"):   # Claude Code's payloads; Qwen Code adds PostToolUseFailure
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
              "SessionStart": "SessionStart", "SessionEnd": "SessionEnd"}
@@ -211,6 +233,9 @@ def normalise(harness, p):
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
             out["tool_use_id"] = p.get("tool_use_id")
+            if harness == "droid":   # Droid's documented stdin carries no call id
+                out["tool_use_id"] = out["session_id"] and _paired_ids(
+                    harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
             if ev != "PreToolUse":
                 out["tool_response"] = p.get("tool_response")
             if ev == "PostToolUseFailure":
@@ -244,7 +269,7 @@ def normalise(harness, p):
         if ev in ("BeforeTool", "AfterTool"):
             name, ti = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
             out.update(hook_event_name="PreToolUse" if ev == "BeforeTool" else "PostToolUse", tool_name=name, tool_input=ti,
-                       tool_use_id=out["session_id"] and _gemini_ids(out["session_id"], name, ti,
+                       tool_use_id=out["session_id"] and _paired_ids(harness, out["session_id"], name, ti,
                                                                      "pre" if ev == "BeforeTool" else "post"))
             if ev == "AfterTool":
                 r = p.get("tool_response")
@@ -341,9 +366,9 @@ def run(harness, raw, stdout=None, stderr=None):
         code = H.main(harness_reasoning=False)
     finally:
         sys.stdin, sys.stderr = real_stdin, real_stderr
-    if code and harness == "gemini" and is_pre and q.get("tool_use_id"):   # a blocked call gets no AfterTool
+    if code and harness in ("gemini", "droid") and is_pre and q.get("tool_use_id"):   # a blocked call gets no post-tool
         with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
-            _gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
+            _paired_ids(harness, q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     msg = err.getvalue().strip()
     _reply(harness, stdout, code == 0, msg, is_pre)
     return _exit(harness, 2 if code else 0, is_pre)
@@ -370,7 +395,7 @@ def _reply(harness, stdout, allowed, msg, is_pre):
     elif harness == "gemini":
         # stdout must be JSON only; a deny only for a tool call
         stdout.write(json.dumps({} if allowed or not is_pre else {"decision": "deny", "reason": msg[:500]}))
-    elif harness == "codex" and not allowed and is_pre:
+    elif harness in ("codex", "droid") and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                         "permissionDecisionReason": msg[:500] or "Blocked by tracekit"}}))
     stdout.flush()
@@ -386,6 +411,7 @@ def config_path(harness, project=None, home=None):
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
             "qwen": os.path.join(base, ".qwen", "settings.json"),
+            "droid": os.path.join(base, ".factory", "hooks.json"),
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
                         os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
                                      os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js")}[harness]
@@ -679,6 +705,13 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         return _install_opencode(path, uninstall, v2, python)
     if harness == "goose":
         return _install_goose(path, uninstall, v2, python)
+    if harness == "droid" and uninstall and not os.path.exists(path):
+        return path
+    if harness == "droid" and not uninstall and not os.path.exists(path):
+        legacy = os.path.join(os.path.dirname(path), "hooks", "hooks.json")
+        if os.path.exists(legacy):
+            raise SettingsError(f"{legacy} is Droid's legacy hooks file: save once in Droid's /hooks so Droid moves it "
+                                f"to {path}, then run init again. Tracekit did not change it.")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     s = {}
     if os.path.exists(path):
@@ -691,7 +724,21 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         if not isinstance(s, dict):
             raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
         _backup(path, txt.encode("utf-8"))
-    hooks = s.setdefault("hooks", {})
+    if harness == "droid" and not uninstall and not os.path.exists(path):
+        settings = os.path.join(os.path.dirname(path), "settings.json")
+        if os.path.exists(settings):
+            try:
+                with open(settings, encoding="utf-8") as f:
+                    fallback = json.load(f)
+                fallback = fallback.get("hooks", {})
+                if not isinstance(fallback, dict):
+                    raise ValueError("hooks must be an object")
+            except (OSError, ValueError, AttributeError) as e:
+                raise SettingsError(f"{settings}: {e}; Tracekit did not change it.") from e
+            # Droid reads settings hooks only while the standalone file is absent; preserve them when creating it.
+            s = dict(fallback)
+    # Droid's standalone hooks.json is the event map; only its settings.json nests that map under `hooks`.
+    hooks = s if harness == "droid" else s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
     new, removed = "v2" if v2 else "v1", set()
@@ -703,7 +750,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
         # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
         # which both run
-        if os.name != "nt" or harness == "cursor":
+        if os.name != "nt" or harness in ("cursor", "droid"):   # assume Droid uses cmd.exe, not PowerShell
             return c
         m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
         return m.group(1) + c[m.end():] if m else f"& {c}"
@@ -732,7 +779,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             else:
                 hooks.pop(ev, None)
     else:
-        events = (["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
+        events = (DROID_EVENTS if harness == "droid" else
+                  ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
                   else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
                   if harness == "qwen" else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
         tools = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "BeforeTool", "AfterTool"}
@@ -751,9 +799,12 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 hooks[ev] = groups
             else:
                 hooks.pop(ev, None)
-    if not hooks:
+    if not hooks and harness != "droid":
         s.pop("hooks", None)
-    _atomic_write_json(path, s)
+    if uninstall and harness == "droid" and not s:
+        os.unlink(path)
+    else:
+        _atomic_write_json(path, s)
     if uninstall and harness == "codex":   # init's reasoning summaries line goes with its hooks
         try:
             codex_reasoning(path, uninstall=True)

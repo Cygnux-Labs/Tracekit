@@ -226,6 +226,45 @@ class CodingAgentHooks(unittest.TestCase):
                     self.assertEqual(got["D-HOOKS-TIMEOUT"]["status"], "ok")
 
 
+class DroidHooks(unittest.TestCase):
+    def test_droid_flat_configs_are_discovered_and_checked_without_reading_metadata_as_hooks(self):
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), \
+                mock.patch("os.getcwd", return_value=d):
+            path = agent_hooks.config_path("droid", d)
+            agent_hooks.install("droid", d, v2=True)
+            with open(path) as f:
+                config = json.load(f)
+            config.update(theme="dark", metadata={"source": "mine"}, revision=3)
+            with open(path, "w") as f:
+                json.dump(config, f)
+            self.assertEqual(doctor._dev_harnesses()["droid"], path)
+            rows = doctor.v2_checks({"data_dir": d}, "dev", harnesses={"droid": path})
+            for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
+                row = next(r for r in rows if r["id"] == rid)
+                self.assertEqual(row["status"], "ok", row)
+                self.assertIn(path, row["detail"])
+            for ev in agent_hooks.DROID_EVENTS:
+                action = config[ev][0]["hooks"][0]
+                original = action["command"]
+                action["command"] = original.replace(ev, "WrongEvent")
+                with open(path, "w") as f:
+                    json.dump(config, f)
+                row = next(r for r in doctor.v2_checks({"data_dir": d}, "dev", harnesses={"droid": path})
+                           if r["id"] == "D-HOOKS-EVENT")
+                self.assertEqual(row["status"], "warn", ev)
+                self.assertIn(ev, row["detail"])
+                self.assertEqual(row["fix"], "tracekit init --dev --v2 --agent droid")
+                action["command"] = original
+            config["PreToolUse"][0]["hooks"][0]["timeout"] = 60
+            with open(path, "w") as f:
+                json.dump(config, f)
+            row = next(r for r in doctor.v2_checks({"data_dir": d}, "dev", harnesses={"droid": path})
+                       if r["id"] == "D-HOOKS-TIMEOUT")
+            self.assertEqual(row["status"], "warn")
+            self.assertIn("60 s", row["detail"])
+
+
 class DevFresh(unittest.TestCase):
     def test_a_dev_signer_that_never_started_gets_dev_advice(self):
         """On a fresh home doctor said "run doctor as root" for the missing keys and "add a witness in signer.yaml" at

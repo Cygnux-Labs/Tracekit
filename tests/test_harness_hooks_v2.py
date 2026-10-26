@@ -3,7 +3,7 @@
 The mapping tables are checked against recorded sample payloads (tests/data/harness/<harness>.json): each case is the
 harness's PreToolUse payload, the decision the signer gives, the exact `decide` request the hook must send (tool,
 args, tool_call_id) and the reply the harness must get (exit code and stdout). Gemini CLI gives tool calls no id, so
-its cases name none: the hook pairs calls itself (tracekit.agent_hooks._gemini_ids) and the test checks the ids are
+its cases name none: the hook pairs calls itself (tracekit.agent_hooks._paired_ids) and the test checks the ids are
 distinct and never a default.
 """
 import contextlib
@@ -136,6 +136,51 @@ class Mapping(HarnessCase):
     def test_qwen(self):
         self.check("qwen")
 
+    def test_droid_pairs_results_and_drops_a_blocked_call_before_allowing_a_retry(self):
+        pre = {"session_id": "s-droid", "hook_event_name": "PreToolUse", "tool_name": "Execute",
+               "tool_input": {"command": "ls"}}
+        self.decision = "deny"
+        code, out, _ = self.hook("droid", pre)
+        self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (2, "deny"))
+        self.decision = "allow"
+        for _ in range(2):
+            self.assertEqual(self.hook("droid", pre)[:2], (0, ""))
+        calls = [s["tool_call_id"] for s in self.sent]
+        self.assertEqual(len(set(calls)), 3)
+        for i in range(2):
+            self.assertEqual(self.hook("droid", dict(pre, hook_event_name="PostToolUse", tool_response=f"ok {i}"))[0], 0)
+        run = self.signer._runs[claude_code._load(claude_code._state("s-droid"))["run_id"]]
+        results = [e["data"] for e in run["events"] if e["type"] == "tool.result"]
+        self.assertEqual([r["tool_call_id"] for r in results], calls[1:])
+        self.assertEqual([s["tool"] for s in self.sent], ["Bash"] * 3)
+
+    def test_droid_a_held_call_waits_for_approval(self):
+        self.decision = "ask"
+        self.approve_when_asked()
+        self.assertEqual(self.hook("droid", {"session_id": "droid-held", "hook_event_name": "PreToolUse",
+                                            "tool_name": "Create", "tool_input": {"file_path": "notes.txt", "content": "hi"}})[:2],
+                         (0, ""))
+        self.assertEqual(self.sent[-1]["tool"], "Write")
+        self.assertTrue(any(a["state"] == "consumed" for a in self.signer._approvals.values()))
+
+    def test_droid_does_not_read_its_transcript_as_geminis(self):
+        with mock.patch.object(harness_hooks, "_read", side_effect=AssertionError("Droid transcript is not Gemini JSON")):
+            code, _, _ = self.hook("droid", {"session_id": "droid-transcript", "hook_event_name": "PreToolUse",
+                                             "transcript_path": "/tmp/droid.jsonl", "tool_name": "Execute",
+                                             "tool_input": {"command": "ls"}})
+        self.assertEqual(code, 0)
+
+    def test_droid_missing_session_or_malformed_payload_blocks_the_call(self):
+        code, out, err = self.hook("droid", {"hook_event_name": "PreToolUse", "tool_name": "Execute",
+                                             "tool_input": {"command": "ls"}})
+        self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (2, "deny"))
+        self.assertIn("tool call blocked", err)
+        self.assertEqual(self.sent, [])
+        for raw in ("not JSON", "[]", "[" * 100_000):
+            out = io.StringIO()
+            self.assertEqual(harness_hooks.run("droid", raw, out, io.StringIO(), event="PreToolUse"), 2)
+            self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
+
     def test_results_complete_the_decided_call(self):
         for harness, pre, post in (
                 ("codex", {"session_id": "s-codex", "hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -235,14 +280,14 @@ class Mapping(HarnessCase):
         self.assertIn("quota_exceeded", err)
 
     def test_a_gemini_id_file_it_cant_update_doesnt_stop_a_block(self):
-        real = agent_hooks._gemini_ids
+        real = agent_hooks._paired_ids
 
         def ids(*a, **kw):
             if kw.get("drop"):
                 raise OSError("read-only")
             return real(*a, **kw)
         with mock.patch.object(self.signer, "decide", side_effect=RPCError("quota_exceeded", "streams_per_run")), \
-                mock.patch.object(agent_hooks, "_gemini_ids", side_effect=ids) as m:
+                mock.patch.object(agent_hooks, "_paired_ids", side_effect=ids) as m:
             code, out, err = self.hook("gemini", cases("gemini")[0]["payload"])
         self.assertTrue(any(c.kwargs.get("drop") for c in m.call_args_list))
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
@@ -271,6 +316,18 @@ class OnTheDevPolicy(HarnessCase):
                                              "tool_use_id": "w1", "tool_input": {"session_id": 1, "chars": "sudo -i\n"}})
         self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
         self.assertIn("TK-D001", err)
+
+    def test_droid_patch_decides_every_file_including_a_move_destination(self):
+        patch = ("*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: src/a.py\n"
+                 "*** Move to: {}\n@@\n-x\n+y\n*** End Patch")
+        for target, expected in (("src/b.py", 0), ("config/.env", 2), ("home/.ssh/config", 2)):
+            code, out, err = self.hook("droid", {"session_id": "droid-patch", "hook_event_name": "PreToolUse",
+                                                 "tool_name": "ApplyPatch", "tool_input": {"input": patch.format(target),
+                                                                                           "paths": ["decoy"], "file_path": "decoy"}})
+            self.assertEqual(code, expected, err)
+            if expected:
+                self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn("TK-D005", err)
 
     def test_an_indented_patch_header_and_a_cursor_delete_are_decided_as_file_writes(self):
         code, out, err = self.hook("codex", {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
@@ -363,13 +420,13 @@ class Installer(unittest.TestCase):
                         continue
                     with open(path) as f:
                         blob = json.load(f)
-                    hooks = [h for hs in blob["hooks"].values() for h in hs]
+                    hooks = [h for hs in (blob if harness == "droid" else blob["hooks"]).values() for h in hs]
                     cmds = [h["command"] if harness == "cursor" else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
                     self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6}.get(harness, 5))   # Cursor: and what its model said
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
-                    if os.name == "nt" and harness != "cursor":   # PowerShell can't start a quoted first word
+                    if os.name == "nt" and harness not in ("cursor", "droid"):   # PowerShell can't start a quoted first word
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
@@ -381,8 +438,12 @@ class Installer(unittest.TestCase):
                         self.assertNotIn("set by init", again[1])
                     code, out = self.cli("uninstall", "--agent", harness, "--project")
                     self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")   # once: the CLI repeated it
+                    if harness == "droid":
+                        self.assertFalse(os.path.exists(path))
+                        continue
                     with open(path) as f:
-                        self.assertNotIn("hooks", json.load(f))
+                        config = json.load(f)
+                        self.assertNotIn("hooks", config)
 
     def test_the_wired_command_runs_the_hook(self):
         cmd = install._hook_command(harness_hooks.__name__, "entry", ("codex",))
@@ -416,6 +477,34 @@ class Installer(unittest.TestCase):
         with open(agent_hooks.config_path(harness, d)) as f:
             groups = json.load(f)["hooks"]["PreToolUse" if harness == "codex" else "BeforeTool"]
         return groups[0]["hooks"][0]["command"]
+
+    def test_droid_windows_commands_keep_the_quoted_interpreter_for_cmd(self):
+        d = ac.tmpdir(self)
+        for exe in (r"C:\Program Files\Python311\python.exe", r"C:\Python311\python.exe"):
+            with self.subTest(exe=exe), mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", exe):
+                agent_hooks.install("droid", d, v2=True)
+                with open(agent_hooks.config_path("droid", d)) as f:
+                    command = json.load(f)["PreToolUse"][0]["hooks"][0]["command"]
+                self.assertTrue(command.startswith(f'"{exe}" -I '), command)
+                self.assertFalse(command.startswith("&"), command)
+
+    @unittest.skipUnless(os.name == "nt", "Droid runs Windows hooks under cmd.exe")
+    def test_droid_cmd_runs_a_hook_with_a_spaced_interpreter_path_and_keeps_its_denial(self):
+        d = ac.tmpdir(self)
+        out = json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}})
+        code = "print(bytes.fromhex('" + out.encode().hex() + "').decode()); raise SystemExit(2)"
+        # Stand in only for the hook target: the installer still formats the command Droid's cmd.exe will run.
+        venv = os.path.join(d, "Python with spaces")
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv], check=True, capture_output=True, timeout=60)
+        exe = os.path.join(venv, "Scripts", "python.exe")
+        with mock.patch.object(install, "_dev_hook_argv", return_value=[exe, "-I", "-c", code]):
+            agent_hooks.install("droid", d, v2=True)
+        with open(agent_hooks.config_path("droid", d)) as f:
+            command = json.load(f)["PreToolUse"][0]["hooks"][0]["command"]
+        process = subprocess.run('cmd.exe /d /s /c "' + command + '"',
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(process.returncode, 2, process.stderr)
+        self.assertEqual(json.loads(process.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_on_windows_the_codex_and_gemini_commands_run_under_powershell_and_cmd(self):
         d = ac.tmpdir(self)
