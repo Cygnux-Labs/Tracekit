@@ -2,6 +2,7 @@
 import contextlib
 import hashlib
 import http.client
+import inspect
 import io
 import json
 import os
@@ -242,8 +243,10 @@ class Server(unittest.TestCase):
                           b"Content-Length: 1000\r\n\r\nold 0\n")
                 held.append(s)
             threading.Thread(target=trickle, daemon=True).start()
-            # by its text: each poll counts toward the /24's registrations, whose own 429 must not pass for this one
-            self.assertTrue(wait_for(lambda: "at a time" in self.post("/register", "{}", xff="192.0.2.1")[2], 20))
+            # both counted before the check: a request in flight counts too, so one let in first turns a held one away
+            active = inspect.getclosurevars(self.srv.RequestHandlerClass.do_POST).nonlocals["active"]
+            self.assertTrue(wait_for(lambda: active.get("192.0.2.1/32") == 2, 20))
+            self.assertIn("at a time", self.post("/register", "{}", xff="192.0.2.1")[2])
             # a neighbour in the same /24 is served: the cap is per address, not per network (its own /24 limit may 429)
             self.assertNotIn("at a time", self.post("/register", "{}", xff="192.0.2.2")[2])
 
