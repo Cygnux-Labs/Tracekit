@@ -93,8 +93,8 @@ def tool(harness, name, ti):
     ti = dict(_input(ti))
     if harness == "droid":
         if name == "ApplyPatch":   # Factory CLI --list-tools: the complete apply_patch diff is `input`
-            patch = ti.get("input")
-            files = [f.strip() for f in PATCH_FILE.findall(patch)] if isinstance(patch, str) else []
+            text = "\n".join(v for v in ti.values() if isinstance(v, str))
+            files = [f.strip() for f in PATCH_FILE.findall(text)]
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
         return DROID_TOOLS.get(name, name), ti
@@ -714,7 +714,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         if not isinstance(s, dict):
             raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
         _backup(path, txt.encode("utf-8"))
-    if harness == "droid" and not uninstall:
+    if harness == "droid" and not uninstall and not os.path.exists(path):
         settings = os.path.join(os.path.dirname(path), "settings.json")
         if os.path.exists(settings):
             try:
@@ -740,7 +740,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
         # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
         # which both run
-        if os.name != "nt" or harness in ("cursor", "droid"):   # Droid uses cmd.exe, not PowerShell
+        if os.name != "nt" or harness in ("cursor", "droid"):   # assume Droid uses cmd.exe, not PowerShell
             return c
         m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
         return m.group(1) + c[m.end():] if m else f"& {c}"

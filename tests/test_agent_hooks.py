@@ -401,6 +401,14 @@ class DroidTools(unittest.TestCase):
                 _, args = agent_hooks.tool("droid", "ApplyPatch", {"input": invalid, "paths": ["decoy"], "file_path": "decoy"})
                 self.assertEqual((args["paths"], args["file_path"]), ([], None))
 
+    def test_patch_paths_are_read_whatever_field_carries_the_patch(self):
+        for ti in ({"patch": PATCH.format(".env"), "file_path": "decoy"}, PATCH.format(".env")):
+            with self.subTest(ti=ti):
+                _, args = agent_hooks.tool("droid", "ApplyPatch", ti)
+                self.assertIn(".env", args["paths"])
+                self.assertEqual(args["file_path"], args["paths"][0])
+                self.assertNotEqual(args["file_path"], "decoy")
+
     def test_policy_decides_every_patch_path(self):
         from tracekit import policy
         pol = policy.load(policy.DEFAULT_POLICY)[0]
@@ -550,6 +558,29 @@ class Installer(unittest.TestCase):
                 if legacy:
                     with open(legacy_path) as f:
                         self.assertEqual(json.load(f), old)
+
+    def test_droid_does_not_migrate_inactive_settings_hooks_into_existing_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = agent_hooks.config_path("droid", d)
+            os.makedirs(os.path.dirname(path))
+            standalone = {"SessionStart": [{"hooks": [{"type": "command", "command": "echo standalone"}]}]}
+            settings = {"theme": "dark", "hooks": {"PreToolUse": [{"hooks": [
+                {"type": "command", "command": "echo inactive settings"}]}]}}
+            with open(path, "w") as f:
+                json.dump(standalone, f)
+            settings_path = os.path.join(os.path.dirname(path), "settings.json")
+            with open(settings_path, "w") as f:
+                json.dump(settings, f)
+
+            agent_hooks.install("droid", d, v2=True)
+            with open(path) as f:
+                installed = json.load(f)
+            self.assertNotIn("inactive settings", json.dumps(installed))
+            agent_hooks.install("droid", d, uninstall=True)
+            with open(path) as f:
+                self.assertEqual(json.load(f), standalone)
+            with open(settings_path) as f:
+                self.assertEqual(json.load(f), settings)
 
     def test_droid_config_timeouts_upgrade_and_preservation(self):
         with tempfile.TemporaryDirectory() as d:

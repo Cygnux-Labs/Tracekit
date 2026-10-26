@@ -51,11 +51,11 @@ Droid's [hooks reference](https://docs.factory.com/harness/hooks) documents Clau
 Its standalone `hooks.json` is keyed directly by event name, with no `hooks` wrapper (that wrapper is for declarations
 inside `settings.json`). When creating it, the installer preserves the effective hooks from `settings.json` and the
 legacy `.factory/hooks/hooks.json`, so adding Tracekit does not hide other hooks of the same event. On Windows Droid
-runs hooks under `cmd.exe`; the interpreter path stays quoted when it contains spaces.
+is assumed to run hooks under `cmd.exe`; the interpreter path stays quoted when it contains spaces.
 The documented stdin carries no tool-call id. Tracekit pairs its tool events by tool and arguments, first in first out, in a queue separate
-from Gemini CLI's. The pre-tool timeout is 600 seconds so a person can answer a held call. Factory CLI 0.249.0's
+from Gemini CLI's. An allowed call with no `PostToolUse` (declined in Droid's permission prompt, blocked by another hook, or failed; Droid has no `PostToolUseFailure`) stays queued, so the next identical call's result can be paired to it and the call that ran closes as an error at session end. The pre-tool timeout is 600 seconds so a person can answer a held call. Factory CLI 0.249.0's
 `droid exec --list-tools --output-format json` describes `Execute` as a shell command and `ApplyPatch` as a complete
-patch in `input`. Droid support has not yet been checked in a live authenticated session; its transcript format is
+patch in `input`; that field and format come from the tool listing, not a captured hook payload. The minimum Droid version is unknown, and it is unknown whether `Task`-started sub-droids fire hooks. Native Windows and live authenticated Droid sessions are untested; its transcript format is
 not read for model text or reasoning.
 
 An unparseable payload or an unknown harness name is reported on stderr and the call is allowed, unless
@@ -140,11 +140,11 @@ an allowed call whose post-tool payload was lost is completed as an error at the
 (below).
 
 Hooks installed before 1.2 have no event argument and keep working as before: an unparseable payload passes,
-unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code, Codex, Cursor, Gemini CLI and goose when a command
+unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code, Codex, Cursor, Gemini CLI, goose and Qwen Code when a command
 doesn't name its configured event, and `D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s approval
-wait (540000 ms for Gemini CLI). Re-run init for the active mode to repair the other coding agents' hooks
+wait (milliseconds for Gemini CLI and Qwen Code). Re-run init for the active mode to repair the other coding agents' hooks
 (`tracekit init --dev --v2 --agent NAME` in dev, or `sudo tracekit init --v2 --user AGENT --agent NAME` in system
-mode). Qwen Code and OpenCode's JavaScript plugin aren't checked; re-run init after upgrading.
+mode). OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
 
 ### What the signer records as a gap
 
