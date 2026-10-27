@@ -5,6 +5,7 @@ and the policy's a2a class (policy2/classes.a2a_fields)."""
 import contextlib
 import hashlib
 import http.client
+import importlib.util
 import http.server
 import io
 import json
@@ -30,6 +31,8 @@ from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import REQUESTS
+
+HAVE_RE2 = importlib.util.find_spec("re2") is not None
 from tracekit.verify import v2
 
 GW = CallerIdentity("mtls", "spiffe://acme/a2a", True)
@@ -472,6 +475,7 @@ class Transfer(unittest.TestCase):
                 "claimed": ["modality", "projector", "receiver", "sender"], "measured": ["digest", "size"]}
         self.assertTrue(self.s._opens(d["args_commitment"], d["decision_id"],
                                       event_hash({"tool": "a2a:transfer", "args": args})))
+        self.s.close()   # every file it keeps, closed (Windows won't read one the signer holds locked)
         for root, _, files in os.walk(self.dir):
             for name in files:
                 with open(os.path.join(root, name), "rb") as f:
@@ -519,7 +523,7 @@ class Policy(unittest.TestCase):
         deny = {"tools": {"a2a:*": "a2a"}, "deny": [
             {"id": "R-BAD", "class": "a2a", "field": "projector", "pattern": "^bad-fuser@1$"},
             {"id": "R-UPPER", "class": "a2a", "field": "sender", "pattern": "^Evil-7B@1$"}]}   # a rule in upper case
-        for backend in ("re2", "regex"):
+        for backend in ("re2", "regex") if HAVE_RE2 else ("regex",):
             e = Engine(deny, backend=backend)
             self.assertEqual(e.decide("a2a:transfer", dict(TRIPLE, projector="bad-fuser@1"))["rule_ids"], ["R-BAD"])
             self.assertEqual(e.decide("a2a:transfer", dict(TRIPLE, sender="evil-7b@1"))["rule_ids"], ["R-UPPER"])
