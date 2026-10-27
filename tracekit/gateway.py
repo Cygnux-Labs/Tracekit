@@ -354,6 +354,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         parts = (run or "").rsplit(".", 2)   # a run token is <payload>.<mac>
         if len(parts) != 3 or not all(parts) or len(run) > MAX_RUN_HEADER:
             return self._error(401, "no run: send X-Tracekit-Run: <run_id>.<run token>")
+        if "transfer-encoding" in self.headers:   # the body is read by Content-Length only; a proxy may read it otherwise
+            return self._error(400, "Transfer-Encoding isn't supported: send the body with Content-Length")
         n = self.headers.get("content-length", "")
         if not (n.isascii() and n.isdigit() and len(n) <= 12):
             return self._error(411, "Content-Length required")

@@ -48,7 +48,7 @@ SECTIONS = [
                             "monitor.md", "issuer.md", "observability.md", "viewer.md", "why.md", "migration.md",
                             "portability.md"]),
     ("Verify the evidence", ["for-auditors.md", "verdicts.md", "format-v2.md", "auditor-guide.md", "sample/README.md",
-                             "signing.md", "guarantees.md"]),
+                             "signing.md", "graph.md", "guarantees.md"]),
     ("Security and privacy", ["threat-model-server.md", "threat-model-laptop.md", "security-checklist.md",
                               "review-packet.md", "privacy.md", "limits.md", "support.md"]),
     ("Compliance", ["compliance/README.md", "compliance/*.md"]),

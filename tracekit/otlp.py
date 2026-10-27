@@ -535,6 +535,10 @@ def make_handler(receiver):
             if self.path.split("?")[0].rstrip("/") != "/v1/traces":
                 self.close_connection = True
                 return self._out(404, {"Content-Type": "application/json"}, b'{"message":"not found"}')
+            if "Transfer-Encoding" in self.headers:   # the body is read by Content-Length only
+                self.close_connection = True
+                return self._out(400, {"Content-Type": "application/json"},
+                                 b'{"message":"Transfer-Encoding isn\'t supported: send the body with Content-Length"}')
             try:
                 n = int(self.headers.get("Content-Length", "-1"))
             except ValueError:

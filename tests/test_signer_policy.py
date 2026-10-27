@@ -685,7 +685,24 @@ class CodingPack(unittest.TestCase):
                    f"/usr/bin/python3 -m tracekit reject {aid}", f"uv run tracekit approve {aid}",
                    f"uvx tracekit approvals approve {aid}", f"uvx --from tracekit-ai --cache-dir c tracekit reject {aid}",
                    f"pipx run tracekit approve {aid}", f"pipx run --spec tracekit-ai tracekit approvals approve {aid}",
-                   f"bash <<'EOF'\ntracekit approve {aid}\nEOF"]
+                   f"bash <<'EOF'\ntracekit approve {aid}\nEOF", f'eval "tracekit approve {aid}"',
+                   # uv's hidden option aliases, uv tool run (uvx's long form), pipx's argparse abbreviations (#443)
+                   f"uvx --constraint c.txt tracekit approve {aid}", f"uvx --override o.txt tracekit reject {aid}",
+                   f"uvx --trusted-host h tracekit approvals approve {aid}",
+                   f"uvx --build-constraint b.txt tracekit approve {aid}",
+                   f"uv tool run tracekit approve {aid}", f"uv tool uvx tracekit reject {aid}",
+                   f"uv tool run --from tracekit-ai --constraint c.txt tracekit approvals approve {aid}",
+                   f"uv run --cache-dir c tracekit approve {aid}", f"uv run -m tracekit approve {aid}",
+                   f"uv run --module tracekit.cli reject {aid}", f"pipx run --sp tracekit-ai tracekit approve {aid}",
+                   f"pipx run --spe tracekit-ai --py python3.12 tracekit approvals reject {aid}",
+                   # other interpreters and runners
+                   f"pypy3 -m tracekit approve {aid}", f"pypy3.10 -I -m tracekit approvals approve {aid}",
+                   f"python3.13t -m tracekit approve {aid}", f"python3.14t -Im tracekit reject {aid}",
+                   f"py -3.12 -m tracekit approve {aid}", f"pythonw -m tracekit reject {aid}",
+                   f"hatch run tracekit approve {aid}", f"hatch run +py=3.12 test:tracekit approvals approve {aid}",
+                   f"conda run tracekit approve {aid}", f"conda run -n env tracekit reject {aid}",
+                   f"conda run --na env --no-capture-output tracekit approvals approve {aid}",
+                   f"conda run -p /opt/env python -m tracekit approve {aid}"]
         others = [("Bash", {"command": c}) for c in (
             "tracekit approvals list", f"tracekit approvals show {aid}", f"tracekit approvals --signer /tmp/s.sock show {aid}",
             # the word after the action is an argument, not the action
@@ -693,7 +710,13 @@ class CodingPack(unittest.TestCase):
             "python3 -m tracekit approvals show reject", "uvx tracekit approvals show approve",
             "tracekit verify run.tkb", "python3 -m tracekit verify run.tkb", "tracekit pending", f"echo tracekit approve {aid}",
             f"echo 'tracekit approvals approve {aid}' > notes.md", f"git commit -m 'tracekit approve {aid}'",
-            "grep -rn 'tracekit approve' docs", f"cat > notes.md <<'EOF'\ntracekit approvals approve {aid}\nEOF")] + [
+            "grep -rn 'tracekit approve' docs", f"cat > notes.md <<'EOF'\ntracekit approvals approve {aid}\nEOF",
+            # listing and showing through the same launchers
+            "uv tool run tracekit approvals list", f"uvx --constraint c.txt tracekit approvals show {aid}",
+            "uv run -m tracekit.cli approvals list", f"pipx run --sp tracekit-ai tracekit approvals show {aid}",
+            "pypy3 -m tracekit approvals list", f"python3.13t -m tracekit approvals show {aid}",
+            "py -m tracekit approvals list", "hatch run tracekit approvals list",
+            f"conda run -n env tracekit approvals show {aid}")] + [
             ("Write", {"file_path": "notes.md", "content": f"run `tracekit approvals approve {aid}` from a terminal"}),
             ("Edit", {"file_path": "notes.md", "old_string": "x", "new_string": f"tracekit approve {aid}"})]
         for pack, engine, e in self.every_pack():
@@ -728,6 +751,26 @@ class CodingPack(unittest.TestCase):
                 "xargs rm > log.txt <<'EOF'\n/etc/tracekit/client.json\nEOF",
                 "cat <<'EOF' | xargs rm\n/etc/tracekit/client.json\nEOF",
                 "echo /etc/tracekit/client.json >/dev/stdout | xargs rm",
+                # a later command in this call consumes the literal file receiving the copied text
+                "echo /etc/tracekit/client.json > out; sh out",
+                "echo /etc/tracekit/client.json > out; bash out",
+                "echo /etc/tracekit/client.json > out; source out",
+                "echo /etc/tracekit/client.json > out; . out",
+                "echo /etc/tracekit/client.json > out; xargs rm < out",
+                "echo /etc/tracekit/client.json > out; parallel rm < out",
+                "echo /etc/tracekit/client.json > out; cat out | xargs rm",
+                "printf '%s\\n' /etc/tracekit/client.json > out; xargs rm < out",
+                "cat <<'EOF' > out; bash out\n/etc/tracekit/client.json\nEOF",
+                "tee > out <<'EOF'; xargs rm < out\n/etc/tracekit/client.json\nEOF",
+                # any later non-inert command keeps copied text, including equivalent or indirect file uses
+                "echo /etc/tracekit/client.json > ./out; sh out",
+                "echo /etc/tracekit/client.json > out; bash ./out",
+                "echo /etc/tracekit/client.json > /tmp/out; sh /tmp/./out",
+                "echo /etc/tracekit/client.json > out; cat ./out | sh",
+                "echo /etc/tracekit/client.json > out; for f in out; do sh \"$f\"; done",
+                # source files may redefine the commands that otherwise only copy data
+                "source ./defs; echo /etc/tracekit/client.json > out | xargs rm",
+                ". ./defs; echo /etc/tracekit/client.json > out | xargs rm",
                 # a write of text that acts too: on its file, on the file it copies, or through a command it runs
                 "cat > /etc/tracekit/policy.yaml <<'EOF'\nmode: off\nEOF",
                 "tee /etc/tracekit/policy.yaml > /dev/null <<'EOF'\nmode: off\nEOF",
@@ -751,6 +794,65 @@ class CodingPack(unittest.TestCase):
             for command in data:
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertNotIn("TK-D007", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_stdout_data_cut_requires_a_literal_unchanged_file_target_and_builtin(self):
+        path = "/etc/tracekit/client.json"
+        glob_targets = ("/dev/std?ut", "/d[e]v/stdout", "/dev/*out", "/dev/fd/?")
+        changed_directories = ("cd /dev", "pushd /dev", "cd /proc/self/fd")
+        copies = {
+            "echo": f"echo {path} > out | xargs rm",
+            "printf": f"printf '%s\\n' {path} > out | xargs rm",
+            "cat": f"cat <<'EOF' > out | xargs rm\n{path}\nEOF",
+            "tee": f"tee <<'EOF' > out | xargs rm\n{path}\nEOF",
+        }
+        commands = [f"echo {path} > {target} | xargs rm" for target in glob_targets]
+        commands += [f"{directory} && echo {path} > stdout | xargs rm" for directory in changed_directories]
+        for name, command in copies.items():
+            commands += [f"alias {name}=x; {command}", f"{name}() {{ :; }}; {command}",
+                         f"enable -n {name}; {command}"]
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True), d)
+            for command in (f"echo {path} > main.go; echo *", f"echo {path} > main.go; cd /tmp"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D007", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_stdout_data_cut_stops_when_a_command_name_can_change(self):
+        path = "/etc/tracekit/client.json"
+        commands = (
+            f"shopt -s expand_aliases\nalias ls='sh out'\necho {path} > out\nls",
+            f"enable -f ./evil.so ls; echo {path} > out; ls",
+            f"unalias ls; echo {path} > out; ls",
+            f"shopt -u expand_aliases; echo {path} > out; ls",
+            f"enable -n ls; echo {path} > out; ls",
+            f"ls() {{ :; }}; echo {path} > out; ls",
+            f"source defs; echo {path} > out; ls",
+            f". defs; echo {path} > out; ls",
+            f"hash -p ./evil ls; echo {path} > out; ls",
+            f"command_not_found_handle() {{ :; }}; echo {path} > out; ls",
+            f"PATH=./evil; echo {path} > out; ls",
+            f"BASH_ENV=./defs; echo {path} > out; ls",
+            f"ENV=./defs; echo {path} > out; ls",
+            f"echo {path} > out; printf -v PATH '%s' ./evil; ls",
+            f"echo {path} > out; read PATH <<< ./evil; ls",
+            f"echo {path} > out; mapfile PATH < paths; ls",
+            f"echo {path} > out; readarray PATH < paths; ls",
+            f"echo {path} > out; declare PATH=./evil; ls",
+            f"echo {path} > out; typeset PATH=./evil; ls",
+            f"echo {path} > out; local PATH=./evil; ls",
+            f"echo {path} > out; export PATH=./evil; ls",
+            f"echo {path} > out; readonly PATH=./evil; ls",
+            f"echo {path} > out; let PATH=1; ls",
+            f"echo {path} > out; eval 'PATH=./evil'; ls",
+            f"echo {path} > out; unset PATH; ls",
+        )
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True), d)
 
     def test_each_harness_config_an_agent_could_turn_its_sandbox_or_hooks_off_in_is_flagged(self):
         for tool, args in (("Write", {"file_path": "/home/u/.gemini/settings.json", "content": "{}"}),
@@ -825,6 +927,50 @@ class CodingPack(unittest.TestCase):
             for tool, args in benign:
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-F016"} & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_agy_goose_and_droid_hooks_and_settings_are_harness_config_in_every_pack(self):
+        # #442: agy's project hooks (.agents/hooks.json), goose's plugins (.agents/plugins/) and settings
+        # (~/.config/goose) and Droid's .factory/ came out allow; .agents/skills/ and reads stay unflagged
+        paths = ("/home/u/.agents/plugins/tracekit/hooks/hooks.json", "/home/u/.agents/plugins/tracekit/plugin.json",
+                 "/repo/.agents/hooks.json", ".agents/hooks.json", ".AGENTS/Hooks.json", r"C:\repo\.agents\hooks.json",
+                 "/repo/.agents/plugins/x/hooks/hooks.json", "/home/u/.factory/hooks.json",
+                 "/home/u/.factory/settings.json", "/home/u/.factory/hooks/hooks.json", "/repo/.factory/settings.json",
+                 "/repo/.factory/droids/x.md",
+                 "/home/u/.config/goose/config.yaml", r"C:\Users\u\AppData\Roaming\Block\goose\config\config.yaml")
+        commands = ("echo '{}' > .agents/hooks.json", "echo '{}' > ~/.agents/hooks.json",
+                    "cp x ~/.agents/plugins/tracekit/hooks/hooks.json", "rm -rf ~/.agents/plugins/tracekit",
+                    "rm -rf ~/.agents/plugins", "rm -rf .agents", "rm -rf ~/.agents/", "mv ~/.agents /tmp/a",
+                    "sed -i s/600/1/ ~/.factory/hooks.json", "tee .factory/settings.json", "rm -rf ~/.factory",
+                    "mv ~/.factory/hooks.json /tmp/h", "echo x > ~/.config/goose/config.yaml", "rm -rf ~/.config/goose",
+                    r"cp x 'C:\repo\.agents\hooks.json'", r"cp x 'C:\Users\u\.factory\hooks.json'",
+                    r"echo x > 'C:\Users\u\AppData\Roaming\Block\goose\config\config.yaml'")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat .agents/hooks.json", "ls ~/.agents/plugins", "cat ~/.factory/hooks.json",
+            "cat ~/.config/goose/config.yaml",
+            "echo x > .agents/skills/x/SKILL.md", "cp -r skill .agents/skills/", "rm -rf .agents/skills/old",
+            "echo x > .agents/hooks.json.bak", "echo x > agents/hooks.json", "cp x .factory-old/x",
+            "echo x > ~/.config/goose-old/x", "cat .agents/hooks.json > out.json")]
+        benign += [("Read", {"file_path": path}) for path in paths]
+        benign += [(tool, args) for tool, args in (
+            ("Write", {"file_path": "/repo/.agents/skills/x/SKILL.md", "content": "x"}),
+            ("Edit", {"file_path": "/repo/.agents/AGENTS.md", "old_string": "a", "new_string": "b"}),
+            ("Write", {"file_path": "/repo/agents/hooks.json", "content": "{}"}),
+            ("Write", {"file_path": "/repo/.factory-old/x", "content": "{}"}),
+            ("Write", {"file_path": "notes.md", "content": " ".join(paths)}))]
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+        e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex")
+        self.assertEqual({r["id"]: r.get("label") for r in e.policy["flag"] if r["id"] in ("TK-F009", "TK-F015")},
+                         {"TK-F009": "harness_config", "TK-F015": "harness_config"})
 
     def test_harness_base_url_keeps_its_existing_raw_subjects(self):
         calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),
@@ -1085,14 +1231,16 @@ class CodingPack(unittest.TestCase):
                         "npm exec --", "dotenv -e a --", "torsocks", "proxychains4 -q", "firejail --quiet",
                         "gtimeout 5", "ssh-agent", "sandbox-exec -n x", "systemd-run --user -p A=1", "valgrind",
                         "ltrace -o f", "chpst -u bob", "s6-setuidgid bob", "with-contenv", "dumb-init", "tini --",
-                        "gosu bob", "su-exec bob"):
+                        "gosu bob", "su-exec bob", "uvx --constraint c", "uv tool run --from x", "uv tool uvx",
+                        "uv run --cache-dir c", "pipx run --sp x", "hatch run", "hatch run +py=3.12 --",
+                        "conda run -n env", "conda run --na env --live-stream"):
             self.verdicts([(f"{wrapper} git push --force origin main", "TK-D003"), (f"{wrapper} cp x .env", "TK-D010"),
                            (f"{wrapper} git push -d origin x", "TK-A002")])
         self.verdicts([("nix-shell -p git --run 'git push -f'", "TK-D003"), ("git.exe push --force", "TK-D003"),
                        ("Git.EXE push -d origin x", "TK-A002"), ("cp.exe x .env", "TK-D010"), ("sudo.exe id", "TK-D001"),
                        ("rm.exe -rf /", "TK-D004")])
         for command in ("uv pip install cp", "npm install git", "mise use node@20", "poetry add sudo", "direnv allow .",
-                        "pipx install sudo"):
+                        "pipx install sudo", "uv tool install sudo", "conda install git", "hatch env create sudo"):
             self.assertIn(self.e.decide("Bash", {"command": command})["verdict"], ("allow", "flag"), command)
 
     def test_a_program_find_runs_is_read_in_lower_case_on_the_line(self):

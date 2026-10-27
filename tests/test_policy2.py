@@ -684,6 +684,13 @@ def find(command, argv):
 
 
 class Shell(unittest.TestCase):
+    def test_many_data_copy_commands_parse_in_linear_time(self):
+        command = "; ".join([*(f"echo text > out{i}" for i in range(1600)),
+                               *(f"sh out{i}" for i in range(1600))])
+        start = time.perf_counter()
+        shell.analyse(command)
+        self.assertLess(time.perf_counter() - start, 0.5 * SLOWER)
+
     def test_sudo_by_absolute_path(self):
         self.assertTrue(find("/usr/bin/sudo id", ["sudo", "id"]))
 
@@ -837,31 +844,48 @@ class Shell(unittest.TestCase):
                 self.assertEqual(argvs(cmd), [["echo", cmd[5:].strip('"')]])
 
     def test_arithmetic_expansion_parses_in_linear_time_and_within_the_budget(self):
-        n = MAX_SUBJECT // 8
-        for cmd in ("echo $(( " + "$(id) + " * n + "1 ))", "echo $(( " + "(" * n + "1" + ")" * n + " ))",
-                    'echo "$(( ' + "x + " * n + '1 ))"', "echo $(( $(echo " + " " * (MAX_SUBJECT - 40) + ") ))"):
-            with self.subTest(cmd=cmd[:20]):
+        def best(cmd):   # the fastest of three parses, so a busy CI runner's pauses don't count
+            times = []
+            for _ in range(3):
                 start = time.perf_counter()
-                shell.parse(cmd)
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER)   # 3-80 ms on a laptop
+                try:
+                    shell.parse(cmd)
+                except shell.ParseError:
+                    pass
+                times.append(time.perf_counter() - start)
+            return min(times)
+        n = MAX_SUBJECT // 8
+        for build in (lambda k: "echo $(( " + "$(id) + " * k + "1 ))",
+                      lambda k: "echo $(( " + "(" * k + "1" + ")" * k + " ))",
+                      lambda k: 'echo "$(( ' + "x + " * k + '1 ))"',
+                      lambda k: "echo $(( $(echo " + " " * (8 * k - 40) + ") ))"):
+            with self.subTest(cmd=build(1)[:20]):
+                shell.parse(build(n))
+                small, big = best(build(n // 4)), best(build(n))
+                # linear: 4 times the text takes about 4 times as long (quadratic would be 16); 3-80 ms on a laptop
+                self.assertLess(big, 8 * small + 0.005 * SLOWER)
+                self.assertLess(big, 2 * SLOWER)
         # each level reads the text of the levels inside it again: the budget stops it
         for cmd in ("echo " + "$(( $(echo " * 10 + " " * 60000 + ") ))" * 10, "echo " + "$(( " * 5000,
                     "echo " + "$(( $(echo " * 40 + "1" + ") ))" * 40):
             with self.subTest(cmd=cmd[:20]):
-                start = time.perf_counter()
                 with self.assertRaises(shell.ParseError):
                     shell.parse(cmd)
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER)
+                self.assertLess(best(cmd), 2 * SLOWER)
 
     def test_nested_reparsed_consumers_are_bounded(self):
         cmd = 'eval "$(id)" "$(id)"'
         while len(cmd) * 2 < MAX_SUBJECT:
             cmd = f'eval "$({cmd})" "$({cmd})"'
-        start = time.monotonic()
-        with self.assertRaises(shell.ParseError):
-            shell.parse(cmd)
-        # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s
-        self.assertLess(time.monotonic() - start, 2 * SLOWER)
+        took = []
+        for _ in range(3):   # the fastest of three, so a busy CI runner's pauses don't count
+            start = time.monotonic()
+            with self.assertRaises(shell.ParseError):
+                shell.parse(cmd)
+            took.append(time.monotonic() - start)
+        # ~0.5 s on a laptop, about 2 s on CI's slowest runner (Windows, py3.9); the old 1 MiB budget took 1.7–5 s on
+        # the laptop
+        self.assertLess(min(took), 3 * SLOWER)
 
     def test_lists_after_process_calls_count_toward_the_parse_budget(self):
         """Each `run([` in interpreter code copied the rest of the code and took every string up to the next `]` as

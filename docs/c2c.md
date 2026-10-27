@@ -31,7 +31,7 @@ This is T1 evidence: the signer checks none of those claims or measurements, and
 
 ## Policy
 
-The shipped packs map `a2a:transfer` to `a2a` through `coding.yaml`'s `a2a:*` mapping, but contain no transfer rules. Use the class fields described on the [A2A gateway](a2a.md#policy): `route` is `sender->receiver via projector`; `size`, `modality`, `projector` and `weights` are also available. Transfer names are lower-cased for `a2a` rules, and a non-printable-ASCII or space-containing name is denied as `TK-A2A-NAME`, with the fixed reason and remedy and without echoing the name.
+The shipped packs map `a2a:transfer` to `a2a` through `coding.yaml`'s `a2a:*` mapping. With `coding.yaml` and `dev.yaml` no rule matches a transfer, so it is allowed and recorded. `server.yaml` and `strict.yaml` ask a person for every `a2a` call, transfers included (`TK-S011`), until a deployment replaces `TK-S011` with a rule scoped to its allowed triples, as the [A2A gateway](a2a.md#policy) page shows. Use the class fields described on the [A2A gateway](a2a.md#policy): `route` is `sender->receiver via projector`; `size`, `modality`, `projector` and `weights` are also available. Transfer names are lower-cased for `a2a` rules, and a non-printable-ASCII or space-containing name is denied as `TK-A2A-NAME`, with the fixed reason and remedy and without echoing the name.
 
 ```yaml
 deny:
