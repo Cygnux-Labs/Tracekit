@@ -25,6 +25,13 @@ MAX_REMEDY = 200   # characters: one sentence the agent and the person read with
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
                 "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME"}
+# the reason and remedy the signer gives with an id the engine gives itself, as with a rule's own: fixed text, never
+# the call's
+ENGINE_REASONS = {"TK-A2A-NAME": {
+    "reason": "an agent-to-agent name (sender, receiver, projector, modality, weights, a skill or a part kind) is not "
+              "printable ASCII without spaces, so a rule written for that name could miss it",
+    "remedy": "Spell each name in printable ASCII without spaces: no look-alike, fullwidth, zero-width or control "
+              "characters."}}
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;

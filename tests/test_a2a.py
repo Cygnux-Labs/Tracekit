@@ -482,12 +482,15 @@ class Transfer(unittest.TestCase):
         self.assertEqual((out["ok"], out["decision"], out["rule_ids"]), (False, "deny", ["R-ROUTE"]))
 
     def test_the_signer_matches_a_names_spellings_and_signs_the_callers(self):
-        """In the signer: a case variant of the listed triple is that triple, a look-alike is refused (TK-A2A-NAME),
-        and each decision commits to the names as the caller spelt them."""
+        """In the signer: a case variant of the listed triple is that triple, a look-alike is refused (TK-A2A-NAME)
+        with its fixed reason and remedy, and each decision commits to the names as the caller spelt them."""
+        fixed = policy_compile.ENGINE_REASONS["TK-A2A-NAME"]
+        self.assertEqual(policy_compile._lint_remedy(fixed["remedy"], "deny"), [])
         for sender, ok, rule_ids in (("QWEN-7b@1", True, []), ("qwеn-7b@1", False, ["TK-A2A-NAME"])):
             with self.subTest(sender=sender):
                 out = self.run.transfer(sender, "llama-1b@2", b"state", "kv-cache", projector="c2c@0.1")
                 self.assertEqual((out["ok"], out["rule_ids"]), (ok, rule_ids))
+                self.assertEqual(out.get("reason"), None if ok else f"{fixed['reason']}. {fixed['remedy']}")
                 d = [r["event"]["data"] for r in self.s.log.storage.iter_run("default", self.run.run_id)
                      if r["event"]["type"] == "policy.decision"][-1]
                 args = {"sender": sender, "receiver": "llama-1b@2", "modality": "kv-cache", "size": 5,
@@ -549,6 +552,18 @@ class Policy(unittest.TestCase):
         self.assertIn("p.yaml: flag rule TK-A2A-NAME: the engine or the signer gives a decision this id itself",
                       "\n".join(policy_compile._lint(dict(POLICY, flag=[{"id": "TK-A2A-NAME", "pattern": "x"}]),
                                                      "p.yaml")))
+
+    def test_every_pack_a_signer_runs_maps_a2a_calls_to_the_a2a_class(self):
+        packs = os.path.join(os.path.dirname(policy_compile.__file__), "packs")
+        whole = {"coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"}   # coding.yaml maps a2a:*; the rest extend it
+        parts = {"browser.yaml", "server-cloud.yaml", "server-comms.yaml", "server-data.yaml", "server-net.yaml"}
+        self.assertEqual(set(os.listdir(packs)), whole | parts)   # a new pack is one or the other (server.yaml's parts)
+        for name in sorted(whole):
+            e = Engine(policy_compile.build(os.path.join(packs, name))[0])
+            for tool in ("a2a:researcher/message/send", "a2a:researcher/message/stream", "a2a:researcher/tasks/get",
+                         "a2a:transfer"):
+                with self.subTest(pack=name, tool=tool):
+                    self.assertEqual(e.tool_class(tool), "a2a")
 
     def test_skills_from_the_receivers_card_meet_an_allow_list(self):
         e = Engine(POLICY)
