@@ -15,7 +15,6 @@ proxy/hook mismatches and approvals. Content that the ledger holds only as a has
 """
 import argparse
 import collections
-import datetime as _dt
 import hashlib
 import hmac
 import itertools
@@ -35,6 +34,7 @@ from .ledger import read_records, verify_record_sig
 from .netserver import drain
 from .replay import CSP_META
 from .storage.base import StorageCorrupt, StorageUnavailable
+from .why.core import ts_seconds
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(HERE, "ui", "terminal.html")
@@ -46,8 +46,8 @@ MAX_INGEST = 20 * 1024 * 1024   # a why log batch (POST /v1/ingest)
 
 def _epoch(ts):
     try:
-        return _dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=_dt.timezone.utc).timestamp()
-    except (TypeError, ValueError):
+        return ts_seconds(ts)
+    except ValueError:
         return time.time()
 
 
@@ -100,7 +100,8 @@ class Translator:
         r = {"seq": self.n - 1, "ts": _epoch(e.get("ts")), "event": event, "session_id": e["run_id"],
              "cwd": self.cwd.get(e["run_id"], ""), "agent": self.agent_names.get(e["run_id"], "claude-code"),
              "parent_id": e.get("parent_id"), "hash": rec.get("hash"),
-             "prev": e.get("prev_hash"), "tk_seq": e.get("seq"), "tk_source": e.get("source")}
+             "prev": e.get("prev_hash"), "tk_seq": e.get("seq"), "tk_source": e.get("source"),
+             **({"ts_signed": _epoch(e["ts_signed"])} if "ts_signed" in e else {})}   # v1: ts is the client's
         if e.get("agent_id") and e["agent_id"] not in ("main", "tracekitd"):
             r["agent_id"] = e["agent_id"]
             meta = self.child_meta.get((e["run_id"], e["agent_id"]), {})
@@ -366,6 +367,10 @@ COOKIE = "tracekit_observe"
 LOGIN_COOKIE = "tracekit_login"
 SESSION_S = 8 * 3600   # how long a session cookie the token was exchanged for lasts
 ALL = object()   # a session's scope: every tenant
+class Busy(Exception):
+    """A feed at its limit of a costly request (view.StoreFeed.rows): answered 503 with Retry-After."""
+
+
 RETRACTED = {}   # a feed's row taken back (view.StoreFeed: a run that failed verification): kept for its position only
 CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -536,6 +541,20 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                                         if r is not RETRACTED and (scope is ALL or r.get("tenant") == scope)],
                             **({"source": feed.source} if getattr(feed, "source", None) else {})}
                 return self._send(200, json.dumps(body, ensure_ascii=False))
+            if u.path == "/api/rows" and hasattr(feed, "rows"):   # a run of the store, verified again, in full
+                q = {k: v[0] for k, v in parse_qs(u.query).items()}
+                if not (q.get("tenant") and q.get("run")):
+                    return self._send(400, '{"error":"needs tenant and run"}')
+                try:
+                    rows = feed.rows(scope, q["tenant"], q["run"])
+                except Busy:
+                    return self._send(503, '{"error":"checking other runs: try again shortly"}',
+                                      headers=[("Retry-After", "5")])
+                except (OSError, StorageUnavailable, StorageCorrupt):
+                    return self._send(502, '{"error":"store unavailable"}')
+                if rows is None:
+                    return self._send(404, '{"error":"no such verified run"}')
+                return self._send(200, json.dumps({"rows": rows}, ensure_ascii=False))
             if u.path == "/api/verify":
                 n, problems, head = feed.verify() if scope is ALL else feed.verify(scope)
                 return self._send(200, json.dumps({"records": n, "ok": not problems, "problems": problems, "head": head,

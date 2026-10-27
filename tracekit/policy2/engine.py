@@ -121,6 +121,16 @@ class Engine:
         cls = self.tool_class(tool)
         return any(u == cls if u in CLASSES else fnmatch.fnmatchcase(tool, u) for u in self.policy.get("untrusted", ()))
 
+    def reads(self, tool, cls=None):
+        """{section: [rule ids]} decide() reads for a call of `tool` (`cls` overrides its class, as for decide): those
+        of no class or of that class whose tool pattern takes its name (the viewer's WHY THIS DECISION)."""
+        cls, name, deadline = cls or self.tool_class(tool), _text(tool), time.monotonic() + REGEX_TIMEOUT_S
+        out = {sec: [] for sec in SECTIONS}
+        for sec, rule, tool_re, *_ in self.rules:
+            if rule.get("class", cls) == cls and (tool_re is None or self._match(tool_re, name, True, deadline)):
+                out[sec].append(rule["id"])
+        return out
+
     def decide(self, tool, args, cls=None, untrusted=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
         (`oversize`: the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the class the

@@ -65,7 +65,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_v2, parsers
+from . import findings_text, findings_v2, parsers
 from .bundle_v2 import export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -73,6 +73,7 @@ from .identity import oidc, webauthn
 from .identity.k8s_sa import _https
 from .netserver import Server
 from .policy2 import compile as policy_compile
+from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
@@ -86,6 +87,7 @@ POLL_S = 1.0
 BACKOFF = 4   # a run being written is verified again no sooner than BACKOFF x its last check's time after that check
 RECHECK_S = 300   # a run that did not grow is verified again this long after its last check, one run a pass
 MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
+ROWCACHE_MAX = 8   # runs whose /api/rows answer the viewer keeps, each until a newer checkpoint
 KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
@@ -329,13 +331,20 @@ SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamp
                "decision_flip", "executed_against_denial", "concurrent_run"}
 
 
+class Reasons(dict):
+    """policy_hash -> {rule id: {reason[, remedy]}}, and `policies`: policy_hash -> that compiled policy."""
+    policies = {}
+
+
 def policy_reasons(paths=()):
-    """policy_hash -> {rule id: {reason[, remedy]}} of the shipped packs and the policy files `paths`: a decision's
-    rule reasons are shown only from the policy whose hash it records."""
-    out = {}
+    """Reasons of the shipped packs and the policy files `paths`: a decision's rule reasons are shown only from the
+    policy whose hash it records, and so is how many rules it read."""
+    out = Reasons()
+    out.policies = {}
     for p in sorted(glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))) + list(paths):
         pol, errors = policy_compile.build(p)
         if not errors:
+            out.policies[policy_compile.policy_hash(pol)] = pol
             out[policy_compile.policy_hash(pol)] = {
                 r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
                 for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
@@ -363,6 +372,7 @@ class Translator(observe.Translator):
     def __init__(self, reasons=None):
         super().__init__()
         self.reasons = reasons or {}
+        self.engines = {}   # policy_hash -> its Engine (None: a policy this viewer doesn't have), built when first read
         # approval_id -> (tool, rule ids, tool call id), and shadow suggestions: the newest MAX_RUNS_KEPT each, like agent_names
         self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
                                          observe._Bounded(observe.MAX_RUNS_KEPT))
@@ -371,8 +381,26 @@ class Translator(observe.Translator):
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
         self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
 
-    def _base(self, e, rec, event):
-        return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent")}
+    def _base(self, e, rec, event):   # tk_tier: T2 a gateway or executor wrote it for its client (said vs did)
+        return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent"),
+                **({"tk_tier": e["tier"]} if e.get("tier") else {})}
+
+    def reads(self, d):
+        """What WHY THIS DECISION shows of a decision's policy, when the viewer has it: the class it maps the tool to,
+        how many rules of each section decide() read for it, and the section of each rule that matched (the engine's
+        own checks, such as TK-UNKNOWN-TOOL, have none). The record names no class: a rule that matched under another
+        one (a class hint the signer also checked, an MCP tool's bare name) sets `other`."""
+        h = d.get("policy_hash")
+        if h not in self.engines:
+            pol = getattr(self.reasons, "policies", {}).get(h)
+            self.engines[h] = pol and Engine(pol)
+        eng, ids = self.engines[h], set(d.get("rule_ids") or ())
+        # the engine never read the arguments (TK-ARGS-INVALID), or ran out of time and denied: no rule was read in full
+        if not (eng and d.get("tool")) or "TK-ARGS-INVALID" in ids or d.get("nondeterministic"):
+            return {}
+        read, secs = eng.reads(d["tool"]), {r["id"]: sec for sec, r, *_ in eng.rules if r["id"] in ids}
+        return {"cls": eng.tool_class(d["tool"]), "read": {k: len(v) for k, v in read.items()}, "secs": secs,
+                **({"other": True} if set(secs) - {i for v in read.values() for i in v} else {})}
 
     def rules(self, d):
         known = self.reasons.get(d.get("policy_hash"), {})
@@ -386,7 +414,9 @@ class Translator(observe.Translator):
         # an approval's later records (one that expired at run.final names no call) are its request's call's
         info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": d.get("tool_use_id")
                 or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
-                or self.requests.get(d.get("approval_id"), ("", [], None))[2]}
+                or self.requests.get(d.get("approval_id"), ("", [], None))[2],
+                # the gateway or tool executor that wrote a call's result (tier T2), not the agent
+                **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
             x["v2"] = {**info, **x.get("v2", {})}
             if e["run_id"] == SIGNER_RUN[1]:
@@ -408,7 +438,8 @@ class Translator(observe.Translator):
                                + (f" · findings about run {d['analyzes']}" if d.get("analyzes") else "")}]
         if t == "input.observed":
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
-                                                       "only its commitment", "INPUT", trust=d.get("trust"))
+                                                       "only its commitment", "INPUT", trust=d.get("trust"),
+                        source=d.get("source"))
         if t == "content.accessed":
             seqs = d.get("seqs") or []
             return note("CONTENT READ", f"{d.get('principal')} read the kept content of {len(seqs)} record"
@@ -457,8 +488,8 @@ class Translator(observe.Translator):
                      policy={"decision": "deny" if dec == "deny" else "allow", "reasons": [x["id"] for x in rules],
                              "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
                      v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
-                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"),
-                         **{k: d[k] for k in ("provenance", "provenance_state") if k in d}})
+                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"), **self.reads(d),
+                         **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d}})
             return [r]
         aid = d.get("approval_id")
         tool, rule_ids, _ = self.requests.get(aid, ("", [], None))
@@ -471,7 +502,9 @@ class Translator(observe.Translator):
                          + ", ".join(f"{x['id']} {x['reason']}".strip() for x in rules)
                          + f" · expires {_hms(d.get('expires_at'))}"
                          + (" · signer executes (t2)" if d.get("executor") == "t2" else ""), "HOLD",
-                         approval="requested", rules=rules, binding_digest=d.get("binding_digest"))
+                         approval="requested", rules=rules, binding_digest=d.get("binding_digest"), approval_id=aid,
+                         expires=d.get("expires_at"), **({"agents": {k: d["agent"].get(k) for k in ("eligible", "reason")}}
+                                                         if isinstance(d.get("agent"), dict) else {}))
         agent = d.get("approver_kind") == "agent"
         model = " (model output" + (f", {d['asserted'].get('model')}" if (d.get("asserted") or {}).get("model") else "")\
             + ")" if agent else ""
@@ -635,6 +668,9 @@ class Translator(observe.Translator):
                 if s["text"] or s["kind"] == "reasoning":
                     blocks.append({"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] ==
                                    "reasoning" else "text", "text": s["text"], "form": s["form"], "after": len(calls)})
+                    said = s["kind"] != "reasoning" and findings_text.read_message(s["text"])
+                    if said and said["claims"]:   # the outcomes it states, as TK-X205's text checks read them
+                        blocks[-1]["claims"] = sorted({said["quote"][c] for c in said["claims"]})
                 calls += s["tools"]
         turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "calls": calls,
                  "message_id": d.get("exchange_id"), "v2": x}]
@@ -645,14 +681,24 @@ CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only
                "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
 
 
+# an approval's later records, as a permission's outcome
+OUTCOMES = {"approval.consumed": "approved · ran", "approval.expired": "expired", "approval.abandoned": "abandoned",
+            "approval.refused": "refused", "approval.binding_mismatch": "refused: arguments changed",
+            "approval.revoked": "revoked"}
+
+
 def review(records, rep, verdict):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
-    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record."""
+    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
+    decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
+    answered, waiting, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
+    when the run's records have left the live view. Counts keep each snapshot small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0,
            "state": "open", "first": {}}
+    perms, calls = {}, {}   # tool_use_id -> its outcome; approval_id -> its tool_use_id
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -663,10 +709,14 @@ def review(records, rep, verdict):
             out["agent"] = (d.get("agent") or {}).get("name") or "agent"
             if d.get("analyzes"):
                 out["analyzes"] = d["analyzes"]
+            if d.get("parent_run"):   # the run that started this one: panel 1 shows it under its parent
+                out["parent"] = d["parent_run"]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
+            if key != "allow":
+                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, "waiting")
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -700,8 +750,19 @@ def review(records, rep, verdict):
             out["state"] = "final"
         elif t == "run.closing" and out["state"] == "open":
             out["state"] = "closing"
+        if t == "approval.request":
+            calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
+        call = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id") or calls.get(d.get("approval_id")))
+        if call in perms and t == "approval":
+            perms[call] = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
+                           "self_approval_refused": "self-approval refused"}.get(d.get("decision"), d.get("decision"))
+        elif call in perms and t in OUTCOMES:
+            perms[call] = OUTCOMES[t]
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
+    # a hold the run ended without an answer to
+    out["permissions"] = collections.Counter("not answered" if o == "waiting" and out["state"] == "final" else o
+                                             for o in perms.values())
     return out
 
 
@@ -788,6 +849,8 @@ class StoreFeed:
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
+        self.rowcache = collections.OrderedDict()   # (tenant, run_id, its covered records) -> rows: the newest ROWCACHE_MAX
+        self.verifying = threading.BoundedSemaphore(2)   # /api/rows checks at once
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
         self.stopped = None   # why the watch thread ended, when it did: the page then says verification stopped
         self.on_run, self.content, self.analyze = on_run, content, analyze
@@ -962,6 +1025,8 @@ class StoreFeed:
                 for i, x in enumerate(self.records):
                     if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key:
                         self.records[i] = observe.RETRACTED
+                for k in [k for k in self.rowcache if k[:2] == key]:   # and /api/rows' answers
+                    del self.rowcache[k]
             self._append([dict(x, tenant=tenant) for x in new], key)
         if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape
             with self._mlock:
@@ -1070,6 +1135,60 @@ class StoreFeed:
                                    next(iter(self.kept))))
             del self.records[:over]
             self.base += over
+
+    def rows(self, scope, tenant, run_id):
+        """GET /api/rows?tenant&run: a run's rows as the tape shows them, from the records of its bundle that verified
+        (exported from the store, verified, then translated: the file is read once), so a run whose records left the
+        live view opens in full; None when `scope` may not read its tenant, the store has no such run, no checkpoint
+        covers it or it fails. At most max_records records, its first. An answer is kept while the run's own covered
+        records don't change, or until the viewer's own re-check of the run fails it (RECHECK_S), as the run list's
+        verdict is. Two checks run at once at most: past that, observe.Busy (503, try again)."""
+        from .why.import_v2 import bundle_records
+        if scope is not observe.ALL and tenant != scope:
+            return None
+        r = reader(self.cfg)
+        fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)   # requests run concurrently: a file each
+        os.close(fd)
+        try:
+            note = r.checkpoint_latest()
+            if note and note[0] > r.tree.size:   # a checkpoint written while it opened: read again, as refresh() does
+                r.close()
+                r = reader(self.cfg)
+            run = r.runs.get((tenant, run_id))
+            count = bisect.bisect_left(run["seqs"], note[0]) if run and note else 0
+            key = (tenant, run_id, count)   # its own covered records: another run's checkpoint costs it a lookup
+            with self.lock:   # a run the watcher failed has no rows, whatever was kept (an edit keeps the count)
+                if (self.runs.get(key[:2]) or {}).get("failed"):
+                    return None
+                rows = self.rowcache.get(key)
+            if rows is not None or not count:
+                return rows
+            if not self.verifying.acquire(blocking=False):
+                raise observe.Busy()
+            try:
+                export(r, tenant, run_id, note[1], out)
+                verified, _, code = bundle_records(out, self.trust)
+            except ValueError:   # the store does not match its own checkpoint
+                return None
+            finally:
+                self.verifying.release()
+            if code:
+                return None
+            # lean: the retained arguments are not read again (each read is a signed content.accessed record); the
+            # live view shows them
+            records = verified.get(run_id, [])[:self.max_records]
+        finally:
+            r.close()
+            os.unlink(out)
+        tr = Translator(self.tr.reasons)
+        rows = [dict(x, tenant=tenant) for rec in records for x in tr.feed(rec)]
+        with self.lock:
+            if (self.runs.get(key[:2]) or {}).get("failed"):   # the watcher failed it while this checked it
+                return None
+            self.rowcache[key] = rows
+            while len(self.rowcache) > ROWCACHE_MAX:
+                self.rowcache.popitem(last=False)
+        return rows
 
     def verify(self, tenant=None):
         """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""
