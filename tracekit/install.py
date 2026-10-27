@@ -252,35 +252,40 @@ PLUGIN = "tracekit@tracekit"   # the Claude Code plugin, as enabledPlugins names
 PLUGIN_NAME = "tracekit"
 
 
-def _blocking(run, unless="", pre=True):
+def _blocking(run, unless="", pre=True, json_deny=False):
     """`run` in a shell that turns any exit status but 0 and 2 (the hook could not run) into 2, a blocked call, unless
     the shell command `unless` exits first. Not `pre` (any event but a pre-tool call): every status but 0 becomes 1, a
-    non-blocking error the harness shows, as 2 there would block a prompt or send the agent back to work at Stop."""
+    non-blocking error the harness shows, as 2 there would block a prompt or send the agent back to work at Stop.
+    json_deny: the call is blocked by a JSON deny on stdout at exit 0 instead (Antigravity CLI reads only that), on any
+    status but 0 (its hook answers every call at exit 0)."""
     if not pre:
         script = (f"{run}; s=$?; [ $s = 0 ] && exit 0; [ $s = 1 ] || [ $s = 2 ] || "
                   "echo 'tracekit: the hook could not run; event not recorded' >&2; exit 1")
     else:
-        script = (f"{run}; s=$?; [ $s = 0 ] || [ $s = 2 ] && exit $s; {unless}"
-                  "echo 'tracekit: the hook could not run; call blocked (fail-closed)' >&2; exit 2")
+        why = "tracekit: the hook could not run; call blocked (fail-closed)"
+        block = (f"echo '{json.dumps({'decision': 'deny', 'reason': why})}'; exit 0" if json_deny else
+                 f"echo '{why}' >&2; exit 2")
+        passed = "[ $s = 0 ] && exit 0" if json_deny else "[ $s = 0 ] || [ $s = 2 ] && exit $s"
+        script = f"{run}; s=$?; {passed}; {unless}{block}"
     return f"/bin/sh -c {shlex.quote(script)}"
 
 
-def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None, pre=True):
+def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None, pre=True, json_deny=False):
     """Shell command that runs `module.func(*args)`. Python runs isolated (-I): the working directory, user
     site-packages and PYTHON* variables are not on the import path, so the harness's cwd cannot shadow tracekit.
     python: an interpreter that has tracekit installed (system mode: OPT_PYTHON). If it cannot run the hook (the
     package or interpreter is missing), a pre-tool call (`pre`) is blocked unless the system config sets fail_mode
-    open (then it runs, with an error the harness shows); a v2 hook that cannot run blocks the call in dev mode too.
-    Any other event is never blocked (_blocking)."""
+    open (then it runs, with an error the harness shows); a v2 hook, or one that answers in JSON (json_deny), that
+    cannot run blocks the call in dev mode too. Any other event is never blocked (_blocking, which json_deny goes to)."""
     if python:
         return _blocking(" ".join([shlex.quote(python), "-I", "-m", module, *args]),
                          f"grep -Eq '\"fail_mode\"[[:space:]]*:[[:space:]]*\"open\"' {client.SYSTEM_CONFIG} 2>/dev/null "
                          "&& { echo 'tracekit: the hook could not run; call NOT recorded (fail_mode open)' >&2; "
-                         "exit 1; }; ", pre)
+                         "exit 1; }; ", pre, json_deny)
     cmd = _dev_hook_command(module, func, args)
-    # lean: on Windows a dev v2 hook that cannot start fails open (no POSIX shell to wrap it in); wrap it in
+    # lean: on Windows a dev v2 or agy hook that cannot start fails open (no POSIX shell to wrap it in); wrap it in
     # PowerShell when Windows dev mode must fail closed
-    return _blocking(cmd, pre=pre) if module in V2_HOOKS and os.name != "nt" else cmd
+    return _blocking(cmd, pre=pre, json_deny=json_deny) if (module in V2_HOOKS or json_deny) and os.name != "nt" else cmd
 
 
 def _dev_hook_argv(module, func, args):

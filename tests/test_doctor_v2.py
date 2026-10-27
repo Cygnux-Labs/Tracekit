@@ -257,7 +257,7 @@ class HooksBefore13(unittest.TestCase):
                 kw = {"settings": path} if harness == "claude" else {"harnesses": {harness: path}}
                 return next(r for r in doctor.v2_checks({"data_dir": d}, "dev", **kw) if r["id"] == "D-HOOKS-EVENT")
             with self.subTest(harness=harness):
-                with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True: old(run, unless)):
+                with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True, json_deny=False: old(run, unless, json_deny=json_deny)):
                     init()   # as init before 1.3 wrote it
                 got = row()
                 self.assertEqual(got["status"], "warn", got)
@@ -304,6 +304,86 @@ class DroidHooks(unittest.TestCase):
                        if r["id"] == "D-HOOKS-TIMEOUT")
             self.assertEqual(row["status"], "warn")
             self.assertIn("60 s", row["detail"])
+
+
+class AntigravityHooks(unittest.TestCase):
+    def test_agy_hooks_under_tracekits_hook_name_are_found_and_checked_in_seconds(self):
+        # agy's hooks.json maps each hook's name to its events: Tracekit's are under AGY_HOOK, not `hooks`, and an
+        # agy-only setup must not be told to install Claude Code's hooks
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_CONFIG_HOME": os.path.join(d, ".config")}), \
+                mock.patch("os.getcwd", return_value=d), contextlib.redirect_stdout(io.StringIO()):
+            path = agent_hooks.install("antigravity", v2=True)
+            self.assertEqual(path, os.path.join(d, ".gemini", "config", "hooks.json"))
+            harnesses = doctor._dev_harnesses()
+            self.assertEqual(harnesses, {"antigravity": path})
+
+            def rows():
+                return {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none.json"),
+                                                             harnesses=harnesses)}
+            got = rows()
+            self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "ok", got["D-HOOKS-PRESENT"])
+            self.assertIn(f"antigravity in {path}", got["D-HOOKS-PRESENT"]["detail"])
+            for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
+                self.assertEqual(got[rid]["status"], "ok", got[rid])
+                self.assertIn(path, got[rid]["detail"])
+            with open(path) as f:
+                config = json.load(f)
+            config[agent_hooks.AGY_HOOK]["PreToolUse"][0]["hooks"][0]["timeout"] = 539
+            with open(path, "w") as f:
+                json.dump(config, f)
+            row = rows()["D-HOOKS-TIMEOUT"]
+            self.assertEqual(row["status"], "warn")
+            self.assertIn("539 s", row["detail"])
+            self.assertEqual(row["fix"], "tracekit init --dev --v2 --agent antigravity")
+            self.assertEqual(got["D-AGY-HOOKS-RUN"]["status"], "ok", got["D-AGY-HOOKS-RUN"])
+
+    def test_agy_sign_ins_and_a_disabled_hook_that_run_no_hook_are_warned_about(self):
+        # agy loads its hooks and never runs them when signed in with a Gemini API key (antigravity-cli#893) or
+        # Application Default Credentials (#1310), or when the named hook is disabled: a run with no record at all
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_CONFIG_HOME": os.path.join(d, ".config")}), \
+                mock.patch("os.getcwd", return_value=d), contextlib.redirect_stdout(io.StringIO()):
+            os.environ.pop("AGY_ADC_AUTH", None)
+            path = agent_hooks.install("antigravity", v2=True)
+            settings, app = (os.path.join(d, ".gemini", *p) for p in (("antigravity-cli", "settings.json"),
+                                                                       ("config", "config.json")))
+            workspace = agent_hooks.config_path("antigravity", d)
+
+            def write(p, cfg):
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w") as f:
+                    json.dump(cfg, f)
+
+            def row():
+                rows = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none.json"),
+                                                             harnesses=doctor._dev_harnesses())}
+                return rows["D-AGY-HOOKS-RUN"]
+            with open(path) as f:
+                hooks = json.load(f)
+            for change, says in ((lambda: write(settings, {"modelProvider": "gemini"}), "antigravity-cli#893"),
+                                 (lambda: write(app, {"userSettings": {"enableAdc": True}}), "enableAdc"),
+                                 (lambda: os.environ.update(AGY_ADC_AUTH="true"), "AGY_ADC_AUTH=true"),
+                                 (lambda: write(path, {agent_hooks.AGY_HOOK: {**hooks[agent_hooks.AGY_HOOK],
+                                                                              "enabled": False}}), '"enabled": false'),
+                                 # a workspace's hooks.json can turn off Tracekit's hook of the same name
+                                 (lambda: write(workspace, {agent_hooks.AGY_HOOK: {"enabled": False}}),
+                                  f'"enabled": false in {workspace}')):
+                with self.subTest(says=says):
+                    change()
+                    got = row()
+                    self.assertEqual(got["status"], "warn", got)
+                    self.assertIn(says, got["detail"])
+                    self.assertIn("Google account", got["fix"])
+                    self.assertEqual(f"from {workspace}" in got["fix"], workspace in says)
+                    for f in (settings, app, workspace):
+                        if os.path.exists(f):
+                            os.unlink(f)
+                    os.environ.pop("AGY_ADC_AUTH", None)
+                    write(path, hooks)
+            self.assertEqual(row()["status"], "ok")
 
 
 class DevFresh(unittest.TestCase):
