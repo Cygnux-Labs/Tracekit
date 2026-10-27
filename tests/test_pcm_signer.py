@@ -34,7 +34,7 @@ NARROWER = [{"field": "amount", "op": "<=", "value": 15000}, {"field": "order", 
 ASK = {"ask": [{"id": "PCM-GRANT", "tool": "pcm.grant", "pattern": "^"}, {"id": "PAY", "tool": "pay", "pattern": "^"}]}
 APPROVALS = {"approvers": ["uid:990001", "uid:990102"], "persons": {"uid:990001": "alice", "uid:990102": "bob"},
              "agents": ["token:reviewer"]}
-AUTHORIZE = {"token:reviewer": sorted(svc.AGENT_METHODS), "token:ops": ["run_quarantine"],
+AUTHORIZE = {"token:reviewer": sorted(svc.AGENT_METHODS), "token:ops": ["run_quarantine", "run_hold"],
              "uid:990105": ["read", "pcm_sign", "pcm_evidence"]}
 _ids = itertools.count()
 
@@ -159,6 +159,32 @@ class TestSign(Case):
         self.refused("run_closed", "pcm_sign", message=self.body())
 
 
+class TestHeld(Case):
+    """A held run passes no new authority on (sign, grant, delegate) while a person looks; it may still read."""
+
+    def setUp(self):
+        super().setUp()
+        self.grant_args, self.parent = self.args(), self.root()
+        self.approve(self.grant_args, tcid="g2")   # consumed before the hold: only the hold refuses its grant
+        self.s.call(OPS, "run_hold", {"request_id": rid(), "run_id": self.run["run_id"]})
+
+    def held(self, method, **req):
+        self.assertIn("is held by incident", self.refused("forbidden", method, **req))
+
+    def test_sign(self):
+        self.held("pcm_sign", message=self.body())
+
+    def test_grant(self):
+        self.held("pcm_grant", tool_call_id="g2", args=self.grant_args)
+
+    def test_delegate(self):
+        self.held("pcm_delegate", parent=self.parent, subject="uid:990102", caveats=NARROWER, delegable=True,
+                  expires_at=self.parent["expires_at"])
+
+    def test_evidence_still_reads(self):
+        self.assertEqual(self.call("pcm_evidence", run_seqs=[0])["pending"], [0])
+
+
 class TestGrant(Case):
     def test_from_a_person_approval(self):
         args = self.args()
@@ -167,7 +193,7 @@ class TestGrant(Case):
         g = out["grant"]
         self.assertIsNone(pcm.check_sig(g, "pcm-grant", self.trust))
         self.assertEqual(g["issuer"], {"kind": "person", "id": "uid:990001", "person": "alice",
-                                       "run": self.run["run_id"], "approval_id": aid})
+                                       "run": self.run["run_id"], "tenant": "default", "approval_id": aid})
         self.assertEqual({k: g[k] for k in args}, args)
         self.assertIsNone(g["parent"])
         [rec] = [e for e in self.records() if e["type"] == "ext"]
@@ -300,7 +326,8 @@ class TestDelegate(Case):
         out = self.delegate(root, delegable=False)
         kid = out["grant"]
         self.assertEqual((kid["issuer"], kid["parent"], kid["intent"], kid["delegable"]), (
-            {"kind": "agent", "id": "uid:990101", "run": self.run["run_id"]}, event_hash(root), REF, False))
+            {"kind": "agent", "id": "uid:990101", "run": self.run["run_id"], "tenant": "default"}, event_hash(root),
+            REF, False))
         [rec] = [e for e in self.records() if e["type"] == "ext" and e["run_seq"] == out["run_seq"]]
         self.assertEqual(rec["data"], {"name": "pcm.grant", "grant": event_hash(kid), "subject": "uid:990102",
                                        "intent": REF, "parent": event_hash(root)})
@@ -335,6 +362,11 @@ class TestDelegate(Case):
         self.assertIn("does not pin", self.refused(
             "invalid_request", "pcm_delegate", parent=elsewhere, subject="uid:990102", caveats=NARROWER,
             delegable=True, expires_at=root["expires_at"]))
+        acme = self.s._pcm_signed("pcm-grant", {k: v for k, v in root.items() if k != "sig"} | {
+            "issuer": dict(root["issuer"], tenant="acme")})   # this signer's grant, of another tenant
+        self.assertIn("issued in tenant acme, not default", self.refused(
+            "forbidden", "pcm_delegate", parent=acme, subject="uid:990102", caveats=NARROWER, delegable=True,
+            expires_at=root["expires_at"]))
         gone = self.delegate(root, subject="uid:990101", expires=-60)["grant"]   # A's own child, already expired
         self.assertIn("expired at", self.refused(
             "invalid_request", "pcm_delegate", parent=gone, subject="uid:990102", caveats=NARROWER, delegable=True,
@@ -372,6 +404,10 @@ class TestEvidence(Case):
         token = self.call("delegate_run", identity="uid:990105")["run_token"]
         self.refused("forbidden", "pcm_evidence", TAILER, {"run_id": self.run["run_id"], "run_token": token},
                      run_seqs=[0])
+
+    def test_charged_to_the_quota(self):
+        with mock.patch.object(self.s.quotas, "take_event", side_effect=RPCError("quota_exceeded", "over")):
+            self.refused("quota_exceeded", "pcm_evidence", run_seqs=[0])
 
 
 class TestBundle(Case):

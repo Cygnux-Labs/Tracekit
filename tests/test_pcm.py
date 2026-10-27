@@ -51,14 +51,14 @@ def message(args=None, ts=T0, frm=A, to=B, ref=REF, key=KEY, vkey=VKEY, **kw):
 def grant(caveats=(), subject=A, issuer=None, parent=None, expires=T0 + 3600, intent=REF, key=KEY, vkey=VKEY,
           delegable=True):
     body = {"pcm_grant": 0, "ts": iso(T0 - 60), "subject": subject, "intent": intent, "caveats": list(caveats),
-            "issuer": issuer or {"kind": "person", "id": ALICE, "person": "alice", "run": "run-r",
+            "issuer": issuer or {"kind": "person", "id": ALICE, "person": "alice", "run": "run-r", "tenant": "default",
                                  "approval_id": "apr-1"},
             "expires_at": iso(expires), "delegable": delegable, "parent": parent}
     return pcm.sign(key, vkey, "pcm-grant", body)
 
 
 def child(parent, caveats, subject=A, **kw):
-    return grant(caveats, subject=subject, issuer={"kind": "agent", "id": parent["subject"], "run": "run-x"},
+    return grant(caveats, subject=subject, issuer={"kind": "agent", "id": parent["subject"], "run": "run-x", "tenant": "default"},
                  parent=event_hash(parent), **kw)
 
 
@@ -258,11 +258,11 @@ class Grants(unittest.TestCase):
         ref = pcm.schema_ref(self.DOC)
         root = grant([cv("amount", "<=", 20000), cv("order", "==", 81)], subject=C, intent=ref)
         narrow = [cv("amount", "<=", 15000), cv("order", "==", 81)]
-        self.refused([root, grant(narrow, issuer={"kind": "agent", "id": C, "run": "r"}, parent="sha256:" + "0" * 64,
+        self.refused([root, grant(narrow, issuer={"kind": "agent", "id": C, "run": "r", "tenant": "default"}, parent="sha256:" + "0" * 64,
                                   intent=ref)], "its parent is not grant 0")
-        self.refused([root, grant(narrow, issuer={"kind": "agent", "id": B, "run": "r"}, parent=event_hash(root),
+        self.refused([root, grant(narrow, issuer={"kind": "agent", "id": B, "run": "r", "tenant": "default"}, parent=event_hash(root),
                                   intent=ref)], "not grant 0's subject")
-        self.refused([root, grant(narrow, issuer={"kind": "person", "id": C, "run": "r"}, parent=event_hash(root),
+        self.refused([root, grant(narrow, issuer={"kind": "person", "id": C, "run": "r", "tenant": "default"}, parent=event_hash(root),
                                   intent=ref)], "not grant 0's subject")
         self.refused([root, child(root, narrow, intent=ref, expires=T0 + 7200)], "outlives its parent")
         other = pcm.schema_ref({**self.DOC, "name": "refund.other"})
@@ -271,7 +271,7 @@ class Grants(unittest.TestCase):
         self.refused([root, child(root, [cv("amount", "<=", 30000), cv("order", "==", 81)], intent=ref)],
                      "amount <= 20000: dropped or widened")
         self.refused([root, child(root, narrow, intent=ref)], "expired at", ts=T0 + 3601)
-        self.refused([grant(subject=A, issuer={"kind": "person", "id": A, "run": "r"}, intent=ref)],
+        self.refused([grant(subject=A, issuer={"kind": "person", "id": A, "run": "r", "tenant": "default"}, intent=ref)],
                      "issuer is its own subject")
         self.refused([grant(intent=ref, parent="sha256:" + "0" * 64)], "the root grant has a parent")
         self.refused([grant(intent=ref, key=OTHER)], "bad signature")
@@ -288,8 +288,11 @@ class Grants(unittest.TestCase):
         self.refused([grant([cv("amount", "<=", 20000)], intent=ref)], "amount 50000 breaks amount <= 20000",
                      args={"amount": 50000, "order": 81})
         self.refused([grant([cv("kind", "==", "full")], intent=ref)], "kind missing breaks")
-        self.refused([grant(intent=ref, issuer={"kind": "agent", "id": C, "run": "r"})],
+        self.refused([grant(intent=ref, issuer={"kind": "agent", "id": C, "run": "r", "tenant": "default"})],
                      "the root grant must come from a person's approval")
+        self.refused([root, grant(narrow, issuer={"kind": "agent", "id": C, "run": "r", "tenant": "acme"},
+                                  parent=event_hash(root), intent=ref)], "grant 1: issued in tenant acme, not the "
+                                                                         "sender's default")
 
     def test_delegable_only_narrows(self):
         ref = pcm.schema_ref(self.DOC)

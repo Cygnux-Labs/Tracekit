@@ -4000,9 +4000,10 @@ class SignerService:
 
     def _pcm_write(self, identity, method, req, key, data, out, check=None):
         """`out` with the run_seq of ext record `data` (digests and ids, never args) in run `key`; refused in a
-        quarantined run, or when `check(run)` raises on the writer."""
+        held or quarantined run (no new authority leaves it while a person looks), or when `check(run)` raises on the
+        writer."""
         def fn(tx, run):
-            if run.get("quarantined"):
+            if run.get("quarantined") or run.get("held"):
                 raise RPCError("forbidden", self._why_contained(run))
             if check:
                 check(run)
@@ -4060,7 +4061,7 @@ class SignerService:
                                 else approved(self.log.runs[key]))
         grant = aid and self._pcm_signed("pcm-grant", {
             "pcm_grant": 0, "ts": _iso(time.time()), "issuer": {
-                "kind": "person", "id": a["answered"]["by"], "run": key[1], "approval_id": aid,
+                "kind": "person", "id": a["answered"]["by"], "run": key[1], "tenant": key[0], "approval_id": aid,
                 **({"person": a["answer"]["person"]} if "person" in a["answer"] else {})},
             "subject": args["subject"], "intent": args["intent"], "caveats": args.get("caveats", []),
             "expires_at": args["expires_at"], "delegable": args["delegable"], "parent": None})
@@ -4081,6 +4082,8 @@ class SignerService:
         # and gate delegation with the a2a policy class once #434 lands
         if e := pcm.check_sig(parent, "pcm-grant", {"logs": [self.vkey]}):
             raise RPCError("invalid_request", f"parent: {e}")
+        if parent["issuer"]["tenant"] != key[0]:
+            raise RPCError("forbidden", f"the grant was issued in tenant {parent['issuer']['tenant']}, not {key[0]}")
         if parent["subject"] != agent:
             raise RPCError("forbidden", f"only the grant's subject, {parent['subject']}, may pass it on")
         if not parent["delegable"]:
@@ -4092,7 +4095,7 @@ class SignerService:
             raise RPCError("invalid_request", "; ".join(problems))
         self.quotas.take_event(identity)
         grant = self._pcm_signed("pcm-grant", {
-            "pcm_grant": 0, "ts": now, "issuer": {"kind": "agent", "id": agent, "run": key[1]},
+            "pcm_grant": 0, "ts": now, "issuer": {"kind": "agent", "id": agent, "run": key[1], "tenant": key[0]},
             "subject": req["subject"], "intent": parent["intent"], "caveats": caveats, "expires_at": req["expires_at"],
             "delegable": req["delegable"], "parent": event_hash(parent)})
         return self._pcm_write(identity, "pcm_delegate", req, key, {
@@ -4104,6 +4107,7 @@ class SignerService:
         policy.decision's with its salt, which opens its args commitment, so only the run's own agent may ask.
         `pending`: those the next checkpoint will cover (checkpoint_nudge, then ask again)."""
         key, _ = self._pcm_agent(identity, req)
+        self.quotas.take_event(identity)
         want = sorted(set(req["run_seqs"]))
 
         def read(tx):   # on the writer, which owns the tree's edges (as tlog)

@@ -234,8 +234,8 @@ _CAVEATS = {"type": "array", "maxItems": 16, "items": _CAVEAT}
 PCM_GRANT = _obj(["pcm_grant", "ts", "issuer", "subject", "intent", "caveats", "expires_at", "delegable", "parent",
                   "sig"],
                  pcm_grant={"type": "integer", "const": 0}, ts=TS,
-                 issuer=_obj(["kind", "id", "run"], kind={"enum": ["person", "agent"]}, id=_str(256), person=_str(256),
-                             run=ID, approval_id=ID),
+                 issuer=_obj(["kind", "id", "run", "tenant"], kind={"enum": ["person", "agent"]}, id=_str(256),
+                             person=_str(256), run=ID, tenant=ID, approval_id=ID),   # tenant: the issuing run's
                  subject=IDENTITY, intent=SCHEMA_REF, caveats=_CAVEATS, expires_at=TS, delegable={"type": "boolean"},
                  parent={"oneOf": [DIGEST, {"type": "null"}]},   # event_hash of the signed parent grant
                  sig=_PCM_SIG)

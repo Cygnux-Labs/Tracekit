@@ -216,6 +216,8 @@ def verify_grants(msg, doc, trust):
         out += [f"{at}: {e}" for e in check_caveats(doc, g["caveats"])]
         if msg["ts"] > g["expires_at"]:
             out.append(f"{at}: expired at {g['expires_at']}")
+        if g["issuer"]["tenant"] != msg["from"]["tenant"]:
+            out.append(f"{at}: issued in tenant {g['issuer']['tenant']}, not the sender's {msg['from']['tenant']}")
         for c in g["caveats"]:   # every caveat of every grant: the check does not rest on narrowing alone
             if not satisfies(args, c):
                 got = json.dumps(args[c["field"]])[:64] if isinstance(args, dict) and c["field"] in args else "missing"
