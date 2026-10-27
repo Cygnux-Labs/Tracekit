@@ -685,7 +685,8 @@ def find(command, argv):
 
 class Shell(unittest.TestCase):
     def test_many_data_copy_commands_parse_in_linear_time(self):
-        command = "; ".join(f"echo text > out{i}" for i in range(1600))
+        command = "; ".join([*(f"echo text > out{i}" for i in range(1600)),
+                               *(f"sh out{i}" for i in range(1600))])
         start = time.perf_counter()
         shell.analyse(command)
         self.assertLess(time.perf_counter() - start, 0.5 * SLOWER)

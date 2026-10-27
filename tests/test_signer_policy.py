@@ -739,6 +739,12 @@ class CodingPack(unittest.TestCase):
                 "printf '%s\\n' /etc/tracekit/client.json > out; xargs rm < out",
                 "cat <<'EOF' > out; bash out\n/etc/tracekit/client.json\nEOF",
                 "tee > out <<'EOF'; xargs rm < out\n/etc/tracekit/client.json\nEOF",
+                # any later non-inert command keeps copied text, including equivalent or indirect file uses
+                "echo /etc/tracekit/client.json > ./out; sh out",
+                "echo /etc/tracekit/client.json > out; bash ./out",
+                "echo /etc/tracekit/client.json > /tmp/out; sh /tmp/./out",
+                "echo /etc/tracekit/client.json > out; cat ./out | sh",
+                "echo /etc/tracekit/client.json > out; for f in out; do sh \"$f\"; done",
                 # source files may redefine the commands that otherwise only copy data
                 "source ./defs; echo /etc/tracekit/client.json > out | xargs rm",
                 ". ./defs; echo /etc/tracekit/client.json > out | xargs rm",

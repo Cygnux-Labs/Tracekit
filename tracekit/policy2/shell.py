@@ -16,9 +16,9 @@ command line; the words that name something besides the commands' argv: redirect
 and the program an interpreter reads from a heredoc or herestring; the targets of the redirections that write a
 file (`>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&` to a name rather than a descriptor); and the code: the command and the
 normalised lines without the text a command only writes into a file (the words of an echo or printf, the heredoc or
-herestring a cat or tee copies, with its output redirected to a file a literal names; when a later command in the
-same call names that file, the text is kept; a word with an expansion, or a body with a command substitution, is
-kept; out of the command, only the top level's is cut).
+herestring a cat or tee copies, with its output redirected to a file a literal names; the text is cut only if every
+later command in the same call is inert; a word with an expansion, or a body with a command substitution, is kept;
+out of the command, only the top level's is cut).
 """
 import re
 
@@ -142,12 +142,14 @@ def parse(command):
 def analyse(command):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code)."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "cuts": [], "redefined": set(),
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
            "pipes": 0, "depth": 0, "work": 0, "exp": 0}
     _Parser(command, ctx, []).script()
-    for cut in ctx["cuts"]:
-        if not _used_later(ctx, cut):
-            ctx["cut"] += cut["marks"]
+    active = False
+    for step in reversed(ctx["steps"]):
+        if not active:
+            ctx["cut"] += step["marks"]
+        active |= not step["inert"]
     code, at = [], 0
     for a, b in sorted(ctx["cut"]):   # each cut a space, so the text on either side doesn't join
         code += [command[at:a], " "]
@@ -158,7 +160,7 @@ def analyse(command):
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "cuts": [], "redefined": set(),
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
            "pipes": 1, "depth": 0, "work": 0, "exp": 0}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
@@ -199,13 +201,6 @@ def data_words(argv):
 def _redefined(redefined, name):
     """Whether name may have been redefined."""
     return name in redefined
-
-
-def _used_later(ctx, cut):
-    """Whether a later command may consume the literal file whose text this cut would remove."""
-    target = cut["target"]
-    return any(target in cmd["argv"] for cmd in ctx["cmds"][cut["cmds"]:]) or \
-        target in ctx["refs"][cut["refs"]:]
 
 
 def _name_unreadable(text):
@@ -543,8 +538,8 @@ class _Parser:
 
     def simple(self, pid, piped=False):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
-        consumed = loop_header = stdin_redirect = to_file = False
-        file_target = None
+        consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
+        dynamic = False
         while True:
             self.blank()
             c = self.peek()
@@ -567,11 +562,11 @@ class _Parser:
                 target = self.word()
                 if target is None:
                     raise ParseError("redirection without a target")
+                dynamic |= bool(re.search(r"[$`]", target[1]))
                 self.out += [m.group(0), target[0]]
                 if m.group(2) in ("<<", "<<-"):
                     docs.append({"delim": target[0], "strip": m.group(2) == "<<-", "expand": target[0] == target[1],
-                                 "via": self.via, "cmds": [], "data": False, "target": None,
-                                 "cut_cmds": 0, "cut_refs": 0})
+                                 "via": self.via, "cmds": [], "data": False, "step": None})
                     self.heredocs.append(docs[-1])
                 elif m.group(2) == "<<<":
                     strings.append(target[0])
@@ -585,12 +580,11 @@ class _Parser:
                     if writes:
                         self.ctx["written"].append(target[0])
                     if m.group(2) in ("&>", "&>>") or m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&"):
+                        stdout_redirect = True
                         # stdout, the last one: into a file a literal names, not a descriptor, a device or a variable
                         to_file = writes and not target[2] and not target[3] and \
                             (target[0].startswith("/") or not self.cwd_changed) and \
                             (target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
-                        if to_file:
-                            file_target = target[0]
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
@@ -608,6 +602,7 @@ class _Parser:
                 self.ctx["refs"].append(text)
                 continue
             words.append(text)
+            dynamic |= bool(re.search(r"[$`]", raw))
             idx.append(len(self.out) - 1)
             spans.append(None if expanded else (len(self.out) - 1, start, self.i))
             globs.append(g)
@@ -620,15 +615,18 @@ class _Parser:
         # evaluated as its own policy input.
         data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
             not _redefined(self.ctx["redefined"], words[0])
+        marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
             self.data.update(i for i, _, _ in marks)
-            if not self.via:   # the top level's text is the command's own
-                self.ctx["cuts"].append({"target": file_target, "cmds": len(self.ctx["cmds"]),
-                                         "refs": len(self.ctx["refs"]), "marks": [(a, b) for _, a, b in marks]})
+        inert = bool(words) and words[0] in ("cd", "pushd", "popd", "pwd", "ls", "mkdir", "true", ":") or \
+            bool(words) and words[0] in ("echo", "printf") and not stdout_redirect
+        step = {"inert": (data and not dynamic) or
+                         (inert and not (stdin_redirect or docs or strings or loop_header or dynamic)),
+                "marks": [(a, b) for _, a, b in marks] if not self.via else []}
+        self.ctx["steps"].append(step)
         for d in docs:
-            d["cmds"], d["data"], d["target"] = cmds, data, file_target if data else None
-            d["cut_cmds"], d["cut_refs"] = len(self.ctx["cmds"]), len(self.ctx["refs"])
+            d["cmds"], d["data"], d["step"] = cmds, data, step
         shell = _stdin_shell(cmds)
         if shell and not docs and not strings:
             shell["opaque"] = True   # its script comes from a pipe, a file or inherited stdin
@@ -792,8 +790,7 @@ class _Parser:
             # a data heredoc's body, unless a command substitution in it runs (what it runs may read a heredoc of its
             # own, which only this text holds)
             if d["data"] and not d["via"] and not (d["expand"] and re.search(r"\$\(|`", body)):
-                self.ctx["cuts"].append({"target": d["target"], "cmds": d["cut_cmds"],
-                                         "refs": d["cut_refs"], "marks": [(start, at)]})
+                d["step"]["marks"].append((start, at))
             shell, interp = _stdin_shell(d["cmds"]), _stdin_interpreter(d["cmds"])
             if shell:
                 self.nested(body, shell["via"] + [shell["argv"][0] + " <<"])
