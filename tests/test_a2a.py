@@ -260,6 +260,27 @@ class Gateway(unittest.TestCase):
         self.assertEqual(len(self.a2a.seen), 1)
         self.assertEqual([e for e in self.events(other_run) if e["type"] == "policy.decision"], [])
 
+    def test_malformed_task_references_are_refused_before_a_decision_or_send(self):
+        long = "x" * (a2a_gateway.MAX_TASK_ID + 1)
+        messages = {
+            "taskId": (None, "", 1, [], long),
+            "contextId": (None, "", 1, [], long),
+            "referenceTaskIds": (None, "", {}, [None], [""], [["task-1"]], ["task-1", "task-1"],
+                                 [str(i) for i in range(a2a_gateway.MAX_REFERENCE_TASK_IDS + 1)], [long]),
+        }
+        for method in ("message/send", "message/stream"):
+            for field, values in messages.items():
+                for value in values:
+                    with self.subTest(method=method, field=field, value=value):
+                        _, _, body = self.post("researcher", method, {"message": dict(TEXT, **{field: value})})
+                        self.assertEqual(json.loads(body)["error"]["code"], -32602)
+        for value in (None, "", 1, [], long):
+            with self.subTest(method="tasks/get", value=value):
+                _, _, body = self.post("researcher", "tasks/get", {"id": value})
+                self.assertEqual(json.loads(body)["error"]["code"], -32602)
+        self.assertEqual(self.a2a.seen, [])
+        self.assertEqual([e for e in self.events() if e["type"] == "policy.decision"], [])
+
     def test_message_send_refuses_a_push_notification_url_before_a_decision(self):
         _, _, body = self.post("researcher", "message/send", {"message": TEXT,
                                                                   "configuration": {"pushNotificationConfig": {
@@ -601,6 +622,14 @@ class Policy(unittest.TestCase):
         args = {"sender": "token:http", "receiver": "researcher",
                 "params": {"message": TEXT, "metadata": "x" * 10000}}
         self.assertEqual(e.decide("a2a:researcher/message/send", args)["rule_ids"], ["R-SIZE"])
+
+    def test_a2a_policy_can_deny_task_like_metadata(self):
+        e = Engine({"tools": {"a2a:*": "a2a"}, "deny": [{"id": "R-METADATA-TASK", "class": "a2a",
+                                                                  "field": "target",
+                                                                  "pattern": '"metadata":.*"(taskId|contextId|referenceTaskIds)":'}]})
+        args = {"sender": "token:http", "receiver": "researcher",
+                "params": {"message": TEXT, "metadata": {"taskId": "task-1"}}}
+        self.assertEqual(e.decide("a2a:researcher/message/send", args)["rule_ids"], ["R-METADATA-TASK"])
 
     def test_a_rule_for_a_name_sees_every_spelling_of_it(self):
         """A deny rule and an allow-list written for a name's logical spelling: its case matches either way, and a

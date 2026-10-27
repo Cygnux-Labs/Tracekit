@@ -103,7 +103,15 @@ The caller's headers are not forwarded upstream. Gateway-held receiver credentia
 
 - Custody covers only requests routed through this gateway. Keep receiver credentials in it and fence agent egress.
 - Push notifications sent outside the gateway are not seen. It relays only the three methods above; push configuration methods, `tasks/cancel` and `tasks/resubscribe` are refused, and `message/send` refuses a push URL.
-- Task ids in `tasks/get` and messages' `taskId`, `contextId` or `referenceTaskIds` belong to the authenticated caller that created them through this gateway. Up to 1,024 task ids per caller (and 1,024 callers) are retained; an evicted id cannot be read or continued through the gateway. Task-like values in free-form `params.metadata` are not task references to the gateway; a receiving server must not interpret them as task references.
+- The gateway checks task ownership only for `tasks/get`'s `id` and messages' `taskId`, `contextId` and `referenceTaskIds`. Those ids are non-empty strings of at most 1,024 characters; `referenceTaskIds` has at most 64 unique ids. Up to 1,024 task ids per caller (and 1,024 callers) are retained; an evicted id cannot be read or continued through the gateway. It forwards `params.metadata` unchanged and does not check values there. Do not put a receiver that reads task references from metadata behind the gateway; otherwise deny such metadata in an A2A policy, for example:
+
+  ```yaml
+  deny:
+    - id: R-METADATA-TASK
+      class: a2a
+      field: target
+      pattern: '"metadata":.*"(taskId|contextId|referenceTaskIds)":'
+  ```
 - Cards are read once at startup. Restart after a card changes.
 - A cut stream's `held_call_unresolved` gap is written at run end; its reason is not in the record.
 - Messages name no skill, so rules see the card's offered skills.

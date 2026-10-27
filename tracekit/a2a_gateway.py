@@ -74,6 +74,8 @@ ENDS = {"completed", "canceled", "failed", "rejected", "input-required", "auth-r
 STREAM_IDLE_S = 600   # how long a stream may go without a byte, as at the LLM gateway
 TASKS_PER_CALLER = 1024
 CALLERS_WITH_TASKS = 1024
+MAX_TASK_ID = 1024
+MAX_REFERENCE_TASK_IDS = 64
 
 
 class _Tasks:
@@ -108,14 +110,32 @@ class _Tasks:
 def _task_refs(method, params):
     """The existing tasks a request reads or continues, if it names them."""
     if method == "tasks/get":
-        return (params.get("id"),)
+        if "id" not in params:
+            return ()
+        if not _task_id(params["id"]):
+            raise ValueError("tasks/get id is a non-empty string of at most %d characters" % MAX_TASK_ID)
+        return (params["id"],)
     message = params.get("message")
     if not isinstance(message, dict):
         return ()
-    refs = tuple(message.get(field) for field in ("taskId", "contextId") if field in message)
-    if isinstance(message.get("referenceTaskIds"), list):
-        refs += tuple(message["referenceTaskIds"])
-    return refs
+    refs = []
+    for field in ("taskId", "contextId"):
+        if field in message:
+            if not _task_id(message[field]):
+                raise ValueError(f"message {field} is a non-empty string of at most {MAX_TASK_ID} characters")
+            refs.append(message[field])
+    if "referenceTaskIds" in message:
+        values = message["referenceTaskIds"]
+        if not isinstance(values, list) or len(values) > MAX_REFERENCE_TASK_IDS or \
+                any(not _task_id(value) for value in values) or len(set(values)) != len(values):
+            raise ValueError("message referenceTaskIds is a list of at most %d unique non-empty strings of at most %d "
+                             "characters" % (MAX_REFERENCE_TASK_IDS, MAX_TASK_ID))
+        refs += values
+    return tuple(refs)
+
+
+def _task_id(value):
+    return isinstance(value, str) and bool(value) and len(value) <= MAX_TASK_ID
 
 
 def _task_created(value):
@@ -162,8 +182,12 @@ class _A2aGateway(_Handler):
                 params["configuration"].get("pushNotificationConfig"), dict) and \
                 "url" in params["configuration"]["pushNotificationConfig"]:
             raise _Error(-32602, "message/send does not relay push notification URLs")
-        for task in _task_refs(method, params):
-            if task is not None and not gw["tasks"].owns(key[2], task):
+        try:
+            refs = _task_refs(method, params)
+        except ValueError as e:
+            raise _Error(-32602, str(e)) from None
+        for task in refs:
+            if not gw["tasks"].owns(key[2], task):
                 raise _Error(-32001, "task belongs to another caller or was not created through this gateway")
         tool, tcid = f"a2a:{up['name']}/{method}", "a2a-" + uuid.uuid4().hex
         args = {"sender": key[2], "receiver": up["name"], "agent_card": up["card_digest"], "skills": up["skills"],
