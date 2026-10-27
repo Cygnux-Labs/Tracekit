@@ -808,17 +808,17 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
 def report(doc: Dict[str, Any], data: Optional[Dict[str, Any]] = None) -> str:
     """GRAPH_REPORT.md: highlights(doc) as Markdown, the files and hosts sections cut to the TOP most."""
     data = data or highlights(doc)
-    def text(value: str) -> str:
+    def text(value: str, markdown: bool = True) -> str:   # markdown=False: a title of ours, its Markdown kept
         value = " ".join(value.splitlines())
         return "".join((f"\\u{ord(c):04X}" if unicodedata.category(c) in ("Cc", "Cf")
-                         else "\\" + c if c in "\\`*_[]()<>#!|~" else c) for c in value)
+                         else "\\" + c if markdown and c in "\\`*_[]()<>#!|~" else c) for c in value)
 
     out = [f"# Tracekit graph report\n\n{text(data['summary']['text'])}"]
     for s in data["sections"]:
         lines = [text(i["text"]) for i in s["items"]]
         if s["id"] in ("files", "hosts") and len(lines) > TOP:
             lines = lines[:TOP] + [f"and {len(lines) - TOP} more {s['id']} (graph.json has them all)"]
-        out.append(f"\n## {s['title']}\n\n" + "\n".join(f"- {x}" for x in lines or ["none"]))
+        out.append(f"\n## {text(s['title'], markdown=False)}\n\n" + "\n".join(f"- {x}" for x in lines or ["none"]))
     return "\n".join(out) + "\n"
 
 

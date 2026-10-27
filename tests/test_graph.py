@@ -408,7 +408,8 @@ class ReviewRegressions(unittest.TestCase):
         data = {"summary": {"text": "billing\u200byp.exe"}, "sections": []}
         self.assertIn("\\u200B", graph.report(doc, data))
         # and control characters: a terminal showing the report must not take an escape sequence from a label
-        out = graph.report(doc, {"summary": {"text": "run\x1b[2Jx\x00y"}, "sections": []})
+        out = graph.report(doc, {"summary": {"text": "run\x1b[2Jx\x00y"},
+                                 "sections": [{"id": "s", "title": "t\x1b[2J", "items": []}]})
         self.assertNotIn("\x1b", out)
         self.assertNotIn("\x00", out)
         self.assertIn("\\u001B", out)
