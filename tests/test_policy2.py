@@ -778,10 +778,10 @@ class Shell(unittest.TestCase):
                          [["sysctl", "-n", "hw.memsize"], ["echo", "$(( $(sysctl -n hw.memsize) / 1073741824 )) GB RAM"]])
         cases = {"echo $(( $(sudo id) ))": ["$()"], 'echo "$(( $(sudo id) + 1 ))"': ["$()"],
                  "echo $(( `sudo id` ))": ["``"], 'echo "$(( `sudo id` * 2 ))"': ["``"],
-                 "echo $(( ${X:-$(sudo id)} - 1 ))": ["$()"], 'echo $(( "$(sudo id)" ))': ["$()"],
+                 "echo $(( ${X:-$(sudo id)} - 1 ))": ["$()"], 'echo $(( "`sudo id`" ))': ["``"],
                  "echo $(( ($(sudo id) + 1) * 2 ))": ["$()"], "echo $(( $(sudo id | wc -l) ))": ["$()"],
                  "echo $(( 1 + $(( $(sudo id) )) ))": ["$()"], "x=$(( $(sudo id) )) ls": ["$()"],
-                 'echo "$(( $(echo $(( `sudo id` ))) ))"': ["$()", "``"]}
+                 'echo "$(( $(echo $(( $(sudo id) ))) ))"': ["$()", "$()"]}
         for cmd, via in cases.items():
             with self.subTest(cmd=cmd):
                 self.assertEqual([c["via"] for c in find(cmd, ["sudo", "id"])], [via])
@@ -800,16 +800,23 @@ class Shell(unittest.TestCase):
                         self.assertEqual(d["verdict"], "deny")
                         self.assertIn("TK-D004", d["rule_ids"])
                         self.assertNotIn("TK-SHELL-PARSE", d["rule_ids"])
+                for cmd in ("echo $(( '$(rm -rf ~)' ))", "echo $(( $'$(rm -rf ~)' ))", 'echo $(( "$(rm -rf ~)" ))'):
+                    with self.subTest(pack=pack, cmd=cmd):
+                        self.assertIn("TK-SHELL-PARSE", e.decide("Bash", {"command": cmd})["rule_ids"])
                 cmd = 'echo "$(( $(sysctl -n hw.memsize) / 1073741824 )) GB RAM"'
                 self.assertEqual(e.decide("Bash", {"command": cmd})["rule_ids"], [])
 
     def test_arithmetic_expansion_that_cannot_be_read_is_a_parse_failure(self):
-        """Unterminated or malformed, a subshell in `$( )` rather than arithmetic, or a parenthesis or newline in it
-        that the shell could read as ending it elsewhere."""
+        """Unterminated or malformed, a subshell in `$( )` rather than arithmetic, a parenthesis or newline in it
+        that the shell could read as ending it elsewhere, or a single quote: the shell does not quote with it there,
+        so a substitution inside one still runs."""
         for cmd in ("echo $(( 1 + 2", "echo $(( 1 + 2 )", 'echo "$(( 1 + 2 )"', "echo $(( $(id) + 1", "echo $(( $(id ))",
                     "echo $(( 1 ) )", "echo $((id); (id))", "echo $(( $(( 1 ) ))", "echo $(( 1 +\n2 ))",
                     "echo $(( $(echo ')') ))", 'echo $(( $(echo "(") ))', "echo $(( $(echo \\)) ))",
-                    "echo $(( $(cat <<E\n)\nE\n) ))", "echo $(( `echo ')'` ))"):
+                    "echo $(( $(cat <<E\n)\nE\n) ))", "echo $(( `echo ')'` ))",
+                    "echo $(( '$(sudo id)' ))", "echo \"$(( '$(sudo id)' ))\"", "echo $(( '`sudo id`' ))",
+                    "echo $(( $'$(sudo id)' ))", "echo $(( '1' ))", 'echo $(( "(" + ${x)} ))',
+                    'echo $(( "$(sudo id)" ))', "echo $(( `(sudo id)` ))", "echo $(( $(echo 'a') ))"):
             with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
                 shell.parse(cmd)
 

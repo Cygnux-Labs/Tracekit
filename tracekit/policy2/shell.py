@@ -760,19 +760,17 @@ class _Parser:
 
     def arith(self):
         """Read `$(( ))` from after its `$((`, running the substitutions in it. It is arithmetic only if the `)`
-        closing the inner `(` is followed by the outer one: bash runs `$((cmd) )` as a subshell. A newline, or a
-        parenthesis this reading skips (quoted, escaped, in a heredoc), could end it elsewhere for the shell."""
+        closing the inner `(` is followed by the outer one: bash runs `$((cmd) )` as a subshell. bash does not quote
+        with `'` here, so a substitution inside one still runs. A newline, or a parenthesis next to a quote or
+        backslash (bash's counts skip quoted ones, in different places), could end it elsewhere for the shell."""
         self.enter()
         s, start, depth = self.s, self.i, 0
         while self.i < len(s) and (s[self.i] != ")" or depth):
             c = s[self.i]
             if c == "\\":
                 self.i += 2
-            elif c == "'":
-                j = s.find("'", self.i + 1)
-                if j < 0:
-                    raise ParseError("unterminated '")
-                self.i = j + 1
+            elif c == "'" or self.at("$'"):
+                raise ParseError("a single quote in $(( )) is not supported")
             elif c == '"':
                 self.i += 1
                 self.dquote('"')
@@ -788,14 +786,14 @@ class _Parser:
                              "$(( that is not arithmetic (a subshell inside $( )) is not supported")
         body = s[start:self.i]
         self.charge(len(body))   # each level reads the levels inside it again
-        level = 0
-        for p in re.findall(r"[()]", body):
+        parens, level = re.findall(r"[()]", body), 0
+        for p in parens:
             level += 1 if p == "(" else -1
             if level < 0:
                 break
         # lean: such a line is held (TK-SHELL-PARSE), not read; read it when real commands need one (docs/limits.md)
-        if level or "\n" in body:
-            raise ParseError("a newline or a quoted or escaped parenthesis in $(( )) is not supported")
+        if level or "\n" in body or parens and re.search(r"[\"'`\\]", body):
+            raise ParseError("a newline, or a parenthesis with a quote or backslash, in $(( )) is not supported")
         self.i += 2
         self.leave()
 
