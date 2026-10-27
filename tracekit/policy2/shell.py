@@ -13,8 +13,11 @@ Variables are not expanded and encodings are not decoded. A line it cannot parse
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
 redirections kept, and again with its program names in lower case when that differs, for rules that match a whole
 command line; the words that name something besides the commands' argv: redirection targets, `VAR=` assignments
-and the program an interpreter reads from a heredoc or herestring; and the targets of the redirections that write a
-file (`>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&` to a name rather than a descriptor).
+and the program an interpreter reads from a heredoc or herestring; the targets of the redirections that write a
+file (`>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&` to a name rather than a descriptor); and the code: the command and the
+normalised lines without the text a command only writes into a file (the words of an echo or printf, the heredoc or
+herestring a cat or tee copies, with its output redirected to a file a literal names; a word with an expansion, or a
+body with a command substitution, is kept; out of the command, only the top level's is cut).
 """
 import re
 
@@ -125,18 +128,27 @@ def parse(command):
 
 
 def analyse(command):
-    """(the commands, the normalised lines, the other words that name something, the files redirections write)."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "pipes": 0, "depth": 0, "work": 0, "exp": 0}
+    """(the commands, the normalised lines, the other words that name something, the files redirections write, the
+    code)."""
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "pipes": 0, "depth": 0, "work": 0,
+           "exp": 0}
     _Parser(command, ctx, []).script()
-    return ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"], ctx["written"]
+    code, at = [], 0
+    for a, b in sorted(ctx["cut"]):   # each cut a space, so the text on either side doesn't join
+        code += [command[at:a], " "]
+        at = b
+    return (ctx["cmds"], [x for x in ctx["lines"] if x], ctx["refs"], ctx["written"],
+            ["".join(code) + command[at:]] + [x for x in ctx["kept"] if x])
 
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "pipes": 1, "depth": 0, "work": 0, "exp": 0}
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "pipes": 1, "depth": 0, "work": 0,
+           "exp": 0}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
-    return ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"]
+    return (ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"],
+            [x for x in lines + ctx["kept"] if x])
 
 
 def data_words(argv):
@@ -397,6 +409,7 @@ def _ansi_c(text):
 class _Parser:
     def __init__(self, src, ctx, via):
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
+        self.data = set()   # indexes in self.out of the words the code leaves out
         self.charge(len(src))
 
     def charge(self, n):
@@ -430,7 +443,10 @@ class _Parser:
     def flush(self):
         if self.out[-1:] == [";"]:   # the separator list() put after the last pipeline; a `;` word before it stays
             self.out.pop()
-        self.ctx["lines"] += _lines(self.out, self.progs)
+        lines = _lines(self.out, self.progs)
+        self.ctx["lines"] += lines
+        self.ctx["kept"] += _lines(["" if i in self.data else w for i, w in enumerate(self.out)], self.progs) \
+            if self.data else lines
 
     def blank(self):
         s = self.s
@@ -498,8 +514,8 @@ class _Parser:
             self.gap()
 
     def simple(self, pid, piped=False):
-        words, globs, names, strings, docs, idx = [], [], [], [], [], []
-        consumed = loop_header = stdin_redirect = False
+        words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
+        consumed = loop_header = stdin_redirect = to_file = False
         while True:
             self.blank()
             c = self.peek()
@@ -518,21 +534,30 @@ class _Parser:
             if m:
                 self.i = m.end()
                 self.blank()
+                start = self.i
                 target = self.word()
                 if target is None:
                     raise ParseError("redirection without a target")
                 self.out += [m.group(0), target[0]]
                 if m.group(2) in ("<<", "<<-"):
                     docs.append({"delim": target[0], "strip": m.group(2) == "<<-", "expand": target[0] == target[1],
-                                 "via": self.via, "cmds": []})
+                                 "via": self.via, "cmds": [], "data": False})
                     self.heredocs.append(docs[-1])
                 elif m.group(2) == "<<<":
                     strings.append(target[0])
+                    if not target[3]:
+                        here.append((len(self.out) - 1, start, self.i))
                 else:
                     self.ctx["refs"].append(target[0])
                     stdin_redirect |= m.group(2) in ("<", "<&", "<>")
-                    if m.group(2) not in ("<", "<&") and not (m.group(2) == ">&" and re.fullmatch(r"\d*-?", target[0])):
+                    writes = m.group(2) not in ("<", "<&") and not (
+                        m.group(2) == ">&" and re.fullmatch(r"\d*-?", target[0]))
+                    if writes:
                         self.ctx["written"].append(target[0])
+                    if m.group(2) in ("&>", "&>>") or m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&"):
+                        # stdout, the last one: into a file a literal names, not a descriptor, a device or a variable
+                        to_file = writes and not target[3] and (
+                            target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
@@ -551,12 +576,24 @@ class _Parser:
                 continue
             words.append(text)
             idx.append(len(self.out) - 1)
+            spans.append(None if expanded else (len(self.out) - 1, start, self.i))
             globs.append(g)
             names.append(g or (expanded and _name_unreadable(text)))
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         self.progs += [idx[k] for k in _programs(words, cmds)]
+        # cat, tee, echo or printf into a file only copies text there: its herestring and echo's or printf's words
+        # (and its heredoc, read_heredocs) are data, which the code leaves out.
+        # lean: the code doesn't follow the text into that file, so a later command of the same call that runs or reads
+        # it (`sh x.sh`, `xargs rm < list`) acts on what it names unseen, as a second call would; keep the text when
+        # another command of the call names the file it wrote if that shows up
+        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf")
+        if data:
+            marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
+            self.data.update(i for i, _, _ in marks)
+            if not self.via:   # the top level's text is the command's own
+                self.ctx["cut"] += [(a, b) for _, a, b in marks]
         for d in docs:
-            d["cmds"] = cmds
+            d["cmds"], d["data"] = cmds, data
         shell = _stdin_shell(cmds)
         if shell and not docs and not strings:
             shell["opaque"] = True   # its script comes from a pipe, a file or inherited stdin
@@ -691,17 +728,21 @@ class _Parser:
         docs, self.heredocs = self.heredocs, []
         s = self.s
         for d in docs:
-            lines = []
+            lines, start = [], self.i
             while True:
                 if self.i >= len(s):
                     raise ParseError(f"heredoc {d['delim']} not terminated")
                 j = s.find("\n", self.i)
                 end = len(s) if j < 0 else j
-                line, self.i = s[self.i:end], min(end + 1, len(s))
+                line, at, self.i = s[self.i:end], self.i, min(end + 1, len(s))
                 if (line.lstrip("\t") if d["strip"] else line) == d["delim"]:
                     break
                 lines.append(line)
             body = "\n".join(lines)
+            # a data heredoc's body, unless a command substitution in it runs (what it runs may read a heredoc of its
+            # own, which only this text holds)
+            if d["data"] and not d["via"] and not (d["expand"] and re.search(r"\$\(|`", body)):
+                self.ctx["cut"].append((start, at))
             shell, interp = _stdin_shell(d["cmds"]), _stdin_interpreter(d["cmds"])
             if shell:
                 self.nested(body, shell["via"] + [shell["argv"][0] + " <<"])
@@ -753,10 +794,11 @@ class _Parser:
         return "".join(buf), s[start:self.i], bool(glob), self.ctx["exp"] != exp
 
     def sub(self, label):
-        via, out, progs, self.via, self.out, self.progs = self.via, self.out, self.progs, self.via + [label], [], []
+        saved = self.via, self.out, self.progs, self.data
+        self.via, self.out, self.progs, self.data = self.via + [label], [], [], set()
         self.list(")")
         self.flush()
-        self.via, self.out, self.progs = via, out, progs
+        self.via, self.out, self.progs, self.data = saved
 
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
