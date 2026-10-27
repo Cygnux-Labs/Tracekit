@@ -116,6 +116,11 @@ class TestTestsPassed(Claims):
         self.assertEqual(self.claim("tests_passed", {"suite": SUITE}, ev), ("unproven", T1))
         self.assertEqual(self.claim("tests_passed", {"suite": SUITE}), ("unproven", "no evidence"))
 
+    def test_a_tool_the_verifier_cannot_place_as_a_shell(self):
+        d, r = self.ran("mcp:ci/run", {"command": SUITE}, t2=True)
+        self.assertEqual(self.claim("tests_passed", {"suite": SUITE}, self.evidence([d, r], {d: {"command": SUITE}})),
+                         ("unproven", "a tool the verifier can't place as a shell tool"))
+
     def test_failed(self):
         _, _, ev = self.run_suite(t2=True)
         self.assertClaim("failed", self.claim("tests_passed", {"suite": "pytest -q"}, ev),
@@ -233,6 +238,9 @@ class TestReachedHost(Claims):
         ev = self.evidence([d, r], {d: URL})
         self.assertEqual(self.claim("reached_host", {"host": "api.example.com"}, ev), ("unproven", T1))
         self.assertClaim("failed", self.claim("reached_host", {"host": "other.example.com"}, ev))
+        d, r = self.ran("mcp:web/get", URL, t2=True)
+        self.assertEqual(self.claim("reached_host", {"host": "api.example.com"}, self.evidence([d, r], {d: URL})),
+                         ("unproven", "a tool the verifier can't place as a http tool"))
 
 
 class TestApprovedBy(Claims):

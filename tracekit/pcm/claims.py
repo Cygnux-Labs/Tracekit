@@ -6,9 +6,11 @@ A claim is proven only by what the signer recorded itself: a person's approval, 
 tool.result a gateway or executor wrote (T2: the record's own `source` and `tier`, which no client sets). A result the
 agent's process reported (T1) is its own word, so a claim that rests on one is unproven."""
 import base64
+import functools
 import hmac
+import os
 
-from tracekit import core, merkle
+from tracekit import core, merkle, yamlmini
 from tracekit.findings_text import _simple, command_facts
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
@@ -16,6 +18,7 @@ from tracekit.pcm import CLAIM_ARGS, check_args
 from tracekit.policy2 import classes
 
 _RANK = {"proven": 0, "unproven": 1, "failed": 2}
+PACKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs")
 
 
 class EvidenceError(ValueError):
@@ -62,13 +65,30 @@ def evidence(ev, msg, trust):
     return out
 
 
-def _ran(recs, match, what):
+@functools.lru_cache(maxsize=None)
+def placed():
+    """{tool: class} of the tool names the policy packs shipped with tracekit map (verifier code, never a bundle's
+    policy); a pattern, or a name two packs class differently, is left out."""
+    seen = {}
+    for name in sorted(os.listdir(PACKS)):
+        if name.endswith(".yaml"):
+            for tool, cls in (yamlmini.loads(core.read_text(os.path.join(PACKS, name))).get("tools") or {}).items():
+                seen.setdefault(tool, set()).add(cls)
+    return {tool: cls for tool, (cls, *more) in seen.items() if not more and "*" not in tool}
+
+
+def _ran(recs, match, what, cls=None):
     """(result, detail) of the claim that a call whose opened args `match(tool, args)` ran and succeeded: proven by a
-    T2 result, unproven by the agent's own (T1)."""
+    T2 result, unproven by the agent's own (T1) or by a tool the verifier can't place as class `cls`."""
     best = ("failed", f"no call in the evidence {what}")
     for e, args in recs:
         d = e["data"]
         if not isinstance(args, dict) or d["decision"] == "deny" or not match(d["tool"], args):
+            continue
+        # lean: the shipped packs' tools map; a custom shell or http tool is unproven until the verifier takes one
+        if cls and placed().get(d["tool"]) != cls:   # a `command` or `url` field alone is not a shell or http call
+            got = ("unproven", f"a tool the verifier can't place as a {cls} tool")
+            best = min(got, best, key=lambda o: _RANK[o[0]])
             continue
         for x, _ in recs:
             r = x["data"]
@@ -90,7 +110,7 @@ def tests_passed(a, recs):
     if len(list(_simple(a["suite"]))) != 1 or "test" not in command_facts(a["suite"])[0]:
         return "failed", f"{a['suite'][:64]!r} is not a single test command"
     return _ran(recs, lambda tool, args: classes.extract("shell", tool, args).get("command") == a["suite"],
-                f"ran {a['suite'][:64]!r}")
+                f"ran {a['suite'][:64]!r}", "shell")
 
 
 def approved_by(a, recs):
@@ -110,7 +130,7 @@ def reached_host(a, recs):
                 and not d.get("denied"):
             return "proven", f"effect.observed seq {e['seq']}: {d['observer']} saw the run reach {a['host']}"
     return _ran(recs, lambda tool, args: classes.extract("http", tool, args).get("host") == a["host"],
-                f"reached {a['host']}")
+                f"reached {a['host']}", "http")
 
 
 def file_written(a, recs):
