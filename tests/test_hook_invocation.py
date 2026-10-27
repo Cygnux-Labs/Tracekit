@@ -58,13 +58,13 @@ class FailMode(unittest.TestCase):
 
     def cursor_fail_closed(self):
         with open(agent_hooks.install("cursor", project=self.d), encoding="utf-8") as f:
-            return {h["failClosed"] for lst in json.load(f)["hooks"].values() for h in lst}
+            return {ev for ev, lst in json.load(f)["hooks"].items() for h in lst if h["failClosed"]}
 
-    def test_cursor_fail_closed_follows_system_config(self):
+    def test_cursor_fail_closed_follows_system_config(self):   # for a tool call only: no other event is blocked
         with mock.patch.object(client, "system_fail_closed", return_value=True):
-            self.assertEqual(self.cursor_fail_closed(), {True})
+            self.assertEqual(self.cursor_fail_closed(), {"preToolUse"})
         with mock.patch.object(client, "system_fail_closed", return_value=False):
-            self.assertEqual(self.cursor_fail_closed(), {False})
+            self.assertEqual(self.cursor_fail_closed(), set())
 
     def test_wiring_error_blocks_when_fail_closed(self):
         with mock.patch.object(client, "system_fail_closed", return_value=True), mock.patch("sys.stderr", io.StringIO()):
