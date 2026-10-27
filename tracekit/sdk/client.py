@@ -691,6 +691,10 @@ class RunHandle:
         meant; a transfer the code doesn't pass through here is not recorded."""
         data = payload.encode() if isinstance(payload, str) else bytes(payload)
         more = measured or {}
+        reserved = {"sender", "receiver", "modality", "projector", "size", "digest", "claimed", "measured"}
+        collision = sorted(set(more) & reserved)
+        if collision:
+            raise ValueError("measured keys replace reserved transfer fields: " + ", ".join(collision))
         args = {"sender": sender, "receiver": receiver, "modality": modality,
                 **({"projector": projector} if projector else {})}
         args = {**args, "claimed": sorted(args), "size": len(data), "digest": "sha256:" + hashlib.sha256(data).hexdigest(),

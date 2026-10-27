@@ -222,14 +222,39 @@ class Gateway(unittest.TestCase):
             self.assertNotIn("a2a-upstream-0123456789", f.read())
 
     def test_tasks_get_is_decided_sent_and_completed(self):
+        self.send("researcher")
         status, _, body = self.post("researcher", "tasks/get", {"id": "task-1"})
         self.assertEqual(json.loads(body)["result"]["status"]["state"], "completed")
         self.assertEqual([(p, r["method"], r["params"]) for p, r in self.a2a.seen],
-                         [("/researcher", "tasks/get", {"id": "task-1"})])
+                         [("/researcher", "message/send", {"message": TEXT}),
+                          ("/researcher", "tasks/get", {"id": "task-1"})])
         evs = self.events()
         self.assertEqual([e["data"]["tool"] for e in evs if e["type"] == "policy.decision"],
-                         ["a2a:researcher/tasks/get"])
-        self.assertEqual([e["data"]["ok"] for e in evs if e["type"] == "tool.result"], [True])
+                         ["a2a:researcher/message/send", "a2a:researcher/tasks/get"])
+        self.assertEqual([e["data"]["ok"] for e in evs if e["type"] == "tool.result"], [True, True])
+
+    def test_task_ids_belong_to_the_caller_that_created_them(self):
+        self.send("researcher")
+        authenticated = a2a_gateway._Handler._authenticated
+        def other_caller(handler, max_body):
+            got = authenticated(handler, max_body)
+            return ((got[0][0], got[0][1], "token:other"), got[1], got[2]) if got else None
+        for method, params in (("tasks/get", {"id": "task-1"}),
+                               ("message/send", {"message": dict(TEXT, contextId="task-1")})):
+            with self.subTest(method=method):
+                with mock.patch.object(a2a_gateway._Handler, "_authenticated", other_caller):
+                    _, _, body = self.post("researcher", method, params)
+                self.assertEqual(json.loads(body)["error"]["code"], -32001)
+        self.assertEqual(len(self.a2a.seen), 1)
+
+    def test_message_send_refuses_a_push_notification_url_before_a_decision(self):
+        _, _, body = self.post("researcher", "message/send", {"message": TEXT,
+                                                                  "configuration": {"pushNotificationConfig": {
+                                                                      "url": "https://callback.example/result"}}})
+        out = json.loads(body)
+        self.assertEqual(out["error"]["code"], -32602)
+        self.assertEqual(self.a2a.seen, [])
+        self.assertEqual([e for e in self.events() if e["type"] == "policy.decision"], [])
 
     def test_a_pair_the_policy_does_not_list_never_reaches_the_receiver(self):
         for method in ("message/send", "message/stream", "tasks/get"):
@@ -485,6 +510,12 @@ class Transfer(unittest.TestCase):
         out = self.run.transfer("qwen-7b@1", "llama-1b@2", b"state", "kv-cache", projector="c2c@0.2")
         self.assertEqual((out["ok"], out["decision"], out["rule_ids"]), (False, "deny", ["R-ROUTE"]))
 
+    def test_measured_cannot_replace_the_transfer_commitments(self):
+        for key in ("sender", "size", "digest", "claimed"):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError, "measured.*reserved"):
+                    self.run.transfer("qwen-7b@1", "llama-1b@2", b"state", "kv-cache", measured={key: "x"})
+
     def test_the_signer_matches_a_names_spellings_and_signs_the_callers(self):
         """In the signer: a case variant of the listed triple is that triple, a look-alike is refused (TK-A2A-NAME)
         with its fixed reason and remedy, and each decision commits to the names as the caller spelt them."""
@@ -505,6 +536,23 @@ class Transfer(unittest.TestCase):
 
 
 class Policy(unittest.TestCase):
+    def test_server_and_strict_hold_a2a_calls_and_scan_their_params_as_targets(self):
+        packs = os.path.join(os.path.dirname(policy_compile.__file__), "packs")
+        metadata = {"sender": "token:http", "receiver": "researcher", "params": {"message": {
+            "parts": [{"kind": "file", "file": {"uri": "http://169.254.169.254/latest/meta-data/iam/"}}]}}}
+        text = {"sender": "token:http", "receiver": "researcher", "params": {"message": TEXT}}
+        transfer = dict(TRIPLE)
+        for pack in ("server.yaml", "strict.yaml"):
+            e = Engine(policy_compile.build(os.path.join(packs, pack))[0])
+            with self.subTest(pack=pack, call="metadata"):
+                self.assertEqual((e.decide("a2a:researcher/message/send", metadata)["verdict"],
+                                  e.decide("a2a:researcher/message/send", metadata)["rule_ids"]),
+                                 ("deny", ["TK-S001", "TK-S011", "TK-F012"]))
+            for tool, args in (("a2a:researcher/message/send", text), ("a2a:transfer", transfer)):
+                with self.subTest(pack=pack, call=tool):
+                    self.assertEqual((e.decide(tool, args)["verdict"], e.decide(tool, args)["rule_ids"]),
+                                     ("ask", ["TK-S011"]))
+
     def test_the_a2a_class_lints_and_reads_the_message(self):
         self.assertEqual(policy_compile._lint(dict(POLICY), "p.yaml"), [])
         bad = dict(POLICY, flag=[{"id": "R-X", "class": "a2a", "field": "skill", "pattern": "x"}])
@@ -515,6 +563,13 @@ class Policy(unittest.TestCase):
         self.assertEqual(e.decide("a2a:researcher/message/send", args)["rule_ids"], ["R-FILE"])
         self.assertEqual(e.decide("a2a:researcher/message/send", dict(args, sender="token:other"))["rule_ids"],
                          ["R-ROUTE", "R-FILE"])
+
+    def test_a2a_size_covers_all_params(self):
+        e = Engine({"tools": {"a2a:*": "a2a"}, "deny": [{"id": "R-SIZE", "class": "a2a", "field": "size",
+                                                               "pattern": "^[0-9]{5,}$"}]})
+        args = {"sender": "token:http", "receiver": "researcher",
+                "params": {"message": TEXT, "metadata": "x" * 10000}}
+        self.assertEqual(e.decide("a2a:researcher/message/send", args)["rule_ids"], ["R-SIZE"])
 
     def test_a_rule_for_a_name_sees_every_spelling_of_it(self):
         """A deny rule and an allow-list written for a name's logical spelling: its case matches either way, and a

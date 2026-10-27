@@ -248,7 +248,7 @@ def a2a_fields(args):
     parts = [p for p in message["parts"] if isinstance(p, dict)] if isinstance(message, dict) and \
         isinstance(message.get("parts"), list) else []
     uris = [p["file"].get("uri") for p in parts if isinstance(p.get("file"), dict)]
-    size = len(canonical(message)) if message is not None else args.get("size")
+    size = len(canonical(params)) if isinstance(params, dict) else args.get("size")
     names = {k: _name(args[k]) for k in ("sender", "receiver", "projector", "modality", "weights")
              if args.get(k) is not None}
     lists = {"skills": args.get("skills") or None,

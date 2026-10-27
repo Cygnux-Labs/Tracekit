@@ -4,7 +4,7 @@
 
 `tracekit a2a-gateway serve` is a reverse proxy for configured A2A (Agent2Agent, JSON-RPC over HTTP) servers. Send requests to it instead of to the receiver. It asks the signer before forwarding a request, holds an `ask` for a person, uses credentials held only by the gateway, and records the result as `source: gateway`, tier T2. If the signer is unavailable, it forwards nothing.
 
-This is Tracekit's A2A binding of PCM 0.1 (spec published separately); Tracekit is the reference implementation. A PCM part in an A2A message has media type `application/vnd.pcm+json`.
+The gateway is planned as Tracekit's A2A binding of PCM 0.1 (spec published separately); today it does not check PCM parts. A PCM part in an A2A message has media type `application/vnd.pcm+json`.
 
 ```bash
 tracekit a2a-gateway serve --config a2a-gateway.yaml
@@ -37,7 +37,7 @@ authorize: {"mtls:spiffe://acme.org/tracekit-a2a-gateway": [decide, complete, ap
 
 ## Policy
 
-`coding.yaml` maps `a2a:*` to class `a2a`; `dev.yaml`, `server.yaml` and `strict.yaml` extend it. A policy composed only from `server.yaml`'s component packs needs that mapping itself. The shipped packs have no A2A rules, so a mapped A2A call is allowed unless a rule says otherwise.
+`coding.yaml` maps `a2a:*` to class `a2a`; `dev.yaml`, `server.yaml` and `strict.yaml` extend it. A policy composed only from `server.yaml`'s component packs needs that mapping itself. `server.yaml` and `strict.yaml` ask for every A2A call until a pair rule allows it; laptop profiles allow it unless a rule says otherwise.
 
 | Field | Meaning |
 |---|---|
@@ -45,7 +45,7 @@ authorize: {"mtls:spiffe://acme.org/tracekit-a2a-gateway": [decide, complete, ap
 | `route` | `sender->receiver`. A transfer adds ` via projector`. |
 | `skills` | Sorted skill ids offered by the receiver's Agent Card. |
 | `kinds`, `hosts` | Message part kinds and hosts of file-part URIs. |
-| `size` | Canonical message bytes, or transfer bytes. |
+| `size` | Canonical JSON-RPC params bytes, or transfer bytes. |
 | `modality`, `projector`, `weights` | Transfer modality, adapter id and measured fuser-weight hash. |
 
 Names (sender, receiver, projector, modality, weights, skill ids and part kinds) are read in lower case. Rules with `class: a2a` therefore match names in any case. A name that is not printable ASCII without spaces is refused with `TK-A2A-NAME`, whatever other rules say; its fixed reason and remedy do not repeat the name. Signed arguments retain the original spelling.
@@ -81,7 +81,7 @@ Only these methods are relayed. Others receive `-32601`, with no decision and no
 
 ## What is recorded
 
-The decision commits to `{sender, receiver, agent_card, skills, params}`. An allowed request sends the signer's copy of `params`; an ask approved with a T2 executor also sends that signer-held copy. A deny, rejected or unanswered ask, other refusal, or unavailable signer returns `-32000` and never reaches the receiver. Answers complete the call as redacted T2 results. An upstream connection failure says the message was not sent; an unreadable answer after sending says it may have been acted on. Both complete the call as errors.
+The decision commits to `{sender, receiver, agent_card, skills, params}`. An allowed request sends the signer's copy of `params`; an ask approved with a T2 executor also sends that signer-held copy. A deny, rejected or unanswered ask, other refusal, or unavailable signer returns `-32000` and never reaches the receiver. `message/send` refuses a `configuration.pushNotificationConfig.url` with `-32602`, before a decision or send. Answers complete the call as redacted T2 results. An upstream connection failure says the message was not sent; an unreadable answer after sending says it may have been acted on. Both complete the call as errors. If that result cannot be recorded, `message/send` still delivers it and the signer leaves a `held_call_unresolved` gap, as the executor does; `message/stream` withholds an event it cannot record.
 
 For `message/stream`, every JSON-RPC event is first recorded as an `input.observed` with source `a2a:<upstream>/message/stream#<tool_call_id>` and trust `untrusted`, then passed to the agent. An error, message, `final` update, or terminal task state completes the call with all events as its result before the final event goes to the agent.
 
@@ -92,7 +92,8 @@ The caller's headers are not forwarded upstream. Gateway-held receiver credentia
 ## Limits
 
 - Custody covers only requests routed through this gateway. Keep receiver credentials in it and fence agent egress.
-- Push notifications sent outside the gateway are not seen. It relays only the three methods above; push configuration methods, `tasks/cancel` and `tasks/resubscribe` are refused.
+- Push notifications sent outside the gateway are not seen. It relays only the three methods above; push configuration methods, `tasks/cancel` and `tasks/resubscribe` are refused, and `message/send` refuses a push URL.
+- Task ids belong to the authenticated caller that created them through this gateway. Up to 1,024 task ids per caller (and 1,024 callers) are retained; an evicted id cannot be read or continued through the gateway.
 - Cards are read once at startup. Restart after a card changes.
 - A cut stream's `held_call_unresolved` gap is written at run end; its reason is not in the record.
 - Messages name no skill, so rules see the card's offered skills.

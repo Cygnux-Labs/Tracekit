@@ -266,9 +266,10 @@ class Engine:
             files = fields.get("attachments")
             return [f if isinstance(f, str) else canonical(f) for f in (files if isinstance(files, list) else [files])
                     if f is not None]
-        if cls == "a2a":   # the agent or model it reaches
+        if cls == "a2a":   # the agent or model it reaches, and the message it carries
             to = fields.get("receiver")
-            return [] if to is None else [to if isinstance(to, str) else canonical(to)]
+            receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
+            return receiver + [canonical(args.get("params"))]
         return [canonical(args)] if cls in ("mcp", "app", "unknown") else []
 
 

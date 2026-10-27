@@ -10,7 +10,7 @@
 # grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-8'
+version: '2026.10-server-9'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -62,6 +62,12 @@ deny:
     rationale: tar, git, ssh, zip, rsync and vim options that run a program are a way to run what the shell rules would stop.
 
 ask:
+  - id: TK-S011
+    class: a2a
+    pattern: '.'
+    reason: an A2A message
+    remedy: Wait for a person to check the sender, receiver and message, or allow the pair with a policy rule.
+    rationale: An A2A call crosses an agent boundary; a pair rule makes its intended counterpart explicit.
   - id: TK-S010
     class: mcp
     pattern: '"(command|cmd|script|shell_command)":["\[]'

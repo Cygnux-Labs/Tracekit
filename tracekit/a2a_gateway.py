@@ -40,11 +40,13 @@ held_call_unresolved gap when the run ends: never a clean end, never silent.
 The header values never reach the agent or the signer: each is cut from answers, events and errors before they are
 recorded or answered. Relative paths are from the config file.
 """
+import collections
 import hashlib
 import http.client
 import json
 import os
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -70,6 +72,50 @@ MAX_CARD = 1 << 20
 METHODS = {"message/send", "message/stream", "tasks/get"}
 ENDS = {"completed", "canceled", "failed", "rejected", "input-required", "auth-required"}   # task states ending a stream
 STREAM_IDLE_S = 600   # how long a stream may go without a byte, as at the LLM gateway
+TASKS_PER_CALLER = 1024
+CALLERS_WITH_TASKS = 1024
+
+
+class _Tasks:
+    """The bounded task ids each authenticated caller created through this gateway."""
+
+    def __init__(self):
+        self.callers, self.lock = collections.OrderedDict(), threading.Lock()
+
+    def owns(self, caller, task):
+        with self.lock:
+            tasks = self.callers.get(caller)
+            if tasks is None or task not in tasks:
+                return False
+            self.callers.move_to_end(caller)
+            tasks.move_to_end(task)
+            return True
+
+    def add(self, caller, task):
+        if not isinstance(task, str) or not task:
+            return
+        with self.lock:
+            tasks = self.callers.pop(caller, collections.OrderedDict())
+            tasks.pop(task, None)
+            tasks[task] = None
+            if len(tasks) > TASKS_PER_CALLER:
+                tasks.popitem(last=False)
+            self.callers[caller] = tasks
+            if len(self.callers) > CALLERS_WITH_TASKS:
+                self.callers.popitem(last=False)
+
+
+def _task_ref(method, params):
+    """The existing task a request reads or continues, if it names one."""
+    if method == "tasks/get":
+        return params.get("id")
+    message = params.get("message")
+    return message.get("contextId") if isinstance(message, dict) else None
+
+
+def _task_created(value):
+    """The task id an A2A response creates, if it is a task result."""
+    return value.get("id") if isinstance(value, dict) and value.get("kind") == "task" else None
 
 
 class _A2aGateway(_Handler):
@@ -107,6 +153,13 @@ class _A2aGateway(_Handler):
                                  f"{', '.join(sorted(METHODS))}")
         if not isinstance(params, dict):
             raise _Error(-32602, "params is an object")
+        if method == "message/send" and isinstance(params.get("configuration"), dict) and isinstance(
+                params["configuration"].get("pushNotificationConfig"), dict) and \
+                "url" in params["configuration"]["pushNotificationConfig"]:
+            raise _Error(-32602, "message/send does not relay push notification URLs")
+        task = _task_ref(method, params)
+        if task is not None and not gw["tasks"].owns(key[2], task):
+            raise _Error(-32001, "task belongs to another caller or was not created through this gateway")
         tool, tcid = f"a2a:{up['name']}/{method}", "a2a-" + uuid.uuid4().hex
         args = {"sender": key[2], "receiver": up["name"], "agent_card": up["card_digest"], "skills": up["skills"],
                 "params": params}
@@ -131,6 +184,8 @@ class _A2aGateway(_Handler):
                                                         "result or error"}}
         gw["custody"].complete(key, tcid, d, tool, args, "ok" if "result" in out else "error",
                                result=result_field(True, value))
+        if method == "message/send" and "result" in out:
+            gw["tasks"].add(key[2], _task_created(out["result"]))
         return out
 
     def _stream(self, gw, up, resp, call, rid):
@@ -155,6 +210,7 @@ class _A2aGateway(_Handler):
                                               "source": f"{tool}#{tcid}", "value": result_field(True, out),
                                               "trust": "untrusted"})
                 events.append(out)
+                gw["tasks"].add(key[2], _task_created(out.get("result")))
                 if _final(out):   # the call's result is recorded before the client gets its last event
                     gw["custody"].complete(key, tcid, d, tool, args, "error" if "error" in out else "ok",
                                            result=result_field(True, events))
@@ -299,7 +355,8 @@ def serve(cfg, client=None):
         ups[name] = dict(u, card_digest=digest, skills=skills, action=action)
     srv = transport.HttpServer(addr, auths, tls, None, handler=_A2aGateway)
     srv.a2a = {"upstreams": ups, "max_body": cfg.get("max_body", MAX_BODY),
-               "custody": Custody(client or Client(cfg["signer"]), cfg.get("approval_wait_s", APPROVAL_WAIT_S))}
+               "custody": Custody(client or Client(cfg["signer"]), cfg.get("approval_wait_s", APPROVAL_WAIT_S)),
+               "tasks": _Tasks()}
     return srv
 
 
