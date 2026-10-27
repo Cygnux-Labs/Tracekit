@@ -286,16 +286,6 @@ class Replay:
         return True, "fresh"
 
 
-def _claim(c):
-    # lean: evidence is not checked yet, so a claim is at best unproven; check it against the pinned checkpoint in
-    # tracekit/pcm/claims.py (#436 step 3)
-    errs = check_args({"fields": CLAIM_ARGS[c["type"]]}, c["args"])
-    if errs:
-        return {"type": c["type"], "result": "failed", "detail": "; ".join(errs)}
-    detail = "evidence not checked" if "evidence" in c else "no evidence"
-    return {"type": c["type"], "result": "unproven", "detail": detail}
-
-
 def _verdict(out, doc, strict):
     claims = out["claims"] or []
     bad = [f"replay: {out['replay']['detail']}"] if out["replay"]["ok"] is False else []
@@ -340,6 +330,7 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     out["schema"] = {"ok": not errs, "ref": ref, "errors": errs}
     if doc is not None:
         out["grants"] = verify_grants(msg, doc, trust)
-    out["claims"] = [_claim(c) for c in msg.get("claims", [])]
+    from tracekit.pcm.claims import check_claim   # claims.py imports this module
+    out["claims"] = [check_claim(c, msg, trust) for c in msg.get("claims", [])]
     out["verdict"], out["reasons"] = _verdict(out, doc, strict)
     return out

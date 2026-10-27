@@ -425,7 +425,8 @@ class Verdicts(unittest.TestCase):
         self.assertEqual((out["verdict"], out["reasons"]), ("reject", ["approved_by: required, not proven"]))
         ev = {"checkpoint": "note", "records": [{"event": {}, "hash": "sha256:" + "0" * 64, "proof": []}]}
         out = pcm.verify(message(claims=[{**self.CLAIM, "evidence": ev}]), TRUST, [DOC])
-        self.assertEqual(out["claims"], [{"type": "approved_by", "result": "unproven", "detail": "evidence not checked"}])
+        self.assertEqual((out["verdict"], out["claims"][0]["result"]), ("reject", "failed"))
+        self.assertIn("checkpoint:", out["claims"][0]["detail"])
         bad = {"type": "approved_by", "args": {"person": "alice", "call": "c 1"}}
         out = pcm.verify(message(claims=[bad]), TRUST, [DOC])
         self.assertEqual(out["verdict"], "reject")
