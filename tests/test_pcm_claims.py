@@ -680,12 +680,13 @@ class PCM01(unittest.TestCase):
     def test_approved_by_does_not_depend_on_record_order(self):
         """Records that disagree on what the person approved fail the claim in either order: a decision listed
         unopened and opened, two requests of one approval naming two decisions (the other one in the evidence or
-        not), two approvals of the call naming different decisions. Records that agree prove it, by the first approval;
-        an opened decision gives its args."""
+        not), two approvals of the call naming different decisions, args {"x": true} and {"x": 1} among them (equal in
+        Python, apart in JCS). Records that agree prove it, by the first approval; an opened decision gives its args."""
         claim, motd = {"person": "alice", "call": "c1"}, {"path": "/etc/motd"}
         dec, req, app = approval("read_file")
         pay = ({"type": "policy.decision", "seq": 4, "data": {"tool": "pay", "decision": "ask", "decision_id": "d2",
                                                               "tool_use_id": "c1"}}, None)
+        one = ({"type": "policy.decision", "seq": 4, "data": dict(dec[0]["data"], decision_id="d2")}, {"x": 1})
         again = ({"type": "approval", "seq": 6, "data": dict(app[0]["data"], approval_id="a2")}, None)
 
         def request(aid, did):
@@ -694,7 +695,9 @@ class PCM01(unittest.TestCase):
         for recs, why in (([dec, (dec[0], motd), req, app], "2 different decisions approved as call c1 by alice"),
                           ([dec, req, pay, request("a1", "d2"), app], two),
                           ([dec, req, app, request("a1", "d2")], two),
-                          ([dec, req, app, pay, request("a2", "d2"), again], "2 different decisions approved as")):
+                          ([dec, req, app, pay, request("a2", "d2"), again], "2 different decisions approved as"),
+                          ([(dec[0], {"x": True}), req, app, one, request("a2", "d2"), again],
+                           "2 different decisions approved as")):
             for order in (recs, recs[::-1]):
                 with self.subTest(order=order):
                     got = claims.approved_by(claim, order)
@@ -725,6 +728,7 @@ class PCM01(unittest.TestCase):
                            ("2001:db8::1", call("fetch", {"url": "http://[2001:DB8:0:0::1]/"})),
                            ("127.0.0.1", call("fetch", {"url": "http://0x7f.1/"})),
                            ("1.2.3.4", call("fetch", {"url": "http://01.2.3.4/"})),   # inet_aton: 01 is octal
+                           ("1.2.3.4", call("fetch", {"url": "http://[64:ff9b::102:304]/"})),   # NAT64
                            ("api.example.com", effect("api.example.com.")),
                            ("10.0.0.1", effect("::ffff:10.0.0.1"))):
             with self.subTest(host=host, recs=recs):
@@ -737,10 +741,14 @@ class PCM01(unittest.TestCase):
         for host, recs in (("999.1.1.1", []), ("a..example", call("fetch", {"url": "http://a..example/"})),
                            ("a.example", call("fetch", {"url": "http://a..example/"})),
                            ("a.example", effect("a..example")), (long, call("fetch", {"url": f"http://{long}/"})),
+                           # a label character outside a-z, 0-9, _ and -; two trailing dots
+                           ("api.example.com", call("fetch", {"url": "http://a*b.example/"})),
+                           ("a.example", call("fetch", {"url": "http://a.example../"})),
                            # a browser reads a.example, Python's urllib b.example
                            ("a.example", call("fetch", {"url": "http://a.example\\@b.example/"})),
-                           # no IPv6 address in brackets, a port that is no number
+                           # no IPv6 address in brackets, read by the browser alone; a port that is no number
                            ("h.com", call("fetch", {"url": "http:\\\\[h.com]/"})),
+                           ("api.example.com", call("fetch", {"url": "http:\\\\[::g]/"})),
                            ("example.com:abc", []), ("example.com:", []), ("1.2.3.4:123456", []),
                            ("a.example", effect("a.example:x"))):
             with self.subTest(host=host, recs=recs):
@@ -787,6 +795,8 @@ class PCM01(unittest.TestCase):
                     else contextlib.nullcontext():
                 for host, recs in (("1.2.3.4", call("fetch", {"url": "http://[::ffff:01.2.3.4]/"})),
                                    ("1.2.3.4", call("fetch", {"url": "file://[::ffff:01.2.3.4]/"})),   # bracket rule
+                                   # no authority, so no bracket rule: the readings' own check
+                                   ("1.2.3.4", call("fetch", {"url": "http:\\\\[::ffff:01.2.3.4]/"})),
                                    ("1.2.3.4", effect("::ffff:1.2.03.4")),
                                    ("::ffff:01.2.3.4", call("fetch", {"url": "http://1.2.3.4/"}))):
                     self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven", (host, recs))

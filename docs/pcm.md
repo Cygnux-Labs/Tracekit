@@ -136,8 +136,8 @@ Each claim gets one result:
   `approval.request` and `policy.decision` that say what was approved fails too: the sender chooses its evidence and
   can always add them. So do records that disagree on what the person approved, in any order: two `approval.request`
   records of one approval that name different decisions, or approvals of the call that name decisions of different
-  tools or args (`the evidence holds 2 different decisions approved as call c1 by alice: send the records of one
-  approval`). A malformed claim fails with or without evidence.
+  tools or args, compared in JCS, so `{"x": true}` and `{"x": 1}` differ (`the evidence holds 2 different decisions
+  approved as call c1 by alice: send the records of one approval`). A malformed claim fails with or without evidence.
 
 ### What `approved_by` says
 
@@ -214,8 +214,9 @@ one form before they are compared, and a port is ignored:
    query (`http://good.com/a[1]`) don't count.
 3. A claim's or effect's host is read as the host of `http://<host>/` (a bare IPv6 address as `http://[<host>]/`); a
    port after it must be 1 to 5 digits. A URL's host is read as a browser (WHATWG URL) reads it, and must also be the
-   host Python's `urllib` reads (`http://a.example\@b.example/` is read apart). Only `http`, `https`, `ws`, `wss`,
-   `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
+   host Python's `urllib` reads (`http://a.example\@b.example/` is read apart). The host is read by these rules alone,
+   so a URL a browser refuses (a port above 65535, an `xn--` label that is no valid punycode) can still have one.
+   Only `http`, `https`, `ws`, `wss`, `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
 4. A host is never percent-decoded: one with a `%`, as either reads it, can't be told (`http://%61.example/` is not
    `a.example`, `http://[::1%25eth0]/` not `::1`).
 5. The host is then written for comparison:
