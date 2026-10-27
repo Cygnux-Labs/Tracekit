@@ -13,7 +13,7 @@ a2a-gateway.yaml:
     approval_wait_s: 300                   # how long a message the policy asks about waits for a person
     max_body: 1048576                      # request and response bodies; a stream's events in all
     upstreams:
-      - name: researcher                   # [A-Za-z0-9-]{1,64}: the agent posts to /a2a/researcher
+      - name: researcher                   # [a-z0-9-]{1,64}: the agent posts to /a2a/researcher
         url: https://researcher.internal/a2a                   # the A2A server's JSON-RPC endpoint
         card: https://researcher.internal/.well-known/agent-card.json   # default: that path on url's host
         headers: {authorization: secrets/researcher.header}   # header -> the file holding its value (a secret: cut)
@@ -61,7 +61,7 @@ from tracekit.transport import http as transport
 
 KEYS = {"http", "signer", "upstreams", "approval_wait_s", "max_body"}
 UPSTREAM_KEYS = {"name", "url", "card", "headers"}
-NAME = re.compile(r"[A-Za-z0-9-]{1,64}")
+NAME = re.compile(r"[a-z0-9-]{1,64}")   # lower case: the policy reads names in any case (policy2/classes.a2a_fields)
 PREFIX = "/a2a/"
 CARD_PATH = "/.well-known/agent-card.json"
 MAX_CARD = 1 << 20
@@ -269,7 +269,7 @@ def load_config(path):
         if not isinstance(u, dict) or set(u) - UPSTREAM_KEYS or "url" not in u:
             raise ValueError(f"{where}: needs name and url; takes {sorted(UPSTREAM_KEYS)}")
         if not (isinstance(u.get("name"), str) and NAME.fullmatch(u["name"])) or u["name"] in upstreams:
-            raise ValueError(f"{where}: name is unique, [A-Za-z0-9-]{{1,64}}")
+            raise ValueError(f"{where}: name is unique, [a-z0-9-]{{1,64}}")
         for k in ("url", "card"):
             if k in u and (remote_url_error(str(u[k])) or set("{}") & set(str(u[k]))):
                 raise ValueError(f"{where}: {k}: {remote_url_error(str(u[k])) or 'no { or } in it'}")

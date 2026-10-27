@@ -24,7 +24,7 @@ RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rat
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
-                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED"}
+                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME"}
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;

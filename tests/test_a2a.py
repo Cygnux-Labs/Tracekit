@@ -47,6 +47,18 @@ POLICY = {"tools": {"a2a:*": "a2a"},
 TEXT = {"role": "user", "messageId": "m1", "parts": [{"kind": "text", "text": "find the Q3 report"}]}
 FILE = {"role": "user", "messageId": "m2", "parts": [{"kind": "file", "file": {"uri": "https://files.example/q3.pdf"}}]}
 # a message/stream's events: the task, two updates and the final one; AUTH is the authorization header the server got
+TRIPLE = {"sender": "qwen-7b@1", "receiver": "llama-1b@2", "projector": "c2c@0.1", "modality": "kv-cache", "size": 5}
+
+
+def spellings(name):
+    """Other spellings of `name` (lower-case ASCII holding an a, c, e or o): its case, space around it, a fullwidth or
+    a Cyrillic look-alike letter, a zero-width or a control character."""
+    look = next(c for c in name if c in "aceo")
+    return {"case": name.upper(), "space": f" {name} ", "fullwidth": chr(ord(name[0]) + 0xFEE0) + name[1:],
+            "cyrillic": name.replace(look, {"a": "а", "c": "с", "e": "е", "o": "о"}[look], 1),
+            "zero-width": name[:2] + "​" + name[2:], "control": name + "\x00"}
+
+
 STREAM = [{"kind": "task", "id": "task-1", "status": {"state": "submitted"}},
           {"kind": "status-update", "taskId": "task-1", "status": {"state": "working"}, "final": False},
           {"kind": "artifact-update", "taskId": "task-1", "artifact": {"parts": [{"kind": "text", "text": "AUTH"}]}},
@@ -340,6 +352,13 @@ class Gateway(unittest.TestCase):
 
     def test_an_unknown_upstream_is_not_found(self):
         self.assertEqual(self.post("nope")[0], 404)
+        self.assertEqual(self.post("Researcher")[0], 404)
+
+    def test_upstream_names_are_lower_case(self):   # the policy reads names in any case: one name, one upstream
+        for name in ("Researcher", "x" * 65):
+            bad = dict(self.cfg, upstreams=[dict(self.cfg["upstreams"][0], name=name)])
+            with self.assertRaisesRegex(ValueError, r"name is unique, \[a-z0-9-\]\{1,64\}"):
+                a2a_gateway.load_config(self.config(bad))
 
     # the checklist's API-surface items (docs/security-checklist.md), on this surface
 
@@ -462,6 +481,21 @@ class Transfer(unittest.TestCase):
         out = self.run.transfer("qwen-7b@1", "llama-1b@2", b"state", "kv-cache", projector="c2c@0.2")
         self.assertEqual((out["ok"], out["decision"], out["rule_ids"]), (False, "deny", ["R-ROUTE"]))
 
+    def test_the_signer_matches_a_names_spellings_and_signs_the_callers(self):
+        """In the signer: a case variant of the listed triple is that triple, a look-alike is refused (TK-A2A-NAME),
+        and each decision commits to the names as the caller spelt them."""
+        for sender, ok, rule_ids in (("QWEN-7b@1", True, []), ("qwеn-7b@1", False, ["TK-A2A-NAME"])):
+            with self.subTest(sender=sender):
+                out = self.run.transfer(sender, "llama-1b@2", b"state", "kv-cache", projector="c2c@0.1")
+                self.assertEqual((out["ok"], out["rule_ids"]), (ok, rule_ids))
+                d = [r["event"]["data"] for r in self.s.log.storage.iter_run("default", self.run.run_id)
+                     if r["event"]["type"] == "policy.decision"][-1]
+                args = {"sender": sender, "receiver": "llama-1b@2", "modality": "kv-cache", "size": 5,
+                        "digest": "sha256:" + hashlib.sha256(b"state").hexdigest(), "projector": "c2c@0.1",
+                        "claimed": ["modality", "projector", "receiver", "sender"], "measured": ["digest", "size"]}
+                self.assertTrue(self.s._opens(d["args_commitment"], d["decision_id"],
+                                              event_hash({"tool": "a2a:transfer", "args": args})))
+
 
 class Policy(unittest.TestCase):
     def test_the_a2a_class_lints_and_reads_the_message(self):
@@ -474,6 +508,47 @@ class Policy(unittest.TestCase):
         self.assertEqual(e.decide("a2a:researcher/message/send", args)["rule_ids"], ["R-FILE"])
         self.assertEqual(e.decide("a2a:researcher/message/send", dict(args, sender="token:other"))["rule_ids"],
                          ["R-ROUTE", "R-FILE"])
+
+    def test_a_rule_for_a_name_sees_every_spelling_of_it(self):
+        """A deny rule and an allow-list written for a name's logical spelling: its case matches either way, and a
+        spelling no rule could match (space, a look-alike, a zero-width or control character) is denied, TK-A2A-NAME,
+        on both regex engines."""
+        deny = {"tools": {"a2a:*": "a2a"}, "deny": [
+            {"id": "R-BAD", "class": "a2a", "field": "projector", "pattern": "^bad-fuser@1$"},
+            {"id": "R-UPPER", "class": "a2a", "field": "sender", "pattern": "^Evil-7B@1$"}]}   # a rule in upper case
+        for backend in ("re2", "regex"):
+            e = Engine(deny, backend=backend)
+            self.assertEqual(e.decide("a2a:transfer", dict(TRIPLE, projector="bad-fuser@1"))["rule_ids"], ["R-BAD"])
+            self.assertEqual(e.decide("a2a:transfer", dict(TRIPLE, sender="evil-7b@1"))["rule_ids"], ["R-UPPER"])
+            for how, spelt in spellings("bad-fuser@1").items():
+                with self.subTest(backend=backend, rule="deny", spelling=how):
+                    d = e.decide("a2a:transfer", dict(TRIPLE, projector=spelt))
+                    self.assertEqual((d["verdict"], d["rule_ids"]),
+                                     ("deny", ["R-BAD"] if how == "case" else ["TK-A2A-NAME"]))
+            a = Engine(POLICY, backend=backend)   # R-ROUTE lets only the listed triples through
+            self.assertEqual(a.decide("a2a:transfer", TRIPLE)["rule_ids"], [])
+            self.assertEqual(a.decide("a2a:transfer", dict(TRIPLE, sender="QWEN-8B@1"))["rule_ids"], ["R-ROUTE"])
+            for field in ("sender", "receiver", "projector"):
+                for how, spelt in spellings(TRIPLE[field]).items():
+                    with self.subTest(backend=backend, rule="allow-list", field=field, spelling=how):
+                        d = a.decide("a2a:transfer", dict(TRIPLE, **{field: spelt}))
+                        self.assertEqual((d["verdict"], d["rule_ids"]),
+                                         ("allow", []) if how == "case" else ("deny", ["TK-A2A-NAME"]))
+        msg = {"sender": "token:http", "receiver": "researcher", "skills": ["search"], "params": {"message": TEXT}}
+        e = Engine(POLICY)
+        for field, value, rule_ids in (("skills", ["SEARCH"], []), ("skills", ["se​arch"], ["TK-A2A-NAME"]),
+                                       ("modality", "kv‐cache", ["TK-A2A-NAME"])):
+            with self.subTest(field=field, value=value):
+                self.assertEqual(e.decide("a2a:researcher/message/send", dict(msg, **{field: value}))["rule_ids"],
+                                 rule_ids)
+        for kind, rule_ids in (("FILE", ["R-FILE"]), ("fіle", ["TK-A2A-NAME"])):   # a part's kind, either way
+            part = {"kind": kind, "file": {"uri": "https://files.example/q3.pdf"}}
+            with self.subTest(kind=kind):
+                self.assertEqual(e.decide("a2a:researcher/message/send", dict(msg, params={"message": dict(
+                    FILE, parts=[part])}))["rule_ids"], rule_ids)
+        self.assertIn("p.yaml: flag rule TK-A2A-NAME: the engine or the signer gives a decision this id itself",
+                      "\n".join(policy_compile._lint(dict(POLICY, flag=[{"id": "TK-A2A-NAME", "pattern": "x"}]),
+                                                     "p.yaml")))
 
     def test_skills_from_the_receivers_card_meet_an_allow_list(self):
         e = Engine(POLICY)
