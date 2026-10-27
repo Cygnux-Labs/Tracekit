@@ -2,6 +2,7 @@
 
     python3 -m pytest tests/test_view_ui.py -v
 """
+import html
 import json
 import os
 import re
@@ -556,6 +557,141 @@ class Waterfall(unittest.TestCase):
         self.assertIn("[data-wf][tabindex]", PAGE)   # Enter opens a row reached with Tab
 
 
+SIGNED ={"evidence": [{"seq": 4, "hash": "sha256:4", "type": "tool.result"}]}
+
+
+def call(policy, **more):
+    return {"type": "action", "agent": "executor", "policy": policy, **SIGNED, **more}
+
+
+class GraphGrades(unittest.TestCase):
+    """GRAPH drew every flow alike: a link between two signed records looked like one an unsigned why log claims, an
+    arrow into a call the signer stopped like one into a call that ran, and what a sensor saw leave was not drawn."""
+
+    def test_each_edge_is_graded_by_its_proof(self):
+        needs_node(self)
+        by = {"in": SIGNED, "cited": {"tracekit": {"run_seq": 2}}, "log": {}, "ran": call({"decision": "allow"}),
+              "denied": call({"decision": "deny"}), "rejected": call({"decision": "ask", "approval": {"decision": "reject"}}),
+              "expired": call({"decision": "ask", "approval": {"decision": "expired"}}),
+              "approved": call({"decision": "ask", "approval": {"decision": "approve"}}), "held": call({"decision": "ask"})}
+        edges = [("in", "cited", "observed"), ("in", "log", "observed"), ("log", "ran", "observed"),
+                 ("in", "ran", "observed"), ("in", "denied", "observed"), ("log", "rejected", "observed"),
+                 ("in", "expired", "observed"), ("in", "approved", "observed"), ("in", "held", "observed"),
+                 ("in", "denied", "inferred"), ("in", "ran", "tested"), ("ran", "fx:r1|9", "sensor")]
+        out = json.loads(page_js(["ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade"], f"""
+            const by = {json.dumps(by)};
+            process.stdout.write(JSON.stringify({json.dumps(edges)}.map(([src, dst, evidence]) => edgeGrade({{ src, dst, evidence }}, by))));"""))
+        self.assertEqual(out, ["signed", "recorded", "recorded", "signed", "blocked", "blocked", "blocked", "signed",
+                               "signed", "inferred", "tested", "observed"])
+
+    def test_a_network_effect_joined_to_a_call_of_this_run_is_a_node_after_it(self):
+        needs_node(self)
+        out = json.loads(page_js(["whyRef", "netEffects"], """
+            const WHY = { calls: { "r1|4": ["w1", "ev:call"], "r2|9": ["w2", "ev:other"] } };
+            const S = { effects: new Map(), actions: new Map([["r1|c1", { pre: { session_id: "r1", v2: { run_seq: 4 } } }],
+                                                              ["r2|c9", { pre: { session_id: "r2", v2: { run_seq: 9 } } }]]) };
+            const fx = (seq, kind, call) => S.effects.set("r1|" + seq, { rec: { tk_seq: seq, v2: { effect: { kind, target: "api.example:443" } } }, call });
+            fx(7, "connect", "r1|c1"); fx(8, "net", "r1|c1");                    // a kernel sensor's connect, the egress observer's
+            fx(9, "exec", "r1|c1"); fx(10, "connect", null);                     // not a connection; joined to no call
+            fx(11, "connect", "r2|c9"); fx(12, "connect", "r1|gone");            // a call of another why run; a call not here
+            const by = { "ev:call": { agent: "executor", seq: 5 } };
+            process.stdout.write(JSON.stringify(netEffects({ run_id: "w1" }, by).map(n => [n.id, n.type, n.call, n.agent, n.seq, n.label])));"""))
+        self.assertEqual(out, [["fx:r1|7", "effect", "ev:call", "executor", 5, "api.example:443"],
+                               ["fx:r1|8", "effect", "ev:call", "executor", 5, "api.example:443"]])
+
+    def test_each_edge_title_says_its_grade_and_the_legend_names_only_those_drawn(self):
+        needs_node(self)
+        d = {"run_id": "w1", "agents": [{"name": "executor"}], "nodes": [
+            {"id": "in", "type": "input", "agent": "executor", "seq": 1, "label": "msg", "trust": "untrusted", **SIGNED},
+            {"id": "un", "type": "input", "agent": "executor", "seq": 2, "label": "note"},
+            {"id": "dec", "type": "decision", "agent": "executor", "seq": 3, "label": "mock", **SIGNED},
+            {**call({"decision": "allow"}), "id": "ok", "seq": 4, "label": "fetch"},
+            {**call({"decision": "ask", "approval": {"decision": "reject"}}), "id": "no", "seq": 5, "label": "send_email"}],
+            "edges": [{"src": "in", "dst": "dec", "kind": "context", "evidence": "observed"},
+                      {"src": "un", "dst": "dec", "kind": "context", "evidence": "observed"},
+                      {"src": "dec", "dst": "ok", "kind": "invoked", "evidence": "observed"},
+                      {"src": "dec", "dst": "no", "kind": "invoked", "evidence": "observed"},
+                      {"src": "in", "dst": "no", "kind": "argument", "evidence": "inferred"}]}
+        out = json.loads(page_js(["esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
+                                  "whyRef", "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"], f"""
+            const GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, CSS = {{ escape: s => s }}, got = {{}};
+            const el = {{ clientWidth: 900, clientHeight: 600, querySelector: () => null }}, $ = id => id === "gsvg" ? null : (got[id] ??= {{}});
+            const WHY = {{ calls: {{ "r1|4": ["w1", "ok"] }} }};
+            const S = {{ actions: new Map([["r1|c1", {{ pre: {{ session_id: "r1", v2: {{ run_seq: 4 }} }} }}]]), effects: new Map([["r1|9",
+                {{ rec: {{ tk_seq: 31, v2: {{ effect: {{ kind: "connect", target: "api.example:443" }} }} }}, call: "r1|c1", how: "window", status: "explained" }}]]) }};
+            graphView(el, {json.dumps(d)});
+            process.stdout.write(JSON.stringify([el.innerHTML, got.wvsum.textContent]));"""))
+        svg, summary = out
+        self.assertEqual([html.unescape(t) for t in re.findall(r"<path [^>]*><title>([^<]*)</title>", svg)], [
+            "context · signed: both ends are signed records", "context · recorded flow",
+            "invoked · signed: both ends are signed records", "invoked · blocked: its signed decision stopped the call",
+            "connect api.example:443 · started while this call ran · observed: a sensor saw it"])
+        self.assertEqual(re.findall(r"</svg> ([^<]*)</span>", svg), [
+            "signed: both ends are signed records", "recorded flow", "observed: a sensor saw it",
+            "blocked: its signed decision stopped the call"])   # no inferred link is drawn, so none is named
+        self.assertIn("stroke:var(--cyan)", svg)
+        self.assertRegex(svg, r'<g data-tkseq="31"[^>]*>.*>api.example:443</text>')   # the effect opens its record
+        self.assertEqual(summary, "5 nodes · 4 of 5 edges (recorded, tested) · 1 network effect a sensor saw")
+
+
+WHY_RUN = {"run_id": "w1", "path": "/runs/w 1", "replay": {"program": "app:System", "allowed": False}, "nodes": [
+    {"id": "ev:task", "type": "input", "agent": "executor", "seq": 1, "label": "task", "evidence": [{"seq": 6}]},
+    {"id": "ev:msg", "type": "input", "agent": "executor", "seq": 2, "label": "msg:planner->executor", "trust": "untrusted",
+     "evidence": [{"seq": 16}]},
+    {"id": "ev:dec", "type": "decision", "agent": "executor", "seq": 3, "label": "mock", "evidence": [{"seq": "3 of run r1"}]},
+    {"id": "ev:call", "type": "action", "agent": "executor", "seq": 4, "label": "send_email", "evidence": [{"seq": 27}]}]}
+WHY_CALL = {"provenance": [], "target": "tool=send_email", "lineage": [["ev:msg", "ev:dec", "ev:call"],
+                                                                      ["ev:task", "ev:dec", "ev:call"]], "candidates": [
+    {"node": "ev:msg", "label": "msg:planner->executor", "kind": "input", "trust": "untrusted", "status": "untested",
+     "intervention": "input:msg:planner->executor", "test": None, "reuse": 0.3},
+    {"node": None, "label": "planner->executor", "kind": "message", "status": "untested",
+     "intervention": "channel:planner->executor", "test": None}]}
+WHY_TEXT = """Why did executor run send_email?
+Not tested yet. 2 inputs and channels reached this action. Start with the untrusted ones.
+How it got here:
+1. input · executor · task (record 6)
+2. input · executor · msg:planner->executor (untrusted) (record 16)
+3. model call · executor · mock
+4. tool call · executor · send_email (record 27)
+run w1"""
+
+
+class WhyCauses(unittest.TestCase):
+    """WHY's verdict and chain could only be read on the page, a candidate cause linked to nothing, and its test's
+    command was a template with SPEC to fill in (Causeway U25: a ready command per cause)."""
+
+    def body(self, run):
+        return json.loads(page_js(["esc", "shq", "cp", "WSTATUS", "CHAIN", "pct", "effectBar", "verdict", "lineageHtml",
+                                   "WTYPE", "PROV", "recSeq", "whyText", "whyBody"], f"""
+            const WTARGET = {{}}, WJOINT = new Set(), WBUSY = null, WMSG = "", d = {json.dumps(run)}, A = {json.dumps(WHY_CALL)};
+            process.stdout.write(JSON.stringify([whyText({{ run: "w1", node: "ev:call" }}, d, A), whyBody({{ run: "w1", node: "ev:call" }}, d, A).join("")]));"""))
+
+    def test_the_explanation_is_the_verdict_the_chain_with_its_records_and_the_run(self):
+        needs_node(self)
+        self.assertEqual(self.body(WHY_RUN)[0], WHY_TEXT)
+
+    def test_each_cause_links_its_node_and_record_and_has_its_ready_command(self):
+        needs_node(self)
+        page = self.body(WHY_RUN)[1]
+        copies = [html.unescape(v) for v in re.findall(r'data-copy="([^"]*)"', page)]
+        self.assertEqual(copies, [WHY_TEXT,
+                                  "tracekit why test '/runs/w 1' --system 'app:System' --remove "
+                                  "'input:msg:planner->executor' --target 'tool=send_email'",
+                                  "tracekit why test '/runs/w 1' --system 'app:System' --remove "
+                                  "'channel:planner->executor' --target 'tool=send_email'"])
+        self.assertIn('title="copy">COPY THIS EXPLANATION</button>', page)
+        self.assertIn('<a href="#" data-wopen="ev:msg" data-wr="w1">planner-&gt;executor</a> '
+                      '<a href="#" data-tkseq="16">record&nbsp;16</a>', page)
+        self.assertEqual(page.count("data-wopen="), 2)   # the call's DETAILS and the input; the channel has no node
+        # a run that names no program has no ready command: only the explanation is copied
+        nothing = self.body({**WHY_RUN, "replay": {"program": "", "allowed": False}})[1]
+        self.assertEqual(len(re.findall(r"data-copy=", nothing)), 1)
+
+    def test_a_copy_button_returns_to_its_own_label(self):
+        self.assertIn("const label = b.dataset.label ??= b.textContent;", PAGE)
+        self.assertIn('setTimeout(() => { b.textContent = label; }, 1200)', PAGE)
+
+
 PAGE_TEXT = " ".join(PAGE.split())
 APPROVALS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "approvals.html"))
 RUNS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "runs.html"))
@@ -618,6 +754,12 @@ class NothingLost(unittest.TestCase):
             "evidence": ["function evidenceOf(", "CHAIN · EACH SIGNED RECORD IN ORDER",
                          "CHECKS · THE VIEWER'S VERIFIER REPORT", '<div class="stamp ${esc(e.stamp[0])}">',
                          "reviewHtml(r, false)", "VERIFIER REPORT · AS THE VIEWER PRINTED IT"],
+            "graph graded by proof": ["function edgeGrade(", "function netEffects(", "signed: both ends are signed records",
+                                      "recorded flow", "observed: a sensor saw it",
+                                      "blocked: its signed decision stopped the call", "network effect\")} a sensor saw"],
+            "why cause chains": ["function whyText(", '"COPY THIS EXPLANATION"', 'data-wopen="${esc(c.node)}"',
+                                 'data-tkseq="${esc(seq)}">record&nbsp;${esc(seq)}',
+                                 "tracekit why test ${path} --system ${prog} --remove ${shq(c.intervention)} --target ${tq}"],
             "honesty tips": ["A row is a signed record of the hash-chained ledger unless it says ANALYSIS",
                              "Times are this browser's local time",
                              "Reasoning is what the model reported about itself; actions are what it did",

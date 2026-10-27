@@ -1893,6 +1893,11 @@
       font-weight: 400
     }
 
+    /* a candidate cause and its ready command read as one */
+    .wt tr:has(+ tr.wcmd)>td {
+      border-bottom: 0
+    }
+
     .wflow,
     .wverdict {
       padding: 4px 8px;
@@ -2330,8 +2335,8 @@
     const TZ = (() => { try { return new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date()).find(p => p.type === "timeZoneName").value; } catch { return "local"; } })();
     const fmtD = ts => { const d = new Date(ts * 1000); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
     const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
-    // a copy button for a value (a hash, a run id, a command); the click handler copies data-copy
-    const cp = v => v == null || v === "" ? "" : `<button type="button" class="cp" data-copy="${esc(v)}" title="copy">COPY</button>`;
+    // a copy button for a value (a hash, a run id, a command), labelled COPY or `label`; the click handler copies data-copy
+    const cp = (v, label = "COPY") => v == null || v === "" ? "" : `<button type="button" class="cp" data-copy="${esc(v)}" title="copy">${esc(label)}</button>`;
     // set a panel's HTML only when it changed: a live re-render must not clear a selection or move a scroll
     function put(id, html) { const el = $(id); if (el._h !== html) { el.innerHTML = html; el._h = html; } }
     // where a row comes from: a signed record of the log, the viewer's own analysis (no record: no seq, no hash), or a why log
@@ -3383,7 +3388,8 @@
     document.addEventListener("click", e => {
       const b = e.target.closest("[data-copy]"); if (!b) return;
       e.stopPropagation(); e.preventDefault();
-      const done = ok => { b.textContent = ok ? "COPIED" : "SELECT IT"; setTimeout(() => { b.textContent = "COPY"; }, 1200); };
+      const label = b.dataset.label ??= b.textContent;   // its own label, kept from before a click's COPIED
+      const done = ok => { b.textContent = ok ? "COPIED" : "SELECT IT"; setTimeout(() => { b.textContent = label; }, 1200); };
       const fallback = () => {   // no clipboard API (plain HTTP beyond loopback): a hidden field and the copy command
         const f = document.createElement("textarea"); f.value = b.dataset.copy; document.body.append(f); f.select();
         let ok = false; try { ok = document.execCommand("copy"); } catch { } f.remove(); done(ok);
@@ -3699,7 +3705,8 @@
       const kind = x => { const n = d.nodes.find(n => n.id === x.node); return x.label === "task" ? "task" : `${x.trust} ${n && n.type === "action" ? "result" : "input"}`; };
       return `<span class="${p.status === "untrusted-only" ? "s-deny" : "s-ok"}">${p.status === "untrusted-only" ? "only untrusted" : "trusted"}</span> · ` + p.sources.map(x => esc(kind(x) + " " + x.label)).join(", ");
     }
-    const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";   // one POSIX shell word, whatever the run's log says
+    // one POSIX shell word, whatever the run's log says
+    const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
     function argsFrom(a) {
       const v = a.v2, ref = whyRef(a);
       if (!v && !ref) return "";
@@ -3744,20 +3751,34 @@
       const W = 80, H = 14, x = v => W / 2 + v * (W / 2 - 4), c = t.verdict === "causal" ? "var(--red)" : t.verdict === "suppressive" ? "var(--blue)" : "var(--muted)";
       return `<svg width="${esc(W)}" height="${esc(H)}" viewBox="${esc(`0 0 ${W} ${H}`)}"><line x1="${esc(W / 2)}" x2="${esc(W / 2)}" y1="1" y2="${esc(H - 1)}" style="stroke:var(--line2)"/><line x1="${esc(x(t.ci[0]))}" x2="${esc(x(t.ci[1]))}" y1="${esc(H / 2)}" y2="${esc(H / 2)}" style="${esc(`stroke:${c};stroke-width:3;opacity:.45`)}"/><circle cx="${esc(x(t.effect))}" cy="${esc(H / 2)}" r="4" style="${esc(`fill:${c}`)}"/></svg>`;
     }
+    // a why node's signed record: its log seq
+    const recSeq = n => (n?.evidence || []).map(x => x.seq).find(Number.isInteger);
+    // COPY THIS EXPLANATION: the call, the verdict, how it got here oldest first (each step's signed record) and the run, as text
+    function whyText(ref, d, A) {
+      const by = Object.fromEntries(d.nodes.map(n => [n.id, n])), n = by[ref.node] || {};
+      const steps = [...new Set(A.lineage.flat())].map(id => by[id] || { label: id }).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+      return [`Why did ${n.agent} run ${n.label}?`, verdict(A), "How it got here:", ...steps.map((x, i) => `${i + 1}. ${WTYPE[x.type] || x.type} · ${x.agent} · ${x.label}`
+        + (x.trust === "untrusted" ? " (untrusted)" : "") + (recSeq(x) != null ? ` (record ${recSeq(x)})` : "")), ...steps.length ? [] : ["No upstream inputs recorded."], `run ${d.run_id}`].join("\n");
+    }
     function whyBody(ref, d, A) {
       const key = ref.run + "|" + ref.node, target = WTARGET[key] ?? A.target, rp = d.replay, busy = WBUSY === key, n = d.nodes.find(x => x.id === ref.node) || {};
       const path = shq(d.path || d.run_id), prog = shq(rp.program || ""), tq = shq(target || "");
       const rows = A.candidates.map(c => {
         const t = c.test, st = c.status === "confirmed" && c.role !== "primary" ? "CONFIRMED CAUSE" : c.status === "untested" && WJOINT.has(ref.run + "|" + c.intervention) ? "JOINT" : WSTATUS[c.status] || c.status;
         const msg = c.kind === "message", unt = c.trust === "untrusted" ? ` <span class="s-deny">${msg ? "carries untrusted content" : "untrusted"}</span>` : "";
-        return `<tr><td title="${esc(c.intervention)}">${esc(msg ? c.label : String(c.label).split(/[:/]/).pop())}<br><span class="dim">${esc(msg ? "message channel" : c.label)}</span>` + unt + `</td><td class="${c.status === "confirmed" ? "s-deny" : c.status === "contributing" ? "s-flag" : "dim"}">${esc(st)}</td>
+        const cn = d.nodes.find(x => x.id === c.node), seq = recSeq(cn), name = msg ? c.label : String(c.label).split(/[:/]/).pop();
+        // one cause's test, ready to run: the same words as the how text below, its intervention in place of SPEC
+        const cmd = rp.program && `tracekit why test ${path} --system ${prog} --remove ${shq(c.intervention)} --target ${tq}`;
+        return `<tr><td title="${esc(c.intervention)}">${cn ? `<a href="#" data-wopen="${esc(c.node)}" data-wr="${esc(ref.run)}">${esc(name)}</a>` : `${esc(name)}`}${seq != null ? ` <a href="#" data-tkseq="${esc(seq)}">record&nbsp;${esc(seq)}</a>` : ""}<br><span class="dim">${esc(msg ? "message channel" : c.label)}</span>` + unt + `</td><td class="${c.status === "confirmed" ? "s-deny" : c.status === "contributing" ? "s-flag" : "dim"}">${esc(st)}</td>
           <td>` + effectBar(t) + `${t ? `<br>${esc(`${sgn(t.effect)} [${sgn(t.ci[0])}, ${sgn(t.ci[1])}]`)}` : "–"}</td><td>${esc(t ? `${pct(t.p_with)} → ${pct(t.p_without)}` : "–")}${t ? `<br><span class="dim">${esc(`n=${t.n}`)}</span>` : ""}${t && CHAIN[t.chain] ? `<span class="s-flag">${esc(chainMark(t))}</span>` : ""}</td>
-          <td class="dim">${esc(c.reuse ? Math.round(c.reuse * 100) + "%" : "–")}</td><td>${rp.allowed ? `<button type="button" data-wtest="${esc(c.intervention)}"${busy ? " disabled" : ""}>${t ? "RE-TEST" : "RUN TEST"}</button>` : ""}</td></tr>`;
+          <td class="dim">${esc(c.reuse ? Math.round(c.reuse * 100) + "%" : "–")}</td><td>${rp.allowed ? `<button type="button" data-wtest="${esc(c.intervention)}"${busy ? " disabled" : ""}>${t ? "RE-TEST" : "RUN TEST"}</button>` : ""}</td></tr>`
+          + (cmd ? `<tr class="wcmd"><td colspan="6"><code class="shell">${esc(cmd)}</code>` + cp(cmd) + `</td></tr>` : "");
       }).join("");
       const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${prog} to run them here, or run: tracekit why attribute ${path} --system ${prog} --target ${tq} (one cause: tracekit why test ${path} --system ${prog} --remove SPEC --target ${tq})` : "This run names no program, so it cannot be replayed: record it with a System (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).")}</p>`;
       const args = `<table class="wt"><thead><tr><th>ARGUMENT VALUE</th><th>WHERE THE VALUE CAME FROM</th></tr></thead><tbody>` + (A.provenance.map(p => `<tr><td>${esc(String(p.value).slice(0, 60))}</td><td><span class="${esc((PROV[p.status] || PROV.generated)[0])}">${esc((PROV[p.status] || PROV.generated)[1])}</span> ${esc(p.sources.map(x => x.label).join(", "))}</td></tr>`).join("") || `<tr><td colspan="2" class="dim">No traceable argument values.</td></tr>`) + `</tbody></table>`;
       const head = `<div class="sec">${esc(n.agent || "")} RAN</div><div class="wverdict">${esc(n.label || "")}${A.sensitive ? ` <span class="s-flag">sensitive${A.sensitive === "heuristic" ? " (by name)" : ""}</span>` : ""} <button type="button" data-wopen="${esc(ref.node)}" data-wr="${esc(ref.run)}">DETAILS</button></div>`;
-      const left = head + args + `<div class="sec">VERDICT</div><div class="wverdict">${esc(verdict(A))}</div><div class="sec">HOW IT GOT HERE</div>` + lineageHtml(d, A.lineage);
+      const left = head + args + `<div class="sec">VERDICT</div><div class="wverdict">${esc(verdict(A))}</div><div class="sec">HOW IT GOT HERE</div>` + lineageHtml(d, A.lineage)
+        + `<div class="wbar">` + cp(whyText(ref, d, A), "COPY THIS EXPLANATION") + `</div>`;
       const right = `<div class="wcause" data-wr="${esc(ref.run)}" data-wn="${esc(ref.node)}"><div class="sec">CANDIDATE CAUSES</div><div class="wbar">${rp.allowed ? `<button type="button" data-wfind${busy ? " disabled" : ""}>${busy ? "REPLAYING…" : "FIND THE CAUSE"}</button>` : ""}<label>target <input class="wtarget" value="${esc(target)}" spellcheck="false"></label></div>
         <table class="wt"><thead><tr><th>REMOVE THIS…</th><th>STATUS</th><th>EFFECT ON THE ACTION</th><th>WITH → WITHOUT</th><th title="Share of this content's wording reused in the next model output">TEXT REUSE</th><th></th></tr></thead><tbody>` + (rows || `<tr><td colspan="6" class="empty">Nothing upstream to remove.</td></tr>`) + `</tbody></table>`
         + (WMSG ? `<p>${esc(WMSG)}</p>` : "") + how + `<p class="dim">A test replays the run with the item removed (tool results come from the recording; new tool calls are stubbed, so nothing real is re-sent) and compares how often the target action happens.</p></div>`;
@@ -3843,7 +3864,8 @@
       // a selected signed run shows its own why run (or says why it has none), never another run's
       if (!runs.includes(WRUN)) WRUN = run ? Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0] || null
         : whyRef(selected)?.run || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
-      const key =[VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit, WPICK, WBUSY, WMSG, WHY.runs.length, scope, run?.verdict, el.clientWidth, el.clientHeight].join("|");
+      const fx = VIEW === "graph" ? [...S.effects.values()].filter(e => e.call).length : 0;   // GRAPH draws the sensor's effects joined to calls
+      const key =[VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit, WPICK, WBUSY, WMSG, WHY.runs.length, scope, run?.verdict, el.clientWidth, el.clientHeight, fx].join("|");
       if (key === wvKey || document.activeElement?.closest("#whyv input")) return;   // never under a field being typed in
       wvKey = key;
       $("wvtitle").textContent = VNAME[VIEW] || VIEW.toUpperCase();
@@ -3945,6 +3967,25 @@
       return ap === "approve" ? ["APPROVED", "--green"] : ap ? [ANSWER[ap] || String(ap).toUpperCase(), "--red"] : DECIDED[p.decision] || [String(p.decision).toUpperCase(), "--muted"];
     }
     const GTYPE = { input: "Input", decision: "Model call", action: "Tool call", message: "Message" };
+    // an edge's proof, as GRAPH draws it: tested, inferred, observed (a kernel or egress sensor saw it), blocked (into a call
+    // its signed decision stopped: decided's red), signed (a recorded flow between two signed records), else recorded
+    const signedNode = n => !!(n && (n.evidence?.length || n.tracekit));
+    function edgeGrade(e, by) {
+      if (e.evidence === "tested" || e.evidence === "inferred") return e.evidence;
+      if (e.evidence === "sensor") return "observed";
+      const n = by[e.dst], dc = n?.type === "action" && decided(n.policy);
+      return dc && dc[1] === "--red" ? "blocked" : signedNode(by[e.src]) && signedNode(n) ? "signed" : "recorded";
+    }
+    // each grade's colour, dash and legend words, in the legend's order
+    const GRADE = { signed: ["amber-dim", "", "signed: both ends are signed records"], recorded: ["faint", "", "recorded flow"], observed: ["cyan", "", "observed: a sensor saw it"],
+                    blocked: ["red", "2 3", "blocked: its signed decision stopped the call"], inferred: ["faint", "5 4", "inferred"] };
+    // the network connections a kernel or egress sensor saw, joined to a call of why run d: a node each, after the call's
+    function netEffects(d, by) {
+      return [...S.effects].flatMap(([k, e]) => {
+        const ef = e.rec.v2?.effect, ref = e.call && /^(connect|net)$/.test(ef?.kind) && whyRef(S.actions.get(e.call));
+        return ref && ref.run === d.run_id && by[ref.node] ? [{ id: "fx:" + k, type: "effect", agent: by[ref.node].agent, seq: by[ref.node].seq, label: ef.target, call: ref.node, fx: e }] : [];
+      });
+    }
     // GRAPH: Causeway's flowchart (tGraph), in this page's colours
     const GRAPH_MAX = 600;   // nodes the flowchart draws; a larger run would be dots too small to read
     const fit = (x, n) => String(x).length > n ? String(x).slice(0, n - 1) + "…" : String(x);
@@ -3954,12 +3995,14 @@
         $("wvsum").textContent = `${d.nodes.length} nodes · too large to draw`; return;
       }
       const show = e => e.evidence === "observed" || (e.evidence === "inferred" && GV.inferred) || (e.evidence === "tested" && (e.verdict === "causal" || e.verdict === "suppressive" || GV.ruled));
-      const N = d.nodes, by = {}, depth = {}, cols = {}, lanes = d.agents.map(a => a.name);
+      const N = [...d.nodes], by = {}, depth = {}, cols = {}, lanes = d.agents.map(a => a.name);
       N.forEach(n => { by[n.id] = n; depth[n.id] = 0; });
       // a tool call nothing recorded flowing into follows the call before it (a signed run's calls): run order, not a cause
       const acts = N.filter(n => n.type === "action").sort((a, b) => a.seq - b.seq), into = new Set(d.edges.filter(e => e.evidence === "observed").map(e => e.dst));
       const SEQ = acts.flatMap((n, i) => i && !into.has(n.id) ? [{ src: acts[i - 1].id, dst: n.id, kind: "next in the run", evidence: "observed" }] : []);
-      const E = d.edges.filter(show).concat(SEQ), flow = d.edges.filter(e => e.evidence === "observed").concat(SEQ);
+      const FX = netEffects(d, by), FXE = FX.map(n => ({ src: n.call, dst: n.id, kind: `${n.fx.rec.v2.effect.kind} ${n.label} · ${effectHow(n.fx)}`, evidence: "sensor" }));
+      FX.forEach(n => { N.push(n); by[n.id] = n; depth[n.id] = 0; });
+      const E = d.edges.filter(show).concat(SEQ, FXE), flow = d.edges.filter(e => e.evidence === "observed").concat(SEQ, FXE), G = E.map(e => edgeGrade(e, by));
       [...N].sort((a, b) => a.seq - b.seq).forEach(n => flow.forEach(e => { if (e.dst === n.id && by[e.src]) depth[n.id] = Math.max(depth[n.id], depth[e.src] + 1); }));
       N.forEach(n => (cols[depth[n.id]] = cols[depth[n.id]] || []).push(n));
       Object.values(cols).forEach(c => c.sort((a, b) => lanes.indexOf(a.agent) - lanes.indexOf(b.agent) || a.seq - b.seq));
@@ -3969,18 +4012,23 @@
       const TC = { input: "--cyan", decision: "--magenta", action: "--green", message: "--amber" }, keep = GV.focus && by[GV.focus] ? reach(E, GV.focus) : null;
       // FIT: the whole graph in the panel, its width and its height; ACTUAL SIZE: scroll
       let svg = `<svg id="gsvg" viewBox="${esc(`0 0 ${W} ${H}`)}" width="${esc(GV.fit ? "100%" : W)}" style="${esc(GV.fit ? `max-width:${W}px` : `height:${H}px`)}"><defs>`
-        + ["faint", "red", "blue"].map(k => `<marker id="ar-${esc(k)}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L8,4L0,8z" style="${esc(`fill:var(--${k})`)}"/></marker>`).join("") + `</defs>`;
+        + ["faint", "red", "blue", "amber-dim", "cyan"].map(k => `<marker id="ar-${esc(k)}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L8,4L0,8z" style="${esc(`fill:var(--${k})`)}"/></marker>`).join("") + `</defs>`;
       E.forEach((e, i) => {
         if (!pos[e.src] || !pos[e.dst]) return;
         const x1 = pos[e.src][0] + BW, y1 = pos[e.src][1] + BH / 2, x2 = pos[e.dst][0], y2 = pos[e.dst][1] + BH / 2, mx = (x1 + x2) / 2;
-        const cause = e.evidence === "tested" && e.verdict === "causal", sup = e.evidence === "tested" && e.verdict === "suppressive", ruled = e.evidence === "tested" && !cause && !sup;
-        const k = cause ? "red" : sup ? "blue" : "faint";
-        const style = `fill:none;stroke:var(--${k});stroke-width:${cause || sup ? 2.6 : 1.3};${e.evidence === "inferred" ? "stroke-dasharray:5 4;" : ""}${ruled ? "stroke-dasharray:1 4;" : ""}${keep && !keep.edges.has(i) ? "opacity:.13" : ""}`;
-        svg += `<path d="${esc(`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 2},${y2}`)}" style="${esc(style)}" marker-end="url(#ar-${esc(k)})"><title>${esc(`${e.kind} (${e.evidence})` + (e.effect != null ? ` effect ${sgn(e.effect)}` + (e.ci ? ` [${e.ci}]` : "") : ""))}</title></path>`;
+        const cause = e.evidence === "tested" && e.verdict === "causal", sup = e.evidence === "tested" && e.verdict === "suppressive", ruled = e.evidence === "tested" && !cause && !sup, g = GRADE[G[i]];
+        const k = cause ? "red" : sup ? "blue" : g ? g[0] : "faint", dash = ruled ? "1 4" : g ? g[1] : "";
+        const style = `fill:none;stroke:var(--${k});stroke-width:${cause || sup ? 2.6 : 1.3};${dash ? `stroke-dasharray:${dash};` : ""}${keep && !keep.edges.has(i) ? "opacity:.13" : ""}`;
+        svg += `<path d="${esc(`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 2},${y2}`)}" style="${esc(style)}" marker-end="url(#ar-${esc(k)})"><title>${esc(`${e.kind} · ${g ? g[2] : G[i]}` + (e.effect != null ? ` effect ${sgn(e.effect)}` + (e.ci ? ` [${e.ci}]` : "") : ""))}</title></path>`;
         if (e.evidence === "tested") svg += `<text x="${esc(x2 - 36)}" y="${esc(y2 - 6)}" style="${esc(`fill:var(--${k});font-size:11px;font-weight:700${keep && !keep.edges.has(i) ? ";opacity:.13" : ""}`)}">${esc(sgn(e.effect))}</text>`;
       });
       N.forEach(n => {
         const [x, y] = pos[n.id], unt = n.trust === "untrusted" && n.type === "input", dc = n.type === "action" && decided(n.policy), rule = dc && (n.policy.rule_ids || [])[0];
+        if (n.fx) {   // what a sensor saw: half a node's height, its record opens on a click
+          svg += `<g data-tkseq="${esc(n.fx.rec.tk_seq)}" style="${esc("cursor:pointer" + (keep && !keep.nodes.has(n.id) ? ";opacity:.13" : ""))}" transform="${esc(`translate(${x},${y + BH / 4})`)}"><rect width="${esc(BW)}" height="${esc(BH / 2)}" style="fill:var(--panel2);stroke:var(--cyan)"/>`
+            + `<text x="8" y="14" style="fill:var(--cyan);font-size:10.5px">${esc(fit(n.label, 24))}</text><title>${esc(`${n.fx.rec.v2.effect.kind} ${n.label} · ${effectHow(n.fx)}` + (n.fx.rec.text ? " · " + n.fx.rec.text : ""))}</title></g>`;
+          return;
+        }
         svg += `<g data-wnode="${esc(n.id)}" style="${esc("cursor:pointer" + (keep && !keep.nodes.has(n.id) ? ";opacity:.13" : ""))}" transform="${esc(`translate(${x},${y})`)}"><rect width="${esc(BW)}" height="${esc(BH)}" rx="8" style="${esc(`fill:var(--panel2);stroke:${unt ? "var(--red)" : "var(--line2)"};stroke-width:${unt ? 2 : 1}`)}"/><rect width="4" height="${esc(BH - 12)}" x="6" y="6" rx="2" style="${esc(`fill:var(${TC[n.type] || "--muted"})`)}"/>`
           + `<text x="16" y="17" style="fill:var(--text);font-size:11px;font-weight:600">${esc(fit(n.label, 20))}</text><text x="16" y="32" style="fill:var(--muted);font-size:10.5px">${dc ? `<tspan style="${esc(`fill:var(${dc[1]})`)}">${esc(fit(dc[0] + (rule ? " " + rule : ""), 21))}</tspan>` : ""}${esc(dc ? "" : fit(`${GTYPE[n.type] || n.type} · ${n.agent}`, 21))}</text>`
           + `${n.sensitive ? `<circle cx="${esc(BW - 10)}" cy="10" r="4" style="fill:var(--amber)"><title>sensitive</title></circle>` : ""}<title>${esc(n.label + (dc ? ` · ${dc[0]} ${(n.policy.rule_ids || []).join(", ")}` : "") + ` · ${GTYPE[n.type] || n.type} · ${n.agent}`)}</title></g>`;
@@ -3989,8 +4037,8 @@
       const types = new Set(N.map(n => n.type)), marks = new Map(N.map(n => n.type === "action" && decided(n.policy)).filter(Boolean));
       const swatch = (style, text) => `<span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="${esc(style)}"/></svg> ${esc(text)}</span>`;
       const legend = `<span class="legend">` + [["input", "--cyan", "input"], ["decision", "--magenta", "model call"], ["action", "--green", "tool call"], ["message", "--amber", "message"]].filter(([k]) => types.has(k)).map(([, c, l]) => `<span style="${esc(`--c:var(${c})`)}">${esc(l)}</span>`).join("") + `</span>`
-        + (E.some(e => e.evidence === "observed") ? swatch("stroke:var(--faint);stroke-width:1.5", "recorded flow") : "") + (E.some(e => e.evidence === "tested" && e.verdict === "causal") ? swatch("stroke:var(--red);stroke-width:3", "confirmed cause") : "")
-        + (E.some(e => e.evidence === "tested" && e.verdict === "suppressive") ? swatch("stroke:var(--blue);stroke-width:3", "suppresses it") : "") + (E.some(e => e.evidence === "inferred") ? swatch("stroke:var(--faint);stroke-dasharray:4 3", "inferred") : "")
+        + Object.entries(GRADE).filter(([g]) => G.includes(g)).map(([, [k, dash, text]]) => swatch(`stroke:var(--${k});stroke-width:1.5` + (dash ? ";stroke-dasharray:" + dash : ""), text)).join("")
+        + (E.some(e => e.evidence === "tested" && e.verdict === "causal") ? swatch("stroke:var(--red);stroke-width:3", "confirmed cause") : "") + (E.some(e => e.evidence === "tested" && e.verdict === "suppressive") ? swatch("stroke:var(--blue);stroke-width:3", "suppresses it") : "")
         + (N.some(n => n.trust === "untrusted" && n.type === "input") ? `<span class="gunt">untrusted</span>` : "") + [...marks].map(([w, c]) => `<span style="${esc(`color:var(${c})`)}">${esc(w)}</span>`).join("");
       el.innerHTML = `<div class="wbar"><label><input type="checkbox" data-gv="inferred"${GV.inferred ? " checked" : ""}> inferred links</label><label><input type="checkbox" data-gv="ruled"${GV.ruled ? " checked" : ""}> ruled-out tests</label>
         <button type="button" data-gfit="1" class="${GV.fit ? "on" : ""}">FIT</button><button type="button" data-gfit="" class="${GV.fit ? "" : "on"}">ACTUAL SIZE</button><button type="button" data-wnode="">CLEAR HIGHLIGHT</button><span>click a node to trace it upstream and downstream</span></div>
@@ -3998,7 +4046,8 @@
       const gs = $("gsvg");   // FIT: as tall as the panel's room below the bars (the viewBox keeps the proportions)
       if (GV.fit && gs) gs.style.height = Math.max(120, Math.min(H, el.clientHeight - (gs.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop) - 6)) + "px";
       el.querySelector(`[data-wnode="${CSS.escape(GV.focus || "")}"]`)?.scrollIntoView({ block: "nearest", inline: "center" });
-      $("wvsum").textContent = `${N.length} nodes · ${E.length - SEQ.length} of ${d.edges.length} edges (observed${GV.inferred ? ", inferred" : ""}, tested)` + (SEQ.length ? ` · ${SEQ.length} in run order` : "") + (!GV.fit && W > el.clientWidth ? " · scroll →" : "");
+      $("wvsum").textContent = `${d.nodes.length} nodes · ${E.length - SEQ.length - FX.length} of ${d.edges.length} edges (recorded${GV.inferred ? ", inferred" : ""}, tested)` + (SEQ.length ? ` · ${SEQ.length} in run order` : "")
+        + (FX.length ? ` · ${plural(FX.length, "network effect")} a sensor saw` : "") + (!GV.fit && W > el.clientWidth ? " · scroll →" : "");
     }
     function cell(t) {
       return t ? `<span class="${t.verdict === "causal" ? "s-deny" : t.verdict === "suppressive" ? "s-run" : "dim"}" title="${esc(`${t.verdict} n=${t.n}`)}">${esc(sgn(t.effect))}</span>` : `<span class="dim">–</span>`;
