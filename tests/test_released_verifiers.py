@@ -53,7 +53,7 @@ class Released(Signed):
 
     def released_verify(self, tag, bundle, trust):
         if tag not in self.roots:
-            self.skipTest(f"{tag} is not in this clone: git fetch origin tag {tag}")
+            (self.fail if os.environ.get("CI") else self.skipTest)(f"{tag} is not in this clone: git fetch origin tag {tag}")
         p = subprocess.run([sys.executable, "-c", VERIFY, bundle, trust], cwd=self.roots[tag], capture_output=True,
                            text=True, env={**os.environ, "PYTHONPATH": self.roots[tag]})
         out = json.loads(p.stdout or "null") or self.fail(p.stderr)
