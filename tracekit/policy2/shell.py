@@ -811,6 +811,49 @@ class _Parser:
         self.flush()
         self.via, self.out, self.progs, self.data = saved
 
+    def arith(self):
+        """Read `$(( ))` from after its `$((`, running the substitutions in it; dollar() calls it only when the text
+        has `$(` or a backtick and skips any other `$(( ))` unread. It must end in `))`: bash runs `$((cmd) )` as a
+        subshell. Held: a single quote or `$'` (bash does not quote with `'` here, so a substitution inside one still
+        runs); a newline; brackets (Bash re-expands array indices); parentheses that don't pair up; any parenthesis
+        when the text has a quote, backtick or backslash (bash's counts skip quoted ones, in different places, so the
+        shell could end it elsewhere); or a backtick when the text has a double quote (bash expands "..." here its
+        own way)."""
+        self.enter()
+        s, start, depth = self.s, self.i, 0
+        while self.i < len(s) and (s[self.i] != ")" or depth):
+            c = s[self.i]
+            if c == "\\":
+                self.i += 2
+            elif c == "'" or self.at("$'"):
+                raise ParseError("a single quote in $(( )) that has $( or a backtick is not supported")
+            elif c == '"':
+                self.i += 1
+                self.dquote('"')
+            elif c == "$":
+                self.dollar(False)
+            elif c == "`":
+                self.backtick()
+            else:
+                depth += {"(": 1, ")": -1}.get(c, 0)
+                self.i += 1
+        if not self.at("))"):
+            raise ParseError("unterminated $((" if self.i >= len(s) else
+                             "$(( that is not arithmetic (a subshell inside $( )) is not supported")
+        body = s[start:self.i]
+        self.charge(len(body))   # each level reads the levels inside it again
+        parens, level = re.findall(r"[()]", body), 0
+        for p in parens:
+            level += 1 if p == "(" else -1
+            if level < 0:
+                break
+        # lean: such a line is held (TK-SHELL-PARSE), not read; read it when real commands need one (docs/limits.md)
+        if level or "\n" in body or "[" in body or parens and re.search(r"[\"'`\\]", body) or '"' in body and "`" in body:
+            raise ParseError("a newline, bracket, unpaired parentheses, a parenthesis with a quote, backtick or backslash, "
+                             "or a backtick with a double quote in $(( )) that has $( or a backtick is not supported")
+        self.i += 2
+        self.leave()
+
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
         self.enter()
@@ -869,8 +912,10 @@ class _Parser:
             if k != j - 1:
                 raise ParseError("$(( that is not arithmetic (a subshell inside $( )) is not supported")
             if "$(" in s[self.i + 3:j] or "`" in s[self.i + 3:j]:
-                raise ParseError("command substitution inside $(( )) is not supported")
-            self.i = j + 1
+                self.i += 3
+                self.arith()
+            else:
+                self.i = j + 1
         elif nxt == "(":
             self.i += 2
             self.sub("$()")
