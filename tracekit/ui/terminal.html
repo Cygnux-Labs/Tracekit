@@ -457,10 +457,6 @@
       background: var(--amber-bg)
     }
 
-    .ag.sub {
-      padding-left: 22px
-    }
-
     .dot {
       width: 8px;
       height: 8px;
@@ -2028,10 +2024,17 @@
       }
       $("clock").textContent = new Date(nowTs() * 1000).toTimeString().slice(0, 8) + " " + TZ + (mode === "replay" ? " (REPLAY)" : "");
       $("tzh").title = "times are this browser's local time, " + TZ;
-      const chips = [];
-      if (F.agent) chips.push(["agent", "AGT " + F.agent]); if (F.tool) chips.push(["tool", "TOOL " + F.tool]);
-      if (F.file) chips.push(["file", "FILE " + F.file]); if (F.flag) chips.push(["flag", "FLAGGED"]); if (F.find) chips.push(["find", "FIND " + F.find]);
-      $("chips").innerHTML = chips.map(([k, t]) => `<button class="chip" data-clear="${esc(k)}" type="button">${esc(t)} ✕</button>`).join("");
+      put("chips", filterChips().map(([k, v, t]) => `<button class="chip" data-${esc(k)}="${esc(v)}" type="button" title="remove this filter">${esc(t)} ✕</button>`).join(""));
+    }
+    // the active filters, each a chip that removes it: [its data attribute, the attribute's value, its words]
+    function filterChips() {
+      const run = scope && RUNS.get(scope), c = [];
+      if (scope) c.push(["run", "", "RUN " + (run?.agent || "run") + "·" + scope.slice(0, 8)]);
+      if (F.agent) c.push(["clear", "agent", "AGT " + F.agent]); if (F.tool) c.push(["clear", "tool", "TOOL " + F.tool]);
+      if (F.file) c.push(["clear", "file", "FILE " + F.file]); if (F.flag) c.push(["clear", "flag", "FLAGGED"]); if (F.find) c.push(["clear", "find", "FIND " + F.find]);
+      if (F.kind) c.push(["clear", "kind", "TAPE " + KINDS[F.kind][0].toUpperCase()]);
+      if (c.length > 1) c.push(["clear", "all", "CLEAR ALL"]);
+      return c;
     }
     function renderTicker() {
       const agents = [...S.agents.values()], running = agents.filter(a => a.status === "running").length;
@@ -2067,17 +2070,26 @@
       const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
       const n = v => list.filter(r => r.verdict === v).length;
       let html = `<div class="run${scope ? "" : " sel"}" data-run="" tabindex="0"><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
-      for (const r of list) {
+      for (const [r, depth] of treeOrder(list, r => r.id, r => r.parent)) {
         const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
-        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}" tabindex="0"><span class="nm">${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
+        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}" tabindex="0" style="${esc(indent(depth))}"><span class="nm">${depth ? `<span class="dim">└ </span>` : ""}${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
           <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(fmtD(t0))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
-          ${r.decisions ? `<span class="meta"><span>${esc(calls)} calls</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${gaps ? "s-err" : ""}">${esc(gaps)} gaps</span></span>` : ""}</div>`;
+          ${r.decisions ? `<span class="meta"><span>${esc(calls)} calls</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${d.flag ? "s-flag" : ""}">${esc(d.flag || 0)} flagged</span><span class="${gaps ? "s-err" : ""}">${esc(gaps)} gaps</span></span>` : ""}</div>`;
       }
       put("agents", html);
       $("agtitle").textContent = "RUNS";
       $("agsum").textContent = "verdicts: operator-side";
     }
+    // items as a tree: each after its parent, siblings in list order; one whose parent isn't listed (or a loop) is a root
+    function treeOrder(items, id, parent) {
+      const ids = new Set(items.map(id)), kids = new Map(), out = [], seen = new Set();
+      for (const x of items) { const p = ids.has(parent(x)) && parent(x) !== id(x) ? parent(x) : null; kids.set(p, [...(kids.get(p) || []), x]); }
+      const walk = (x, depth) => { if (seen.has(id(x))) return; seen.add(id(x)); out.push([x, depth]); for (const k of kids.get(id(x)) || []) walk(k, depth + 1); };
+      for (const x of [...(kids.get(null) || []), ...items]) walk(x, 0);
+      return out;
+    }
+    const indent = depth => `padding-left:${8 + Math.min(depth, 6) * 14}px`;
     function renderAgents() {
       if (V2) return renderRuns();
       const by = new Map();
@@ -2086,14 +2098,15 @@
       for (const [sid, list] of [...by.entries()].reverse()) {
         const s = S.sessions.get(sid) || { prompts: [] };
         list.sort((x, y) => (x.sub - y.sub) || (x.first - y.first));
+        const held = a => S.actList.filter(x => x.agent === a && x.flags.includes("held_for_approval")).length;
         html += `<div class="sess"><div class="sess-h">SESSION ${esc(sid.length <= 16 ? sid : sid.slice(0, 8))} · ${esc((s.cwd || "").split("/").slice(-2).join("/"))}<div class="prompt">${esc(s.prompts[s.prompts.length - 1] || "(no prompt recorded)")}</div></div>`;
-        for (const a of list) {
+        for (const [a, depth] of treeOrder(list, a => a.id, a => a.parent || (a.sub ? "main" : null))) {
           const sel = F.agent && agentMatch(a) ? " sel" : "";
-          const st = a.status;
-          html += `<div class="ag${a.sub ? " sub" : ""}${esc(sel)}" data-agent="${esc(a.id)}">
+          const st = a.status, h = held(a);
+          html += `<div class="ag${esc(sel)}" data-agent="${esc(a.id)}" style="${esc(indent(depth))}">
         <span class="dot ${esc(a.blocked && st !== "done" ? "blocked" : st)}"></span>
-        <span class="nm">${esc(a.sub ? (a.desc || a.type) : "main agent")}</span><span class="st ${esc(st)}">${esc(st.toUpperCase())}</span>
-        <span class="meta"><span>${esc(label(a))}</span><span>${esc(a.actions)} act</span><span>${esc(fmtN(a.tokOut))} out</span>${a.cost ? `<span>${esc(a.cost.toFixed(4))} ${esc(S.currency)}</span>` : ""}${a.blocked ? `<span style="color:var(--red)">${esc(a.blocked)} blk</span>` : ""}${a.errors ? `<span style="color:var(--red)">${esc(a.errors)} err</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}</span>
+        <span class="nm">${depth ? `<span class="dim">└ </span>` : ""}${esc(a.sub ? (a.desc || a.type) : "main agent")}</span><span class="st ${esc(st)}">${esc(st.toUpperCase())}</span>
+        <span class="meta"><span>${esc(label(a))}</span><span>${esc(a.actions)} calls</span>${h ? `<span class="s-flag">${esc(h)} held</span>` : ""}${a.blocked ? `<span class="s-deny">${esc(a.blocked)} blocked</span>` : ""}${a.flags ? `<span class="s-flag">${esc(a.flags)} flagged</span>` : ""}<span>${esc(fmtN(a.tokOut))} out</span>${a.cost ? `<span>${esc(a.cost.toFixed(4))} ${esc(S.currency)}</span>` : ""}${a.errors ? `<span class="s-deny">${esc(a.errors)} err</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}</span>
         ${a.current ? `<span class="cur">▸ ${esc(a.current.tool)} ${esc(a.current.target)}</span>` : ""}
       </div>`;
         }
@@ -2429,6 +2442,7 @@
         if (!inScope(r)) setScope(r.session_id);
         const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); return;
       }
+      if (t.dataset.clear === "all") { runCommand("CLR"); return setScope(null); }
       if (t.dataset.clear) { F[t.dataset.clear] = t.dataset.clear === "flag" ? false : null; return schedule(); }
       if (t.dataset.i) { const row = S.tape[+t.dataset.i]; return row && select(row.act || row.rec); }
       if (t.dataset.al) { const al = S.alerts[+t.dataset.al]; return select(al.ref?.pre ? al.ref : al.ref?.rec); }

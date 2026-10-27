@@ -8,10 +8,11 @@ import re
 import shutil
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tracekit import observe  # noqa: E402
-from test_view import page_js  # noqa: E402
+from tracekit import observe, view  # noqa: E402
+from test_view import page_js, v2rec  # noqa: E402
 
 PAGE = observe.read_text(observe.UI)
 COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\(")
@@ -81,6 +82,37 @@ class DeepLinks(unittest.TestCase):
     def test_back_and_forward_follow_the_link_and_the_seq_command_shares_its_record_lookup(self):
         self.assertIn('window.addEventListener("popstate", () => linked && followLink());', PAGE)
         self.assertEqual(PAGE.count("S.recs.reduce((b, r) => lseq(r) != null && lseq(r) <= n"), 1)
+
+
+
+class Panels(unittest.TestCase):
+    def test_a_run_started_by_another_is_listed_under_it(self):
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "coder"}, "parent_run": "orch", "session": "orch"})]
+        self.assertEqual(view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["parent"], "orch")
+        self.assertNotIn("parent", view.review(recs[:0], mock.Mock(integrity="VERIFIED", assurance="dev"), "verified"))
+
+    def test_the_tree_puts_each_after_its_parent_and_keeps_orphans_and_loops(self):
+        """Panel 1 listed runs by time and sub-agents one level under main: who started whom was not shown."""
+        needs_node(self)
+        out = page_js(["treeOrder"], """
+            const items = [["a", null], ["c", "b"], ["b", "a"], ["d", "gone"], ["x", "y"], ["y", "x"], ["s", "s"]];
+            process.stdout.write(treeOrder(items, i => i[0], i => i[1]).map(([i, d]) => i[0] + d).join(" "));""")
+        self.assertEqual(out, "a0 b1 c2 d0 s0 x0 y1")
+
+    def test_each_active_filter_is_a_chip_that_removes_it(self):
+        needs_node(self)
+        out = json.loads(page_js(["KINDS", "filterChips"], """
+            const V2 = true, RUNS = new Map([["d91c70b32fa1", { agent: "coder" }]]);
+            let scope = null, F = { agent: null, tool: null, file: null, flag: false, find: null, kind: null };
+            const seen = [filterChips()];
+            scope = "d91c70b32fa1"; seen.push(filterChips());
+            F = { agent: "api", tool: "Bash", file: null, flag: true, find: "rm", kind: "apr" }; seen.push(filterChips());
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, [[], [["run", "", "RUN coder·d91c70b3"]],
+                               [["run", "", "RUN coder·d91c70b3"], ["clear", "agent", "AGT api"],
+                                ["clear", "tool", "TOOL Bash"], ["clear", "flag", "FLAGGED"], ["clear", "find", "FIND rm"],
+                                ["clear", "kind", "TAPE APPROVALS"], ["clear", "all", "CLEAR ALL"]]])
+        self.assertIn('if (t.dataset.clear === "all") { runCommand("CLR"); return setScope(null); }', PAGE)
 
 
 if __name__ == "__main__":

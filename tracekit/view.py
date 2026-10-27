@@ -662,6 +662,8 @@ def review(records, rep, verdict):
             out["agent"] = (d.get("agent") or {}).get("name") or "agent"
             if d.get("analyzes"):
                 out["analyzes"] = d["analyzes"]
+            if d.get("parent_run"):   # the run that started this one: panel 1 shows it under its parent
+                out["parent"] = d["parent_run"]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())

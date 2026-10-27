@@ -1623,12 +1623,12 @@ class LiveRuns(unittest.TestCase):
         self.assertEqual(json.loads(c.getresponse().read())["stopped"], feed.stopped)
         if not shutil.which("node"):
             self.skipTest("needs node to run the page's renderTop()")
-        top = json.loads(page_js(["renderTop"], f"""
+        top = json.loads(page_js(["renderTop", "filterChips"], f"""
             const el = {{}}, $ = id => el[id] ??= {{ classList: {{ toggle() {{}} }} }};
             const document = {{ URL: "http://127.0.0.1/", body: {{ classList: {{ toggle() {{}} }} }} }};
             let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = {json.dumps(feed.stopped)};
             const BOOT = null, V2 = true, scope = null, RUNS = new Map(), F = {{}}, TZ = "UTC", nowTs = () => 0;
-            const chainState = {{ ok: false, n: 0, detail: "" }}, esc = s => s;
+            const chainState = {{ ok: false, n: 0, detail: "" }}, esc = s => s, put = () => {{}};
             renderTop();
             process.stdout.write(JSON.stringify([el.mode.textContent, el.lost.hidden, el.lost.textContent,
                                                  el.chain.textContent]));"""))
