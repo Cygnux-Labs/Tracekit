@@ -59,7 +59,8 @@ def page_js(names, script):
     page = observe.read_text(observe.UI)
     code = "".join(re.search(rf"^    (?:function {n}\(.*?^    }}|const {n} = .*?;)$", page, re.M | re.S).group(0) + "\n"
                    for n in names)
-    return subprocess.run(["node", "-e", code + script], capture_output=True, encoding="utf-8", check=True).stdout
+    # on stdin: Linux caps one argument at 128 KiB (MAX_ARG_STRLEN), which a test's records can pass
+    return subprocess.run(["node", "-"], input=code + script, capture_output=True, encoding="utf-8", check=True).stdout
 
 
 def v2rec(seq, typ, data, run="r1", **top):
