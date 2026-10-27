@@ -48,11 +48,12 @@ def message(args=None, ts=T0, frm=A, to=B, ref=REF, key=KEY, vkey=VKEY, **kw):
     return pcm.sign(key, vkey, "pcm", body)
 
 
-def grant(caveats=(), subject=A, issuer=None, parent=None, expires=T0 + 3600, intent=REF, key=KEY, vkey=VKEY):
+def grant(caveats=(), subject=A, issuer=None, parent=None, expires=T0 + 3600, intent=REF, key=KEY, vkey=VKEY,
+          delegable=True):
     body = {"pcm_grant": 0, "ts": iso(T0 - 60), "subject": subject, "intent": intent, "caveats": list(caveats),
             "issuer": issuer or {"kind": "person", "id": ALICE, "person": "alice", "run": "run-r",
                                  "approval_id": "apr-1"},
-            "expires_at": iso(expires), "parent": parent}
+            "expires_at": iso(expires), "delegable": delegable, "parent": parent}
     return pcm.sign(key, vkey, "pcm-grant", body)
 
 
@@ -289,6 +290,24 @@ class Grants(unittest.TestCase):
         self.refused([grant([cv("kind", "==", "full")], intent=ref)], "kind missing breaks")
         self.refused([grant(intent=ref, issuer={"kind": "agent", "id": C, "run": "r"})],
                      "the root grant must come from a person's approval")
+
+    def test_delegable_only_narrows(self):
+        ref = pcm.schema_ref(self.DOC)
+        narrow = [cv("amount", "<=", 15000)]
+        for parent, kid, ok in ((True, True, True), (True, False, True), (False, False, False), (False, True, False)):
+            with self.subTest(parent=parent, child=kid):
+                root = grant([cv("amount", "<=", 20000)], subject=C, intent=ref, delegable=parent)
+                last = child(root, narrow, intent=ref, delegable=kid)
+                out = self.run_chain([root, last])
+                if ok:
+                    self.assertEqual(out["verdict"], "accept", out)
+                else:
+                    self.refused([root, last], "grant 0 can't be passed on")
+                # one more step: below a child that can't be passed on, nothing links
+                out = self.run_chain([root, last, child(last, narrow, intent=ref)])
+                self.assertEqual(out["verdict"], "accept" if ok and kid else "reject", out)
+        self.assertEqual(self.run_chain([grant([cv("amount", "<=", 20000)], intent=ref, delegable=False)])["verdict"],
+                         "accept")   # a root that can't be passed on still holds for its own subject
 
     def test_args_not_an_object(self):
         ref = pcm.schema_ref(self.DOC)

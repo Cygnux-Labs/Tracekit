@@ -4,7 +4,7 @@ verifier: a receiver needs only its trust.json (the signer's pinned log key) and
 
 A schema document is content-addressed (`schema_ref`): flat typed fields, the claim types its intent needs and
 whether a grant is required. A grant is signed by the log key too: a root grant comes from a person's approval in the
-issuer's run, a child from the root's subject, only narrower (`narrows`)."""
+issuer's run, a child from its parent's subject, only narrower (`narrows`) and only below a `delegable` grant."""
 import base64
 import binascii
 import collections
@@ -231,6 +231,8 @@ def verify_grants(msg, doc, trust):
         p = grants[i - 1]
         if g["parent"] != event_hash(p):
             out.append(f"{at}: its parent is not grant {i - 1}")
+        if not p["delegable"]:   # so no child, delegable or not, below it
+            out.append(f"{at}: grant {i - 1} can't be passed on")
         if (g["issuer"]["kind"], g["issuer"]["id"]) != ("agent", p["subject"]):
             out.append(f"{at}: issued by {g['issuer']['id']}, not grant {i - 1}'s subject {p['subject']}")
         if g["expires_at"] > p["expires_at"]:

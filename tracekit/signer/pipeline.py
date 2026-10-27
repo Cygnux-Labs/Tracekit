@@ -89,8 +89,8 @@ def since(ts):
 def approval(tenant, run_id, data, ts):
     """The signer's state for the approval an `approval.request` record (`data`, written at `ts`) opened. `agent`: the
     record's agent eligibility; `escalated`: only people answer it now (`escalation`: by whom and why); an answer adds
-    `answered` (by, kind); an agent's approval adds `kind` agent and the times it may be consumed between
-    (`not_before`, `consume_by`)."""
+    `answered` (by, kind) and `answer` (its self_approved and person, when the record has them); an agent's approval
+    adds `kind` agent and the times it may be consumed between (`not_before`, `consume_by`)."""
     b = data["binding"]
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
@@ -161,8 +161,9 @@ def agent_state(set_, log, run, e):
     elif typ == "approval.escalated":
         set_(a, "escalated", True)
         set_(a, "escalation", {k: d[k] for k in ("by", "reason") if k in d})
-    if typ == "approval":   # who answered, for the bridges
+    if typ == "approval":   # who answered, for the bridges; and as whom, for a root grant (SignerService._pcm_grant)
         set_(a, "answered", {"by": d["approver"], "kind": d.get("approver_kind", "person")})
+        set_(a, "answer", {k: d[k] for k in ("self_approved", "person") if k in d})
     if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d["decision"] != "approve":
         # anyone's reject sticks: a person's veto as much as an agent's
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
