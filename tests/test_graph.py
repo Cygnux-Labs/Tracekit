@@ -96,6 +96,48 @@ class ResultGrades(unittest.TestCase):
         self.assertEqual({(e["dst"], e["kind"]) for e in g.edges if e["src"] == "call:r-obs:c"},
                          {("file:/failed", "asked to write"), ("file:/retried", "reported writing")})
 
+    def test_missing_decision_ids_do_not_join(self):
+        records = [rec(0, "run.registered", {"agent": {"name": "a"}}),
+                   rec(1, "policy.decision", {"tool_use_id": "bad", "tool": "Write", "decision": "deny"}),
+                   rec(2, "policy.decision", {"tool_use_id": "ok", "tool": "Write", "decision": "allow"}),
+                   rec(3, "tool.result", {"tool_use_id": "ok", "ok": True})]
+        g = Graph(None, "grade")
+        graph._add_run(g, records, True, {1: {"file_path": "/etc/shadow"}, 2: {"file_path": "/tmp/fine"}})
+        self.assertEqual({(e["dst"], e["kind"]) for e in g.edges if e["dst"].startswith("file:")},
+                         {("file:/etc/shadow", "asked to write"), ("file:/tmp/fine", "asked to write")})
+
+    def test_later_result_hides_an_earlier_ask_from_reports_and_queries(self):
+        records = [rec(0, "run.registered", {"agent": {"name": "a"}}),
+                   rec(1, "policy.decision", {"tool_use_id": "c", "decision_id": "first", "tool": "Write",
+                                                "decision": "ask", "rule_ids": ["TK-F001"]}),
+                   rec(2, "policy.decision", {"tool_use_id": "c", "decision_id": "later", "tool": "Write",
+                                                "decision": "allow", "rule_ids": ["TK-F001"]}),
+                   rec(3, "tool.result", {"tool_use_id": "c", "decision_id": "later", "ok": True})]
+        g = Graph(None, "grade")
+        graph._add_run(g, records, True, {1: {"file_path": "/repo/.env"}, 2: {"file_path": "/repo/.env"}})
+        doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
+               "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
+        report = graph.highlights(doc)
+        files = next(s["items"] for s in report["sections"] if s["id"] == "files")
+        self.assertEqual((files[0]["reported"], files[0]["asked"]), (1, 0))
+        sensitive = next(s["items"] for s in report["sections"] if s["id"] == "sensitive")
+        self.assertEqual([item["edge"]["kind"] for item in sensitive], ["reported writing"])
+        answer = graph.matching(doc, "file", "/repo/.env")
+        self.assertEqual([e["kind"] for e in answer["runs"][0]["matched"]],
+                         ["reported writing"])
+        self.assertEqual([answer["map"]["edges"][a["edge"]]["kind"] for a in answer["map"]["answers"]
+                          if answer["map"]["edges"][a["edge"]]["dst"] == "file:/repo/.env"], ["reported writing"])
+
+
+class QueryInput(unittest.TestCase):
+    def test_rejects_a_non_tracekit_graph(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, graph.GRAPH), "w") as f:
+                json.dump({"nodes": [], "edges": []}, f)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(graph.main(["query", d, "--file", "x"]), 2)
+            self.assertIn("not a Tracekit graph", err.getvalue())
+
 
 @unittest.skipUnless(os.name == "posix", "the Claude Code hook runs through a POSIX shell")
 class EndToEnd(unittest.TestCase):

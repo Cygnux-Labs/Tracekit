@@ -18,8 +18,9 @@ memory, and keep each answer's grade.
 
 ## 1. Find the graph
 
-Look for `tracekit-graph/graph.json` (the default output), then any `graph.json` next to a `GRAPH_REPORT.md`. If
-there is none, say so and give the person the command; don't build one from logs:
+Look for `tracekit-graph/graph.json` (the default output), then a `graph.json` next to a `GRAPH_REPORT.md` whose
+top level has `schema_version` and `sources`. Graphify writes a `graph.json` and `GRAPH_REPORT.md` too; it is joined
+with `--graphify`, not queried. If there is none, say so and give the person the command; don't build one from logs:
 
 ```bash
 tracekit graph build RUN.tkb ... --trust trust.json --content -o tracekit-graph
