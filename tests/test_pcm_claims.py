@@ -757,31 +757,43 @@ class PCM01(unittest.TestCase):
     def test_only_printable_ascii_is_read(self):
         """A URL or host with any character outside U+0021 to U+007E is one the verifier can't tell: IDNA 2003, UTS 46
         and Python's codec name some hosts apart (sharp s, U+1806, U+3164, U+0378), and urlsplit releases drop leading
-        controls and spaces, tabs and newlines differently, even inside a percent-escape."""
-        for host, recs in (("fass.example", call("fetch", {"url": "http://fa%C3\t%9F.example/"})),
-                           ("fass.example", call("fetch", {"url": "http://fa\u00df.example/"})),
-                           ("ab.example", call("fetch", {"url": "http://a\u1806b.example/"})),
-                           ("ab.example", call("fetch", {"url": "http://a\u3164b.example/"})),
-                           ("xn--x-qib.example", call("fetch", {"url": "http://x\u0378.example/"})),
-                           ("xn--bcher-kva.example", call("fetch", {"url": "http://b\u00fccher.example/"})),
-                           *(("a.example", call("fetch", {"url": url})) for url in (
-                               "http://a.example/caf\u00e9", " http://a.example/", "\x01http://a.example/",
-                               "http://a.ex\tample/", "http://a.example/ x", "http://a.example/\x7f")),
-                           ("xn--bcher-kva.example", effect("b\u00fccher.example")),
+        controls and spaces, tabs and newlines differently, even inside a percent-escape. A call's detail says what the
+        sender can do."""
+        why = ("its URL is not printable ASCII: send the URL with the host in xn-- form and the path and query "
+               "percent-encoded")
+        for host, url in (("fass.example", "http://fa%C3\t%9F.example/"), ("fass.example", "http://fa\u00df.example/"),
+                          ("ab.example", "http://a\u1806b.example/"), ("ab.example", "http://a\u3164b.example/"),
+                          ("xn--x-qib.example", "http://x\u0378.example/"),
+                          ("xn--bcher-kva.example", "http://b\u00fccher.example/"),
+                          *(("a.example", url) for url in (
+                              "http://a.example/caf\u00e9", " http://a.example/", "\x01http://a.example/",
+                              "http://a.ex\tample/", "http://a.example/ x", "http://a.example/\x7f"))):
+            with self.subTest(url=url):
+                self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url})),
+                                 ("unproven", f"the verifier can't tell whether call c1 reached {host}: {why}"))
+        for host, recs in (("xn--bcher-kva.example", effect("b\u00fccher.example")),
                            ("b\u00fccher.example", effect("xn--bcher-kva.example"))):
             with self.subTest(host=host, recs=recs):
                 self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
 
     def test_a_host_with_a_percent_is_unproven(self):
         """Hosts are never percent-decoded: a `%` in the host the browser or urllib reads makes it one the verifier
-        can't tell."""
-        for host, recs in (("a.example", call("fetch", {"url": "http://%61.example/"})),
-                           ("a.example", call("fetch", {"url": "http:\\\\%61.example/"})),   # the browser's host
-                           ("a.example", call("fetch", {"url": "http://a.example\\@%61.example/"})),   # urllib's
-                           ("h.com", call("fetch", {"url": "http://%5bh.com%5d/"})),
-                           ("h.com.evil", call("fetch", {"url": "http://h.com%00.evil/"})),
-                           ("::1", call("fetch", {"url": "http://[::1%25eth0]/"})),
-                           ("a.example", effect("%61.example")), ("%61.example", effect("a.example"))):
+        can't tell. A call's detail says what the sender can do; it gives no advice for a cause the sender can't fix
+        that way."""
+        why = "its host has a %: send the URL with the host as plain ASCII, not percent-encoded"
+        for host, url in (("a.example", "http://%61.example/"),
+                          ("a.example", "http:\\\\%61.example/"),   # the browser's host
+                          ("a.example", "http://a.example\\@%61.example/"),   # urllib's
+                          ("b.example", "http://a.example\\@%62.example/"),   # the two read apart too
+                          ("h.com", "http://%5bh.com%5d/"), ("h.com.evil", "http://h.com%00.evil/"),
+                          ("::1", "http://[::1%25eth0]/")):
+            with self.subTest(url=url):
+                self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url})),
+                                 ("unproven", f"the verifier can't tell whether call c1 reached {host}: {why}"))
+        self.assertEqual(claims.reached_host({"host": "b.example"},
+                                             call("fetch", {"url": "http://a.example\\@b.example/"})),
+                         ("unproven", "the verifier can't tell whether call c1 reached b.example"))
+        for host, recs in (("a.example", effect("%61.example")), ("%61.example", effect("a.example"))):
             with self.subTest(host=host, recs=recs):
                 self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
 

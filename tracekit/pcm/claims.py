@@ -42,6 +42,10 @@ _DRIVE = re.compile(r"[A-Za-z]:[\\/]")   # a Windows drive path, the only one re
 _PRINTABLE = re.compile(r"[!-~]*")
 # a leading zero in an IPv6 address's dotted quad (::ffff:01.2.3.4): Python before 3.9.5 reads 01 as 1, later refuses it
 _ZERO_QUAD = re.compile(r"\.0[0-9]|:0[0-9]+\.")
+# what a call's detail tells the sender when its URL's host won't parse for a cause the sender can fix (PCM 0.1 6.6)
+NOT_ASCII = ("its URL is not printable ASCII: send the URL with the host in xn-- form and the path and query "
+             "percent-encoded")
+PERCENT = "its host has a %: send the URL with the host as plain ASCII, not percent-encoded"
 
 
 class EvidenceError(ValueError):
@@ -106,17 +110,17 @@ def placed():
 def _ran(recs, match, what, cls=None):
     """(result, detail) of the claim that a call whose opened args `match(tool, args)` ran and succeeded: proven by a
     T2 result, unproven by the agent's own (T1), by a tool the verifier can't place as class `cls`, or by a call
-    `match` can't tell (None)."""
+    `match` can't tell (None, or what the sender can do about it)."""
     best = ("failed", f"no call in the evidence {what}")
     for e, args in recs:
         d = e["data"]
         # the two the event schema leaves optional
         m = isinstance(args, dict) and d["decision"] != "deny" and {"tool", "decision_id"} <= d.keys() \
             and match(d["tool"], args)
-        if m is None:
-            best = min(("unproven", f"the verifier can't tell whether call {d['tool_use_id']} {what}"), best,
-                       key=lambda o: _RANK[o[0]])
-        if not m:
+        if not isinstance(m, bool):
+            best = min(("unproven", f"the verifier can't tell whether call {d['tool_use_id']} {what}"
+                        + (f": {m}" if m else "")), best, key=lambda o: _RANK[o[0]])
+        if m is not True:
             continue
         # lean: PCM 0.1's frozen table; a custom shell or http tool is unproven until a later PCM version places it
         if cls and placed().get(d["tool"]) != cls:   # a `command` or `url` field alone is not a shell or http call
@@ -257,6 +261,18 @@ def _url_host(url):
     return name if re.fullmatch(r"[a-z0-9_-]{1,63}(\.[a-z0-9_-]{1,63})*", name) else None
 
 
+def _why(url):
+    """NOT_ASCII or PERCENT when that is why the host of `url`, which won't parse, won't; else None."""
+    if not _PRINTABLE.fullmatch(url):
+        return NOT_ASCII
+    u = classes.with_scheme(url)
+    try:   # as in classes.url_info: no urlsplit release refuses a URL the bracket rule passes, a later one may
+        hosts = (classes._whatwg_host(u)[1], urlsplit(u).hostname) if _brackets_ok(url) else ()
+    except ValueError:
+        return None
+    return PERCENT if any("%" in h for h in hosts if h) else None
+
+
 def _host(host):
     """A claim's or an effect's host (a name or address, maybe with a port of 1 to 5 digits) as PCM 0.1 compares
     hosts, None when it won't parse."""
@@ -288,7 +304,7 @@ def reached_host(a, recs):
 
     def match(tool, args):
         got = _url_host(args["url"]) if isinstance(args.get("url"), str) else ""
-        return None if got is None else got == want
+        return _why(args["url"]) if got is None else got == want
     return min(_ran(recs, match, f"reached {a['host']}", "http"), seen, key=lambda o: _RANK[o[0]])
 
 

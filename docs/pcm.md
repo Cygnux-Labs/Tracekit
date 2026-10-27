@@ -206,7 +206,8 @@ one form before they are compared, and a port is ignored:
 1. The URL, or the claim's or effect's host, must be printable ASCII: every character from `!` to `~` (U+0021 to
    U+007E). A space, tab, newline or other control character, DEL or any non-ASCII character anywhere in it, the path
    too, makes it one the verifier can't tell. An international name is compared in its `xn--` form, as DNS names it:
-   claim and fetch `xn--bcher-kva.example`, not `bücher.example`.
+   claim and fetch `xn--bcher-kva.example`, not `bücher.example`. A call's detail then ends with `its URL is not
+   printable ASCII: send the URL with the host in xn-- form and the path and query percent-encoded`.
 2. Before anything else reads the URL, a `[` or `]` in its authority (between `//` and the first `/`, `?` or `#`) is
    taken only as one pair around an IPv6 or IPvFuture address that opens the host after the last `@`, followed by
    nothing or `:` and a port: `http://[::1]:8080/` and `http://u@[::1]/x` have a host; `http://[x]@good.com/`,
@@ -218,7 +219,8 @@ one form before they are compared, and a port is ignored:
    so a URL a browser refuses (a port above 65535, an `xn--` label that is no valid punycode) can still have one.
    Only `http`, `https`, `ws`, `wss`, `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
 4. A host is never percent-decoded: one with a `%`, as either reads it, can't be told (`http://%61.example/` is not
-   `a.example`, `http://[::1%25eth0]/` not `::1`).
+   `a.example`, `http://[::1%25eth0]/` not `::1`). A call's detail then ends with `its host has a %: send the URL with
+   the host as plain ASCII, not percent-encoded`.
 5. The host is then written for comparison:
    - a name: lowercased, without one trailing dot, of labels of 1 to 63 of `a`-`z`, `0`-`9`, `_` and `-` joined by
      dots. An `xn--` label is compared as written, without a punycode check.
