@@ -6,7 +6,7 @@ description: Answer questions about what AI agents did across runs (which runs c
 # Answer from the Tracekit graph
 
 `tracekit graph build` turns verified v2 evidence bundles into one graph of what agents did. Every edge has an
-evidence grade and cites the record it came from. Answer from that graph, never from agent logs, transcripts or
+`grade` and cites the record it came from. Answer from that graph, never from agent logs, transcripts or
 memory, and keep each answer's grade.
 
 | Grade | Meaning | How to say it |
@@ -55,7 +55,8 @@ Exit 1 means nothing matched; 2 means a bad node or graph. For a question no mod
   `input:RUN:SEQ`, `model:RUN:SEQ`, `file:PATH`, `host:HOST`, `secret:RULE`, `rule:TK-...`, `finding:RUN:SEQ`,
   `approval:ID`, `gap:RUN:SEQ`, `code:GRAPHIFY_ID`. A call node may carry `decision` and `ok`.
 - edges: `{src, dst, kind, evidence, record: {run_id, run_seq, seq}, ...}`; kinds include `ran`, `decided allow|deny|ask|flag`,
-  a rule's `allow|deny|ask|flag`, `wrote`, `asked to write`, `reached`, `asked to reach`, `held for approval`,
+  a rule's `allow|deny|ask|flag`, `wrote`, `reported writing`, `asked to write`, `reached`, `reported reaching`,
+  `asked to reach`, `held for approval`,
   `approve`/`reject` (with `self_approved`, `wait_ms`), what became of an approval (`consumed`, `expired`, ...), `reached :PORT`
   (OBSERVED, with `explained_by`), `held a secret (redacted)`, `recorded` (a gap), `found in`, `tested ...`,
   `contains` (Graphify).
@@ -65,6 +66,8 @@ Exit 1 means nothing matched; 2 means a bad node or graph. For a question no mod
 - Lead with the answer, then the evidence: for each claim, its grade and its record, as `run RUN record SEQ`.
 - Never upgrade a grade: say "inferred" for `INFERRED`, and "a bundle that failed verification claims" for
   `UNVERIFIED`. A person's approval with `self_approved: true` is the run's own identity, not a second person.
+- `reported writing` and `reported reaching` are the agent's signed completion report, not an observed effect.
+  Only `wrote` and `reached` come from a Tracekit T2 executor or gateway result; observer edges remain `OBSERVED`.
 - "asked to write" or a call without `ok: true` did not run (or did not succeed): don't report it as done.
 - Say what the graph cannot show: it holds what the records hold, nothing outside them. No edge means no record,
   not proof that nothing happened (check gaps and `unread_args`).

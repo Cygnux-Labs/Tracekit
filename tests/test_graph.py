@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -57,6 +58,25 @@ def rec(seq, typ, data, run_id="r-obs"):
 def net(host, st):
     return {"kind": "net", "host": host, "port": 443, "bytes_out": 10, "bytes_in": 20, "connections": 1,
             "first_ts": TS, "last_ts": TS, "run_id": st["run_id"], "run_token": st["run_token"]}
+
+
+class ResultGrades(unittest.TestCase):
+    def test_agent_reports_are_named_but_t2_results_attest_effects(self):
+        def kinds(result=None):
+            records = [rec(0, "run.registered", {"agent": {"name": "a"}}),
+                       rec(1, "policy.decision", {"tool_use_id": "c", "tool": "Write", "decision": "allow"})]
+            if result:
+                records.append(result)
+            g = Graph(None, "grade")
+            graph._add_run(g, records, True, {1: {"file_path": "out.py", "url": "https://example.test/x"}})
+            return {(e["kind"], e["record"]["run_seq"]) for e in g.edges if e["src"] == "call:r-obs:c"}
+
+        self.assertEqual(kinds(rec(2, "tool.result", {"tool_use_id": "c", "ok": True})),
+                         {("reported writing", 2), ("reported reaching", 2)})
+        t2 = rec(2, "tool.result", {"tool_use_id": "c", "ok": True})
+        t2["event"]["tier"] = "T2"
+        self.assertEqual(kinds(t2), {("wrote", 2), ("reached", 2)})
+        self.assertEqual(kinds(), {("asked to write", 1), ("asked to reach", 1)})
 
 
 @unittest.skipUnless(os.name == "posix", "the Claude Code hook runs through a POSIX shell")
@@ -235,15 +255,15 @@ class EndToEnd(unittest.TestCase):
                 ev = recs[r["run_id"]][r["run_seq"]]["event"]
                 self.assertEqual((ev["seq"], ev["ts"]), (r["seq"], r["ts"]), e)
             else:
-                self.assertEqual((e["grade"], e["join"], r["graphify"]), ("INFERRED", "graphify", self.graphify))
+                self.assertEqual((e["grade"], e["join"], r["graphify"]), ("INFERRED", "graphify", "graph.json"))
 
     def test_the_hook_session_signed_and_observed(self):
         run, me = "run:" + self.session, service._dev_identity()
         write, fetch = self.call(self.session, "Write"), self.call(self.session, "WebFetch")
         self.one(src="agent:claude-code", dst=run, kind="ran", grade="SIGNED")
         # the decided arguments, from the content vault, each opening its record's commitment
-        self.one(src=write, dst="file:" + self.billing, kind="wrote", grade="SIGNED")
-        self.one(src=fetch, dst="host:docs.example.com", kind="reached", grade="SIGNED")
+        self.one(src=write, dst="file:" + self.billing, kind="reported writing", grade="SIGNED")
+        self.one(src=fetch, dst="host:docs.example.com", kind="reported reaching", grade="SIGNED")
         # the egress observer's: the run's, with what explains the host
         self.assertEqual(self.one(src=run, dst="host:docs.example.com", grade="OBSERVED")["explained_by"], "call")
         self.assertEqual(self.one(src=run, dst="host:telemetry.example.net")["explained_by"], "nothing")
@@ -286,8 +306,8 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(code, {"code:billing_total", "code:billing"})   # src/pager.py is no file of the graph
 
     def test_a_tampered_bundle_is_unverified_never_dropped(self):
-        self.assertIn("UNVERIFIED (failed verification): " + self.bad, self.said)
-        bad = next(s for s in self.doc["sources"] if s["path"] == self.bad)
+        self.assertIn("UNVERIFIED (failed verification): bad.tkb", self.said)
+        bad = next(s for s in self.doc["sources"] if s["name"] == "bad.tkb")
         self.assertFalse(bad["verify"]["ok"])
         unverified = self.edges(grade="UNVERIFIED")
         self.assertTrue(unverified and all(e["claimed"] in ("SIGNED", "OBSERVED", "INFERRED") for e in unverified))
@@ -299,21 +319,21 @@ class EndToEnd(unittest.TestCase):
                              (r, rm, "allow") for r in ("rule:TK-D001", "rule:TK-D004", "rule:TK-F003")})
         self.assertFalse(self.edges(dst=rm, kind="decided allow", grade="SIGNED"))
         self.assertTrue(self.report.split("\n## ")[1].startswith("Read first"))
-        self.assertIn(f"{self.bad}: FAILED", self.report.split("\n## ")[1])
+        self.assertIn("bad.tkb: FAILED", self.report.split("\n## ")[1])
         res = graph.path(self.doc, "agent:mailer", "rule:TK-F003")   # the signed way, not the claimed one
         self.assertEqual({e["grade"] for e in res["edges"]}, {"SIGNED"})
 
     def test_every_query_mode(self):
         res = json.loads(run("query", self.out, "--file", "billing.py", "--json")[1])
         [r] = res["runs"]
-        self.assertEqual((r["run"], [e["kind"] for e in r["matched"]]), (self.session, ["wrote"]))
+        self.assertEqual((r["run"], [e["kind"] for e in r["matched"]]), (self.session, ["reported writing"]))
         self.assertIn("docs.example.com", {e["dst"][5:] for e in r["host"]})
         self.assertEqual([e["kind"] for e in r["person"]], ["approve"])
         self.assertEqual(sorted(n["label"] for n in res["code"]), ["billing", "compute_total()"])
         code, text = run("query", self.out, "--file", "billing.py")
         self.assertEqual(code, 0)
         self.assertIn(f"run {self.session}", text)
-        self.assertIn("SIGNED     Write -wrote-> " + self.billing, text)
+        self.assertIn("SIGNED     Write -reported writing-> " + self.billing, text)
         self.assertIn("code in these files (Graphify): compute_total() (src/billing.py L10)", text)
         hits = json.loads(run("query", self.out, "--host", "docs.example.com", "--json")[1])["runs"][0]["matched"]
         self.assertEqual(sorted(e["grade"] for e in hits), ["OBSERVED", "SIGNED"])
@@ -323,12 +343,16 @@ class EndToEnd(unittest.TestCase):
                                   ("--code", "compute_total()", [self.session])):
             code, text = run("query", self.out, flag, value, "--json")
             self.assertEqual((code, [r["run"] for r in json.loads(text)["runs"]]), (0, runs), flag)
+            self.assertEqual(set(json.loads(text)["map"]), {"columns", "nodes", "edges", "answers"}, flag)
         page = self.page()
-        reached = {r["node"] for r in json.loads(run("query", self.out, "--blast", page, "--json")[1])["reached"]}
+        blast = json.loads(run("query", self.out, "--blast", page, "--json")[1])
+        self.assertEqual(set(blast["map"]), {"columns", "nodes", "edges", "answers"})
+        reached = {r["node"] for r in blast["reached"]}
         self.assertIn(self.call(self.mail, "send_email"), reached)
         res = json.loads(run("query", self.out, "--path", "agent:claude-code", "host:docs.example.com", "--json")[1])
         self.assertEqual((res["found"], res["edges"][0]["src"], res["edges"][-1]["dst"]),
                          (True, "agent:claude-code", "host:docs.example.com"))
+        self.assertEqual(set(res["map"]), {"columns", "nodes", "edges", "answers"})
         self.assertEqual(run("query", self.out, "--host", "nowhere.example")[0], 1)
         self.assertEqual(run("query", self.out, "--blast", "no-such-node")[0], 2)
 
@@ -343,11 +367,12 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual({k: data["summary"][k] for k in ("sources", "failed", "runs")}, {"sources": 4, "failed": 1,
                                                                                           "runs": 3})
         failed = sec["read_first"][0]
-        self.assertEqual((failed["what"], failed["source"]), ("source failed verification", self.bad))
+        self.assertEqual((failed["what"], failed["source"]), ("source failed verification", "bad.tkb"))
         self.assertTrue(failed["failures"])
         billing = next(i for i in sec["files"] if i["node"] == "file:" + self.billing)
         self.assertEqual({k: billing[k] for k in ("writes", "runs", "grades", "without_person")},
-                         {"writes": 1, "runs": [self.session], "grades": {"SIGNED": 1}, "without_person": 1})
+                         {"writes": 0, "runs": [], "grades": {}, "without_person": 0})
+        self.assertEqual((billing["reported"], billing["reported_grades"]), (1, {"SIGNED": 1}))
         [docs] = [i for i in sec["hosts"] if i["node"] == "host:docs.example.com"]
         [r] = docs["runs"]
         self.assertEqual((r["run_id"], r["agents"]), (self.session, ["claude-code"]))
@@ -375,10 +400,10 @@ class EndToEnd(unittest.TestCase):
         order = [(a["ts"], a["seq"]) for a in m["answers"]]
         self.assertEqual(order, sorted(order, reverse=True))   # newest first
         self.assertTrue(all(m["edges"][a["edge"]]["grade"] == a["grade"] for a in m["answers"]))
-        wrote = next(a for a in m["answers"] if m["edges"][a["edge"]]["kind"] == "wrote")
+        wrote = next(a for a in m["answers"] if m["edges"][a["edge"]]["kind"] == "reported writing")
         self.assertEqual({k: wrote[k] for k in ("grade", "run_id", "text", "note")},
-                         {"grade": "SIGNED", "run_id": self.session, "text": f"claude-code: Write wrote {self.billing}",
-                          "note": "no person approved it"})
+                         {"grade": "SIGNED", "run_id": self.session, "text": f"claude-code: Write reported writing {self.billing}",
+                          "note": ""})
         seen = next(a for a in m["answers"] if m["edges"][a["edge"]]["dst"] == "host:telemetry.example.net")
         self.assertEqual(seen["grade"], "OBSERVED")
         self.assertTrue(seen["note"].startswith("seen by ") and seen["note"].endswith("explained by nothing"), seen)
@@ -401,13 +426,12 @@ class EndToEnd(unittest.TestCase):
         sec = dict(s.split("\n\n", 1) for s in self.report.split("\n## ")[1:])
         self.assertIn(f"run {self.session}: capture.gap tailer_lost", sec[titles[0]])
         self.assertIn(f"run {self.session}: reconcile.unexplained_effect", sec[titles[0]])
-        self.assertIn(f"- {self.billing}: written 1 time in 1 run (1 SIGNED); calls that wrote it: 1, without a "
-                      "person's approval: 1\n", sec[titles[1]])   # self-approval is no person's
+        self.assertIn(f"- {self.billing}: not written; reported written: 1 (1 SIGNED)\n", sec[titles[1]])
         self.assertIn("- /: not written; calls that asked to write it and did not run: 1 (1 SIGNED)", sec[titles[1]])
         [rm] = sec[titles[2]].splitlines()
         self.assertTrue(rm.startswith(f"- /: Bash (deny) in run {self.mail} asked to write it (SIGNED) under "), rm)
         self.assertIn("TK-F003 allow (UNVERIFIED), TK-F003 deny (SIGNED); it did not run", rm)
-        self.assertIn(f"- docs.example.com: run {self.session} (agent claude-code): WebFetch reached (SIGNED), the run "
+        self.assertIn(f"- docs.example.com: run {self.session} (agent claude-code): WebFetch reported reaching (SIGNED), the run "
                       "reached :443 (OBSERVED, explained by call)", sec[titles[3]])
         self.assertIn(f"- {service._dev_identity()}: 1 approve, no wait recorded, 1 self-approved", sec[titles[4]])
         self.assertIn(f"- aws_access_key: in 1 run, held by Bash (allow) in run {self.mail} (1 SIGNED, 1 UNVERIFIED)",
@@ -428,7 +452,27 @@ class EndToEnd(unittest.TestCase):
         for name in graph.FILES:
             with open(os.path.join(self.out, name), "rb") as f, open(os.path.join(two, name), "rb") as g:
                 self.assertEqual(f.read(), g.read())
-        self.assertEqual(run("verify", self.out, "--trust", self.trust),
+        cwd, one_cwd, two_cwd = os.getcwd(), os.path.join(self.dir, "cwd1"), os.path.join(self.dir, "cwd2")
+        os.makedirs(one_cwd)
+        os.makedirs(two_cwd)
+        for directory in (one_cwd, two_cwd):
+            for source in self.sources + [self.graphify]:
+                os.symlink(source, os.path.join(directory, os.path.basename(source)))
+        try:
+            os.chdir(one_cwd)
+            self.assertEqual(run("build", *(os.path.basename(s) for s in self.sources), "--trust", self.trust,
+                                 "--content", "--graphify", "graph.json", "-o", "graph")[0], 0)
+            os.chdir(two_cwd)
+            self.assertEqual(run("build", *(os.path.basename(s) for s in self.sources), "--trust", self.trust,
+                                 "--content", "--graphify", "graph.json", "-o", "graph")[0], 0)
+        finally:
+            os.chdir(cwd)
+        for name in graph.FILES:
+            with open(os.path.join(one_cwd, "graph", name), "rb") as f, open(os.path.join(two_cwd, "graph", name), "rb") as g:
+                self.assertEqual(f.read(), g.read())
+        moved = shutil.move(os.path.join(one_cwd, "graph"), os.path.join(self.dir, "moved-graph"))
+        self.assertEqual(run("verify", moved, *self.sources, "--trust", self.trust, "--graphify", self.graphify)[0], 0)
+        self.assertEqual(run("verify", self.out, *self.sources, "--trust", self.trust, "--graphify", self.graphify),
                          (0, f"{self.out}: {', '.join(graph.FILES[:-1])} and {graph.FILES[-1]} are what their sources "
                              "give\n"))
         doc = dict(self.doc, edges=[e for e in self.doc["edges"] if e["kind"] != "deny"])   # an edge dropped
@@ -436,7 +480,7 @@ class EndToEnd(unittest.TestCase):
             f.write(graph.dumps(doc))
         with open(os.path.join(two, graph.FILES[-1]), "a") as f:
             f.write("an edit\n")
-        code, out = run("verify", two, "--trust", self.trust)
+        code, out = run("verify", two, *self.sources, "--trust", self.trust, "--graphify", self.graphify)
         self.assertEqual((code, out), (1, f"graph.json is not what its sources give\n{graph.FILES[-1]} is not what its "
                                           "sources give\n"))
         three, source = os.path.join(self.dir, "g3"), shutil.copy(self.hook_tkb, os.path.join(self.dir, "source.tkb"))
@@ -445,13 +489,14 @@ class EndToEnd(unittest.TestCase):
         shutil.copy(self.mail_tkb, source)   # a source replaced after the build
         with open(gf, "w") as f:
             json.dump({"nodes": []}, f)
-        problems = graph.verify(three, self.trust, graph.vault())
-        self.assertIn(f"{source}: its digest is not the one graph.json lists", problems)
-        self.assertIn(f"{gf}: the Graphify graph changed since the build", problems)
+        problems = graph.verify(three, self.trust, graph.vault(), [source], gf)
+        self.assertIn("source digests are not the ones graph.json lists", problems)
+        self.assertIn("graphify.json: the Graphify graph changed since the build", problems)
         other = shutil.copy(self.trust, os.path.join(self.dir, "other-trust.json"))
         with open(other, "a") as f:
             f.write("\n")
-        self.assertIn("the trust config is not the one graph.json was built with", graph.verify(self.out, other))
+        self.assertIn("the trust config is not the one graph.json was built with",
+                      graph.verify(self.out, other, graph.vault(), self.sources, self.graphify))
 
     def test_without_content_the_report_says_what_was_not_read(self):
         doc = graph.build([self.hook_tkb], self.trust)
@@ -469,7 +514,7 @@ class EndToEnd(unittest.TestCase):
         doc = graph.build([self.hook_tkb], self.trust, altered)
         self.assertFalse(self.edges(doc, kind="wrote") or self.edges(doc, kind="reached"))
         first = graph.report(doc).split("\n## ")[1]
-        self.assertIn(f"{self.hook_tkb}: run {self.session}: EvidenceAlert: the content the vault returned does not "
+        self.assertIn(f"hook.tkb: run {self.session}: EvidenceAlert: the content the vault returned does not "
                       "open the record's commitment", first)
         self.assertIn("4 calls in 1 run: their arguments were not read", first)
 
@@ -545,6 +590,19 @@ class Records(unittest.TestCase):
                          [("file:/repo/app/src/billing.py", "code:a")])
         doc = {"nodes": list(g.nodes.values()), "edges": g.edges}
         self.assertEqual([r["run"] for r in graph.matching(doc, "code", "total()")["runs"]], ["r-obs"])
+
+    def test_graphify_join_indexes_five_thousand_file_nodes(self):
+        g = Graph(None, "grade")
+        for i in range(5000):
+            graph._node(g, f"file:/repo/pkg/{i}/item.py", "file", f"/repo/pkg/{i}/item.py")
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "graph.json")
+        files.write_json(p, {"nodes": [{"id": str(i), "source_file": f"pkg/{i}/item.py"}
+                                       for i in range(5000)]}, 0o644)
+        start = time.monotonic()
+        self.assertEqual(graph._graphify(g, p)["linked"], 5000)
+        self.assertLess(time.monotonic() - start, 1.0)
 
 
 if __name__ == "__main__":
