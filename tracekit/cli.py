@@ -40,7 +40,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
-              "sensor": "sensor", "ingest": "ingest"}  # subcommands with their own parsers
+              "sensor": "sensor", "ingest": "ingest", "graph": "graph"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
@@ -50,7 +50,7 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
-                 "sensor": "the kernel sensor import"}
+                 "sensor": "the kernel sensor import", "graph": "tracekit graph"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -220,6 +220,8 @@ def main(argv=None):
     p = sub.add_parser("observe", help="now part of `tracekit view --ledger`: the v1 ledger or a bundle (read-only web UI)")
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("view", help="the viewer: the v2 signer's runs, each verified; --why DIR, --ledger, --bundle (read-only web UI)")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("graph", help="what agents did across verified bundles: `graph build|query|verify`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)

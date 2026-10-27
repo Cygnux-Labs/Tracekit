@@ -82,8 +82,8 @@ def overlap(a: Set[str], b: Set[str]) -> float:
 # --------------------------------------------------------------------------- graph
 
 class Graph:
-    def __init__(self, run: Run):
-        self.run = run
+    def __init__(self, run: Run, key: str = "evidence"):
+        self.run, self.key = run, key   # key: the field an edge's grade is kept in (tracekit graph's is "grade")
         self.nodes: Dict[str, Dict[str, Any]] = {}
         self.edges: List[Dict[str, Any]] = []
         self._out: Dict[str, List[Dict[str, Any]]] = {}
@@ -95,18 +95,18 @@ class Graph:
         if src not in self.nodes or dst not in self.nodes or src == dst or (src, dst, kind, evidence) in self._keys:
             return
         self._keys.add((src, dst, kind, evidence))
-        e = {"src": src, "dst": dst, "kind": kind, "evidence": evidence, **extra}
+        e = {"src": src, "dst": dst, "kind": kind, self.key: evidence, **extra}
         self.edges.append(e)
         self._out.setdefault(src, []).append(e)
         self._in.setdefault(dst, []).append(e)
 
     def out_edges(self, n: str, evidence: Iterable[str] = EVIDENCE) -> List[Dict[str, Any]]:
         ev = set(evidence)
-        return [e for e in self._out.get(n, []) if e["evidence"] in ev]
+        return [e for e in self._out.get(n, []) if e[self.key] in ev]
 
     def in_edges(self, n: str, evidence: Iterable[str] = EVIDENCE) -> List[Dict[str, Any]]:
         ev = set(evidence)
-        return [e for e in self._in.get(n, []) if e["evidence"] in ev]
+        return [e for e in self._in.get(n, []) if e[self.key] in ev]
 
     # -- traversal
     def descendants(self, starts: Iterable[str], evidence: Iterable[str] = ("observed",)) -> Dict[str, Optional[str]]:
