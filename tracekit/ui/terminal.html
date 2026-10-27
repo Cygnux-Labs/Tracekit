@@ -238,6 +238,71 @@
       border-color: var(--red)
     }
 
+    /* WAITING FOR YOU: calls a person must answer, in every run; it opens the approvals page or the oldest one */
+    .mode.wait {
+      color: var(--ink);
+      background: var(--amber);
+      border-color: var(--amber);
+      text-decoration: none
+    }
+
+    .sev.wait {
+      border: 1px solid var(--amber);
+      color: var(--amber)
+    }
+
+    /* a new hold or high alert, for a few seconds; the page never answers it */
+    #toasts {
+      position: fixed;
+      right: 10px;
+      bottom: 34px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 8;
+      max-width: min(420px, calc(100vw - 20px))
+    }
+
+    .toast {
+      background: var(--panel);
+      border: 1px solid var(--amber);
+      border-left-width: 4px;
+      padding: 6px 8px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 2px 8px;
+      animation: flash .8s ease-out
+    }
+
+    .toast.high {
+      border-color: var(--red)
+    }
+
+    .toast b {
+      color: var(--amber)
+    }
+
+    .toast.high b {
+      color: var(--red)
+    }
+
+    .toast span {
+      grid-column: 1;
+      color: var(--muted);
+      font-size: 11px;
+      overflow-wrap: anywhere
+    }
+
+    .toast a,
+    .toast button {
+      color: var(--cyan);
+      background: none;
+      border: 0;
+      padding: 0;
+      cursor: pointer;
+      font: inherit
+    }
+
     @keyframes blink {
       to {
         visibility: hidden
@@ -845,6 +910,11 @@
       display: grid;
       grid-template-columns: auto 1fr;
       gap: 1px 8px
+    }
+
+    a.al {
+      color: inherit;
+      text-decoration: none
     }
 
     .al:hover {
@@ -1554,6 +1624,7 @@
           placeholder="AGT api · TOOL BASH · FLAG · FILE .env · SEQ 12 · CLR · HELP"><kbd>GO</kbd></label>
       <div class="chips" id="chips"></div>
       <span class="views" id="views" hidden></span>
+      <a class="mode wait" id="waiting" hidden></a>
       <span class="mode" id="mode">…</span>
       <span class="chain" id="chain">CHAIN …</span>
       <span class="clock" id="clock"></span>
@@ -1654,6 +1725,7 @@
           title="auto follows this computer's setting; light and dark stay picked in this browser">THEME AUTO</button></span>
     </footer>
   </div>
+  <div id="toasts" role="status" aria-live="polite"></div>
   <div class="help" id="help" hidden>
     <div>
       <h2 style="margin:0;padding:6px 8px;background:var(--amber);color:var(--ink);font-size:12px">COMMANDS · type then press
@@ -1995,7 +2067,7 @@
     function nowTs() { return mode === "live" ? Date.now() / 1000 : (S.lastTs || Date.now() / 1000); }
 
     function render() {
-      renderTop(); renderTicker(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
+      renderTop(); renderWaiting(); renderTicker(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
       document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
       renderWhyView();
@@ -2203,9 +2275,54 @@
         if (g) { g.n++; g.al = al; } else groups.set(k, { al, n: 1 });
       }
       const list = [...groups.values()].sort((x, y) => y.al.i - x.al.i).slice(0, 200);
-      put("alerts", why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
+      const wait = waiting().filter(w => !scope || w.rec.session_id === scope);
+      put("alerts", wait.map(w => `<a class="al" href="${esc(w.link)}"><span class="sev wait">WAIT</span><span class="tx"><span class="src">WAITING FOR YOU</span>${esc(w.rec.tool_name)} · ${esc(w.rec.agent)}</span><span class="sub">${esc(fmtT(w.rec.ts))} · ${esc((w.rec.v2.rules || []).map(x => x.id).join(" ") || "held")} · ${esc(w.req ? "approval " + w.req.v2.approval_id : "no approval requested yet")}</span></a>`).join("")
+        + why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
         + list.map(({ al, n }) => `<div class="al" data-al="${esc(al.i)}" tabindex="0"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
-      $("alsum").textContent = `${S.alerts.length + why.length} total · ${highCount()} high`;
+      $("alsum").textContent = (wait.length ? `${wait.length} waiting · ` : "") + `${S.alerts.length + why.length} total · ${highCount()} high`;
+    }
+    // the calls a person must answer, in every run the page has: a hold (ask) no answer has ended, in a run still open;
+    // [{rec: its decision, req: its approval request or null, link}], oldest first
+    let waitKey = [], waitList = [];
+    function waiting() {
+      const key = [ALL.length, ALL[ALL.length - 1]];
+      if (key.every((x, i) => x === waitKey[i])) return waitList;
+      const open = new Map(), ended = new Set();
+      for (const r of ALL) {
+        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id);
+        if (r.event === "SessionEnd") ended.add(r.session_id);
+        else if (r.event === "PreToolUse" && r.v2?.decision === "ask") open.set(k, { rec: r, req: null });
+        else if (r.v2?.approval === "requested") { if (open.has(k)) open.get(k).req = r; }
+        else if (r.v2?.approval && !["suggested", "escalated"].includes(r.v2.approval)) open.delete(k);
+      }
+      waitKey = key;
+      return waitList = [...open.values()].filter(w => !ended.has(w.rec.session_id))
+        .map(w => ({ ...w, link: "#" + new URLSearchParams({ run: w.rec.session_id, seq: w.rec.tk_seq }) }));
+    }
+    function renderWaiting() {
+      const w = waiting(), el = $("waiting");
+      el.hidden = !w.length;
+      el.textContent = `WAITING FOR YOU ${w.length}`;
+      el.href = DESK() ? "/approvals" : w[0]?.link || "#";
+      el.title = DESK() ? "answer them on the approvals page" : "open the oldest: its detail has the command that answers it";
+    }
+    // a new hold or high alert as it arrives (never the snapshot's): words set as text, a link that opens its record
+    let toasting = false;
+    function toastOf(r) {
+      if (!toasting || r.analysis) return;
+      const hold = r.event === "PreToolUse" && r.v2?.decision === "ask", high = r.event === "tk_alert" && r.severity === "high";
+      if (!hold && !high) return;
+      const t = document.createElement("div"), b = document.createElement("b"), x = document.createElement("button"), sub = document.createElement("span"), go = document.createElement("a");
+      t.className = "toast" + (high ? " high" : "");
+      b.textContent = vis(hold ? `HELD · ${r.tool_name} waits for a person` : `HIGH · ${r.title}`);
+      sub.textContent = vis(`${r.agent} · run ${String(r.session_id).slice(0, 8)}` + (hold ? "" : ` · ${String(r.text || "").slice(0, 160)}`));
+      x.type = "button"; x.textContent = "✕"; x.title = "dismiss"; x.onclick = () => t.remove();
+      go.href = "#" + new URLSearchParams({ run: r.session_id, seq: r.tk_seq }); go.textContent = "OPEN";
+      t.append(b, x, sub, go);
+      if (hold && DESK()) { const ap = document.createElement("a"); ap.href = "/approvals"; ap.textContent = "APPROVALS PAGE"; t.append(ap); }
+      const box = $("toasts"); box.prepend(t);
+      while (box.children.length > 3) box.lastChild.remove();
+      setTimeout(() => t.remove(), 12000);
     }
     function renderMix() {
       const counts = new Map();
@@ -2618,7 +2735,7 @@
         // restarted numbers its records anew, so resuming from the old position would miss or repeat records
         if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); selected = null; reset(); }
         DROPPED = snap.dropped || 0; MAXREC = snap.max || MAXREC;
-        snap.records.forEach(accept); tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; loadWhy(); schedule();
+        toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; loadWhy(); schedule();
         followLink();
         const es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
@@ -2665,7 +2782,7 @@
     const inScope = r => !scope || r.session_id === scope;
     function accept(r) {
       if (r.event === "why") return whyChanged(r.why);   // a why log changed: not a record of the run
-      ALL.push(r);
+      ALL.push(r); toastOf(r);
       if ((r.v2 || r.review) && !V2) { V2 = true; document.body.classList.add("v2"); }
       if (r.review && !r.signer) RUNS.set(r.session_id, { ...r.review, id: r.session_id, tenant: r.tenant, report: r.text });
       // a run that verified at one checkpoint and fails at a later one: the records it showed are taken back, and the

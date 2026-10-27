@@ -159,5 +159,59 @@ class WhyThisDecision(unittest.TestCase):
         self.assertIn("nobody yet: the agent has not requested an approval for this call", html)
 
 
+
+def hold(seq, call, run="r1", **v2):
+    return {"event": "PreToolUse", "session_id": run, "tk_seq": seq, "tool_use_id": call, "tool_name": "send_email",
+            "agent": "billing", "v2": {"decision": "ask", **v2}}
+
+
+def answer(seq, call, how, run="r1", **v2):
+    return {"event": "tk_alert", "session_id": run, "tk_seq": seq, "v2": {"tool_use_id": call, "approval": how, **v2}}
+
+
+class WaitingForYou(unittest.TestCase):
+    def test_every_runs_unanswered_holds_count_and_each_links_to_its_record(self):
+        """The page showed a hold only inside its own run: nothing said a person was needed somewhere else."""
+        needs_node(self)
+        recs = [hold(1, "c1"), answer(2, "c1", "requested", approval_id="apr-1"), hold(3, "c2"),
+                answer(4, "c2", "requested"), answer(5, "c2", "approve"), answer(6, "c2", "consumed"),
+                hold(7, "c3", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 8},
+                hold(9, "c4"), answer(10, "c4", "escalated"), hold(11, "c5", run="r 3&x"),
+                {**hold(12, "c6"), "v2": {"decision": "flag"}}, answer(13, "c7", "expired")]
+        out = json.loads(page_js(["waiting", "renderWaiting"], f"""
+            const ALL = {json.dumps(recs)}, el = {{}}, $ = id => el[id] ??= {{}};
+            let desk = false, waitKey = [], waitList = []; const DESK = () => desk;
+            const seen = [waiting().map(w => [w.rec.tool_use_id, w.req?.v2.approval_id ?? null, w.link])];
+            renderWaiting(); seen.push([el.waiting.hidden, el.waiting.textContent, el.waiting.href]);
+            desk = true; renderWaiting(); seen.push(el.waiting.href);
+            ALL.push({json.dumps(answer(14, "c1", "reject"))}); seen.push(waiting().map(w => w.rec.tool_use_id));
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, [[["c1", "apr-1", "#run=r1&seq=1"], ["c4", None, "#run=r1&seq=9"],
+                                ["c5", None, "#run=r+3%26x&seq=11"]],
+                               [False, "WAITING FOR YOU 3", "#run=r1&seq=1"], "/approvals", ["c4", "c5"]])
+
+    def test_a_new_hold_or_high_alert_toasts_as_text_and_the_snapshot_does_not(self):
+        needs_node(self)
+        out = json.loads(page_js(["vis", "toastOf"], f"""
+            const made = [], box = {{ children: [], prepend(t) {{ this.children.unshift(t); }} }};
+            Object.defineProperty(box, "lastChild", {{ get() {{ return {{ remove: () => box.children.pop() }}; }} }});
+            const document = {{ createElement: tag => {{ const e = {{ tag, kids: [], append(...k) {{ this.kids.push(...k); }},
+                                                               remove() {{}} }}; made.push(e); return e; }} }};
+            const $ = () => box, DESK = () => false, setTimeout = () => {{}};
+            let toasting = false;
+            toastOf({json.dumps(hold(1, "c1"))});   // the snapshot: no toast
+            toasting = true;
+            toastOf({json.dumps(hold(2, "c2"))});
+            toastOf({{ event: "tk_alert", severity: "high", title: "rm\u202e<b>", text: "x", agent: "a", session_id: "r", tk_seq: 3 }});
+            toastOf({{ event: "tk_alert", severity: "med", title: "quiet", session_id: "r", tk_seq: 4 }});
+            for (let i = 0; i < 3; i++) toastOf({json.dumps(hold(5, "c5"))});
+            process.stdout.write(JSON.stringify([box.children.length, made.filter(e => e.tag === "b").map(e => e.textContent),
+                                                 made.filter(e => e.tag === "a").map(e => e.href)]));"""))
+        self.assertEqual(out[0], 3)
+        self.assertEqual(out[1][:2], ["HELD · send_email waits for a person", "HIGH · rm\\u202e<b>"])
+        self.assertEqual(out[2][:2], ["#run=r1&seq=2", "#run=r&seq=3"])
+        self.assertIn("toasting = false; snap.records.forEach(accept); toasting = true;", PAGE)
+
+
 if __name__ == "__main__":
     unittest.main()
