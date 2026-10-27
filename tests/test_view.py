@@ -400,7 +400,10 @@ class View(unittest.TestCase):
         run_id = self.finished_run()
         feed = store_feed(self, {"data_dir": self.d})
         self.report(feed, run_id)
-        rows = feed.rows(observe.ALL, "default", run_id)
+        with mock.patch.object(view, "check", wraps=view.check) as checked:
+            rows = feed.rows(observe.ALL, "default", run_id)
+            self.assertIs(feed.rows(observe.ALL, "default", run_id), rows)   # asked again: checked once a checkpoint
+        self.assertEqual(checked.call_count, 1)
         self.assertEqual([r["tool_use_id"] for r in rows if r["event"] == "PreToolUse"], ["c1", "c2", "c3"])
         self.assertEqual({r["tenant"] for r in rows}, {"default"})
         self.assertIsNone(feed.rows("other", "default", run_id))   # an OIDC session of another tenant
@@ -418,13 +421,17 @@ class View(unittest.TestCase):
             body = json.loads(r.read())
         c.request("GET", f"/api/rows?tenant=default&run={run_id}")
         self.assertEqual(c.getresponse().status, 401)
-        self.service.close()   # a record edited after it was shown: the run is checked again, and refused
+        self.service.close()   # a record edited after it was shown: the viewer's re-check fails it, and it is refused
         path = os.path.join(self.d, "store", "records.jsonl")
         with open(path, encoding="utf-8") as f:
             data = f.read()
         with open(path, "w", encoding="utf-8") as f:
             f.write(data.replace('"tool":"Bash"', '"tool":"Bosh"'))
+        with mock.patch.object(view.time, "time", return_value=time.time() + view.RECHECK_S + 1):
+            for _ in range(2):   # one stale run a pass: the signer's own, then this one
+                feed.refresh()
         self.assertIsNone(feed.rows(observe.ALL, "default", run_id))
+        self.assertIsNone(store_feed(self, {"data_dir": self.d}).rows(observe.ALL, "default", run_id))
         self.assertIn("error", body)
 
     def test_with_a_content_source_each_decision_carries_its_arguments(self):
@@ -1348,7 +1355,11 @@ class OneViewer(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertIn('<a href="/" class="%s">LIVE</a><a href="/runs" class="%s">RUNS</a>'
                           % ("on" if on == "LIVE" else "", "on" if on == "RUNS" else ""), page)
-            self.assertNotIn("APPROVALS", page)
+            # no way to the approval pages this server lacks: none in its nav, and the terminal page's own links to it
+            # are drawn only from the nav's link (its APPROVALS page lists the holds read-only on every server)
+            self.assertNotIn("APPROVALS", re.search(r'<nav class="nav">.*?</nav>', page).group(0))
+            for link in re.findall(r'.{0,60}<a href="/approvals">', page):
+                self.assertIn("DESK()", link)
         self.assertEqual(self.get(port, "/runs", {})[0], 401)
 
     def test_observe_and_why_serve_say_they_are_part_of_view_and_keep_working(self):

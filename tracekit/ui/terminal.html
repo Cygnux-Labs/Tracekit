@@ -152,9 +152,74 @@
     .brand {
       background: var(--amber);
       color: var(--ink);
-      font-weight: 600;
+      font-weight: 700;
       padding: 2px 8px;
-      letter-spacing: .06em
+      letter-spacing: .14em
+    }
+
+    /* the global pages, then a run's views as boxed buttons (keys 1–7) */
+    .top .nav {
+      display: none
+    }
+
+    .pages,
+    .rviews {
+      display: flex;
+      align-items: stretch
+    }
+
+    .pages button {
+      background: none;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      padding: 2px 10px;
+      font-size: 11px;
+      letter-spacing: .08em;
+      cursor: pointer
+    }
+
+    .pages button:hover {
+      color: var(--text)
+    }
+
+    .pages button.on {
+      color: var(--text);
+      border-bottom-color: var(--amber)
+    }
+
+    .pages .n {
+      background: var(--amber);
+      color: var(--ink);
+      padding: 0 4px;
+      margin-left: 4px;
+      font-weight: 700
+    }
+
+    .rviews button {
+      background: none;
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      padding: 1px 9px;
+      font-size: 11px;
+      letter-spacing: .06em;
+      cursor: pointer
+    }
+
+    .rviews button+button {
+      border-left: 0
+    }
+
+    .rviews button.on {
+      background: var(--amber);
+      border-color: var(--amber);
+      color: var(--ink)
+    }
+
+    .rviews kbd {
+      font-size: 9px;
+      opacity: .7;
+      margin-left: 4px
     }
 
     .cmd {
@@ -477,14 +542,16 @@
       min-width: 0
     }
 
+    /* a panel's title: small capitals on a ruled band (v7); amber is kept for what needs the eye */
     .p>h2 {
       margin: 0;
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 600;
-      letter-spacing: .07em;
-      color: var(--amber);
-      background: var(--amber-bg);
-      padding: 3px 6px;
+      letter-spacing: .12em;
+      color: var(--muted);
+      background: var(--panel2);
+      padding: 0 8px;
+      min-height: 28px;
       display: flex;
       gap: 8px;
       align-items: center;
@@ -493,9 +560,7 @@
     }
 
     .p>h2 b {
-      background: var(--amber);
-      color: var(--ink);
-      padding: 0 5px
+      display: none
     }
 
     .p>h2 small {
@@ -822,7 +887,7 @@
     }
 
     /* v2 records hold no paths: the files panel gives its room to the detail card and run review */
-    .v2 main {
+    .pg-desk.v2 main {
       grid-template-rows: minmax(0, 1.1fr) minmax(0, .7fr) 140px minmax(0, 1.2fr);
       grid-template-areas: "agents tape alerts" "agents tape mix" "lanes lanes lanes" "reason detail detail"
     }
@@ -1342,16 +1407,131 @@
       display: none
     }
 
-    .wv main,
-    .v2.wv main {
-      grid-template-rows: minmax(0, .8fr) minmax(0, 1.7fr);
-      grid-template-areas: "agents tape alerts" "whyv whyv detail"
+    /* pages (body pg-*): DESK is today's grid; a run is its agents and tool mix, one view, and the inspector (DETAIL);
+       RUNS, APPROVALS, PERMISSIONS and INFLUENCE take the whole width. The panels are the same: only where they sit */
+    body:not(.pg-desk) main>.p,
+    body:not(.pg-desk) .ticker {
+      display: none
     }
 
-    .wv.wd main,
-    .v2.wv.wd main {
-      grid-template-columns: minmax(250px, 1fr) minmax(0, 1.6fr) minmax(420px, 1.5fr);
-      grid-template-areas: "agents tape alerts" "whyv whyv detail"
+    .pg-run main {
+      grid-template-columns: minmax(220px, .8fr) minmax(0, 2.4fr) minmax(360px, 1.4fr);
+      grid-template-rows: minmax(0, 1fr) minmax(0, .45fr);
+      grid-template-areas: "agents view detail" "mix view detail"
+    }
+
+    body.pg-run main>.p.agents,
+    body.pg-run main>.p.mix,
+    body.pg-run main>.p.detail,
+    body.pg-run.rv-calls:not(.callslog) main>.p.tape,
+    body.pg-run.rv-waterfall main>.p.lanes,
+    body.pg-run.wv main>.p.whyv,
+    body.pg-runs main>.p.runsp,
+    body.pg-approvals main>.p.apprp,
+    body.pg-permissions main>.p.whyv,
+    body.pg-influence main>.p.whyv {
+      display: flex
+    }
+
+    .pg-run .tape,
+    .pg-run .lanes,
+    .pg-run .whyv {
+      grid-area: view
+    }
+
+    .pg-runs main,
+    .pg-approvals main,
+    .pg-permissions main,
+    .pg-influence main {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+      grid-template-areas: "page"
+    }
+
+    .runsp,
+    .apprp,
+    .pg-permissions .whyv,
+    .pg-influence .whyv {
+      grid-area: page
+    }
+
+    .runsp,
+    .apprp {
+      display: none
+    }
+
+    /* a run's header: where it came from, what it is, its counts and the commands that make it evidence */
+    .runhead {
+      padding: 8px 4px 6px;
+      border-bottom: 1px solid var(--line2);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 2px 16px
+    }
+
+    .runhead h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600
+    }
+
+    .runhead .crumb,
+    .runhead .meta {
+      color: var(--muted);
+      font-size: 11px
+    }
+
+    .runhead .acts {
+      grid-row: 1/4;
+      grid-column: 2;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      align-items: flex-end;
+      font-size: 11px
+    }
+
+    .runhead .cnt {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap
+    }
+
+    .tag {
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      padding: 0 5px;
+      font-size: 10px
+    }
+
+    .tag.deny {
+      background: var(--red);
+      border-color: var(--red);
+      color: var(--ink)
+    }
+
+    .tag.held {
+      border-color: var(--amber);
+      color: var(--amber)
+    }
+
+    .tag.flag {
+      border-color: var(--cyan);
+      color: var(--cyan)
+    }
+
+    /* APPROVALS: each hold waiting, its arguments, its rule and the commands that answer it */
+    .hold {
+      border: 1px solid var(--line2);
+      border-left: 3px solid var(--amber);
+      margin: 8px;
+      padding: 8px 10px
+    }
+
+    .hold pre {
+      border: 1px solid var(--line2);
+      margin: 6px 0;
+      background: var(--bg)
     }
 
     #whyv button:not([disabled]):not(.on),
@@ -1418,17 +1598,6 @@
       background: var(--line2)
     }
 
-    .wv .whyv {
-      display: flex
-    }
-
-    .wv .mix,
-    .wv .lanes,
-    .wv .reason,
-    .wv .files {
-      display: none
-    }
-
     .wbar {
       display: flex;
       gap: 12px;
@@ -1475,8 +1644,8 @@
     }
 
     /* WHY and NODE: the detail panel takes the room their tables and values need */
-    .wd main,
-    .v2.wd main {
+    .pg-desk.wd main,
+    .pg-desk.v2.wd main {
       grid-template-areas: "agents tape alerts" "agents tape mix" "lanes lanes lanes" "reason detail detail"
     }
 
@@ -1612,10 +1781,6 @@
         overflow: auto
       }
 
-      .wv .whyv {
-        order: -1
-      }
-
       main {
         display: flex;
         flex-direction: column
@@ -1712,10 +1877,11 @@
   <div id="app">
     <header class="top">
       <span class="brand">TRACEKIT</span><!--__NAV__-->
+      <nav class="pages" id="pages" aria-label="Pages"></nav>
       <label class="cmd" for="cmd"><span>▶</span><input id="cmd" autocomplete="off" spellcheck="false"
           placeholder="AGT api · TOOL BASH · FLAG · FILE .env · SEQ 12 · CLR · HELP"><kbd>GO</kbd></label>
       <div class="chips" id="chips"></div>
-      <span class="views" id="views" hidden></span>
+      <span class="rviews" id="rviews" hidden></span>
       <button class="mode wait" id="waiting" type="button" hidden></button>
       <span class="mode" id="mode">…</span>
       <span class="chain" id="chain">CHAIN …</span>
@@ -1724,6 +1890,7 @@
     <div class="lost" id="lost" hidden></div>
     <div class="ticker" id="ticker"></div>
     <div class="needs" id="needs" hidden></div>
+    <div class="runhead" id="runhead" hidden></div>
     <main>
       <section class="p agents">
         <h2><b>1</b><span id="agtitle">AGENTS</span><small id="agsum"></small></h2>
@@ -1796,6 +1963,14 @@
       <section class="p whyv">
         <h2><b>9</b><span id="wvtitle"></span><select id="wrun" aria-label="Why log"></select><small id="wvsum"></small></h2>
         <div class="body" id="whyv"></div>
+      </section>
+      <section class="p runsp">
+        <h2>RUNS<small id="runssum"></small></h2>
+        <div class="body"><div id="runsp"></div><div id="whyruns"></div></div>
+      </section>
+      <section class="p apprp">
+        <h2>APPROVALS<small id="apprsum"></small></h2>
+        <div class="body" id="apprp"></div>
       </section>
     </main>
     <footer class="foot">
@@ -2163,7 +2338,13 @@
     function nowTs() { return mode === "live" ? Date.now() / 1000 : (S.lastTs || Date.now() / 1000); }
 
     function render() {
-      renderTop(); renderWaiting(); renderTicker(); renderNeeds(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
+      if (PAGE === "run" && V2 && !scope) PAGE = "runs";   // a run's page with no run: the list to pick one from
+      VIEW = centre();
+      for (const p of [...PAGES, "run"]) document.body.classList.toggle("pg-" + p, PAGE === p);
+      for (const v of RVIEWS) document.body.classList.toggle("rv-" + v, PAGE === "run" && RV === v);
+      document.body.classList.toggle("callslog", CALLSLOG);
+      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunHead(); renderRunsPage(); renderApprovalsPage();
+      renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
       document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
       renderWhyView();
@@ -2172,12 +2353,93 @@
       if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
       syncLink();
     }
-    /* ---------------- deep links: #run=…&view=…&seq=…; Back and Forward step through what was opened ---------------- */
+    /* ---------------- pages and a run's views (v7): the same panels, placed per page ---------------- */
+    // PAGE: a global page, or "run": one run's agents and tool mix, one of its views (RV) and the inspector (DETAIL).
+    // RV "waterfall" is the run's TIMELINE (an old link's view=timeline was the why log's events: CALLS shows them)
+    const PAGES = ["desk", "runs", "live", "approvals", "permissions", "influence"];
+    const RVIEWS = ["overview", "calls", "waterfall", "graph", "why", "agents", "evidence"], RVNAME = { waterfall: "TIMELINE" };
+    let PAGE = "desk", RV = "calls", CALLSLOG = false;
+    // a view by any of its names, old (links, the why views' own buttons) or new
+    function show(v) {
+      if (v === "live") return goLive();
+      if (PAGES.includes(v)) { PAGE = v; return; }
+      PAGE = "run"; CALLSLOG = v === "timeline"; RV = RVIEWS.includes(v) ? v : "calls";
+    }
+    // LIVE: the newest run still open, else the newest; with none, RUNS
+    function goLive() {
+      const by = [...RUNS.values()].sort((x, y) => (y.state === "open") - (x.state === "open") || String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
+      if (!by.length) { PAGE = "runs"; return; }
+      if (by[0].id !== scope) setScope(by[0].id);
+      PAGE = "run"; RV = "calls"; CALLSLOG = false;
+    }
+    // the why panel's view for this page: a run's why views, PERMISSIONS and INFLUENCE; "desk" is none
+    const centre = () => PAGE === "run" ? ({ calls: CALLSLOG ? "timeline" : "desk", waterfall: "desk" }[RV] ?? RV)
+      : PAGE === "permissions" || PAGE === "influence" ? PAGE : "desk";
+    // the header: the global pages (APPROVALS counts the holds waiting), and on a run's page its views, keys 1–7
+    function renderPages() {
+      const n = waiting().length, on = p => p === "live" ? PAGE === "run" && RUNS.get(scope)?.state === "open" : PAGE === p;
+      put("pages", PAGES.filter(p => p !== "influence" || WHY).map(p => `<button type="button" data-page="${esc(p)}" class="${on(p) ? "on" : ""}">${esc(p.toUpperCase())}${p === "approvals" && n ? `<span class="n">${esc(n)}</span>` : ""}</button>`).join(""));
+      $("rviews").hidden = PAGE !== "run";
+      put("rviews", RVIEWS.map((v, i) => `<button type="button" data-rv="${esc(v)}" class="${RV === v ? "on" : ""}">${esc(RVNAME[v] || v.toUpperCase())}<kbd>${esc(i + 1)}</kbd></button>`).join(""));
+    }
+    // a run's page header: what run, its counts and the commands that make it evidence (EXPORT, VERIFY)
+    function renderRunHead() {
+      $("runhead").hidden = PAGE !== "run";
+      if (PAGE !== "run") return;
+      const r = scope && RUNS.get(scope), crumb = `<div class="crumb"><button type="button" class="cp" data-page="runs">← RUNS</button> / ${esc(scope || WRUN || "")}</div>`;
+      if (!r) return put("runhead", crumb + `<h1>${esc(WRUN ? "why log " + WRUN : "no run")}</h1>`);
+      const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
+      const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, [exp, ver] = runCmds(r);
+      put("runhead", crumb + `<h1>${esc(r.agent || "run")}</h1><div class="meta">${esc([r.id, r.tenant && r.tenant !== "default" ? "tenant " + r.tenant : "", t0 ? `started ${fmtD(t0)} ${fmtT(t0)} ${TZ}` : "", t1 ? fmtDur(t1 - t0) : "", r.state, r.records != null ? plural(r.records, "record") : ""].filter(Boolean).join(" · "))}</div>`
+        + `<div class="cnt"><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span><span class="tag">${esc(plural(calls, "call"))}</span>${d.deny ? `<span class="tag deny">${esc(d.deny)} blocked</span>` : ""}${d.ask ? `<span class="tag held">${esc(d.ask)} held</span>` : ""}${d.flag ? `<span class="tag flag">${esc(d.flag)} flagged</span>` : ""}${gaps ? `<span class="tag deny">${esc(plural(gaps, "gap"))}</span>` : ""}</div>`
+        + (r.decisions ? `<div class="acts"><span>EXPORT <code class="shell">${esc(exp)}</code>` + cp(exp) + `</span><span>VERIFY <code class="shell">${esc(ver)}</code>` + cp(ver) + `</span></div>` : ""));
+    }
+    // RUNS: every run with its counts and verdict, newest first, each opening its page; then the why logs' runs
+    function renderRunsPage() {
+      if (PAGE !== "runs") return;
+      const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
+      put("runsp", `<table class="wt"><thead><tr><th>RUN</th><th>AGENT</th><th>STARTED (${esc(TZ)})</th><th>LENGTH</th><th>STATE</th><th>CALLS</th><th>BLOCKED</th><th>HELD</th><th>FLAGGED</th><th>GAPS</th><th>VERDICT</th></tr></thead><tbody>`
+        + list.map(r => {
+          const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
+          return `<tr class="row" data-openrun="${esc(r.id)}" tabindex="0"><td title="${esc(r.id)}">${esc(r.id.slice(0, 8))}${r.tenant && r.tenant !== "default" ? `<br><span class="dim">tenant ${esc(r.tenant)}</span>` : ""}</td><td class="s-flag">${esc(r.agent || "run")}</td><td class="dim">${esc(t0 ? fmtD(t0) + " " + fmtT(t0) : "")}</td><td class="dim">${esc(t1 ? fmtDur(t1 - t0) : "")}</td><td>${esc(r.state || "")}</td>`
+            + `<td>${esc(Object.values(d).reduce((x, y) => x + y, 0))}</td><td class="${d.deny ? "s-deny" : "dim"}">${esc(d.deny || 0)}</td><td class="${d.ask ? "s-flag" : "dim"}">${esc(d.ask || 0)}</td><td class="${d.flag ? "s-flag" : "dim"}">${esc(d.flag || 0)}</td><td class="${gaps ? "s-err" : "dim"}">${esc(gaps)}</td><td><span class="vchip ${esc(r.verdict)}" title="${esc(r.label || "")}">${esc(String(r.verdict).toUpperCase())}</span></td></tr>`;
+        }).join("") + `</tbody></table>` + (list.length ? "" : `<div class="empty">No runs yet.</div>`)
+        + (DROPPED ? `<p class="dim" style="padding:0 8px">${esc(`The live view keeps the newest ${MAXREC} records; ${DROPPED} older ones left it. Every run stays in this list with its verdict.`)}</p>` : "")
+        + (document.querySelector('.nav a[href="/runs"]') ? `<p style="padding:0 8px">Every log of this deployment, searchable: the <a href="/runs">runs page</a>.</p>` : ""));
+      $("runssum").textContent = `${plural(list.length, "run")} · verdicts: operator-side`;
+      if (WHY && $("whyruns")._w !== WHY) { $("whyruns")._w = WHY; runsView($("whyruns")); }
+    }
+    // APPROVALS: each hold waiting, in every run, with what it binds, its rule in words and the commands that answer it;
+    // then the answers given. The page answers nothing: the approvals page (passkey) or the signer's command does
+    function renderApprovalsPage() {
+      if (PAGE !== "approvals") return;
+      const w = waiting(), answered = ALL.filter(r => r.v2?.approval in ANSWER && !r.analysis).slice(-100).reverse();
+      put("apprp", `<p class="dim" style="padding:0 8px">Calls the signer is holding until a person answers. An answer binds to the exact arguments, is signed and can't be undone. This page answers nothing: copy the command`
+        + (DESK() ? `, or answer on the <a href="/approvals">approvals page</a> with a passkey` : "") + `.</p>`
+        + (w.map(x => {
+          const args = x.rec.tool_input && Object.keys(x.rec.tool_input).length ? j(x.rec.tool_input) : "";
+          const cmds = x.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${x.req.v2.approval_id}`) : [];
+          return `<div class="hold"><span class="sev wait">WAITING</span> <b>${esc(x.rec.tool_name)}</b> · ${esc(x.rec.agent)} · ${esc(fmtT(x.rec.ts))} <button type="button" class="cp" data-orun="${esc(x.open[0])}" data-oseq="${esc(x.open[1])}">OPEN</button>`
+            + `<pre>${esc(args || "arguments kept as a commitment only")}</pre><div>${esc((x.rec.v2.rules || []).map(r => (r.id + " " + (r.reason || "")).trim()).join("; ") || "held")}</div>`
+            + `<div class="dim">${esc(x.req ? `approval ${x.req.v2.approval_id}` + (x.req.v2.expires ? ` · expires ${x.req.v2.expires}` : "") : "no approval requested yet: nobody can answer it until the agent asks")}</div>`
+            + cmds.map(c => `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`).join("") + `</div>`;
+        }).join("") || `<div class="empty">Nothing is waiting for a person.</div>`)
+        + `<div class="sec">ANSWERED</div><table class="wt"><tbody>` + (answered.map(r => `<tr class="row" data-orun="${esc(r.session_id)}" data-oseq="${esc(r.tk_seq)}"><td class="dim">${esc(fmtT(r.ts))}</td><td class="${r.v2.approval === "approve" ? "s-ok" : "s-deny"}">${esc(ANSWER[r.v2.approval])}</td><td>${esc(r.title)}</td><td class="dim">${esc(r.text)}</td></tr>`).join("") || `<tr><td class="empty">No answers in the live view.</td></tr>`) + `</tbody></table>`);
+      $("apprsum").textContent = `${w.length} waiting · ${answered.length} answered`;
+    }
+    // EVIDENCE: the run's review and the verifier's report, from the viewer's check; the commands that make it evidence
+    function evidenceView(el) {
+      const r = scope && RUNS.get(scope);
+      put("whyv", r ? reviewHtml(r) + (r.report ? `<div class="sec">VERIFIER REPORT · THE VIEWER'S CHECK, OPERATOR-SIDE</div><pre>${esc(r.report)}</pre>` : "") : `<div class="empty">Select a run: its evidence is its bundle.</div>`);
+      $("wvsum").textContent = "download the bundle and check it with tracekit verify";
+    }
+    /* ---------------- deep links: #page=…&run=…&view=…&seq=…; Back and Forward step through what was opened ---------------- */
     let linked = false, following = false;   // linked: the page's link was read (until then the URL keeps it)
     function linkOf() {
       const sel = selected && (selected.pre || selected), seq = sel && lseq(sel), p = new URLSearchParams();
+      if (PAGE !== "run" && (PAGE !== "desk" || scope)) p.set("page", PAGE);   // a run alone (#run=…) opens its page
       if (scope) p.set("run", scope);
-      if (VIEW !== "desk") p.set("view", VIEW);
+      if (PAGE === "run") p.set("view", CALLSLOG ? "timeline" : RV);
       if (seq != null) p.set("seq", seq);
       return p.toString() ? "#" + p : "";
     }
@@ -2192,7 +2454,10 @@
       const p = new URLSearchParams(location.hash.slice(1)), run = p.get("run") || null, seq = p.get("seq");
       linked = following = true;
       if (V2 && run !== scope && (!run || RUNS.has(run))) setScope(run);
-      VIEW = VIEWS.includes(p.get("view")) ? p.get("view") : "desk"; wvKey = "";
+      // a page by name; else a view by its old or new name; else a run's page for a run, DESK without one
+      if (PAGES.includes(p.get("page"))) show(p.get("page")); else if (p.get("view")) show(p.get("view")); else PAGE = scope ? "run" : "desk";
+      if (PAGE === "run" && !p.get("view")) { RV = "calls"; CALLSLOG = false; }
+      wvKey = "";
       selected = null;
       if (seq != null && seq !== "") openSeq(+seq);
       schedule();
@@ -2267,9 +2532,11 @@
     // high alerts: the ticker's and the ALERTS panel's count are one number
     const highCount = () => S.alerts.filter(a => a.sev === "high").length + whyAlerts().filter(a => a.severity === "high").length;
     function renderRuns() {
-      const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
+      const all = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
+      // a run's page: its family, the run that started it all and every run started from there (its agents)
+      const fam = PAGE === "run" && scope && family(scope), list = fam ? all.filter(r => fam.has(r.id)) : all;
       const n = v => list.filter(r => r.verdict === v).length;
-      let html = `<div class="run${scope ? "" : " sel"}" data-run="" tabindex="0"><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
+      let html = fam ? "" : `<div class="run${scope ? "" : " sel"}" data-run="" tabindex="0"><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
       for (const [r, depth] of treeOrder(list, r => r.id, r => r.parent)) {
         const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
@@ -2278,8 +2545,16 @@
           ${r.decisions ? `<span class="meta"><span>${esc(calls)} calls</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${d.flag ? "s-flag" : ""}">${esc(d.flag || 0)} flagged</span><span class="${gaps ? "s-err" : ""}">${esc(gaps)} gaps</span></span>` : ""}</div>`;
       }
       put("agents", html);
-      $("agtitle").textContent = "RUNS";
-      $("agsum").textContent = "verdicts: operator-side";
+      $("agtitle").textContent = fam ? "AGENTS" : "RUNS";
+      $("agsum").textContent = fam ? plural(list.length, "run") : "verdicts: operator-side";
+    }
+    // a run's family: its root (following parent runs, a loop stops it) and every run started from there
+    function family(id) {
+      const seen = new Set();
+      while (RUNS.get(id)?.parent && RUNS.has(RUNS.get(id).parent) && !seen.has(id)) { seen.add(id); id = RUNS.get(id).parent; }
+      const out = new Set([id]);
+      for (let grew = true; grew;) { grew = false; for (const r of RUNS.values()) if (!out.has(r.id) && out.has(r.parent)) { out.add(r.id); grew = true; } }
+      return out;
     }
     // items as a tree: each after its parent, siblings in list order; one whose parent isn't listed (or a loop) is a root
     function treeOrder(items, id, parent) {
@@ -2474,6 +2749,7 @@
     // no link carries data
     function openRec(run, seq) {
       if (V2 && run && run !== scope && RUNS.has(run)) setScope(run);
+      if (V2 && run && RUNS.has(run)) show("calls");   // its run's page, the record in the inspector
       if (seq !== "" && seq != null) openSeq(+seq);
       schedule();
     }
@@ -2734,6 +3010,15 @@
         put("detail", `<div class="empty">Select a run for its review, or any row for its record.</div>`);
         $("detsum").textContent = "click any row"; return;
       }
+      put("detail", reviewHtml(r));
+      $("detsum").textContent = "run review";
+    }
+    // the commands that make a run's review evidence: export its bundle and verify it offline
+    function runCmds(r) {
+      const file = r.id + ".tkb", word = x => /^[\w.:@/=-]+$/.test(x) ? x : shq(x);
+      return [`tracekit export --v2 --run ${word(r.id)}` + (r.tenant && r.tenant !== "default" ? ` --tenant ${word(r.tenant)}` : "") + ` --with-findings -o ${word(file)}`, `tracekit verify ${word(file)} --trust trust.json`];
+    }
+    function reviewHtml(r) {
       const d = r.decisions || {}, f = r.first || {};
       const line = (seq, k, text, cls, tip) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}" title="${esc(tip || "")}">${esc(text)}</dd>`;
       let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span>${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
@@ -2747,9 +3032,7 @@
           // the analyzer's opinion of the run (tracekit analyze --v2), beside its integrity, never in it
           + (r.findings ? line(null, "FINDINGS", r.findings.line) + (r.findings.monitorability ? line(null, "MONITORABILITY", r.findings.monitorability + " (the share of actions whose reasoning can be read)") : "")
             + (r.findings.not_checkable?.length ? `<dt>NOT CHECKABLE</dt><dd class="s-flag">` + r.findings.not_checkable.map(g => `<div title="${esc(g.code)}">${esc(`${g.rule} for ${g.n}: ${g.text}`)}</div>`).join("") + `<div class="dim">never counted as a pass: tracekit analyze --v2 says what makes each checkable</div></dd>` : "") : "");
-        // the commands that make this review evidence: export the run's bundle and verify it offline
-        const file = r.id + ".tkb", word = x => /^[\w.:@/=-]+$/.test(x) ? x : shq(x);
-        const exp = `tracekit export --v2 --run ${word(r.id)}` + (r.tenant && r.tenant !== "default" ? ` --tenant ${word(r.tenant)}` : "") + ` --with-findings -o ${word(file)}`, ver = `tracekit verify ${word(file)} --trust trust.json`;
+        const [exp, ver] = runCmds(r);
         left += `<dt>EXPORT` + cp(exp) + `</dt><dd><code class="shell">${esc(exp)}</code></dd><dt>VERIFY` + cp(ver) + `</dt><dd><code class="shell">${esc(ver)}</code><div class="dim">trust.json pins the signer's log key; that check, not this page, is the evidence</div></dd>`;
         right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", d.ask || 0, d.ask ? "s-flag" : "");
         // only an approval can be a self-approval: a requester rejecting their own call is no risk
@@ -2763,8 +3046,7 @@
           + (failed.length ? `<dt>FAILED</dt><dd class="s-deny">` + failed.map(l => `<div>${esc(l)}</div>`).join("") + `</dd>` : "");
         if (r.report) right = `<div class="sec">VERIFIER REPORT</div><pre>${esc(r.report)}</pre>`;
       }
-      put("detail", cols(left + `</dl>`, right));
-      $("detsum").textContent = "run review";
+      return cols(left + `</dl>`, right);
     }
     // the ledger's seq (v0.2 records carry it as tk_seq); a row the viewer made has none
     function lseq(r) { return r.analysis ? null : r.tk_seq ?? r.seq; }
@@ -2860,6 +3142,7 @@
       else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; schedule(); }
       else if (e.key === "f" || e.key === "F") { F.flag = !F.flag; schedule(); }
       else if (e.key === "t" || e.key === "T") $("theme").click();
+      else if (PAGE === "run" && /^[1-7]$/.test(e.key)) { show(RVIEWS[+e.key - 1]); wvKey = ""; schedule(); }
       else if (e.key === "?") { $("help").hidden = !$("help").hidden; }
     });
     $("help").addEventListener("click", e => { if (e.target.id === "help") $("help").hidden = true; });
@@ -3049,9 +3332,8 @@
 
     /* ---------------- why logs (why.server.Store; docs/viewer.md#why) ---------------- */
     // WHY: /api/why/workspace; WD: why run id -> its detail (null while loading); VIEW: the lower panels' view
-    // the lower panels' views; those of NEEDWHY need why logs, the others are built from the runs' records
-    const VIEWS = ["desk", "permissions", "runs", "overview", "timeline", "why", "graph", "agents", "influence"];
-    const NEEDWHY = new Set(["runs", "overview", "timeline", "why", "graph", "agents", "influence"]);
+    // the why panel's views that need why logs (centre()); the others are built from the runs' records
+    const NEEDWHY = new Set(["overview", "timeline", "why", "graph", "agents", "influence"]);
     let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "", WNODE = null, WPICK = null;
     const TL = { agent: "", type: "", flag: false, q: "" };   // TIMELINE's filters
     const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null, fit: true };
@@ -3065,7 +3347,7 @@
     const pct = x => x == null ? "–" : Math.round(x * 100) + "%", sgn = x => (x > 0 ? "+" : "") + (Math.round(x * 100) / 100).toFixed(2);
     async function loadWhy() {
       try { WHY = await getJSON("api/why/workspace"); } catch { return; }   // no why logs: 204, no JSON (404 from an older server)
-      $("views").hidden = $("wtabwhy").hidden = false; wvKey = ""; schedule();
+      $("wtabwhy").hidden = false; wvKey = ""; schedule();
     }
     function whyChanged(m) { WD.delete(m.run_id); clearTimeout(whyT); whyT = setTimeout(loadWhy, 400); }
     function whyDetail(id) {
@@ -3222,17 +3504,15 @@
     function openWhy(run, node) {
       const act = node && S.actList.find(a => { const r = whyRef(a); return r && r.run === run && r.node === node; });
       if (act) { WTAB = "why"; return select(act); }
-      WRUN = run; if (node) { VIEW = "why"; WPICK = node; } else VIEW = "overview"; schedule();
+      WRUN = run; if (node) { show("why"); WPICK = node; } else show("overview"); schedule();
     }
     function renderWhyView() {
       document.body.classList.toggle("wv", VIEW !== "desk");
-      const VNAME = { why: "WHY DID IT HAPPEN?" }, el = $("whyv");
-      $("views").hidden = !(V2 || WHY);
-      put("views", VIEWS.filter(k => WHY || !NEEDWHY.has(k)).map(k => `<button type="button" data-view="${esc(k)}" class="${VIEW === k ? "on" : ""}">${esc(VNAME[k] || k.toUpperCase())}</button>`).join(""));
+      const VNAME = { why: "WHY DID IT HAPPEN?", timeline: "WHY LOG EVENTS" }, el = $("whyv");
       if (VIEW === "desk") return;
       if (!NEEDWHY.has(VIEW)) {   // a view of the runs' records: drawn with put, so a live re-render keeps its scroll
         wvKey = ""; $("wvtitle").textContent = VIEW.toUpperCase(); $("wrun").hidden = true;
-        return { permissions: permissionsView }[VIEW](el);
+        return { permissions: permissionsView, evidence: evidenceView }[VIEW](el);
       }
       el._h = null;   // the why views set their HTML themselves
       if (!WHY) { el.innerHTML = `<div class="empty">This view needs why logs: none are loaded (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).</div>`; return; }
@@ -3248,7 +3528,6 @@
       // a run by its agents and short id (a signed run's import is tk-<run id>-<hash>)
       $("wrun").innerHTML = (WRUN ? "" : `<option value="" selected>no why run</option>`) + WHY.runs.map(r => `<option value="${esc(r.run_id)}"${r.run_id === WRUN ? " selected" : ""} title="${esc(r.run_id)}">${esc(r.run_id.startsWith("tk-") ? (r.agents.join(", ") || "run") + " · " + r.run_id.slice(3, 11) : r.run_id)}</option>`).join("");
       if (VIEW === "influence") return influenceView(el);
-      if (VIEW === "runs") return runsView(el);
       const d = WRUN && whyDetail(WRUN);
       if (!d || d.error) {
         const calls = run && Object.values(run.decisions || {}).reduce((x, y) => x + y, 0);
@@ -3441,14 +3720,16 @@
       $("wvsum").textContent = `${S2.length} sources · ${T.length} tools`;
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage]"); if (!t) return;
       e.preventDefault();
+      if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
+      if (t.dataset.rv) { show(t.dataset.rv); wvKey = ""; return schedule(); }
+      if (t.dataset.openrun) { setScope(t.dataset.openrun); show("calls"); return schedule(); }
       if (t.dataset.ptab) { PERM.tab = t.dataset.ptab; PERM.page = 0; return schedule(); }
       if (t.dataset.ppage) { PERM.page = Math.max(0, PERM.page + +t.dataset.ppage); return schedule(); }
       if (t.dataset.wtab) { WTAB = t.dataset.wtab; return schedule(); }
-      if (t.dataset.view) { VIEW = t.dataset.view; wvKey = ""; return schedule(); }
       if (t.dataset.gfit !== undefined) { GV.fit = !!t.dataset.gfit; return schedule(); }
-      if (t.dataset.wgo) { WRUN = t.dataset.wgo; VIEW = "overview"; return schedule(); }
+      if (t.dataset.wgo) { WRUN = t.dataset.wgo; show("overview"); return schedule(); }
       if (t.dataset.wpick) { WPICK = t.dataset.wpick; return schedule(); }
       if (t.dataset.tlk !== undefined) { TL.type = t.dataset.tlk; document.querySelectorAll("[data-tlk]").forEach(b => b.classList.toggle("on", b === t)); return drawTimeline(); }
       if (t.dataset.wal) { const a = whyAlerts()[+t.dataset.wal]; return a && openWhy(a.run_id, a.node); }
@@ -3461,13 +3742,13 @@
         const id = t.dataset.wopen || t.dataset.wwhy || t.dataset.wreach, run = t.dataset.wr || WNODE.run;
         const act = S.actList.find(a => { const r = whyRef(a); return r && r.run === run && r.node === id; });
         if (act) selected = act;
-        if (t.dataset.wwhy) { WRUN = run; WPICK = id; VIEW = "why"; }
-        else { WNODE = { run, id }; WTAB = "node"; if (t.dataset.wreach || VIEW === "graph") { WRUN = run; VIEW = "graph"; GV.focus = id; } }
+        if (t.dataset.wwhy) { WRUN = run; WPICK = id; show("why"); }
+        else { WNODE = { run, id }; WTAB = "node"; if (t.dataset.wreach || VIEW === "graph") { WRUN = run; show("graph"); GV.focus = id; } }
         return schedule();
       }
       if (t.dataset.wnode !== undefined) {
         const id = t.dataset.wnode || null;
-        if (VIEW !== "graph") { WRUN = whyRef(selected)?.run || WRUN; VIEW = "graph"; GV.focus = id; }
+        if (VIEW !== "graph") { WRUN = whyRef(selected)?.run || WRUN; show("graph"); GV.focus = id; }
         else GV.focus = GV.focus === id ? null : id;
         const act = GV.focus && S.actList.find(a => { const r = whyRef(a); return r && r.run === WRUN && r.node === GV.focus; });
         if (act) selected = act;

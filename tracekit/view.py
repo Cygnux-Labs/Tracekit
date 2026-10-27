@@ -87,6 +87,7 @@ POLL_S = 1.0
 BACKOFF = 4   # a run being written is verified again no sooner than BACKOFF x its last check's time after that check
 RECHECK_S = 300   # a run that did not grow is verified again this long after its last check, one run a pass
 MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
+ROWCACHE_MAX = 8   # runs whose /api/rows answer the viewer keeps, each until a newer checkpoint
 KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
@@ -850,6 +851,7 @@ class StoreFeed:
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
+        self.rowcache = collections.OrderedDict()   # (tenant, run_id, checkpoint size) -> rows (): its newest ROWCACHE_MAX
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
         self.stopped = None   # why the watch thread ended, when it did: the page then says verification stopped
         self.on_run, self.content, self.analyze = on_run, content, analyze
@@ -1024,6 +1026,8 @@ class StoreFeed:
                 for i, x in enumerate(self.records):
                     if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key:
                         self.records[i] = observe.RETRACTED
+                for k in [k for k in self.rowcache if k[:2] == key]:   # and /api/rows' answers
+                    del self.rowcache[k]
             self._append([dict(x, tenant=tenant) for x in new], key)
         if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape
             with self._mlock:
@@ -1134,10 +1138,11 @@ class StoreFeed:
             self.base += over
 
     def rows(self, scope, tenant, run_id):
-        """GET /api/rows?tenant&run: a run's rows as the tape shows them, read from the store and verified again for
-        this request (the rows served are of the records checked), so a run whose records left the live view opens in
-        full; None when `scope` may not read its tenant, the store has no such run, no checkpoint covers it or it fails.
-        At most max_records records, its first."""
+        """GET /api/rows?tenant&run: a run's rows as the tape shows them, read from the store and verified (the rows
+        served are of the records checked), so a run whose records left the live view opens in full; None when `scope`
+        may not read its tenant, the store has no such run, no checkpoint covers it or it fails. At most max_records
+        records, its first. An answer is kept until a newer checkpoint, or until the viewer's own re-check of the run
+        fails it (RECHECK_S), as the run list's verdict is."""
         if scope is not observe.ALL and tenant != scope:
             return None
         r = reader(self.cfg)
@@ -1146,7 +1151,12 @@ class StoreFeed:
         try:
             note, run = r.checkpoint_latest(), r.runs.get((tenant, run_id))
             count = bisect.bisect_left(run["seqs"], note[0]) if run and note else 0
-            if not count or check(r, tenant, run_id, note[1], self.trust, out)[1]:
+            key = (tenant, run_id, note and note[0])   # checked once a checkpoint: a page that asks again costs a lookup
+            with self.lock:
+                rows = self.rowcache.get(key)
+            if rows is not None or not count:
+                return rows
+            if check(r, tenant, run_id, note[1], self.trust, out)[1]:
                 return None
             # lean: the retained arguments are not read again (each read is a signed content.accessed record); the
             # live view shows them
@@ -1155,7 +1165,12 @@ class StoreFeed:
             r.close()
             os.unlink(out)
         tr = Translator(self.tr.reasons)
-        return [dict(x, tenant=tenant) for rec in records for x in tr.feed(rec)]
+        rows = [dict(x, tenant=tenant) for rec in records for x in tr.feed(rec)]
+        with self.lock:
+            self.rowcache[key] = rows
+            while len(self.rowcache) > ROWCACHE_MAX:
+                self.rowcache.popitem(last=False)
+        return rows
 
     def verify(self, tenant=None):
         """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""

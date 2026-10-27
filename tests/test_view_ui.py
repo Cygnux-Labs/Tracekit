@@ -58,9 +58,9 @@ class DeepLinks(unittest.TestCase):
         """The URL said nothing of what was open: a run could be linked (#run=) but not its view or record, and Back
         left the page."""
         needs_node(self)
-        out = json.loads(page_js(["VIEWS", "linkOf", "syncLink", "followLink"], """
-            let scope = null, VIEW = "desk", selected = null, R = null, linked = false, following = false, wvKey = "x";
-            const V2 = true, RUNS = new Map([["r 1&x", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [];
+        out = json.loads(page_js(["PAGES", "RVIEWS", "show", "linkOf", "syncLink", "followLink"], """
+            let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
+            const V2 = true, RUNS = new Map([["r 1&x", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [], goLive = () => {};
             const location = { hash: "#seq=7&view=graph&run=r+1%26x", pathname: "/" };
             const write = how => (_, __, h) => { seen.push([how, h]); location.hash = h.startsWith("#") ? h : ""; };
             const history = { pushState: write("push"), replaceState: write("replace") };
@@ -68,16 +68,24 @@ class DeepLinks(unittest.TestCase):
             const openSeq = n => { selected = { tk_seq: n - 1 }; };   // record 7 has no row: the one before it opens
             syncLink();                                  // before the link is read the URL keeps it
             followLink(); syncLink();                    // followed: its record opened as the row before it
-            seen.push([scope, VIEW]);
+            seen.push([scope, PAGE, RV]);
             selected = { pre: { tk_seq: 9 } }; syncLink();   // a click: a new entry, so Back returns to seq 6
             R = [{}]; selected = { tk_seq: 10 }; syncLink(); R = null;   // a replay step replaces it
             location.hash = "#run=nope&view=%3Cscript%3E"; followLink(); syncLink();   // an unknown run and view
-            seen.push([scope, VIEW]);
-            selected = null; scope = null; syncLink();
+            seen.push([scope, PAGE, RV]);
+            PAGE = "desk"; selected = null; syncLink();   // DESK with a run: its own page name
+            scope = null; syncLink();
+            // old links: the why log's TIMELINE is CALLS with its events, PERMISSIONS a page, a run alone its page
+            for (const h of ["#view=timeline", "#view=permissions", "#run=r+1%26x", "#page=runs", "#view=waterfall&run=r+1%26x"]) {
+              location.hash = h; followLink(); seen.push([h, PAGE, RV, CALLSLOG]); }
             process.stdout.write(JSON.stringify(seen));"""))
-        self.assertEqual(out, [["replace", "#run=r+1%26x&view=graph&seq=6"], ["r 1&x", "graph"],
+        self.assertEqual(out, [["replace", "#run=r+1%26x&view=graph&seq=6"], ["r 1&x", "run", "graph"],
                                ["push", "#run=r+1%26x&view=graph&seq=9"], ["replace", "#run=r+1%26x&view=graph&seq=10"],
-                               ["replace", "#run=r+1%26x"], ["r 1&x", "desk"], ["push", "/"]])
+                               ["replace", "#run=r+1%26x&view=calls"], ["r 1&x", "run", "calls"],
+                               ["push", "#page=desk&run=r+1%26x"], ["push", "/"],
+                               ["#view=timeline", "run", "calls", True], ["#view=permissions", "permissions", "calls", True],
+                               ["#run=r+1%26x", "run", "calls", False], ["#page=runs", "runs", "calls", False],
+                               ["#view=waterfall&run=r+1%26x", "run", "waterfall", False]])
 
     def test_back_and_forward_follow_the_link_and_the_seq_command_shares_its_record_lookup(self):
         self.assertIn('window.addEventListener("popstate", () => linked && followLink());', PAGE)
@@ -351,8 +359,101 @@ class Permissions(unittest.TestCase):
                          (["c5", "c6"], 3))
 
     def test_the_view_is_reachable_without_why_logs_and_from_a_link(self):
-        self.assertIn('VIEWS.filter(k => WHY || !NEEDWHY.has(k))', PAGE)
+        needs_node(self)
         self.assertNotIn('"permissions"', re.search(r"const NEEDWHY = new Set\(\[[^\]]*\]\)", PAGE).group(0))
+        self.assertEqual(page_js(["PAGES", "centre"], """
+            let PAGE = "permissions", RV = "calls", CALLSLOG = false;
+            process.stdout.write(PAGES.includes("permissions") + " " + centre());"""), "true permissions")
+
+
+PAGE_TEXT = " ".join(PAGE.split())
+APPROVALS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "approvals.html"))
+RUNS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "runs.html"))
+
+
+class NothingLost(unittest.TestCase):
+    """v7 moved today's viewer into pages and a run's views (the decision of 27 Oct 17:55 in #439): one check per row of
+    its table and per item of the Keep list, so a later change that drops a feature fails here."""
+
+    def test_every_global_page_and_run_view_is_reachable(self):
+        needs_node(self)
+        out = json.loads(page_js(["PAGES", "RVIEWS", "show", "centre"], """
+            let PAGE = "desk", RV = "calls", CALLSLOG = false; const goLive = () => { PAGE = "run"; }, seen = {};
+            for (const v of [...PAGES, ...RVIEWS, "timeline"]) { show(v); seen[v] = [PAGE, RV, centre()]; }
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, {
+            "desk": ["desk", "calls", "desk"], "runs": ["runs", "calls", "desk"], "live": ["run", "calls", "desk"],
+            "approvals": ["approvals", "calls", "desk"], "permissions": ["permissions", "calls", "permissions"],
+            "influence": ["influence", "calls", "influence"], "overview": ["run", "overview", "overview"],
+            "calls": ["run", "calls", "desk"], "waterfall": ["run", "waterfall", "desk"], "graph": ["run", "graph", "graph"],
+            "why": ["run", "why", "why"], "agents": ["run", "agents", "agents"], "evidence": ["run", "evidence", "evidence"],
+            "timeline": ["run", "calls", "timeline"]})   # the why log's TIMELINE: CALLS with its events
+
+    def test_each_page_places_the_panels_it_had(self):
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        for rule in ("body.pg-run main>.p.agents", "body.pg-run main>.p.mix", "body.pg-run main>.p.detail",
+                     "body.pg-run.rv-calls:not(.callslog) main>.p.tape", "body.pg-run.rv-waterfall main>.p.lanes",
+                     "body.pg-run.wv main>.p.whyv", "body.pg-runs main>.p.runsp", "body.pg-approvals main>.p.apprp",
+                     "body.pg-permissions main>.p.whyv", "body.pg-influence main>.p.whyv"):
+            self.assertIn(rule, css)
+        # DESK is today's grid: every panel, the stats strip and NEEDS YOU
+        self.assertIn("body:not(.pg-desk) main>.p", css)
+        for panel in ("agents", "tape", "alerts", "mix", "lanes", "reason", "files", "detail"):
+            self.assertIn(f'<section class="p {panel}">', PAGE)
+
+    def test_todays_features_are_each_still_there(self):
+        rows = {
+            "stats strip": ['["RUNS", scope ? 1', '"HIGH ALERTS"', '"RECORDS", signed'],
+            "chain badge": ["CHAIN ✓ ${chainState.n} SIGNED RECORDS"],
+            "clock and zone": ['$("clock").textContent'],
+            "tape columns": ["TIME", "AGENT", "EVT", "TOOL", "TARGET / TEXT", "STATUS", "MS"],
+            "alerts with why": ['<span class="src">WHY</span>'],
+            "tool mix": ["function renderMix()"], "lanes": ["TIMELINE · ONE LANE PER AGENT"],
+            "reasoning": ["REASONING<small>self-reported, not proof</small>"],
+            "files": ["<th>PATH</th>", "LAST AGENT"],
+            "detail, why, node": ['data-wtab="detail"', 'data-wtab="why"', 'data-wtab="node"', "LEDGER EVIDENCE · SEQ"],
+            "modes": ['"STATIC"', '"BUNDLE"', '"STOPPED"', '"DISCONNECTED"', '"REPLAY"', 'id="lost"'],
+            "replay": ['id="play"', 'id="speed"', 'id="scrub"', 'id="rback"', 'id="rfwd"', 'data-jump="deny"',
+                       'data-jump="hold"', 'data-jump="gap"', 'id="rlive"'],
+            "why views": ["function overviewView(", "function timelineView(", "function whyView(", "function graphView(",
+                          "function agentsView(", "function influenceView(", "function runsView(", "function renderNode(",
+                          "FIND THE CAUSE", "RUN TEST", "inferred links", "ruled-out tests", "ACTUAL SIZE",
+                          "CLEAR HIGHLIGHT", "SHOW WHAT IT REACHED", "INFLUENCE MATRIX", "CRITICAL PATH",
+                          "HOW TO READ THE EVIDENCE"],
+            "new v7 pieces": ["function renderRunHead()", "function renderRunsPage()", "function renderApprovalsPage()",
+                              "function evidenceView(", "NEEDS YOU", "WHY THIS DECISION", "WAITING FOR YOU"],
+            "honesty tips": ["A row is a signed record of the hash-chained ledger unless it says ANALYSIS",
+                             "Times are this browser's local time",
+                             "Reasoning is what the model reported about itself; actions are what it did",
+                             "trust.json pins the signer's log key; that check, not this page, is the evidence",
+                             "operator-side"],
+            "security": ["const esc = s =>", "const vis = s =>", "\\\\u\" + c.charCodeAt(0)"],
+        }
+        for feature, marks in rows.items():
+            for mark in marks:
+                with self.subTest(feature=feature, mark=mark):
+                    self.assertIn(mark, PAGE_TEXT)
+
+    def test_every_command_and_key_is_still_parsed(self):
+        for cmd in ("AGT", "TOOL", "FILE", "FIND", "FLAG", "CLR", "SEQ", "HELP", "PAUSE", "PLAY", "SPEED"):
+            with self.subTest(cmd=cmd):
+                self.assertIn(f'case "{cmd}":', PAGE)
+        for key in ('e.key === "/"', 'e.key === "Escape"', 'e.key === "f"', 'e.key === "?"', 'e.key === "t"',
+                    '" ": togglePlay', "ArrowLeft:", "ArrowRight:", 'd: () => jump("deny")', 'h: () => jump("hold")',
+                    'g: () => jump("gap")', "l: () => R && stopRun()", "/^[1-7]$/.test(e.key)"):
+            with self.subTest(key=key):
+                self.assertIn(key, PAGE)
+
+    def test_the_run_and_approval_pages_keep_their_controls(self):
+        for mark in ('id="run"', 'id="agent"', 'id="tenant"', 'id="since"', 'id="until"', 'id="verdict"', 'id="gaps"',
+                     'id="denies"', 'id="approvals"', ">Log<", ">Tenant<", ">Ended<", "More runs", "More records",
+                     'id="download"'):
+            with self.subTest(page="runs.html", mark=mark):
+                self.assertIn(mark, RUNS_PAGE)
+        for mark in ('id="register"', 'id="filter"', "Expires", "Answered by", 'id="args"', 'id="reason"',
+                     "Revoke the agent's approval", "5000"):
+            with self.subTest(page="approvals.html", mark=mark):
+                self.assertIn(mark, APPROVALS_PAGE)
 
 
 if __name__ == "__main__":
