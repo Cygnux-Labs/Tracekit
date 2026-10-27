@@ -15,7 +15,6 @@ proxy/hook mismatches and approvals. Content that the ledger holds only as a has
 """
 import argparse
 import collections
-import datetime as _dt
 import hashlib
 import hmac
 import itertools
@@ -35,6 +34,7 @@ from .ledger import read_records, verify_record_sig
 from .netserver import drain
 from .replay import CSP_META
 from .storage.base import StorageCorrupt, StorageUnavailable
+from .why.core import ts_seconds
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(HERE, "ui", "terminal.html")
@@ -46,8 +46,8 @@ MAX_INGEST = 20 * 1024 * 1024   # a why log batch (POST /v1/ingest)
 
 def _epoch(ts):
     try:
-        return _dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=_dt.timezone.utc).timestamp()
-    except (TypeError, ValueError):
+        return ts_seconds(ts)
+    except ValueError:
         return time.time()
 
 
@@ -100,7 +100,8 @@ class Translator:
         r = {"seq": self.n - 1, "ts": _epoch(e.get("ts")), "event": event, "session_id": e["run_id"],
              "cwd": self.cwd.get(e["run_id"], ""), "agent": self.agent_names.get(e["run_id"], "claude-code"),
              "parent_id": e.get("parent_id"), "hash": rec.get("hash"),
-             "prev": e.get("prev_hash"), "tk_seq": e.get("seq"), "tk_source": e.get("source")}
+             "prev": e.get("prev_hash"), "tk_seq": e.get("seq"), "tk_source": e.get("source"),
+             **({"ts_signed": _epoch(e["ts_signed"])} if "ts_signed" in e else {})}   # v1: ts is the client's
         if e.get("agent_id") and e["agent_id"] not in ("main", "tracekitd"):
             r["agent_id"] = e["agent_id"]
             meta = self.child_meta.get((e["run_id"], e["agent_id"]), {})

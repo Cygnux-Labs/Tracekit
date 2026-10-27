@@ -3305,8 +3305,8 @@
     }
     // a restricted place's rule: a TK-F or TK-D rule whose reason is about secrets, harness configuration or Tracekit's files
     const hzRest = rules => rules.filter(x => /^TK-[FD]\d/.test(x.id) && /secret|credential|harness|tracekit/i.test(x.reason || "")).map(x => x.id + " · " + x.reason)[0] || null;
-    // every run's calls and sensor effects, the newest HZMAX of all runs together in time order (a v2 seq counts within
-    // its run, so it orders only a run's own records), each at its place; the places laid out on the rings
+    // every run's calls and sensor effects, the newest HZMAX of all runs together by the signer's time (v2 ts, v1
+    // ts_signed; a why log's own ts, whose seq counts within its run), each at its place; the places laid out on the rings
     // (project files by their top folder), the agents in the order their runs started each other
     let hzKey = [], hzD = null;
     function hzData() {
@@ -3320,7 +3320,7 @@
         const a = ans.get(r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id)), ok = V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true;
         const p = fx ? (fx.kind === "connect" ? ["outside", String(fx.target).replace(/:\d+$/, "")] : hzPath(String(fx.target), r.cwd))
           : hzPlace(r.tool_name, r.tool_input, r.cwd) || [category({ tool: r.tool_name, flags: [] }) === "net" ? "outside" : "machine", r.tool_name, true];
-        raw.push({ t: r.ts, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules),
+        raw.push({ t: r.ts_signed ?? r.ts, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules),
           ag: vis(RUNS.get(r.session_id)?.agent || r.agent || "agent"), gr: !ok ? "unverified" : fx ? "observed" : "signed",
           act: fx ? (fx.kind === "connect" ? "net" : "seen") : d === "deny" ? "blocked" : d === "ask" ? (a === "approve" ? "approved" : "held") : d === "flag" ? "flag"
             : p[0] === "outside" ? "net" : FILE_TOOLS[r.tool_name] === "W" ? "write" : /^(Read|Glob|Grep|LS)$/.test(r.tool_name) ? "read" : "run",

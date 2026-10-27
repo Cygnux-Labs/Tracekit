@@ -17,6 +17,18 @@ class HashedContent(unittest.TestCase):
         self.assertEqual(observe._show({"value": "ls"}), "ls")
 
 
+class Times(unittest.TestCase):
+    def test_a_row_reads_every_timestamp_a_why_log_may_hold_and_keeps_the_signers_time(self):
+        """A why log's ts with no fraction or 7-9 digits read as now (the newest call on HORIZON); a v1 row had only
+        the client's ts."""
+        for ts, want in (("2026-10-27T10:00:00Z", 1793095200), ("2026-10-27T10:00:00.5Z", 1793095200.5),
+                         ("2026-10-27T10:00:00.123456789Z", 1793095200.123456789)):
+            self.assertAlmostEqual(observe._epoch(ts), want, places=6)
+        row = observe.Translator()._base({"run_id": "r", "ts": "2020-01-01T00:00:00Z", "ts_signed": "2026-10-27T10:00:00Z"}, {}, "PreToolUse")
+        self.assertEqual((row["ts"], row["ts_signed"]), (1577836800, 1793095200))
+        self.assertNotIn("ts_signed", observe.Translator()._base({"run_id": "r", "ts": "2026-10-27T10:00:00Z"}, {}, "PreToolUse"))
+
+
 class DevSocketPath(unittest.TestCase):
     @unittest.skipUnless(hasattr(__import__("socket"), "AF_UNIX"), "Unix sockets only")
     def test_too_long_home_is_a_clear_error(self):

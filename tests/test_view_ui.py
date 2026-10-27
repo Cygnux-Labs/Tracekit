@@ -960,21 +960,32 @@ class Horizon(unittest.TestCase):
         self.assertEqual((out["bare"], out["cwd"], out["laid"], out["same"]), (2, "shop", True, True))
         self.assertEqual(out["more"], [["outside", "outside.example"], ["outside", "github.com"], None, ["outside", "evil.example"]])
 
-    def test_the_cap_keeps_the_newest_calls_of_all_runs_together(self):
-        """A v2 seq counts within its run: ordered by seq, an older 600-call run kept a newer run's calls off the map."""
+    def hz_cap(self, recs):
         needs_node(self)
-        recs = [hz_call(i, "Read", {"file_path": f"src/f{i}.py"}, "old") for i in range(1, 601)]
-        recs += [{**hz_call(i, "Read", {"file_path": f"notes/n{i}.md"}, "new"), "ts": 5000 + i} for i in range(1, 4)]
-        runs = [{"id": "old", "agent": "a", "verdict": "verified"}, {"id": "new", "agent": "b", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
                                   "hzRad", "hzPath", "hzPlace", "hzRest", "hzData"], f"""
-            const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
+            const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
             process.stdout.write(JSON.stringify({{ ev: D.ev.map(e => [e.run, e.seq]), calls: D.calls }}));"""))
-        self.assertEqual((len(out["ev"]), out["calls"]), (500, 603))
-        self.assertEqual(out["ev"][0], ["old", 104])
-        self.assertEqual(out["ev"][-3:], [["new", 1], ["new", 2], ["new", 3]])
+        self.assertEqual((len(out["ev"]), out["calls"]), (500, len(recs)))
+        return out["ev"]
+
+    def test_the_cap_keeps_the_newest_why_log_calls_of_all_runs_together(self):
+        """A why log's seq counts within its run (why.server.tape): ordered by seq, an older 600-call why run kept a
+        newer one's calls off the map."""
+        def why_call(seq, run, ts):
+            return {"event": "PreToolUse", "session_id": run, "seq": seq, "ts": ts, "tool_use_id": f"{run}{seq}", "tool_name": "Read",
+                    "tool_input": {"file_path": f"src/f{seq}.py"}, "policy": {"decision": "allow"}, "why": {"run": run, "node": f"ev:{seq}"}}
+        ev = self.hz_cap([why_call(i, "old", 1000 + i) for i in range(1, 601)] + [why_call(i, "new", 5000 + i) for i in range(1, 4)])
+        self.assertEqual(ev[0], ["old", 104])
+        self.assertEqual(ev[-3:], [["new", 1], ["new", 2], ["new", 3]])
+
+    def test_the_cap_orders_v1_calls_by_the_signers_time_not_the_agents(self):
+        """A v1 event's ts comes from the client (tracekitd's setdefault): a call that backdates its ts stays on the map."""
+        recs = [{**hz_call(i, "Read", {"file_path": f"src/f{i}.py"}), "ts_signed": 1000 + i} for i in range(1, 601)]
+        ev = self.hz_cap(recs + [{**hz_call(601, "Read", {"file_path": "~/.ssh/id_rsa"}), "ts": 1, "ts_signed": 1601}])
+        self.assertEqual((ev[0], ev[-1]), (["r1", 102], ["r1", 601]))
 
     def test_a_place_named_like_an_object_key_is_a_place(self):
         """A call to http://constructor/ made every frame throw (seen[e.at].push), and a place named __proto__ set the
