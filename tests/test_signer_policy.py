@@ -728,6 +728,20 @@ class CodingPack(unittest.TestCase):
                 "xargs rm > log.txt <<'EOF'\n/etc/tracekit/client.json\nEOF",
                 "cat <<'EOF' | xargs rm\n/etc/tracekit/client.json\nEOF",
                 "echo /etc/tracekit/client.json >/dev/stdout | xargs rm",
+                # a later command in this call consumes the literal file receiving the copied text
+                "echo /etc/tracekit/client.json > out; sh out",
+                "echo /etc/tracekit/client.json > out; bash out",
+                "echo /etc/tracekit/client.json > out; source out",
+                "echo /etc/tracekit/client.json > out; . out",
+                "echo /etc/tracekit/client.json > out; xargs rm < out",
+                "echo /etc/tracekit/client.json > out; parallel rm < out",
+                "echo /etc/tracekit/client.json > out; cat out | xargs rm",
+                "printf '%s\\n' /etc/tracekit/client.json > out; xargs rm < out",
+                "cat <<'EOF' > out; bash out\n/etc/tracekit/client.json\nEOF",
+                "tee > out <<'EOF'; xargs rm < out\n/etc/tracekit/client.json\nEOF",
+                # source files may redefine the commands that otherwise only copy data
+                "source ./defs; echo /etc/tracekit/client.json > out | xargs rm",
+                ". ./defs; echo /etc/tracekit/client.json > out | xargs rm",
                 # a write of text that acts too: on its file, on the file it copies, or through a command it runs
                 "cat > /etc/tracekit/policy.yaml <<'EOF'\nmode: off\nEOF",
                 "tee /etc/tracekit/policy.yaml > /dev/null <<'EOF'\nmode: off\nEOF",
