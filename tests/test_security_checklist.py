@@ -23,8 +23,8 @@ from http.server import ThreadingHTTPServer
 
 from test_e13_approvals import Sessions
 from test_observe_render import XSS
-from tracekit import (egress, executor, gateway, ingest, mcp_gateway, observe, otlp, proxy, public_witness_server,
-                      slack_approvals, witness_server)
+from tracekit import (a2a_gateway, egress, executor, gateway, ingest, mcp_gateway, observe, otlp, proxy,
+                      public_witness_server, slack_approvals, witness_server)
 from tracekit.observe import _session
 from tracekit.identity.token import BearerToken
 from tracekit.ledger import Keys
@@ -50,6 +50,7 @@ SURFACES = {
     "tracekit/gateway.py:_Handler": "LLM gateway",
     "tracekit/executor.py:_Executor": "tool executor",
     "tracekit/mcp_gateway.py:_McpGateway": "MCP gateway",
+    "tracekit/a2a_gateway.py:_A2aGateway": "A2A gateway",
     "tracekit/egress.py:_Handler": "egress observer (forward and CONNECT proxy)",
     "tracekit/signer/metrics.py:Handler": "signer metrics, logs list and tlog tiles",
     "tracekit/otlp.py:H": "local OTLP receiver (tracekit otel serve)",
@@ -192,6 +193,16 @@ class Surfaces(unittest.TestCase):
                              ("POST", "/mcp", {**auth, "Transfer-Encoding": "chunked", "Content-Length": "2"}, 400),
                              ("PUT", "/mcp", auth, 501)]
 
+    def a2a_gateway(self):
+        srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None,
+                                   handler=a2a_gateway._A2aGateway)
+        srv.a2a = {"max_body": 1024, "upstreams": {}}
+        auth = {"Authorization": f"Bearer {SECRET}", "X-Tracekit-Run": f"run.{SECRET}.mac"}
+        return srv, SECRET, [("POST", f"/nope?token={SECRET}", auth, 404), ("GET", "/a2a/up", auth, 405),
+                             ("POST", f"/a2a/{SECRET}", {}, 401),
+                             ("POST", "/a2a/up", {**auth, "Content-Length": BIG}, 413),
+                             ("PUT", "/a2a/up", auth, 501)]
+
     def egress(self):
         srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None, handler=egress._Handler)
         srv.observer = egress.Observer(types.SimpleNamespace(observe_effect=lambda req: None))
@@ -254,6 +265,7 @@ class Surfaces(unittest.TestCase):
     PROBES = {"tracekit/observe.py:Handler": viewer, "tracekit/transport/http.py:_Handler": signer_http,
               "tracekit/gateway.py:_Handler": gateway, "tracekit/executor.py:_Executor": executor,
               "tracekit/mcp_gateway.py:_McpGateway": mcp_gateway, "tracekit/signer/metrics.py:Handler": metrics,
+              "tracekit/a2a_gateway.py:_A2aGateway": a2a_gateway,
               "tracekit/egress.py:_Handler": egress,
               "tracekit/otlp.py:H": otlp, "tracekit/ingest.py:H": ingest, "tracekit/witness_server.py:H": witness,
               "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack,

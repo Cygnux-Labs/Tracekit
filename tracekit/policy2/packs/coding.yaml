@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-37'
+version: '2026.10-v2-38'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -34,6 +34,7 @@ tools:
   'srt:request': http        # a request srt-proxy asks about (tracekit srt-decider)
   'mcp__*': mcp
   'mcp:*/*': mcp
+  'a2a:*': a2a               # the A2A gateway's calls (a2a:<upstream>/<method>) and run.transfer (a2a:transfer)
 
 # tool classes and tool names whose results are untrusted content (the signer's provenance index)
 untrusted: [http, mcp, WebFetch, WebSearch]

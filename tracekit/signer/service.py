@@ -1899,8 +1899,8 @@ class SignerService:
 
     def _reasons(self, ids):
         """The reasons of the rules among `ids` that give one, in their order, joined by "; ", then their remedies (what
-        to do instead), each once (at most 1024 chars)."""
-        by = {r["id"]: r for _, r, *_ in self.policy.rules}
+        to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed ENGINE_REASONS."""
+        by = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for _, r, *_ in self.policy.rules}}
         rules = [by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by]
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]

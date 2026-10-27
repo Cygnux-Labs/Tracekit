@@ -37,6 +37,7 @@ experimental.
 | The signer's HTTPS transport and its OIDC, Kubernetes service-account and mTLS identities | [identity](identity.md), [remote clients](remote-ingest.md) |
 | Postgres storage and multi-tenant signers | [deployment](deploy.md) |
 | LLM gateway, tool executor, MCP gateway, egress observer | [gateway](gateway.md), [executor](executor.md), [MCP gateway](mcp-gateway.md), [egress](egress.md) |
+| The A2A gateway (`tracekit a2a-gateway`: `message/send`, `message/stream` and `tasks/get`, tested against an in-process A2A server, not a third-party one) and latent transfers (`run.transfer`, the C2C integration and `tracekit why transfer`, tested against a stand-in for C2C's `RosettaModel`, not C2C itself) | [A2A gateway](a2a.md), [latent transfers](c2c.md) |
 | The egress observer's SOCKS5 listener for E2B's and microsandbox's outbound proxies (tested against E2B's API description and microsandbox's source, not either running) | [E2B](integrations/e2b.md), [microsandbox](integrations/microsandbox.md) |
 | agentgateway: the `ext_mcp` processor (`tracekit ext-mcp`) and the import of its MCP spans (tested against the protocol and span attributes in agentgateway's source, not a running agentgateway) | [agentgateway](integrations/agentgateway.md) |
 | Wassette behind the MCP gateway (its policy rule is tested against a stand-in with Wassette's tool names, not against Wassette in CI) | [Wassette](integrations/wassette.md) |

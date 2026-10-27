@@ -6,6 +6,8 @@
 [agentgateway](https://agentgateway.dev) (a Linux Foundation project) is a proxy for MCP, A2A and LLM traffic. Tracekit
 works with it in two ways, which you can use together:
 
+Both cover MCP. For A2A, Tracekit's own [A2A gateway](../a2a.md) decides and records each message; agentgateway's A2A traffic is not decided or recorded by Tracekit.
+
 | | The `ext_mcp` processor | The OTLP import |
 |---|---|---|
 | What it does | Decides each MCP `tools/call` in the signer before agentgateway forwards it, holds an `ask` for a person, and records the result | Records each MCP `tools/call` agentgateway traced, after it ran |
