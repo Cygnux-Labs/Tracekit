@@ -691,6 +691,32 @@ class Installer(unittest.TestCase):
                 cfg = json.load(open(path))
                 self.assertNotIn("tracekit.agent_hooks", json.dumps(cfg))
                 self.assertIn("echo mine", json.dumps(cfg))
+            # agy loads a named hook with "enabled": false and never runs it: init rewrites Tracekit's whole, so it runs,
+            # and uninstall leaves no disabled stub behind
+            path, key = agent_hooks.config_path("antigravity", d), agent_hooks.AGY_HOOK
+
+            def write(cfg):
+                with open(path, "w") as f:
+                    json.dump(cfg, f)
+
+            def read():
+                with open(path) as f:
+                    return json.load(f)
+            stop = [{"hooks": [{"type": "command", "command": "echo mine"}]}]
+            for v2 in (False, True):
+                write({key: {"enabled": False, "Stop": stop, "PreToolUse": stop}, "other": {"Stop": stop}})
+                agent_hooks.install("antigravity", d, v2=v2)
+                cfg = read()
+                self.assertEqual(sorted(cfg[key]), ["PostToolUse", "PreToolUse"], v2)
+                self.assertEqual([len(cfg[key][ev]) for ev in ("PreToolUse", "PostToolUse")], [1, 1], v2)
+                self.assertEqual(cfg["other"], {"Stop": stop}, v2)   # another named hook is left as it is
+                write({key: {**read()[key], "enabled": False}})
+                agent_hooks.install("antigravity", d, uninstall=True)
+                self.assertEqual(read(), {}, v2)
+            mine = {key: {"enabled": False, "Stop": stop}}
+            write(mine)   # not Tracekit's hooks: uninstall leaves them as they are
+            agent_hooks.install("antigravity", d, uninstall=True)
+            self.assertEqual(read(), mine)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

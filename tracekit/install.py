@@ -257,7 +257,8 @@ def _blocking(run, unless="", pre=True, json_deny=False):
     """`run` in a shell that turns any exit status but 0 and 2 (the hook could not run) into 2, a blocked call, unless
     the shell command `unless` exits first. Not `pre` (any event but a pre-tool call): every status but 0 becomes 1, a
     non-blocking error the harness shows, as 2 there would block a prompt or send the agent back to work at Stop.
-    json_deny: the call is blocked by a JSON deny on stdout at exit 0 instead (Antigravity CLI reads only that)."""
+    json_deny: the call is blocked by a JSON deny on stdout at exit 0 instead (Antigravity CLI reads only that), on any
+    status but 0 (its hook answers every call at exit 0)."""
     if not pre:
         script = (f"{run}; s=$?; [ $s = 0 ] && exit 0; [ $s = 1 ] || [ $s = 2 ] || "
                   "echo 'tracekit: the hook could not run; event not recorded' >&2; exit 1")
@@ -265,7 +266,8 @@ def _blocking(run, unless="", pre=True, json_deny=False):
         why = "tracekit: the hook could not run; call blocked (fail-closed)"
         block = (f"echo '{json.dumps({'decision': 'deny', 'reason': why})}'; exit 0" if json_deny else
                  f"echo '{why}' >&2; exit 2")
-        script = f"{run}; s=$?; [ $s = 0 ] || [ $s = 2 ] && exit $s; {unless}{block}"
+        passed = "[ $s = 0 ] && exit 0" if json_deny else "[ $s = 0 ] || [ $s = 2 ] && exit $s"
+        script = f"{run}; s=$?; {passed}; {unless}{block}"
     return f"/bin/sh -c {shlex.quote(script)}"
 
 

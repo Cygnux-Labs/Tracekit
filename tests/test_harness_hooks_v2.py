@@ -185,9 +185,10 @@ class Mapping(HarnessCase):
     def test_antigravity(self):
         self.check("antigravity")
 
-    def test_antigravity_pairs_results_by_step_and_always_answers_in_json_at_exit_0(self):
-        # agy's payload names no event and gives a call no id: the command names the event, and the stepIdx sent with
-        # a call's PreToolUse and PostToolUse pairs them. agy reads a hook's answer only from its JSON at exit 0
+    def test_antigravity_pairs_results_by_step_tool_and_arguments_and_always_answers_in_json_at_exit_0(self):
+        # agy's payload names no event and gives a call no id: the command names the event, and the stepIdx, tool and
+        # arguments sent with a call's PreToolUse and PostToolUse pair them; a step can hold two calls. agy reads a
+        # hook's answer only from its JSON at exit 0
         def pre(step, cmd):
             return {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd}}, "stepIdx": step,
                     "conversationId": "ag-pair", "workspacePaths": ["/w"]}
@@ -195,17 +196,20 @@ class Mapping(HarnessCase):
         code, out, err = self.hook("antigravity", pre(3, "ls"), "PreToolUse")
         self.assertEqual((code, json.loads(out)), (0, {"decision": "deny", "reason": "Blocked by tracekit policy: R-1"}))
         self.decision = "allow"
-        for step in (4, 5):
-            self.assertEqual(self.hook("antigravity", pre(step, "ls"), "PreToolUse")[:2], (0, '{"decision": "allow"}'))
-        # results in the other order, each with its own step's error text (an empty one: the call ran); toolCall may be
-        # missing from a PostToolUse (agy 1.0), the step alone pairs it
-        self.assertEqual(self.hook("antigravity", dict(pre(5, "ls"), error="exit status 1"), "PostToolUse")[:2], (0, "{}"))
-        self.assertEqual(self.hook("antigravity", {"stepIdx": 4, "conversationId": "ag-pair", "error": ""},
-                                   "PostToolUse")[:2], (0, "{}"))
+        for step, cmd in ((4, "ls"), (4, "pwd"), (5, "ls")):
+            self.assertEqual(self.hook("antigravity", pre(step, cmd), "PreToolUse")[:2], (0, '{"decision": "allow"}'))
+        # step 4's two results in the other order, each with its own error text (an empty one: the call ran)
+        self.assertEqual(self.hook("antigravity", dict(pre(4, "pwd"), error="exit status 1"), "PostToolUse")[:2],
+                         (0, "{}"))
+        self.assertEqual(self.hook("antigravity", dict(pre(4, "ls"), error=""), "PostToolUse")[:2], (0, "{}"))
+        # a result that matches no call exactly (no toolCall, or another step's arguments) is never paired by guess:
+        # step 5's call stays decided and not completed
+        for post in ({"stepIdx": 5, "conversationId": "ag-pair", "error": ""}, dict(pre(5, "pwd"), error="")):
+            self.assertEqual(self.hook("antigravity", post, "PostToolUse")[:2], (0, "{}"))
         run = self.signer._runs[claude_code._load(claude_code._state("ag-pair"))["run_id"]]
         self.assertEqual(run["events"][0]["data"]["agent"]["name"], "antigravity")
         calls = [s["tool_call_id"] for s in self.sent]
-        self.assertEqual(len(set(calls)), 3)
+        self.assertEqual(len(set(calls)), 4)
         results = [(e["data"]["tool_call_id"], e["data"]["status"]) for e in run["events"] if e["type"] == "tool.result"]
         self.assertEqual(results, [(calls[2], "error"), (calls[1], "ok")])   # the blocked step 3 left the queue
 
@@ -550,15 +554,19 @@ class Installer(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)   # no stepIdx: blocked before reaching any signer
         self.assertEqual(json.loads(p.stdout)["decision"], "deny")
         self.assertIn("no tool_use_id", json.loads(p.stdout)["reason"])
-        with mock.patch.object(install, "_dev_hook_command", return_value="false"):   # as when tracekit is gone
-            pre = install._hook_command(harness_hooks.__name__, "entry", ("antigravity", "PreToolUse"), json_deny=True)
-            post = install._hook_command(harness_hooks.__name__, "entry", ("antigravity", "PostToolUse"), pre=False,
-                                         json_deny=True)
-        p = subprocess.run(pre, shell=True, capture_output=True, text=True, timeout=30)
-        self.assertEqual((p.returncode, json.loads(p.stdout)["decision"]), (0, "deny"))
-        self.assertIn("call blocked (fail-closed)", json.loads(p.stdout)["reason"])
-        p = subprocess.run(post, shell=True, capture_output=True, text=True, timeout=30)
-        self.assertEqual((p.returncode, p.stdout), (1, ""))   # a result is never answered with a deny
+        # as when tracekit is gone (1), the interpreter refuses its options (2) or is gone (127): agy's hook answers
+        # every call at exit 0, so any other status is a deny
+        for status in (1, 2, 127):
+            with self.subTest(status=status), mock.patch.object(install, "_dev_hook_command",
+                                                                return_value=f"(exit {status})"):
+                pre = install._hook_command(harness_hooks.__name__, "entry", ("antigravity", "PreToolUse"), json_deny=True)
+                post = install._hook_command(harness_hooks.__name__, "entry", ("antigravity", "PostToolUse"), pre=False,
+                                             json_deny=True)
+                p = subprocess.run(pre, shell=True, capture_output=True, text=True, timeout=30)
+                self.assertEqual((p.returncode, json.loads(p.stdout)["decision"]), (0, "deny"))
+                self.assertIn("call blocked (fail-closed)", json.loads(p.stdout)["reason"])
+                p = subprocess.run(post, shell=True, capture_output=True, text=True, timeout=30)
+                self.assertEqual((p.returncode, p.stdout), (1, ""))   # a result is never answered with a deny
 
     def test_a_utf8_payload_is_read_under_any_console_code_page(self):
         # Windows decodes a pipe with its ANSI code page: cp1252 has no byte 0x81, so "\u00c1" (C3 81) failed to decode,

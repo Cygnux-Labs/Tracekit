@@ -511,6 +511,9 @@ def _run(a):
             print(f"dev signer running (same-user): {cfg['socket']}")
             print("hooks:", hooks or "not installed")
             return 0
+        if a.agent == "antigravity":   # the v1 system signer installs Claude Code's hooks only
+            print("tracekit: --agent antigravity goes with --dev or --v2", file=sys.stderr)
+            return 2
         user = a.user or os.environ.get("SUDO_USER") or getpass.getuser()
         try:
             cfg, settings = install.init_system(user, a.witness, a.checkpoint_every,

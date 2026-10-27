@@ -36,7 +36,7 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             WebSearch, Task (each decided on the argument the tool itself reads)
 
 What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
-events are paired by (tool, arguments) in order, and Antigravity CLI's by the step index it sends with both; Cursor and
+events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
 Qwen Code report failures through postToolUseFailure.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
@@ -340,19 +340,21 @@ def normalise(harness, p):
             return out
         return None
     if harness == "antigravity":
-        # agy's payload names no event (its hook's command line does) and gives a call no id: the stepIdx it sends with
-        # a call's PreToolUse and PostToolUse pairs them; a result is not sent, only its error text (empty if it ran)
-        # lean: the same stepIdx on both is agy's documented contract, not yet seen in a live session; pair by (tool,
-        # arguments) as Gemini CLI's are if a live run shows results left unpaired
+        # agy's payload names no event (its hook's command line does) and gives a call no id: the stepIdx, tool and
+        # arguments it sends with a call's PreToolUse and PostToolUse pair them (a step can hold more than one call),
+        # and a result that matches no call exactly stays unpaired, its call a gap, never guessed; a result is not
+        # sent, only its error text (empty if it ran)
+        # lean: the same stepIdx and toolCall on both is agy's documented contract, not yet seen in a live session
         if ev not in AGY_EVENTS:
             return None
         call = p.get("toolCall") if isinstance(p.get("toolCall"), dict) else {}
-        name, ti = tool(harness, str(call.get("name") or "?"), call.get("args"))
+        raw = str(call.get("name") or "?")
+        name, ti = tool(harness, raw, call.get("args"))
         sid, step = p.get("conversationId"), p.get("stepIdx")
         out.update(cwd=(p.get("workspacePaths") or [None])[0], transcript_path=p.get("transcriptPath"),
                    model=p.get("modelName"), session_id=sid, hook_event_name=ev, tool_name=name, tool_input=ti,
                    tool_use_id=sid and type(step) is int and _paired_ids(
-                       harness, sid, "stepIdx", step, "pre" if ev == "PreToolUse" else "post"))
+                       harness, sid, f"{step}|{raw}", ti, "pre" if ev == "PreToolUse" else "post"))
         if ev == "PostToolUse" and p.get("error"):
             out.update(hook_event_name="PostToolUseFailure", error=p["error"])
         return out
@@ -864,6 +866,12 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 hooks[ev] = groups
             else:
                 hooks.pop(ev, None)
+    if harness == "antigravity":   # Tracekit's named hook holds only its own two entries, rewritten whole: agy loads a
+        # named hook with "enabled": false and never runs it
+        if not uninstall:
+            s[key] = {ev: hooks[ev][-1:] for ev in AGY_EVENTS}
+        elif removed:
+            s.pop(key)
     if not hooks and harness != "droid":
         s.pop(key, None)
     if uninstall and harness == "droid" and not s:
