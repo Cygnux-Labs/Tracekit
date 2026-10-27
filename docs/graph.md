@@ -114,8 +114,9 @@ tracekit graph query [DIR] --path agent:codex host:api.stripe.com
 
 `DIR` defaults to `tracekit-graph`. `--file` accepts the full path or its trailing path parts. `--blast` and `--path`
 accept a node id or a label that names exactly one node. `--path` finds a shortest path in either direction and orders
-the choices at each step by grade: `SIGNED`, `OBSERVED`, `INFERRED`, then `UNVERIFIED`. `--blast` uses that ordering
-for equal-length paths and prints each path's weakest grade.
+the choices at each step by grade: `SIGNED`, `OBSERVED`, `INFERRED`, then `UNVERIFIED`. Among equal-length paths,
+`--blast` chooses the path with the strongest weakest grade (then breaks ties deterministically) and reports that
+weakest grade.
 
 Node filters return `{matched, code, runs, map}`. `--blast` returns `{from, reached, map}`. `--path` returns
 `{from, to, found, edges, map}`. Every `map` has `columns`, `nodes`, `edges`, and `answers`; its columns are
@@ -151,8 +152,8 @@ to read retained content.
 `tracekit graph verify [DIR] [SOURCES...] --trust trust.json [--graphify FILE]` rebuilds the graph and compares all
 three files. When `SOURCES` are omitted, it tries each recorded basename beside `DIR`; it never follows a path named
 inside `graph.json`. It refuses ambiguous duplicate recorded names, missing sources, and anything other than a regular
-file. Sources are checked by their recorded basename and SHA-256 digest, so moving the output directory does not
-matter.
+file: no symlinks, FIFOs, or devices. Sources are checked by their recorded basename and SHA-256 digest, so moving the
+output directory does not matter.
 
 If the built graph used `--content`, verify reads the vault again. For a default Graphify input it tries
 `graphify-out/graph.json`; otherwise pass `--graphify` when the recorded Graphify file is not in the current directory.

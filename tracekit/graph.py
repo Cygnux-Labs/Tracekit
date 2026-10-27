@@ -37,6 +37,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import statistics
 import sys
 import tempfile
@@ -61,6 +62,54 @@ Content = Callable[[str, List[Dict[str, Any]]], Dict[int, Any]]
 
 # --------------------------------------------------------------------------- sources
 
+def _graph_data(e: Dict[str, Any]) -> None:
+    """Reject nested event shapes that graph building reads as objects, lists, or string node ids."""
+    d, t = e.get("data") or {}, e["type"]
+
+    def obj(value: Any, name: str) -> None:
+        if value is not None and not isinstance(value, dict):
+            raise ValueError(f"{t} data.{name} must be an object")
+
+    def strings(value: Any, name: str) -> None:
+        if value is not None and (not isinstance(value, list) or not all(isinstance(x, str) for x in value)):
+            raise ValueError(f"{t} data.{name} must be a list of strings")
+
+    def string(value: Any, name: str) -> None:
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{t} data.{name} must be a string")
+
+    if t == "run.registered":
+        obj(d.get("agent"), "agent")
+        obj(d.get("identity"), "identity")
+        if isinstance(d.get("agent"), dict):
+            string(d["agent"].get("name"), "agent.name")
+        string(d.get("analyzes"), "analyzes")
+    elif t == "run.child":
+        string(d.get("run_id"), "run_id")
+    elif t == "policy.decision":
+        strings(d.get("rule_ids"), "rule_ids")
+        provenance = d.get("provenance")
+        if provenance is not None:
+            if not isinstance(provenance, list) or not all(isinstance(p, dict) for p in provenance):
+                raise ValueError("policy.decision data.provenance must be a list of objects")
+            for p in provenance:
+                obj(p.get("source"), "provenance.source")
+    elif t == "approval.request":
+        obj(d.get("binding"), "binding")
+        strings(d.get("rule_ids"), "rule_ids")
+    elif t == "effect.observed":
+        string(d.get("host"), "host")
+        string(d.get("path"), "path")
+    elif t == "review":
+        obj(d.get("verdict"), "verdict")
+        cites = d.get("cites")
+        if cites is not None and (not isinstance(cites, list) or not all(isinstance(c, dict) for c in cites)):
+            raise ValueError("review data.cites must be a list of objects")
+    redaction = d.get("redaction")
+    obj(redaction, "redaction")
+    if isinstance(redaction, dict):
+        strings(redaction.get("rules"), "redaction.rules")
+
 def _runs(data: bytes) -> Dict[str, List[Dict[str, Any]]]:
     """run_id -> records of the v2 bundle `data`, unverified."""
     from .bundle_v2 import run_files
@@ -78,6 +127,7 @@ def _runs(data: bytes) -> Dict[str, List[Dict[str, Any]]]:
                     and isinstance(e.get("type"), str)
                     and ("data" not in e or isinstance(e["data"], dict))):
                 raise ValueError("a record must have string run_id and type, integer run_seq, and object data")
+            _graph_data(e)
         runs[recs[0]["event"]["run_id"]] = recs
     return runs
 
@@ -825,15 +875,23 @@ def blast(doc: Dict[str, Any], spec: str) -> Dict[str, Any]:
     start = _find(g, spec)
     parent: Dict[str, Optional[str]] = {start: None}
     via: Dict[str, Dict[str, Any]] = {}
+    depth = {start: 0}
+    # (weakest grade, path's edge tuples): among equally short paths, lower is stronger and then deterministic.
+    rank = {start: (0, ())}
     q = deque([start])
     while q:
         n = q.popleft()
         for e in sorted((e for e in g.out_edges(n, GRADES) if _shown(e, outcomes)),
                         key=lambda e: GRADES.index(e["grade"])):
-            if e["dst"] not in parent:
-                parent[e["dst"]] = n
-                via[e["dst"]] = e
-                q.append(e["dst"])
+            dst = e["dst"]
+            candidate_depth = depth[n] + 1
+            candidate_rank = (max(rank[n][0], GRADES.index(e["grade"])),
+                              rank[n][1] + ((e["src"], e["dst"], e["kind"], e["grade"]),))
+            if dst not in depth or candidate_depth < depth[dst] or \
+                    (candidate_depth == depth[dst] and candidate_rank < rank[dst]):
+                parent[dst], via[dst] = n, e
+                depth[dst], rank[dst] = candidate_depth, candidate_rank
+                q.append(dst)
     reached = sorted(parent)
     touching = [e for e in g.edges if _shown(e, outcomes) and e["src"] in parent and e["dst"] in parent and _run_of(e)]
     runs = sorted({_run_of(e) for e in touching}, key=lambda r: (g.nodes.get(f"run:{r}", {}).get("ts", ""), r), reverse=True)
@@ -916,9 +974,15 @@ def verify(out: str, trust: str, content: Optional[Content] = None, paths: Optio
     duplicates = sorted({s["name"] for s in listed if sum(x["name"] == s["name"] for x in listed) > 1})
     if default_paths and duplicates:
         return [f"multiple sources are named {name}; pass SOURCES explicitly" for name in duplicates]
-    missing = ([s["name"] for s in listed if not os.path.isfile(os.path.join(out, os.path.basename(s["name"])))]
+    def regular(path: str) -> bool:
+        try:
+            return stat.S_ISREG(os.lstat(path).st_mode)
+        except OSError:
+            return False
+
+    missing = ([s["name"] for s in listed if not regular(os.path.join(out, os.path.basename(s["name"])))]
                if default_paths else [s["name"] for s in listed
-                                      if not any(os.path.basename(p) == os.path.basename(s["name"]) and os.path.isfile(p)
+                                      if not any(os.path.basename(p) == os.path.basename(s["name"]) and regular(p)
                                                  for p in paths)])
     problems = [f"{name}: source is missing; pass it to tracekit graph verify" for name in missing]
     if missing:

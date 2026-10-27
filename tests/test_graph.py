@@ -267,6 +267,15 @@ class ReviewRegressions(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(d, graph.GRAPH)))
             self.assertIn("agent:good", {n["id"] for n in doc["nodes"]})
 
+    def test_malformed_nested_event_makes_its_source_unreadable(self):
+        bad = {"event": {"run_id": "bad", "run_seq": 0, "type": "run.registered",
+                         "data": {"agent": "not an object"}}}
+        with mock.patch("tracekit.bundle_v2.run_files", return_value={"bad": ["runs/bad.jsonl"]}), \
+             mock.patch("tracekit.verify.v2.read_zip", return_value={"runs/bad.jsonl": b""}), \
+             mock.patch("tracekit.verify.v2._jsonl", return_value=[bad]):
+            with self.assertRaises(ValueError):
+                graph._runs(b"bad")
+
     def test_unverified_people_and_agents_do_not_describe_signed_answers(self):
         g = Graph(None, "grade")
         graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "coder"}}),
@@ -288,6 +297,19 @@ class ReviewRegressions(unittest.TestCase):
         result = graph.blast(self.doc(g), "agent:a")
         host = next(item for item in result["reached"] if item["node"] == "host:exfil.example")
         self.assertEqual(host["grade"], "UNVERIFIED")
+
+    def test_blast_prefers_the_strongest_bottleneck_at_equal_depth(self):
+        g = Graph(None, "grade")
+        for node in ("start", "signed", "observed", "target"):
+            graph._node(g, node, "run", node)
+        graph._node(g, "run:r", "run", "r")
+        cite = {"run_id": "r", "run_seq": 0, "seq": 0, "ts": TS}
+        g.add_edge("start", "signed", "edge", "SIGNED", record=cite)
+        g.add_edge("start", "observed", "edge", "OBSERVED", record=cite)
+        g.add_edge("signed", "target", "edge", "UNVERIFIED", record=cite, claimed="SIGNED")
+        g.add_edge("observed", "target", "edge", "OBSERVED", record=cite)
+        target = next(item for item in graph.blast(self.doc(g), "start")["reached"] if item["node"] == "target")
+        self.assertEqual((target["path"], target["grade"]), (["start", "observed", "target"], "OBSERVED"))
 
     def test_hosts_group_edges_by_run_once(self):
         class CountingEdges(list):
@@ -315,6 +337,21 @@ class ReviewRegressions(unittest.TestCase):
                            "nodes": [], "edges": []}, f)
             problems = graph.verify(d, os.path.join(d, "trust.json"))
         self.assertIn("source is missing", problems[0])
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symlinks")
+    def test_verify_refuses_a_symlinked_recorded_source(self):
+        with tempfile.TemporaryDirectory() as d:
+            target, source = (os.path.join(d, name) for name in ("target.tkb", "source.tkb"))
+            with open(target, "w") as f:
+                f.write("bundle")
+            os.symlink(target, source)
+            with open(os.path.join(d, graph.GRAPH), "w") as f:
+                json.dump({"schema_version": graph.SCHEMA_VERSION, "sources": [{"name": "source.tkb", "sha256": "x"}],
+                           "nodes": [], "edges": []}, f)
+            with mock.patch.object(graph, "build") as build, mock.patch.object(graph, "_files", return_value={}):
+                problems = graph.verify(d, os.path.join(d, "trust.json"))
+            self.assertIn("source is missing", problems[0])
+            build.assert_not_called()
 
 
 @unittest.skipUnless(os.name == "posix", "the Claude Code hook runs through a POSIX shell")
