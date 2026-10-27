@@ -348,6 +348,9 @@ class Signature(unittest.TestCase):
         self.assertEqual(pcm.check_sig(message(), "pcm-grant", TRUST), "bad signature")
         with self.assertRaises(ValueError):
             sigmsg.message("pcm", {"t": "tracekit.checkpoint.v2"})
+        # PCM's own tags (an open protocol, not a tracekit format), distinct from every tracekit purpose
+        self.assertEqual(sigmsg.message("pcm", {}), b'{"t":"pcm.message.v0"}')
+        self.assertEqual(sigmsg.message("pcm-grant", {}), b'{"t":"pcm.grant.v0"}')
         text = sigmsg.message("pcm", {"x": 1}).decode() + "\n"   # PCM bytes posing as a checkpoint note
         note = text + "\n" + checkpoint.log_line("pcm-test/log", KEY.public, KEY.sign(text.encode()))
         with self.assertRaises(checkpoint.NoteError):

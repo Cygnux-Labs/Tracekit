@@ -19,7 +19,7 @@ from tracekit.format.canon import MAX_SAFE_INT, event_hash
 from tracekit.schema import _check
 from tracekit.signer.rpc_schema import CLAIM_TYPES, DIGEST, HOST, ID, PCM_MESSAGE, TS, _END, _obj, _str
 
-MEDIA_TYPE = "application/vnd.tracekit.pcm+json"
+MEDIA_TYPE = "application/vnd.pcm+json"
 
 _SAFE = {"type": "integer", "minimum": -MAX_SAFE_INT, "maximum": MAX_SAFE_INT}
 _OPT = {"optional": {"type": "boolean"}}
