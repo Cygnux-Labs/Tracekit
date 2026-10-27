@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-35'
+version: '2026.10-v2-37'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -152,17 +152,23 @@ deny:
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
   - id: TK-D012
     class: shell
-    # each command's argv (wrappers and runners such as uvx and pipx run, `sh -c` and a path to the binary resolved):
-    # `tracekit approve|reject` and `tracekit approvals [OPTIONS] approve|reject`, also as `python -m tracekit[.cli]`
-    # (up to eight options, with a value, before -m; or -Im), and after a `--` (Python 3.14's argparse takes one before
-    # the command). The hold line names these commands for a person, and the agent reads it too: the dev signer takes
-    # the agent's own answer, labelled self_approved. Listing and showing approvals aren't held. The action is the
-    # word after `approvals` and its options (--signer, `--`); after an option `[\w\W]*?` crosses a --signer path with
-    # a space in it, so `approvals --signer S show approve` is denied too (the joined argv can't tell it from a path
-    # with ` show` in it); anchored and lazy, so the fallback engine stays linear
-    # lean: a tripwire, as TK-D007: code that calls approval_decide itself (python -c, a script) isn't read; when that
-    # must hold too, run system mode, whose signer refuses the agent's own answer
-    pattern: '^(tracekit|python[0-9.]* (-[^ ]+ ([^- ][^ ]* )?){0,8}-[A-Za-z]*m ?tracekit(\.cli|\.__main__)?)( --)? (approve|reject|approvals( --[\w\W]*?)? (approve|reject))( |$)'
+    # each command's argv (wrappers and runners such as uvx, uv tool run, pipx run, hatch run and conda run, `sh -c`,
+    # `eval` and a path to the binary resolved): `tracekit approve|reject` and `tracekit approvals [OPTIONS]
+    # approve|reject`, also as `python -m tracekit[.cli]` (python, pythonw, py, pyw or pypy, with a version and a
+    # free-threaded build's `t`; up to eight options, with a value, before -m; or -Im) or a runner's module (`uv run -m
+    # tracekit.cli`), and after a `--` (Python 3.14's argparse takes one before the command). The hold line names these
+    # commands for a person, and the agent reads it too: the dev signer takes the agent's own answer, labelled
+    # self_approved. Listing and showing approvals aren't held. The action is the word after `approvals` and its
+    # options (--signer, `--`); after an option `[\w\W]*?` crosses a --signer path with a space in it, so `approvals
+    # --signer S show approve` is denied too (the joined argv can't tell it from a path with ` show` in it); anchored
+    # and lazy, so the fallback engine stays linear
+    # lean: a tripwire, as TK-D007: code that calls approval_decide itself (python -c, a script) isn't read, nor a
+    # name or action that comes at run time (`$(…)` and variables are held as TK-SHELL-PARSE; `xargs tracekit` reading
+    # the action from stdin and `sh -c 'tracekit "$@"'` aren't), a short-option cluster ending in an option that takes
+    # a value (`uvx -qc c.txt tracekit`), a runner's own options before its subcommand (`uv -q run`) or a runner
+    # policy2/shell.py doesn't name (mamba, `hatch env run`); when that must hold too, run system mode, whose signer
+    # refuses the agent's own answer
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ ([^- ][^ ]* )?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (approve|reject|approvals( --[\w\W]*?)? (approve|reject))( |$)'
     reason: answering an approval from the agent's session
     remedy: Wait for a person to approve or reject the held call from their own terminal; `tracekit approvals list` and `show` stay allowed.
     rationale: An approval is a person's decision; an agent that answers its own held calls turns every ask into an allow.
@@ -588,16 +594,20 @@ flag:
     class: fs
     tool: Write|Edit|MultiEdit
     field: path
-    # Only the normalized path, including its casefolded form, not the file's content.
-    pattern: '(^|/)\.(claude|codex|gemini|opencode|qwen)(/|$)|\.cursor/hooks\.json|(^|/)opencode\.jsonc?$|managed-settings|\.mcp\.json'
+    # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
+    # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
+    # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
+    # AppData/Roaming/Block/goose/config).
+    pattern: '(^|/)\.(claude|codex|gemini|opencode|qwen|factory)(/|$)|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|block/goose/config)(/|$)|\.cursor/hooks\.json|(^|/)opencode\.jsonc?$|managed-settings|\.mcp\.json'
     label: harness_config
   - id: TK-F015
     class: shell
     field: effects
     # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
     # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
-    # user config (its plugins, Tracekit's too) is ~/.config/opencode.
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode|qwen)(?:[/\\]|$)|\.config[/\\]opencode(?:[/\\]|$)|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
+    # user config (its plugins, Tracekit's too) is ~/.config/opencode. The agy, goose and Droid paths are TK-F009's,
+    # and a delete of a whole .agents folder (agy's hooks.json with it).
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose)|block[/\\]goose[/\\]config)(?:[/\\]|$)|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
     label: harness_config
   - id: TK-F016
     tool: Bash|Write|Edit|MultiEdit

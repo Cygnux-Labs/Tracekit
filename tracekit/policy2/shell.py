@@ -34,6 +34,20 @@ MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings, t
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "rbash", "mksh", "ksh93", "yash", "posh", "lksh", "oksh"}
 # shells whose language the parser doesn't read: the commands they get on their line or from stdin are opaque
 FOREIGN_SHELLS = {"fish", "csh", "tcsh", "pwsh", "powershell", "nu", "xonsh", "elvish"}
+# the options of uv run and uv tool run (uvx) that take a value, as uv 0.13 lists them, and their hidden aliases
+# (--constraint, --trusted-host, ...): neither takes the other's, so the union reads both
+UV_OPTS = ("--from", "-w", "--with", "--with-editable", "--with-requirements", "-c", "--constraints", "--constraint",
+           "-b", "--build-constraints", "--build-constraint", "--overrides", "--override", "--env-file",
+           "--python-platform", "--torch-backend", "--index", "--default-index", "-i", "--index-url",
+           "--extra-index-url", "-f", "--find-links", "--index-strategy", "--keyring-provider", "-P",
+           "--upgrade-package", "--upgrade-group", "--resolution", "--prerelease", "--prerelease-package",
+           "--fork-strategy", "--exclude-newer", "--exclude-newer-package", "--no-sources-package",
+           "--reinstall-package", "--link-mode", "-C", "--config-setting", "--config-settings",
+           "--config-settings-package", "--no-build-isolation-package", "--no-build-package", "--no-binary-package",
+           "--cache-dir", "--refresh-package", "-p", "--python", "--python-preference", "--python-fetch", "--color",
+           "--allow-insecure-host", "--trusted-host", "--directory", "--project", "--config-file",
+           "--preview-features", "--preview-feature", "--package", "--extra", "--no-extra", "--group", "--no-group",
+           "--only-group", "--no-editable-package")
 # wrapper -> (options that take a value, positional arguments before the command)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"), 0), "nohup": ((), 0),
             "time": (("-f", "-o", "--format", "--output"), 0),
@@ -60,15 +74,7 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
             "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
             "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
-            "uvx": (("--from", "-w", "--with", "--with-editable", "--with-requirements", "-c", "--constraints", "-b",
-                     "--build-constraints", "--overrides", "--env-file", "--python-platform", "--torch-backend",
-                     "--index", "--default-index", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
-                     "--index-strategy", "--keyring-provider", "-P", "--upgrade-package", "--upgrade-group",
-                     "--resolution", "--prerelease", "--prerelease-package", "--fork-strategy", "--exclude-newer",
-                     "--exclude-newer-package", "--no-sources-package", "--reinstall-package", "--link-mode", "-C",
-                     "--config-setting", "--config-settings-package", "--no-build-isolation-package",
-                     "--no-build-package", "--no-binary-package", "--cache-dir", "--refresh-package", "-p",
-                     "--python", "--color", "--allow-insecure-host", "--directory", "--project", "--config-file"), 0),
+            "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
             "proxychains": (("-f",), 0), "proxychains4": (("-f",), 0), "firejail": ((), 0),
             "sandbox-exec": (("-f", "-n", "-p", "-D"), 0), "ssh-agent": (("-a", "-E", "-t", "-O", "-P"), 0),
@@ -83,9 +89,8 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
 # "--": the command follows a `--`, after the tools to run it with)
 # lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
 # anchored on a command's name (TK-D001, TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
-RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirements", "--python", "-p", "--package",
-                             "--extra", "--group", "--only-group", "--env-file", "--directory", "--project", "--index",
-                             "--default-index", "--index-url", "--extra-index-url"), 0),
+RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
+           "conda": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0),
            "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
            "pdm": (("run",), ("-p", "--project"), 0), "direnv": (("exec",), (), 1),
            "pipx": (("run",), ("--spec", "--python", "--python-args", "--with", "--fetch-python", "-i", "--index-url",
@@ -96,6 +101,8 @@ RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirem
            "npm": (("exec", "x"), ("-p", "--package", "-w", "--workspace"), 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
            "yarn": (("exec", "dlx"), ("-p", "--package"), 0), "bun": (("x",), ("-p", "--package"), 0)}
+# runners whose argparse takes any unambiguous prefix of a long option (`pipx run --sp tracekit-ai tracekit`)
+ARGPARSE = {"pipx", "conda"}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -219,12 +226,15 @@ def _unwrap(name, args):
         if name == "command" and a in ("-v", "-V"):
             return []   # a lookup, not a run
         if a.startswith("-"):   # a bare `-` too (env - cmd: an empty environment)
-            i += 2 if a in opts else 1
-        elif _ASSIGN.match(a):
+            i += 2 if a in opts or name in ARGPARSE and a.startswith("--") and any(o.startswith(a) for o in opts) else 1
+        elif _ASSIGN.match(a) or name == "hatch" and a.startswith("+"):   # hatch run's +var=… matrix selection
             i += 1
         else:
             break
-    return args[i + positional:]
+    inner = args[i + positional:]
+    if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
+        inner = [inner[0].split(":", 1)[-1]] + inner[1:]
+    return inner
 
 
 def _shell_mode(args):
@@ -663,6 +673,10 @@ class _Parser:
             elif (name == "npx" or name == "npm" and args[:1] in (["exec"], ["x"])) and \
                     (script := _npm_call(args if name == "npx" else args[1:])) is not None:
                 self.nested(script, via + [name + " -c"])
+            elif name == "uv" and args[:2] in (["tool", "run"], ["tool", "uvx"]):   # uvx's long forms
+                argv, via, unreadable = ["uvx"] + args[2:], via + ["uv tool run"], unreadable[2:]
+                self.charge(len(argv))
+                continue
             elif name in WRAPPERS or name in RUNNERS and args[:1] and args[0] in RUNNERS[name][0]:
                 if name == "runuser" and _dash_c(args) is not None:
                     self.nested(_dash_c(args), via + ["runuser -c"])

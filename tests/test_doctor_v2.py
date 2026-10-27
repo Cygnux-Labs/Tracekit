@@ -179,6 +179,20 @@ class CodingAgentHooks(unittest.TestCase):
                     got = self.check(harness, path, settings)["D-HOOKS-TIMEOUT"]
                     self.assertEqual(got["status"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
 
+    def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
+        # agy waits 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states agy's wait
+        from tracekit import agent_hooks
+        for harness, says in (("antigravity", "30 s"), ("codex", "60 s")):
+            with self.subTest(harness=harness):
+                path, settings = self.installed(harness)
+                hooks = settings[agent_hooks.AGY_HOOK] if harness == "antigravity" else settings["hooks"]
+                for ev, h in self.entries({"hooks": hooks}):
+                    if ev in agent_hooks.PRE:
+                        h.pop("timeout")
+                got = self.check(harness, path, settings)["D-HOOKS-TIMEOUT"]
+                self.assertEqual(got["status"], "warn")
+                self.assertIn(f"{harness} pre-tool timeout {says} in {path}", got["detail"])
+
     def test_a_wrong_event_and_an_event_missing_from_a_post_hook_warn(self):
         for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
             for replacement in ("", "AnotherEvent"):

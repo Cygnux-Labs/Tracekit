@@ -287,7 +287,8 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             f"each {harness} hook command in {path} names its event" if cmds else
             f"no v2 {harness} hook commands found in {path}", fix, bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
-        pre = [h.get("timeout", 60 * scale) for ev, h in cmds if ev in agent_hooks.PRE]
+        default = 30 if harness == "antigravity" else 60   # a timeout the hook doesn't set: agy's own default is 30 s
+        pre = [h.get("timeout", default * scale) for ev, h in cmds if ev in agent_hooks.PRE]
         pre = [t if type(t) in (int, float) and 0 <= t < float("inf") else 0 for t in pre]
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
