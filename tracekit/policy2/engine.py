@@ -414,9 +414,31 @@ def _effects(parsed):
     """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
     path casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
     sed -i and perl -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i), awk's
-    print > "file", and one of those that git, docker, podman, kubectl or parallel runs from its words (git rm)."""
+    print > "file", and one of those that git, docker, podman, kubectl or parallel runs from its words (git rm). When a
+    command writes files the line names only at run time or inside code it runs (_opaque), every word on the line is
+    one it may write, as MAY_WRITE:word (only TK-D008 reads those)."""
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
+    if any(_opaque(c["argv"]) for c in parsed[0] if c["argv"]):
+        # lean: a read on the same line as such a writer counts as a write (as TK-D008 read the whole line before
+        # #421); follow the names into the writer if that holds real reads
+        tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:]]
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
+
+
+_WRITE_WORD = re.compile(r"\b(?:rm|unlink|truncate|shred|mv|tee|dd|ln|sed|perl|find)\b|>")
+
+
+def _opaque(argv):
+    """Whether a command writes files _command_effects can't name: a writer whose operand is a variable or a
+    substitution (rm "$f"), or xargs, parallel, a container's exec or ssh, or an interpreter running code with a write
+    in it (xargs rm, parallel 'rm {}', docker exec c sh -c 'rm …', perl -e 'open F, ">", …')."""
+    exe = argv[0].rsplit("/", 1)[-1].lower()
+    if exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
+        return any("$" in a or "`" in a for a in argv[1:])
+    if exe in ("xargs", "parallel", "docker", "podman", "kubectl", "ssh") or \
+            re.fullmatch(r"perl|python[\d.]*|node(?:js)?|ruby|php|bun|deno|lua", exe):
+        return any(_WRITE_WORD.search(a) for a in argv[1:])
+    return False
 
 
 def _command_effects(commands):

@@ -103,8 +103,10 @@ deny:
     # folders isn't held: one in Claude Code's, Codex's or Gemini CLI's transcript folder, OpenCode's sessions (its
     # data folder's opencode*.db, and storage/ before it), or a delete of a home folder holding them (~/.claude,
     # ~/.local/share; a home is ~, $HOME or an absolute /home/<u>, /Users/<u> or /root, so a project's .claude, or a
-    # repo's build/home/u/.claude, isn't one). Anchored and lazy, so the fallback engine stays linear
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\]opencode[/\\](?:storage(?:[/\\]|$)|opencode[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\]opencode)?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\]opencode)?)[/\\]*\*?$'
+    # repo's build/home/u/.claude, isn't one). MAY_WRITE: any word on a line whose writer gets its files at run time
+    # (xargs rm, rm "$f") or in code it runs (docker exec c sh -c, perl -e). Anchored and lazy, so the fallback
+    # engine stays linear
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET|MAY_WRITE):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\]opencode[/\\](?:storage(?:[/\\]|$)|opencode[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\]opencode)?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\]opencode)?)[/\\]*\*?$'
     reason: modifying the agent harness's transcripts
     remedy: Leave the harness's transcripts as they are (reading them is fine); a person removes them once the run's evidence is exported.
     rationale: Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.

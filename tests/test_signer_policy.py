@@ -579,7 +579,13 @@ class CodingPack(unittest.TestCase):
                   "git rm ~/.claude/projects/p/a.jsonl", "docker exec c rm /root/.claude/projects/p/a.jsonl",
                   "kubectl exec p -- rm /root/.codex/sessions/a.jsonl", "parallel rm ::: ~/.codex/sessions/*",
                   "docker exec c find /tmp -exec rm /root/.codex/sessions/a.jsonl \\;",
-                  "awk '{print > \"/Users/u/.claude/projects/p/a.jsonl\"}' x")
+                  "awk '{print > \"/Users/u/.claude/projects/p/a.jsonl\"}' x",
+                  # a writer that gets its files at run time or runs them in code: every word on the line counts
+                  "perl -e 'open F, \">\", \"/home/u/.claude/projects/p/x\"'",
+                  "docker exec c sh -c 'rm /root/.claude/projects/p/x'", "podman exec c sh -c 'rm /root/.codex/sessions/x'",
+                  "kubectl exec p -- sh -c 'rm /root/.gemini/tmp/h/x'", "parallel -j1 'rm {}' ::: ~/.claude/projects/p/x",
+                  "xargs rm < <(ls ~/.codex/sessions/*)", "find ~/.codex/sessions -type f -print0 | xargs -0 rm",
+                  "while read f; do rm \"$f\"; done <<< \"$(ls ~/.codex/sessions/*)\"")
         reads = ("ls -la ~/.codex/sessions/ 2>/dev/null | head; ls ~/.gemini/tmp 2>/dev/null | head",
                  "rm -rf build && ls ~/.codex/sessions", "echo 'rm ~/.codex/sessions' > note.txt",
                  "cat > notes.md <<'EOF'\nrm ~/.claude/projects/x\nEOF", "git commit -m 'rm ~/.claude/projects'",
