@@ -3241,7 +3241,7 @@
         + (DESK() ? `, or answer on the <a href="/approvals">approvals page</a> with a passkey` : "") + `.</p>`
         + (w.map(x => {
           const args = x.rec.tool_input && Object.keys(x.rec.tool_input).length ? j(x.rec.tool_input) : "";
-          const cmds = x.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${x.req.v2.approval_id}`) : [];
+          const cmds = x.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(x.req.v2.approval_id)}`) : [];
           return `<div class="hold"><span class="sev wait">WAITING</span> <b>${esc(x.rec.tool_name)}</b> · ${esc(x.rec.agent)} · ${esc(fmtT(x.rec.ts))} <button type="button" class="cp" data-orun="${esc(x.open[0])}" data-oseq="${esc(x.open[1])}">OPEN</button>`
             + `<pre>${esc(args || "arguments kept as a commitment only")}</pre><div>${esc((x.rec.v2.rules || []).map(r => (r.id + " " + (r.reason || "")).trim()).join("; ") || "held")}</div>`
             + `<div class="dim">${esc(x.req ? `approval ${x.req.v2.approval_id}` + (x.req.v2.expires ? ` · expires ${x.req.v2.expires}` : "") : "no approval requested yet: nobody can answer it until the agent asks")}</div>`
@@ -3855,11 +3855,11 @@
         const v = w.rec.v2, args = w.rec.tool_input && Object.keys(w.rec.tool_input).length ? j(w.rec.tool_input).replace(/\s+/g, " ") : "";
         out.push({ kind: "HOLD", sev: "med", open: w.open, what: `${w.rec.tool_name} · ${w.rec.agent} waits for a person: ` + ((v.rules || []).map(x => x.reason ? `${x.id} ${x.reason}` : x.id).join("; ") || "held"),
           detail: (args ? "binds " + args.slice(0, 300) : "arguments kept as a commitment only") + (w.req ? "" : " · no approval requested yet"),
-          cmds: w.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${w.req.v2.approval_id}`) : [] });
+          cmds: w.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(w.req.v2.approval_id)}`) : [] });
       }
       const runs = [...RUNS.values()];
       for (const r of runs) for (const i of r.incidents || []) if (i.state === "held" || i.state === "quarantined")
-        out.push({ kind: "CONTAINED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${i.state} by incident ${i.incident_id}`, detail: `${i.trigger} ${i.rule_ids.join(" ")}`.trim(), cmds: [`tracekit signer incidents resume ${r.id}`] });
+        out.push({ kind: "CONTAINED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${i.state} by incident ${i.incident_id}`, detail: `${i.trigger} ${i.rule_ids.join(" ")}`.trim(), cmds: [`tracekit signer incidents resume ${word(r.id)}`] });
       for (const r of runs) if (r.verdict === "failed" || r.verdict === "error")
         out.push({ kind: r.verdict === "failed" ? "FAILED" : "NOT CHECKED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${r.id.slice(0, 8)} ` + (r.verdict === "failed" ? "failed verification: none of its records are shown" : "could not be checked"), detail: failLines(r.report)[0] || "", cmds: [] });
       if (STOPPED) out.push({ kind: "STOPPED", sev: "high", open: null, what: STOPPED, detail: "", cmds: [] });
@@ -3916,7 +3916,7 @@
         + `<table class="wt"><thead><tr><th>TIME</th><th>AGENT</th><th>CALL</th><th>ARGUMENTS (SIGNER'S COPY)</th><th>DECISION</th><th>RULE, IN WORDS</th><th>OUTCOME</th><th>WHO · WHEN</th><th></th></tr></thead><tbody>`
         + (shown.map(r => {
           const v = r.rec.v2, args = r.rec.tool_input && Object.keys(r.rec.tool_input).length ? j(r.rec.tool_input).replace(/\s+/g, " ") : "";
-          const cmds = r.tabs.includes("waiting") && r.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${r.req.v2.approval_id}`) : [];
+          const cmds = r.tabs.includes("waiting") && r.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(r.req.v2.approval_id)}`) : [];
           return `<tr class="row" data-tkseq="${esc(r.rec.tk_seq)}"><td class="dim">${esc(fmtD(r.rec.ts) + " " + fmtT(r.rec.ts))}</td><td class="s-flag">${esc(r.rec.agent)}</td><td>${esc(r.rec.tool_name)}</td><td title="${esc(args)}" class="${args ? "" : "dim"}">${esc(args ? args.slice(0, 160) : "kept as a commitment only")}</td>`
             + `<td class="${esc((DEC[v.decision] || DEC.flag)[0])}">${esc((DEC[v.decision] || DEC.flag)[1])}</td><td>${esc((v.rules || []).map(x => (x.id + " " + (x.reason || "")).trim()).join("; ") || "–")}</td><td class="${esc(r.out[0])}">${esc(r.out[1])}</td>`
             + `<td class="dim">${esc(r.ans ? `${r.ans.v2.approver || "?"} · ${fmtT(r.ans.ts)}` : v.decision === "deny" ? "nobody may: never held" : r.tabs.includes("waiting") && !r.req ? "no approval requested yet" : "–")}</td><td>` + cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join("<br>") + `</td></tr>`;
@@ -4182,7 +4182,7 @@
         : !req ? "nobody yet: the agent has not requested an approval for this call (no approval.request record)"
         : "a person the signer takes as an approver" + (DESK() ? `, on the <a href="/approvals">approvals page</a>` : "") + ", or in a terminal with the signer's approvals command";
       if (req?.v2.agents) who += `<div class="dim">${esc((req.v2.agents.eligible ? "an agent approver may answer it too: " : "no agent approver may answer it: ") + req.v2.agents.reason)}</div>`;
-      if (out[1] === "WAITING" && req?.v2.approval_id) for (const d of ["approve", "reject"]) { const c = `tracekit approvals ${d} ${req.v2.approval_id}`; who += `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`; }
+      if (out[1] === "WAITING" && req?.v2.approval_id) for (const d of ["approve", "reject"]) { const c = `tracekit approvals ${d} ${word(req.v2.approval_id)}`; who += `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`; }
       steps.push(["", "WHO ANSWERS", who]);
       return `<div class="sec">WHY THIS DECISION</div><div class="steps">` + steps.map(([k, l, h], i) => `<b class="${esc(k)}">${esc(i + 1)}</b><span class="dim">${esc(l)}</span><span>` + h + `</span>`).join("") + `</div>`;
     }
@@ -4341,7 +4341,7 @@
     }
     // the commands that make a run's review evidence: export its bundle and verify it offline
     function runCmds(r) {
-      const file = r.id + ".tkb", word = x => /^[\w.:@/=-]+$/.test(x) ? x : shq(x);
+      const file = r.id + ".tkb";
       return [`tracekit export --v2 --run ${word(r.id)}` + (r.tenant && r.tenant !== "default" ? ` --tenant ${word(r.tenant)}` : "") + ` --with-findings -o ${word(file)}`, `tracekit verify ${word(file)} --trust trust.json`];
     }
     // cmds: the export and verify commands (EVIDENCE shows them above the review)
@@ -4725,6 +4725,8 @@
     }
     // one POSIX shell word, whatever the run's log says
     const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+    // an id in a command to copy: as it is when that is safe, else one quoted shell word
+    const word = x => /^[\w.:@/=-]+$/.test(x) ? x : shq(x);
     function argsFrom(a) {
       const v = a.v2, ref = whyRef(a);
       if (!v && !ref) return "";

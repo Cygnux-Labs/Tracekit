@@ -132,7 +132,7 @@ def text(html):
 
 class WhyThisDecision(unittest.TestCase):
     def detail(self, call):
-        return json.loads(page_js(["esc", "short", "cp", "ANSWER", "lastAnswer", "ended", "callState", "whyDecision"], f"""
+        return json.loads(page_js(["esc", "short", "cp", "shq", "word", "ANSWER", "lastAnswer", "ended", "callState", "whyDecision"], f"""
             const S = {{ sessions: new Map() }}, label = () => "coder·5e67", DESK = () => true;
             const a = {json.dumps(call)}; a.agent = {{ session: "r1" }}; a.approvals ??= []; a.flags ??= [];
             process.stdout.write(JSON.stringify(whyDecision(a)));"""))
@@ -151,8 +151,8 @@ class WhyThisDecision(unittest.TestCase):
             "to do: Send it from a person. 4 FLAG RULES read 3 · none matched 5 DECISION ASK the first section with a "
             "match decides: deny, then ask, then flag; none, allow 6 OUTCOME WAITING 7 WHO ANSWERS a person the "
             "signer takes as an approver, on the approvals page , or in a terminal with the signer's approvals command no "
-            "agent approver may answer it: the rule has no agent bounds tracekit approvals approve apr&lt;1&gt; COPY "
-            "tracekit approvals reject apr&lt;1&gt; COPY"))
+            "agent approver may answer it: the rule has no agent bounds tracekit approvals approve &#39;apr&lt;1&gt;&#39; COPY "
+            "tracekit approvals reject &#39;apr&lt;1&gt;&#39; COPY"))   # the id one quoted shell word
         self.assertIn('<b class="ask">3</b>', html)
         self.assertIn('<a href="/approvals">approvals page</a>', html)
 
@@ -400,10 +400,22 @@ class WaitingForYou(unittest.TestCase):
 
 class NeedsYou(unittest.TestCase):
     def needs(self, recs, runs, stopped=""):
-        return json.loads(page_js(["j", "plural", "failLines", "waiting", "needsYou"], f"""
+        return json.loads(page_js(["j", "plural", "failLines", "shq", "word", "waiting", "needsYou"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), STOPPED = {json.dumps(stopped)};
             let waitKey = [], waitList = [];
             process.stdout.write(JSON.stringify(needsYou()));"""))
+
+    def test_an_id_in_a_command_to_copy_is_one_shell_word(self):
+        """The approve, reject and resume commands put a record's ids in as they came; runCmds quoted its."""
+        needs_node(self)
+        held = {**hold(1, "c1"), "v2": {"decision": "ask", "rules": []}}
+        out = self.needs([held, answer(2, "c1", "requested", approval_id="apr-1; rm -rf ~")], [
+            {"id": "r 1$(x)", "verdict": "verified", "state": "open", "incidents": [
+                {"incident_id": "i", "trigger": "rule", "rule_ids": [], "state": "held"}]}])
+        self.assertEqual([c for n in out for c in n["cmds"]], [
+            "tracekit approvals approve 'apr-1; rm -rf ~'", "tracekit approvals reject 'apr-1; rm -rf ~'",
+            "tracekit signer incidents resume 'r 1$(x)'"])
+        self.assertEqual(re.findall(r"tracekit (?:approvals \$\{d\}|signer incidents resume) \$\{(?!word\()", PAGE), [])
 
     def test_what_needs_a_person_comes_first_with_its_command_and_record(self):
         """A person asked "do I need to do anything?" and the answer was spread over runs, alerts and pages."""
