@@ -46,6 +46,68 @@ class IsolatedCommand(unittest.TestCase):
             self.assertNotIn("Traceback", r.stderr, cmd)
 
 
+@unittest.skipIf(os.name == "nt", "the fail-closed wrapper is POSIX shell")
+class WorkingTree(unittest.TestCase):
+    """A dev hook imports Tracekit from the working tree init ran in (#427): a branch switch or rebase there that
+    leaves code which won't import says which tree, what it is on now and what to run, and still blocks the call."""
+
+    def git(self, *args):
+        """git in the test's tree only: no GIT_DIR or other GIT_* (set when a git hook runs the tests) points it at
+        the repository under test."""
+        subprocess.run(["git", "-C", self.tree, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "-c", "commit.gpgsign=false", *args], check=True, capture_output=True,
+                       env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
+
+    def write_hook(self, source):
+        with open(os.path.join(self.tree, "tracekit", "integrations", "claude_code.py"), "w", encoding="utf-8") as f:
+            f.write(source)
+
+    def test_a_tree_that_no_longer_imports_names_the_tree_its_branch_and_the_fix(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.tree = os.path.join(d, "the checkout")   # a space: the fix command quotes the path
+        os.makedirs(os.path.join(self.tree, "tracekit", "integrations"))
+        for name in ("__init__.py", os.path.join("integrations", "__init__.py")):
+            open(os.path.join(self.tree, "tracekit", name), "w").close()
+        self.write_hook("def _entry(event):\n    return 0\n")
+        self.git("init", "-q")
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.git("add", ".")
+        self.git("commit", "-qm", "hook")
+        elsewhere = {"GIT_DIR": os.path.join(d, "another repository")}   # as a git hook sets it: git ignores it here
+        with mock.patch.object(install, "ROOT", self.tree), mock.patch("importlib.util.find_spec", return_value=None), \
+                mock.patch.dict(os.environ, elsewhere):
+            pre, stop = (install._hook_command(install.V2_HOOK, args=(ev,), pre=ev == "PreToolUse")
+                         for ev in ("PreToolUse", "Stop"))
+            for module, args, flags in ((install.V2_HOOKS[1], ("codex", "PreToolUse"), "--dev --v2 --agent codex"),
+                                        ("tracekit.agent_hooks", ("codex",), "--dev --agent codex")):
+                self.assertIn(f"or run tracekit init {flags} again from", install._dev_hook_argv(module, "entry", args)[3])
+
+        def run(cmd, **env):
+            return subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, timeout=60,
+                                  env=dict(os.environ, **elsewhere, **env))
+        self.assertEqual([(r.returncode, r.stderr) for r in (run(pre), run(stop))], [(0, ""), (0, "")])
+        self.git("checkout", "-qb", "feature")
+        self.write_hook("from tracekit import a_name_this_branch_removed\n")
+        for now in ("feature", "a detached HEAD"):
+            p, s = run(pre), run(stop)
+            self.assertEqual((p.returncode, s.returncode), (2, 1), p.stderr)   # blocked as before; only the line is new
+            line = p.stderr.splitlines()[0]
+            self.assertEqual(s.stderr.splitlines()[0], line)
+            for part in (f"the working tree {self.tree},",
+                         "(ImportError: cannot import name 'a_name_this_branch_removed'",
+                         f"it is on {now} there, and was on main when the hooks were installed",
+                         f"git -C '{self.tree}' checkout main",
+                         "or run tracekit init --dev --v2 again from"):
+                self.assertIn(part, line)
+            self.assertNotIn("Traceback", p.stderr)
+            self.git("checkout", "-q", "--detach")   # as a rebase leaves it
+        p = run(pre, PATH=d)   # no git on PATH: the plain traceback, and the call is still blocked
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("ImportError: cannot import name 'a_name_this_branch_removed'", p.stderr)
+        self.assertNotIn("Error in sys.excepthook", p.stderr)
+
+
 class FailMode(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
