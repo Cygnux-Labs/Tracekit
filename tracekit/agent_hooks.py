@@ -1,4 +1,5 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code and Factory Droid, on the Claude Code pipeline.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid and Antigravity CLI, on the Claude
+Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -7,6 +8,7 @@
     tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
     tracekit init --dev --agent qwen         # ~/.qwen/settings.json
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
+    tracekit init --dev --agent antigravity  # ~/.gemini/config/hooks.json (project: .agents/hooks.json)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -28,9 +30,14 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     Qwen Code (a Gemini CLI fork) sends Claude Code's payloads and names its events as Claude Code does, with Gemini's
             tool names and its own edit, grep_search and agent -> Edit, Grep, Task
     Droid   Execute, Create, ApplyPatch, FetchUrl -> Bash, Write, Edit (all patch file headers in paths), WebFetch
+    agy     run_command, view_file, write_to_file, replace_file_content, multi_replace_file_content, list_dir,
+            find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
+            -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
+            WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
 
 What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
-events are paired by (tool, arguments) in order; Cursor and Qwen Code report failures through postToolUseFailure.
+events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
+Qwen Code report failures through postToolUseFailure.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
 import hashlib
@@ -46,9 +53,9 @@ from . import __version__, hook as H
 from .core import canon
 from .locking import lock_file, unlock_file
 
-HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid")
+HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid", "antigravity")
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
-               "qwen": "qwen-code", "droid": "droid"}
+               "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity"}
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
@@ -70,6 +77,19 @@ GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", 
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
+# Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
+# tool itself reads, so a decoy key the model sends beside it never moves the decision. BypassSandbox runs a
+# run_command outside agy's terminal sandbox (google-antigravity/antigravity-cli#1304): TK-A003 holds it
+AGY_TOOLS = {"run_command": "Bash", "view_file": "Read", "write_to_file": "Write", "replace_file_content": "Edit",
+             "multi_replace_file_content": "Edit", "list_dir": "LS", "find_by_name": "Glob", "grep_search": "Grep",
+             "read_url_content": "WebFetch", "search_web": "WebSearch", "invoke_subagent": "Task"}
+AGY_ARGS = {"run_command": {"command": "CommandLine", "dangerouslyDisableSandbox": "BypassSandbox"},
+            "view_file": {"file_path": "AbsolutePath"}, "write_to_file": {"file_path": "TargetFile"},
+            "replace_file_content": {"file_path": "TargetFile"}, "multi_replace_file_content": {"file_path": "TargetFile"},
+            "list_dir": {"file_path": "DirectoryPath"}, "find_by_name": {"file_path": "SearchDirectory", "pattern": "Pattern"},
+            "grep_search": {"file_path": "SearchPath", "pattern": "Query"}, "read_url_content": {"url": "Url"}}
+AGY_HOOK = "tracekit"   # the name Tracekit's hook has in agy's hooks.json, which maps each hook's name to its events
+AGY_EVENTS = ("PreToolUse", "PostToolUse")
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -173,6 +193,12 @@ def tool(harness, name, ti):
         if "__" in name and not name.startswith("mcp__"):   # an extension/MCP tool, as goose namespaces it
             return "mcp__" + name, ti
         return GOOSE_TOOLS.get(name, name), ti
+    if harness == "antigravity":
+        if name == "manage_task" and ti.get("Action") == "send_input":   # input typed into a background run_command
+            ti["command"] = ti.get("Input")
+            return "Bash", ti
+        ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
+        return AGY_TOOLS.get(name, name), ti
     return name, ti
 
 
@@ -316,6 +342,25 @@ def normalise(harness, p):
             out["error"] = p.get("error")
             return out
         return None
+    if harness == "antigravity":
+        # agy's payload names no event (its hook's command line does) and gives a call no id: the stepIdx, tool and
+        # arguments it sends with a call's PreToolUse and PostToolUse pair them (a step can hold more than one call),
+        # and a result that matches no call exactly stays unpaired, its call a gap, never guessed; a result is not
+        # sent, only its error text (empty if it ran)
+        # lean: the same stepIdx and toolCall on both is agy's documented contract, not yet seen in a live session
+        if ev not in AGY_EVENTS:
+            return None
+        call = p.get("toolCall") if isinstance(p.get("toolCall"), dict) else {}
+        raw = str(call.get("name") or "?")
+        name, ti = tool(harness, raw, call.get("args"))
+        sid, step = p.get("conversationId"), p.get("stepIdx")
+        out.update(cwd=(p.get("workspacePaths") or [None])[0], transcript_path=p.get("transcriptPath"),
+                   model=p.get("modelName"), session_id=sid, hook_event_name=ev, tool_name=name, tool_input=ti,
+                   tool_use_id=sid and type(step) is int and _paired_ids(
+                       harness, sid, f"{step}|{raw}", ti, "pre" if ev == "PreToolUse" else "post"))
+        if ev == "PostToolUse" and p.get("error"):
+            out.update(hook_event_name="PostToolUseFailure", error=p["error"])
+        return out
     raise ValueError(f"unknown harness {harness!r}")
 
 
@@ -332,6 +377,7 @@ class Tee(io.StringIO):
 
 
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
+PAIRED = ("gemini", "droid", "antigravity")   # the harnesses whose call ids _paired_ids makes
 
 
 # goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
@@ -349,13 +395,14 @@ def _blocked_goose_tool(tool_name):
     return None
 
 
-def run(harness, raw, stdout=None, stderr=None):
-    """Handle one hook invocation. -> exit code. Writes the harness's expected stdout. A payload that is not a JSON
-    object raises: entry answers it."""
+def run(harness, raw, stdout=None, stderr=None, event=None):
+    """Handle one hook invocation (`event`: the hook event from the command line, or None). -> exit code. Writes the
+    harness's expected stdout. A payload that is not a JSON object raises: entry answers it."""
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     p = json.loads(raw) if raw.strip() else {}
     if not isinstance(p, dict):
         raise ValueError("the hook payload is not a JSON object")
+    p = dict(p, hook_event_name=event) if event else p
     is_pre = p.get("hook_event_name") in PRE or (harness == "goose" and p.get("event") in PRE)
     q = normalise(harness, p)
     if q is None:
@@ -374,7 +421,7 @@ def run(harness, raw, stdout=None, stderr=None):
         code = H.main(harness_reasoning=False)
     finally:
         sys.stdin, sys.stderr = real_stdin, real_stderr
-    if code and harness in ("gemini", "droid") and is_pre and q.get("tool_use_id"):   # a blocked call gets no post-tool
+    if code and harness in PAIRED and is_pre and q.get("tool_use_id"):   # a blocked call gets no post-tool event
         with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
             _paired_ids(harness, q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     msg = err.getvalue().strip()
@@ -387,7 +434,11 @@ def _exit(harness, code, is_pre):
     exit 2 with a reason on stderr, whatever a shell startup file printed to stdout; on Windows its hooks run under
     PowerShell, which hands it 2 as 1, so there the JSON deny _reply writes carries the block, at exit 0, the only
     status at which Codex reads it. Only a tool call is blocked: a failed prompt or result exits 1, since at 2 Gemini
-    CLI erases the prompt or hides the result, and Codex and Cursor block them."""
+    CLI erases the prompt or hides the result, and Codex and Cursor block them. Antigravity CLI reads an answer only
+    from the JSON of a hook that exits 0 (any other status is a hook that failed, and a failed PostToolUse hook replaced
+    the call's result with an error before agy 1.4.7): its hooks always exit 0."""
+    if harness == "antigravity":
+        return 0
     if code and not is_pre:
         return 1
     return 0 if harness == "codex" and is_pre and os.name == "nt" else code
@@ -403,6 +454,11 @@ def _reply(harness, stdout, allowed, msg, is_pre):
     elif harness == "gemini":
         # stdout must be JSON only; a deny only for a tool call
         stdout.write(json.dumps({} if allowed or not is_pre else {"decision": "deny", "reason": msg[:500]}))
+    elif harness == "antigravity":
+        # agy reads stdout as its hook result message: only documented fields (another fails the hook), on every event.
+        # `allow` leaves the call to agy's own permissions, as the other hooks' exit 0 does
+        stdout.write(json.dumps({} if not is_pre else {"decision": "allow"} if allowed else
+                                {"decision": "deny", "reason": msg[:500] or "Blocked by Tracekit"}))
     elif harness in ("codex", "droid") and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                         "permissionDecisionReason": msg[:500] or "Blocked by tracekit"}}))
@@ -420,6 +476,8 @@ def config_path(harness, project=None, home=None):
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
             "qwen": os.path.join(base, ".qwen", "settings.json"),
             "droid": os.path.join(base, ".factory", "hooks.json"),
+            "antigravity": os.path.join(base, ".agents", "hooks.json") if project else
+                           os.path.join(base, ".gemini", "config", "hooks.json"),
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
                         os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
                                      os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js")}[harness]
@@ -745,15 +803,19 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 raise SettingsError(f"{settings}: {e}; Tracekit did not change it.") from e
             # Droid reads settings hooks only while the standalone file is absent; preserve them when creating it.
             s = dict(fallback)
-    # Droid's standalone hooks.json is the event map; only its settings.json nests that map under `hooks`.
-    hooks = s if harness == "droid" else s.setdefault("hooks", {})
+    # Droid's standalone hooks.json is the event map; only its settings.json nests that map under `hooks`. agy's maps
+    # each hook's name to its event map: Tracekit's is AGY_HOOK
+    key = AGY_HOOK if harness == "antigravity" else "hooks"
+    hooks = s if harness == "droid" else s.setdefault(key, {})
     if not isinstance(hooks, dict):
-        raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
+        raise SettingsError(f"'{key}' in {path} must be an object; Tracekit did not change it.")
     new, removed = "v2" if v2 else "v1", set()
 
-    def cmd(ev):   # the v2 hook names its event, so it can block a pre-tool payload it cannot read
-        c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness, ev) if v2 else (harness,),
-                          python, ev in PRE)
+    def cmd(ev):   # the v2 hook names its event, so it can block a pre-tool payload it cannot read; agy's payload names
+        # none, so its v1 hook does too
+        c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
+                          (harness, ev) if v2 or harness == "antigravity" else (harness,), python, ev in PRE,
+                          harness == "antigravity")
         # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
         # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
         # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
@@ -788,7 +850,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             else:
                 hooks.pop(ev, None)
     else:
-        events = (DROID_EVENTS if harness == "droid" else
+        events = (DROID_EVENTS if harness == "droid" else AGY_EVENTS if harness == "antigravity" else
                   ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
                   else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
                   if harness == "qwen" else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
@@ -808,8 +870,14 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 hooks[ev] = groups
             else:
                 hooks.pop(ev, None)
+    if harness == "antigravity":   # Tracekit's named hook holds only its own two entries, rewritten whole: agy loads a
+        # named hook with "enabled": false and never runs it
+        if not uninstall:
+            s[key] = {ev: hooks[ev][-1:] for ev in AGY_EVENTS}
+        elif removed:
+            s.pop(key)
     if not hooks and harness != "droid":
-        s.pop("hooks", None)
+        s.pop(key, None)
     if uninstall and harness == "droid" and not s:
         os.unlink(path)
     else:
@@ -842,7 +910,7 @@ def entry(harness=None, event=None):
     raw = ""
     try:
         raw = stdin_text()
-        return run(harness, raw)
+        return run(harness, raw, event=event)
     except Exception as e:
         try:
             parsed = json.loads(raw)

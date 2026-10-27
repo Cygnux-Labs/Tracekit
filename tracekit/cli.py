@@ -3,6 +3,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 
 from . import __version__
@@ -119,7 +120,8 @@ def main(argv=None):
     p.add_argument("--fail-closed", action="store_true", help="proxy: refuse to forward when the signer can't record")
     p.add_argument("--managed", action="store_true", help="system mode: install hooks in Claude Code's admin-managed settings")
     p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly")
-    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid"), default="claude",
+    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
+                                       "antigravity"), default="claude",
                    help="which coding agent's hooks to install (default: Claude Code)")
     p.add_argument("--harness", action="append", default=[], metavar="[NAME=]PATH",
                    help="system mode (0.3): the agent program whose processes may send events, e.g. /usr/local/bin/claude "
@@ -151,7 +153,8 @@ def main(argv=None):
     p.add_argument("--project", action="store_true")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
-    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid"), default="claude")
+    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
+                                       "antigravity"), default="claude")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -227,7 +230,8 @@ def main(argv=None):
     sub.add_parser("pending", help="list tool calls waiting for approval")
     for name in ("approve", "reject"):
         p = sub.add_parser(name, help=f"{name} a held tool call (run from a terminal outside the agent's session)")
-        p.add_argument("approval_id", nargs="?", help="id from `tracekit pending` (default: the only pending one)")
+        p.add_argument("approval_id", nargs="?", help="id from `tracekit pending` (default: the only pending one), or "
+                       f"a v2 one (apr-...), answered as `tracekit approvals {name}` does")
 
     p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`, "
                        "`approvals slack serve --config slack.yaml`")
@@ -514,6 +518,9 @@ def _run(a):
             print(f"dev signer running (same-user): {cfg['socket']}")
             print("hooks:", hooks or "not installed")
             return 0
+        if a.agent == "antigravity":   # the v1 system signer installs Claude Code's hooks only
+            print("tracekit: --agent antigravity goes with --dev or --v2", file=sys.stderr)
+            return 2
         user = a.user or os.environ.get("SUDO_USER") or getpass.getuser()
         try:
             cfg, settings = install.init_system(user, a.witness, a.checkpoint_every,
@@ -593,6 +600,9 @@ def _run(a):
             return 2
         return proxy.main(["--home", _signer_home(a)] + (["--port", str(a.port)] if a.port is not None else []) +
                           (["--upstream", a.upstream] if a.upstream else []))
+    # a v2 id, `[<route>.]apr-` and 32 hex digits (signer/service.py): tracekitd's are hex
+    if a.cmd in ("approve", "reject") and re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval_id or ""):
+        return _approvals(argparse.Namespace(action=a.cmd, approval_id=a.approval_id, signer=None, reason=None))
     if a.cmd in ("pending", "approve", "reject"):
         from . import client
         try:

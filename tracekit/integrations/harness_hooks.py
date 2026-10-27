@@ -1,6 +1,6 @@
-"""Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code and Factory Droid hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid and Antigravity CLI hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose|qwen|droid EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose|qwen|droid|antigravity EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -79,7 +79,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         print(f"[tracekit] {harness} hook error ({type(e).__name__}: {e}); "
               + ("blocking" if is_pre else "event not recorded"), file=err)
         code = 2 if is_pre else 1
-    if code and harness in ("gemini", "droid") and is_pre and q and q.get("tool_use_id"):   # a blocked call gets no post-tool
+    if code and harness in agent_hooks.PAIRED and is_pre and q and q.get("tool_use_id"):   # a blocked call gets no post-tool
         with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
             agent_hooks._paired_ids(harness, q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     agent_hooks._reply(harness, stdout, code == 0, err.getvalue().strip(), is_pre)
@@ -88,7 +88,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
-    if harness in ("qwen", "droid"):   # lean: their transcript formats are not read; model text goes unrecorded
+    if harness in ("qwen", "droid", "antigravity"):   # lean: their transcript formats are not read; model text goes unrecorded
         return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
