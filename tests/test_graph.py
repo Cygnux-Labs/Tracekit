@@ -241,17 +241,17 @@ class EndToEnd(unittest.TestCase):
         # the egress observer's: the run's, with what explains the host
         self.assertEqual(self.one(src=run, dst="host:docs.example.com", evidence="OBSERVED")["explained_by"], "call")
         self.assertEqual(self.one(src=run, dst="host:telemetry.example.net")["explained_by"], "nothing")
-        denied = [n["id"] for n in self.doc["nodes"] if n["id"] == f"call:{self.session}:b1"][0]
+        denied, nodes = f"call:{self.session}:b1", {n["id"]: n for n in self.doc["nodes"]}
         self.one(src="rule:TK-D007", dst=denied, kind="deny", evidence="SIGNED")
         self.one(src=run, dst=denied, kind="decided deny", evidence="SIGNED")
         held = f"call:{self.session}:b2"
         self.one(src="rule:TK-SHELL-PARSE", dst=held, kind="ask", evidence="SIGNED")
         approval = self.one(src=held, kind="held for approval")["dst"]
-        self.assertEqual(self.doc["nodes"][[n["id"] for n in self.doc["nodes"]].index(approval)]["kind"], "approval")
+        self.assertEqual(nodes[approval]["kind"], "approval")
         self.one(src=approval, dst=held, kind="consumed", evidence="SIGNED")
         self.assertTrue(self.one(src="person:" + me, dst=held, kind="approve", evidence="SIGNED")["self_approved"])
-        gaps = {e["dst"]: e for e in self.edges(src=run, kind="recorded", evidence="SIGNED")}
-        labels = sorted(n["label"].split(":")[0] for n in self.doc["nodes"] if n["id"] in gaps)
+        labels = sorted(nodes[e["dst"]]["label"].split(":")[0]
+                        for e in self.edges(src=run, kind="recorded", evidence="SIGNED"))
         self.assertEqual(labels, ["capture.gap tailer_lost", "reconcile.unexplained_effect net"])
 
     def test_the_why_run_signed_secrets_and_findings(self):
