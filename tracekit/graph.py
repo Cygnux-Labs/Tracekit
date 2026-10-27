@@ -126,7 +126,10 @@ def _graph_data(e: Dict[str, Any]) -> None:
 def _secure_source(path: str) -> bytes:
     """Read a verify source through one descriptor, refusing an unsafe final component: the file opened must be the
     regular file lstat saw (same device and inode), so a swap to a symlink between the two is refused also where
-    O_NOFOLLOW doesn't exist (Windows)."""
+    O_NOFOLLOW doesn't exist (Windows).
+    lean: a Windows file system that reports no file id (st_ino 0: FAT, some network shares) can't tell two files
+    apart, so a swap there between the check and the open goes unseen; the digest check still fails a swapped-in file
+    with other content. Read through a handle opened with FILE_FLAG_OPEN_REPARSE_POINT if that matters there"""
     seen = os.lstat(path)
     if not stat.S_ISREG(seen.st_mode):
         raise OSError(f"{path}: source is not a regular file")
