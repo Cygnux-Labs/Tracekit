@@ -5,7 +5,7 @@ from tracekit.format.canon import canonical
 
 __all__ = ["PURPOSES", "RECORD_FIELDS", "message", "sig_message_v1", "sig_message_v2"]
 
-PURPOSES = ("record", "checkpoint", "approval", "cert", "retire", "export")
+PURPOSES = ("record", "checkpoint", "approval", "cert", "retire", "export", "pcm", "pcm-grant")
 RECORD_FIELDS = ("alg", "kid", "log_id", "seq", "prev_hash", "tenant", "run_id", "run_seq", "run_prev_hash", "hash")
 
 

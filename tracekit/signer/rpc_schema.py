@@ -213,6 +213,39 @@ _AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash"
                       **{k: _SUMMARY["properties"][k] for k in ("approval_id", "state", "tool", "rule_ids",
                                                                 "policy_hash", "expires_at", "escalated", "agent",
                                                                 "run_closing")})
+# proof-carrying messages (tracekit.pcm, experimental): a message the signer signs as the sending run's own agent, with
+# a typed intent (`SCHEMA_REF`: a schema document's name and hash), claims with evidence from the sender's run, and a
+# chain of grants (root first). `pcm` and `pcm_grant` are integer 0, never `false` or `0.0`.
+SCHEMA_REF = _str(136, pattern=r"^[a-z][a-z0-9_.-]{0,63}@sha256:[0-9a-f]{64}" + _END)
+CLAIM_TYPES = ["tests_passed", "approved_by", "reached_host", "file_written"]
+HEX16 = _str(32, pattern=r"^[0-9a-f]{32}" + _END)   # 16 random bytes
+_PCM_SIG = _obj(["key", "sig"], key=_str(300, minLength=1), sig=_str(88))   # the log vkey's name+id, base64 Ed25519
+_PCM_RECORD = _obj(["event", "hash", "proof"], event=ANY, hash=DIGEST,
+                   proof={"type": "array", "maxItems": 64, "items": _str(44)},
+                   salt=_str(64, pattern=r"^[0-9a-f]{64}" + _END), args=ANY)   # opens a policy.decision's commitment
+_EVIDENCE = _obj(["checkpoint", "records"], checkpoint=_str(16384, minLength=1),
+                 records={"type": "array", "minItems": 1, "maxItems": 16, "items": _PCM_RECORD})
+_CLAIM = _obj(["type", "args"], type={"enum": CLAIM_TYPES}, args=ANY, evidence=_EVIDENCE)
+_CAVEAT = _obj(["field", "op", "value"], field=_str(64, pattern=r"^[a-z][a-z0-9_]*" + _END),
+               op={"enum": ["==", "<=", ">=", "<", ">", "in"]}, value=ANY)
+_CAVEATS = {"type": "array", "maxItems": 16, "items": _CAVEAT}
+PCM_GRANT = _obj(["pcm_grant", "ts", "issuer", "subject", "intent", "caveats", "expires_at", "parent", "sig"],
+                 pcm_grant={"type": "integer", "const": 0}, ts=TS,
+                 issuer=_obj(["kind", "id", "run"], kind={"enum": ["person", "agent"]}, id=_str(256), person=_str(256),
+                             run=ID, approval_id=ID),
+                 subject=IDENTITY, intent=SCHEMA_REF, caveats=_CAVEATS, expires_at=TS,
+                 parent={"oneOf": [DIGEST, {"type": "null"}]},   # event_hash of the signed parent grant
+                 sig=_PCM_SIG)
+PCM_BODY = _obj(["from", "to", "intent"], to=_obj(["agent"], agent=IDENTITY),
+                intent=_obj(["type", "args"], type=SCHEMA_REF, args=ANY),
+                claims={"type": "array", "maxItems": 8, "items": _CLAIM},
+                grants={"type": "array", "maxItems": 8, "items": PCM_GRANT},
+                payload={"oneOf": [_obj(["kind", "text"], kind={"const": "text"}, text=_str(65536)),
+                                   _obj(["kind", "data"], kind={"const": "data"}, data=ANY)]},
+                **{"from": _obj(["agent", "run", "tenant"], agent=IDENTITY, run=ID, tenant=ID)})
+# the signer adds pcm, id, ts and nonce (its clock and randomness) and signs everything but `sig`
+PCM_MESSAGE = _obj(["pcm", "id", "ts", "nonce", "sig", *PCM_BODY["required"]], **PCM_BODY["properties"],
+                   pcm={"type": "integer", "const": 0}, id=HEX16, ts=TS, nonce=HEX16, sig=_PCM_SIG)
 
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,

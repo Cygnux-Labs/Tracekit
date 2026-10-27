@@ -331,7 +331,11 @@ is used today; the others are reserved:
 {"t":"tracekit.cert.v2"}
 {"t":"tracekit.retire.v2"}
 {"t":"tracekit.export.v2"}
+{"t":"tracekit.pcm.v2"}
+{"t":"tracekit.pcm-grant.v2"}
 ```
+
+`pcm` and `pcm-grant` are the experimental proof-carrying messages and grants (#436), signed by the log key.
 
 Worked example: the first record of `tests/vectors/sig_v2.jsonl` (`record-signer-epoch`) has the signature message
 
