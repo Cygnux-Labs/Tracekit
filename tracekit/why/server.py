@@ -33,9 +33,8 @@ import threading
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from ..observe import _epoch
 from .analysis import analyse, workspace
-from .core import GENESIS, REF, SCHEMA, content_hash, event_hash, event_problem, load_run, referenced_refs
+from .core import GENESIS, REF, SCHEMA, content_hash, event_hash, event_problem, load_run, referenced_refs, ts_seconds
 from .evals import list_runs
 from .guard import Webhook
 from .replay import attribute, counterfactual, load_system
@@ -118,7 +117,11 @@ def tape(run, start: int = 0) -> List[Dict[str, Any]]:
     out = []
     for ev in run.events[start:]:
         t = ev["type"]
-        r = {"ts": _epoch(ev["ts"]), "session_id": run.run_id, "seq": ev["seq"], "hash": ev["hash"],
+        try:
+            ts = {"ts": ts_seconds(ev["ts"])}
+        except ValueError:   # load_run does not check a log's ts: shown as now, and HORIZON sorts it oldest
+            ts = {"ts": time.time(), "ts_unread": True}
+        r = {**ts, "session_id": run.run_id, "seq": ev["seq"], "hash": ev["hash"],
              "prev": ev["prev_hash"], "why": {"run": run.run_id, "node": "ev:" + ev["id"]}, **_agent(ev)}
         if t == "run.start":
             out.append({**r, "event": "SessionStart", "source": f"why log · {ev.get('program') or 'no program'}"})

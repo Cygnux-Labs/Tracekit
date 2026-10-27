@@ -973,11 +973,12 @@ class Horizon(unittest.TestCase):
 
     def test_the_cap_keeps_the_newest_why_log_calls_of_all_runs_together(self):
         """A why log's seq counts within its run (why.server.tape): ordered by seq, an older 600-call why run kept a
-        newer one's calls off the map."""
-        def why_call(seq, run, ts):
+        newer one's calls off the map. A log whose ts the tape could not read shows it as now: it sorts oldest."""
+        def why_call(seq, run, ts, **unread):
             return {"event": "PreToolUse", "session_id": run, "seq": seq, "ts": ts, "tool_use_id": f"{run}{seq}", "tool_name": "Read",
-                    "tool_input": {"file_path": f"src/f{seq}.py"}, "policy": {"decision": "allow"}, "why": {"run": run, "node": f"ev:{seq}"}}
-        ev = self.hz_cap([why_call(i, "old", 1000 + i) for i in range(1, 601)] + [why_call(i, "new", 5000 + i) for i in range(1, 4)])
+                    "tool_input": {"file_path": f"src/f{seq}.py"}, "policy": {"decision": "allow"}, "why": {"run": run, "node": f"ev:{seq}"}, **unread}
+        ev = self.hz_cap([why_call(i, "old", 1000 + i) for i in range(1, 601)] + [why_call(i, "new", 5000 + i) for i in range(1, 4)]
+                         + [why_call(i, "bad", 9000 + i, ts_unread=True) for i in range(1, 601)])
         self.assertEqual(ev[0], ["old", 104])
         self.assertEqual(ev[-3:], [["new", 1], ["new", 2], ["new", 3]])
 

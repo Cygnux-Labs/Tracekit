@@ -1,6 +1,7 @@
 """Observer content display and the dev-socket path limit."""
 import os
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -24,6 +25,7 @@ class Times(unittest.TestCase):
         for ts, want in (("2026-10-27T10:00:00Z", 1793095200), ("2026-10-27T10:00:00.5Z", 1793095200.5),
                          ("2026-10-27T10:00:00.123456789Z", 1793095200.123456789)):
             self.assertAlmostEqual(observe._epoch(ts), want, places=6)
+        self.assertAlmostEqual(observe._epoch("2026-10-27T10:00:00+00:00"), time.time(), delta=5)   # shown as now, never 1970
         row = observe.Translator()._base({"run_id": "r", "ts": "2020-01-01T00:00:00Z", "ts_signed": "2026-10-27T10:00:00Z"}, {}, "PreToolUse")
         self.assertEqual((row["ts"], row["ts_signed"]), (1577836800, 1793095200))
         self.assertNotIn("ts_signed", observe.Translator()._base({"run_id": "r", "ts": "2026-10-27T10:00:00Z"}, {}, "PreToolUse"))

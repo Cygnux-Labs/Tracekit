@@ -1209,6 +1209,15 @@ class WhyData(WhyServer):
         sub = {r["agent_id"] for r in rows if r["event"] == "SubagentStart"}
         self.assertEqual(sub, {e["agent"] for e in run.of_type("agent.start")})
 
+    def test_a_why_log_time_the_tape_cannot_read_shows_as_now_and_is_marked(self):
+        """load_run does not check a log's ts: a row whose ts the tape cannot read shows as now (never 1970) and is
+        marked ts_unread, which HORIZON sorts oldest."""
+        run = load_run(SYSTEM.run(seed=0, out_dir=self.store.root, run_id="t1").path)
+        run.events[1]["ts"] = "2026-10-27T10:00:00+00:00"
+        rows, node = tape(run), "ev:" + run.events[1]["id"]
+        self.assertEqual({r["why"]["node"] for r in rows if r.get("ts_unread")}, {node})
+        self.assertTrue(all(abs(r["ts"] - time.time()) < 5 for r in rows if r["why"]["node"] == node))
+
     def test_replay_without_the_program_says_what_to_run(self):
         store = Store(os.path.join(self.tmp, "srv2"))
         SYSTEM.run(seed=0, out_dir=store.root, run_id="r")
