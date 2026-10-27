@@ -231,8 +231,11 @@ def main(argv=None):
                        "`approvals slack serve --config slack.yaml`")
     p.add_argument("--signer", help="the signer's Unix socket or tcp://host:port (default: the same-user dev signer)")
     acts = p.add_subparsers(dest="action", required=True)
-    acts.add_parser("list", help="pending and recent approvals")
-    acts.add_parser("show", help="one approval, with the signer's copy of the arguments in full").add_argument("approval_id")
+    acts.add_parser("list", help="pending and recent approvals").add_argument("--json", action="store_true",
+                                                                            help="print one JSON array")
+    q = acts.add_parser("show", help="one approval, with the signer's copy of the arguments in full")
+    q.add_argument("approval_id")
+    q.add_argument("--json", action="store_true", help="print one JSON object without a pager")
     for name in ("approve", "reject"):
         q = acts.add_parser(name, help=f"{name} a pending approval")
         q.add_argument("approval_id")
@@ -937,17 +940,21 @@ def _approvals(a):
     c = Client(a.signer)
     try:
         if a.action == "list":
-            page, shown = {"next_cursor": None}, 0
+            page, approvals = {"next_cursor": None}, []
             while True:
                 page = c.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
+                approvals.extend(page["approvals"])
                 for x in page["approvals"]:
-                    shown += 1
+                    if a.json:
+                        continue
                     state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
                     print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
                           f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
                 if page["next_cursor"] is None:
                     break
-            if not shown:
+            if a.json:
+                print(json.dumps(approvals))
+            elif not approvals:
                 try:
                     me = "{scheme}:{subject}".format(**c.status({})["identity"])
                 except (RPCError, SignerUnavailable):
@@ -958,6 +965,9 @@ def _approvals(a):
         elif a.action == "show":
             x = c.approval_get({"approval_id": a.approval_id})
             args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]
+            if a.json:
+                print(json.dumps({**x, "args": args}))
+                return 0
             lines = [f"approval    {x['approval_id']} ({x['state']})", f"tool        {json.dumps(x['tool'])}",
                      f"rules       {', '.join(x['rule_ids'])}", f"policy      {x['policy_hash']}",
                      f"requester   {json.dumps(x['requester'])}", f"run         {x['run_id']}",
