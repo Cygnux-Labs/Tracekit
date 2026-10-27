@@ -684,6 +684,13 @@ def find(command, argv):
 
 
 class Shell(unittest.TestCase):
+    def test_many_data_copy_commands_parse_in_linear_time(self):
+        command = "; ".join([*(f"echo text > out{i}" for i in range(1600)),
+                               *(f"sh out{i}" for i in range(1600))])
+        start = time.perf_counter()
+        shell.analyse(command)
+        self.assertLess(time.perf_counter() - start, 0.5 * SLOWER)
+
     def test_sudo_by_absolute_path(self):
         self.assertTrue(find("/usr/bin/sudo id", ["sudo", "id"]))
 
@@ -870,11 +877,15 @@ class Shell(unittest.TestCase):
         cmd = 'eval "$(id)" "$(id)"'
         while len(cmd) * 2 < MAX_SUBJECT:
             cmd = f'eval "$({cmd})" "$({cmd})"'
-        start = time.monotonic()
-        with self.assertRaises(shell.ParseError):
-            shell.parse(cmd)
-        # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s
-        self.assertLess(time.monotonic() - start, 2 * SLOWER)
+        took = []
+        for _ in range(3):   # the fastest of three, so a busy CI runner's pauses don't count
+            start = time.monotonic()
+            with self.assertRaises(shell.ParseError):
+                shell.parse(cmd)
+            took.append(time.monotonic() - start)
+        # ~0.5 s on a laptop, about 2 s on CI's slowest runner (Windows, py3.9); the old 1 MiB budget took 1.7–5 s on
+        # the laptop
+        self.assertLess(min(took), 3 * SLOWER)
 
     def test_lists_after_process_calls_count_toward_the_parse_budget(self):
         """Each `run([` in interpreter code copied the rest of the code and took every string up to the next `]` as

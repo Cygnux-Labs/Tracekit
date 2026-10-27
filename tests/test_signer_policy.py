@@ -751,6 +751,26 @@ class CodingPack(unittest.TestCase):
                 "xargs rm > log.txt <<'EOF'\n/etc/tracekit/client.json\nEOF",
                 "cat <<'EOF' | xargs rm\n/etc/tracekit/client.json\nEOF",
                 "echo /etc/tracekit/client.json >/dev/stdout | xargs rm",
+                # a later command in this call consumes the literal file receiving the copied text
+                "echo /etc/tracekit/client.json > out; sh out",
+                "echo /etc/tracekit/client.json > out; bash out",
+                "echo /etc/tracekit/client.json > out; source out",
+                "echo /etc/tracekit/client.json > out; . out",
+                "echo /etc/tracekit/client.json > out; xargs rm < out",
+                "echo /etc/tracekit/client.json > out; parallel rm < out",
+                "echo /etc/tracekit/client.json > out; cat out | xargs rm",
+                "printf '%s\\n' /etc/tracekit/client.json > out; xargs rm < out",
+                "cat <<'EOF' > out; bash out\n/etc/tracekit/client.json\nEOF",
+                "tee > out <<'EOF'; xargs rm < out\n/etc/tracekit/client.json\nEOF",
+                # any later non-inert command keeps copied text, including equivalent or indirect file uses
+                "echo /etc/tracekit/client.json > ./out; sh out",
+                "echo /etc/tracekit/client.json > out; bash ./out",
+                "echo /etc/tracekit/client.json > /tmp/out; sh /tmp/./out",
+                "echo /etc/tracekit/client.json > out; cat ./out | sh",
+                "echo /etc/tracekit/client.json > out; for f in out; do sh \"$f\"; done",
+                # source files may redefine the commands that otherwise only copy data
+                "source ./defs; echo /etc/tracekit/client.json > out | xargs rm",
+                ". ./defs; echo /etc/tracekit/client.json > out | xargs rm",
                 # a write of text that acts too: on its file, on the file it copies, or through a command it runs
                 "cat > /etc/tracekit/policy.yaml <<'EOF'\nmode: off\nEOF",
                 "tee /etc/tracekit/policy.yaml > /dev/null <<'EOF'\nmode: off\nEOF",
@@ -774,6 +794,65 @@ class CodingPack(unittest.TestCase):
             for command in data:
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertNotIn("TK-D007", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_stdout_data_cut_requires_a_literal_unchanged_file_target_and_builtin(self):
+        path = "/etc/tracekit/client.json"
+        glob_targets = ("/dev/std?ut", "/d[e]v/stdout", "/dev/*out", "/dev/fd/?")
+        changed_directories = ("cd /dev", "pushd /dev", "cd /proc/self/fd")
+        copies = {
+            "echo": f"echo {path} > out | xargs rm",
+            "printf": f"printf '%s\\n' {path} > out | xargs rm",
+            "cat": f"cat <<'EOF' > out | xargs rm\n{path}\nEOF",
+            "tee": f"tee <<'EOF' > out | xargs rm\n{path}\nEOF",
+        }
+        commands = [f"echo {path} > {target} | xargs rm" for target in glob_targets]
+        commands += [f"{directory} && echo {path} > stdout | xargs rm" for directory in changed_directories]
+        for name, command in copies.items():
+            commands += [f"alias {name}=x; {command}", f"{name}() {{ :; }}; {command}",
+                         f"enable -n {name}; {command}"]
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True), d)
+            for command in (f"echo {path} > main.go; echo *", f"echo {path} > main.go; cd /tmp"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D007", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_stdout_data_cut_stops_when_a_command_name_can_change(self):
+        path = "/etc/tracekit/client.json"
+        commands = (
+            f"shopt -s expand_aliases\nalias ls='sh out'\necho {path} > out\nls",
+            f"enable -f ./evil.so ls; echo {path} > out; ls",
+            f"unalias ls; echo {path} > out; ls",
+            f"shopt -u expand_aliases; echo {path} > out; ls",
+            f"enable -n ls; echo {path} > out; ls",
+            f"ls() {{ :; }}; echo {path} > out; ls",
+            f"source defs; echo {path} > out; ls",
+            f". defs; echo {path} > out; ls",
+            f"hash -p ./evil ls; echo {path} > out; ls",
+            f"command_not_found_handle() {{ :; }}; echo {path} > out; ls",
+            f"PATH=./evil; echo {path} > out; ls",
+            f"BASH_ENV=./defs; echo {path} > out; ls",
+            f"ENV=./defs; echo {path} > out; ls",
+            f"echo {path} > out; printf -v PATH '%s' ./evil; ls",
+            f"echo {path} > out; read PATH <<< ./evil; ls",
+            f"echo {path} > out; mapfile PATH < paths; ls",
+            f"echo {path} > out; readarray PATH < paths; ls",
+            f"echo {path} > out; declare PATH=./evil; ls",
+            f"echo {path} > out; typeset PATH=./evil; ls",
+            f"echo {path} > out; local PATH=./evil; ls",
+            f"echo {path} > out; export PATH=./evil; ls",
+            f"echo {path} > out; readonly PATH=./evil; ls",
+            f"echo {path} > out; let PATH=1; ls",
+            f"echo {path} > out; eval 'PATH=./evil'; ls",
+            f"echo {path} > out; unset PATH; ls",
+        )
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True), d)
 
     def test_each_harness_config_an_agent_could_turn_its_sandbox_or_hooks_off_in_is_flagged(self):
         for tool, args in (("Write", {"file_path": "/home/u/.gemini/settings.json", "content": "{}"}),
