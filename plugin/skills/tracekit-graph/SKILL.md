@@ -26,20 +26,24 @@ tracekit graph build RUN.tkb ... --trust trust.json --content -o tracekit-graph
 ```
 
 Bundles come from `tracekit last` (the dev signer's latest run, with its trust config) or `tracekit export --v2`.
-`--content` reads each call's decided arguments from the signer's content vault; without it the graph has no
-"wrote" or "reached" edges from calls.
+`--content` reads each call's decided arguments from the signer's content vault; without it the graph has no call
+argument edges. A T2 executor or gateway result is required for `wrote` or `reached`; a laptop completion is only
+`reported writing` or `reported reaching`.
 
 ## 2. Read what can't be trusted first
 
 Read the "Read first" section of `GRAPH_REPORT.md`, or `sources` in graph.json: a source with `verify.ok: false`
 makes every edge from it `UNVERIFIED`. Report failed sources, gaps (`gap` nodes) and runs with `unread_args`
 before anything else. If the answer matters, check the files still match their sources:
-`tracekit graph verify tracekit-graph --trust trust.json` (exit 0: unchanged).
+`tracekit graph verify tracekit-graph RUN.tkb ... --trust trust.json` (exit 0: unchanged). Omit `RUN.tkb ...` only
+when the recorded bundle names are available in the current directory.
 
 ## 3. Query; don't load the whole file
 
-Each mode prints the runs that touched the node, newest first, with their agents, approvers, rules, hosts, files,
-secrets, findings and gaps. Add `--json` to read it.
+The node filters print the matching runs, newest first, with their agents, approvers, rules, hosts, files, secrets,
+findings and gaps. `--blast` prints downstream nodes; `--path` prints the shortest evidence path. Add `--json` to
+read it: filters return `{matched, code, runs, map}`, blast returns `{from, reached, map}`, and path returns
+`{from, to, found, edges, map}`.
 
 ```bash
 tracekit graph query tracekit-graph --file billing.py          # also: --host H, --agent A, --approved-by P,
@@ -54,11 +58,11 @@ Exit 1 means nothing matched; 2 means a bad node or graph. For a question no mod
 - nodes: `{id, kind, label, ...}`; ids are `run:RUN`, `agent:NAME`, `person:WHO`, `call:RUN:TOOL_USE_ID`,
   `input:RUN:SEQ`, `model:RUN:SEQ`, `file:PATH`, `host:HOST`, `secret:RULE`, `rule:TK-...`, `finding:RUN:SEQ`,
   `approval:ID`, `gap:RUN:SEQ`, `code:GRAPHIFY_ID`. A call node may carry `decision` and `ok`.
-- edges: `{src, dst, kind, evidence, record: {run_id, run_seq, seq}, ...}`; kinds include `ran`, `decided allow|deny|ask|flag`,
+- edges: `{src, dst, kind, grade, record: {run_id, run_seq, seq}, ...}`; kinds include `ran`, `decided allow|deny|ask|flag`,
   a rule's `allow|deny|ask|flag`, `wrote`, `reported writing`, `asked to write`, `reached`, `reported reaching`,
   `asked to reach`, `held for approval`,
   `approve`/`reject` (with `self_approved`, `wait_ms`), what became of an approval (`consumed`, `expired`, ...), `reached :PORT`
-  (OBSERVED, with `explained_by`), `held a secret (redacted)`, `recorded` (a gap), `found in`, `tested ...`,
+  or `blocked from reaching :PORT` (OBSERVED, with `explained_by` when applicable), `held a secret (redacted)`, `recorded` (a gap), `found in`, `tested ...`,
   `contains` (Graphify).
 
 ## 4. Answer
