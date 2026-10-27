@@ -543,6 +543,48 @@ class CodingPack(unittest.TestCase):
                        ({"file_path": "/Users/u/.claude/projects/p/memory/../abc.jsonl"}, "TK-D009"),
                        ({"file_path": "/Users/u/.claude/projects/p/memory/x/abc.jsonl"}, "TK-D009")], tool="Write")
 
+    def test_transcript_rule_holds_writes_to_transcripts_not_reads_or_mentions(self):
+        """TK-D008 matched a write word or `>` anywhere on the line before a transcript folder's name, so it denied
+        listings, unrelated writes and text naming the folders (#421); it reads each command's write and delete
+        targets, so every write to a transcript is still denied."""
+        writes = ("rm ~/.claude/projects/x/y.jsonl", "rm -rf ~/.claude/projects", "echo hi > ~/.codex/sessions/a.jsonl",
+                  'echo hi >> "$HOME/.gemini/tmp/h/chats/c.json"', ": > ${HOME}/.claude/projects/-x/abc.jsonl",
+                  "unlink ~/.codex/sessions/a.jsonl", "truncate -s0 ~/.codex/sessions/a.jsonl",
+                  "shred -u ~/.gemini/tmp/h/logs.json", "sed -i 's/rm/ls/' ~/.claude/projects/-x/a.jsonl",
+                  "sed -i.bak -e 's/a/b/' ~/.claude/projects/-x/a.jsonl", "perl -pi -e 's/a/b/' ~/.codex/sessions/a.jsonl",
+                  "mv ~/.claude/projects/p/a.jsonl /tmp/", "mv /tmp/x ~/.claude/projects/p/a.jsonl",
+                  "ln -sf /dev/null ~/.codex/sessions/a.jsonl", "dd if=/dev/zero of=$HOME/.claude/projects/p/a.jsonl",
+                  "echo x | tee -a ~/.config/opencode/x", "cp /dev/null ~/.claude/projects/p/a.jsonl",
+                  "find ~/.claude/projects -name '*.jsonl' -delete", "find -L ~/.codex/sessions -name x -delete",
+                  "find ~/.claude/projects -exec rm {} +", "find ~/.gemini/tmp -execdir shred -u {} \\;",
+                  "find ~/.claude/projects -type f -exec sed -i 's/a/b/' {} +",
+                  "find ~/.codex/sessions -exec Perl -pi -e 's/a/b/' {} \\;",
+                  "ls ~/.codex/sessions && rm ~/.codex/sessions/a.jsonl", "cd /repo; echo x > ~/.claude/projects/p/a.jsonl",
+                  'rm "/Users/u/.claude/projects/p/a b.jsonl"', "rm ~/.Claude/Projects/p/a.jsonl",
+                  r"rm 'C:\Users\u\.codex\sessions\a.jsonl'", "bash -c 'rm ~/.claude/projects/p/a.jsonl'",
+                  "sudo rm ~/.claude/projects/p/a.jsonl", "cat ~/.codex/sessions/a.jsonl | xargs rm ~/.codex/sessions/b")
+        reads = ("ls -la ~/.codex/sessions/ 2>/dev/null | head; ls ~/.gemini/tmp 2>/dev/null | head",
+                 "rm -rf build && ls ~/.codex/sessions", "echo 'rm ~/.codex/sessions' > note.txt",
+                 "cat > notes.md <<'EOF'\nrm ~/.claude/projects/x\nEOF", "git commit -m 'rm ~/.claude/projects'",
+                 "echo x > notes.md; cat ~/.config/opencode/opencode.json",
+                 "mv a.md b.md && grep model ~/.config/opencode/opencode.json",
+                 "cp ~/.claude/projects/p/a.jsonl /tmp/", "dd if=~/.codex/sessions/a.jsonl of=/tmp/a",
+                 "ln -sf ~/.claude/projects/p/a.jsonl ./latest.jsonl", "grep -r x ~/.gemini/tmp > hits.txt",
+                 "cat ~/.claude/projects/p/a.jsonl | tee /tmp/copy.jsonl",
+                 "find ~/.claude/projects -name '*.jsonl' -exec grep -l x {} +",
+                 "find ~/.claude/projects -exec sed -n 1p {} \\;")
+        for pack, engine, e in self.every_pack():
+            for command in writes:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D008" in d["rule_ids"]), ("deny", True), d)
+            for command in reads:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D008", e.decide("Bash", {"command": command})["rule_ids"])
+            # a line the parser can't read is still held (TK-SHELL-PARSE)
+            self.assertIn(e.decide("Bash", {"command": "rm ~/.claude/projects/p/a.jsonl; echo '"})["verdict"],
+                          ("ask", "deny"))
+
     def test_dev_signer_dirs_and_installed_packs_are_protected(self):
         for path in ("/Users/u/Library/Application Support/tracekit/data/keys/log.key", "/home/u/.local/share/tracekit/x",
                      "C:\\Users\\u\\AppData\\Local\\tracekit\\keys", "/run/user/1000/tracekit/signer.sock",
@@ -1075,8 +1117,7 @@ class CodingPack(unittest.TestCase):
         self.assertEqual((d["verdict"], d["rule_ids"][0]), ("deny", "TK-OVERSIZE"))
 
     def test_history_and_container_rules_are_bounded_on_adversarial_commands(self):
-        """The new rules alone, on the fallback engine: an older rule's own worst case here (TK-D008 on 64 KB of
-        `find ... -delete`) is not theirs to bound."""
+        """The new rules alone, on the fallback engine."""
         policy = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
         new = Engine(dict(policy, **{sec: [r for r in policy[sec] if r["id"] in NEW_RULES]
                                      for sec in ("deny", "ask", "flag")}), "regex")

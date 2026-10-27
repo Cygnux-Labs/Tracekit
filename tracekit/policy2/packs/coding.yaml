@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-32'
+version: '2026.10-v2-33'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -97,8 +97,10 @@ deny:
     rationale: Sending .env off the machine is exfiltration.
   - id: TK-D008
     class: shell
-    field: line
-    pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
+    field: effects
+    # each file a command writes or deletes, as TK-F015 reads them, so a listing, a read or text that names the
+    # folders isn't held; anchored and lazy, so the fallback engine stays linear
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|\.config[/\\]opencode)'
     reason: modifying the agent harness's transcripts
     remedy: Leave the harness's transcripts as they are (reading them is fine); a person removes them once the run's evidence is exported.
     rationale: Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.

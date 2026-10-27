@@ -409,7 +409,7 @@ def _log_or_history(path):
 def _effects(parsed):
     """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
     path casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
-    sed -i and perl -i name, and find with -delete or -exec rm."""
+    sed -i and perl -i name, and find with -delete, -exec rm or an -exec that writes each file found (sed -i)."""
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
 
@@ -424,11 +424,16 @@ def _command_effects(commands):
         args = argv[1:]
         if exe == "find" and ("-delete" in args or any(
                 a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args)
-                and args[i + 1].rsplit("/", 1)[-1] in ("rm", "unlink", "shred", "truncate") for i, a in enumerate(args))):
-            # its start paths, and the log and history names among its tests (`-name .bash_history`) but those
-            # `-prune` leaves out
+                and args[i + 1].rsplit("/", 1)[-1].lower() in ("rm", "unlink", "shred", "truncate")
+                for i, a in enumerate(args)) or any(   # or what it runs writes each file found (`-exec sed -i … {} +`)
+                t.partition(":")[2] == "{}" for run in shell._find_execs(args)
+                for t in _command_effects([{"argv": [run[0].lower()] + run[1:]}]))):
+            # its start paths (after its options: -L, -H, BSD's -E, -x …), and the log and history names among its
+            # tests (`-name .bash_history`) but those `-prune` leaves out
             paths = []
             for arg in args:
+                if re.fullmatch(r"-[A-Za-z]|-O[0-9]*", arg):
+                    continue
                 if arg.startswith("-"):
                     break
                 paths.append(arg)
