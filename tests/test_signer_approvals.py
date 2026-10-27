@@ -306,6 +306,48 @@ def tracekit(*args, env=None):
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
 class TestCli(unittest.TestCase):
+    def test_json_lists_all_pages_and_shows_redacted_decoded_arguments_without_a_pager(self):
+        d = ts.tmpdir(self)
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "approvals": {"self_approval": "allow"}}
+        service = svc.open_service(cfg, policy=ts.PAY_ASKS)
+        self.addCleanup(service.close)
+        for srv in svc.serve(cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        client = Client(cfg["socket"])
+        self.addCleanup(client.close)
+        run = client.run(agent="a")
+        memo = "payment\n\x1b[31m"
+        args = {"to": "acct-42", "memo": memo, "key": SECRET}
+        aids = []
+        for tcid, source in (("tc-1", "parsed"), ("tc-2", "raw")):
+            run.decide(tcid, "pay", args if source == "parsed" else json.dumps(args), args_source=source)
+            aids.append(run.call("approval_request", tool_call_id=tcid, reason=memo)["approval_id"])
+        with mock.patch.object(svc, "LIST_PAGE", 1):
+            listed = tracekit("approvals", "--signer", cfg["socket"], "list", "--json")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        rows = json.loads(listed.stdout)
+        self.assertEqual([x["approval_id"] for x in rows], aids)
+        self.assertEqual(rows, client.approval_list({})["approvals"])
+        for row in rows:
+            self.assertEqual((row["state"], row["tool"], row["rule_ids"]), ("requested", "pay", ["TEST-PAY"]))
+        for aid in aids:
+            buf = io.StringIO()
+            with mock.patch("pydoc.pager") as pager, contextlib.redirect_stdout(buf):
+                self.assertEqual(cli.main(["approvals", "--signer", cfg["socket"], "show", aid, "--json"]), 0)
+            pager.assert_not_called()
+            shown = buf.getvalue()
+            approval = json.loads(shown)
+            self.assertEqual(approval["approval_id"], aid)
+            self.assertEqual(approval["args"]["memo"], memo)
+            self.assertEqual(approval["reason"], memo)
+            self.assertNotIn(SECRET, shown)
+            self.assertNotEqual(approval["args"]["key"], SECRET)
+            self.assertNotIn(memo, shown)
+            self.assertIn(r"payment\n\u001b[31m", shown)
+            text = tracekit("approvals", "--signer", cfg["socket"], "show", aid)
+            self.assertIn(json.dumps(approval["args"], indent=2), text.stdout)
+
     def test_show_prints_the_real_args_and_approve_reject_round_trip(self):
         d = ts.tmpdir(self)
         cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "approvals": {"self_approval": "allow"}}
@@ -351,6 +393,8 @@ class TestCli(unittest.TestCase):
         listed = tracekit("approvals", "--signer", cfg["socket"], "list")
         self.assertIn(f"no approvals uid:{os.getuid()} may see", listed.stdout)
         self.assertIn("approvals.approvers", listed.stdout)
+        listed = tracekit("approvals", "--signer", cfg["socket"], "list", "--json")
+        self.assertEqual((listed.returncode, listed.stdout.strip()), (0, "[]"))
         client = Client(cfg["socket"])
         self.addCleanup(client.close)
         run = client.run(agent="a")
