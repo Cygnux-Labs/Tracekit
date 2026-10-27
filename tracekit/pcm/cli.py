@@ -9,7 +9,6 @@ import argparse
 import datetime
 import itertools
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -40,7 +39,10 @@ def summary(out):
 
 def _load(path):
     with open(path, "rb") as f:
-        return loads_strict(f.read())
+        try:
+            return loads_strict(f.read())
+        except ValueError as e:
+            raise ValueError(f"{path}: {e}") from None
 
 
 def verify(a):
@@ -63,7 +65,7 @@ def demo():
     from tracekit.policy2.engine import Engine
     from tracekit.signer import service as svc
     from tracekit.signer.rpc_schema import REQUESTS, RPCError
-    d = tempfile.mkdtemp(prefix="tk-pcm-", dir="/tmp" if os.path.isdir("/tmp") else None)
+    d = tempfile.mkdtemp(prefix="tk-pcm-")
     s, ids = None, itertools.count()
     try:
         print(f"tracekit pcm demo: two agents negotiate a refund (an in-process signer in {d})")

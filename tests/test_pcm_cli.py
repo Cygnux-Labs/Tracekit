@@ -7,7 +7,7 @@ import re
 import unittest
 
 from test_pcm_signer import DOC, Case
-from tracekit import cli
+from tracekit import cli, pcm
 from tracekit.pcm import cli as pcm_cli
 from tracekit.wiki import wiki_url
 
@@ -68,7 +68,22 @@ class TestVerify(Case):
         self.files["schema"] = self.write("schema", {"name": "not a schema"})
         code, _, err = self.verify(msg)
         self.assertEqual(code, 2)
-        self.assertIn("schema document", err)
+        self.assertIn("schema document 0: ", err)
+        self.files["schema"] = self.write("schema", [1, 2])
+        self.assertEqual(self.verify(msg)[::2], (2, "tracekit pcm verify: schema document 0: $: expected object, got list\n"))
+        with open(self.files["schema"], "w", encoding="utf-8") as f:
+            f.write("not json")
+        code, _, err = self.verify(msg)
+        self.assertEqual(code, 2)
+        self.assertIn(f"tracekit pcm verify: {self.files['schema']}: ", err)
+
+    def test_strict(self):
+        doc = dict(DOC, claims=["approved_by"])
+        self.files["schema"] = self.write("schema", doc)
+        msg = self.call("pcm_sign", message=self.body(
+            intent={"type": pcm.schema_ref(doc), "args": {"amount": 12000, "order": 81}}))["message"]
+        self.assertEqual(self.verify(msg)[:2], (3, "ACCEPT-UNPROVEN  approved_by: required, not proven\n"))
+        self.assertEqual(self.verify(msg, "--strict")[:2], (1, "REJECT  approved_by: required, not proven\n"))
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ sets the limit.
 
 ```text
 $ tracekit pcm demo
-tracekit pcm demo: two agents negotiate a refund (an in-process signer in /tmp/tk-pcm-osmsmhz3)
+tracekit pcm demo: two agents negotiate a refund (an in-process signer in /var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/tk-pcm-lo5rs176)
   alice approves agent A's grant: refund.request, amount <= $200.00, order == 81, until 18:00Z, can be passed on: no
   A -> B  refund.request {amount $120.00, order 81} + approved_by(alice)
       B: ACCEPT           signature ok · replay ok · schema ok · grant ok (alice, 1 step) · approved_by proven
@@ -29,7 +29,7 @@ tracekit pcm demo: two agents negotiate a refund (an in-process signer in /tmp/t
   A -> B  refund.request {amount $500.00, order 81} + approved_by(alice)
       B: REJECT           grant: grant 0: amount 50000 breaks amount <= 20000
   A asks the signer to sign as B
-      signer: forbidden: the signer signs only as the calling run's own agent (uid:990101, run 33de43e5133cc29204824fd9402dc530, tenant default)
+      signer: forbidden: the signer signs only as the calling run's own agent (uid:990101, run 4205598ec8ab06b650a402d019b1592a, tenant default)
 ```
 
 The demo runs a real signer in a temp dir (removed at exit), with A, B and alice as three local identities. It exits 0
@@ -43,17 +43,16 @@ from the demo (its claims and grants left out here):
 
 ```json
 {
- "from": {"agent": "uid:990101", "run": "0b15c2a8046e112b331fb28c105bb6f1", "tenant": "default"},
+ "from": {"agent": "uid:990101", "run": "4205598ec8ab06b650a402d019b1592a", "tenant": "default"},
  "to": {"agent": "uid:990102"},
  "intent": {"type": "refund.request@sha256:d8636b6fbbd07430d057ea9ead9c27f0df1b918b10d34ab9257a4971d487846c",
             "args": {"amount": 12000, "order": 81}},
- "payload": {"kind": "text", "text": "please refund order 81"},
  "pcm": 0,
- "id": "fcf671ef66e6e5a0db93547ca202c53a",
- "ts": "2026-10-27T12:26:18.183404Z",
- "nonce": "a4f5ec5db33ba52f45536cf1ebed5870",
- "sig": {"key": "tracekit.local/dafbd1fe7ac8298346be98a44167729e+96f6d1e1",
-         "sig": "DLG1eeWiZ7tz6Hyqez42vX14YqdYxqRACNGu0fB9d7M6DAYkr3QwVREc8ELJzf6c7qY3w0anMSh69RbmSMO2AQ=="}
+ "id": "5ff5392983a0b7d8f4dd8bd88d6fecb3",
+ "ts": "2026-10-27T13:37:07.594540Z",
+ "nonce": "ebf9449e4b30726f5f9621f5c22b4fbe",
+ "sig": {"key": "tracekit.local/39efd223d635ba423b1faced04a8e7d7+52ebcdec",
+         "sig": "89bs02iZt3un/Myxp2qmq7pvqk9Y4zLNsTz2HT86Itf6dSpqG99Wr/THuZoIm4Y2fz9NqOqFs48ozJUm5eapBA=="}
 }
 ```
 
@@ -62,16 +61,18 @@ from the demo (its claims and grants left out here):
 - `intent.type` names a schema by content hash; `args` must match it.
 - `payload` is free text (`{"kind": "text", "text"}`) or JSON (`{"kind": "data", "data"}`). Nothing checks it.
 - The signature is Ed25519 by the signer's **log key**, the key trust.json already pins under `logs`. It covers every
-  field except `sig`: `JCS({...message without sig, "t": "tracekit.pcm.v2"})`. Grants sign with
-  `"t": "tracekit.pcm-grant.v2"`, so one can't pass as the other, and neither can pass as a checkpoint note.
-- The media type is `application/vnd.tracekit.pcm+json`.
+  field except `sig`: `JCS({...message without sig, "t": "pcm.message.v0"})`. Grants sign with
+  `"t": "pcm.grant.v0"`, so one can't pass as the other, and neither can pass as a checkpoint note. The tags are
+  PCM's own, not `tracekit.*`, because PCM is an open protocol that other implementations sign too
+  ([format](format-v2.md)).
+- The media type is `application/vnd.pcm+json`.
 
 Each signed message is one record in the sender's run: `ext` with `name: pcm.sent`, the message's hash, its id, the
 receiver and the intent. It holds no args:
 
 ```json
-{"name": "pcm.sent", "message": "sha256:2e7246d0c8abcb135d8aab5ae74a61a56c6c5ac958c1bd5a050314f51d87d024",
- "id": "fcf671ef66e6e5a0db93547ca202c53a", "to": "uid:990102",
+{"name": "pcm.sent", "message": "sha256:651f71bd8b686a10a99249483fc8dd257ea519f5552c5dfaf25b039a36f8e364",
+ "id": "5ff5392983a0b7d8f4dd8bd88d6fecb3", "to": "uid:990102",
  "intent": "refund.request@sha256:d8636b6fbbd07430d057ea9ead9c27f0df1b918b10d34ab9257a4971d487846c"}
 ```
 
@@ -111,9 +112,9 @@ A claim says something happened in the sender's run. There are four types:
 
 | Claim | Proven when the evidence holds |
 |---|---|
-| `tests_passed {suite}` | a call whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one test command (`pytest -q tests/x.py`, not `pytest -q; true` or `echo hi`) |
+| `tests_passed {suite}` | a call of a tool the shipped policy packs class as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one test command (`pytest -q tests/x.py`, not `pytest -q; true` or `echo hi`) |
 | `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives, or the identity), not an agent approver and not self-approved |
-| `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md) or kernel sensor, to `host`, not denied; or a call whose opened args have a `url` on `host`, with a T2 result `ok` |
+| `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md) or kernel sensor, to `host`, not denied; or a call of a tool the shipped packs class as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok` |
 | `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok` |
 
 Each claim gets one result:
@@ -121,17 +122,18 @@ Each claim gets one result:
 - **proven**: the evidence verifies and says what the claim says.
 - **unproven**: there is no evidence, or the only matching result is the agent's own report (T1:
   `the result is the agent's own report (T1)`). The agent's process said the call succeeded; nothing else saw it.
+  A matching call of another tool is unproven too (`a tool the verifier can't place as a shell tool`).
 - **failed**: the evidence does not verify, or no record in it says what the claim says.
 
 The evidence for a claim is self-contained. It needs only trust.json:
 
 ```json
-{"checkpoint": "tracekit.local/dafbd1fe7ac8298346be98a44167729e\n8\n55MDx5p7DKZigOHA15VDmtnBHEzSn0l9ACEmWTaPhP0=\n\n— tracekit.local/dafbd1fe7ac8298346be98a44167729e lvbR4SAX…\n",
- "records": [{"event": {"type": "approval", "seq": 4, "run_id": "0b15c2a8046e112b331fb28c105bb6f1", "tenant": "default",
+{"checkpoint": "tracekit.local/39efd223d635ba423b1faced04a8e7d7\n8\nMOdodHINu4iy4en2EA2+YPnEKH/Nt5/aXOJHRgr4qaY=\n\n— tracekit.local/39efd223d635ba423b1faced04a8e7d7 UuvN7Jot…\n",
+ "records": [{"event": {"type": "approval", "seq": 4, "run_id": "4205598ec8ab06b650a402d019b1592a", "tenant": "default",
                         "data": {"tool_use_id": "grant-1", "decision": "approve", "approver": "uid:990001",
                                  "person": "alice", "self_approved": false, "…": "…"}, "…": "…"},
-              "hash": "sha256:a14c929d4257e7055f645b090a0a7614a65b4e0707d0d47ada23423ff4791a3d",
-              "proof": ["IWMZ8dkgxYQJIBj8KK8bd3rmDrj6bqqtOfbaoxBrXks=", "Qo/W+ieH…", "+7d+ItY5…"]}]}
+              "hash": "sha256:5bf218dc39a3c41efdfaccd33e99bc7f7a6e8f365c7aaaa01b708b2332b47cfa",
+              "proof": ["zq3sGmbBpb1ungBDmMhpS6xl1UszRL8GQa4msQbSm9w=", "8xx0dD16…", "s5+blM63…"]}]}
 ```
 
 The receiver checks, in order:
@@ -158,14 +160,14 @@ A grant says: this agent may ask for this intent, within these caveats, until th
 the log key. A root grant needs a person's approval. A grant from the demo signer:
 
 ```json
-{"pcm_grant": 0, "ts": "2026-10-27T12:26:18.170909Z",
- "issuer": {"kind": "person", "id": "uid:990001", "person": "alice", "run": "0b15c2a8046e112b331fb28c105bb6f1",
-            "tenant": "default", "approval_id": "apr-b3eedd856eb48524a9afe4d71875a0e0"},
+{"pcm_grant": 0, "ts": "2026-10-27T13:37:07.576604Z",
+ "issuer": {"kind": "person", "id": "uid:990001", "run": "4205598ec8ab06b650a402d019b1592a", "tenant": "default",
+            "approval_id": "apr-982067cfc47a41b2d652f9a51860d02d", "person": "alice"},
  "subject": "uid:990101",
  "intent": "refund.request@sha256:d8636b6fbbd07430d057ea9ead9c27f0df1b918b10d34ab9257a4971d487846c",
  "caveats": [{"field": "amount", "op": "<=", "value": 20000}, {"field": "order", "op": "==", "value": 81}],
- "expires_at": "2026-10-27T13:26:18.169142Z", "delegable": true, "parent": null,
- "sig": {"key": "tracekit.local/dafbd1fe7ac8298346be98a44167729e+96f6d1e1", "sig": "ym1gVTv/…"}}
+ "expires_at": "2026-10-27T18:00:00.000000Z", "delegable": false, "parent": null,
+ "sig": {"key": "tracekit.local/39efd223d635ba423b1faced04a8e7d7+52ebcdec", "sig": "gmNkRPWL…"}}
 ```
 
 **Root grants come from a person.** The agent makes a tool call `pcm.grant` with the grant's args (`subject`,
@@ -262,7 +264,7 @@ The receiver checks the whole chain again (`verify_grants`), so a chain the sign
 `pcm.verify(msg, trust, schemas, replay=None, me=None, strict=False)` returns one result. The demo's first message:
 
 ```json
-{"signature": {"ok": true, "key": "tracekit.local/dafbd1fe7ac8298346be98a44167729e+96f6d1e1"},
+{"signature": {"ok": true, "key": "tracekit.local/39efd223d635ba423b1faced04a8e7d7+52ebcdec"},
  "replay": {"ok": true, "detail": "fresh"},
  "schema": {"ok": true, "ref": "refund.request@sha256:d8636b6f…", "errors": []},
  "grants": {"result": "ok", "steps": 1, "root": {"kind": "person", "id": "uid:990001", "person": "alice"},
@@ -319,6 +321,8 @@ while a person looks at it; `pcm_evidence` still reads. All four count against t
 ## Python SDK
 
 ```python
+import datetime
+
 import tracekit.pcm as pcm
 from tracekit.sdk.client import Client
 
@@ -327,10 +331,11 @@ DOC = {"pcm_schema": 0, "name": "refund.request",
                   "order": {"type": "int", "min": 1, "max": 999999999}},
        "claims": ["approved_by"], "grant": True}
 REF = pcm.schema_ref(DOC)
+in_an_hour = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
 
 with Client().run("agent-a") as run:
     # blocks until a person answers the pcm.grant approval (the policy must ask for it)
-    grant = run.pcm_grant("uid:990101", REF, "2026-10-27T18:00:00.000000Z",
+    grant = run.pcm_grant("uid:990101", REF, in_an_hour.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                           caveats=[{"field": "amount", "op": "<=", "value": 20000},
                                    {"field": "order", "op": "==", "value": 81}])
     [a] = [e for e in run.call("read", limit=1000)["events"] if e["type"] == "approval"]

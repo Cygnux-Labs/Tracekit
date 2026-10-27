@@ -320,9 +320,9 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
         ok, detail = False, f"addressed to {msg['to']['agent']}, not {me}"
     out["replay"] = {"ok": ok, "detail": detail}
     docs = {}
-    for d in schemas:
+    for i, d in enumerate(schemas):
         if errs := check_schema(d):
-            raise ValueError(f"schema document {d.get('name')!r}: {'; '.join(errs)}")
+            raise ValueError(f"schema document {i}: {'; '.join(errs)}")
         docs[schema_ref(d)] = d
     ref = msg["intent"]["type"]
     doc = docs.get(ref)
