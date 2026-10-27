@@ -11,6 +11,8 @@ import io
 import json
 import os
 import socket
+import shutil
+import tempfile
 import threading
 import time
 import unittest
@@ -118,9 +120,13 @@ class A2aServer(http.server.BaseHTTPRequestHandler):
 class Gateway(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
-        self.s = svc.SignerService(self.dir, policy=Engine(POLICY), gateways=["mtls:spiffe://acme/*"], grace_s=0,
+        policy = dict(POLICY, deny=[dict(rule, unless="^(token:(http|other)->(researcher|payer)|"
+                                                "qwen-7b@1->llama-1b@2 via c2c@0\\.1)$")
+                                         if rule["id"] == "R-ROUTE" else rule for rule in POLICY["deny"]])
+        self.s = svc.SignerService(self.dir, policy=Engine(policy), gateways=["mtls:spiffe://acme/*"], grace_s=0,
                                    tenants={f"{OTHER.scheme}:{OTHER.subject}": "beta"},
                                    authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
+                                              "token:other": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/a2a": ["decide", "complete", "approval_request",
                                                                          "approval_wait", "approval_consume",
                                                                          "observe"]})
@@ -235,17 +241,22 @@ class Gateway(unittest.TestCase):
 
     def test_task_ids_belong_to_the_caller_that_created_them(self):
         self.send("researcher")
+        other_run = self.register(CallerIdentity("token", "other", True))
         authenticated = a2a_gateway._Handler._authenticated
         def other_caller(handler, max_body):
             got = authenticated(handler, max_body)
             return ((got[0][0], got[0][1], "token:other"), got[1], got[2]) if got else None
         for method, params in (("tasks/get", {"id": "task-1"}),
-                               ("message/send", {"message": dict(TEXT, contextId="task-1")})):
+                               ("message/send", {"message": dict(TEXT, taskId="task-1")}),
+                               ("message/send", {"message": dict(TEXT, contextId="task-1")}),
+                               ("message/stream", {"message": dict(TEXT, taskId="task-1")}),
+                               ("message/stream", {"message": dict(TEXT, contextId="task-1")})):
             with self.subTest(method=method):
                 with mock.patch.object(a2a_gateway._Handler, "_authenticated", other_caller):
-                    _, _, body = self.post("researcher", method, params)
+                    _, _, body = self.post("researcher", method, params, run=other_run)
                 self.assertEqual(json.loads(body)["error"]["code"], -32001)
         self.assertEqual(len(self.a2a.seen), 1)
+        self.assertEqual([e for e in self.events(other_run) if e["type"] == "policy.decision"], [])
 
     def test_message_send_refuses_a_push_notification_url_before_a_decision(self):
         _, _, body = self.post("researcher", "message/send", {"message": TEXT,
@@ -552,6 +563,24 @@ class Policy(unittest.TestCase):
                 with self.subTest(pack=pack, call=tool):
                     self.assertEqual((e.decide(tool, args)["verdict"], e.decide(tool, args)["rule_ids"]),
                                      ("ask", ["TK-S011"]))
+
+    def test_a_deployment_redefines_tk_s011_to_allow_its_a2a_pairs_unattended(self):
+        packs = os.path.join(os.path.dirname(policy_compile.__file__), "packs")
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copytree(packs, os.path.join(d, "packs"))
+            for pack in ("server.yaml", "strict.yaml"):
+                path = os.path.join(d, f"{pack[:-5]}-a2a.yaml")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("extends: packs/" + pack + "\nask:\n"
+                            "  - id: TK-S011\n    class: a2a\n    field: route\n    pattern: '.'\n"
+                            "    unless: '^mtls:spiffe://acme\\.org/planner->(researcher|writer)$'\n")
+                policy, errors = policy_compile.build(path)
+                self.assertEqual(errors, [])
+                decision = Engine(policy).decide("a2a:researcher/message/send", {
+                    "sender": "mtls:spiffe://acme.org/planner", "receiver": "researcher",
+                    "params": {"message": TEXT}})
+                with self.subTest(pack=pack):
+                    self.assertEqual((decision["verdict"], decision["rule_ids"]), ("allow", []))
 
     def test_the_a2a_class_lints_and_reads_the_message(self):
         self.assertEqual(policy_compile._lint(dict(POLICY), "p.yaml"), [])

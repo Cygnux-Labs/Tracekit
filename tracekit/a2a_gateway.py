@@ -105,12 +105,14 @@ class _Tasks:
                 self.callers.popitem(last=False)
 
 
-def _task_ref(method, params):
-    """The existing task a request reads or continues, if it names one."""
+def _task_refs(method, params):
+    """The existing tasks a request reads or continues, if it names them."""
     if method == "tasks/get":
-        return params.get("id")
+        return (params.get("id"),)
     message = params.get("message")
-    return message.get("contextId") if isinstance(message, dict) else None
+    if not isinstance(message, dict):
+        return ()
+    return tuple(message.get(field) for field in ("taskId", "contextId") if field in message)
 
 
 def _task_created(value):
@@ -157,9 +159,9 @@ class _A2aGateway(_Handler):
                 params["configuration"].get("pushNotificationConfig"), dict) and \
                 "url" in params["configuration"]["pushNotificationConfig"]:
             raise _Error(-32602, "message/send does not relay push notification URLs")
-        task = _task_ref(method, params)
-        if task is not None and not gw["tasks"].owns(key[2], task):
-            raise _Error(-32001, "task belongs to another caller or was not created through this gateway")
+        for task in _task_refs(method, params):
+            if task is not None and not gw["tasks"].owns(key[2], task):
+                raise _Error(-32001, "task belongs to another caller or was not created through this gateway")
         tool, tcid = f"a2a:{up['name']}/{method}", "a2a-" + uuid.uuid4().hex
         args = {"sender": key[2], "receiver": up["name"], "agent_card": up["card_digest"], "skills": up["skills"],
                 "params": params}
