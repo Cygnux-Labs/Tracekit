@@ -166,6 +166,27 @@ class WhyThisDecision(unittest.TestCase):
         self.assertEqual((own["cls"], own["secs"], "other" in own), ("http", {"TK-N001": "deny"}, False))
         self.assertEqual((other["secs"], other["other"]), ({"TK-D003": "deny"}, True))
 
+    def test_no_rule_is_said_read_or_matched_when_the_engine_never_ran_or_ran_out_of_time(self):
+        """A decision denied for arguments the signer could not read (TK-ARGS-INVALID) got read counts, and one whose
+        regex engine ran out of time listed the rule it was on as matched."""
+        tr = view.Translator(view.policy_reasons())
+        h = next(k for k, rules in tr.reasons.items() if "TK-D003" in rules)
+        bad, slow = (tr.feed(v2rec(1, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "deny", "policy_hash": h,
+                                                        **extra}))[0]["v2"] for extra in (
+            {"rule_ids": ["TK-ARGS-INVALID"]},
+            {"rule_ids": ["TK-D003"], "nondeterministic": True, "reasons": ["nondeterministic: the fallback regex engine ran out"]}))
+        self.assertEqual([k for k in ("cls", "read", "secs", "other") if k in bad or k in slow], [])
+        self.assertEqual((slow["nondeterministic"], slow["reasons"]), (True, ["nondeterministic: the fallback regex engine ran out"]))
+        needs_node(self)
+        html = text(self.detail({"tool": "Bash", "pre": {}, "denied": True, "v2": {
+            "decision": "deny", "nondeterministic": True, "reasons": slow["reasons"], "rules": [{"id": "TK-D003", "reason": "force push"}]}}))
+        self.assertIn("2 ENGINE nondeterministic: the fallback regex engine ran out · rule ids recorded, none of them a match: TK-D003", html)
+        self.assertNotIn("matched", html.replace("none of them a match", ""))
+        html = text(self.detail({"tool": "Bash", "pre": {}, "denied": True, "v2": {
+            "decision": "deny", "rules": [{"id": "TK-ARGS-INVALID", "reason": "arguments the signer could not read, so it refused the call"}]}}))
+        self.assertIn("2 ENGINE no rule was read: TK-ARGS-INVALID arguments the signer could not read, so it refused the call", html)
+        self.assertNotIn("POLICY", html)
+
     def test_a_call_of_a_policy_the_viewer_lacks_names_only_what_matched(self):
         needs_node(self)
         html = text(self.detail({"tool": "Bash", "pre": {}, "denied": True, "v2": {

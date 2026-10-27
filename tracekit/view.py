@@ -394,7 +394,8 @@ class Translator(observe.Translator):
             pol = getattr(self.reasons, "policies", {}).get(h)
             self.engines[h] = pol and Engine(pol)
         eng, ids = self.engines[h], set(d.get("rule_ids") or ())
-        if not (eng and d.get("tool")):
+        # the engine never read the arguments (TK-ARGS-INVALID), or ran out of time and denied: no rule was read in full
+        if not (eng and d.get("tool")) or "TK-ARGS-INVALID" in ids or d.get("nondeterministic"):
             return {}
         read, secs = eng.reads(d["tool"]), {r["id"]: sec for sec, r, *_ in eng.rules if r["id"] in ids}
         return {"cls": eng.tool_class(d["tool"]), "read": {k: len(v) for k, v in read.items()}, "secs": secs,
@@ -487,7 +488,7 @@ class Translator(observe.Translator):
                              "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
                      v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
                          "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"), **self.reads(d),
-                         **{k: d[k] for k in ("provenance", "provenance_state") if k in d}})
+                         **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d}})
             return [r]
         aid = d.get("approval_id")
         tool, rule_ids, _ = self.requests.get(aid, ("", [], None))

@@ -4156,9 +4156,15 @@
         const hit = rules.filter(x => secs[x.id] === sec);
         steps.push([hit.length ? sec : "", sec.toUpperCase() + " RULES", `read ${esc(v.read[sec])} · ` + (hit.length ? `matched ` + hit.map(rule).join("") : `<span class="dim">none matched</span>`)]);
       }
-      else steps.push(["", "POLICY", `<span class="dim">${esc(short(v.policy_hash) || "none recorded")}: not a policy this viewer has, so only the rules that matched are known (start the viewer with the signer's --config)</span>`]);
-      const own = rules.filter(x => !Object.hasOwn(secs, x.id));
-      if (own.length) steps.push([v.decision, v.read ? "ENGINE" : "MATCHED", own.map(rule).join("")]);
+      // the engine ran out of time (the record says so, and why), or never read the arguments: no rule was read in full
+      const invalid = rules.some(x => x.id === "TK-ARGS-INVALID"), own = rules.filter(x => !Object.hasOwn(secs, x.id));
+      if (v.nondeterministic) steps.push(["deny", "ENGINE", `<span class="s-deny">${esc((v.reasons || []).find(x => x.startsWith("nondeterministic")) || "nondeterministic: the engine ran out of time on these arguments, so the call is denied")}</span>`
+        + (rules.length ? `<div class="dim">· rule ids recorded, none of them a match: ${esc(rules.map(x => x.id).join(", "))}</div>` : "")]);
+      else if (invalid) steps.push(["deny", "ENGINE", "no rule was read: " + own.map(rule).join("")]);
+      else {
+        if (!v.read) steps.push(["", "POLICY", `<span class="dim">${esc(short(v.policy_hash) || "none recorded")}: not a policy this viewer has, so only the rules that matched are known (start the viewer with the signer's --config)</span>`]);
+        if (own.length) steps.push([v.decision, v.read ? "ENGINE" : "MATCHED", own.map(rule).join("")]);
+      }
       steps.push([v.decision, "DECISION", `${esc(String(v.decision).toUpperCase())} <span class="dim">the first section with a match decides: deny, then ask, then flag; none, allow</span>`]);
       steps.push([out[0] === "s-ok" ? "allow" : out[0] === "s-deny" ? "deny" : "ask", "OUTCOME", `<span class="${esc(out[0])}">${esc(out[1])}</span>` + (ans ? ` <span class="dim">${esc(ans.text)}</span>` : "")]);
       let who = v.decision === "deny" ? "nobody: a denied call is never held" : v.decision !== "ask" ? "nobody: it did not wait for an answer"
