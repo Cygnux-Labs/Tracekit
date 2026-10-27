@@ -565,7 +565,21 @@ class CodingPack(unittest.TestCase):
                   "ls ~/.codex/sessions && rm ~/.codex/sessions/a.jsonl", "cd /repo; echo x > ~/.claude/projects/p/a.jsonl",
                   'rm "/Users/u/.claude/projects/p/a b.jsonl"', "rm ~/.Claude/Projects/p/a.jsonl",
                   r"rm 'C:\Users\u\.codex\sessions\a.jsonl'", "bash -c 'rm ~/.claude/projects/p/a.jsonl'",
-                  "sudo rm ~/.claude/projects/p/a.jsonl", "cat ~/.codex/sessions/a.jsonl | xargs rm ~/.codex/sessions/b")
+                  "sudo rm ~/.claude/projects/p/a.jsonl", "cat ~/.codex/sessions/a.jsonl | xargs rm ~/.codex/sessions/b",
+                  # find's start paths after `--`, and its path tests (-delete implies -depth: -prune doesn't keep
+                  # find out of the folder)
+                  "find -- ~/.codex/sessions -delete", "find ~ -path '*/.claude/projects/*' -delete",
+                  "find $HOME -ipath '*/.gemini/tmp/*' -delete", "find . -path './.claude/projects/*' -delete",
+                  "find ~ -regex '.*\\.codex/sessions/.*' -delete", "find ~ -path '*/.codex/sessions' -prune -o -delete",
+                  "find ~ -path '*/.claude/projects/*' -exec sed -i s/a/b/ {} +",
+                  "find ~ -name '*.jsonl' -path '*/.codex/sessions/*' -exec rm {} \\;",
+                  "find ~ -wholename '*/.claude/projects/*' -exec truncate -s0 {} +",
+                  "find -files0-from <(printf '%s\\0' ~/.codex/sessions) -delete",
+                  # a writer git, a container or parallel runs from its words, and awk's print > "file"
+                  "git rm ~/.claude/projects/p/a.jsonl", "docker exec c rm /root/.claude/projects/p/a.jsonl",
+                  "kubectl exec p -- rm /root/.codex/sessions/a.jsonl", "parallel rm ::: ~/.codex/sessions/*",
+                  "docker exec c find /tmp -exec rm /root/.codex/sessions/a.jsonl \\;",
+                  "awk '{print > \"/Users/u/.claude/projects/p/a.jsonl\"}' x")
         reads = ("ls -la ~/.codex/sessions/ 2>/dev/null | head; ls ~/.gemini/tmp 2>/dev/null | head",
                  "rm -rf build && ls ~/.codex/sessions", "echo 'rm ~/.codex/sessions' > note.txt",
                  "cat > notes.md <<'EOF'\nrm ~/.claude/projects/x\nEOF", "git commit -m 'rm ~/.claude/projects'",
@@ -578,7 +592,11 @@ class CodingPack(unittest.TestCase):
                  "find ~/.claude/projects -exec sed -n 1p {} \\;",
                  # OpenCode's config (TK-F015 flags it), its plans and worktrees beside its sessions
                  "echo x | tee -a ~/.config/opencode/x", "echo x > ~/.local/share/opencode/plans/p.md",
-                 "rm -rf ~/.local/share/opencode/worktree/p/w", "rm -rf ~/.config", "rm ~/.claude.json.bak")
+                 "rm -rf ~/.local/share/opencode/worktree/p/w", "rm -rf ~/.config", "rm ~/.claude.json.bak",
+                 "find ~/.claude/projects -name '*.jsonl' -exec cp {} /backup/ \\;",
+                 "find /tmp -newer ~/.codex/sessions/a.jsonl -delete", "grep -n rm ~/.claude/projects/p/a.jsonl",
+                 "docker exec c cat /root/.claude/projects/p/a.jsonl", "parallel wc -l ::: ~/.codex/sessions/*",
+                 "awk '$3 > 5 { print > \"/tmp/big.txt\" }' ~/.codex/sessions/a.jsonl")
         for pack, engine, e in self.every_pack():
             for command in writes:
                 with self.subTest(pack=pack, engine=engine, command=command):
@@ -599,12 +617,16 @@ class CodingPack(unittest.TestCase):
                    "rm -rf ~/.local/share/opencode", 'rm -rf "$XDG_DATA_HOME/opencode"', "rm -rf ${XDG_DATA_HOME}",
                    "rm -rf ~/.local/share/*", "rm -rf ~/.local", "mv ~/.codex /tmp/codex-old", "rm -rf ~/.Gemini",
                    "find ~/.claude -name '*.jsonl' -delete", r"rm -r 'C:\Users\u\.codex'", "rm -rf /home/u/.claude//",
-                   "rm -rf /Users/u/.gemini", "rm -rf /root/.codex")
+                   "rm -rf /Users/u/.gemini", "rm -rf /root/.codex", "find -- ~/.claude -delete")
         kept = ("cp settings.json ~/.gemini", "mv x ~/.claude", "rm -rf ~/.claude/hooks", "rm ~/.codex/config.toml",
                 "rm -rf ~/.claude-old", "rm -rf ~/.local/share/opencode/log", "rm -rf ~/.local/bin",
                 "echo x > ~/.local/share/opencode/storage.txt",
                 # a project's own harness folders hold its settings, not transcripts (TK-F015 flags them)
-                "rm -rf .claude", "rm -rf repo/.gemini/", "mv .codex .codex.bak", "rm -rf /Users/u/repo/.claude")
+                "rm -rf .claude", "rm -rf repo/.gemini/", "mv .codex .codex.bak", "rm -rf /Users/u/repo/.claude",
+                # or a folder that only looks like a home (a rootfs overlay, dotfiles mirrored in a repo)
+                "rm -rf root/.claude", "rm -rf build/home/x/.claude", "rm -rf /srv/app/root/.codex",
+                # find that only edits files in place writes them, it doesn't delete the folder
+                "find ~/.codex -maxdepth 1 -name config.toml -exec sed -i s/a/b/ {} +")
         for pack, engine, e in self.every_pack():
             for command in deletes:
                 with self.subTest(pack=pack, engine=engine, command=command):
@@ -1176,8 +1198,10 @@ class CodingPack(unittest.TestCase):
 
     def test_mount_sources_option_values_history_reads_and_pruned_paths(self):
         # a mount source is read as the runtime resolves it (`//`, `/.`); an option's value is never another option
-        # (`--rootfs --privileged`); `history -r` with a path holding `-c` reads history; a path `-prune` leaves out of
-        # a find that deletes isn't deleted
+        # (`--rootfs --privileged`); `history -r` with a path holding `-c` reads history; a file `-prune` leaves out of
+        # a find that deletes isn't deleted, but a path test's folder is: -delete implies -depth, under which -prune
+        # doesn't keep find out of it
+        self.verdicts([("find /var -path /var/log -prune -o -name '*.tmp' -delete", "TK-A027")])
         self.verdicts([(c, "TK-A023") for c in (
             "docker run -v //:/host alpine", "docker run -v /.:/host alpine", "podman run -v /proc/.:/p alpine",
             "docker run --mount type=bind,src=//,dst=/h alpine", "podman run --rootfs --privileged alpine",
@@ -1185,7 +1209,6 @@ class CodingPack(unittest.TestCase):
         self.verdicts([("history -cw", "TK-A029"), ("history -w -c", "TK-A029")])
         for command in ("docker run -v /home/u/src:/src alpine", "docker run -v ./proc:/p alpine",
                         "history -r ~/my-cache", "history -a ~/a-c",
-                        "find /tmp -path /var/log -prune -o -name '*.tmp' -delete",
                         "find /tmp -name .bash_history -prune -o -exec rm {} +"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})

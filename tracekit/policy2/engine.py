@@ -409,7 +409,8 @@ def _log_or_history(path):
 def _effects(parsed):
     """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
     path casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
-    sed -i and perl -i name, and find with -delete, -exec rm or an -exec that writes each file found (sed -i)."""
+    sed -i and perl -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i), awk's
+    print > "file", and one of those that git, docker, podman, kubectl or parallel runs from its words (git rm)."""
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
 
@@ -422,24 +423,36 @@ def _command_effects(commands):
             continue
         exe = argv[0].rsplit("/", 1)[-1]
         args = argv[1:]
-        if exe == "find" and ("-delete" in args or any(
-                a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args)
-                and args[i + 1].rsplit("/", 1)[-1].lower() in ("rm", "unlink", "shred", "truncate")
-                for i, a in enumerate(args)) or any(   # or what it runs writes each file found (`-exec sed -i … {} +`)
-                t.partition(":")[2] == "{}" for run in shell._find_execs(args)
-                for t in _command_effects([{"argv": [run[0].lower()] + run[1:]}]))):
-            # its start paths (after its options: -L, -H, BSD's -E, -x …), and the log and history names among its
-            # tests (`-name .bash_history`) but those `-prune` leaves out
+        if exe == "find":
+            # what its -exec runs write (the parser doesn't emit them when a container runs the find: `docker exec c
+            # find . -exec rm x \;`); -delete or an -exec rm (unlink, shred, truncate, mv {}) deletes each file found,
+            # one that writes `{}` (sed -i, perl -i, cp /dev/null {}) writes it. An -exec's run ends at the first `;` or
+            # `+`, so a find it runs (through git or a container) has no run of its own: the recursion stays shallow
+            runs = _command_effects([{"argv": [run[0].lower()] + run[1:]} for run in shell._find_execs(args)])
+            out.extend(runs)
+            found = {t.partition(":")[0] for t in runs if t.partition(":")[2] == "{}"}
+            if "-delete" in args or any(a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args)
+                                        and args[i + 1].rsplit("/", 1)[-1].lower() in ("rm", "unlink", "shred", "truncate")
+                                        for i, a in enumerate(args)):
+                found.add("DELETE_TARGET")
+            if not found:
+                continue
+            # its start paths (after its options: -L, -H, BSD's -E, -x …, and `--`), what its path tests and
+            # -files0-from name (`-path '*/x/*'`; -delete implies -depth, under which -prune doesn't keep find out of a
+            # folder), and the log and history names among its tests (`-name .bash_history`) but those `-prune` leaves out
             paths = []
             for arg in args:
-                if re.fullmatch(r"-[A-Za-z]|-O[0-9]*", arg):
+                if re.fullmatch(r"-[A-Za-z]|-O[0-9]*|--", arg):
                     continue
                 if arg.startswith("-"):
                     break
                 paths.append(arg)
+            paths += [args[i + 1] for i in range(len(args) - 1) if args[i] in (
+                "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex", "-files0-from")]
             pruned = {i for i in range(len(args)) if args[i + 1:i + 2] == ["-prune"]}
             paths += [a for i, a in enumerate(args) if i not in pruned and _log_or_history(a)]
-            out.extend("DELETE_TARGET:" + path for path in dict.fromkeys(paths))
+            kind = "DELETE_TARGET" if "DELETE_TARGET" in found else "WRITE_TARGET"
+            out.extend(kind + ":" + path for path in dict.fromkeys(paths))
         elif exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
             valued = ("-s", "--size", "-r", "--reference") if exe == "truncate" else (
                 "-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix")
@@ -499,6 +512,17 @@ def _command_effects(commands):
                     positional = [i for i, arg in enumerate(args) if not arg.startswith("-")]
                     files = args[positional[0] + 1:] if positional else []
             out.extend("WRITE_TARGET:" + path for path in files)
+        elif exe in ("git", "docker", "podman", "kubectl", "parallel"):
+            # the writer they are or run from their own words (git rm or mv, docker exec c rm, kubectl cp, parallel rm
+            # ::: …), read from its name on (a git message or grep pattern is data)
+            data = shell.data_words(argv)
+            j = next((j for j in range(1, len(argv)) if j not in data and argv[j].rsplit("/", 1)[-1].lower() in (
+                "rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln", "dd", "sed", "perl", "find")),
+                     None)
+            if j is not None:
+                out.extend(_command_effects([{"argv": [argv[j].lower()] + argv[j + 1:]}]))
+        elif exe in ("awk", "gawk", "mawk", "nawk"):   # print or printf > "file" in its program
+            out.extend("WRITE_TARGET:" + path for path in re.findall(r'>>?\s*"([^"\n]+)"', shell._awk_program(args) or ""))
     return out
 
 
