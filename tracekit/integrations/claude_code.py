@@ -299,7 +299,7 @@ def _pre(client, p, sid, tid):
               file=sys.stderr)
         return 2
     if d["decision"] == "ask":
-        why = f": {d['reason']}" if d.get("reason") else ""   # a live constraint's says which and what to do
+        why = f": {d['reason'].removesuffix('.')}" if d.get("reason") else ""   # a live constraint's says which and what to do; one trailing period dropped so it does not print as .;
         try:
             cap()
             aid = run.call("approval_request", tool_call_id=tid)["approval_id"]

@@ -547,10 +547,11 @@ signer, and witness cosignatures (`witnesses_required`) limit forged evidence, n
 log key where only the signer reads it ([signing](signing.md)). If it leaks, remove it from every receiver's
 trust.json, rotate it, and treat what you accepted under it since the leak as unverified.
 
-## Agent-to-agent transport (later)
+## Agent-to-agent transport
 
-The A2A gateway (#434) will check PCM parts before it forwards them, drop rejected ones, and let policy require
-proven claims per receiver or intent. A `transfer` payload waits for it too. Until then the receiver calls
+The [A2A gateway](a2a.md) is merged, but it doesn't check PCM parts yet: it forwards them like any other part.
+Enforcing PCM in it (checking PCM parts before it forwards them, dropping rejected ones, and letting policy require
+proven claims per receiver or intent) is a follow-up, and so is a `transfer` payload. Until then the receiver calls
 `pcm.verify` itself.
 
 ## Limits

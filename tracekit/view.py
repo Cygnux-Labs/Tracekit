@@ -285,7 +285,8 @@ ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PAR
                 "TK-CONSTRAINT": "the person's request in this run said not to do this, so a person must approve it",
                 "TK-HOLD": "the run is held by an incident: every call waits for a person",
                 "TK-QUARANTINE": "the run is quarantined by an incident: its calls are refused",
-                "TK-ARGS-INVALID": "arguments the signer could not read, so it refused the call"}
+                "TK-ARGS-INVALID": "arguments the signer could not read, so it refused the call",
+                "TK-A2A-NAME": policy_compile.ENGINE_REASONS["TK-A2A-NAME"]["reason"]}
 # a signed gap's kind in words (the kind itself stays on the row, for its tooltip and DETAIL)
 GAP_WORDS = {
     "signer_unavailable": "the signer was unreachable: calls may be missing",

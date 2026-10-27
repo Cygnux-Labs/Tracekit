@@ -270,8 +270,8 @@ def normalise(harness, p):
             out["prompt"] = p.get("prompt")
             if harness == "qwen":
                 # Qwen Code also fires it as it continues after tool results (prompt "") and with a Stop hook's reason;
-                # only a prompt the person submitted carries submitted_prompt (0.22 on), before @file expansion
-                # (handle reads the live constraints from this out['prompt'] too, not the raw payload)
+                # only a prompt the person submitted carries submitted_prompt (0.21.1 on; 0.21.12 for qwen -p), before
+                # @file expansion (handle reads the live constraints from this out['prompt'] too, not the raw payload)
                 typed = p.get("submitted_prompt")
                 if not isinstance(typed, str) or not typed.strip():
                     return None
@@ -820,10 +820,12 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
         # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
         # which both run
-        if os.name != "nt" or harness in ("cursor", "droid"):   # assume Droid uses cmd.exe, not PowerShell
+        # assume Droid runs hooks under cmd.exe; Qwen Code does, so a path that needs quotes keeps cmd.exe's form there,
+        # and one that doesn't goes bare, which either shell runs
+        if os.name != "nt" or harness in ("cursor", "droid"):
             return c
         m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
-        return m.group(1) + c[m.end():] if m else f"& {c}"
+        return m.group(1) + c[m.end():] if m else c if harness == "qwen" else f"& {c}"
 
     def ours(cmds):
         vs = {_version(c) for c in cmds} - {None}

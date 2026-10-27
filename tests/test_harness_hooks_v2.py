@@ -502,7 +502,7 @@ class Installer(unittest.TestCase):
                     self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
-                    if os.name == "nt" and harness not in ("cursor", "droid"):   # PowerShell can't start a quoted first word
+                    if os.name == "nt" and harness not in ("cursor", "droid", "qwen"):   # PowerShell can't start a quoted first word
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
@@ -568,8 +568,16 @@ class Installer(unittest.TestCase):
                 p = subprocess.run(pre, shell=True, capture_output=True, text=True, timeout=30)
                 self.assertEqual((p.returncode, json.loads(p.stdout)["decision"]), (0, "deny"))
                 self.assertIn("call blocked (fail-closed)", json.loads(p.stdout)["reason"])
+                # a result is never answered with a deny, nor failed: before agy 1.4.7 a failed PostToolUse hook
+                # replaced the call's result with an error (#448)
                 p = subprocess.run(post, shell=True, capture_output=True, text=True, timeout=30)
-                self.assertEqual((p.returncode, p.stdout), (1, ""))   # a result is never answered with a deny
+                self.assertEqual((p.returncode, p.stdout.strip()), (0, "{}"))
+        with contextlib.redirect_stdout(io.StringIO()):   # system mode: init's interpreter is gone
+            agent_hooks.install("antigravity", None, v2=True, python=os.path.join(d, "gone", "python"), path=path)
+        with open(path) as f:
+            post = json.load(f)[agent_hooks.AGY_HOOK]["PostToolUse"][0]["hooks"][0]["command"]
+        p = subprocess.run(post, shell=True, capture_output=True, text=True, timeout=30)
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, "{}"))
 
     def test_a_utf8_payload_is_read_under_any_console_code_page(self):
         # Windows decodes a pipe with its ANSI code page: cp1252 has no byte 0x81, so "\u00c1" (C3 81) failed to decode,
@@ -627,15 +635,21 @@ class Installer(unittest.TestCase):
             groups = json.load(f)["hooks"]["PreToolUse" if harness == "codex" else "BeforeTool"]
         return groups[0]["hooks"][0]["command"]
 
-    def test_droid_windows_commands_keep_the_quoted_interpreter_for_cmd(self):
+    def test_droid_and_qwen_windows_commands_keep_the_quoted_interpreter_for_cmd(self):
+        # both run hooks under cmd.exe, which can't run PowerShell's `& "..."` (#448: Qwen Code's had it)
         d = ac.tmpdir(self)
-        for exe in (r"C:\Program Files\Python311\python.exe", r"C:\Python311\python.exe"):
-            with self.subTest(exe=exe), mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", exe):
-                agent_hooks.install("droid", d, v2=True)
-                with open(agent_hooks.config_path("droid", d)) as f:
-                    command = json.load(f)["PreToolUse"][0]["hooks"][0]["command"]
-                self.assertTrue(command.startswith(f'"{exe}" -I '), command)
-                self.assertFalse(command.startswith("&"), command)
+        for harness in ("droid", "qwen"):
+            for exe in (r"C:\Program Files\Python311\python.exe", r"C:\Python311\python.exe"):
+                with self.subTest(harness=harness, exe=exe), mock.patch("os.name", "nt"), \
+                        mock.patch.object(sys, "executable", exe), contextlib.redirect_stdout(io.StringIO()):
+                    agent_hooks.install(harness, d, v2=True)
+                    with open(agent_hooks.config_path(harness, d)) as f:
+                        config = json.load(f)
+                    command = (config if harness == "droid" else config["hooks"])["PreToolUse"][0]["hooks"][0]["command"]
+                    # a path that needs no quotes goes bare for Qwen Code, which either shell runs
+                    plain = harness == "qwen" and " " not in exe
+                    self.assertTrue(command.startswith(f'{exe} -I ' if plain else f'"{exe}" -I '), command)
+                    self.assertFalse(command.startswith("&"), command)
 
     @unittest.skipUnless(os.name == "nt", "Droid runs Windows hooks under cmd.exe")
     def test_droid_cmd_runs_a_hook_with_a_spaced_interpreter_path_and_keeps_its_denial(self):

@@ -28,8 +28,8 @@ REGEX_TIMEOUT_S = 1.0       # fallback engine only: the time all matches of one 
 
 
 def _backend(name):
-    """Return (engine id, compile(pattern), match(compiled, text, full, deadline)); only the fallback uses the
-    deadline (time.monotonic())."""
+    """Return (engine id, compile(pattern, anycase=False), match(compiled, text, full, deadline)); only the fallback
+    uses the deadline (time.monotonic())."""
     if name != "regex":
         try:
             import re2
@@ -40,10 +40,11 @@ def _backend(name):
             from importlib.metadata import version
             opts = re2.Options()
             opts.log_errors = False
-            return (f"re2@{version('google-re2')}", lambda p: re2.compile(p, opts),
+            return (f"re2@{version('google-re2')}", lambda p, anycase=False: re2.compile("(?i)" * anycase + p, opts),
                     lambda c, s, full, deadline: (c.fullmatch if full else c.search)(s))
     import regex
-    return (f"regex@{regex.__version__}", lambda p: regex.compile(translate(p), regex.ASCII | regex.V0),
+    return (f"regex@{regex.__version__}", lambda p, anycase=False: regex.compile(
+                translate(p), regex.ASCII | regex.V0 | regex.IGNORECASE * anycase),
             lambda c, s, full, deadline: (c.fullmatch if full else c.search)(
                 s, timeout=max(deadline - time.monotonic(), 1e-6)))
 
@@ -54,9 +55,12 @@ class Engine:
         self.policy, self.policy_hash = policy, policy_hash(policy)
         self.tool_class = functools.lru_cache(maxsize=1024)(self.tool_class)   # a glob scan per call otherwise
         self.engine, compile_, self._match = _backend(backend)
-        # each rule's prefilter (compile.literals): a subject holding none of its strings is not searched
-        self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, compile_(r["pattern"]),
-                       compile_(r["unless"]) if "unless" in r else None, literals(r["pattern"]))
+        # each rule's prefilter (compile.literals): a subject holding none of its strings is not searched. An a2a rule
+        # matches in any case, as every prefilter does: the names it reads are lower-cased (classes.a2a_fields)
+        def rx(r, key):
+            return compile_(r[key], r.get("class") == "a2a")
+        self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
+                       rx(r, "unless") if "unless" in r else None, literals(r["pattern"]))
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
         self._of = {}
         # an ask rule's approval.agent patterns: (rule id, argument name) -> compiled
@@ -132,6 +136,8 @@ class Engine:
             hits[self.policy["unknown_tools"]].append("TK-UNKNOWN-TOOL")
         if cls == "sql" and fields.get("statement") is not None and not fields.get("code"):
             hits["ask"].append("TK-SQL-PARSE")   # no dialect reads it: an unclosed literal or comment, or not text
+        if cls == "a2a" and fields.get("unreadable"):
+            hits["deny"].append("TK-A2A-NAME")   # a name with spellings its rules can't see (classes.a2a_fields)
         parsed, oversize = ([], [], [], [], []), []
         if cls == "shell":
             command = fields.get("command", "")
@@ -236,8 +242,8 @@ class Engine:
     def _targets(cls, args, fields, parsed):
         """shell: each command's argv without its data words (shell.data_words), the redirection targets, assignments
         and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
-        writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; mcp, app and unknown
-        tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
+        writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
+        mcp, app and unknown tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
         decimal, hex, octal or IPv6 form reads as the address it is."""
         if cls == "shell":
             words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in parsed[0]
@@ -260,6 +266,10 @@ class Engine:
             files = fields.get("attachments")
             return [f if isinstance(f, str) else canonical(f) for f in (files if isinstance(files, list) else [files])
                     if f is not None]
+        if cls == "a2a":   # the agent or model it reaches, and the message it carries
+            to = fields.get("receiver")
+            receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
+            return receiver + [canonical(args.get("params"))]
         return [canonical(args)] if cls in ("mcp", "app", "unknown") else []
 
 
