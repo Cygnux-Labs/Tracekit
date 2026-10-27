@@ -1,8 +1,10 @@
 """Claims of proof-carrying messages checked end to end through a real in-process signer (#436): each checker proven by
 a signer-side or T2 record, unproven on the agent's own report (T1), failed on a mismatch or on evidence that does not
 verify; the verdicts; and the Python SDK's pcm_send, pcm_evidence and pcm_grant."""
+import base64
 import concurrent.futures
 import hashlib
+import hmac
 import itertools
 import os
 import time
@@ -12,7 +14,7 @@ from unittest import mock
 import test_pcm_signer
 import test_signer_service as ts
 from test_pcm_signer import A, ALICE, APPROVALS, ASK, AUTHORIZE, CAVEATS, DOC, NARROWER, REF, REVIEWER, Case, rid
-from tracekit import crypto, pcm
+from tracekit import crypto, merkle, pcm
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
@@ -127,7 +129,8 @@ class TestTestsPassed(Claims):
                          "no call in the evidence ran")
         _, _, ev = self.run_suite(ok=False, t2=True)
         self.assertClaim("failed", self.claim("tests_passed", {"suite": SUITE}, ev), "and failed")
-        for cmd in ("echo hi", SUITE + " || true"):   # || true: the call succeeds whatever the tests do
+        # || true: the call succeeds whatever the tests do; a `#` inside a word starts no comment, so `|| true` runs
+        for cmd in ("echo hi", SUITE + " || true", SUITE + "#|| true"):
             _, _, ev = self.run_suite(cmd, t2=True)
             self.assertClaim("failed", self.claim("tests_passed", {"suite": cmd}, ev), "not a single test command")
         d, r = self.ran("Bash", {"command": "pytest -q tests/other.py"}, t2=True)
@@ -251,8 +254,8 @@ class TestApprovedBy(Claims):
     def test_proven_by_the_persons_approval_of_that_call(self):
         ev = self.approval()
         self.assertClaim("proven", self.claim("approved_by", {"person": "alice", "call": "g1"}, ev), "by alice of g1")
-        self.assertClaim("proven", self.claim("approved_by", {"person": "uid:990001", "call": "g1"}, ev))
-        for args in ({"person": "bob", "call": "g1"}, {"person": "alice", "call": "g2"}):
+        for args in ({"person": "bob", "call": "g1"}, {"person": "alice", "call": "g2"},
+                     {"person": "uid:990001", "call": "g1"}):   # the person's name, not the identity that answered
             with self.subTest(args=args):
                 self.assertClaim("failed", self.claim("approved_by", args, ev), "no approval of")
 
@@ -289,6 +292,17 @@ class TestApprovedBy(Claims):
         trust = {"logs": [self.s.vkey, s2.vkey], "algs": ["ed25519"]}
         self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"}, ev, trust=trust, h=h),
                          "not the one that signed the message")
+
+
+class TestApprovedWithoutApprovals(Claims):
+    approvals = None
+
+    def test_an_identity_no_person_maps_is_no_person(self):
+        self.approve(self.args(), who=CallerIdentity("uid", "990103", True))   # any identity of the tenant may answer
+        [a] = [x for x in self.records() if x["type"] == "approval"]
+        self.assertNotIn("person", a["data"])
+        self.assertClaim("failed", self.claim("approved_by", {"person": "uid:990103", "call": "g1"},
+                                              self.evidence([a["run_seq"]])), "no approval of")
 
 
 class TestApprovedByAnAgent(Claims):
@@ -364,6 +378,49 @@ class TestEvidence(Claims):
         text = self.ev["checkpoint"].partition("\n\n")[0] + "\n"
         cosigned = self.ev["checkpoint"] + checkpoint.cosign(text, "witness.example/w", secret, int(time.time()))
         self.assertClaim("proven", self.claim("approved_by", self.args_, dict(self.ev, checkpoint=cosigned), trust))
+
+
+class TestMalformedRecords(Claims):
+    """Records the pinned log key signed that are no valid event, or that lack a field a checker reads, fail the
+    claim: a hostile pinned log can't make the verifier raise."""
+
+    def relog(self, events, opened=None):
+        """Evidence of `events` alone, numbered from 0, under a checkpoint the signer's log key signs; `opened`:
+        {index: (args, the tool its commitment names)} of decisions to open with a fresh salt."""
+        events, opened, salt = [dict(e, seq=i) for i, e in enumerate(events)], opened or {}, os.urandom(32)
+        for i, (args, tool) in opened.items():
+            mac = hmac.new(salt, event_hash({"tool": tool, "args": args}).encode(), "sha256").hexdigest()
+            events[i]["data"] = dict(events[i]["data"], args_commitment="hmac-sha256:" + mac)
+        leaves = [merkle.leaf_hash(bytes.fromhex(event_hash(e)[7:])) for e in events]
+        text = checkpoint.body(self.s.origin, len(leaves), merkle.root(leaves))
+        note = text + "\n" + checkpoint.log_line(self.s.origin, self.s._log_key.public,
+                                                 self.s._log_key.sign(text.encode()))
+        return {"checkpoint": note, "records": [
+            {"event": e, "hash": event_hash(e), "proof": [base64.b64encode(p).decode()
+                                                         for p in merkle.inclusion_proof(i, leaves)],
+             **({"salt": salt.hex(), "args": opened[i][0]} if i in opened else {})} for i, e in enumerate(events)]}
+
+    def test_no_valid_event(self):
+        self.approve(self.args())
+        seq = [x for x in self.records() if x["type"] == "approval"][-1]["run_seq"]
+        a = self.evidence([seq])["records"][0]["event"]
+        self.assertClaim("proven", self.claim("approved_by", {"person": "alice", "call": "g1"}, self.relog([a])))
+        for bad in ({k: v for k, v in a.items() if k != "data"}, dict(a, data=[]),
+                    dict(a, data={k: v for k, v in a["data"].items() if k != "decision"})):
+            with self.subTest(bad=bad):
+                self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"},
+                                                      self.relog([bad])), "record 1: not a valid event")
+
+    def test_a_decision_without_its_tool_or_id(self):
+        dec, res = (r["event"] for r in self.evidence(self.ran("Bash", {"command": SUITE}, t2=True))["records"])
+        opened = {0: ({"command": SUITE}, "Bash")}
+        self.assertClaim("proven", self.claim("tests_passed", {"suite": SUITE}, self.relog([dec, res], opened)))
+        for drop, tool in (("tool", None), ("decision_id", "Bash")):
+            with self.subTest(drop=drop):
+                bad = dict(dec, data={k: v for k, v in dec["data"].items() if k != drop})
+                self.assertClaim("failed", self.claim("tests_passed", {"suite": SUITE},
+                                                      self.relog([bad, res], {0: ({"command": SUITE}, tool)})),
+                                 "no call in the evidence ran")
 
 
 class TestVerdicts(Claims):

@@ -7,6 +7,7 @@ import json
 import operator
 import os
 import secrets
+import sys
 import unittest
 
 from tracekit import pcm
@@ -150,6 +151,16 @@ class Envelope(unittest.TestCase):
         out = pcm.verify(message(grants=[g] * 9), TRUST, [DOC])
         self.assertEqual((out["verdict"], out["signature"]), ("reject", None))
 
+    def test_a_value_deeper_than_the_recursion_limit(self):
+        deep = []
+        for _ in range(sys.getrecursionlimit() + 100):
+            deep = [deep]
+        for m in (dict(message(), claims=[{"type": deep, "args": {}}]),
+                  dict(message(), grants=[dict(grant(), caveats=[cv("amount", deep, 1)])])):
+            out = pcm.verify(m, TRUST, [DOC])
+            self.assertEqual((out["verdict"], out["signature"]), ("reject", None))
+            self.assertIn("a list not in", out["reasons"][0])
+
 
 class Narrowing(unittest.TestCase):
     def test_int_pairs_exhaustive(self):
@@ -276,9 +287,9 @@ class Grants(unittest.TestCase):
                      "issuer is its own subject")
         self.refused([grant(intent=ref, parent="sha256:" + "0" * 64)], "the root grant has a parent")
         self.refused([grant(intent=ref, key=OTHER)], "bad signature")
-        self.refused([grant(intent=ref, key=OTHER, vkey=OTHER_VKEY)], "does not pin")
+        self.refused([grant(intent=ref, key=OTHER, vkey=OTHER_VKEY)], "not the log that signed the message")
         self.refused([grant(intent=ref, vkey=checkpoint.vkey("elsewhere/log", checkpoint.ED25519, KEY.public))],
-                     "does not pin")
+                     "not the log that signed the message")
         tampered = grant([cv("amount", "<=", 20000)], intent=ref)
         tampered["caveats"][0]["value"] = 90000
         self.refused([tampered], "bad signature")
@@ -294,6 +305,16 @@ class Grants(unittest.TestCase):
         self.refused([root, grant(narrow, issuer={"kind": "agent", "id": C, "run": "r", "tenant": "acme"},
                                   parent=event_hash(root), intent=ref)], "grant 1: issued in tenant acme, not the "
                                                                          "sender's default")
+
+    def test_a_grant_from_another_pinned_log(self):
+        """Both logs are pinned: a grant the other one signed holds nothing in a message from this one."""
+        ref, trust = pcm.schema_ref(self.DOC), {"logs": [VKEY, OTHER_VKEY]}
+        g = grant([cv("amount", "<=", 20000)], intent=ref, key=OTHER, vkey=OTHER_VKEY)
+        self.assertIsNone(pcm.check_sig(g, "pcm-grant", trust))
+        out = pcm.verify(message(ref=ref, grants=[g]), trust, [self.DOC])
+        self.assertEqual(out["verdict"], "reject")
+        self.assertEqual(out["grants"]["problems"], [f"grant 0: signed by {g['sig']['key']}, not the log that signed "
+                                                     f"the message ({message()['sig']['key']})"])
 
     def test_delegable_only_narrows(self):
         ref = pcm.schema_ref(self.DOC)
@@ -413,6 +434,15 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual((out["verdict"], out["replay"]["detail"]), ("reject", f"addressed to {B}, not {C}"))
         self.assertEqual(self.check(None, message(), me=B)["verdict"], "accept")
         self.assertEqual(self.check(None, message())["replay"], {"ok": None, "detail": "not checked"})
+
+    def test_a_ts_that_is_no_real_time(self):
+        body = {k: v for k, v in message().items() if k != "sig"}
+        for ts in ("2026-13-01T00:00:00.000000Z", "0000-01-01T00:00:00.000000Z"):
+            m = pcm.sign(KEY, VKEY, "pcm", dict(body, ts=ts))
+            for r in (pcm.Replay(now=T0), pcm.Replay(window_s=None)):
+                out = self.check(r, m)
+                self.assertEqual((out["verdict"], out["replay"]), ("reject", {"ok": False, "detail":
+                                                                              f"sent at {ts}, which is no real time"}))
 
     def test_auditor_ignores_clocks(self):
         r, m = pcm.Replay(window_s=None, now=T0 + 10 ** 6), message()

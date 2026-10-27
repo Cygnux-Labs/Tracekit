@@ -16,6 +16,7 @@ from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.pcm import CLAIM_ARGS, check_args
 from tracekit.policy2 import classes
+from tracekit.schema import V2, validate
 
 _RANK = {"proven": 0, "unproven": 1, "failed": 2}
 PACKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs")
@@ -27,7 +28,8 @@ class EvidenceError(ValueError):
 
 def evidence(ev, msg, trust):
     """[(event, its opened args or None)] of evidence item `ev` of message `msg`; EvidenceError when it does not
-    verify against trust.json `trust` or comes from another log than the one whose key signed `msg`."""
+    verify against trust.json `trust`, holds a record that is no valid v2 event, or comes from another log than the one
+    whose key signed `msg`."""
     try:
         origin, size, root, cosigs = checkpoint.open_note(ev["checkpoint"], trust["logs"],
                                                           [w["vkey"] for w in trust.get("witnesses", [])])
@@ -52,6 +54,8 @@ def evidence(ev, msg, trust):
         # lean: the sender's own run only; accept a parent session's runs when sub-agents' records are needed
         if (e.get("tenant"), e.get("run_id")) != (msg["from"]["tenant"], msg["from"]["run"]):
             raise EvidenceError(f"record {i}: from run {str(e.get('run_id'))[:128]}, not the sender's")
+        if errs := validate(e) if e.get("schema_version") == V2 else [f"not a {V2} event"]:
+            raise EvidenceError(f"record {i}: not a valid event ({errs[0][:256]})")
         args = None
         if "salt" in r or "args" in r:
             d = e["data"]
@@ -83,7 +87,8 @@ def _ran(recs, match, what, cls=None):
     best = ("failed", f"no call in the evidence {what}")
     for e, args in recs:
         d = e["data"]
-        if not isinstance(args, dict) or d["decision"] == "deny" or not match(d["tool"], args):
+        if not isinstance(args, dict) or d["decision"] == "deny" or not {"tool", "decision_id"} <= d.keys() \
+                or not match(d["tool"], args):   # the two the event schema leaves optional
             continue
         # lean: the shipped packs' tools map; a custom shell or http tool is unproven until the verifier takes one
         if cls and placed().get(d["tool"]) != cls:   # a `command` or `url` field alone is not a shell or http call
@@ -117,7 +122,7 @@ def approved_by(a, recs):
     for e, _ in recs:
         d = e["data"]
         if e["type"] == "approval" and d["decision"] == "approve" and d["tool_use_id"] == a["call"] \
-                and a["person"] in (d.get("person"), d["approver"]) and d.get("approver_kind", "person") == "person" \
+                and d.get("person") == a["person"] and d.get("approver_kind", "person") == "person" \
                 and d.get("self_approved") is not True:
             return "proven", f"approval seq {e['seq']} by {a['person']} of {a['call']}"
     return "failed", f"no approval of {a['call']} by the person {a['person']}"

@@ -113,7 +113,7 @@ A claim says something happened in the sender's run. There are four types:
 | Claim | Proven when the evidence holds |
 |---|---|
 | `tests_passed {suite}` | a call of a tool the shipped policy packs class as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one test command (`pytest -q tests/x.py`, not `pytest -q; true` or `echo hi`) |
-| `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives, or the identity), not an agent approver and not self-approved |
+| `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved |
 | `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md) or kernel sensor, to `host`, not denied; or a call of a tool the shipped packs class as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok` |
 | `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok` |
 
@@ -248,7 +248,7 @@ The receiver checks the whole chain again (`verify_grants`), so a chain the sign
 
 | Rule | Check |
 |---|---|
-| signature | every grant is signed by a pinned log key |
+| signature | every grant is signed by the log key that signed the message |
 | root | no parent, issued by a person, issuer is not the subject |
 | link | each child's `parent` is the hash of the grant before it, which is delegable |
 | who delegates | each child's issuer is the agent its parent was granted to |

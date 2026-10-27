@@ -56,7 +56,8 @@ def _check(v, s, root, path, errs, warns=None, strict=False):
     if "const" in s and v != s["const"]:
         errs.append(f"{path}: must be {s['const']!r}")
     if "enum" in s and v not in s["enum"]:
-        errs.append(f"{path}: {v!r} not in {s['enum']}")
+        shown = f"a {type(v).__name__}" if isinstance(v, (list, dict)) else repr(v)   # a deep one's repr would recurse
+        errs.append(f"{path}: {shown} not in {s['enum']}")
     if isinstance(v, str):
         if "pattern" in s:
             full = re.fullmatch(s["pattern"], v, re.ASCII)

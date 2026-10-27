@@ -592,6 +592,18 @@ class WordLists(unittest.TestCase):
                          [{"test"}, {"network"}])
 
 
+class ShellComments(unittest.TestCase):
+    def test_a_hash_starts_a_comment_only_at_the_start_of_a_word(self):
+        for cmd, want in (("pytest -q tests/x.py#|| true", [["pytest", "-q", "tests/x.py#"], ["true"]]),
+                          ("pytest -q # || true", [["pytest", "-q"]]),
+                          ("pytest;# || true", [["pytest"]]),
+                          ("echo '#' a\\#b \"#\"x a'#'; ls", [["echo", "#", "a#b", "#x", "a#"], ["ls"]]),
+                          ("#ls\nls x#y", [["ls", "x#y"]])):
+            with self.subTest(cmd):
+                self.assertEqual(list(findings_text._simple(cmd)), want)
+        self.assertEqual(findings_text.command_facts("echo a#b; npm test")[0], {"test"})
+
+
 # The words and phrases of the checks' constants that a development pool uses and neither the tuned set nor E6's
 # lists do, each with where it came from: what the guard below allows. Pools v1 and v2 were both added and read on
 # 2026-10-19 (v1 at 08:13, v2 at 15:43), so texts written after that (E20's honest sessions, these tests) prove

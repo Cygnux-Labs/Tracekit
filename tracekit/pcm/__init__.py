@@ -209,7 +209,9 @@ def verify_grants(msg, doc, trust):
                 "problems": ["the intent needs a grant"] if need else []}
     for i, g in enumerate(grants):
         at = f"grant {i}"
-        if e := check_sig(g, "pcm-grant", trust):
+        if g["sig"]["key"] != msg["sig"]["key"]:   # another pinned log's grant holds nothing here
+            out.append(f"{at}: signed by {g['sig']['key']}, not the log that signed the message ({msg['sig']['key']})")
+        elif e := check_sig(g, "pcm-grant", trust):
             out.append(f"{at}: {e}")
         if g["intent"] != msg["intent"]["type"]:
             out.append(f"{at}: for {g['intent']}, not this intent")
@@ -267,7 +269,10 @@ class Replay:
     def check(self, msg, now=None):
         """(ok, detail) for a message whose signature passed; a passing one is remembered."""
         now = time.time() if now is None else now
-        t, sender = _epoch(msg["ts"]), msg["from"]["agent"]
+        try:
+            t, sender = _epoch(msg["ts"]), msg["from"]["agent"]
+        except ValueError:   # the TS pattern passes a month 13 or a year 0
+            return False, f"sent at {msg['ts']}, which is no real time"
         if self.window_s is not None:
             if abs(now - t) > self.window_s:
                 return False, f"sent at {msg['ts']}, more than {self.window_s:g} s from this receiver's clock"
