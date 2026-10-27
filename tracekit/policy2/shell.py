@@ -758,6 +758,47 @@ class _Parser:
         self.flush()
         self.via, self.out, self.progs = via, out, progs
 
+    def arith(self):
+        """Read `$(( ))` from after its `$((`, running the substitutions in it. It is arithmetic only if the `)`
+        closing the inner `(` is followed by the outer one: bash runs `$((cmd) )` as a subshell. A newline, or a
+        parenthesis this reading skips (quoted, escaped, in a heredoc), could end it elsewhere for the shell."""
+        self.enter()
+        s, start, depth = self.s, self.i, 0
+        while self.i < len(s) and (s[self.i] != ")" or depth):
+            c = s[self.i]
+            if c == "\\":
+                self.i += 2
+            elif c == "'":
+                j = s.find("'", self.i + 1)
+                if j < 0:
+                    raise ParseError("unterminated '")
+                self.i = j + 1
+            elif c == '"':
+                self.i += 1
+                self.dquote('"')
+            elif c == "$":
+                self.dollar(False)
+            elif c == "`":
+                self.backtick()
+            else:
+                depth += {"(": 1, ")": -1}.get(c, 0)
+                self.i += 1
+        if not self.at("))"):
+            raise ParseError("unterminated $((" if self.i >= len(s) else
+                             "$(( that is not arithmetic (a subshell inside $( )) is not supported")
+        body = s[start:self.i]
+        self.charge(len(body))   # each level reads the levels inside it again
+        level = 0
+        for p in re.findall(r"[()]", body):
+            level += 1 if p == "(" else -1
+            if level < 0:
+                break
+        # lean: such a line is held (TK-SHELL-PARSE), not read; read it when real commands need one (docs/limits.md)
+        if level or "\n" in body:
+            raise ParseError("a newline or a quoted or escaped parenthesis in $(( )) is not supported")
+        self.i += 2
+        self.leave()
+
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
         self.enter()
@@ -798,26 +839,8 @@ class _Parser:
             return self.dquote('"')
         self.ctx["exp"] += 1
         if self.at("$(("):
-            depth, j = 0, self.i + 1
-            while j < len(s):
-                depth += {"(": 1, ")": -1}.get(s[j], 0)
-                if depth == 0:
-                    break
-                j += 1
-            if j >= len(s):
-                raise ParseError("unterminated $((")
-            # arithmetic only if the inner "(" closes right before the outer ")": bash runs `$((cmd) )` as a subshell
-            inner, k = 0, self.i + 2
-            while k < j:
-                inner += {"(": 1, ")": -1}.get(s[k], 0)
-                if inner == 0:
-                    break
-                k += 1
-            if k != j - 1:
-                raise ParseError("$(( that is not arithmetic (a subshell inside $( )) is not supported")
-            if "$(" in s[self.i + 3:j] or "`" in s[self.i + 3:j]:
-                raise ParseError("command substitution inside $(( )) is not supported")
-            self.i = j + 1
+            self.i += 3
+            self.arith()
         elif nxt == "(":
             self.i += 2
             self.sub("$()")
