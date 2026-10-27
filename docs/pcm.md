@@ -521,7 +521,8 @@ error: `pcm.verify` raises on it before it checks a message.
 Because the log key signs all three, a fault in PCM signing is a fault of the log key: the fix is rotating it.
 
 PCM 0.1 takes one Ed25519 key per log. A trust.json that pins two under one log name is the receiver's own error:
-`pcm.verify` raises and `tracekit pcm verify` exits 2 (`trust.json pins 2 Ed25519 keys of log …`). PCM declares no
+`pcm.verify` raises and `tracekit pcm verify` exits 2 (`trust.json pins 2 Ed25519 keys for log …; PCM verifies with
+one: pass a trust file with only the current key`). PCM declares no
 rotation, so it can't tell which of the two may sign a message now, and an old key that leaked would sign grants for
 as long as it stays pinned. For bundles, [signing](signing.md) says to keep old public keys pinned after a rotation,
 so old bundles still verify; that trust.json is not one for PCM. Give PCM its own trust.json that pins only each log's

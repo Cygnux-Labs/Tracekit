@@ -54,7 +54,9 @@ def verify(a):
     except (OSError, ValueError) as e:   # a file, a schema document that is not one, or a bad vkey in trust.json
         print(f"tracekit pcm verify: {e}", file=sys.stderr)
         return 2
-    print(json.dumps(out, indent=2) if a.json else f"{out['verdict'].upper()}  {summary(out)}")
+    # the sender chose parts of the reasons and details: escape what a terminal would act on
+    line = "".join(c if c.isprintable() else json.dumps(c)[1:-1] for c in summary(out))
+    print(json.dumps(out, indent=2) if a.json else f"{out['verdict'].upper()}  {line}")
     return EXIT[out["verdict"]]
 
 

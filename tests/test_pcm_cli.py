@@ -91,7 +91,18 @@ class TestVerify(Case):
         self.files["trust"] = self.write("trust", dict(self.trust, logs=[self.s.vkey, twin]))
         code, _, err = self.verify(msg)
         self.assertEqual(code, 2)
-        self.assertIn(f"tracekit pcm verify: trust.json pins 2 Ed25519 keys of log {name}", err)
+        self.assertEqual(err, f"tracekit pcm verify: trust.json pins 2 Ed25519 keys for log {name}; PCM verifies with "
+                              "one: pass a trust file with only the current key (`tracekit signer trust -o "
+                              "pcm-trust.json` writes one)\n")
+
+    def test_sender_text_is_printed_escaped(self):
+        msg = self.call("pcm_sign", message=self.body(claims=[
+            {"type": "file_written", "args": {"path": "/x/\x1b[2J‮/..", "digest": "sha256:" + "0" * 64}}]))["message"]
+        code, out, _ = self.verify(msg)
+        self.assertEqual(code, 1)
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("‮", out)
+        self.assertIn("/x/\\u001b[2J\\u202e/.. has a `..`", out)
 
     def test_strict(self):
         doc = dict(DOC, claims=["approved_by"])

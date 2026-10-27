@@ -413,7 +413,8 @@ class Signature(unittest.TestCase):
         """PCM 0.1 declares no rotation: a second Ed25519 key under one log name is bad input, not a key to try."""
         twin = checkpoint.vkey("pcm-test/log", checkpoint.ED25519, OTHER.public)
         for trust in ({"logs": [VKEY, twin]}, {"logs": [twin, VKEY]}):
-            with self.subTest(trust=trust), self.assertRaisesRegex(ValueError, "2 Ed25519 keys of log pcm-test/log"):
+            with self.subTest(trust=trust), self.assertRaisesRegex(ValueError, "2 Ed25519 keys for log pcm-test/log; PCM verifies "
+                                                                           "with one"):
                 pcm.verify(message(), trust, [DOC])
         hybrid = checkpoint.vkey("pcm-test/log", checkpoint.HYBRID, checkpoint.SLH_DSA + os.urandom(slh_dsa.PK_SIZE))
         for trust in ({"logs": [VKEY, OTHER_VKEY]}, {"logs": [VKEY, hybrid]}):   # another log; the hybrid line
