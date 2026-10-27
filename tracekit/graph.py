@@ -22,8 +22,8 @@ has a grade (`grade`) and cites the record it came from (`record`: run_id, run_s
     INFERRED    tracekit why's causal graph of the run and the signed why tests about it (why.finding), why's own grade
                 kept (`why_evidence`); and the Graphify join (`join`: "graphify"): a code node in a file the graph has
                 (`record` names the Graphify file)
-    UNVERIFIED  any of these from a bundle that fails verification against the trust config (`claimed`: the grade it
-                would have): kept, never dropped
+    UNVERIFIED  any of these from a bundle that fails verification against the trust config, or a Graphify join for a
+                file named only by failed bundles (`claimed`: the grade it would have): kept, never dropped
 
 build writes FILES: graph.json and its highlights as data (GRAPH_REPORT.json) and as Markdown (GRAPH_REPORT.md).
 Sources and Graphify input are recorded by digest and file name, so `verify DIR SOURCES...` can find moved bundles. A
@@ -332,7 +332,8 @@ def _add_why(g: Graph, recs: List[Dict[str, Any]], ok: bool, tests=()) -> None:
 
 def _graphify(g: Graph, path: str) -> Dict[str, Any]:
     """The Graphify join: each code node of the Graphify graph at `path` whose `source_file` is a file node's path, or
-    its end, linked from that file (INFERRED): what the agents changed, by function and concept. Read-only.
+    its end, linked from that file (INFERRED, or UNVERIFIED if only an unverified source names the file): what the
+    agents changed, by function and concept. Read-only.
     lean: Graphify's own edges (calls, imports) are left out; add them when a query must reach past the file"""
     with open(path, "rb") as f:
         data = f.read()
@@ -351,12 +352,15 @@ def _graphify(g: Graph, path: str) -> Dict[str, Any]:
         normalized = f["label"].replace("\\", "/").removeprefix("./")
         parts = normalized.split("/")
         sf = next(("/".join(parts[i:]) for i in range(len(parts)) if "/".join(parts[i:]) in by_file), None)
+        provenance = g.in_edges(f["id"], GRADES)
+        unverified = provenance and all(e["grade"] == "UNVERIFIED" for e in provenance)
         for n in sorted(by_file.get(sf or "", ()), key=lambda n: str(n["id"])):
             loc = n.get("source_location")
             code = _node(g, f"code:{n['id']}", "code", str(n.get("label") or n["id"]), source_file=sf,
                          **({"source_location": loc} if isinstance(loc, str) else {}))
-            g.add_edge(f["id"], code, "contains", "INFERRED", record={"graphify": os.path.basename(path), "source_file": sf},
-                       join="graphify")
+            g.add_edge(f["id"], code, "contains", "UNVERIFIED" if unverified else "INFERRED",
+                       record={"graphify": os.path.basename(path), "source_file": sf}, join="graphify",
+                       **({"claimed": "INFERRED"} if unverified else {}))
             linked += 1
     return {"name": os.path.basename(path), "sha256": hashlib.sha256(data).hexdigest(), "linked": linked}
 

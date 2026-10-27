@@ -723,6 +723,30 @@ class Records(unittest.TestCase):
         doc = {"nodes": list(g.nodes.values()), "edges": g.edges}
         self.assertEqual([r["run"] for r in graph.matching(doc, "code", "total()")["runs"]], ["r-obs"])
 
+    def test_graphify_join_keeps_a_file_only_unverified_from_becoming_inferred(self):
+        g = Graph(None, "grade")
+        for name, ok in (("bad.py", False), ("shared.py", False), ("shared.py", True), ("good.py", True)):
+            graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": name}}),
+                               rec(1, "effect.observed", {"kind": "file", "path": "/repo/" + name})], ok)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "graph.json")
+        files.write_json(p, {"nodes": [{"id": name, "source_file": name}
+                                       for name in ("bad.py", "shared.py", "good.py")]}, 0o644)
+        graph._graphify(g, p)
+        contains = {e["src"].rsplit("/", 1)[-1]: e for e in g.edges if e["kind"] == "contains"}
+        self.assertEqual((contains["bad.py"]["grade"], contains["bad.py"]["claimed"]),
+                         ("UNVERIFIED", "INFERRED"))
+        self.assertEqual(contains["shared.py"]["grade"], "INFERRED")
+        self.assertEqual(contains["good.py"]["grade"], "INFERRED")
+        doc = {"tracekit": "test", "sources": [], "content": False, "nodes": list(g.nodes.values()), "edges": g.edges}
+        self.assertEqual(graph.highlights(doc)["summary"]["grades"],
+                         {"SIGNED": 2, "OBSERVED": 2, "INFERRED": 2, "UNVERIFIED": 5})
+        self.assertEqual([n["id"] for n in graph.matching(doc, "file", "bad.py")["code"]], ["code:bad.py"])
+        path = graph.path(doc, "run:r-obs", "code:bad.py")
+        self.assertEqual((path["edges"][-1]["grade"], path["edges"][-1]["claimed"]),
+                         ("UNVERIFIED", "INFERRED"))
+
     def test_graphify_does_not_join_a_shared_basename(self):
         g = Graph(None, "grade")
         graph._node(g, "file:/tmp/x/__init__.py", "file", "/tmp/x/__init__.py")
