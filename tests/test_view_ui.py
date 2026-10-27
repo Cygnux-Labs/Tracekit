@@ -180,8 +180,10 @@ class WhyThisDecision(unittest.TestCase):
         needs_node(self)
         html = text(self.detail({"tool": "Bash", "pre": {}, "denied": True, "v2": {
             "decision": "deny", "nondeterministic": True, "reasons": slow["reasons"], "rules": [{"id": "TK-D003", "reason": "force push"}]}}))
-        self.assertIn("2 ENGINE nondeterministic: the fallback regex engine ran out · rule ids recorded, none of them a match: TK-D003", html)
-        self.assertNotIn("matched", html.replace("none of them a match", ""))
+        # a rule matched before time ran out stays among the rule ids: the signer's own words, not "none matched"
+        self.assertIn("2 ENGINE nondeterministic: the fallback regex engine ran out · the rule it was matching when time ran "
+                      "out is among these, without having matched: TK-D003", html)
+        self.assertNotIn("none of them", html)
         html = text(self.detail({"tool": "Bash", "pre": {}, "denied": True, "v2": {
             "decision": "deny", "rules": [{"id": "TK-ARGS-INVALID", "reason": "arguments the signer could not read, so it refused the call"}]}}))
         self.assertIn("2 ENGINE no rule was read: TK-ARGS-INVALID arguments the signer could not read, so it refused the call", html)
@@ -414,8 +416,8 @@ class NeedsYou(unittest.TestCase):
                 {"incident_id": "i", "trigger": "rule", "rule_ids": [], "state": "held"}]}])
         self.assertEqual([c for n in out for c in n["cmds"]], [
             "tracekit approvals approve 'apr-1; rm -rf ~'", "tracekit approvals reject 'apr-1; rm -rf ~'",
-            "tracekit signer incidents resume 'r 1$(x)'"])
-        self.assertEqual(re.findall(r"tracekit (?:approvals \$\{d\}|signer incidents resume) \$\{(?!word\()", PAGE), [])
+            "tracekit signer incidents resume -- 'r 1$(x)'"])   # after --, an id is never read as an option
+        self.assertEqual(re.findall(r"tracekit (?:approvals \$\{d\}|signer incidents resume(?: --)?) \$\{(?!word\()", PAGE), [])
 
     def test_what_needs_a_person_comes_first_with_its_command_and_record(self):
         """A person asked "do I need to do anything?" and the answer was spread over runs, alerts and pages."""
@@ -544,9 +546,31 @@ class Permissions(unittest.TestCase):
               seen.push([[...asked], rebuilt, LOADED.get("r1").length, permRows().map(r => [r.rec.tool_use_id, r.out[1]])]);
               loadRun("r2"); DROPPED = 0; LOADED.clear(); loadRun("r1"); seen.push(asked.length);   // failed; nothing left out
               DROPPED = 7; answer = Promise.reject(new Error("503")); loadRun("r1"); await answer.catch(() => {{}}); await null;
-              seen.push([LOADED.get("r1"), later.length]); later[0](); seen.push(LOADED.has("r1"));   // tried again later
+              seen.push([LOADED.get("r1"), later.length]); later[0](); seen.push([LOADED.get("r1"), asked.length]);   // asked again 10 s later
+              // a run that failed while its rows were on the way: they are not kept
+              LOADED.clear(); answer = Promise.resolve({{ rows: {json.dumps(rows)} }}); loadRun("r1");
+              RUNS.get("r1").verdict = "failed"; await answer; await null; seen.push(LOADED.has("r1"));
               process.stdout.write(JSON.stringify(seen)); }})();"""))
-        self.assertEqual(out, [[["api/rows?tenant=default&run=r1"], 1, 1, [["c1", "BLOCKED"]]], 1, [None, 1], False])
+        self.assertEqual(out, [[["api/rows?tenant=default&run=r1"], 1, 1, [["c1", "BLOCKED"]]], 1, [None, 1], [None, 3], False])
+
+    def test_a_loaded_run_keeps_its_new_rows_and_loses_its_rows_when_it_fails(self):
+        """A loaded run's live rows after the load vanished on the next rebuild, and its loaded rows survived a failed
+        verification (and a reconnect), shown again by rebuild()."""
+        needs_node(self)
+        loaded = [{"session_id": "r1", "tk_seq": s, "event": "SESS"} for s in (1, 2, 3)]
+        live = [{"session_id": "r1", "tk_seq": 2, "event": "SESS"}, {"session_id": "r1", "tk_seq": 4, "event": "HOLD"},
+                {"session_id": "r1", "analysis": True, "event": "tk_alert"}, {"session_id": "r2", "tk_seq": 9, "event": "SESS"}]
+        out = json.loads(page_js(["runRows", "rebuild", "accept"], f"""
+            const LOADED = new Map([["r1", {json.dumps(loaded)}]]), ALL = {json.dumps(live)}, RUNS = new Map(), got = [], seen = [];
+            let scope = "r1", R = null, rpos = 0, tapeShown = 0, V2 = true, DROPPED = 0, MAXREC = 50000;
+            const S = {{ tape: [] }}, reset = () => {{ got.length = 0; }}, ingest = r => got.push(r.tk_seq ?? "a"), inScope = r => r.session_id === scope;
+            const document = {{ body: {{ classList: {{ add() {{}} }} }} }}, toastOf = () => {{}}, stopRun = () => {{}}, whyChanged = () => {{}};
+            rebuild(); seen.push([...got]);   // the loaded rows, then its newer live rows and the viewer's own
+            accept({{ session_id: "r1", tenant: undefined, analysis: true, review: {{ verdict: "failed" }} }});
+            seen.push([LOADED.has("r1"), [...got]]);   // a failed check takes the loaded rows back too
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, [[1, 2, 3, 4, "a"], [False, ["a"]]])
+        self.assertIn("if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); LOADED.clear();", PAGE)
         self.assertIn("function permCounts(", PAGE)   # while they load, PERMISSIONS shows the review's counts
 
     def test_the_view_is_reachable_without_why_logs_and_from_a_link(self):

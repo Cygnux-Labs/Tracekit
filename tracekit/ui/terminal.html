@@ -3859,7 +3859,7 @@
       }
       const runs = [...RUNS.values()];
       for (const r of runs) for (const i of r.incidents || []) if (i.state === "held" || i.state === "quarantined")
-        out.push({ kind: "CONTAINED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${i.state} by incident ${i.incident_id}`, detail: `${i.trigger} ${i.rule_ids.join(" ")}`.trim(), cmds: [`tracekit signer incidents resume ${word(r.id)}`] });
+        out.push({ kind: "CONTAINED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${i.state} by incident ${i.incident_id}`, detail: `${i.trigger} ${i.rule_ids.join(" ")}`.trim(), cmds: [`tracekit signer incidents resume -- ${word(r.id)}`] });
       for (const r of runs) if (r.verdict === "failed" || r.verdict === "error")
         out.push({ kind: r.verdict === "failed" ? "FAILED" : "NOT CHECKED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${r.id.slice(0, 8)} ` + (r.verdict === "failed" ? "failed verification: none of its records are shown" : "could not be checked"), detail: failLines(r.report)[0] || "", cmds: [] });
       if (STOPPED) out.push({ kind: "STOPPED", sev: "high", open: null, what: STOPPED, detail: "", cmds: [] });
@@ -4170,7 +4170,7 @@
       // the engine ran out of time (the record says so, and why), or never read the arguments: no rule was read in full
       const invalid = rules.some(x => x.id === "TK-ARGS-INVALID"), own = rules.filter(x => !Object.hasOwn(secs, x.id));
       if (v.nondeterministic) steps.push(["deny", "ENGINE", `<span class="s-deny">${esc((v.reasons || []).find(x => x.startsWith("nondeterministic")) || "nondeterministic: the engine ran out of time on these arguments, so the call is denied")}</span>`
-        + (rules.length ? `<div class="dim">· rule ids recorded, none of them a match: ${esc(rules.map(x => x.id).join(", "))}</div>` : "")]);
+        + (rules.length ? `<div class="dim">· the rule it was matching when time ran out is among these, without having matched: ${esc(rules.map(x => x.id).join(", "))}</div>` : "")]);
       else if (invalid) steps.push(["deny", "ENGINE", "no rule was read: " + own.map(rule).join("")]);
       else {
         if (!v.read) steps.push(["", "POLICY", `<span class="dim">${esc(short(v.policy_hash) || "none recorded")}: not a policy this viewer has, so only the rules that matched are known (start the viewer with the signer's --config)</span>`]);
@@ -4533,7 +4533,7 @@
         const snap = await getJSON("api/snapshot");
         // a reconnect starts again from the server's snapshot: stream positions are the server's own, and a viewer that
         // restarted numbers its records anew, so resuming from the old position would miss or repeat records
-        if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); selected = null; reset(); }
+        if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); LOADED.clear(); selected = null; reset(); }
         DROPPED = snap.dropped || 0; MAXREC = snap.max || MAXREC;
         toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; loadWhy(); schedule();
         followLink();
@@ -4592,6 +4592,7 @@
       if (r.review?.verdict === "failed") {
         for (const x of ALL) if (x === r || x.session_id !== r.session_id || x.tenant !== r.tenant) ALL[n++] = x;
         n = ALL.length - n; ALL.length -= n;
+        if (LOADED.delete(r.session_id)) n ||= 1;   // and its rows read from the store
       }
       if (ALL.length > MAXREC * 1.1) { const k = ALL.length - MAXREC; ALL.splice(0, k); DROPPED += k; n += k; }
       if (n) { if (R && scope === r.session_id) stopRun(true); if (!R) rebuild(); }
@@ -4599,13 +4600,17 @@
     }
     function rebuild() {
       reset();
-      const loaded = scope && LOADED.get(scope);   // a run read from the store: its rows, then the viewer's own about it
-      if (R) for (let i = 0; i < rpos; i++) ingest(R[i]);
-      else { for (const r of loaded || ALL) if (inScope(r)) ingest(r); if (loaded) for (const r of ALL) if (inScope(r) && r.analysis) ingest(r); }
+      if (R) for (let i = 0; i < rpos; i++) ingest(R[i]); else for (const r of runRows()) if (inScope(r)) ingest(r);
       tapeShown = S.tape.length;
     }
-    // the selected run's rows: read from the store when its records left the live view, else the live view's
-    const runRows = () => scope && LOADED.get(scope) || ALL;
+    // the selected run's rows: read from the store when its records left the live view (then the live view's rows of it
+    // past the last one read, and the viewer's own about it), else the live view's
+    function runRows() {
+      const loaded = scope && LOADED.get(scope);
+      if (!loaded) return ALL;
+      const last = loaded.reduce((m, r) => Math.max(m, r.tk_seq ?? -1), -1);
+      return loaded.concat(ALL.filter(r => r.session_id === scope && (r.analysis || (r.tk_seq ?? -1) > last)));
+    }
     // a run whose records left the live view (some of its signed records are not on the page): its rows from the store,
     // verified for the request (/api/rows); the newest four runs kept, a failure (503: busy) tried again 10 s later
     const LOADED = new Map();
@@ -4614,10 +4619,11 @@
       if (!r || r.verdict !== "verified" || !DROPPED || seqs.size >= (r.records || 0) || LOADED.has(id) || document.URL.startsWith("file:")) return;
       LOADED.set(id, null);
       getJSON("api/rows?" + new URLSearchParams({ tenant: r.tenant || "default", run: id })).then(d => {
+        if (RUNS.get(id)?.verdict !== "verified") return LOADED.delete(id);   // it failed while they were on the way
         LOADED.set(id, d.rows);
         while (LOADED.size > 4) LOADED.delete(LOADED.keys().next().value);
         if (scope === id && !R) { rebuild(); schedule(); }
-      }, () => setTimeout(() => LOADED.delete(id), 10000));
+      }, () => setTimeout(() => { LOADED.delete(id); if (scope === id) loadRun(id); }, 10000));
     }
     function setScope(id) {
       if (R) stopRun(true);

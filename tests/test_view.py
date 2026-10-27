@@ -481,6 +481,49 @@ class View(unittest.TestCase):
         self.assertIsNone(store_feed(self, {"data_dir": self.d}).rows(observe.ALL, "default", run_id))
         self.assertIn("error", body)
 
+    def test_rows_never_outlive_a_failed_check_and_a_checkpoint_written_while_reading_is_read_again(self):
+        """An answer cached as the watcher failed the run (or cached before, with the same covered count after an edit
+        in place) was served again; and a checkpoint written while rows() read the store made it miss the run."""
+        run_id = self.finished_run()
+        feed = store_feed(self, {"data_dir": self.d})
+        self.report(feed, run_id)
+        key = ("default", run_id)
+        self.assertIsNotNone(feed.rows(observe.ALL, *key))
+        with feed.lock:   # the watcher failed it; the cached answer stays (the same covered count)
+            feed.runs[key] = dict(feed.runs[key], failed="FAILED")
+        self.assertIsNone(feed.rows(observe.ALL, *key))
+        with feed.lock:
+            feed.runs[key] = dict(feed.runs[key], failed=None)
+        feed.rowcache.clear()
+        real = import_v2.bundle_records
+
+        def failed_meanwhile(*a, **k):   # the watcher fails the run while this request checks it
+            out = real(*a, **k)
+            with feed.lock:
+                feed.runs[key] = dict(feed.runs[key], failed="FAILED")
+            return out
+        with mock.patch.object(import_v2, "bundle_records", side_effect=failed_meanwhile):
+            self.assertIsNone(feed.rows(observe.ALL, *key))
+        self.assertEqual(dict(feed.rowcache), {})
+        with feed.lock:
+            feed.runs[key] = dict(feed.runs[key], failed=None)
+        opened, real_reader = [], view.reader
+
+        class Behind:   # a reader opened before the checkpoint its note names: its tree is shorter
+            def __init__(self, r):
+                self.r, self.tree = r, types.SimpleNamespace(size=0)
+
+            def __getattr__(self, name):
+                return getattr(self.r, name)
+
+        def reader(cfg):
+            opened.append(1)
+            r = real_reader(cfg)
+            return Behind(r) if len(opened) == 1 else r
+        with mock.patch.object(view, "reader", side_effect=reader):
+            self.assertIsNotNone(feed.rows(observe.ALL, *key))
+        self.assertEqual(len(opened), 2)
+
     def test_with_a_content_source_each_decision_carries_its_arguments(self):
         """The tape named every allowed call "no rule matched": with the dev signer's retained arguments each decision
         carries them (the page names the call by them), asked for once, for exactly the run's decisions."""
@@ -1561,7 +1604,7 @@ class LiveRuns(unittest.TestCase):
             self.assertEqual(json.loads(page_js(["accept"], f"""
                 let V2 = true, R = null, scope = null, DROPPED = 0, MAXREC = 50000;
                 const ALL = [], RUNS = new Map(), document = {{ body: {{ classList: {{ add() {{}} }} }} }};
-                const inScope = () => true, ingest = () => {{}}, rebuild = () => {{}}, stopRun = () => {{}}, toastOf = () => {{}};
+                const inScope = () => true, ingest = () => {{}}, rebuild = () => {{}}, stopRun = () => {{}}, toastOf = () => {{}}, LOADED = new Map();
                 for (const r of {json.dumps(rows)}) accept(r);
                 accept({{ session_id: "r1", tenant: "default", analysis: true, review: {{ verdict: "failed" }} }});
                 process.stdout.write(JSON.stringify(ALL.map(r => [r.session_id, r.review?.verdict ?? r.tape])));""")),

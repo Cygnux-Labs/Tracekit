@@ -1149,10 +1149,16 @@ class StoreFeed:
         fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)   # requests run concurrently: a file each
         os.close(fd)
         try:
-            note, run = r.checkpoint_latest(), r.runs.get((tenant, run_id))
+            note = r.checkpoint_latest()
+            if note and note[0] > r.tree.size:   # a checkpoint written while it opened: read again, as refresh() does
+                r.close()
+                r = reader(self.cfg)
+            run = r.runs.get((tenant, run_id))
             count = bisect.bisect_left(run["seqs"], note[0]) if run and note else 0
             key = (tenant, run_id, count)   # its own covered records: another run's checkpoint costs it a lookup
-            with self.lock:
+            with self.lock:   # a run the watcher failed has no rows, whatever was kept (an edit keeps the count)
+                if (self.runs.get(key[:2]) or {}).get("failed"):
+                    return None
                 rows = self.rowcache.get(key)
             if rows is not None or not count:
                 return rows
@@ -1176,6 +1182,8 @@ class StoreFeed:
         tr = Translator(self.tr.reasons)
         rows = [dict(x, tenant=tenant) for rec in records for x in tr.feed(rec)]
         with self.lock:
+            if (self.runs.get(key[:2]) or {}).get("failed"):   # the watcher failed it while this checked it
+                return None
             self.rowcache[key] = rows
             while len(self.rowcache) > ROWCACHE_MAX:
                 self.rowcache.popitem(last=False)
