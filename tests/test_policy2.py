@@ -767,9 +767,91 @@ class Shell(unittest.TestCase):
     def test_parse_failures(self):
         for cmd in ('echo "open', "echo $(ls", "ls )", "case x in a) ls;; esac", "cat <<EOF\nno end", "f() { ls; }",
                     "a &&", "| ls", "echo 'open", "echo `ls", "eval " * 40 + "id",
-                    "echo $(( $(sudo id) ))", "echo $(( `sudo id` ))", "echo $((sudo id) )", 'echo "$((sudo id) )"'):
+                    "echo $((sudo id) )", 'echo "$((sudo id) )"'):
             with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
                 shell.parse(cmd)
+
+    def test_arithmetic_expansion_reads_the_substitutions_in_it(self):
+        """A command substitution in `$(( ))` made the line unparseable (TK-SHELL-PARSE): it is now read and checked
+        like any other command, in and out of double quotes and at any depth."""
+        self.assertEqual(argvs('echo "$(( $(sysctl -n hw.memsize) / 1073741824 )) GB RAM"'),
+                         [["sysctl", "-n", "hw.memsize"], ["echo", "$(( $(sysctl -n hw.memsize) / 1073741824 )) GB RAM"]])
+        cases = {"echo $(( $(sudo id) ))": ["$()"], 'echo "$(( $(sudo id) + 1 ))"': ["$()"],
+                 "echo $(( `sudo id` ))": ["``"], 'echo "$(( `sudo id` * 2 ))"': ["``"],
+                 "echo $(( ${X:-$(sudo id)} - 1 ))": ["$()"],
+                 "echo $(( ($(sudo id) + 1) * 2 ))": ["$()"], "echo $(( $(sudo id | wc -l) ))": ["$()"],
+                 "echo $(( 1 + $(( $(sudo id) )) ))": ["$()"], "x=$(( $(sudo id) )) ls": ["$()"],
+                 'echo "$(( $(echo $(( $(sudo id) ))) ))"': ["$()", "$()"]}
+        for cmd, via in cases.items():
+            with self.subTest(cmd=cmd):
+                self.assertEqual([c["via"] for c in find(cmd, ["sudo", "id"])], [via])
+        self.assertEqual(shell.analyse("echo $(( $(echo 1 > f) + 1 ))")[3], ["f"])
+        self.assertEqual(argvs("echo $(( (1 + 2) * 3 )) $(( 16#ff >> 1 << 2 )) $((x[1]))"),
+                         [["echo", "$(( (1 + 2) * 3 ))", "$(( 16#ff >> 1 << 2 ))", "$((x[1]))"]])
+
+    def test_a_command_in_arithmetic_expansion_gets_the_rules(self):
+        for pack in ("coding.yaml", "server.yaml"):
+            pol = pc.build(os.path.join(PACKS, pack))[0]
+            for e in (Engine(pol), Engine(pol, "regex")):
+                for cmd in ("echo $(( $(rm -rf ~) + 1 ))", 'echo "$(( $(rm -rf ~) + 1 ))"', "echo $(( `rm -rf ~` ))",
+                            'echo "$(( 1 + $(( $(rm -rf ~) )) ))"', "echo $(( $(echo $(( $(rm -rf ~) ))) ))"):
+                    with self.subTest(pack=pack, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual(d["verdict"], "deny")
+                        self.assertIn("TK-D004", d["rule_ids"])
+                        self.assertNotIn("TK-SHELL-PARSE", d["rule_ids"])
+                for cmd in ("echo $(( '$(rm -rf ~)' ))", "echo $(( $'$(rm -rf ~)' ))", 'echo $(( "$(rm -rf ~)" ))',
+                            'echo $(( "`rm -rf ~`" ))'):
+                    with self.subTest(pack=pack, cmd=cmd):
+                        self.assertIn("TK-SHELL-PARSE", e.decide("Bash", {"command": cmd})["rule_ids"])
+                d = e.decide("Bash", {"command": "echo $(( a[`rm -rf ~`] ))"})
+                self.assertEqual(d["verdict"], "ask")
+                self.assertIn("TK-SHELL-PARSE", d["rule_ids"])
+                cmd = 'echo "$(( $(sysctl -n hw.memsize) / 1073741824 )) GB RAM"'
+                self.assertEqual(e.decide("Bash", {"command": cmd})["rule_ids"], [])
+
+    def test_arithmetic_expansion_that_cannot_be_read_is_a_parse_failure(self):
+        """Unterminated or malformed, or a subshell in `$( )` rather than arithmetic; with `$(` or a backtick in it,
+        a newline, bracket, a parenthesis the shell could read as ending it elsewhere, a backtick with a double quote,
+        or a single quote: the shell does not quote with it there, so a substitution inside one still runs."""
+        for cmd in ("echo $(( 1 + 2", "echo $(( 1 + 2 )", 'echo "$(( 1 + 2 )"', "echo $(( $(id) + 1", "echo $(( $(id ))",
+                    "echo $(( 1 ) )", "echo $((id); (id))", "echo $(( $(( 1 ) ))", "echo $(( $(id) +\n2 ))",
+                    "echo $(( `id` +\n2 ))", "echo $(( $(echo ')') ))", 'echo $(( $(echo "(") ))',
+                    "echo $(( $(echo \\)) ))", "echo $(( $(cat <<E\n)\nE\n) ))", "echo $(( `echo ')'` ))",
+                    "echo $(( '$(sudo id)' ))", "echo \"$(( '$(sudo id)' ))\"", "echo $(( '`sudo id`' ))",
+                    "echo $(( $'$(sudo id)' ))", "echo $(( `id` + '1' ))", 'echo $(( "(" + ${x)} + $(id) ))',
+                    'echo $(( "$(sudo id)" ))', "echo $(( `(sudo id)` ))", "echo $(( $(echo 'a') ))",
+                    'echo $(( "`sudo id`" ))', 'echo "$(( "`sudo id`" ))"', 'echo $(( ${X:-"`sudo id`"} ))',
+                    'echo $(( `sudo id` + "1" ))', "echo $(( a[`sudo id`] ))",
+                    'echo "$(( a[`sudo id`] ))"', "echo $(( a[${x:-`sudo id`}] ))",
+                    "echo $(( $(true) + a[${x:-$}(sudo id)] ))"):
+            with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
+                shell.parse(cmd)
+
+    def test_arithmetic_expansion_without_a_substitution_is_skipped_as_before(self):
+        """With no `$(` or backtick in it, `$(( ))` is skipped unread as before the substitutions in it were read:
+        its quotes, backslashes, parentheses and newlines are not held."""
+        for cmd in ('echo $(( ("$a" + 1) * 2 ))', 'echo $(( (${a:-"1"} + 1) ))', "echo $(( (a + b) \\* 2 ))",
+                    "echo $(( 1 +\n2 ))", "echo $(( '1' ))", 'echo $(( "(" + ${x)} ))', 'echo "$(( ("$a") ))"'):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(argvs(cmd), [["echo", cmd[5:].strip('"')]])
+
+    def test_arithmetic_expansion_parses_in_linear_time_and_within_the_budget(self):
+        n = MAX_SUBJECT // 8
+        for cmd in ("echo $(( " + "$(id) + " * n + "1 ))", "echo $(( " + "(" * n + "1" + ")" * n + " ))",
+                    'echo "$(( ' + "x + " * n + '1 ))"', "echo $(( $(echo " + " " * (MAX_SUBJECT - 40) + ") ))"):
+            with self.subTest(cmd=cmd[:20]):
+                start = time.perf_counter()
+                shell.parse(cmd)
+                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER)   # 3-80 ms on a laptop
+        # each level reads the text of the levels inside it again: the budget stops it
+        for cmd in ("echo " + "$(( $(echo " * 10 + " " * 60000 + ") ))" * 10, "echo " + "$(( " * 5000,
+                    "echo " + "$(( $(echo " * 40 + "1" + ") ))" * 40):
+            with self.subTest(cmd=cmd[:20]):
+                start = time.perf_counter()
+                with self.assertRaises(shell.ParseError):
+                    shell.parse(cmd)
+                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER)
 
     def test_nested_reparsed_consumers_are_bounded(self):
         cmd = 'eval "$(id)" "$(id)"'

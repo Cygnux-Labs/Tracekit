@@ -557,6 +557,51 @@ class CodingPack(unittest.TestCase):
                        ("del %LOCALAPPDATA%\\tracekit", "TK-D007"), ("rm /tmp/tracekit-501/signer.sock", "TK-D007"),
                        ("cp x .venv/lib/python3.12/site-packages/tracekit/policy2/packs/coding.yaml", "TK-D007")])
 
+    def test_an_agent_answering_an_approval_itself_is_denied_in_every_pack(self):
+        """The hold line names `tracekit approvals approve ID` for a person (#420); the agent reads it too, and the dev
+        signer lets the agent's own uid answer its run's approvals. Every form of the answer is denied; listing or
+        showing approvals, and text that names the command, are not."""
+        aid = "apr-" + "0123456789abcdef" * 2
+        answers = [f"tracekit approve {aid}", f"tracekit reject {aid}", "tracekit approve", f"tracekit -- reject {aid}",
+                   f"tracekit approvals approve {aid}", f"tracekit approvals reject {aid} --reason ok",
+                   f"tracekit approvals --signer /tmp/s.sock approve {aid}", f"tracekit approvals --signer=tcp://h:1 reject {aid}",
+                   f"tracekit approvals --signer '/tmp/a b;x.sock' approve {aid}", f"tracekit approvals -- approve {aid}",
+                   f"TRACEKIT approve {aid}", f"TRACEKIT_SIGNER=/tmp/s.sock tracekit approve {aid}",
+                   # wrappers, nested shells, the module, a path to the binary
+                   f"env TRACEKIT_SIGNER=/tmp/s.sock tracekit approve {aid}", f"sudo -u alice tracekit approve {aid}",
+                   f"nohup tracekit approvals approve {aid} &", f"timeout 5 tracekit reject {aid}",
+                   f"echo {aid} | xargs tracekit approve", f"nice -n 5 tracekit approve {aid}",
+                   f"command tracekit approve {aid}", f"exec tracekit approvals reject {aid}",
+                   f"bash -c 'tracekit approve {aid}'", f"sh -c \"tracekit approvals approve {aid}\"",
+                   f"zsh -lc 'tracekit reject {aid}'", f"python -m tracekit approve {aid}",
+                   f"python3 -m tracekit approvals --signer /tmp/s.sock approve {aid}", f"python3.12 -I -X dev -m tracekit reject {aid}",
+                   f"python3 -Im tracekit approve {aid}", f"python3 -mtracekit approve {aid}", f"python3 -m tracekit.cli approve {aid}",
+                   f"/Users/u/.venv/bin/tracekit approve {aid}", f"~/.local/bin/tracekit approvals approve {aid}",
+                   f"/usr/bin/python3 -m tracekit reject {aid}", f"uv run tracekit approve {aid}",
+                   f"uvx tracekit approvals approve {aid}", f"uvx --from tracekit-ai --cache-dir c tracekit reject {aid}",
+                   f"pipx run tracekit approve {aid}", f"pipx run --spec tracekit-ai tracekit approvals approve {aid}",
+                   f"bash <<'EOF'\ntracekit approve {aid}\nEOF"]
+        others = [("Bash", {"command": c}) for c in (
+            "tracekit approvals list", f"tracekit approvals show {aid}", f"tracekit approvals --signer /tmp/s.sock show {aid}",
+            # the word after the action is an argument, not the action
+            "tracekit approvals show approve", "tracekit approvals slack serve --config reject",
+            "python3 -m tracekit approvals show reject", "uvx tracekit approvals show approve",
+            "tracekit verify run.tkb", "python3 -m tracekit verify run.tkb", "tracekit pending", f"echo tracekit approve {aid}",
+            f"echo 'tracekit approvals approve {aid}' > notes.md", f"git commit -m 'tracekit approve {aid}'",
+            "grep -rn 'tracekit approve' docs", f"cat > notes.md <<'EOF'\ntracekit approvals approve {aid}\nEOF")] + [
+            ("Write", {"file_path": "notes.md", "content": f"run `tracekit approvals approve {aid}` from a terminal"}),
+            ("Edit", {"file_path": "notes.md", "old_string": "x", "new_string": f"tracekit approve {aid}"})]
+        for pack, engine, e in self.every_pack():
+            for cmd in answers:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual((d["verdict"], "TK-D012" in d["rule_ids"]), ("deny", True), d)
+            for tool, args in others:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertNotIn("TK-D012", d["rule_ids"])
+                    self.assertNotEqual(d["verdict"], "deny", d)
+
     def test_text_only_written_into_a_file_may_name_tracekits_paths(self):
         # TK-D007 matched a Tracekit path anywhere in the command, so writing a source file whose help text names one
         # was denied (#423); reading, writing, moving or deleting one, stopping the signer, and code an interpreter
@@ -928,6 +973,7 @@ class CodingPack(unittest.TestCase):
         # the rules anchored on a command's name lost what an unknown wrapper or runner runs, and git.exe or cp.exe
         # (Windows runs them for git and cp): 1.3's unanchored rules denied these
         for wrapper in ("caffeinate -i", "arch -arm64", "uv run --with x", "poetry run", "pipenv run", "pdm run", "npx",
+                        "uvx --from x", "uvx -p 3.12 --cache-dir c", "pipx run --spec x", "pipx run --pip-args=-q",
                         "direnv exec .", "mise exec node@20 --", "op run --env-file=a --", "doppler run -c dev --",
                         "npm exec --", "dotenv -e a --", "torsocks", "proxychains4 -q", "firejail --quiet",
                         "gtimeout 5", "ssh-agent", "sandbox-exec -n x", "systemd-run --user -p A=1", "valgrind",
@@ -938,7 +984,8 @@ class CodingPack(unittest.TestCase):
         self.verdicts([("nix-shell -p git --run 'git push -f'", "TK-D003"), ("git.exe push --force", "TK-D003"),
                        ("Git.EXE push -d origin x", "TK-A002"), ("cp.exe x .env", "TK-D010"), ("sudo.exe id", "TK-D001"),
                        ("rm.exe -rf /", "TK-D004")])
-        for command in ("uv pip install cp", "npm install git", "mise use node@20", "poetry add sudo", "direnv allow ."):
+        for command in ("uv pip install cp", "npm install git", "mise use node@20", "poetry add sudo", "direnv allow .",
+                        "pipx install sudo"):
             self.assertIn(self.e.decide("Bash", {"command": command})["verdict"], ("allow", "flag"), command)
 
     def test_a_program_find_runs_is_read_in_lower_case_on_the_line(self):

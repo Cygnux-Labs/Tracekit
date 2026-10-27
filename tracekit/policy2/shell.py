@@ -60,6 +60,15 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
             "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
             "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
+            "uvx": (("--from", "-w", "--with", "--with-editable", "--with-requirements", "-c", "--constraints", "-b",
+                     "--build-constraints", "--overrides", "--env-file", "--python-platform", "--torch-backend",
+                     "--index", "--default-index", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
+                     "--index-strategy", "--keyring-provider", "-P", "--upgrade-package", "--upgrade-group",
+                     "--resolution", "--prerelease", "--prerelease-package", "--fork-strategy", "--exclude-newer",
+                     "--exclude-newer-package", "--no-sources-package", "--reinstall-package", "--link-mode", "-C",
+                     "--config-setting", "--config-settings-package", "--no-build-isolation-package",
+                     "--no-build-package", "--no-binary-package", "--cache-dir", "--refresh-package", "-p",
+                     "--python", "--color", "--allow-insecure-host", "--directory", "--project", "--config-file"), 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
             "proxychains": (("-f",), 0), "proxychains4": (("-f",), 0), "firejail": ((), 0),
             "sandbox-exec": (("-f", "-n", "-p", "-D"), 0), "ssh-agent": (("-a", "-E", "-t", "-O", "-P"), 0),
@@ -79,6 +88,8 @@ RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirem
                              "--default-index", "--index-url", "--extra-index-url"), 0),
            "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
            "pdm": (("run",), ("-p", "--project"), 0), "direnv": (("exec",), (), 1),
+           "pipx": (("run",), ("--spec", "--python", "--python-args", "--with", "--fetch-python", "-i", "--index-url",
+                              "--pip-args", "--cooldown", "--backend"), 0),
            "op": (("run",), ("--env-file", "--account", "--config", "--environment"), 0),
            "doppler": (("run",), ("-p", "--project", "-c", "--config", "--token", "--scope", "--mount"), 0),
            "mise": (("exec", "x"), ("-C", "--cd", "-j", "--jobs"), "--"),
@@ -800,6 +811,49 @@ class _Parser:
         self.flush()
         self.via, self.out, self.progs, self.data = saved
 
+    def arith(self):
+        """Read `$(( ))` from after its `$((`, running the substitutions in it; dollar() calls it only when the text
+        has `$(` or a backtick and skips any other `$(( ))` unread. It must end in `))`: bash runs `$((cmd) )` as a
+        subshell. Held: a single quote or `$'` (bash does not quote with `'` here, so a substitution inside one still
+        runs); a newline; brackets (Bash re-expands array indices); parentheses that don't pair up; any parenthesis
+        when the text has a quote, backtick or backslash (bash's counts skip quoted ones, in different places, so the
+        shell could end it elsewhere); or a backtick when the text has a double quote (bash expands "..." here its
+        own way)."""
+        self.enter()
+        s, start, depth = self.s, self.i, 0
+        while self.i < len(s) and (s[self.i] != ")" or depth):
+            c = s[self.i]
+            if c == "\\":
+                self.i += 2
+            elif c == "'" or self.at("$'"):
+                raise ParseError("a single quote in $(( )) that has $( or a backtick is not supported")
+            elif c == '"':
+                self.i += 1
+                self.dquote('"')
+            elif c == "$":
+                self.dollar(False)
+            elif c == "`":
+                self.backtick()
+            else:
+                depth += {"(": 1, ")": -1}.get(c, 0)
+                self.i += 1
+        if not self.at("))"):
+            raise ParseError("unterminated $((" if self.i >= len(s) else
+                             "$(( that is not arithmetic (a subshell inside $( )) is not supported")
+        body = s[start:self.i]
+        self.charge(len(body))   # each level reads the levels inside it again
+        parens, level = re.findall(r"[()]", body), 0
+        for p in parens:
+            level += 1 if p == "(" else -1
+            if level < 0:
+                break
+        # lean: such a line is held (TK-SHELL-PARSE), not read; read it when real commands need one (docs/limits.md)
+        if level or "\n" in body or "[" in body or parens and re.search(r"[\"'`\\]", body) or '"' in body and "`" in body:
+            raise ParseError("a newline, bracket, unpaired parentheses, a parenthesis with a quote, backtick or backslash, "
+                             "or a backtick with a double quote in $(( )) that has $( or a backtick is not supported")
+        self.i += 2
+        self.leave()
+
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
         self.enter()
@@ -858,8 +912,10 @@ class _Parser:
             if k != j - 1:
                 raise ParseError("$(( that is not arithmetic (a subshell inside $( )) is not supported")
             if "$(" in s[self.i + 3:j] or "`" in s[self.i + 3:j]:
-                raise ParseError("command substitution inside $(( )) is not supported")
-            self.i = j + 1
+                self.i += 3
+                self.arith()
+            else:
+                self.i = j + 1
         elif nxt == "(":
             self.i += 2
             self.sub("$()")

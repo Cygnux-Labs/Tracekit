@@ -153,6 +153,18 @@ def _dev_settings():
     return install.user_settings()
 
 
+def _harness_hooks(harness, config):
+    """{event: [hook groups]} of a coding agent's hook config: Droid's file is the event map, agy's names each hook's
+    (Tracekit's is agent_hooks.AGY_HOOK), the others' is under `hooks`."""
+    from . import agent_hooks
+    if harness == "droid":
+        return {ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config}
+    if harness == "antigravity":   # its "enabled" is D-AGY-HOOKS-RUN's
+        named = config.get(agent_hooks.AGY_HOOK) or {}
+        return {ev: named[ev] for ev in agent_hooks.AGY_EVENTS if ev in named}
+    return config.get("hooks") or {}
+
+
 def _dev_harnesses():
     """{harness: its hook config} for each coding agent (agent_hooks) with a v2 hook in its user or project config."""
     from . import agent_hooks
@@ -167,9 +179,7 @@ def _dev_harnesses():
                     pass
                 continue
             try:
-                config = _json(path) or {}
-                hooks = ({ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config} if harness == "droid"
-                         else config.get("hooks") or {})
+                hooks = _harness_hooks(harness, _json(path) or {})
                 cmds = [h.get("command") for lst in hooks.values() for g in lst
                         for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
             except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
@@ -216,18 +226,50 @@ def _reasoning_checks(add, harnesses, vault, fix):
                 f"modelConfigs in {path} (Gemini CLI's default includes thoughts)", bad=WARN)
 
 
-def _harness_hook_checks(add, harnesses, prod):
-    """Event arguments and approval timeouts of the other coding agents' v2 command hooks."""
+def _agy_runs(add, path, home, fix):
+    """D-AGY-HOOKS-RUN: whether agy runs the hooks in `path` at all. It loads and never runs them when Tracekit's
+    named hook is disabled (in `path`, the user's hooks.json or this workspace's), or when it signs in with a Gemini
+    API key (google-antigravity/antigravity-cli#893) or Application Default Credentials (#1310), set as its install
+    docs say.
+    lean: reads this process's environment and working directory, which are agy's only when doctor runs in agy's shell
+    (dev mode)"""
+    from . import agent_hooks
+
+    def get(obj, key):
+        return obj.get(key) if isinstance(obj, dict) else None
+    settings = os.path.join(home, ".gemini", "antigravity-cli", "settings.json")
+    app = os.path.join(home, ".gemini", "config", "config.json")
+    off = [p for p in dict.fromkeys((path, agent_hooks.config_path("antigravity", home=home),
+                                     agent_hooks.config_path("antigravity", os.getcwd())))
+           if get(_setting(p, agent_hooks.AGY_HOOK), "enabled") is False]
+    why = [w for w, hit in (
+        *((f'Tracekit\'s hook is "enabled": false in {p}', True) for p in off),
+        (f"a Gemini API key sign-in (modelProvider gemini in {settings}; antigravity-cli#893)",
+         _setting(settings, "modelProvider") == "gemini"),
+        (f"Application Default Credentials (enableAdc in {app}; antigravity-cli#1310)",
+         get(_setting(app, "userSettings"), "enableAdc") is True),
+        ("Application Default Credentials (AGY_ADC_AUTH=true in this environment; antigravity-cli#1310)",
+         os.environ.get("AGY_ADC_AUTH", "").lower() == "true")) if hit]
+    add("D-AGY-HOOKS-RUN", not why, f"agy loads its hooks and never runs them: {'; '.join(why)}. No agy call is "
+        "decided or recorded, and agy doesn't say so" if why else f"nothing stops agy running the hooks in {path}",
+        "sign agy in with a Google account (remove modelProvider gemini, enableAdc and AGY_ADC_AUTH), "
+        + "".join(f'remove "{agent_hooks.AGY_HOOK}" from {p}, ' for p in off if p != path) + "then " + fix,
+        bad=WARN)
+
+
+def _harness_hook_checks(add, harnesses, prod, home=None):
+    """Event arguments and approval timeouts of the other coding agents' v2 command hooks (home: the agent user's home
+    directory, where agy's sign-in settings are)."""
     from . import agent_hooks
     from .integrations.claude_code import APPROVAL_WAIT_S
     for harness, path in sorted((harnesses or {}).items()):
-        if harness not in ("codex", "cursor", "gemini", "goose", "qwen", "droid"):
+        if harness not in ("codex", "cursor", "gemini", "goose", "qwen", "droid", "antigravity"):
             continue
         fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
+        if harness == "antigravity":
+            _agy_runs(add, path, home or os.path.expanduser("~"), fix)
         try:
-            config = _json(path) or {}
-            hooks = ({ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config} if harness == "droid"
-                     else config.get("hooks") or {})
+            hooks = _harness_hooks(harness, _json(path) or {})
             cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
                     for h in (g.get("hooks") or () if "hooks" in g else [g])
                     if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
@@ -639,7 +681,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 'remove tools.sandbox and set "toolSandboxing": true under "security" '
                 f"({wiki_url('docs/integrations/gemini-sandbox.md')})", bad=WARN)
 
-    _harness_hook_checks(add, harnesses, prod)
+    _harness_hook_checks(add, harnesses, prod, agent and agent.pw_dir)
     _reasoning_checks(add, harnesses, isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True,
                       REINIT if prod else "tracekit init --dev --v2")
 
