@@ -227,17 +227,22 @@ def _reasoning_checks(add, harnesses, vault, fix):
 
 def _agy_runs(add, path, home, fix):
     """D-AGY-HOOKS-RUN: whether agy runs the hooks in `path` at all. It loads and never runs them when Tracekit's
-    named hook is disabled, or when it signs in with a Gemini API key (google-antigravity/antigravity-cli#893) or
-    Application Default Credentials (#1310), set as its install docs say.
-    lean: reads this process's environment, which is agy's only when doctor runs in agy's shell (dev mode)"""
+    named hook is disabled (in `path`, the user's hooks.json or this workspace's), or when it signs in with a Gemini
+    API key (google-antigravity/antigravity-cli#893) or Application Default Credentials (#1310), set as its install
+    docs say.
+    lean: reads this process's environment and working directory, which are agy's only when doctor runs in agy's shell
+    (dev mode)"""
     from . import agent_hooks
 
     def get(obj, key):
         return obj.get(key) if isinstance(obj, dict) else None
     settings = os.path.join(home, ".gemini", "antigravity-cli", "settings.json")
     app = os.path.join(home, ".gemini", "config", "config.json")
+    off = [p for p in dict.fromkeys((path, agent_hooks.config_path("antigravity", home=home),
+                                     agent_hooks.config_path("antigravity", os.getcwd())))
+           if get(_setting(p, agent_hooks.AGY_HOOK), "enabled") is False]
     why = [w for w, hit in (
-        (f'Tracekit\'s hook is "enabled": false in {path}', get(_setting(path, agent_hooks.AGY_HOOK), "enabled") is False),
+        *((f'Tracekit\'s hook is "enabled": false in {p}', True) for p in off),
         (f"a Gemini API key sign-in (modelProvider gemini in {settings}; antigravity-cli#893)",
          _setting(settings, "modelProvider") == "gemini"),
         (f"Application Default Credentials (enableAdc in {app}; antigravity-cli#1310)",
@@ -246,7 +251,8 @@ def _agy_runs(add, path, home, fix):
          os.environ.get("AGY_ADC_AUTH", "").lower() == "true")) if hit]
     add("D-AGY-HOOKS-RUN", not why, f"agy loads its hooks and never runs them: {'; '.join(why)}. No agy call is "
         "decided or recorded, and agy doesn't say so" if why else f"nothing stops agy running the hooks in {path}",
-        "sign agy in with a Google account (remove modelProvider gemini, enableAdc and AGY_ADC_AUTH), then " + fix,
+        "sign agy in with a Google account (remove modelProvider gemini, enableAdc and AGY_ADC_AUTH), "
+        + "".join(f'remove "{agent_hooks.AGY_HOOK}" from {p}, ' for p in off if p != path) + "then " + fix,
         bad=WARN)
 
 

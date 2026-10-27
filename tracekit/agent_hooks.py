@@ -31,9 +31,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             tool names and its own edit, grep_search and agent -> Edit, Grep, Task
     Droid   Execute, Create, ApplyPatch, FetchUrl -> Bash, Write, Edit (all patch file headers in paths), WebFetch
     agy     run_command, view_file, write_to_file, replace_file_content, multi_replace_file_content, list_dir,
-            find_by_name, grep_search, read_url_content, search_web, invoke_subagent
+            find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
-            WebSearch, Task (each decided on the argument the tool itself reads)
+            WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
 
 What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
@@ -194,6 +194,9 @@ def tool(harness, name, ti):
             return "mcp__" + name, ti
         return GOOSE_TOOLS.get(name, name), ti
     if harness == "antigravity":
+        if name == "manage_task" and ti.get("Action") == "send_input":   # input typed into a background run_command
+            ti["command"] = ti.get("Input")
+            return "Bash", ti
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
         return AGY_TOOLS.get(name, name), ti
     return name, ti

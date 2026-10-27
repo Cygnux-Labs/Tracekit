@@ -326,6 +326,9 @@ class Harnesses(DaemonCase):
                          [(calls[0]["tool_use_id"], True), (calls[2]["tool_use_id"], False)])
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"],
                          ["allow", "deny", "allow"])
+        # input typed into a background run_command is a shell command
+        typed = call(4, "manage_task", {"Action": "send_input", "TaskId": "t1", "Input": "rm -rf ~\n"})
+        self.assertEqual(json.loads(self.hook("antigravity", typed, "PreToolUse")[1])["decision"], "deny")
         self.assertEqual((agent_hooks.config_path("antigravity", home=self.d), agent_hooks.config_path("antigravity", self.d)),
                          (os.path.join(self.d, ".gemini", "config", "hooks.json"), os.path.join(self.d, ".agents", "hooks.json")))
 

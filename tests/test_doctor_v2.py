@@ -309,6 +309,7 @@ class AntigravityHooks(unittest.TestCase):
             path = agent_hooks.install("antigravity", v2=True)
             settings, app = (os.path.join(d, ".gemini", *p) for p in (("antigravity-cli", "settings.json"),
                                                                        ("config", "config.json")))
+            workspace = agent_hooks.config_path("antigravity", d)
 
             def write(p, cfg):
                 os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -325,14 +326,18 @@ class AntigravityHooks(unittest.TestCase):
                                  (lambda: write(app, {"userSettings": {"enableAdc": True}}), "enableAdc"),
                                  (lambda: os.environ.update(AGY_ADC_AUTH="true"), "AGY_ADC_AUTH=true"),
                                  (lambda: write(path, {agent_hooks.AGY_HOOK: {**hooks[agent_hooks.AGY_HOOK],
-                                                                              "enabled": False}}), '"enabled": false')):
+                                                                              "enabled": False}}), '"enabled": false'),
+                                 # a workspace's hooks.json can turn off Tracekit's hook of the same name
+                                 (lambda: write(workspace, {agent_hooks.AGY_HOOK: {"enabled": False}}),
+                                  f'"enabled": false in {workspace}')):
                 with self.subTest(says=says):
                     change()
                     got = row()
                     self.assertEqual(got["status"], "warn", got)
                     self.assertIn(says, got["detail"])
                     self.assertIn("Google account", got["fix"])
-                    for f in (settings, app):
+                    self.assertEqual(f"from {workspace}" in got["fix"], workspace in says)
+                    for f in (settings, app, workspace):
                         if os.path.exists(f):
                             os.unlink(f)
                     os.environ.pop("AGY_ADC_AUTH", None)

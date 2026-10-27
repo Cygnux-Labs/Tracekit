@@ -412,7 +412,8 @@ class OnTheDevPolicy(HarnessCase):
                     "workspacePaths": ["/w"]}
         for step, name, args in ((1, "write_to_file", {"TargetFile": "/w/.env", "CodeContent": "A=1",
                                                        "file_path": "/w/notes.txt"}),
-                                 (2, "run_command", {"CommandLine": "rm -rf ~", "command": "ls"})):
+                                 (2, "run_command", {"CommandLine": "rm -rf ~", "command": "ls"}),
+                                 (5, "manage_task", {"Action": "send_input", "TaskId": "t1", "Input": "rm -rf ~\n"})):
             with self.subTest(name=name):
                 code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
                 self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
@@ -555,13 +556,14 @@ class Installer(unittest.TestCase):
         self.assertEqual(json.loads(p.stdout)["decision"], "deny")
         self.assertIn("no tool_use_id", json.loads(p.stdout)["reason"])
         # as when tracekit is gone (1), the interpreter refuses its options (2) or is gone (127): agy's hook answers
-        # every call at exit 0, so any other status is a deny
-        for status in (1, 2, 127):
-            with self.subTest(status=status), mock.patch.object(install, "_dev_hook_command",
-                                                                return_value=f"(exit {status})"):
-                pre = install._hook_command(harness_hooks.__name__, "entry", ("antigravity", "PreToolUse"), json_deny=True)
-                post = install._hook_command(harness_hooks.__name__, "entry", ("antigravity", "PostToolUse"), pre=False,
-                                             json_deny=True)
+        # every call at exit 0, so any other status is a deny, from the v1 hook too
+        for v2, status in ((True, 1), (True, 2), (True, 127), (False, 127)):
+            with self.subTest(v2=v2, status=status), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(install, "_dev_hook_command", return_value=f"(exit {status})"):
+                agent_hooks.install("antigravity", None, v2=v2, path=path)
+                with open(path) as f:
+                    hooks = json.load(f)[agent_hooks.AGY_HOOK]
+                pre, post = (hooks[ev][0]["hooks"][0]["command"] for ev in ("PreToolUse", "PostToolUse"))
                 p = subprocess.run(pre, shell=True, capture_output=True, text=True, timeout=30)
                 self.assertEqual((p.returncode, json.loads(p.stdout)["decision"]), (0, "deny"))
                 self.assertIn("call blocked (fail-closed)", json.loads(p.stdout)["reason"])
