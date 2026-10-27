@@ -115,5 +115,49 @@ class Panels(unittest.TestCase):
         self.assertIn('if (t.dataset.clear === "all") { runCommand("CLR"); return setScope(null); }', PAGE)
 
 
+
+def text(html):
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
+
+
+class WhyThisDecision(unittest.TestCase):
+    def detail(self, call):
+        return json.loads(page_js(["esc", "short", "cp", "ANSWER", "lastAnswer", "ended", "callState", "whyDecision"], f"""
+            const S = {{ sessions: new Map() }}, label = () => "coder·5e67", DESK = () => true;
+            const a = {json.dumps(call)}; a.agent = {{ session: "r1" }}; a.approvals ??= []; a.flags ??= [];
+            process.stdout.write(JSON.stringify(whyDecision(a)));"""))
+
+    def test_a_held_call_shows_each_section_read_its_rule_and_the_commands_that_answer_it(self):
+        """DETAIL listed a call's rules, not the walk that decided it: what was read, what matched, who may answer."""
+        needs_node(self)
+        html = self.detail({"tool": "send_email", "v2": {
+            "decision": "ask", "cls": "email", "read": {"deny": 7, "ask": 6, "flag": 3}, "secs": {"TK-P001": "ask"},
+            "rules": [{"id": "TK-P001", "reason": "email outside the company", "remedy": "Send it from a person."}]},
+            "approvals": [{"v2": {"approval": "requested", "approval_id": "apr<1>",
+                                  "agents": {"eligible": False, "reason": "the rule has no agent bounds"}}}]})
+        self.assertEqual(text(html), (
+            "WHY THIS DECISION 1 CALL send_email from coder·5e67 · class email (the policy's map of this tool) "
+            "2 DENY RULES read 7 · none matched 3 ASK RULES read 6 · matched TK-P001 email outside the company what "
+            "to do: Send it from a person. 4 FLAG RULES read 3 · none matched 5 DECISION ASK the first section with a "
+            "match decides: deny, then ask, then flag; none, allow 6 OUTCOME WAITING 7 WHO ANSWERS a person the "
+            "signer takes as an approver, on the approvals page , or in a terminal with the signer's approvals command no "
+            "agent approver may answer it: the rule has no agent bounds tracekit approvals approve apr&lt;1&gt; COPY "
+            "tracekit approvals reject apr&lt;1&gt; COPY"))
+        self.assertIn('<b class="ask">3</b>', html)
+        self.assertIn('<a href="/approvals">approvals page</a>', html)
+
+    def test_a_call_of_a_policy_the_viewer_lacks_names_only_what_matched(self):
+        needs_node(self)
+        html = text(self.detail({"tool": "Bash", "pre": {}, "denied": True, "v2": {
+            "decision": "deny", "policy_hash": "sha256:0123456789abcdef", "rules": [{"id": "TK-D003", "reason": ""}]}}))
+        self.assertIn("2 POLICY sha256:0123456789ab…: not a policy this viewer has, so only the rules that matched are "
+                      "known", html)
+        self.assertIn("3 MATCHED TK-D003 (no reason in this policy) 4 DECISION DENY", html)
+        self.assertIn("5 OUTCOME BLOCKED 6 WHO ANSWERS nobody: a denied call is never held", html)
+        self.assertNotIn("tracekit approvals", html)
+        html = text(self.detail({"tool": "Agent", "v2": {"decision": "ask", "rules": []}}))
+        self.assertIn("nobody yet: the agent has not requested an approval for this call", html)
+
+
 if __name__ == "__main__":
     unittest.main()

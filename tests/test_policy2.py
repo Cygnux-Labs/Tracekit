@@ -296,6 +296,15 @@ class Engines(unittest.TestCase):
                 a, b = self.regex.decide(tool, args), re2_engine.decide(tool, args)
                 self.assertEqual({**a, "engine": None}, {**b, "engine": None})
 
+    def test_reads_counts_the_rules_decide_walks_for_a_tool(self):
+        """The viewer's WHY THIS DECISION says how many rules of each section a call read: those of no class or of
+        its class whose tool pattern takes its name."""
+        n = len(PATTERNS)
+        self.assertEqual(self.regex.reads("Bash"), {"deny": 0, "ask": n, "flag": n})
+        self.assertEqual(self.regex.reads("Write"), {"deny": 1, "ask": 0, "flag": 0})
+        self.assertEqual(self.regex.reads("mcp__s__t"), {"deny": 0, "ask": 0, "flag": 0})
+        self.assertEqual(self.regex.decide("Write", {"file_path": "/p/.env"})["rule_ids"], ["F1"])
+
     def test_regex_engine_follows_re2_semantics(self):
         hits = lambda s: self.regex.decide("Bash", {"command": s})["rule_ids"]  # noqa: E731
         self.assertNotIn("P1", hits("a\n"))      # $ is end of text, not before a final newline

@@ -1036,6 +1036,38 @@
       color: var(--green)
     }
 
+    /* WHY THIS DECISION: the policy's walk, one numbered step a line; the step that decided is coloured */
+    .steps {
+      display: grid;
+      grid-template-columns: auto 92px minmax(0, 1fr);
+      gap: 3px 8px;
+      padding: 6px 8px;
+      align-items: baseline
+    }
+
+    .steps>b {
+      background: var(--line2);
+      color: var(--text);
+      padding: 0 5px;
+      font-weight: 600
+    }
+
+    .steps>b.deny {
+      background: var(--red);
+      color: var(--ink)
+    }
+
+    .steps>b.ask,
+    .steps>b.flag {
+      background: var(--amber);
+      color: var(--ink)
+    }
+
+    .steps>b.allow {
+      background: var(--green);
+      color: var(--ink)
+    }
+
     /* footer */
     .foot {
       display: flex;
@@ -2084,7 +2116,7 @@
     // items as a tree: each after its parent, siblings in list order; one whose parent isn't listed (or a loop) is a root
     function treeOrder(items, id, parent) {
       const ids = new Set(items.map(id)), kids = new Map(), out = [], seen = new Set();
-      for (const x of items) { const p = ids.has(parent(x)) && parent(x) !== id(x) ? parent(x) : null; kids.set(p, [...(kids.get(p) || []), x]); }
+      for (const x of items) { const p = ids.has(parent(x)) && parent(x) !== id(x) ? parent(x) : null; kids.get(p)?.push(x) ?? kids.set(p, [x]); }
       const walk = (x, depth) => { if (seen.has(id(x))) return; seen.add(id(x)); out.push([x, depth]); for (const k of kids.get(id(x)) || []) walk(k, depth + 1); };
       for (const x of [...(kids.get(null) || []), ...items]) walk(x, 0);
       return out;
@@ -2092,17 +2124,17 @@
     const indent = depth => `padding-left:${8 + Math.min(depth, 6) * 14}px`;
     function renderAgents() {
       if (V2) return renderRuns();
-      const by = new Map();
+      const by = new Map(), holds = new Map();
       for (const a of S.agents.values()) { if (!by.has(a.session)) by.set(a.session, []); by.get(a.session).push(a); }
+      for (const x of S.actList) if (x.flags.includes("held_for_approval")) holds.set(x.agent, (holds.get(x.agent) || 0) + 1);
       let html = "";
       for (const [sid, list] of [...by.entries()].reverse()) {
         const s = S.sessions.get(sid) || { prompts: [] };
         list.sort((x, y) => (x.sub - y.sub) || (x.first - y.first));
-        const held = a => S.actList.filter(x => x.agent === a && x.flags.includes("held_for_approval")).length;
         html += `<div class="sess"><div class="sess-h">SESSION ${esc(sid.length <= 16 ? sid : sid.slice(0, 8))} · ${esc((s.cwd || "").split("/").slice(-2).join("/"))}<div class="prompt">${esc(s.prompts[s.prompts.length - 1] || "(no prompt recorded)")}</div></div>`;
         for (const [a, depth] of treeOrder(list, a => a.id, a => a.parent || (a.sub ? "main" : null))) {
           const sel = F.agent && agentMatch(a) ? " sel" : "";
-          const st = a.status, h = held(a);
+          const st = a.status, h = holds.get(a) || 0;
           html += `<div class="ag${esc(sel)}" data-agent="${esc(a.id)}" style="${esc(indent(depth))}">
         <span class="dot ${esc(a.blocked && st !== "done" ? "blocked" : st)}"></span>
         <span class="nm">${depth ? `<span class="dim">└ </span>` : ""}${esc(a.sub ? (a.desc || a.type) : "main agent")}</span><span class="st ${esc(st)}">${esc(st.toUpperCase())}</span>
@@ -2312,15 +2344,39 @@
     function rulesHtml(rules) {
       return (rules || []).map(x => `<div><span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(not in a policy this viewer has)")}</div>` + (x.remedy ? `<div style="color:var(--muted)">what to do: ${esc(x.remedy)}</div>` : "")).join("") || "none matched";
     }
+    // WHY THIS DECISION: the policy's walk for a call, as far as its records and the viewer's copy of its policy say
+    function whyDecision(a) {
+      const v = a.v2 || {}, rules = v.rules || [], secs = v.secs || {}, out = callState(a);
+      const req = a.approvals.find(r => r.v2.approval === "requested"), ans = a.approvals.filter(r => r.v2.approval in ANSWER).pop();
+      const rule = x => `<span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(no reason in this policy)")}` + (x.remedy ? `<div class="dim">what to do: ${esc(x.remedy)}</div>` : "");
+      const steps = [["", "CALL", `${esc(a.tool)} from ${esc(label(a.agent))}` + (v.cls ? ` · class ${esc(v.cls)} <span class="dim">(the policy's map of this tool)</span>` : "")]];
+      if (v.read) for (const sec of ["deny", "ask", "flag"]) {
+        const hit = rules.filter(x => secs[x.id] === sec);
+        steps.push([hit.length ? sec : "", sec.toUpperCase() + " RULES", `read ${esc(v.read[sec])} · ` + (hit.length ? `matched ` + hit.map(rule).join("") : `<span class="dim">none matched</span>`)]);
+      }
+      else steps.push(["", "POLICY", `<span class="dim">${esc(short(v.policy_hash) || "none recorded")}: not a policy this viewer has, so only the rules that matched are known (start the viewer with the signer's --config)</span>`]);
+      const own = rules.filter(x => !(x.id in secs));
+      if (own.length) steps.push([v.decision, v.read ? "ENGINE" : "MATCHED", own.map(rule).join("")]);
+      steps.push([v.decision, "DECISION", `${esc(String(v.decision).toUpperCase())} <span class="dim">the first section with a match decides: deny, then ask, then flag; none, allow</span>`]);
+      steps.push([out[0] === "s-ok" ? "allow" : out[0] === "s-deny" ? "deny" : "ask", "OUTCOME", `<span class="${esc(out[0])}">${esc(out[1])}</span>` + (ans ? ` <span class="dim">${esc(ans.text)}</span>` : "")]);
+      let who = v.decision === "deny" ? "nobody: a denied call is never held" : v.decision !== "ask" ? "nobody: it did not wait for an answer"
+        : !req ? "nobody yet: the agent has not requested an approval for this call (no approval.request record)"
+        : "a person the signer takes as an approver" + (DESK() ? `, on the <a href="/approvals">approvals page</a>` : "") + ", or in a terminal with the signer's approvals command";
+      if (req?.v2.agents) who += `<div class="dim">${esc((req.v2.agents.eligible ? "an agent approver may answer it too: " : "no agent approver may answer it: ") + req.v2.agents.reason)}</div>`;
+      if (out[1] === "WAITING" && req?.v2.approval_id) for (const d of ["approve", "reject"]) { const c = `tracekit approvals ${d} ${req.v2.approval_id}`; who += `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`; }
+      steps.push(["", "WHO ANSWERS", who]);
+      return `<div class="sec">WHY THIS DECISION</div><div class="steps">` + steps.map(([k, l, h], i) => `<b class="${esc(k)}">${esc(i + 1)}</b><span class="dim">${esc(l)}</span><span>` + h + `</span>`).join("") + `</div>`;
+    }
+    const DESK = () => !!document.querySelector('.nav a[href="/approvals"]');   // this server has the approval pages
     const cols = (l, r) => `<div>` + l + `</div><div>` + r + `</div>`;  // the detail card's two columns
     function detailV2(sel) {
       if (sel.pre) {
         const a = sel, v = a.v2 || {}, out = callState(a), seq = lseq(a.pre), reveal = `tracekit signer reveal --record ${seq}`;
         const left = `<dl class="kv"><dt>CALL</dt><dd style="color:var(--cyan)">${esc(a.tool)}</dd><dt>RUN</dt><dd>${esc(label(a.agent))}</dd><dt>TIME</dt><dd>${esc(fmtT(a.start))}${a.ms != null ? ` · ${esc(a.ms)} ms` : ""}</dd>
-      <dt>DECISION</dt><dd>${esc(String(v.decision).toUpperCase())} → <span class="${esc(out[0])}">${esc(out[1])}</span></dd><dt>RULES</dt><dd>` + rulesHtml(v.rules) + `</dd>` + verdictLine(a.pre.session_id) + `</dl>
+      <dt>DECISION</dt><dd>${esc(String(v.decision).toUpperCase())} → <span class="${esc(out[0])}">${esc(out[1])}</span></dd>` + verdictLine(a.pre.session_id) + `</dl>
       <div class="sec">ARGUMENTS</div>` + (Object.keys(a.input).length ? `<pre>${esc(j(a.input).slice(0, 6000))}</pre><div class="dim" style="padding:0 8px">kept by the signer and read by this viewer; the record holds only their commitment</div>` : "")
           + `<dl class="kv"><dt>commitment` + cp(v.args_commitment) + `</dt><dd class="hash">${esc(v.args_commitment || "")}</dd><dt>reveal` + cp(reveal) + `</dt><dd class="dim"><code class="shell">${esc(reveal)}</code> gives an auditor the salt that opens the commitment</dd><dt>policy</dt><dd class="dim" title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</dd></dl>` + argsFrom(a);
-        let right = a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "";
+        let right = whyDecision(a) + (a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "");
         if (a.post) right += `<div class="sec">RESULT</div><dl class="kv"><dt>status</dt><dd>${esc(a.error ? "failed" : "ok")}</dd><dt>output</dt><dd>${esc(j(a.post.tool_response?.output))}</dd></dl>`;
         // what the model said before this call in the message that asked for it: "signed before this call" only when its record's run_seq is lower than the decision's
         const asked = S.asked.get(a.id), said = asked ? S.reasoning.filter(r => saidBefore(r, asked, a.pre)) : [];

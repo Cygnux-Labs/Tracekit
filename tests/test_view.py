@@ -92,7 +92,8 @@ class Translate(unittest.TestCase):
         self.assertEqual(call["policy"], {"decision": "deny", "reasons": ["TK-N001", "TK-S001", "TK-NEW"], "flags": []})
         self.assertEqual(call["v2"], {"type": "policy.decision", "run_seq": 2, "tool_use_id": "c3", "decision": "deny",
                                       "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
-                                      "decision_id": "dec-1", "rules": [
+                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 6, "flag": 3},
+                                      "secs": {"TK-N001": "deny", "TK-S001": "deny"}, "rules": [
                                           {"id": "TK-N001", "reason": "request to an internal address"},
                                           {"id": "TK-S001", "reason": "cloud metadata service",
                                            "remedy": "Use the credentials the deployment gives the tool; no tool call "
@@ -102,6 +103,7 @@ class Translate(unittest.TestCase):
                                                          "rule_ids": ["TK-S001"], "policy_hash": "sha256:unknown"}))
         # a decision of a policy the viewer does not have: its rule ids only
         self.assertEqual((other["target"], other["policy"]["flags"]), ("TK-S001", ["held_for_approval"]))
+        self.assertNotIn("read", other["v2"])
 
     def test_a_model_message_of_any_shape_reads_as_what_it_says(self):
         """{"output": [{"type": ["x"]}]}, an agent's own words the dev vault keeps, raised TypeError in the parser and
@@ -199,7 +201,8 @@ class Translate(unittest.TestCase):
         req, ans, used = rows[1:]
         self.assertEqual((req["tape"], req["title"]), ("HOLD", "APPROVAL REQUESTED · create_refund"))
         self.assertEqual(req["text"], "requested by uid:501 · rules TK-M001 sending money · expires 18:00:34 UTC")
-        self.assertEqual((req["v2"]["approval"], req["v2"]["tool_use_id"]), ("requested", "c6"))
+        self.assertEqual((req["v2"]["approval"], req["v2"]["tool_use_id"], req["v2"]["approval_id"]),
+                         ("requested", "c6", "apr-1"))
         self.assertEqual((ans["tape"], ans["severity"], ans["title"]), ("APPROVE", "high", "APPROVED · create_refund"))
         self.assertEqual(ans["text"], "by oidc:alice (not attested) · vouched for by mtls:spiffe://acme/viewer "
                                       "(attested) via web · “on call” · not self-approved · BREAK-GLASS")

@@ -73,6 +73,7 @@ from .identity import oidc, webauthn
 from .identity.k8s_sa import _https
 from .netserver import Server
 from .policy2 import compile as policy_compile
+from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
@@ -328,13 +329,20 @@ SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamp
                "decision_flip", "executed_against_denial", "concurrent_run"}
 
 
+class Reasons(dict):
+    """policy_hash -> {rule id: {reason[, remedy]}}, and `policies`: policy_hash -> that compiled policy."""
+    policies = {}
+
+
 def policy_reasons(paths=()):
-    """policy_hash -> {rule id: {reason[, remedy]}} of the shipped packs and the policy files `paths`: a decision's
-    rule reasons are shown only from the policy whose hash it records."""
-    out = {}
+    """Reasons of the shipped packs and the policy files `paths`: a decision's rule reasons are shown only from the
+    policy whose hash it records, and so is how many rules it read."""
+    out = Reasons()
+    out.policies = {}
     for p in sorted(glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))) + list(paths):
         pol, errors = policy_compile.build(p)
         if not errors:
+            out.policies[policy_compile.policy_hash(pol)] = pol
             out[policy_compile.policy_hash(pol)] = {
                 r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
                 for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
@@ -362,6 +370,7 @@ class Translator(observe.Translator):
     def __init__(self, reasons=None):
         super().__init__()
         self.reasons = reasons or {}
+        self.engines = {}   # policy_hash -> its Engine (None: a policy this viewer doesn't have), built when first read
         # approval_id -> (tool, rule ids, tool call id), and shadow suggestions: the newest MAX_RUNS_KEPT each, like agent_names
         self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
                                          observe._Bounded(observe.MAX_RUNS_KEPT))
@@ -372,6 +381,20 @@ class Translator(observe.Translator):
 
     def _base(self, e, rec, event):
         return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent")}
+
+    def reads(self, d):
+        """What WHY THIS DECISION shows of a decision's policy, when the viewer has it: the class it maps the tool to,
+        how many rules of each section decide() read for it, and the section of each rule that matched (the engine's
+        own checks, such as TK-UNKNOWN-TOOL, have none)."""
+        h = d.get("policy_hash")
+        if h not in self.engines:
+            pol = getattr(self.reasons, "policies", {}).get(h)
+            self.engines[h] = pol and Engine(pol)
+        eng, ids = self.engines[h], set(d.get("rule_ids") or ())
+        if not (eng and d.get("tool")):
+            return {}
+        return {"cls": eng.tool_class(d["tool"]), "read": eng.reads(d["tool"]),
+                "secs": {r["id"]: sec for sec, r, *_ in eng.rules if r["id"] in ids}}
 
     def rules(self, d):
         known = self.reasons.get(d.get("policy_hash"), {})
@@ -456,7 +479,7 @@ class Translator(observe.Translator):
                      policy={"decision": "deny" if dec == "deny" else "allow", "reasons": [x["id"] for x in rules],
                              "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
                      v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
-                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"),
+                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"), **self.reads(d),
                          **{k: d[k] for k in ("provenance", "provenance_state") if k in d}})
             return [r]
         aid = d.get("approval_id")
@@ -470,7 +493,9 @@ class Translator(observe.Translator):
                          + ", ".join(f"{x['id']} {x['reason']}".strip() for x in rules)
                          + f" · expires {_hms(d.get('expires_at'))}"
                          + (" · signer executes (t2)" if d.get("executor") == "t2" else ""), "HOLD",
-                         approval="requested", rules=rules, binding_digest=d.get("binding_digest"))
+                         approval="requested", rules=rules, binding_digest=d.get("binding_digest"), approval_id=aid,
+                         expires=d.get("expires_at"), **({"agents": {k: d["agent"].get(k) for k in ("eligible", "reason")}}
+                                                         if isinstance(d.get("agent"), dict) else {}))
         agent = d.get("approver_kind") == "agent"
         model = " (model output" + (f", {d['asserted'].get('model')}" if (d.get("asserted") or {}).get("model") else "")\
             + ")" if agent else ""
