@@ -233,6 +233,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
             return
         t0 = time.perf_counter()
+        if "transfer-encoding" in self.headers:   # the body is read by Content-Length only
+            self.close_connection = True
+            return self._error(400, "tracekit proxy: Transfer-Encoding isn't supported; send Content-Length")
         try:
             n = int(self.headers.get("content-length") or 0)
         except ValueError:
