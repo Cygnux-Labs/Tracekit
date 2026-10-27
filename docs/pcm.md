@@ -1,11 +1,11 @@
-# Proof-carrying messages
+# PCM 0.1: proof-carrying messages
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
 
 Agent A asks agent B to refund $120 on order 81. It says alice approved refunds up to $200 for that order. B has only
 A's word for it. If A was prompt-injected, or another process sends the message in A's name, B pays out anyway.
 
-A proof-carrying message lets B check the request before it acts. The message carries:
+A proof-carrying message (PCM 0.1, an open protocol Tracekit implements) lets B check the request before it acts. The message carries:
 
 - who sent it, signed by the v2 signer, which signs only as the calling run's own agent;
 - what it asks for, as a typed intent (`refund.request`, `amount`, `order`) checked against a schema both sides agreed on;
@@ -374,4 +374,4 @@ proven claims per receiver or intent. A `transfer` payload waits for it too. Unt
 
 ## Limits
 
-All of them, with what to do: [limits](limits.md#proof-carrying-messages-experimental).
+All of them, with what to do: [limits](limits.md#pcm-01-proof-carrying-messages-experimental).

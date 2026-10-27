@@ -615,7 +615,7 @@ What Tracekit guarantees and doesn't, per deployment, on one page: [guarantees](
 | TK-X207 checks a write only where you say the sensor's file policy selects writes (`--sensor-skip DIR` for each directory it leaves out), a kind of effect only if the run has some, and a Bash command's programs by name: a command whose program has the same name as Tracekit's hook interpreter (`python3 -m pytest` against a `python3` hook) is `hook_binary`, not checked, when only such processes ran. | The run doesn't record the sensor's policy; a hook's process and the command's look alike. | Pass `--sensor-skip`; with Codex keep `CODEX_TOOL_CALL_ID`, which makes each command's processes name it. | [findings](findings.md#effects-what-a-kernel-sensor-saw) |
 | The egress observer's per-minute network totals aren't part of TK-X206 or TK-X207. | The signer reconciles them itself (`reconcile.unexplained_effect`); a total over a minute can't be placed inside a call. | Read `reconcile.unexplained_effect` records for hosts. | [egress](egress.md) |
 
-## Proof-carrying messages (experimental)
+## PCM 0.1: proof-carrying messages (experimental)
 
 | Limit | Why it is so | What to do | Details |
 |---|---|---|---|

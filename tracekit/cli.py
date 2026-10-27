@@ -224,7 +224,7 @@ def main(argv=None):
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("pcm", help="proof-carrying messages between agents: `pcm verify MSG --trust T --schema S`, "
+    p = sub.add_parser("pcm", help="PCM 0.1, proof-carrying messages between agents: `pcm verify MSG --trust T --schema S`, "
                        "`pcm demo`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
 
