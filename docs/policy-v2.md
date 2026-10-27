@@ -34,6 +34,7 @@ Rule ids the signer adds itself:
 | Id | Verdict | When |
 |---|---|---|
 | `TK-ARGS-INVALID` | deny | the raw arguments are not strict JSON ([format v2](format-v2.md#1-canonical-json)); the Python client sends parsed arguments a frame can't carry (a lone surrogate) as raw text, so they get this signed deny too |
+| `TK-A2A-NAME` | deny | an `a2a` call (the A2A gateway or `run.transfer`) names a sender, receiver, projector, modality, weights hash, skill or part kind that is not printable ASCII without spaces. The signer refuses spelling a rule could miss; signed arguments retain the original spelling, while the response has a fixed reason and remedy that never repeats it. |
 | `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies). The decision's `reasons` (and the `decide` response's `reason`) name each such subject by its rule and field: `TK-S002's subject (the whole arguments)` |
 | `TK-ENGINE-ERROR` | deny | the policy engine itself failed on the call's arguments (a bug): the call is denied and recorded, the decision's `reasons` (and the `decide` response's `reason`) name the error's type and the signer logs its traceback. Arguments nested too deeply to check are refused (`invalid_request`), not decided |
 | `TK-SHELL-PARSE` | `on_parse_error` (ask) | a shell command can't be parsed, or what it runs can't be read from the line |
@@ -159,6 +160,7 @@ class's fields from the raw arguments (`policy2/classes.py`):
 | `email` | `to`, `domains`, `attachments`, `recipients` | `to` (string or list), `attachments`; `recipients`: every one of `to`, `cc`, `bcc`, `recipients` |
 | `mcp` | `server`, `tool`, `args` | the tool name (`mcp__server__tool` or `mcp:server/tool`) and the arguments |
 | `browser` | `action`, `url`, `scheme`, `host`, `internal`, `sends_to` | `action`, `url`; `scheme`, `host` and `internal` as below; `sends_to`: the host of `page_url` for `input` and `upload_file`, and the URL's host for a `navigate` or `go_to_url` whose URL has a query string |
+| `a2a` | `sender`, `receiver`, `route`, `skills`, `kinds`, `hosts`, `size`, `modality`, `projector`, `weights` | A2A gateway arguments, or `run.transfer`; names are lower-cased for this class and unprintable names are refused as `TK-A2A-NAME`. |
 | `app` | — | — (an application's own tool: known, so `unknown_tools` doesn't apply; rules reach it by `tool` name, `field: target` or a raw argument `field`) |
 | `unknown` | — | — |
 
@@ -528,7 +530,7 @@ look for one thing after another with any text between, noted with their times i
 
 | Pack | For | Contents |
 |---|---|---|
-| `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain, and srt-proxy's requests (`srt:request`, [sandbox-runtime](integrations/sandbox-runtime.md)) |
+| `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain, srt-proxy's requests (`srt:request`, [sandbox-runtime](integrations/sandbox-runtime.md)), and `a2a:*` to `a2a` for the A2A gateway and `run.transfer`; it has no A2A rules. |
 | `dev.yaml` | the signer's default | `coding.yaml` plus `TK-A032`, which holds uploads to cloud storage (`gsutil` and `gcloud storage` cp, mv or rsync to `gs://`, `aws s3` cp, mv or sync to `s3://`, `az storage blob upload`): a coding agent on a laptop rarely writes to a bucket, and the server pack, which extends `coding.yaml`, leaves uploads alone; and `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`) and `TK-DEMO-ASK` (holds `tracekit_demo_ask` for a person), so both are easy to see |
 | `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads, typing outside an allowlist, the agent's own page JavaScript (`evaluate`), and typing or a navigation with a query string to a host from untrusted content, ask; Browser Use's actions are `structured_output` |
 | `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person; detection in shadow: `TK-Q001` a secret read then egress (notify), `TK-L001` a runaway loop and `TK-L002` a delete burst (limits), `executed_against_policy` (notify) |
