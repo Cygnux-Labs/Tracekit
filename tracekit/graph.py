@@ -230,7 +230,13 @@ def _of(g: Graph, e: Dict[str, Any]) -> str:
     d = e.get("data") or {}
     nid = (f"call:{e['run_id']}:{d.get('tool_use_id')}" if e["type"] in ("policy.decision", "tool.result", "approval")
            else f"input:{e['run_id']}:{e['run_seq']}" if e["type"] == "input.observed" else "")
-    return nid if nid in g.nodes or nid in getattr(g, "_committed_nodes", {}) else "run:" + e["run_id"]
+    committed = getattr(g, "_committed_nodes", {})
+    for n in (nid, "run:" + e["run_id"]):
+        if n and n not in g.nodes and n in committed:   # another source's node: into this source's overlay, so an
+            g.nodes[n] = dict(committed[n])               # edge to it isn't dropped
+        if n and n in g.nodes:
+            return n
+    return "run:" + e["run_id"]
 
 
 def _about(recs: List[Dict[str, Any]]) -> Optional[str]:
@@ -371,10 +377,7 @@ def _add_run(g: Graph, recs: List[Dict[str, Any]], ok: bool, args: Optional[Dict
             for c, x in cited:
                 if not x or x.get("hash") != c.get("hash"):
                     continue
-                n = _of(g, x["event"])
-                if n.startswith("call:") and n not in g.nodes:
-                    _node(g, n, "call", str((x["event"].get("data") or {}).get("tool") or "?"))
-                cited_nodes.add(n)
+                cited_nodes.add(_of(g, x["event"]))
             for n in sorted(cited_nodes) or [
                     _node(g, "run:" + str(about), "run", str(about))]:
                 _edge(g, ok, f, n, "found in", "SIGNED", at)
@@ -440,10 +443,9 @@ def _add_why(g: Graph, recs: List[Dict[str, Any]], ok: bool, tests=()) -> None:
 
 def _merge(g: Graph, staged: Graph) -> None:
     """Commit a source-local graph only after all of its records built successfully."""
-    for nid, node in sorted(staged.nodes.items()):
-        committed = g.nodes.setdefault(nid, dict(node))
-        for key, value in sorted(node.items()):
-            committed.setdefault(key, value)
+    for nid, node in sorted(staged.nodes.items()):   # as _node: a "?" label gives way to a named one
+        attrs = {k: v for k, v in sorted(node.items()) if k not in ("id", "kind", "label")}
+        _node(g, nid, node["kind"], node["label"], **attrs)
     for edge in staged.edges:
         g.add_edge(edge["src"], edge["dst"], edge["kind"], edge["grade"],
                    **{k: v for k, v in edge.items() if k not in ("src", "dst", "kind", "grade")})

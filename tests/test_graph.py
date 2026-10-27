@@ -313,6 +313,43 @@ class ReviewRegressions(unittest.TestCase):
         self.assertEqual(json.dumps({k: both[k] for k in ("nodes", "edges")}, sort_keys=True),
                          json.dumps({k: alone[k] for k in ("nodes", "edges")}, sort_keys=True))
 
+    def split_and_together(self, runs_a, runs_b):
+        """build() over two sources, and over one source holding both, with _read mocked to give these runs."""
+        with tempfile.TemporaryDirectory() as d:
+            trust = os.path.join(d, "trust.json")
+            with open(trust, "w") as f:
+                f.write("{}")
+            src = {n: {"name": n, "sha256": n, "verify": {"ok": True, "integrity": "ok", "failures": []}}
+                   for n in ("a.tkb", "b.tkb", "ab.tkb")}
+            table = {"a.tkb": (src["a.tkb"], runs_a), "b.tkb": (src["b.tkb"], runs_b),
+                     "ab.tkb": (src["ab.tkb"], {**runs_a, **runs_b})}
+            with mock.patch.object(graph, "_read", side_effect=lambda p, *args: table[os.path.basename(p)]), \
+                 mock.patch.object(graph, "_add_why"):
+                split = graph.build([os.path.join(d, "a.tkb"), os.path.join(d, "b.tkb")], trust)
+                together = graph.build([os.path.join(d, "ab.tkb")], trust)
+        return split, together
+
+    def test_a_finding_keeps_its_edge_to_an_input_in_another_bundle(self):
+        target = dict(rec(1, "input.observed", {"source": "page"}, "target"), hash="h1")
+        runs_a = {"target": [rec(0, "run.registered", {"agent": {"name": "a"}}, "target"), target]}
+        runs_b = {"fr": [rec(0, "run.registered", {"agent": {"name": "reviewer"}, "analyzes": "target"}, "fr"),
+                         rec(1, "review", {"verdict": {"kind": "finding", "rule": "TK-X", "severity": "high",
+                                                       "title": "t"}, "cites": [{"run_seq": 1, "hash": "h1"}]}, "fr")]}
+        split, together = self.split_and_together(runs_a, runs_b)
+        found = [(e["src"], e["dst"]) for doc in (split, together) for e in doc["edges"] if e["kind"] == "found in"]
+        self.assertEqual(found, [("finding:fr:1", "input:target:1")] * 2)
+
+    def test_a_call_named_by_a_later_source_loses_its_placeholder_label(self):
+        runs_a = {"r": [rec(0, "run.registered", {"agent": {"name": "a"}}, "r"),
+                        rec(2, "tool.result", {"tool_use_id": "c", "decision_id": "d", "ok": True}, "r")]}
+        runs_b = {"r2": [rec(0, "run.registered", {"agent": {"name": "a"}}, "r2")],
+                  "r": [rec(1, "policy.decision", {"tool_use_id": "c", "decision_id": "d", "tool": "Write",
+                                                   "decision": "allow"}, "r")]}
+        split, together = self.split_and_together(runs_a, runs_b)
+        for doc in (split, together):
+            with self.subTest(sources=len(doc["sources"])):
+                self.assertEqual({n["id"]: n["label"] for n in doc["nodes"]}["call:r:c"], "Write")
+
     def test_unverified_people_and_agents_do_not_describe_signed_answers(self):
         g = Graph(None, "grade")
         graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "coder"}}),
