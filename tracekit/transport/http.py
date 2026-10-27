@@ -141,6 +141,9 @@ class _Handler(BaseHTTPRequestHandler):
         otlp = self.path == OTLP_PATH and self.server.otlp
         if self.path != PATH and not otlp:
             return self._reply(404, RPCError("invalid_request", f"POST {PATH}").wire(), close=True)
+        if "Transfer-Encoding" in self.headers:   # the body is read by Content-Length only
+            return self._reply(400, RPCError("invalid_request", "Transfer-Encoding isn't supported: send the body "
+                                                                "with Content-Length").wire(), close=True)
         n, limit = self.headers.get("Content-Length", ""), OTLP_MAX_BODY if otlp else MAX_LINE
         if not n:
             return self._reply(411, RPCError("invalid_request", "Content-Length required").wire(), close=True)
