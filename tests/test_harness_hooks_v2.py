@@ -592,7 +592,8 @@ class Installer(unittest.TestCase):
         d = ac.tmpdir(self)
         gone, old = os.path.join(d, "gone", "python"), install._blocking
         for python in (None, gone):   # dev mode (this interpreter, moved), system mode (OPT_PYTHON)
-            for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h != "opencode")):   # OpenCode: no shell
+            # OpenCode: no shell; agy answers at exit 0 in JSON (test_antigravity_installed_commands_answer_in_json_…)
+            for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("opencode", "antigravity"))):
                 path = os.path.join(d, str(bool(python)), harness, "hooks.json")
 
                 def init():
@@ -603,7 +604,7 @@ class Installer(unittest.TestCase):
                             agent_hooks.install(harness, v2=True, python=python, path=path)
                 with self.subTest(python=python, harness=harness), mock.patch.object(sys, "executable", gone), \
                         mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(d, "client.json")):
-                    with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True: old(run, unless)):
+                    with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True, json_deny=False: old(run, unless, json_deny=json_deny)):
                         init()   # as init before 1.3 wrote it
                     init()
                     with open(path) as f:

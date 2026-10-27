@@ -257,7 +257,7 @@ class HooksBefore13(unittest.TestCase):
                 kw = {"settings": path} if harness == "claude" else {"harnesses": {harness: path}}
                 return next(r for r in doctor.v2_checks({"data_dir": d}, "dev", **kw) if r["id"] == "D-HOOKS-EVENT")
             with self.subTest(harness=harness):
-                with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True: old(run, unless)):
+                with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True, json_deny=False: old(run, unless, json_deny=json_deny)):
                     init()   # as init before 1.3 wrote it
                 got = row()
                 self.assertEqual(got["status"], "warn", got)
