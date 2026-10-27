@@ -685,11 +685,18 @@ def find(command, argv):
 
 class Shell(unittest.TestCase):
     def test_many_data_copy_commands_parse_in_linear_time(self):
-        command = "; ".join([*(f"echo text > out{i}" for i in range(1600)),
-                               *(f"sh out{i}" for i in range(1600))])
-        start = time.perf_counter()
-        shell.analyse(command)
-        self.assertLess(time.perf_counter() - start, 0.5 * SLOWER)
+        def best(k):   # the fastest of three parses, so a busy CI runner's pauses don't count
+            command = "; ".join([*(f"echo text > out{i}" for i in range(k)), *(f"sh out{i}" for i in range(k))])
+            times = []
+            for _ in range(3):
+                start = time.perf_counter()
+                shell.analyse(command)
+                times.append(time.perf_counter() - start)
+            return min(times)
+        small, big = best(400), best(1600)
+        # linear: 4 times the commands take about 4 times as long (quadratic would be 16)
+        self.assertLess(big, 8 * small + 0.005 * SLOWER)
+        self.assertLess(big, 2 * SLOWER)
 
     def test_sudo_by_absolute_path(self):
         self.assertTrue(find("/usr/bin/sudo id", ["sudo", "id"]))
