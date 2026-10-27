@@ -501,14 +501,14 @@ class Speed(unittest.TestCase):
     FILLERS = (" -", " -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@")
     # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
     # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
-    # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-D008 a writer, then a
-    # transcript path; TK-C010 kubectl delete, then --all, or aws s3 rm, then --recursive; TK-A032 a storage copy, then
-    # a bucket destination, anchored but backing off over the rest of the command) or in an SQL statement
+    # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-C010 kubectl delete,
+    # then --all, or aws s3 rm, then --recursive; TK-A032 a storage copy, then a bucket destination, anchored but
+    # backing off over the rest of the command) or in an SQL statement
     # (TK-DB003 DELETE FROM, then an always-true WHERE): a backtracking engine rescans that text from each occurrence of
     # their first word, so 64 KiB repeating it in one command or statement spends the fallback's 1 s and denies
     # (nondeterministic). RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade:
     # structural pipeline and argv rules
-    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D008", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
+    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4

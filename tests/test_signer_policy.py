@@ -543,6 +543,111 @@ class CodingPack(unittest.TestCase):
                        ({"file_path": "/Users/u/.claude/projects/p/memory/../abc.jsonl"}, "TK-D009"),
                        ({"file_path": "/Users/u/.claude/projects/p/memory/x/abc.jsonl"}, "TK-D009")], tool="Write")
 
+    def test_transcript_rule_holds_writes_to_transcripts_not_reads_or_mentions(self):
+        """TK-D008 matched a write word or `>` anywhere on the line before a transcript folder's name, so it denied
+        listings, unrelated writes and text naming the folders (#421); it reads each command's write and delete
+        targets, so every write to a transcript is still denied."""
+        writes = ("rm ~/.claude/projects/x/y.jsonl", "rm -rf ~/.claude/projects", "echo hi > ~/.codex/sessions/a.jsonl",
+                  'echo hi >> "$HOME/.gemini/tmp/h/chats/c.json"', ": > ${HOME}/.claude/projects/-x/abc.jsonl",
+                  "unlink ~/.codex/sessions/a.jsonl", "truncate -s0 ~/.codex/sessions/a.jsonl",
+                  "shred -u ~/.gemini/tmp/h/logs.json", "sed -i 's/rm/ls/' ~/.claude/projects/-x/a.jsonl",
+                  "sed -i.bak -e 's/a/b/' ~/.claude/projects/-x/a.jsonl", "perl -pi -e 's/a/b/' ~/.codex/sessions/a.jsonl",
+                  "mv ~/.claude/projects/p/a.jsonl /tmp/", "mv /tmp/x ~/.claude/projects/p/a.jsonl",
+                  "ln -sf /dev/null ~/.codex/sessions/a.jsonl", "dd if=/dev/zero of=$HOME/.claude/projects/p/a.jsonl",
+                  "cp /dev/null ~/.claude/projects/p/a.jsonl", "rm ~/.local/share/opencode/opencode.db",
+                  "echo x > ~/.local/share/opencode/storage/message/s/m.json", 'rm "$XDG_DATA_HOME/opencode/opencode.db-wal"',
+                  "truncate -s0 ${XDG_DATA_HOME}/opencode/opencode-dev.db",
+                  r"rm 'C:\Users\u\.local\share\opencode\storage\part\p.json'",
+                  "find ~/.claude/projects -name '*.jsonl' -delete", "find -L ~/.codex/sessions -name x -delete",
+                  "find ~/.claude/projects -exec rm {} +", "find ~/.gemini/tmp -execdir shred -u {} \\;",
+                  "find ~/.claude/projects -type f -exec sed -i 's/a/b/' {} +",
+                  "find ~/.codex/sessions -exec Perl -pi -e 's/a/b/' {} \\;",
+                  "ls ~/.codex/sessions && rm ~/.codex/sessions/a.jsonl", "cd /repo; echo x > ~/.claude/projects/p/a.jsonl",
+                  'rm "/Users/u/.claude/projects/p/a b.jsonl"', "rm ~/.Claude/Projects/p/a.jsonl",
+                  r"rm 'C:\Users\u\.codex\sessions\a.jsonl'", "bash -c 'rm ~/.claude/projects/p/a.jsonl'",
+                  "sudo rm ~/.claude/projects/p/a.jsonl", "cat ~/.codex/sessions/a.jsonl | xargs rm ~/.codex/sessions/b",
+                  # find's start paths after `--`, and its path tests (-delete implies -depth: -prune doesn't keep
+                  # find out of the folder)
+                  "find -- ~/.codex/sessions -delete", "find ~ -path '*/.claude/projects/*' -delete",
+                  "find $HOME -ipath '*/.gemini/tmp/*' -delete", "find . -path './.claude/projects/*' -delete",
+                  "find ~ -regex '.*\\.codex/sessions/.*' -delete", "find ~ -path '*/.codex/sessions' -prune -o -delete",
+                  "find ~ -path '*/.claude/projects/*' -exec sed -i s/a/b/ {} +",
+                  "find ~ -name '*.jsonl' -path '*/.codex/sessions/*' -exec rm {} \\;",
+                  "find ~ -wholename '*/.claude/projects/*' -exec truncate -s0 {} +",
+                  "find -files0-from <(printf '%s\\0' ~/.codex/sessions) -delete",
+                  # a writer git, a container or parallel runs from its words, and awk's print > "file"
+                  "git rm ~/.claude/projects/p/a.jsonl", "docker exec c rm /root/.claude/projects/p/a.jsonl",
+                  "kubectl exec p -- rm /root/.codex/sessions/a.jsonl", "parallel rm ::: ~/.codex/sessions/*",
+                  "docker exec c find /tmp -exec rm /root/.codex/sessions/a.jsonl \\;",
+                  "awk '{print > \"/Users/u/.claude/projects/p/a.jsonl\"}' x",
+                  # a writer that gets its files at run time or runs them in code: every word on the line counts
+                  "perl -e 'open F, \">\", \"/home/u/.claude/projects/p/x\"'",
+                  "docker exec c sh -c 'rm /root/.claude/projects/p/x'", "podman exec c sh -c 'rm /root/.codex/sessions/x'",
+                  "kubectl exec p -- sh -c 'rm /root/.gemini/tmp/h/x'", "parallel -j1 'rm {}' ::: ~/.claude/projects/p/x",
+                  "xargs rm < <(ls ~/.codex/sessions/*)", "find ~/.codex/sessions -type f -print0 | xargs -0 rm",
+                  "while read f; do rm \"$f\"; done <<< \"$(ls ~/.codex/sessions/*)\"")
+        reads = ("ls -la ~/.codex/sessions/ 2>/dev/null | head; ls ~/.gemini/tmp 2>/dev/null | head",
+                 "rm -rf build && ls ~/.codex/sessions", "echo 'rm ~/.codex/sessions' > note.txt",
+                 "cat > notes.md <<'EOF'\nrm ~/.claude/projects/x\nEOF", "git commit -m 'rm ~/.claude/projects'",
+                 "echo x > notes.md; cat ~/.config/opencode/opencode.json",
+                 "mv a.md b.md && grep model ~/.config/opencode/opencode.json",
+                 "cp ~/.claude/projects/p/a.jsonl /tmp/", "dd if=~/.codex/sessions/a.jsonl of=/tmp/a",
+                 "ln -sf ~/.claude/projects/p/a.jsonl ./latest.jsonl", "grep -r x ~/.gemini/tmp > hits.txt",
+                 "cat ~/.claude/projects/p/a.jsonl | tee /tmp/copy.jsonl",
+                 "find ~/.claude/projects -name '*.jsonl' -exec grep -l x {} +",
+                 "find ~/.claude/projects -exec sed -n 1p {} \\;",
+                 # OpenCode's config (TK-F015 flags it), its plans and worktrees beside its sessions
+                 "echo x | tee -a ~/.config/opencode/x", "echo x > ~/.local/share/opencode/plans/p.md",
+                 "rm -rf ~/.local/share/opencode/worktree/p/w", "rm -rf ~/.config", "rm ~/.claude.json.bak",
+                 "find ~/.claude/projects -name '*.jsonl' -exec cp {} /backup/ \\;",
+                 "find /tmp -newer ~/.codex/sessions/a.jsonl -delete", "grep -n rm ~/.claude/projects/p/a.jsonl",
+                 "docker exec c cat /root/.claude/projects/p/a.jsonl", "parallel wc -l ::: ~/.codex/sessions/*",
+                 "awk '$3 > 5 { print > \"/tmp/big.txt\" }' ~/.codex/sessions/a.jsonl")
+        for pack, engine, e in self.every_pack():
+            for command in writes:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D008" in d["rule_ids"]), ("deny", True), d)
+            for command in reads:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D008", e.decide("Bash", {"command": command})["rule_ids"])
+            # a line the parser can't read is still held (TK-SHELL-PARSE)
+            self.assertIn(e.decide("Bash", {"command": "rm ~/.claude/projects/p/a.jsonl; echo '"})["verdict"],
+                          ("ask", "deny"))
+
+    def test_transcript_rule_holds_deletes_of_the_folders_that_hold_transcripts(self):
+        """Deleting ~/.claude, ~/.codex, ~/.gemini or OpenCode's data folder (or a folder above it in the home)
+        deletes the transcripts in it; TK-F015 only flagged it. Writing into those folders outside the transcripts,
+        or deleting a project's own .claude, isn't held."""
+        deletes = ("rm -rf ~/.claude", "rm -rf ~/.codex/", "rm -rf $HOME/.gemini", "rm -rf ~/.claude/*",
+                   "rm -rf ~/.local/share/opencode", 'rm -rf "$XDG_DATA_HOME/opencode"', "rm -rf ${XDG_DATA_HOME}",
+                   "rm -rf ~/.local/share/*", "rm -rf ~/.local", "mv ~/.codex /tmp/codex-old", "rm -rf ~/.Gemini",
+                   "find ~/.claude -name '*.jsonl' -delete", r"rm -r 'C:\Users\u\.codex'", "rm -rf /home/u/.claude//",
+                   "rm -rf /Users/u/.gemini", "rm -rf /root/.codex", "find -- ~/.claude -delete")
+        kept = ("cp settings.json ~/.gemini", "mv x ~/.claude", "rm -rf ~/.claude/hooks", "rm ~/.codex/config.toml",
+                "rm -rf ~/.claude-old", "rm -rf ~/.local/share/opencode/log", "rm -rf ~/.local/bin",
+                "echo x > ~/.local/share/opencode/storage.txt",
+                # a project's own harness folders hold its settings, not transcripts (TK-F015 flags them)
+                "rm -rf .claude", "rm -rf repo/.gemini/", "mv .codex .codex.bak", "rm -rf /Users/u/repo/.claude",
+                # or a folder that only looks like a home (a rootfs overlay, dotfiles mirrored in a repo)
+                "rm -rf root/.claude", "rm -rf build/home/x/.claude", "rm -rf /srv/app/root/.codex",
+                # find that only edits files in place writes them, it doesn't delete the folder
+                "find ~/.codex -maxdepth 1 -name config.toml -exec sed -i s/a/b/ {} +")
+        for pack, engine, e in self.every_pack():
+            for command in deletes:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D008" in d["rule_ids"]), ("deny", True), d)
+            for command in kept:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D008", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_opencode_sessions_are_transcripts_to_the_file_tools(self):
+        self.verdicts([({"file_path": "/home/u/.local/share/opencode/storage/message/s/m.json"}, "TK-D009"),
+                       ({"file_path": "/Users/u/.local/share/opencode/opencode.db"}, "TK-D009")], tool="Write")
+        self.assertNotIn("TK-D009", self.e.decide("Write", {"file_path": "/Users/u/.local/share/opencode/plans/p.md"})[
+            "rule_ids"])
+
     def test_dev_signer_dirs_and_installed_packs_are_protected(self):
         for path in ("/Users/u/Library/Application Support/tracekit/data/keys/log.key", "/home/u/.local/share/tracekit/x",
                      "C:\\Users\\u\\AppData\\Local\\tracekit\\keys", "/run/user/1000/tracekit/signer.sock",
@@ -691,13 +796,15 @@ class CodingPack(unittest.TestCase):
                     "cp x 'a\n/../.claude/settings.json'", "tee 'a\n/../.mcp.json'",
                     "echo '{}' > .qwen/settings.json", "sed -i s/true/false/ ~/.qwen/settings.json", "rm -rf ~/.qwen",
                     r"cp x 'C:\repo\.qwen\settings.json'", 'echo x > "$QWEN_HOME/settings.json"',
-                    "tee ${QWEN_HOME}/settings.json", 'rm -rf "$QWEN_HOME"')
+                    "tee ${QWEN_HOME}/settings.json", 'rm -rf "$QWEN_HOME"',
+                    "echo x > ~/.config/opencode/plugin/tracekit.js", "rm ~/.config/opencode/plugins/tracekit.js",
+                    r"cp x 'C:\Users\u\.config\opencode\plugin\x.js'", "rm -rf ~/.config/opencode")
         benign = [("Bash", {"command": c}) for c in (
             "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
             "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
             "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt",
             "cat .qwen/settings.json", "ls ~/.qwen", 'cat "$QWEN_HOME/settings.json"', "echo x > qwen-settings.json",
-            "cp x .qwen-backup/settings.json")]
+            "cp x .qwen-backup/settings.json", "ls ~/.config/opencode/plugin", "echo x > ~/.config/opencode-old/x")]
         benign += [(tool, args) for tool, args in (
             ("Read", {"file_path": "opencode.json"}),
             ("Read", {"file_path": "/home/u/.qwen/settings.json"}),
@@ -1167,8 +1274,7 @@ class CodingPack(unittest.TestCase):
         self.assertEqual((d["verdict"], d["rule_ids"][0]), ("deny", "TK-OVERSIZE"))
 
     def test_history_and_container_rules_are_bounded_on_adversarial_commands(self):
-        """The new rules alone, on the fallback engine: an older rule's own worst case here (TK-D008 on 64 KB of
-        `find ... -delete`) is not theirs to bound."""
+        """The new rules alone, on the fallback engine."""
         policy = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
         new = Engine(dict(policy, **{sec: [r for r in policy[sec] if r["id"] in NEW_RULES]
                                      for sec in ("deny", "ask", "flag")}), "regex")
@@ -1190,8 +1296,10 @@ class CodingPack(unittest.TestCase):
 
     def test_mount_sources_option_values_history_reads_and_pruned_paths(self):
         # a mount source is read as the runtime resolves it (`//`, `/.`); an option's value is never another option
-        # (`--rootfs --privileged`); `history -r` with a path holding `-c` reads history; a path `-prune` leaves out of
-        # a find that deletes isn't deleted
+        # (`--rootfs --privileged`); `history -r` with a path holding `-c` reads history; a file `-prune` leaves out of
+        # a find that deletes isn't deleted, but a path test's folder is: -delete implies -depth, under which -prune
+        # doesn't keep find out of it
+        self.verdicts([("find /var -path /var/log -prune -o -name '*.tmp' -delete", "TK-A027")])
         self.verdicts([(c, "TK-A023") for c in (
             "docker run -v //:/host alpine", "docker run -v /.:/host alpine", "podman run -v /proc/.:/p alpine",
             "docker run --mount type=bind,src=//,dst=/h alpine", "podman run --rootfs --privileged alpine",
@@ -1199,7 +1307,6 @@ class CodingPack(unittest.TestCase):
         self.verdicts([("history -cw", "TK-A029"), ("history -w -c", "TK-A029")])
         for command in ("docker run -v /home/u/src:/src alpine", "docker run -v ./proc:/p alpine",
                         "history -r ~/my-cache", "history -a ~/a-c",
-                        "find /tmp -path /var/log -prune -o -name '*.tmp' -delete",
                         "find /tmp -name .bash_history -prune -o -exec rm {} +"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
