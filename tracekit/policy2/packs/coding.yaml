@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-34'
+version: '2026.10-v2-35'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -98,8 +98,15 @@ deny:
     rationale: Sending .env off the machine is exfiltration.
   - id: TK-D008
     class: shell
-    field: line
-    pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
+    field: effects
+    # each file a command writes or deletes, as TK-F015 reads them, so a listing, a read or text that names the
+    # folders isn't held: one in Claude Code's, Codex's or Gemini CLI's transcript folder, OpenCode's sessions (its
+    # data folder's opencode*.db, and storage/ before it), or a delete of a home folder holding them (~/.claude,
+    # ~/.local/share; a home is ~, $HOME or an absolute /home/<u>, /Users/<u> or /root, so a project's .claude, or a
+    # repo's build/home/u/.claude, isn't one). MAY_WRITE: any word on a line whose writer gets its files at run time
+    # (xargs rm, rm "$f") or in code it runs (docker exec c sh -c, perl -e). Anchored and lazy, so the fallback
+    # engine stays linear
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET|MAY_WRITE):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\]opencode[/\\](?:storage(?:[/\\]|$)|opencode[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\]opencode)?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\]opencode)?)[/\\]*\*?$'
     reason: modifying the agent harness's transcripts
     remedy: Leave the harness's transcripts as they are (reading them is fine); a person removes them once the run's evidence is exported.
     rationale: Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
@@ -118,7 +125,7 @@ deny:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)/'
+    pattern: '(^|/)(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode|\.local/share/opencode/storage)/|(^|/)\.local/share/opencode/opencode[^/]*\.db'
     # Claude Code keeps the agent's own memory notes beside its transcripts: those it may write
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     reason: writing to the agent harness's transcripts
@@ -588,8 +595,9 @@ flag:
     class: shell
     field: effects
     # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
-    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name.
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode|qwen)(?:[/\\]|$)|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
+    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
+    # user config (its plugins, Tracekit's too) is ~/.config/opencode.
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode|qwen)(?:[/\\]|$)|\.config[/\\]opencode(?:[/\\]|$)|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
     label: harness_config
   - id: TK-F016
     tool: Bash|Write|Edit|MultiEdit
