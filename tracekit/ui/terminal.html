@@ -3786,8 +3786,13 @@
       const src = srcOf(row.rec), tag = src === "ANALYSIS" || (src === "WHY" && V2) ? src : "", code = row.rec?.v2?.kind;
       return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}" tabindex="0"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
     }
+    // the tape's kind chips; on a run's page with why logs, a way to the why log's own events (agents, types, search)
+    function kindChips() {
+      return [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" ")
+        + (PAGE === "run" && WHY ? ` <button class="fchip" data-rv="timeline" type="button">WHY LOG EVENTS</button>` : "");
+    }
     function renderTape() {
-      if (V2) put("fchips", [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" "));
+      if (V2) put("fchips", kindChips());
       // only what changes the rows re-renders them (the live tick re-renders every second)
       const key = [S, S.tape.length, S.recs.length, F.agent, F.tool, F.file, F.flag, F.find, F.kind, tapeMax, selected, DROPPED];
       if (key.every((x, i) => x === tapeKey[i])) return;
@@ -4912,7 +4917,7 @@
     // TIMELINE: every event of the run, filtered by agent, type, flagged and text; a row opens its NODE
     function timelineView(el, d) {
       const agents = [...new Set(d.timeline.map(r => r.agent))];
-      el.innerHTML = runHead(d) + `<div class="wbar"><select id="tlagent"><option value="">All agents</option>` + agents.map(a => `<option value="${esc(a)}"${TL.agent === a ? " selected" : ""}>${esc(a)}</option>`).join("") + `</select>`
+      el.innerHTML = runHead(d) + `<div class="wbar"><button type="button" data-rv="calls">← THE RUN'S CALLS</button><select id="tlagent"><option value="">All agents</option>` + agents.map(a => `<option value="${esc(a)}"${TL.agent === a ? " selected" : ""}>${esc(a)}</option>`).join("") + `</select>`
         + [["", "ALL"], ["input", "INPUTS"], ["decision", "MODEL CALLS"], ["action", "TOOL CALLS"], ["message", "MESSAGES"]].map(([k, l]) => `<button type="button" data-tlk="${esc(k)}" class="${TL.type === k ? "on" : ""}">${esc(l)}</button>`).join("")
         + `<label><input type="checkbox" id="tlflag"${TL.flag ? " checked" : ""}> flagged only</label><input id="tlq" placeholder="Search" value="${esc(TL.q)}" spellcheck="false"></div><div id="wtl"></div>`;
       drawTimeline(d);

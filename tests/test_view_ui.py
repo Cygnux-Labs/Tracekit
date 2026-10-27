@@ -1000,6 +1000,20 @@ class NothingLost(unittest.TestCase):
                 self.assertIn(rule, phone)
         self.assertIn("tickStep(t1 - t0, Math.max(2, (W - labelW) / 90))", PAGE)   # the lanes: a tick per 90px at most
 
+    def test_the_why_logs_timeline_is_a_click_away_on_calls_and_back(self):
+        """v7 left the why log's TIMELINE (agent select, type segments, flagged only, search) reachable only by a
+        #view=timeline link: CALLS has a button to it, and it a button back."""
+        needs_node(self)
+        out = json.loads(page_js(["esc", "KINDS", "PAGES", "RVIEWS", "show", "centre", "kindChips"], """
+            let PAGE = "run", RV = "calls", CALLSLOG = false, F = { kind: null }, WHY = { runs: [] };
+            const seen = [], click = html => show(/data-rv="([^"]+)"/.exec(html)[1]);
+            click(kindChips()); seen.push([PAGE, RV, centre()]);
+            show("calls"); seen.push(centre());
+            WHY = null; seen.push(kindChips().includes("data-rv"));   // with no why logs there is nothing to show
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, [["run", "calls", "timeline"], "desk", False])
+        self.assertIn('data-rv="calls">← THE RUN\'S CALLS</button>', PAGE)
+
     def test_each_page_places_the_panels_it_had(self):
         css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
         for rule in ("body.pg-run main>.p.agents", "body.pg-run main>.p.mix", "body.pg-run main>.p.detail",
