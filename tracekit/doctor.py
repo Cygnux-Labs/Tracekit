@@ -35,6 +35,7 @@ MAX_SKEW_S = 300
 REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>" + (
     " --experimental-macos" if sys.platform == "darwin" else "")   # init refuses macOS system mode without it
 FAIL_CLOSED = "call blocked (fail-closed)"   # the pre-tool wrapper's words (install._blocking); before 1.3 every event's
+# wrapper had them, so a hook that couldn't run blocked a prompt or a tool result too (D-HOOKS-EVENT warns)
 
 
 
@@ -279,16 +280,24 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         unnamed = sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
         blocking = sorted({ev for ev, h in cmds if ev not in agent_hooks.PRE
                            and (FAIL_CLOSED in h["command"] or h.get("failClosed") is True)})   # Cursor's failClosed
-        add("D-HOOKS-EVENT", bool(cmds) and not unnamed and not blocking,
+        pre = [h for ev, h in cmds if ev in agent_hooks.PRE]
+        # Cursor and goose let a call through when its pre-tool hook can't run, unless the hook says to block it
+        key, block = {"cursor": ("failClosed", True), "goose": ("on_failure", "block")}.get(harness, (None, None))
+        lets_past = key and any(h.get(key) != block for h in pre)
+        add("D-HOOKS-EVENT", bool(pre) and not unnamed and not blocking and not lets_past,
+            f"no v2 {harness} hook commands found in {path}" if not cmds else
+            f"{harness} hooks in {path}: no Tracekit v2 hook on the pre-tool event, so {harness} runs every tool call "
+            "undecided and unrecorded" if not pre else
             f"{harness} hooks in {path}: {', '.join(unnamed)} command(s) do not name their configured event; "
             "a pre-tool payload the hook cannot read can pass unrecorded" if unnamed else
             f"{harness} hooks in {path}: the {', '.join(blocking)} hook(s) block their event when the hook can't run, "
             "not only tool calls (an older init wrote them)" if blocking else
-            f"each {harness} hook command in {path} names its event" if cmds else
-            f"no v2 {harness} hook commands found in {path}", fix, bad=WARN)
+            f"{harness} hooks in {path}: the pre-tool hook has no {key}: {json.dumps(block)}, so {harness} runs a call "
+            "whose hook can't run, undecided and unrecorded" if lets_past else
+            f"each {harness} hook command in {path} names its event", fix, bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
         default = 30 if harness == "antigravity" else 60   # a timeout the hook doesn't set: agy's own default is 30 s
-        pre = [h.get("timeout", default * scale) for ev, h in cmds if ev in agent_hooks.PRE]
+        pre = [h.get("timeout", default * scale) for h in pre]
         pre = [t if type(t) in (int, float) and 0 <= t < float("inf") else 0 for t in pre]
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,

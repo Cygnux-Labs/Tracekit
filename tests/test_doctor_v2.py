@@ -112,6 +112,32 @@ class CodingAgentHooks(unittest.TestCase):
                 self.assertIn(path, got["D-HOOKS-EVENT"]["detail"])
                 self.assertEqual(got["D-HOOKS-EVENT"]["fix"], f"tracekit init --dev --v2 --agent {harness}")
 
+    def test_no_pre_tool_hook_or_one_the_harness_lets_a_call_past_warns(self):
+        # #448: doctor said ok with no Tracekit hook on the pre-tool event, with Cursor's failClosed off and with
+        # goose's on_failure gone: in each, a call runs that no hook decided
+        from tracekit import agent_hooks
+
+        def drop_pre(hooks):
+            for ev in [ev for ev in hooks if ev in agent_hooks.PRE]:
+                hooks.pop(ev)
+        changes = [(h, "no Tracekit v2 hook on the pre-tool event", drop_pre)
+                   for h in ("codex", "cursor", "gemini", "goose", "qwen", "droid", "antigravity")]
+        changes += [("cursor", "failClosed: true", lambda hooks: hooks["preToolUse"][0].update(failClosed=False)),
+                    ("goose", 'on_failure: "block"', lambda hooks: hooks["PreToolUse"][0]["hooks"][0].pop("on_failure"))]
+        with mock.patch.dict(os.environ, {"HOME": self.d, "USERPROFILE": self.d}), \
+                mock.patch("os.getcwd", return_value=self.d):   # agy's sign-in settings: none here
+            for harness, says, change in changes:
+                with self.subTest(harness=harness, says=says):
+                    path, settings = self.installed(harness)
+                    self.assertEqual(self.check(harness, path, settings)["D-HOOKS-EVENT"]["status"], "ok")
+                    change(settings if harness == "droid" else settings[agent_hooks.AGY_HOOK if harness == "antigravity"
+                                                                        else "hooks"])
+                    got = self.check(harness, path, settings)["D-HOOKS-EVENT"]
+                    self.assertEqual(got["status"], "warn", got)
+                    self.assertIn(says, got["detail"])
+                    self.assertIn(path, got["detail"])
+                    self.assertEqual(got["fix"], f"tracekit init --dev --v2 --agent {harness}")
+
     def test_production_hook_advice_uses_system_init_for_the_harness(self):
         harness = "codex"
         path, settings = self.installed(harness)

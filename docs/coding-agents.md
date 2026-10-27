@@ -10,6 +10,7 @@ tracekit init --dev --agent qwen       # ~/.qwen/settings.json
 tracekit init --dev --agent droid      # ~/.factory/hooks.json
 tracekit init --dev --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
 tracekit init --dev --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.json (plus plugin.json beside it)
+tracekit init --dev --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
 # --project writes the project-level file instead; tracekit uninstall --agent X removes it
 tracekit demo --agent codex            # the scripted demo, sent as Codex's own hook payloads (also cursor, gemini)
 ```
@@ -45,7 +46,8 @@ need an update here. Qwen Code's are from its [hooks documentation](https://qwen
 it sends Claude Code's payloads and event names (with `tool_use_id`), reads exit 2 as a block, takes hook timeouts in
 milliseconds (versions since September 2026 in seconds, but 1000 or more still as milliseconds; 60 s unless set; `init` writes 600000, 600 s
 either way, for `PreToolUse`, so a person has time to approve a held call), and
-runs a project's hooks only in a trusted folder.
+runs a project's hooks only in a trusted folder. On Windows it runs hooks under `cmd.exe`, so the interpreter path
+stays quoted when it contains spaces, as for Droid.
 
 A call on several files (a patch's `paths`) is decided on each file: a rule that matches any of them applies.
 
@@ -69,7 +71,7 @@ every hook, a payload nested too deep to read.
 ## On the v2 signer
 
 ```bash
-tracekit init --dev --v2 --agent codex                   # or cursor, gemini, opencode, goose, qwen, droid; replaces a v1 hook
+tracekit init --dev --v2 --agent codex                   # or cursor, gemini, opencode, goose, qwen, droid, antigravity; replaces a v1 hook
 sudo tracekit init --v2 --user AGENT --agent codex       # system mode: the signer as its own user
 ```
 
@@ -149,6 +151,11 @@ wait (milliseconds for Gemini CLI and Qwen Code). Re-run init for the active mod
 (`tracekit init --dev --v2 --agent NAME` in dev, or `sudo tracekit init --v2 --user AGENT --agent NAME` in system
 mode). `tracekit doctor` also checks Droid's hook presence and timeout. OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
 
+For the other coding agents (Antigravity CLI too, not OpenCode, whose plugin doctor doesn't read), `D-HOOKS-EVENT` also warns when a call can run that no hook
+decided: no Tracekit v2 hook is on the pre-tool event, Cursor's `preToolUse` hook has no `failClosed: true`, or goose's
+`PreToolUse` hook has no `on_failure: "block"`. Without those two, Cursor and goose let a call through when its hook
+can't run. Re-run init to put them back.
+
 ### What the signer records as a gap
 
 Without anything else installed, the signer turns what it saw and then never heard about into signed gaps
@@ -169,3 +176,61 @@ Without anything else installed, the signer turns what it saw and then never hea
   that the run ended (an idle close) and moves to a new run.
 
 The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can't be used with the Claude Code hooks: they record a digest of each tool's raw output, not what the model is sent, so every result would mismatch ([gateway](gateway.md#verified-tool-results)).
+
+## Antigravity CLI
+
+Antigravity CLI (`agy`) support is experimental: tested through agy's documented hook payloads
+([hooks reference](https://antigravity.google/docs/hooks)) and Tracekit's installer, not yet in a live agy session
+([limits](limits.md#signer-and-capture)).
+
+```bash
+tracekit init --dev --v2 --agent antigravity               # ~/.gemini/config/hooks.json; --project: .agents/hooks.json
+sudo tracekit init --v2 --user AGENT --agent antigravity   # system mode
+tracekit uninstall --agent antigravity                     # removes Tracekit's hook only
+```
+
+agy's `hooks.json` maps each hook's name to its events. Init adds one named `tracekit`, with a `PreToolUse` hook
+(timeout 600 s, so a person has time to approve a held call) and a `PostToolUse` hook (30 s), both with matcher `*`.
+Other named hooks in the file are kept, and a backup is written first. Init rewrites Tracekit's hook whole, so an
+`"enabled": false` left on it is removed. The v1 hook (`tracekit init --dev --agent antigravity`) works in dev mode
+only: v1 system mode installs Claude Code's hooks only, so it refuses `--agent antigravity`.
+
+agy's payload doesn't name its event, so each hook command names it, the v1 one too. agy reads a hook's answer only
+from JSON on stdout at exit 0, so Tracekit's hook always exits 0: `{"decision": "allow"}` leaves the call to agy's own
+permissions, `{"decision": "deny", "reason": ...}` blocks it, and the post-tool hook answers `{}`. A hook that can't
+start (its Python or Tracekit is gone) gives the same answers through a shell wrapper: the pre-tool hook denies the
+call, and the post-tool hook answers `{}` (before agy 1.4.7, a post-tool hook that failed replaced the call's result
+with an error). On Windows, dev mode has no such wrapper ([limits](limits.md#signer-and-capture)).
+
+**What is recorded.** A conversation (`conversationId`) is one run. Each tool call is decided on the argument the tool
+itself reads, so a decoy key the model sends beside it never moves the decision:
+
+| agy tool | Decided as | On |
+|---|---|---|
+| `run_command` | `Bash` | `CommandLine`; `BypassSandbox` (run outside agy's terminal sandbox) as `dangerouslyDisableSandbox`, which the v2 coding pack holds for a person (`TK-A003`) |
+| `manage_task` with `Action: send_input` | `Bash` | `Input`, the text typed into a background command |
+| `view_file` | `Read` | `AbsolutePath` |
+| `write_to_file` | `Write` | `TargetFile` |
+| `replace_file_content`, `multi_replace_file_content` | `Edit` | `TargetFile` |
+| `list_dir` | `LS` | `DirectoryPath` |
+| `find_by_name` | `Glob` | `SearchDirectory`, `Pattern` |
+| `grep_search` | `Grep` | `SearchPath`, `Query` |
+| `read_url_content` | `WebFetch` | `Url` |
+| `search_web`, `invoke_subagent` | `WebSearch`, `Task` | their arguments as sent |
+
+Any other tool passes under its own name, which the policy treats as an unknown tool. agy gives a call no id: Tracekit
+pairs a call's `PreToolUse` and `PostToolUse` by the step index (`stepIdx`), tool and arguments agy sends with both.
+On the v2 signer, a pre-tool payload with no `conversationId` or `stepIdx` is blocked. A result that matches no call
+exactly stays unpaired, and its call is left a `decided_not_completed` gap, never guessed. agy sends a failed call's
+error text with `PostToolUse`, which records the call as failed, but not a call's output. Tracekit installs only agy's
+tool hooks and doesn't read its transcript, so no prompts, live constraints or model text are recorded, and the run
+closes at the signer's idle timeout.
+
+**Doctor.** `tracekit doctor` finds agy's hooks in the user's and the working directory's `hooks.json` and checks them
+as the other agents' (`D-HOOKS-PRESENT`, `D-HOOKS-EVENT`, `D-HOOKS-TIMEOUT` in seconds). It also warns
+`D-AGY-HOOKS-RUN` when agy would load the hooks and never run them: Tracekit's hook is `"enabled": false` (in the file
+init wrote, the user's `hooks.json` or the workspace's), or agy signs in with a Gemini API key (`"modelProvider":
+"gemini"` in `~/.gemini/antigravity-cli/settings.json`) or with Application Default Credentials (`"enableAdc": true`
+under `userSettings` in `~/.gemini/config/config.json`, or `AGY_ADC_AUTH=true`). agy says nothing when it skips the
+hooks. Doctor reads `AGY_ADC_AUTH` and the workspace from the shell it runs in, so run it from agy's shell
+([doctor](doctor.md#v2-checks)).
