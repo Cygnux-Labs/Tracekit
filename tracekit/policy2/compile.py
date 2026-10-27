@@ -53,7 +53,9 @@ CLASSES = {"shell": {"command", "argv", "line", "effects", "package_index", "con
            "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
            "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
-           "browser": {"action", "url", "scheme", "host", "internal", "sends_to"}, "app": set(), "unknown": set()}
+           "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},
+           "a2a": {"sender", "receiver", "route", "kinds", "hosts", "size", "modality", "projector"},
+           "app": set(), "unknown": set()}
 for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}

@@ -25,6 +25,7 @@ import collections
 import concurrent.futures
 import contextlib
 import contextvars
+import hashlib
 import http.client
 import json
 import os
@@ -53,6 +54,7 @@ CONNECT_TIMEOUT_S = 2
 KEEP_CALLS = 4096   # decided calls a RunHandle remembers for their `complete`, the oldest forgotten first
 KEEP_RUNS = 65536   # runs a Client keeps an event counter for, the least recently used forgotten first
 RETRIES = 3
+TRANSFER = "a2a:transfer"   # the tool RunHandle.transfer decides
 _EVENT_METHODS = {m for m, s in rpc_schema.REQUESTS.items() if "client_seq" in s["properties"]}
 _LONG_POLLS = {m for m, s in rpc_schema.REQUESTS.items() if "timeout_ms" in s["properties"]}
 
@@ -671,6 +673,36 @@ class RunHandle:
         so the signer's provenance index has it; the task or user prompt goes in with trust="trusted". The signer
         records a commitment, never the value."""
         return self.call("observe", value=value, source=source, trust=trust, **fields)
+
+    def transfer(self, sender, receiver, payload, modality, projector=None):
+        """Record and gate a transfer from `sender` to `receiver` before it happens: text, a tool call, or a model's
+        internal state (`modality` kv-cache, embedding, activations) through `projector` (the adapter). Each is an id
+        with its version ("qwen2.5-7b@<sha>"). `payload` (bytes or text) is hashed here: the signer gets its size and
+        sha256 digest, never the payload. Decided as tool a2a:transfer, of the class the policy maps it to (a2a: a
+        rule on `route`, "sender->receiver via projector", allows listed triples); an ask waits up to 5 minutes for a
+        person. Returns the decision with `ok`, whether the transfer may happen now; one that may is recorded as made
+        before this returns. It proves who sent which bytes to whom, through which adapter, and when, not what the
+        state meant; a transfer the code doesn't pass through here is not recorded."""
+        data = payload.encode() if isinstance(payload, str) else bytes(payload)
+        args = {"sender": sender, "receiver": receiver, "modality": modality, "size": len(data),
+                "digest": "sha256:" + hashlib.sha256(data).hexdigest(), **({"projector": projector} if projector else {})}
+        tcid = "tx-" + uuid.uuid4().hex
+        d = self.decide(tcid, TRANSFER, args)
+        if d.get("unavailable") or d["decision"] == "deny":   # the run's fail mode, or the policy
+            return {**d, "ok": d["decision"] == "allow"}
+        hint = {}
+        if d["decision"] == "ask":
+            hint = {"approval_id_hint": self.call("approval_request", tool_call_id=tcid)["approval_id"]}
+            state = self.call("approval_wait", approval_id=hint["approval_id_hint"], timeout_ms=300000)["state"]
+            if state != "approved":
+                if state == "requested":   # unanswered: withdrawn, so no one approves a transfer that is gone
+                    self.call("approval_abandon", approval_id=hint["approval_id_hint"],
+                              reason="no answer within run.transfer's wait")
+                return {**d, "ok": False, "reason": f"approval {state}"}
+        c = self.approval_consume(tcid, TRANSFER, args, **hint)
+        if c["ok"]:
+            self.complete(tcid)
+        return {**d, "ok": c["ok"], **({"reason": c["reason"]} if c.get("reason") else {})}
 
     def review_finding(self, reviewer, verdict, cites):
         """Sign a finding in this findings run (`client.run(name, analyzes=<run id>)`, as an identity signer.yaml

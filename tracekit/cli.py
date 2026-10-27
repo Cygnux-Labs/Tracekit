@@ -36,13 +36,14 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
               "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
-              "ext-mcp": "ext_mcp",
+              "a2a-gateway": "a2a_gateway", "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
               "sensor": "sensor", "ingest": "ingest"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
-                 "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
+                 "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
+                 "reviewer": "the reference reviewer",
                  "openshell-middleware": "the OpenShell middleware",
                  "ext-mcp": "agentgateway's ext_mcp processor",
                  "issuer": "the record-key issuer", "witness": "the witness", "public-witness": "the public witness",
@@ -188,6 +189,9 @@ def main(argv=None):
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("mcp-gateway", help="MCP gateway for the v2 signer: `mcp-gateway serve --config mcp-gateway.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("a2a-gateway", help="A2A gateway for the v2 signer: `a2a-gateway serve --config a2a-gateway.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("srt-decider", help="decide every request srt-proxy (Anthropic's sandbox-runtime) asks about: "

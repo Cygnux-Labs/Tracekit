@@ -9,7 +9,7 @@ import re
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
-from tracekit.format.canon import event_hash
+from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
 PATH_KEYS = ("file_path", "notebook_path", "path")
@@ -224,6 +224,29 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
     return "".join(out)
 
 
+A2A_PARTS = ("text", "file", "data")
+
+
+def a2a_fields(args):
+    """An agent-to-agent call's fields: what the A2A gateway sends (sender, the caller it authenticated; receiver, the
+    upstream it names; params, the JSON-RPC params) or run.transfer does (sender, receiver, modality, projector, size,
+    digest), so a sender is the gateway's authenticated caller at tier T2 and the agent's own claim from run.transfer.
+    `route` is sender->receiver, then ` via <projector>` when a transfer names one; `kinds` the message's part kinds,
+    `hosts` the hosts its file parts point at, `size` the message's bytes (canonical JSON) or the transfer's."""
+    sender, receiver, projector = args.get("sender"), args.get("receiver"), args.get("projector")
+    params = args.get("params")
+    message = params.get("message") if isinstance(params, dict) else None
+    parts = [p for p in message["parts"] if isinstance(p, dict)] if isinstance(message, dict) and \
+        isinstance(message.get("parts"), list) else []
+    uris = [p["file"].get("uri") for p in parts if isinstance(p.get("file"), dict)]
+    size = len(canonical(message)) if message is not None else args.get("size")
+    return {"sender": sender, "receiver": receiver, "projector": projector, "modality": args.get("modality"),
+            "route": f"{sender}->{receiver}" + (f" via {projector}" if isinstance(projector, str) else "")
+            if isinstance(sender, str) and isinstance(receiver, str) else None,
+            "kinds": [p.get("kind") or next((k for k in A2A_PARTS if k in p), "unknown") for p in parts] or None,
+            "hosts": sorted({url_info(u).get("host") or u for u in uris if isinstance(u, str)}) or None, "size": size}
+
+
 def extract(cls, tool, args):
     """{field: value} for `cls`; a missing value is left out."""
     if cls == "shell":
@@ -275,6 +298,8 @@ def extract(cls, tool, args):
         elif tool.startswith("mcp:"):
             server, _, name = tool[4:].partition("/")
         out = {"server": server, "tool": name, "args": args}
+    elif cls == "a2a":
+        out = a2a_fields(args)
     else:
         out = {}
     return {k: v for k, v in out.items() if v is not None}
