@@ -146,6 +146,16 @@ class WhyThisDecision(unittest.TestCase):
         self.assertIn('<b class="ask">3</b>', html)
         self.assertIn('<a href="/approvals">approvals page</a>', html)
 
+    def test_a_rule_that_matched_under_another_class_is_said_not_counted(self):
+        """The record names no class: a shell rule on an http tool matched under a class hint the signer also checked."""
+        tr, h = view.Translator(view.policy_reasons()), None
+        h = next(k for k, rules in tr.reasons.items() if "TK-D003" in rules and "TK-N001" in rules)
+        own, other = (tr.feed(v2rec(1, "policy.decision", {"tool_use_id": "c1", "tool": "http_get", "decision": "deny",
+                                                           "rule_ids": [i], "policy_hash": h}))[0]["v2"]
+                      for i in ("TK-N001", "TK-D003"))
+        self.assertEqual((own["cls"], own["secs"], "other" in own), ("http", {"TK-N001": "deny"}, False))
+        self.assertEqual((other["secs"], other["other"]), ({"TK-D003": "deny"}, True))
+
     def test_a_call_of_a_policy_the_viewer_lacks_names_only_what_matched(self):
         needs_node(self)
         html = text(self.detail({"tool": "Bash", "pre": {}, "denied": True, "v2": {
@@ -211,6 +221,42 @@ class WaitingForYou(unittest.TestCase):
         self.assertEqual(out[1][:2], ["HELD · send_email waits for a person", "HIGH · rm\\u202e<b>"])
         self.assertEqual(out[2][:2], ["#run=r1&seq=2", "#run=r&seq=3"])
         self.assertIn("toasting = false; snap.records.forEach(accept); toasting = true;", PAGE)
+
+
+
+class NeedsYou(unittest.TestCase):
+    def needs(self, recs, runs, stopped=""):
+        return json.loads(page_js(["j", "plural", "failLines", "waiting", "needsYou"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), STOPPED = {json.dumps(stopped)};
+            let waitKey = [], waitList = [];
+            process.stdout.write(JSON.stringify(needsYou()));"""))
+
+    def test_what_needs_a_person_comes_first_with_its_command_and_link(self):
+        """A person asked "do I need to do anything?" and the answer was spread over runs, alerts and pages."""
+        needs_node(self)
+        held = {**hold(1, "c1"), "tool_input": {"to": "x@outside.example"},
+                "v2": {"decision": "ask", "rules": [{"id": "TK-P001", "reason": "an email outside the company"}]}}
+        out = self.needs([held, answer(2, "c1", "requested", approval_id="apr-1"), hold(3, "c2")], [
+            {"id": "r1", "agent": "billing", "verdict": "verified", "state": "open", "incidents": [
+                {"incident_id": "inc-1", "trigger": "rule", "rule_ids": ["TK-D002"], "state": "held"},
+                {"incident_id": "inc-0", "trigger": "rule", "rule_ids": [], "state": "resumed"}]},
+            {"id": "r2xxxxxxxx", "agent": "coder", "verdict": "failed", "state": "final",
+             "report": "[PASS] chain\n[FAIL] signatures\n  seq 4: bad signature"}], stopped="verification stopped")
+        self.assertEqual([(n["kind"], n["link"]) for n in out], [
+            ("HOLD", "#run=r1&seq=1"), ("HOLD", "#run=r1&seq=3"), ("CONTAINED", "#run=r1"), ("FAILED", "#run=r2xxxxxxxx"),
+            ("STOPPED", "")])
+        self.assertEqual(out[0]["what"], "send_email · billing waits for a person: TK-P001 an email outside the company")
+        self.assertEqual(out[0]["detail"], 'binds { "to": "x@outside.example" }')
+        self.assertEqual(out[0]["cmds"], ["tracekit approvals approve apr-1", "tracekit approvals reject apr-1"])
+        self.assertEqual((out[1]["detail"], out[1]["cmds"]),
+                         ("arguments kept as a commitment only · no approval requested yet", []))
+        self.assertEqual(out[2]["what"], "billing · run held by incident inc-1")
+        self.assertEqual(out[3]["detail"], "[FAIL] signatures")
+
+    def test_nothing_needed_reads_all_clear_with_the_agents_working(self):
+        needs_node(self)
+        self.assertEqual(self.needs([], [{"id": "r1", "verdict": "verified", "state": "open"}]), [])
+        self.assertIn('`ALL CLEAR · ${esc(plural(working, "agent"))} working · nothing needs you`', PAGE)
 
 
 if __name__ == "__main__":

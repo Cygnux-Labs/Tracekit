@@ -1469,7 +1469,7 @@ class LiveRuns(unittest.TestCase):
             self.assertEqual(json.loads(page_js(["accept"], f"""
                 let V2 = true, R = null, scope = null, DROPPED = 0, MAXREC = 50000;
                 const ALL = [], RUNS = new Map(), document = {{ body: {{ classList: {{ add() {{}} }} }} }};
-                const inScope = () => true, ingest = () => {{}}, rebuild = () => {{}}, stopRun = () => {{}};
+                const inScope = () => true, ingest = () => {{}}, rebuild = () => {{}}, stopRun = () => {{}}, toastOf = () => {{}};
                 for (const r of {json.dumps(rows)}) accept(r);
                 accept({{ session_id: "r1", tenant: "default", analysis: true, review: {{ verdict: "failed" }} }});
                 process.stdout.write(JSON.stringify(ALL.map(r => [r.session_id, r.review?.verdict ?? r.tape])));""")),

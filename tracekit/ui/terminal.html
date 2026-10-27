@@ -393,6 +393,69 @@
       }
     }
 
+    /* NEEDS YOU: what needs a person, in every run, first; one calm line when nothing does */
+    .needs {
+      display: flex;
+      border-bottom: 1px solid var(--line2);
+      max-height: 132px;
+      overflow: auto
+    }
+
+    .needs>b {
+      background: var(--amber-bg);
+      color: var(--amber);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .07em;
+      padding: 4px 8px;
+      white-space: nowrap
+    }
+
+    .needs>div {
+      flex: 1;
+      min-width: 0
+    }
+
+    .needs.clear>div {
+      color: var(--green);
+      padding: 3px 8px
+    }
+
+    .need {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr) auto;
+      gap: 0 10px;
+      padding: 3px 8px;
+      border-left: 3px solid var(--amber);
+      align-items: baseline
+    }
+
+    .need.high {
+      border-left-color: var(--red)
+    }
+
+    .need+.need {
+      border-top: 1px solid var(--line)
+    }
+
+    .need .sev {
+      justify-self: start
+    }
+
+    .need .what {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap
+    }
+
+    .need .do {
+      white-space: nowrap
+    }
+
+    .need a {
+      color: var(--cyan)
+    }
+
     /* grid */
     main {
       flex: 1;
@@ -1611,6 +1674,25 @@
         flex-wrap: wrap;
         row-gap: 4px
       }
+
+      /* NEEDS YOU: its label above, each item's words then its commands on their own lines */
+      .needs {
+        flex-direction: column;
+        max-height: none
+      }
+
+      .need {
+        grid-template-columns: auto minmax(0, 1fr)
+      }
+
+      .need .what {
+        white-space: normal
+      }
+
+      .need .do {
+        grid-column: 1/3;
+        white-space: normal
+      }
     }
   </style>
 </head>
@@ -1631,6 +1713,7 @@
     </header>
     <div class="lost" id="lost" hidden></div>
     <div class="ticker" id="ticker"></div>
+    <div class="needs" id="needs" hidden></div>
     <main>
       <section class="p agents">
         <h2><b>1</b><span id="agtitle">AGENTS</span><small id="agsum"></small></h2>
@@ -2067,7 +2150,7 @@
     function nowTs() { return mode === "live" ? Date.now() / 1000 : (S.lastTs || Date.now() / 1000); }
 
     function render() {
-      renderTop(); renderWaiting(); renderTicker(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
+      renderTop(); renderWaiting(); renderTicker(); renderNeeds(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
       document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
       renderWhyView();
@@ -2299,6 +2382,34 @@
       return waitList = [...open.values()].filter(w => !ended.has(w.rec.session_id))
         .map(w => ({ ...w, link: "#" + new URLSearchParams({ run: w.rec.session_id, seq: w.rec.tk_seq }) }));
     }
+    // NEEDS YOU: everything that needs a person, in every run, ranked: holds waiting (oldest first), runs an incident
+    // holds, runs that failed verification or weren't checked, a viewer that stopped checking. Each has its words, the
+    // command that acts on it (the page itself acts on nothing) and a link to its record or run
+    function needsYou() {
+      const out = [], runLink = id => "#" + new URLSearchParams({ run: id });
+      for (const w of waiting()) {
+        const v = w.rec.v2, args = w.rec.tool_input && Object.keys(w.rec.tool_input).length ? j(w.rec.tool_input).replace(/\s+/g, " ") : "";
+        out.push({ kind: "HOLD", sev: "med", link: w.link, what: `${w.rec.tool_name} · ${w.rec.agent} waits for a person: ` + ((v.rules || []).map(x => x.reason ? `${x.id} ${x.reason}` : x.id).join("; ") || "held"),
+          detail: (args ? "binds " + args.slice(0, 300) : "arguments kept as a commitment only") + (w.req ? "" : " · no approval requested yet"),
+          cmds: w.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${w.req.v2.approval_id}`) : [] });
+      }
+      const runs = [...RUNS.values()];
+      for (const r of runs) for (const i of r.incidents || []) if (i.state === "held" || i.state === "quarantined")
+        out.push({ kind: "CONTAINED", sev: "high", link: runLink(r.id), what: `${r.agent || "run"} · run ${i.state} by incident ${i.incident_id}`, detail: `${i.trigger} ${i.rule_ids.join(" ")}`.trim(), cmds: [`tracekit signer incidents resume ${r.id}`] });
+      for (const r of runs) if (r.verdict === "failed" || r.verdict === "error")
+        out.push({ kind: r.verdict === "failed" ? "FAILED" : "NOT CHECKED", sev: "high", link: runLink(r.id), what: `${r.agent || "run"} · run ${r.id.slice(0, 8)} ` + (r.verdict === "failed" ? "failed verification: none of its records are shown" : "could not be checked"), detail: failLines(r.report)[0] || "", cmds: [] });
+      if (STOPPED) out.push({ kind: "STOPPED", sev: "high", link: "", what: STOPPED, detail: "", cmds: [] });
+      return out;
+    }
+    function renderNeeds() {
+      const el = $("needs"), list = V2 ? needsYou() : [];
+      el.hidden = !V2;
+      el.classList.toggle("clear", !list.length);
+      const working = [...RUNS.values()].filter(r => r.state === "open").length;
+      put("needs", `<b>NEEDS YOU</b><div>` + (list.length ? list.map(n => `<div class="need${n.sev === "high" ? " high" : ""}"><span class="sev ${esc(n.sev === "high" ? "high" : "wait")}">${esc(n.kind)}</span><span class="what" title="${esc(n.what + " · " + n.detail)}">${esc(n.what)}<span class="dim"> · ${esc(n.detail)}</span></span><span class="do">`
+        + n.cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join(" ") + (n.link ? ` <a href="${esc(n.link)}">OPEN</a>` : "") + `</span></div>`).join("")
+        : `ALL CLEAR · ${esc(plural(working, "agent"))} working · nothing needs you`) + `</div>`);
+    }
     function renderWaiting() {
       const w = waiting(), el = $("waiting");
       el.hidden = !w.length;
@@ -2319,7 +2430,7 @@
       x.type = "button"; x.textContent = "✕"; x.title = "dismiss"; x.onclick = () => t.remove();
       go.href = "#" + new URLSearchParams({ run: r.session_id, seq: r.tk_seq }); go.textContent = "OPEN";
       t.append(b, x, sub, go);
-      if (hold && DESK()) { const ap = document.createElement("a"); ap.href = "/approvals"; ap.textContent = "APPROVALS PAGE"; t.append(ap); }
+      if (hold && DESK()) { const ap = document.createElement("a"); ap.href = DESK().getAttribute("href"); ap.textContent = DESK().textContent; t.append(ap); }
       const box = $("toasts"); box.prepend(t);
       while (box.children.length > 3) box.lastChild.remove();
       setTimeout(() => t.remove(), 12000);
@@ -2466,7 +2577,8 @@
       const v = a.v2 || {}, rules = v.rules || [], secs = v.secs || {}, out = callState(a);
       const req = a.approvals.find(r => r.v2.approval === "requested"), ans = a.approvals.filter(r => r.v2.approval in ANSWER).pop();
       const rule = x => `<span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(no reason in this policy)")}` + (x.remedy ? `<div class="dim">what to do: ${esc(x.remedy)}</div>` : "");
-      const steps = [["", "CALL", `${esc(a.tool)} from ${esc(label(a.agent))}` + (v.cls ? ` · class ${esc(v.cls)} <span class="dim">(the policy's map of this tool)</span>` : "")]];
+      const steps = [["", "CALL", `${esc(a.tool)} from ${esc(label(a.agent))}` + (v.cls ? ` · class ${esc(v.cls)} <span class="dim">(the policy's map of this tool)</span>` : "")
+        + (v.other ? `<div class="s-flag">a rule matched under another class too (a class hint the signer also checked, or an MCP tool's bare name): the counts are class ${esc(v.cls)}'s</div>` : "")]];
       if (v.read) for (const sec of ["deny", "ask", "flag"]) {
         const hit = rules.filter(x => secs[x.id] === sec);
         steps.push([hit.length ? sec : "", sec.toUpperCase() + " RULES", `read ${esc(v.read[sec])} · ` + (hit.length ? `matched ` + hit.map(rule).join("") : `<span class="dim">none matched</span>`)]);
@@ -2484,7 +2596,7 @@
       steps.push(["", "WHO ANSWERS", who]);
       return `<div class="sec">WHY THIS DECISION</div><div class="steps">` + steps.map(([k, l, h], i) => `<b class="${esc(k)}">${esc(i + 1)}</b><span class="dim">${esc(l)}</span><span>` + h + `</span>`).join("") + `</div>`;
     }
-    const DESK = () => !!document.querySelector('.nav a[href="/approvals"]');   // this server has the approval pages
+    const DESK = () => document.querySelector('.nav a[href="/approvals"]');   // the nav's link: this server has the approval pages
     const cols = (l, r) => `<div>` + l + `</div><div>` + r + `</div>`;  // the detail card's two columns
     function detailV2(sel) {
       if (sel.pre) {
