@@ -22,6 +22,7 @@ from test_gateway import AGENT, OTHER, SECRET, serve
 from test_signer_service import records
 from tracekit import a2a_gateway
 from tracekit.bundle_v2 import export
+from tracekit.deploy import files as tkfiles
 from tracekit.format.canon import canonical, event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as policy_compile
@@ -125,9 +126,8 @@ class Gateway(unittest.TestCase):
         self.a2a = http.server.ThreadingHTTPServer(("127.0.0.1", 0), A2aServer)
         self.a2a.seen, self.a2a.cards, self.a2a.stream, self.a2a.big = [], [], STREAM, False
         port = serve(self, self.a2a)
-        for name, value in (("bearer", SECRET), ("up.header", UPSTREAM_KEY)):
-            with open(os.path.join(self.dir, name), "w") as f:
-                f.write(value)
+        for name, value in (("bearer", SECRET), ("up.header", UPSTREAM_KEY)):   # 0600, as a real token file is
+            tkfiles.write(self.dir, name, value.encode("utf-8"))
         self.cfg = {"http": {"listen": "127.0.0.1:0", "insecure_loopback": True, "authenticators": ["token"],
                              "token_file": "bearer"}, "signer": "unused", "approval_wait_s": 5,
                     "upstreams": [{"name": "researcher", "url": f"http://127.0.0.1:{port}/researcher",
