@@ -307,14 +307,21 @@ def _dev_hook_argv(module, func, args):
     if branch:
         # lean: the hooks still run the working tree, so a branch switch there still breaks them and this only says
         # what happened; run them from a copy init makes if switching branches under them keeps happening
-        code += (f"import shlex,subprocess; w=base64.b64decode('{b64e(branch.encode('utf-8'))}').decode('utf-8'); "
-                 "g=lambda: subprocess.run(['git','-C',r,'symbolic-ref','-q','--short','HEAD'],capture_output=True,"
-                 "text=True).stdout.strip() or 'a detached HEAD'; "
-                 "sys.excepthook=lambda t,e,b: print(f'tracekit: the hook runs Tracekit from the working tree {r}, which "
-                 "cannot import it now ({t.__name__}: {e}): it is on {g()} there, and was on {w} when the hooks were "
-                 "installed. Check out {w} there again (git -C {shlex.quote(r)} checkout {shlex.quote(w)}) if a branch "
-                 "switch broke it, or run tracekit init again from a Tracekit installed outside a working tree (pip "
-                 "install, not pip install -e)', file=sys.stderr); ")
+        # lean: the hook's command doesn't carry --remote or --project, so a hook init wired with them is told this
+        # command without them; carry them here if those installs from a working tree hit this
+        init = "tracekit init --dev" + (" --v2" if module in V2_HOOKS else "") + (
+            "" if module in ("tracekit.hook", V2_HOOK) else f" --agent {args[0]}")
+        # exec: a try statement can't follow `;` on one line, and the command must stay one line (Windows); git that
+        # can't run (not on the hook's PATH) gives the plain traceback
+        code += (f"import os,shlex,subprocess; w=base64.b64decode('{b64e(branch.encode('utf-8'))}').decode('utf-8'); "
+                 "exec('''def h(t,e,b):\\n try: n=subprocess.run(['git','-C',r,'symbolic-ref','-q','--short','HEAD'],"
+                 "capture_output=True,text=True,env={k:v for k,v in os.environ.items() if not k.startswith('GIT_')})"
+                 ".stdout.strip() or 'a detached HEAD'\\n except OSError: return sys.__excepthook__(t,e,b)\\n "
+                 "print(f'tracekit: the hook runs Tracekit from the working tree {r}, which cannot import it now "
+                 "({t.__name__}: {e}): it is on {n} there, and was on {w} when the hooks were installed. Check out {w} "
+                 "there again (git -C {shlex.quote(r)} checkout {shlex.quote(w)}) if a branch switch broke it, or run "
+                 f"{init} again from a Tracekit installed outside a working tree (pip install, not pip install -e)', "
+                 "file=sys.stderr)'''); sys.excepthook=h; ")
         call = "sys.excepthook=sys.__excepthook__; " + call
     return [sys.executable, "-I", "-c", f"{code}from {module} import {func}; {call}"]
 
@@ -325,7 +332,8 @@ def _branch(root):
         return None
     for args in (("symbolic-ref", "-q", "--short", "HEAD"), ("rev-parse", "--short", "HEAD")):
         try:
-            out = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True).stdout.strip()
+            out = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True,
+                                 env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")}).stdout.strip()
         except OSError:   # no git
             return None
         if out:

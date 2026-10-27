@@ -74,12 +74,18 @@ class WorkingTree(unittest.TestCase):
         self.git("symbolic-ref", "HEAD", "refs/heads/main")
         self.git("add", ".")
         self.git("commit", "-qm", "hook")
-        with mock.patch.object(install, "ROOT", self.tree), mock.patch("importlib.util.find_spec", return_value=None):
+        elsewhere = {"GIT_DIR": os.path.join(d, "another repository")}   # as a git hook sets it: git ignores it here
+        with mock.patch.object(install, "ROOT", self.tree), mock.patch("importlib.util.find_spec", return_value=None), \
+                mock.patch.dict(os.environ, elsewhere):
             pre, stop = (install._hook_command(install.V2_HOOK, args=(ev,), pre=ev == "PreToolUse")
                          for ev in ("PreToolUse", "Stop"))
+            for module, args, flags in ((install.V2_HOOKS[1], ("codex", "PreToolUse"), "--dev --v2 --agent codex"),
+                                        ("tracekit.agent_hooks", ("codex",), "--dev --agent codex")):
+                self.assertIn(f"or run tracekit init {flags} again from", install._dev_hook_argv(module, "entry", args)[3])
 
-        def run(cmd):
-            return subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, timeout=60)
+        def run(cmd, **env):
+            return subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, timeout=60,
+                                  env=dict(os.environ, **elsewhere, **env))
         self.assertEqual([(r.returncode, r.stderr) for r in (run(pre), run(stop))], [(0, ""), (0, "")])
         self.git("checkout", "-qb", "feature")
         self.write_hook("from tracekit import a_name_this_branch_removed\n")
@@ -91,10 +97,15 @@ class WorkingTree(unittest.TestCase):
             for part in (f"the working tree {self.tree},",
                          "(ImportError: cannot import name 'a_name_this_branch_removed'",
                          f"it is on {now} there, and was on main when the hooks were installed",
-                         f"git -C '{self.tree}' checkout main"):
+                         f"git -C '{self.tree}' checkout main",
+                         "or run tracekit init --dev --v2 again from"):
                 self.assertIn(part, line)
             self.assertNotIn("Traceback", p.stderr)
             self.git("checkout", "-q", "--detach")   # as a rebase leaves it
+        p = run(pre, PATH=d)   # no git on PATH: the plain traceback, and the call is still blocked
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("ImportError: cannot import name 'a_name_this_branch_removed'", p.stderr)
+        self.assertNotIn("Error in sys.excepthook", p.stderr)
 
 
 class FailMode(unittest.TestCase):
