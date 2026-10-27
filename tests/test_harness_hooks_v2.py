@@ -50,9 +50,9 @@ class HarnessCase(unittest.TestCase):
         agent.start()
         self.addCleanup(agent.stop)
 
-    def hook(self, harness, payload):
+    def hook(self, harness, payload, event=None):
         out, err = io.StringIO(), io.StringIO()
-        code = harness_hooks.run(harness, json.dumps(payload), out, err)
+        code = harness_hooks.run(harness, json.dumps(payload), out, err, event=event)
         return code, out.getvalue(), err.getvalue()
 
 
@@ -92,12 +92,13 @@ class Mapping(HarnessCase):
                 self.decision = case["decision"]
                 if self.decision == "ask":
                     self.approve_when_asked()
-                code, out, err = self.hook(harness, case["payload"])
+                code, out, err = self.hook(harness, case["payload"], case.get("event"))   # agy: the command's event
                 self.assertEqual(code, CODEX_DENY if harness == "codex" and case["exit"] == 2 else case["exit"], err)
                 self.assertEqual(json.loads(out) if out else "", case["stdout"])
                 sent = self.sent[-1]
-                if case["request"]["tool_call_id"] is None:   # Gemini: paired by the hook, never defaulted
-                    self.assertRegex(sent["tool_call_id"], r"^gem_[0-9a-f]{16}_\d+$")
+                if case["request"]["tool_call_id"] is None:   # Gemini, agy: paired by the hook, never defaulted
+                    prefix = "gem" if harness == "gemini" else harness
+                    self.assertRegex(sent["tool_call_id"], rf"^{prefix}_[0-9a-f]{{16}}_\d+$")
                     sent = dict(sent, tool_call_id=None)
                 self.assertEqual(sent, case["request"])
         self.assertEqual(len({s["tool_call_id"] for s in self.sent}), len(self.sent))
@@ -180,6 +181,54 @@ class Mapping(HarnessCase):
             out = io.StringIO()
             self.assertEqual(harness_hooks.run("droid", raw, out, io.StringIO(), event="PreToolUse"), 2)
             self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_antigravity(self):
+        self.check("antigravity")
+
+    def test_antigravity_pairs_results_by_step_and_always_answers_in_json_at_exit_0(self):
+        # agy's payload names no event and gives a call no id: the command names the event, and the stepIdx sent with
+        # a call's PreToolUse and PostToolUse pairs them. agy reads a hook's answer only from its JSON at exit 0
+        def pre(step, cmd):
+            return {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd}}, "stepIdx": step,
+                    "conversationId": "ag-pair", "workspacePaths": ["/w"]}
+        self.decision = "deny"
+        code, out, err = self.hook("antigravity", pre(3, "ls"), "PreToolUse")
+        self.assertEqual((code, json.loads(out)), (0, {"decision": "deny", "reason": "Blocked by tracekit policy: R-1"}))
+        self.decision = "allow"
+        for step in (4, 5):
+            self.assertEqual(self.hook("antigravity", pre(step, "ls"), "PreToolUse")[:2], (0, '{"decision": "allow"}'))
+        # results in the other order, each with its own step's error text (an empty one: the call ran); toolCall may be
+        # missing from a PostToolUse (agy 1.0), the step alone pairs it
+        self.assertEqual(self.hook("antigravity", dict(pre(5, "ls"), error="exit status 1"), "PostToolUse")[:2], (0, "{}"))
+        self.assertEqual(self.hook("antigravity", {"stepIdx": 4, "conversationId": "ag-pair", "error": ""},
+                                   "PostToolUse")[:2], (0, "{}"))
+        run = self.signer._runs[claude_code._load(claude_code._state("ag-pair"))["run_id"]]
+        self.assertEqual(run["events"][0]["data"]["agent"]["name"], "antigravity")
+        calls = [s["tool_call_id"] for s in self.sent]
+        self.assertEqual(len(set(calls)), 3)
+        results = [(e["data"]["tool_call_id"], e["data"]["status"]) for e in run["events"] if e["type"] == "tool.result"]
+        self.assertEqual(results, [(calls[2], "error"), (calls[1], "ok")])   # the blocked step 3 left the queue
+
+    def test_antigravity_a_call_it_cant_pair_or_read_is_denied_in_json(self):
+        for payload in ({"toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}, "stepIdx": 1},   # no session
+                        {"toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}, "conversationId": "ag-x"},
+                        {"toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}, "conversationId": "ag-x",
+                         "stepIdx": "1"}):
+            with self.subTest(payload=payload):
+                code, out, err = self.hook("antigravity", payload, "PreToolUse")
+                self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
+                self.assertIn("tool call blocked", json.loads(out)["reason"])
+        self.assertEqual(self.sent, [])
+        for raw in ("not JSON", "[]", "[" * 100_000):
+            out = io.StringIO()
+            self.assertEqual(harness_hooks.run("antigravity", raw, out, io.StringIO(), event="PreToolUse"), 0)
+            self.assertEqual(json.loads(out.getvalue())["decision"], "deny")
+            out = io.StringIO()   # a result it can't read: nothing to answer but {}, at exit 0
+            self.assertEqual(harness_hooks.run("antigravity", raw, out, io.StringIO(), event="PostToolUse"), 0)
+            self.assertEqual(out.getvalue(), "{}")
+        with mock.patch.object(claude_code, "handle", side_effect=RuntimeError("boom")):
+            code, out, _ = self.hook("antigravity", cases("antigravity")[0]["payload"], "PreToolUse")
+        self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
 
     def test_results_complete_the_decided_call(self):
         for harness, pre, post in (
@@ -353,6 +402,26 @@ class OnTheDevPolicy(HarnessCase):
         pre["tool_input"]["additional_permissions"] = {"network": False}
         self.assertEqual(self.hook("gemini", pre)[0], 0)
 
+    def test_antigravity_decides_what_its_tools_read_and_holds_a_command_outside_its_sandbox(self):
+        def pre(step, name, args):
+            return {"toolCall": {"name": name, "args": args}, "stepIdx": step, "conversationId": "ag-pol",
+                    "workspacePaths": ["/w"]}
+        for step, name, args in ((1, "write_to_file", {"TargetFile": "/w/.env", "CodeContent": "A=1",
+                                                       "file_path": "/w/notes.txt"}),
+                                 (2, "run_command", {"CommandLine": "rm -rf ~", "command": "ls"})):
+            with self.subTest(name=name):
+                code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
+                self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
+                self.assertIn("Blocked by tracekit policy", json.loads(out)["reason"])
+        cmd = {"CommandLine": "mkdir -p /tmp/x", "BypassSandbox": True}
+        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 10):   # nobody answers: see the Gemini test above
+            code, out, err = self.hook("antigravity", pre(3, "run_command", cmd), "PreToolUse")
+        self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
+        self.assertIn("waiting for approval", err)
+        self.assertIn("TK-A003", err)
+        self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
+                         (0, '{"decision": "allow"}'))
+
 
 class Installer(unittest.TestCase):
     def setUp(self):
@@ -420,10 +489,12 @@ class Installer(unittest.TestCase):
                         continue
                     with open(path) as f:
                         blob = json.load(f)
-                    hooks = [h for hs in (blob if harness == "droid" else blob["hooks"]).values() for h in hs]
+                    key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
+                    hooks = [h for hs in (blob if harness == "droid" else blob[key]).values() for h in hs]
                     cmds = [h["command"] if harness == "cursor" else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
-                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6}.get(harness, 5))   # Cursor: and what its model said
+                    # Cursor: and what its model said; agy: its tool events only
+                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     if os.name == "nt" and harness not in ("cursor", "droid"):   # PowerShell can't start a quoted first word
@@ -443,7 +514,7 @@ class Installer(unittest.TestCase):
                         continue
                     with open(path) as f:
                         config = json.load(f)
-                        self.assertNotIn("hooks", config)
+                        self.assertNotIn(key, config)
 
     def test_the_wired_command_runs_the_hook(self):
         cmd = install._hook_command(harness_hooks.__name__, "entry", ("codex",))
@@ -456,6 +527,38 @@ class Installer(unittest.TestCase):
         self.assertEqual(out["permissionDecision"], "deny")
         self.assertIn("no tool_use_id", out["permissionDecisionReason"])   # Codex ignores a deny without a reason
         self.assertIn("no tool_use_id", p.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "a POSIX shell wraps the hook")
+    def test_antigravity_installed_commands_answer_in_json_at_exit_0_even_when_the_hook_cant_run(self):
+        # agy runs a hook through sh -c and reads its answer only from its stdout at exit 0
+        d = ac.tmpdir(self)
+        path = os.path.join(d, "hooks.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("antigravity", None, v2=True, path=path)
+        with open(path) as f:
+            hooks = json.load(f)[agent_hooks.AGY_HOOK]
+        self.assertEqual(sorted(hooks), ["PostToolUse", "PreToolUse"])
+        for ev, timeout in (("PreToolUse", 600), ("PostToolUse", 30)):   # seconds: a held call has time to be approved
+            (group,) = hooks[ev]
+            (h,) = group["hooks"]
+            self.assertEqual((group["matcher"], h["type"], h["timeout"]), ("*", "command", timeout))
+            self.assertRegex(h["command"], rf"\b{ev}\b")
+        env = dict(os.environ, TRACEKIT_RUNTIME_DIR=os.path.join(d, "run"), HOME=d)
+        payload = json.dumps({"toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}, "conversationId": "c"})
+        p = subprocess.run(hooks["PreToolUse"][0]["hooks"][0]["command"], shell=True, cwd=d, input=payload,
+                           capture_output=True, text=True, timeout=60, env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)   # no stepIdx: blocked before reaching any signer
+        self.assertEqual(json.loads(p.stdout)["decision"], "deny")
+        self.assertIn("no tool_use_id", json.loads(p.stdout)["reason"])
+        with mock.patch.object(install, "_dev_hook_command", return_value="false"):   # as when tracekit is gone
+            pre = install._hook_command(harness_hooks.__name__, "entry", ("antigravity", "PreToolUse"), json_deny=True)
+            post = install._hook_command(harness_hooks.__name__, "entry", ("antigravity", "PostToolUse"), pre=False,
+                                         json_deny=True)
+        p = subprocess.run(pre, shell=True, capture_output=True, text=True, timeout=30)
+        self.assertEqual((p.returncode, json.loads(p.stdout)["decision"]), (0, "deny"))
+        self.assertIn("call blocked (fail-closed)", json.loads(p.stdout)["reason"])
+        p = subprocess.run(post, shell=True, capture_output=True, text=True, timeout=30)
+        self.assertEqual((p.returncode, p.stdout), (1, ""))   # a result is never answered with a deny
 
     def test_a_utf8_payload_is_read_under_any_console_code_page(self):
         # Windows decodes a pipe with its ANSI code page: cp1252 has no byte 0x81, so "\u00c1" (C3 81) failed to decode,
