@@ -77,7 +77,7 @@ class DeepLinks(unittest.TestCase):
             PAGE = "desk"; selected = null; syncLink();   // DESK with a run: its own page name
             scope = null; syncLink();
             // old links: the why log's TIMELINE is CALLS with its events, PERMISSIONS a page, a run alone its page
-            for (const h of ["#view=timeline", "#view=permissions", "#run=r+1%26x", "#page=runs", "#view=waterfall&run=r+1%26x"]) {
+            for (const h of ["#view=timeline", "#view=permissions", "#run=r+1%26x", "#page=runs", "#view=waterfall&run=r+1%26x", "#page=map"]) {
               location.hash = h; followLink(); seen.push([h, PAGE, RV, CALLSLOG]); }
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out, [["replace", "#run=r+1%26x&view=graph&seq=6"], ["r 1&x", "run", "graph"],
@@ -86,7 +86,8 @@ class DeepLinks(unittest.TestCase):
                                ["push", "#page=desk&run=r+1%26x"], ["push", "/"],
                                ["#view=timeline", "run", "calls", True], ["#view=permissions", "permissions", "calls", True],
                                ["#run=r+1%26x", "run", "calls", False], ["#page=runs", "runs", "calls", False],
-                               ["#view=waterfall&run=r+1%26x", "run", "waterfall", False]])
+                               ["#view=waterfall&run=r+1%26x", "run", "waterfall", False],
+                               ["#page=map", "horizon", "waterfall", False]])
 
     def test_back_and_forward_follow_the_link_and_the_seq_command_shares_its_record_lookup(self):
         self.assertIn('window.addEventListener("popstate", () => linked && followLink());', PAGE)
@@ -833,6 +834,88 @@ class WhyCauses(unittest.TestCase):
         self.assertIn('setTimeout(() => { b.textContent = label; }, 1200)', PAGE)
 
 
+def hz_call(seq, tool, args, run="r1", decision="allow", rules=(), cwd="/home/u/shop"):
+    return {"event": "PreToolUse", "session_id": run, "tk_seq": seq, "ts": 1000 + seq, "tool_use_id": f"c{seq}", "tool_name": tool,
+            "tool_input": args, "cwd": cwd, "agent": "?", "v2": {"decision": decision, "rules": [{"id": i, "reason": r} for i, r in rules]}}
+
+
+class Horizon(unittest.TestCase):
+    """HORIZON: where the agents went, from the calls' arguments, rules and runs, drawn on a canvas."""
+
+    def test_each_call_is_placed_on_its_ring_graded_and_kept_in_seq_order(self):
+        needs_node(self)
+        recs = [hz_call(4, "Bash", {"command": "cat /home/u/.aws/credentials"}, "r2", "flag", [("TK-F005", "secrets_access")]),
+                hz_call(1, "Bash", {"command": "pytest tests/test_refund.py -x"}),
+                hz_call(3, "Read", {"file_path": "/home/u/shop/src/refunds.py"}),
+                hz_call(6, "WebFetch", {"url": "https://Docs.Stripe.com/refunds?x=1"}, "r2"),
+                hz_call(7, "Bash", {"command": "rm -rf /tmp/x"}, "r2", "deny", [("TK-D004", "recursive delete of root or home")]),
+                hz_call(8, "send_email", {}, decision="ask", rules=[("TK-P001", "an email outside the company")]),
+                {"event": "tk_alert", "session_id": "r1", "tk_seq": 9, "v2": {"tool_use_id": "c8", "approval": "approve"}},
+                hz_call(10, "WebSearch", {}),
+                {"event": "tk_alert", "session_id": "r1", "tk_seq": 11, "ts": 1011, "title": "EFFECT · connect api.unknown.example:443",
+                 "v2": {"effect": {"kind": "connect", "target": "api.unknown.example:443", "claim": None}}},
+                {**hz_call(12, "Read", {"file_path": "/etc/hosts"}), "analysis": True},
+                hz_call(13, "Read", {"file_path": "notes/ticket.md"}, "r3", cwd=""),
+                hz_call(14, "Edit", {"file_path": "/home/u/.claude/settings.json", "new_string": "see https://x.example"}, "r3", "ask",
+                     [("TK-F015", "harness_config")], cwd="")]
+        runs = [{"id": "r1", "agent": "orchestrator", "verdict": "verified"},
+                {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
+                {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
+        out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
+                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null;
+            const D = hzData();
+            process.stdout.write(JSON.stringify({{ ev: D.ev.map(e => [e.seq, e.ag, e.at, e.act, e.gr]), agents: D.agents, bare: D.bare, cwd: D.cwd,
+              places: Object.fromEntries(Object.entries(D.places).map(([k, q]) => [k, [q.kind, q.label, q.rest]])),
+              laid: Object.values(D.places).every(q => q.r > 0 && Number.isFinite(q.th)), same: hzData() === D,
+              more: [hzPlace("send_email", {{ to: "x@Outside.example" }}, ""), hzPlace("Bash", {{ command: "git push git@github.com:acme/shop.git" }}, ""),
+                     hzPlace("Bash", {{ command: "git push origin" }}, ""), hzPlace("Bash", {{ command: "echo $(curl -s https://evil.example/x)" }}, "")] }}));"""))
+        self.assertEqual(out["ev"], [
+            [1, "orchestrator", "tests/test_refund.py", "run", "signed"], [3, "orchestrator", "src/refunds.py", "read", "signed"],
+            [4, "coder", "~/.aws/credentials", "flag", "unverified"], [6, "coder", "docs.stripe.com", "net", "unverified"],
+            [7, "coder", "/tmp/x", "blocked", "unverified"], [8, "orchestrator", "tool:send_email", "approved", "signed"],
+            [10, "orchestrator", "tool:WebSearch", "net", "signed"], [11, "orchestrator", "api.unknown.example", "net", "observed"],
+            [13, "researcher", "notes/ticket.md", "read", "signed"], [14, "researcher", "~/.claude/settings.json", "held", "signed"]])
+        self.assertEqual(out["places"], {
+            "tests/test_refund.py": ["project", "tests/test_refund.py", None], "src/refunds.py": ["project", "src/refunds.py", None],
+            "notes/ticket.md": ["project", "notes/ticket.md", None],   # a run with no cwd: a relative path is the project
+            "~/.aws/credentials": ["machine", "~/.aws/credentials", "TK-F005 · secrets_access"], "/tmp/x": ["machine", "/tmp/x", None],
+            "~/.claude/settings.json": ["machine", "~/.claude/settings.json", "TK-F015 · harness_config"],
+            "tool:send_email": ["machine", "send_email", None], "tool:WebSearch": ["outside", "WebSearch", None],
+            "docs.stripe.com": ["outside", "docs.stripe.com", None], "api.unknown.example": ["outside", "api.unknown.example", None]})
+        self.assertEqual(out["agents"], [["orchestrator", 0], ["coder", 1], ["researcher", 1]])
+        self.assertEqual((out["bare"], out["cwd"], out["laid"], out["same"]), (2, "shop", True, True))
+        self.assertEqual(out["more"], [["outside", "outside.example"], ["outside", "github.com"], None, ["outside", "evil.example"]])
+
+    def test_calls_without_arguments_are_said_on_the_page(self):
+        self.assertIn("calls have their arguments only as a commitment here, so each is placed by its tool", PAGE)
+        self.assertIn("A TOOL, NO FILE OR HOST RECORDED", PAGE)
+
+    def test_reduced_motion_draws_a_still_frame_on_each_change_and_no_loop(self):
+        needs_node(self)
+        out = json.loads(page_js(["HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], """
+            const ctx = new Proxy({}, { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {}, width: 10 }) });
+            let frames = 0, reduce = true, PAGE = "horizon";
+            const queued = [], cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => { frames++; return ctx; } };
+            const $ = id => id === "hzcv" ? cv : null, window = {}, document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
+            const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
+            const matchMedia = () => ({ matches: reduce }), requestAnimationFrame = f => queued.push(f);
+            const ev = (seq, at, act) => ({ t: seq, seq, ag: "coder", at, act, gr: "signed", run: "r1", w: "" });
+            HZ.d = { ev: [ev(1, "src/a.py", "read"), ev(2, "~/.ssh", "blocked"), ev(3, "x.example", "net")], dirs: [{ label: "SRC/", r: .165, th: 0 }],
+                     agents: [["coder", 0]], cwd: "shop", places: { "src/a.py": { kind: "project", label: "src/a.py", r: .24, th: .5, rest: null },
+                       "~/.ssh": { kind: "machine", label: "~/.ssh", r: .565, th: 2, rest: "TK-F005 · secrets_access" },
+                       "x.example": { kind: "outside", label: "x.example", r: .85, th: 4, rest: null } } };
+            Object.assign(HZ, { t: 3, col: { coder: "#d98bff" }, pick: "src/a.py", comet: { ag: "coder", to: "x.example", from: "~/.ssh", t0: 0 } });
+            const seen = [];
+            hzDraw(); hzDraw(); seen.push([frames, queued.length, HZ.raf, !!HZ.comet]);   // still: a frame each time, no loop, no comet
+            reduce = false; hzDraw(); seen.push([frames, queued.length]);                  // moving: drawn on the next animation frame
+            queued.shift()(16); seen.push([frames, queued.length]);                        // ...which asks for the one after
+            PAGE = "runs"; queued.shift()(32); seen.push([frames, queued.length]);         // off the page the loop stops
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, [[2, 0, 0, True], [2, 1], [3, 1], [3, 0]])
+
+
 PAGE_TEXT = " ".join(PAGE.split())
 APPROVALS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "approvals.html"))
 RUNS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "runs.html"))
@@ -846,11 +929,12 @@ class NothingLost(unittest.TestCase):
         needs_node(self)
         out = json.loads(page_js(["PAGES", "RVIEWS", "show", "centre"], """
             let PAGE = "desk", RV = "calls", CALLSLOG = false; const goLive = () => { PAGE = "run"; }, seen = {};
-            for (const v of [...PAGES, ...RVIEWS, "timeline"]) { show(v); seen[v] = [PAGE, RV, centre()]; }
+            for (const v of [...PAGES, ...RVIEWS, "timeline", "map"]) { show(v); seen[v] = [PAGE, RV, centre()]; }
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out, {
             "desk": ["desk", "calls", "desk"], "runs": ["runs", "calls", "desk"], "live": ["run", "calls", "desk"],
             "approvals": ["approvals", "calls", "desk"], "permissions": ["permissions", "calls", "permissions"],
+            "horizon": ["horizon", "calls", "desk"], "map": ["horizon", "calls", "desk"],   # MAP: HORIZON's first name
             "influence": ["influence", "calls", "influence"], "overview": ["run", "overview", "overview"],
             "calls": ["run", "calls", "desk"], "waterfall": ["run", "waterfall", "desk"], "graph": ["run", "graph", "graph"],
             "why": ["run", "why", "why"], "agents": ["run", "agents", "agents"], "evidence": ["run", "evidence", "evidence"],
@@ -861,7 +945,7 @@ class NothingLost(unittest.TestCase):
         for rule in ("body.pg-run main>.p.agents", "body.pg-run main>.p.mix", "body.pg-run main>.p.detail",
                      "body.pg-run.rv-calls:not(.callslog) main>.p.tape", "body.pg-run.rv-waterfall main>.p.lanes",
                      "body.pg-run.wv main>.p.whyv", "body.pg-runs main>.p.runsp", "body.pg-approvals main>.p.apprp",
-                     "body.pg-permissions main>.p.whyv", "body.pg-influence main>.p.whyv"):
+                     "body.pg-permissions main>.p.whyv", "body.pg-horizon main>.p.hzp", "body.pg-influence main>.p.whyv"):
             self.assertIn(rule, css)
         # DESK is today's grid: every panel, the stats strip and NEEDS YOU
         self.assertIn("body:not(.pg-desk) main>.p", css)
@@ -905,6 +989,8 @@ class NothingLost(unittest.TestCase):
                                                     'b: "BACKED", w: "AGENT\'S WORD", x: "CONTRADICTED"',
                                                     "WHOSE WORDS · WHERE THE INSTRUCTION", "function whoseWords(",
                                                     'typed: "TYPED", relayed: "RELAYED", web: "TOOL/WEB"'],
+            "horizon": ["function renderHorizon()", "function hzFrame(", "EVENT HORIZON", "▶ REPLAY", "FOLLOW AN AGENT",
+                        'data-hzv="orbit"', 'data-hzv="top"', "HOW TO READ IT", "MISSION CLOCK"],
             "honesty tips": ["A row is a signed record of the hash-chained ledger unless it says ANALYSIS",
                              "Times are this browser's local time",
                              "Reasoning is what the model reported about itself; actions are what it did",

@@ -34,6 +34,15 @@
       --life: #1a1a17;
       --flash: #3a2a08;
       --scrim: rgba(0, 0, 0, .8);
+      /* HORIZON's stage: dark in both themes (the light blocks repeat these); --hz-gas runs hot to cold */
+      --hz-space: #020203;
+      --hz-ink: #e9e4d8;
+      --hz-amber: #ffa630;
+      --hz-green: #3ddc84;
+      --hz-cyan: #3cc8f0;
+      --hz-red: #ff5147;
+      --hz-gas: #fff6e4 #ffbc64 #ee8028 #6e2408;
+      --hz-agents: #ffa630 #d98bff #3cc8f0 #3ddc84 #7aa2ff #ff8fb3;
       --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
@@ -67,6 +76,14 @@
         --life: #d2cdc1;
         --flash: #f7dfb5;
         --scrim: rgba(40, 36, 28, .45);
+        --hz-space: #020203;
+        --hz-ink: #e9e4d8;
+        --hz-amber: #ffa630;
+        --hz-green: #3ddc84;
+        --hz-cyan: #3cc8f0;
+        --hz-red: #ff5147;
+        --hz-gas: #fff6e4 #ffbc64 #ee8028 #6e2408;
+        --hz-agents: #ffa630 #d98bff #3cc8f0 #3ddc84 #7aa2ff #ff8fb3;
       }
     }
 
@@ -98,6 +115,14 @@
       --life: #d2cdc1;
       --flash: #f7dfb5;
       --scrim: rgba(40, 36, 28, .45);
+      --hz-space: #020203;
+      --hz-ink: #e9e4d8;
+      --hz-amber: #ffa630;
+      --hz-green: #3ddc84;
+      --hz-cyan: #3cc8f0;
+      --hz-red: #ff5147;
+      --hz-gas: #fff6e4 #ffbc64 #ee8028 #6e2408;
+      --hz-agents: #ffa630 #d98bff #3cc8f0 #3ddc84 #7aa2ff #ff8fb3;
     }
 
     * {
@@ -1574,6 +1599,7 @@
     body.pg-runs main>.p.runsp,
     body.pg-approvals main>.p.apprp,
     body.pg-permissions main>.p.whyv,
+    body.pg-horizon main>.p.hzp,
     body.pg-influence main>.p.whyv {
       display: flex
     }
@@ -1587,6 +1613,7 @@
     .pg-runs main,
     .pg-approvals main,
     .pg-permissions main,
+    .pg-horizon main,
     .pg-influence main {
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: minmax(0, 1fr);
@@ -1595,14 +1622,394 @@
 
     .runsp,
     .apprp,
+    .hzp,
     .pg-permissions .whyv,
     .pg-influence .whyv {
       grid-area: page
     }
 
     .runsp,
-    .apprp {
+    .apprp,
+    .hzp {
       display: none
+    }
+
+    /* HORIZON: the mission line with REPLAY, the agents to follow, then the stage (its own dark tokens, --hz-*) and
+       what is picked; the rest of the page keeps its theme */
+    .hzbody {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 6px
+    }
+
+    .hzsub {
+      font-weight: 400;
+      letter-spacing: 0
+    }
+
+    .hztl {
+      display: grid;
+      grid-template-columns: auto minmax(200px, 1.3fr) minmax(0, 1fr);
+      gap: 14px;
+      align-items: center;
+      border: 1px solid var(--line2);
+      padding: 8px 10px
+    }
+
+    .hztl>button,
+    .hzbar button {
+      font: inherit;
+      background: none;
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      padding: 1px 8px;
+      cursor: pointer
+    }
+
+    .hztl>button {
+      border-color: var(--amber);
+      color: var(--amber);
+      font-weight: 600;
+      letter-spacing: .14em;
+      min-width: 110px
+    }
+
+    .hzline {
+      position: relative;
+      height: 20px;
+      margin-bottom: 18px
+    }
+
+    .hztrack,
+    .hztrack i {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 10px;
+      height: 1px;
+      background: var(--line2)
+    }
+
+    .hztrack i {
+      right: auto;
+      top: 0;
+      background: var(--amber)
+    }
+
+    .hzline button {
+      position: absolute;
+      top: 3px;
+      transform: translateX(-50%);
+      width: 14px;
+      height: 14px;
+      padding: 0;
+      background: none;
+      border: 0;
+      display: grid;
+      place-items: center;
+      cursor: pointer
+    }
+
+    .hzline button i {
+      width: 7px;
+      height: 7px;
+      border: 1px solid var(--muted);
+      background: var(--bg)
+    }
+
+    .hzline button.done i {
+      background: var(--cyan);
+      border-color: var(--cyan)
+    }
+
+    .hzline .a-write.done i,
+    .hzline .a-approved.done i,
+    .hzline .a-held.done i {
+      background: var(--amber);
+      border-color: var(--amber)
+    }
+
+    .hzline .a-blocked.done i {
+      background: var(--red);
+      border-color: var(--red)
+    }
+
+    .hzline button.cur i {
+      width: 11px;
+      height: 11px;
+      box-shadow: 0 0 0 3px var(--amber-bg)
+    }
+
+    .hzline button span {
+      position: absolute;
+      top: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 8.5px;
+      letter-spacing: .14em;
+      color: var(--muted);
+      white-space: nowrap;
+      pointer-events: none
+    }
+
+    .hzline button span.r1 {
+      top: 25px
+    }
+
+    .hzcap {
+      font-size: 11px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap
+    }
+
+    .hzstep {
+      background: var(--amber);
+      color: var(--ink);
+      font-weight: 700;
+      padding: 0 5px;
+      margin-right: 8px
+    }
+
+    .hzbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center
+    }
+
+    .hzbar button.on {
+      border-color: var(--amber);
+      color: var(--text);
+      background: var(--amber-bg)
+    }
+
+    .hzbar i,
+    .hzsw {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-right: 6px
+    }
+
+    .hzr {
+      margin-left: auto
+    }
+
+    .hznote {
+      flex-basis: 100%;
+      margin: 0;
+      color: var(--amber)
+    }
+
+    .hzmain {
+      flex: 1 0 auto;
+      min-height: 480px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      grid-template-rows: minmax(0, 1fr);
+      border: 1px solid var(--line2)
+    }
+
+    .hzstage {
+      position: relative;
+      overflow: hidden;
+      background: var(--hz-space)
+    }
+
+    .hzstage canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%
+    }
+
+    .hzstage::before {
+      content: "";
+      position: absolute;
+      inset: 8px;
+      pointer-events: none;
+      opacity: .55;
+      background: linear-gradient(var(--hz-amber), var(--hz-amber)) top left / 14px 1px no-repeat,
+        linear-gradient(var(--hz-amber), var(--hz-amber)) top left / 1px 14px no-repeat,
+        linear-gradient(var(--hz-amber), var(--hz-amber)) top right / 14px 1px no-repeat,
+        linear-gradient(var(--hz-amber), var(--hz-amber)) top right / 1px 14px no-repeat,
+        linear-gradient(var(--hz-amber), var(--hz-amber)) bottom left / 14px 1px no-repeat,
+        linear-gradient(var(--hz-amber), var(--hz-amber)) bottom left / 1px 14px no-repeat,
+        linear-gradient(var(--hz-amber), var(--hz-amber)) bottom right / 14px 1px no-repeat,
+        linear-gradient(var(--hz-amber), var(--hz-amber)) bottom right / 1px 14px no-repeat
+    }
+
+    .hzhud {
+      position: absolute;
+      z-index: 1;
+      font-size: 10px;
+      letter-spacing: .14em;
+      color: color-mix(in srgb, var(--hz-ink) 55%, transparent);
+      pointer-events: none
+    }
+
+    .hzhud b {
+      display: block;
+      color: var(--hz-ink);
+      font-size: 15px;
+      letter-spacing: .06em;
+      margin-bottom: 8px
+    }
+
+    .hzhud.tl {
+      top: 16px;
+      left: 18px
+    }
+
+    .hzhud.tr {
+      top: 16px;
+      right: 18px;
+      text-align: right;
+      pointer-events: auto
+    }
+
+    .hzhud.bl {
+      bottom: 14px;
+      left: 18px;
+      color: color-mix(in srgb, var(--hz-amber) 60%, transparent)
+    }
+
+    .hzvt {
+      display: inline-flex;
+      border: 1px solid color-mix(in srgb, var(--hz-amber) 50%, transparent);
+      margin-bottom: 10px
+    }
+
+    .hzvt button {
+      font: inherit;
+      font-weight: 600;
+      background: none;
+      border: 0;
+      color: inherit;
+      padding: 2px 10px;
+      cursor: pointer
+    }
+
+    .hzvt button.on {
+      background: var(--hz-amber);
+      color: var(--hz-space)
+    }
+
+    .hzhud .hztel b {
+      display: inline-block;
+      font-size: 10px;
+      min-width: 13ch;
+      margin: 0 0 3px 14px;
+      text-align: left
+    }
+
+    .hzhud .hztel b.warn {
+      color: var(--hz-amber)
+    }
+
+    .hzhud .hztel b.ok {
+      color: var(--hz-green)
+    }
+
+    .hzside {
+      border-left: 1px solid var(--line2);
+      overflow: auto;
+      min-height: 0
+    }
+
+    .hzstats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid var(--line2)
+    }
+
+    .hzstats div {
+      padding: 8px 10px;
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .08em
+    }
+
+    .hzstats div:nth-child(odd) {
+      border-right: 1px solid var(--line)
+    }
+
+    .hzstats div:nth-child(-n+2) {
+      border-bottom: 1px solid var(--line)
+    }
+
+    .hzstats b {
+      display: block;
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0
+    }
+
+    .hzstats .warn b {
+      color: var(--amber)
+    }
+
+    .hzcard {
+      display: grid;
+      gap: 6px;
+      padding-bottom: 8px
+    }
+
+    .hzcard h3 {
+      margin: 0 8px;
+      font-size: 13px;
+      overflow-wrap: anywhere
+    }
+
+    .hzcard>div:not(.sec) {
+      padding: 0 8px
+    }
+
+    .hzev {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--line);
+      font-size: 11px
+    }
+
+    .hzs {
+      color: var(--cyan);
+      text-align: center
+    }
+
+    .hzs.a-write,
+    .hzs.a-approved,
+    .hzs.a-held {
+      color: var(--amber)
+    }
+
+    .hzs.a-blocked {
+      color: var(--red)
+    }
+
+    .hzshield {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 1px dashed var(--red);
+      border-radius: 50%
+    }
+
+    .hzjet {
+      display: inline-block;
+      width: 14px;
+      border-top: 2px dashed var(--amber)
+    }
+
+    .tag.unv {
+      border-color: var(--red);
+      color: var(--red)
     }
 
     /* a run's header: where it came from, what it is, its counts and the commands that make it evidence */
@@ -2070,6 +2477,33 @@
         height: auto;
         min-height: 100%
       }
+
+      .p.hzp {
+        max-height: none
+      }
+
+      .hztl {
+        grid-template-columns: auto minmax(0, 1fr)
+      }
+
+      .hzcap {
+        grid-column: 1/-1;
+        white-space: normal
+      }
+
+      .hzmain {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: 440px auto
+      }
+
+      .hzside {
+        border-left: 0;
+        border-top: 1px solid var(--line2)
+      }
+
+      .hzhud .hztel {
+        display: none
+      }
     }
     @media (max-width:700px) {
       /* phones: keep time, event, tool, target and status readable; agent and duration live in DETAIL */
@@ -2116,7 +2550,8 @@
         white-space: normal
       }
 
-      header.top {
+      header.top,
+      .pages {
         flex-wrap: wrap;
         row-gap: 4px
       }
@@ -2245,6 +2680,30 @@
       <section class="p apprp">
         <h2>APPROVALS<small id="apprsum"></small></h2>
         <div class="body" id="apprp"></div>
+      </section>
+      <section class="p hzp" id="hzp">
+        <h2>EVENT HORIZON<span class="hzsub">where your agents went: the project, this machine and the outside
+            world</span><small>every mark is a record</small></h2>
+        <div class="body hzbody">
+          <div class="hztl"><button id="hzplay" type="button">▶ REPLAY</button>
+            <div class="hzline" id="hzline"></div>
+            <div class="hzcap" id="hzcap" aria-live="polite"></div>
+          </div>
+          <div class="hzbar" id="hzbar"></div>
+          <div class="hzmain">
+            <div class="hzstage">
+              <canvas id="hzcv" role="img" aria-label="Where the agents went: the project, this machine and the outside world; the panel beside it lists each move"></canvas>
+              <div class="hzhud tl">MISSION CLOCK<b id="hzclock"></b>MOVE<b id="hzmove"></b></div>
+              <div class="hzhud tr"><span class="hzvt"><button type="button" data-hzv="orbit">ORBIT</button><button
+                    type="button" data-hzv="top">TOP</button></span>
+                <div class="hztel">EGRESS<b id="hzt0"></b><br>RESTRICTED<b id="hzt1"></b><br>FENCES HIT<b
+                    id="hzt2"></b><br>HOLDS<b id="hzt3"></b><br>CHAIN<b id="hzt4"></b></div>
+              </div>
+              <div class="hzhud bl">TRACEKIT // EVENT HORIZON</div>
+            </div>
+            <aside class="hzside" id="hzside"></aside>
+          </div>
+        </div>
       </section>
     </main>
     <footer class="foot">
@@ -2617,7 +3076,7 @@
       for (const p of [...PAGES, "run"]) document.body.classList.toggle("pg-" + p, PAGE === p);
       for (const v of RVIEWS) document.body.classList.toggle("rv-" + v, PAGE === "run" && RV === v);
       document.body.classList.toggle("callslog", CALLSLOG);
-      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunHead(); renderRunsPage(); renderApprovalsPage();
+      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunHead(); renderRunsPage(); renderApprovalsPage(); renderHorizon();
       renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderWaterfall(); renderReason(); renderFiles();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
       document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
@@ -2630,12 +3089,13 @@
     /* ---------------- pages and a run's views (v7): the same panels, placed per page ---------------- */
     // PAGE: a global page, or "run": one run's agents and tool mix, one of its views (RV) and the inspector (DETAIL).
     // RV "waterfall" is the run's TIMELINE (an old link's view=timeline was the why log's events: CALLS shows them)
-    const PAGES = ["desk", "runs", "live", "approvals", "permissions", "influence"];
+    const PAGES = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence"];
     const RVIEWS = ["overview", "calls", "waterfall", "graph", "why", "agents", "evidence"], RVNAME = { waterfall: "TIMELINE" };
     let PAGE = "desk", RV = "calls", CALLSLOG = false;
-    // a view by any of its names, old (links, the why views' own buttons) or new
+    // a view by any of its names, old (links, the why views' own buttons) or new; MAP was HORIZON's first name
     function show(v) {
       if (v === "live") return goLive();
+      if (v === "map") v = "horizon";
       if (PAGES.includes(v)) { PAGE = v; return; }
       PAGE = "run"; CALLSLOG = v === "timeline"; RV = RVIEWS.includes(v) ? v : "calls";
     }
@@ -2721,6 +3181,324 @@
         return { seq: x.tk_seq, hash: x.hash || "", type: x.v2?.type || x.event, what: a ? (a.pre === x ? `${a.tool} · ${a.target}` : `${a.tool} · result`) : x.title || x.v2?.type || x.event };
       }) };
     }
+    /* ---------------- HORIZON: where the agents went, around a black hole drawn on a canvas (the Cygnux mark) ---------------- */
+    // the rings are the project (inside the run's cwd), this machine and the outside world; a place is a file or host in
+    // a call's arguments (the signer's copy), else its tool. Each mark is a call, or an effect a sensor saw, graded signed,
+    // observed or unverified (its run did not verify)
+    const HZMAX = 500;   // lean: the newest 500 calls are drawn; past that a run's own views have every call
+    const HZ = { t: 0, n: 0, play: null, pick: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: {}, t0: performance.now() };
+    const HZACT = { read: "read", run: "ran", write: "wrote", net: "reached", seen: "was seen at", blocked: "was blocked at", held: "was held at", flag: "was flagged at", approved: "was approved at" };
+    const HZSYM = { read: "●", run: "●", net: "●", seen: "●", write: "■", approved: "■", blocked: "✕", held: "◯", flag: "◆" };
+    const HZWORST = ["blocked", "held", "flag", "write", "approved", "net", "seen", "run", "read"];
+    const hzRad = deg => (deg - 90) * Math.PI / 180;
+    const hzRgba = (hex, a) => `rgba(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(",")},${a})`;
+    // a path's ring: the project inside the run's cwd (a relative path is), else this machine, where a home reads as ~
+    const hzPath = (p, cwd) => /^[~/]/.test(p) && !(cwd && (p + "/").startsWith(cwd + "/")) ? ["machine", p.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~")] : ["project", rel(p, cwd).replace(/^\.\//, "")];
+    // where a call went: [ring, label] of the first host or path among its arguments, its subject first; else null
+    function hzPlace(tool, input, cwd) {
+      for (const w of [subject(tool, input), ...Object.values(input || {})].filter(v => typeof v === "string").join(" ").split(/[\s"'`;|&<>()=,]+/)) {
+        const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/]*@)?([^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
+        if (host) return ["outside", host.toLowerCase()];
+        // lean: a word with a slash is a path, so a ref like origin/main is a project place; the signer's parser knows better
+        if (/^(~|\.{0,2}\/)|^[\w.-]+\/[\w.-]|^\.\w/.test(w)) return hzPath(w, cwd);
+      }
+      return null;
+    }
+    // a restricted place's rule: a TK-F or TK-D rule whose reason is about secrets, harness configuration or Tracekit's files
+    const hzRest = rules => rules.filter(x => /^TK-[FD]\d/.test(x.id) && /secret|credential|harness|tracekit/i.test(x.reason || "")).map(x => x.id + " · " + x.reason)[0] || null;
+    // every run's calls and sensor effects, newest HZMAX in seq order, each at its place; the places laid out on the rings
+    // (project files by their top folder), the agents in the order their runs started each other
+    let hzKey = [], hzD = null;
+    function hzData() {
+      const key = [ALL.length, ALL[ALL.length - 1], RUNS.size, chainState.ok];
+      if (key.every((x, i) => x === hzKey[i])) return hzD;
+      const ans = new Map(), raw = [], places = {}, parent = {}, cwds = new Set(), groups = {}, dirs = [];
+      for (const r of ALL) if (r.v2?.approval in ANSWER) ans.set(r.session_id + "|" + r.v2.tool_use_id, r.v2.approval);
+      for (const r of ALL) {
+        const fx = r.v2?.effect, d = r.v2?.decision ?? (r.policy?.decision === "deny" ? "deny" : "allow"), rules = r.v2?.rules || [];
+        if (r.analysis || r.signer || !(r.event === "PreToolUse" || fx?.kind === "connect" || fx?.kind === "file")) continue;
+        const a = ans.get(r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id)), ok = V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true;
+        const p = fx ? (fx.kind === "connect" ? ["outside", String(fx.target).replace(/:\d+$/, "")] : hzPath(String(fx.target), r.cwd))
+          : hzPlace(r.tool_name, r.tool_input, r.cwd) || [category({ tool: r.tool_name, flags: [] }) === "net" ? "outside" : "machine", r.tool_name, true];
+        raw.push({ t: r.ts, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules),
+          ag: vis(RUNS.get(r.session_id)?.agent || r.agent || "agent"), gr: !ok ? "unverified" : fx ? "observed" : "signed",
+          act: fx ? (fx.kind === "connect" ? "net" : "seen") : d === "deny" ? "blocked" : d === "ask" ? (a === "approve" ? "approved" : "held") : d === "flag" ? "flag"
+            : p[0] === "outside" ? "net" : FILE_TOOLS[r.tool_name] === "W" ? "write" : /^(Read|Glob|Grep|LS)$/.test(r.tool_name) ? "read" : "run",
+          w: fx ? r.title : [r.tool_name, d === "ask" ? ANSWER[a] || "no answer yet" : "", ...rules.map(x => (x.id + " " + (x.reason || "")).trim())].filter(Boolean).join(" · ") });
+      }
+      const ev = raw.sort((x, y) => (x.seq ?? 0) - (y.seq ?? 0) || x.t - y.t).slice(-HZMAX);
+      for (const e of ev) {
+        e.at = (e.p[2] ? "tool:" : "") + e.p[1];
+        (places[e.at] ||= { kind: e.p[0], label: vis(e.p[1]), tool: !!e.p[2], rest: null }).rest ||= e.rest;
+        const up = RUNS.get(RUNS.get(e.run)?.parent)?.agent;
+        parent[e.ag] ??= up == null ? null : vis(up);
+        if (e.cwd) cwds.add(e.cwd);
+      }
+      const ring = k => Object.keys(places).filter(x => places[x].kind === k).sort();
+      for (const x of ring("project")) (groups[places[x].label.includes("/") ? places[x].label.split("/")[0] : ""] ||= []).push(x);
+      Object.entries(groups).forEach(([g, xs], s, all) => {
+        const w = 360 / all.length, a0 = s * w - w / 2;
+        if (g) dirs.push({ label: g.toUpperCase() + "/", r: .165, th: hzRad(a0 + w / 2) });
+        xs.forEach((x, j) => Object.assign(places[x], { r: [.24, .39, .31][j % 3], th: hzRad(a0 + w * (j + 1) / (xs.length + 1)) }));
+      });
+      for (const [k, r, o] of [["machine", .565, 17], ["outside", .85, 41]]) ring(k).forEach((x, j, all) => Object.assign(places[x], { r, th: hzRad(o + 360 * j / all.length) }));
+      hzKey = key;
+      return hzD = { ev, places, dirs, agents: treeOrder(Object.keys(parent), x => x, x => parent[x]), calls: raw.length, bare: ev.filter(e => e.bare).length,
+                     runs: new Set(ev.map(e => e.run)).size, cwd: cwds.size === 1 ? vis([...cwds][0].split("/").pop()) : "" };
+    }
+    const HZKEY = `<div class="sec">HOW TO READ IT</div><div><span class="hzs">●</span> read, ran or reached</div><div><span class="hzs a-write">■</span> wrote, or a person approved it</div>`
+      + `<div><span class="hzs a-blocked">✕</span> blocked by policy</div><div><span class="hzs a-held">◯</span> held for a person</div><div><span class="hzs">◆</span> flagged</div>`
+      + `<div><span class="hzshield"></span> shield: a restricted place (a rule about secrets, harness configuration or Tracekit's own files); a flare where an agent was stopped</div>`
+      + `<div><span class="hzjet"></span> jet: data left the machine</div><div><span class="tag">SIGNED</span> the signer's record says so · <span class="tag flag">OBSERVED</span> a sensor outside the agent saw it · <span class="tag unv">UNVERIFIED</span> its run did not verify</div>`
+      + `<div class="dim">The rings are the project (the run's working directory; a run that records none: its relative paths), this machine and the outside world, around the event horizon every run starts from. Click a place to see who went there and how we know; click an agent to follow its route.</div>`;
+    function renderHorizon() {
+      if (PAGE !== "horizon") return;
+      const D = HZ.d = hzData(), N = D.ev.length, pal = css("--hz-agents").split(/\s+/);
+      if (!HZ.play && (HZ.t === HZ.n || HZ.t > N)) HZ.t = N;   // at the end it follows new calls; a replay or a step back stays
+      HZ.n = N;
+      HZ.col = Object.fromEntries(D.agents.map(([a], n) => [a, pal[n % pal.length]]));
+      if (!(HZ.follow in HZ.col)) HZ.follow = null;
+      if (!D.places[HZ.pick]) HZ.pick = null;
+      const ev = D.ev.slice(0, HZ.t), cur = D.ev[HZ.t - 1], P = k => D.places[k], last = [-99, -99], MIL = { blocked: "BLOCK", approved: "APPROVED", held: "HOLD", flag: "FLAG" };
+      const room = 6000 / ($("hzline").clientWidth || 600);   // a milestone's name needs about 60px of the line
+      put("hzline", `<span class="hztrack"><i style="width:${esc(N ? HZ.t / N * 100 : 0)}%"></i></span>` + D.ev.map((e, k) => {
+        const at = (k + .5) / N * 100, row = last[0] <= last[1] ? 0 : 1, ml = MIL[e.act] && at - last[row] > room;
+        if (ml) last[row] = at;
+        return `<button type="button" class="a-${esc(e.act)}${k < HZ.t ? " done" : ""}${k === HZ.t - 1 ? " cur" : ""}" style="left:${esc(at)}%" data-hzk="${esc(k + 1)}" title="${esc(e.ag + " · " + P(e.at).label)}"><i></i>${ml ? `<span class="r${esc(row)}">${esc(MIL[e.act])}</span>` : ""}</button>`;
+      }).join(""));
+      put("hzcap", cur && (HZ.play || HZ.t < N) ? `<span class="hzstep">${esc(String(HZ.t).padStart(2, "0") + "/" + N)}</span><i class="hzsw" style="background:${esc(HZ.col[cur.ag])}"></i><b>${esc(cur.ag)}</b> ${esc(HZACT[cur.act])} <b>${esc(P(cur.at).label)}</b> <span class="dim">· ${esc(cur.w)}</span>`
+        : `<span class="dim">${esc(N ? `${plural(N, "move")} · press Replay to watch them in order, or click any point on the line` : "No calls yet: each call an agent makes is a move here")}</span>`);
+      $("hzplay").textContent = HZ.play ? "❚❚ PAUSE" : "▶ REPLAY";
+      $("hzplay").disabled = !N;
+      put("hzbar", `<span class="dim">FOLLOW AN AGENT</span>` + D.agents.map(([a, depth]) => `<button type="button" data-hzag="${esc(a)}" class="${HZ.follow === a ? "on" : ""}" aria-pressed="${HZ.follow === a ? "true" : "false"}"><i style="background:${esc(HZ.col[a])}"></i>${depth ? "└ " : ""}${esc(a)}</button>`).join("")
+        + `<span class="dim hzr">${esc(`${plural(D.runs, "run")} · ${D.calls > N ? `the newest ${N} of ${D.calls} calls` : plural(N, "call")}`)}</span>`
+        + (D.bare ? `<p class="hznote">${esc(`${D.bare} of ${N} calls have their arguments only as a commitment here, so each is placed by its tool (on this machine, or outside for a network tool), not at a file or host.`)}</p>` : ""));
+      // the HUD's words go in as text
+      const out = ev.filter(e => P(e.at).kind === "outside"), rest = ev.filter(e => P(e.at).rest), ran = rest.filter(e => e.act !== "blocked" && e.act !== "held").length;
+      const unv = ev.filter(e => e.gr === "unverified").length, s = cur ? cur.t - D.ev[0].t : 0;
+      $("hzclock").textContent = "T+ " + [s / 3600, s % 3600 / 60, s % 60].map(v => String(Math.floor(v)).padStart(2, "0")).join(":");
+      $("hzmove").textContent = `${String(HZ.t).padStart(2, "0")} / ${N}`;
+      [[new Set(out.map(e => e.at)).size, out.length ? "warn" : ""], [`${rest.length} · ${ran} RAN`, rest.length ? "warn" : ""], [ev.filter(e => e.act === "blocked").length, ""],
+       [ev.filter(e => e.act === "held").length, ""], [!ev.length ? "–" : unv ? `${unv} UNVERIFIED` : "✓ VERIFIED", unv ? "warn" : "ok"]]
+        .forEach(([v, c], k) => { $("hzt" + k).textContent = vis(v); $("hzt" + k).className = c; });
+      document.querySelectorAll("[data-hzv]").forEach(b => b.classList.toggle("on", b.dataset.hzv === HZ.view));
+      // beside the stage: the counts, then the followed agent's route, the picked place's visitors or how to read it
+      const pill = g => `<span class="tag${g === "unverified" ? " unv" : g === "observed" ? " flag" : ""}">${esc(g.toUpperCase())}</span>`;
+      const row = (e, n) => `<div class="hzev"><span class="hzs a-${esc(e.act)}">${esc(n || HZSYM[e.act])}</span><div><i class="hzsw" style="background:${esc(HZ.col[e.ag])}"></i><b>${esc(e.ag)}</b> ${esc(HZACT[e.act])} <b>${esc(P(e.at).label)}</b><div class="dim">${esc(e.w)}</div><div class="dim">${esc(`run ${String(e.run).slice(0, 8)} · seq ${e.seq}`)} `
+        + pill(e.gr) + ` <button type="button" class="cp" data-orun="${esc(e.run)}" data-oseq="${esc(e.seq)}">OPEN</button></div></div></div>`;
+      const pick = HZ.pick && P(HZ.pick), here = ev.filter(e => e.at === HZ.pick);
+      const card = HZ.follow ? `<div class="sec">ROUTE · ${esc(HZ.follow)}</div>` + ev.filter(e => e.ag === HZ.follow).map((e, n) => row(e, n + 1)).join("")
+        : pick ? `<div class="sec">${esc((pick.rest ? "RESTRICTED · " : "") + { project: "IN THE PROJECT", machine: "ON THIS MACHINE", outside: "OUTSIDE THE MACHINE" }[pick.kind] + (pick.tool ? " · A TOOL, NO FILE OR HOST RECORDED" : ""))}</div><h3>${esc(pick.label)}</h3>`
+          + (pick.rest ? `<div class="s-flag">${esc(pick.rest)}</div>` : "") + (here.map(e => row(e)).join("") || `<div class="dim">${esc(`No agent has been here${HZ.t < N ? " yet" : ""}.`)}</div>`)
+        : HZKEY;
+      const stats = [[new Set(ev.map(e => e.ag)).size, "AGENTS"], [new Set(ev.map(e => e.at)).size, "PLACES"], [new Set(out.map(e => e.at)).size, "OUTSIDE THE MACHINE", 1],
+                     [rest.length, `RESTRICTED TRIES · ${ran ? ran + " RAN" : "NONE RAN"}`, 1]];
+      put("hzside", `<div class="hzstats">` + stats.map(([v, k, c]) => `<div class="${c && v ? "warn" : ""}"><b>${esc(v)}</b>${esc(k)}</div>`).join("") + `</div><div class="hzcard">` + card + `</div>`);
+      hzDraw();
+    }
+    // a frame now and, unless motion is reduced (a still frame, drawn again on each change), one every animation frame
+    function hzDraw() {
+      if (HZ.raf) return;
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) hzFrame(0);
+      else HZ.raf = requestAnimationFrame(hzFrame);
+    }
+    function hzFrame(now) {
+      HZ.raf = 0;
+      const cv = $("hzcv"), D = HZ.d, still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (PAGE !== "horizon" || !cv || !D) return;
+      if (!still) HZ.raf = requestAnimationFrame(hzFrame);
+      const dpr = Math.min(2, window.devicePixelRatio || 1), cw = cv.clientWidth, ch = cv.clientHeight, ow = Math.round(cw * dpr), oh = Math.round(ch * dpr);
+      if (!cw || !ch) return;
+      if (cv.width !== ow || cv.height !== oh) { cv.width = ow; cv.height = oh; }
+      if (!HZ.off) {   // the disk's streaks and the stars: the same every time
+        let seed = 7; const R = () => (seed = seed * 16807 % 2147483647) / 2147483647;
+        HZ.off = document.createElement("canvas");
+        HZ.streaks = Array.from({ length: 240 }, () => { const r = .085 + .42 * Math.pow(R(), 1.35); return { r, th: R() * 6.2832, len: .25 + R() * 1.2, w: .7 * Math.pow(.1 / r, 1.5), a: (.06 + R() * .18) * Math.max(.25, 1 - (r - .085) / .45), lw: .5 + R() * 1.1 }; });
+        HZ.stars = Array.from({ length: 170 }, () => ({ x: R(), y: R(), s: .3 + R() * .9, a: .06 + R() * .3 }));
+      }
+      const [hot, gold, ember, rust] = css("--hz-gas").split(/\s+/), ink = css("--hz-ink"), space = css("--hz-space"), amber = css("--hz-amber"), red = css("--hz-red"), cyan = css("--hz-cyan");
+      const A = hzRgba, font = (w, px) => `${w} ${px}px ${css("--mono")}`, AC = act => act === "blocked" ? red : /^(write|approved|held)$/.test(act) ? amber : cyan;
+      const x = cv.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0);
+      HZ.i += ((HZ.view === "orbit" ? .6 : 1) - HZ.i) * (still ? 1 : .07);
+      const i = HZ.i, T = still ? 0 : (now - HZ.t0) / 1000, tt = Math.min(1, Math.max(0, (1 - i) / .4));
+      const R4 = Math.min(ch * .45, cw * .46) * (1 - tt) + Math.min(cw * .46, ch * .78) * tt, cx = cw / 2, cy = ch * (.5 + .03 * tt), Rs = R4 * .082;
+      const P = (r, th) => [cx + r * R4 * Math.cos(th), cy + r * R4 * Math.sin(th) * i], pt = k => P(D.places[k].r, D.places[k].th);
+      // space: deep black, faint stars, the two lensing arcs of the Cygnux mark; then the rings
+      x.globalCompositeOperation = "source-over"; x.fillStyle = space; x.fillRect(0, 0, cw, ch);
+      for (const s of HZ.stars) { x.fillStyle = A(ink, s.a); x.fillRect(s.x * cw, s.y * ch, s.s, s.s); }
+      const lg = x.createLinearGradient(0, 0, 0, ch); lg.addColorStop(0, A(amber, 0)); lg.addColorStop(.5, A(amber, .16)); lg.addColorStop(1, A(amber, 0));
+      x.strokeStyle = lg; x.lineWidth = 1.2;
+      for (const sg of [-1, 1]) { x.beginPath(); x.moveTo(cx + sg * R4 * .8, -10); x.quadraticCurveTo(cx + sg * R4 * .12, cy, cx + sg * R4 * .8, ch + 10); x.stroke(); }
+      for (const [r, a, dash] of [[.47, .22, []], [.66, .14, []], [1, .1, [2, 6]]]) { x.setLineDash(dash); x.strokeStyle = A(gold, a); x.lineWidth = 1; x.beginPath(); x.ellipse(cx, cy, r * R4, r * R4 * i, 0, 0, 6.2832); x.stroke(); }
+      x.setLineDash([]);
+      // the disk, painted off-screen in its own plane: smooth hot gas, orbiting streaks, the side turning toward us brighter
+      const off = HZ.off; if (off.width !== ow || off.height !== oh) { off.width = ow; off.height = oh; }
+      const o = off.getContext("2d"); o.setTransform(1, 0, 0, 1, 0, 0); o.globalCompositeOperation = "source-over"; o.clearRect(0, 0, ow, oh); o.setTransform(dpr, 0, 0, dpr, 0, 0);
+      o.save(); o.translate(cx, cy); o.scale(1, i);
+      const rIn = R4 * .09, rOut = R4 * .56, body = o.createRadialGradient(0, 0, rIn, 0, 0, rOut);
+      for (const [at, c, a] of [[0, hot, 1], [.05, hot, .95], [.13, gold, .68], [.3, ember, .32], [.56, rust, .2], [1, rust, 0]]) body.addColorStop(at, A(c, a));
+      o.fillStyle = body; o.beginPath(); o.arc(0, 0, rOut, 0, 6.2832); o.arc(0, 0, rIn, 0, 6.2832, true); o.fill();
+      o.globalCompositeOperation = "lighter"; o.lineCap = "round";
+      for (const s of HZ.streaks) { const a0 = s.th + s.w * T; o.strokeStyle = A(hot, s.a.toFixed(3)); o.lineWidth = s.lw; o.beginPath(); o.arc(0, 0, s.r * R4, a0, a0 + s.len); o.stroke(); }
+      if (o.createConicGradient) {
+        o.globalCompositeOperation = "destination-in"; const dop = o.createConicGradient(0, 0, 0);
+        for (const [at, a] of [[0, .4], [.25, .72], [.5, 1], [.75, .72], [1, .4]]) dop.addColorStop(at, A(space, a));
+        o.fillStyle = dop; o.fillRect(-rOut, -rOut, rOut * 2, rOut * 2);
+      }
+      o.restore();
+      const half = far => { x.save(); x.beginPath(); if (far) x.rect(0, 0, cw, cy); else x.rect(0, cy, cw, ch - cy); x.clip(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "lighter"; x.drawImage(off, 0, 0); x.restore(); };
+      // a bloom, the far half of the disk, the shadow, the lensed arc over the top, the horizon and photon ring, the near half
+      x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "lighter"; x.globalAlpha = .55; x.filter = `blur(${Math.round(16 * dpr)}px)`; x.drawImage(off, 0, 0); x.restore();
+      half(true);
+      x.globalCompositeOperation = "source-over";
+      const sh = x.createRadialGradient(cx, cy, Rs * .9, cx, cy, Rs * 1.35); sh.addColorStop(0, A(space, 1)); sh.addColorStop(1, A(space, 0));
+      x.fillStyle = sh; x.beginPath(); x.arc(cx, cy, Rs * 1.35, 0, 6.2832); x.fill();
+      if (i < .95) {
+        const lw = Math.min(1, (1 - i) * 1.7), lgr = x.createLinearGradient(cx - Rs * 2.4, 0, cx + Rs * 2.4, 0);
+        lgr.addColorStop(0, A(hot, 1)); lgr.addColorStop(.5, A(gold, .75)); lgr.addColorStop(1, A(gold, .4));
+        x.save(); x.globalCompositeOperation = "lighter"; x.strokeStyle = lgr; x.filter = "blur(1.2px)";
+        for (let k = 0; k < 16; k++) { x.globalAlpha = lw * .85 * Math.exp(-k / 4.6); x.lineWidth = Rs * .09; x.beginPath(); x.arc(cx, cy, Rs * (1.1 + k * .07), Math.PI, 2 * Math.PI); x.stroke(); }
+        for (let k = 0; k < 9; k++) { x.globalAlpha = lw * .3 * Math.exp(-k / 3.2); x.lineWidth = Rs * .07; x.beginPath(); x.arc(cx, cy, Rs * (1.08 + k * .06), 0, Math.PI); x.stroke(); }
+        x.restore();
+      }
+      x.globalCompositeOperation = "source-over"; x.fillStyle = space; x.beginPath(); x.arc(cx, cy, Rs, 0, 6.2832); x.fill();
+      x.save(); x.globalCompositeOperation = "lighter"; const pr = x.createLinearGradient(cx - Rs, 0, cx + Rs, 0); pr.addColorStop(0, A(hot, .95)); pr.addColorStop(1, A(gold, .5));
+      x.strokeStyle = pr; x.lineWidth = 1.1; x.shadowColor = A(gold, .8); x.shadowBlur = 6; x.beginPath(); x.arc(cx, cy, Rs * 1.02, 0, 6.2832); x.stroke(); x.restore();
+      half(false); x.globalCompositeOperation = "source-over";
+      // the rings' names, upper left (no callout covers them); in the top view, the project's folders
+      const placed = [];
+      x.font = font(600, 9); x.textAlign = "left"; x.letterSpacing = "2.5px";
+      for (const [r, l, c] of [[.47, D.cwd ? "PROJECT · " + D.cwd : "PROJECT", A(amber, .8)], [.66, "THIS MACHINE", A(ink, .5)], [1, "OUTSIDE WORLD", A(ink, .4)]]) {
+        const [lx, ly] = P(r, hzRad(-40)); x.fillStyle = c; x.fillRect(lx - 2, ly - 2, 4, 4); x.fillText(l, lx + 7, ly - 5);
+        placed.push([lx - 2, ly - 14, lx + 9 + x.measureText(l).width, ly + 2]);
+      }
+      x.letterSpacing = "0px";
+      if (i > .6) { x.textAlign = "center"; x.fillStyle = A(ink, (i - .6) / .4 * .5); for (const q of D.dirs) { const [px, py] = P(q.r, q.th); x.fillText(q.label, px, py + 3); } }
+      // what happened, up to the move shown: jets where data left the machine, the routes, then the places
+      const ev = D.ev.slice(0, HZ.t), mine = e => !HZ.follow || e.ag === HZ.follow, seen = {};
+      for (const e of ev) if (mine(e)) (seen[e.at] ||= []).push(e);
+      x.lineWidth = 1.6;
+      for (const e of ev) if (mine(e) && D.places[e.at].kind === "outside") {
+        const q = D.places[e.at], [ax, ay] = P(.66, q.th), [bx, by] = pt(e.at), g = x.createLinearGradient(ax, ay, bx, by);
+        g.addColorStop(0, HZ.col[e.ag]); g.addColorStop(1, A(ink, .9));
+        x.strokeStyle = g; x.setLineDash([5, 5]); x.lineDashOffset = -T * 24; x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.stroke(); x.setLineDash([]);
+        x.fillStyle = HZ.col[e.ag]; x.fillRect(ax - 3, ay - 3, 6, 6);
+      }
+      const route = (ag, alpha, numbered) => {
+        let prev = null;
+        ev.filter(e => e.ag === ag).forEach((e, n) => {
+          const [bx, by] = pt(e.at); prev ||= P(.082 * 1.6, D.places[e.at].th);
+          const mx = (prev[0] + bx) / 2, my = (prev[1] + by) / 2, ox = -(my - cy) * .18, oy = (mx - cx) * .18 * i;
+          x.globalAlpha = alpha; x.strokeStyle = HZ.col[ag]; x.lineWidth = numbered ? 2 : 1.2; x.beginPath(); x.moveTo(prev[0], prev[1]); x.quadraticCurveTo(mx + ox, my + oy, bx, by); x.stroke(); x.globalAlpha = 1;
+          if (numbered) { const nx = (prev[0] + 2 * (mx + ox) + bx) / 4, ny = (prev[1] + 2 * (my + oy) + by) / 4; x.fillStyle = HZ.col[ag]; x.fillRect(nx - 8, ny - 8, 16, 16); x.fillStyle = space; x.font = font(700, 9); x.textAlign = "center"; x.fillText(String(n + 1), nx, ny + 3); }
+          prev = [bx, by];
+        });
+      };
+      if (HZ.follow) route(HZ.follow, 1, true); else for (const [a] of D.agents) route(a, HZ.play ? .4 : .14, false);
+      // places: markers, shields and glows first; then each who-did-what callout where it collides with nothing
+      HZ.hits = [];
+      const marks = [], blocks = [];
+      for (const [k, q] of Object.entries(D.places)) {
+        const [px, py] = pt(k), es = seen[k] || [], worst = HZWORST.find(a => es.some(e => e.act === a));
+        HZ.hits.push({ k, x: px, y: py });
+        if (Math.sin(q.th) < 0 && Math.hypot(px - cx, py - cy) < Rs * 1.6) continue;   // behind the hole
+        marks.push([px, py, q.rest ? 30 : 9]);
+        if (q.rest) {
+          const sr = 24, sg = x.createRadialGradient(px, py, sr * .35, px, py, sr);
+          sg.addColorStop(0, A(red, 0)); sg.addColorStop(.75, A(red, .1)); sg.addColorStop(1, A(red, .32));
+          x.fillStyle = sg; x.beginPath(); x.arc(px, py, sr, 0, 6.2832); x.fill();
+          x.strokeStyle = A(red, .85); x.lineWidth = 1; x.setLineDash([2, 4]); x.lineDashOffset = -T * 6; x.beginPath(); x.arc(px, py, sr, 0, 6.2832); x.stroke(); x.setLineDash([]);
+          x.strokeStyle = A(red, .35); x.beginPath(); x.arc(px, py, sr + 5, 0, 6.2832); x.stroke();
+          if (es.some(e => e.act === "blocked" || e.act === "held")) {   // a flare where an agent was stopped
+            const fa = Math.atan2(cy - py, cx - px), fl = .55 + .45 * Math.abs(Math.sin(T * 5)); x.globalCompositeOperation = "lighter";
+            for (let r = -2; r <= 2; r++) { const a = fa + r * .22, l = (7 - Math.abs(r) * 2) * fl; x.strokeStyle = A(red, (.9 - Math.abs(r) * .2) * fl); x.lineWidth = 1.3; x.beginPath(); x.moveTo(px + Math.cos(a) * (sr + 1), py + Math.sin(a) * (sr + 1)); x.lineTo(px + Math.cos(a) * (sr + 1 + l), py + Math.sin(a) * (sr + 1 + l)); x.stroke(); }
+            x.globalCompositeOperation = "source-over";
+          }
+        }
+        if (worst) { const gr = 16 + Math.min(es.length, 8) * 4, gl = x.createRadialGradient(px, py, 0, px, py, gr); gl.addColorStop(0, A(AC(worst), .4)); gl.addColorStop(1, A(AC(worst), 0)); x.fillStyle = gl; x.beginPath(); x.arc(px, py, gr, 0, 6.2832); x.fill(); }
+        x.textAlign = "center"; x.font = font(700, 12); x.fillStyle = worst ? AC(worst) : A(ink, .28);
+        if (worst) x.fillText(HZSYM[worst], px, py + 4); else x.fillRect(px - 1, py - 1, 2, 2);
+        if (!(worst || HZ.pick === k || i > .7)) continue;
+        const pairs = [...new Map(es.map(e => [e.ag + "|" + e.act, e])).values()], rows = [];
+        if (q.rest) rows.push([red, "RESTRICTED · " + q.rest.split(" · ")[0], true]);
+        pairs.slice(0, 3).forEach(e => rows.push([HZ.col[e.ag], e.ag + " · " + HZACT[e.act].replace(/^was | at$/g, "")]));
+        if (pairs.length > 3) rows.push([A(ink, .4), "+" + (pairs.length - 3) + " more"]);
+        x.font = font(400, 10.5); let w = x.measureText(q.label).width;
+        x.font = font(400, 9.5); rows.forEach(([, t, bad]) => { w = Math.max(w, x.measureText(t).width + (bad ? 0 : 10)); });
+        blocks.push({ k, q, px, py, worst, rows, w, h: 13 * rows.length, rank: q.rest ? 0 : worst === "blocked" || worst === "held" ? 1 : worst ? 2 : 3, gap: q.rest ? 30 : 8 });
+      }
+      const hit = a => placed.some(b => a[0] < b[2] + 4 && a[2] > b[0] - 4 && a[1] < b[3] + 3 && a[3] > b[1] - 3)
+        || marks.some(([mx, my, mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - mr && my < a[3] + mr)
+        || a[0] < 6 || a[2] > cw - 6 || a[1] < 70 || a[3] > ch - 30 || (a[0] < cx + Rs * 2 && a[2] > cx - Rs * 2 && a[1] < cy + Rs * 1.4 && a[3] > cy - Rs * 1.6);
+      blocks.sort((a, b) => a.rank - b.rank);
+      for (const b of blocks) {
+        const pref = Math.sin(b.q.th) < 0 ? -1 : 1, side0 = b.px < cx ? -1 : 1;
+        let best = null;
+        for (const L of [10, 26, 42, 58, 76, 96]) {
+          for (const dy of [pref, -pref]) for (const sd of [side0, -side0]) {
+            const ey = b.py + dy * (b.gap + L), x0 = sd > 0 ? b.px + 11 : b.px - 11 - b.w, box = [x0, dy < 0 ? ey - b.h - 10 : ey - 10, x0 + b.w, dy < 0 ? ey + 3 : ey + b.h + 3];
+            if (!best && !hit(box)) best = { box, ey, dy, sd };
+          }
+          if (best) break;
+        }
+        if (!best) {   // lean: a callout with no free room is left out unless the place is restricted or stopped someone; a click still lists it
+          if (b.rank > 1) continue;
+          const ey = b.py + pref * (b.gap + 10), x0 = Math.max(6, Math.min(cw - 6 - b.w, side0 > 0 ? b.px + 11 : b.px - 11 - b.w));
+          best = { box: [x0, ey - 10, x0 + b.w, ey + b.h + 3], ey, dy: pref, sd: side0 };
+        }
+        placed.push(best.box);
+        const { ey, dy, sd } = best, tx = sd > 0 ? best.box[0] : best.box[2];
+        x.strokeStyle = A(ink, .35); x.lineWidth = 1; x.beginPath(); x.moveTo(b.px, b.py + dy * b.gap); x.lineTo(b.px, ey); x.lineTo(b.px + sd * 8, ey); x.stroke();
+        x.textAlign = sd > 0 ? "left" : "right"; x.font = font(400, 10.5);
+        x.fillStyle = HZ.pick === b.k ? amber : A(ink, b.worst ? .95 : .42); x.fillText(b.q.label, tx, ey + 3);
+        x.font = font(400, 9.5);
+        b.rows.forEach(([c, t, bad], n) => {
+          const ry = ey + 3 + dy * 13 * (n + 1); x.fillStyle = c;
+          if (bad) return x.fillText(t, tx, ry);
+          x.fillRect(sd < 0 ? tx - x.measureText(t).width - 10 : tx, ry - 6, 6, 6); x.fillStyle = A(ink, .62); x.fillText(t, sd < 0 ? tx : tx + 10, ry);
+        });
+      }
+      // the target reticle on the picked place; the comet of the move just replayed
+      if (HZ.pick) {
+        const [px, py] = pt(HZ.pick), s = 13, c = 5; x.strokeStyle = amber; x.lineWidth = 1.4; x.beginPath();
+        for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { x.moveTo(px + dx * s, py + dy * (s - c)); x.lineTo(px + dx * s, py + dy * s); x.lineTo(px + dx * (s - c), py + dy * s); }
+        x.stroke();
+      }
+      const cm = HZ.comet;
+      if (cm && !still && D.places[cm.to]) {
+        const pr = (now - cm.t0) / 700, [ex, ey] = pt(cm.to), [sx, sy] = D.places[cm.from] ? pt(cm.from) : P(.082 * 1.6, D.places[cm.to].th);
+        const mx = (sx + ex) / 2 - ((sy + ey) / 2 - cy) * .18, my = (sy + ey) / 2 + ((sx + ex) / 2 - cx) * .18 * i, at = u => [(1 - u) ** 2 * sx + 2 * (1 - u) * u * mx + u * u * ex, (1 - u) ** 2 * sy + 2 * (1 - u) * u * my + u * u * ey];
+        x.fillStyle = x.strokeStyle = HZ.col[cm.ag];
+        if (pr <= 1) { x.globalCompositeOperation = "lighter"; for (let k = 0; k < 14; k++) { const [hx, hy] = at(Math.max(0, pr - k * .035)), s = 4 - k * .22; x.globalAlpha = (1 - k / 14) * .9; x.fillRect(hx - s / 2, hy - s / 2, s, s); } }
+        else if (pr <= 1.8) { const f = (pr - 1) / .8; x.globalAlpha = 1 - f; x.lineWidth = 1.5; x.beginPath(); x.arc(ex, ey, 6 + 22 * f, 0, 6.2832); x.stroke(); }
+        else HZ.comet = null;
+        x.globalAlpha = 1; x.globalCompositeOperation = "source-over";
+      }
+    }
+    function hzStep(k) {
+      HZ.t = k;
+      const e = HZ.d.ev[k - 1], prev = e && HZ.d.ev.slice(0, k - 1).filter(x => x.ag === e.ag).pop();
+      if (e) HZ.comet = { ag: e.ag, to: e.at, from: prev?.at, t0: performance.now() };
+      renderHorizon();
+    }
+    function hzStop() { clearInterval(HZ.play); HZ.play = null; }
+    function hzPlay() {
+      if (HZ.play) { hzStop(); return renderHorizon(); }
+      if (HZ.t >= HZ.n) HZ.t = 0;
+      HZ.play = setInterval(() => { if (PAGE !== "horizon" || HZ.t >= HZ.n) { hzStop(); renderHorizon(); } else hzStep(HZ.t + 1); }, 1000);
+      hzStep(HZ.t + 1);
+    }
+    $("hzp").addEventListener("click", e => {
+      const t = e.target.closest("#hzplay,[data-hzk],[data-hzag],[data-hzv]"); if (!t) return;
+      if (t.id === "hzplay") return hzPlay();
+      if (t.dataset.hzk) { hzStop(); return hzStep(+t.dataset.hzk); }
+      if (t.dataset.hzag) { HZ.follow = HZ.follow === t.dataset.hzag ? null : t.dataset.hzag; HZ.pick = null; }
+      if (t.dataset.hzv) HZ.view = t.dataset.hzv;
+      renderHorizon();
+    });
+    const hzNear = e => { const b = $("hzcv").getBoundingClientRect(), mx = e.clientX - b.left, my = e.clientY - b.top; let best = null, bd = 18; for (const h of HZ.hits) { const d = Math.hypot(h.x - mx, h.y - my); if (d < bd) { bd = d; best = h.k; } } return best; };
+    $("hzcv").addEventListener("click", e => { const k = hzNear(e); HZ.pick = k && HZ.pick !== k ? k : null; if (k) HZ.follow = null; renderHorizon(); });
+    $("hzcv").addEventListener("mousemove", e => { e.target.style.cursor = hzNear(e) ? "pointer" : "default"; });
     function evidenceView(el) {
       const r = scope && RUNS.get(scope);
       if (!r) { put("whyv", `<div class="empty">Select a run: its evidence is its bundle.</div>`); $("wvsum").textContent = ""; return; }
@@ -2764,7 +3542,7 @@
       linked = following = true;
       if (V2 && run !== scope && (!run || RUNS.has(run))) setScope(run);
       // a page by name; else a view by its old or new name; else a run's page for a run, DESK without one
-      if (PAGES.includes(p.get("page"))) show(p.get("page")); else if (p.get("view")) show(p.get("view")); else PAGE = scope ? "run" : "desk";
+      if ([...PAGES, "map"].includes(p.get("page"))) show(p.get("page")); else if (p.get("view")) show(p.get("view")); else PAGE = scope ? "run" : "desk";
       if (PAGE === "run" && !p.get("view")) { RV = "calls"; CALLSLOG = false; }
       wvKey = "";
       selected = null;
