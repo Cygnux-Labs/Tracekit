@@ -812,6 +812,18 @@ class CodingPack(unittest.TestCase):
             f"PATH=./evil; echo {path} > out; ls",
             f"BASH_ENV=./defs; echo {path} > out; ls",
             f"ENV=./defs; echo {path} > out; ls",
+            f"echo {path} > out; printf -v PATH '%s' ./evil; ls",
+            f"echo {path} > out; read PATH <<< ./evil; ls",
+            f"echo {path} > out; mapfile PATH < paths; ls",
+            f"echo {path} > out; readarray PATH < paths; ls",
+            f"echo {path} > out; declare PATH=./evil; ls",
+            f"echo {path} > out; typeset PATH=./evil; ls",
+            f"echo {path} > out; local PATH=./evil; ls",
+            f"echo {path} > out; export PATH=./evil; ls",
+            f"echo {path} > out; readonly PATH=./evil; ls",
+            f"echo {path} > out; let PATH=1; ls",
+            f"echo {path} > out; eval 'PATH=./evil'; ls",
+            f"echo {path} > out; unset PATH; ls",
         )
         for pack, engine, e in self.every_pack():
             for command in commands:

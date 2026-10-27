@@ -116,6 +116,8 @@ CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "r"
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c"}
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
 _COMMAND_NAME_ASSIGN = re.compile(r"(?:PATH|BASH_ENV|ENV)(?:\[[^]]*\])?\+?=")
+_VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typeset", "local", "export", "readonly",
+                             "let", "eval", "unset"}
 _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
@@ -624,7 +626,7 @@ class _Parser:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
             self.data.update(i for i, _, _ in marks)
         inert = bool(words) and words[0] in ("cd", "pushd", "popd", "pwd", "ls", "mkdir", "true", ":") or \
-            bool(words) and words[0] in ("echo", "printf") and not stdout_redirect
+            bool(words) and words[0] in ("echo", "printf") and "-v" not in words[1:] and not stdout_redirect
         step = {"inert": (data and not dynamic) or
                          (inert and not (stdin_redirect or docs or strings or loop_header or dynamic)),
                 "marks": [(a, b) for _, a, b in marks] if not self.via else []}
@@ -652,6 +654,8 @@ class _Parser:
         for cmd in cmds:
             argv = cmd["argv"]
             self.ctx["command_names_mutable"] |= (argv[0] in ("alias", "unalias", "shopt", "enable", "source", ".", "hash") or
+                                                  argv[0] in _VARIABLE_SETTING_BUILTINS or
+                                                  (argv[0] == "printf" and "-v" in argv[1:]) or
                                                   "command_not_found_handle" in argv or
                                                   any(_COMMAND_NAME_ASSIGN.match(a) for a in argv[1:]))
             if argv[0] == "alias":
