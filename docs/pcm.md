@@ -278,7 +278,8 @@ Opening a decision shows its args to the receiver. The SDK opens only the decisi
 ## Grants
 
 A grant says: this agent may ask for this intent, within these caveats, until this time. The signer signs it with
-the log key. A root grant needs a person's approval. A grant from the demo signer:
+the log key. A root grant needs the approval of a person signer.yaml's `approvals.persons` names, and carries that
+name in `issuer.person`. A grant from the demo signer:
 
 ```json
 {"pcm_grant": 0, "ts": "2026-10-27T13:37:07.576604Z",
@@ -307,6 +308,9 @@ agent consumes the approval, then calls `pcm_grant`. The signer refuses when:
 - signer.yaml has no `approvals` section (without it no answer comes from a named person);
 - the call was not approved and consumed with exactly these args;
 - the approver was an agent approver, the run's own agent (self-approved) or the grant's subject;
+- `approvals.persons` maps the approver's identity to no person (an OIDC approver too: map its identity there), so
+  the grant would name no one: `a root grant needs the approval of a person signer.yaml's approvals.persons names:
+  uid:990009 maps to none`;
 - `expires_at` is not within the next 24 hours;
 - the `pcm.grant` call already has its result (one grant per approval);
 - the run is held or quarantined.
@@ -314,8 +318,8 @@ agent consumes the approval, then calls `pcm_grant`. The signer refuses when:
 Without the ask rule there is nothing to consume, so no root grant can be made.
 
 **`delegable`** is the person's choice: may the subject pass this grant on? A child is made with `pcm_delegate`, by
-the grant's subject only, with no approval. It can only narrow: the same intent, an expiry no later than the
-parent's and caveats that imply the parent's. The child sets its own `delegable`. A grant with `delegable: false`
+the grant's subject only, with no approval. It can only narrow: the same intent, an expiry after now and no later than
+the parent's, and caveats that imply the parent's. The child sets its own `delegable`. A grant with `delegable: false`
 can't be passed on, by the signer or in a chain the receiver checks:
 
 ```text
@@ -370,7 +374,7 @@ The receiver checks the whole chain again (`verify_grants`), so a chain the sign
 | Rule | Check |
 |---|---|
 | signature | every grant is signed by the log key that signed the message |
-| root | no parent, issued by a person, issuer is not the subject |
+| root | no parent, issued by a person it names (`issuer.person`), issuer is not the subject |
 | link | each child's `parent` is the hash of the grant before it, which is delegable |
 | who delegates | each child's issuer is the agent its parent was granted to |
 | intent | every grant is for the message's intent |
@@ -391,8 +395,12 @@ The receiver checks the whole chain again (`verify_grants`), so a chain the sign
  "grants": {"result": "ok", "steps": 1, "root": {"kind": "person", "id": "uid:990001", "person": "alice"},
             "problems": []},
  "claims": [{"type": "approved_by", "result": "proven", "detail": "approval seq 4 by alice of pcm.grant call grant-1"}],
- "verdict": "accept", "reasons": []}
+ "verdict": "accept", "reasons": [], "skipped": []}
 ```
+
+`skipped` names the checks the caller didn't ask for: `replay` when it passes no `Replay`, `recipient` when it passes
+no `me`. An `accept` with something skipped says less than it reads: the message may be a replay, or for another
+receiver.
 
 | Verdict | When |
 |---|---|
@@ -412,18 +420,21 @@ replay: sent before this receiver started: ask for it again
 ```
 
 So a restart needs no saved state; the sender asks again. `me` is the receiver's own identity: a message addressed to
-another is rejected (`replay: addressed to uid:990102, not uid:990103`).
+another is rejected (`replay: addressed to uid:990102, not uid:990103`). A message rejected because it is for another
+receiver, or of a schema this receiver doesn't have or whose args break it, spends no nonce: the same message still
+passes once it reaches its receiver, or once the receiver has its schema.
 
 **From the command line,** for one saved message:
 
 ```text
 $ tracekit pcm verify msg.json --trust trust.json --schema refund.request.json --me uid:990102
-ACCEPT  signature ok · schema ok · grant ok (alice, 1 step) · approved_by proven
+ACCEPT  signature ok · schema ok · grant ok (alice, 1 step) · approved_by proven · not checked: replay
 ```
 
-It exits 0 for accept, 3 for accept-unproven, 1 for reject and 2 when it can't read its inputs. `--strict` rejects
-when a claim type the schema lists is not proven; `--json` prints the whole result. It does not check replay: it
-reads one message, and a new process remembers no nonces.
+It exits 0 for accept, 3 for accept-unproven, 1 for reject and 2 when it can't read its inputs (trust.json with two
+keys of one log too: [Trust and keys](#trust-and-keys)). `--strict` rejects when a claim type the schema lists is not
+proven; `--json` prints the whole result. It does not check replay: it reads one message, and a new process remembers
+no nonces. So its line ends `not checked: replay`, and `not checked: replay, recipient` without `--me`.
 
 ## Signer calls
 
@@ -494,6 +505,14 @@ each evidence checkpoint. A malformed or non-canonical vkey anywhere in `logs` o
 error: `pcm.verify` raises on it before it checks a message.
 
 Because the log key signs all three, a fault in PCM signing is a fault of the log key: the fix is rotating it.
+
+PCM 0.1 takes one Ed25519 key per log. A trust.json that pins two under one log name is the receiver's own error:
+`pcm.verify` raises and `tracekit pcm verify` exits 2 (`trust.json pins 2 Ed25519 keys of log …`). PCM declares no
+rotation, so it can't tell which of the two may sign a message now, and an old key that leaked would sign grants for
+as long as it stays pinned. For bundles, [signing](signing.md) says to keep old public keys pinned after a rotation,
+so old bundles still verify; that trust.json is not one for PCM. Give PCM its own trust.json that pins only each log's
+current key. To rotate, replace the key in it: messages, grants and evidence the old key signed then don't verify, so
+senders ask for new grants and send again.
 
 There is no revocation and no key validity period. A leaked log key signs any message, grant or evidence checkpoint,
 with any time and expiry, until every receiver removes it from trust.json: the 24-hour grant cap binds only an honest

@@ -12,14 +12,14 @@ import sys
 import unittest
 
 from tracekit import pcm
-from tracekit.format import checkpoint, sigmsg
+from tracekit.format import checkpoint, sigmsg, slh_dsa
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.signer import logkey, rpc_schema
 
 KEY = logkey.FileKey(os.urandom(32))
 VKEY = checkpoint.vkey("pcm-test/log", checkpoint.ED25519, KEY.public)
 OTHER = logkey.FileKey(os.urandom(32))
-OTHER_VKEY = checkpoint.vkey("pcm-test/log", checkpoint.ED25519, OTHER.public)
+OTHER_VKEY = checkpoint.vkey("pcm-other/log", checkpoint.ED25519, OTHER.public)
 TRUST = {"logs": [VKEY]}
 A, B, C, ALICE = "uid:990101", "uid:990102", "uid:990103", "uid:990001"
 T0 = 1_800_000_000.0
@@ -303,6 +303,8 @@ class Grants(unittest.TestCase):
         self.refused([grant([cv("kind", "==", "full")], intent=ref)], "kind missing breaks")
         self.refused([grant(intent=ref, issuer={"kind": "agent", "id": C, "run": "r", "tenant": "default"})],
                      "the root grant must come from a person's approval")
+        nobody = {"kind": "person", "id": ALICE, "run": "r", "tenant": "default", "approval_id": "apr-1"}
+        self.refused([grant(intent=ref, issuer=nobody)], "grant 0: the root grant's issuer names no person")
         self.refused([root, grant(narrow, issuer={"kind": "agent", "id": C, "run": "r", "tenant": "acme"},
                                   parent=event_hash(root), intent=ref)], "grant 1: issued in tenant acme, not the "
                                                                          "sender's default")
@@ -398,7 +400,7 @@ class Signature(unittest.TestCase):
         out = pcm.verify(message(key=OTHER), TRUST, [DOC], replay=pcm.Replay(now=T0), now=T0)
         self.assertEqual(out, {"signature": {"ok": False, "key": out["signature"]["key"]}, "replay": None,
                                "schema": None, "grants": None, "claims": None, "verdict": "reject",
-                               "reasons": ["signature: bad signature"]})
+                               "reasons": ["signature: bad signature"], "skipped": ["recipient"]})
 
     def test_a_bad_pin_is_the_receivers_error_wherever_it_sits(self):
         """PCM 0.1 10.1: a malformed or non-canonical vkey in trust.json is refused before any message is checked."""
@@ -406,6 +408,16 @@ class Signature(unittest.TestCase):
             for trust in ({"logs": [VKEY, bad]}, {"logs": [bad, VKEY]}, {"logs": [VKEY], "witnesses": [{"vkey": bad}]}):
                 with self.subTest(trust=trust), self.assertRaises(checkpoint.NoteError):
                     pcm.verify(message(), trust, [DOC])
+
+    def test_two_keys_of_one_log_are_the_receivers_error(self):
+        """PCM 0.1 declares no rotation: a second Ed25519 key under one log name is bad input, not a key to try."""
+        twin = checkpoint.vkey("pcm-test/log", checkpoint.ED25519, OTHER.public)
+        for trust in ({"logs": [VKEY, twin]}, {"logs": [twin, VKEY]}):
+            with self.subTest(trust=trust), self.assertRaisesRegex(ValueError, "2 Ed25519 keys of log pcm-test/log"):
+                pcm.verify(message(), trust, [DOC])
+        hybrid = checkpoint.vkey("pcm-test/log", checkpoint.HYBRID, checkpoint.SLH_DSA + os.urandom(slh_dsa.PK_SIZE))
+        for trust in ({"logs": [VKEY, OTHER_VKEY]}, {"logs": [VKEY, hybrid]}):   # another log; the hybrid line
+            self.assertEqual(pcm.verify(message(), trust, [DOC])["verdict"], "accept", trust)
 
 
 class ReplayTests(unittest.TestCase):
@@ -461,6 +473,23 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual((out["verdict"], out["replay"]["detail"]), ("reject", f"addressed to {B}, not {C}"))
         self.assertEqual(self.check(None, message(), me=B)["verdict"], "accept")
         self.assertEqual(self.check(None, message())["replay"], {"ok": None, "detail": "not checked"})
+
+    def test_the_result_names_what_it_skipped(self):
+        for r, me, skipped in ((None, None, ["replay", "recipient"]), (pcm.Replay(now=T0), None, ["recipient"]),
+                               (None, B, ["replay"]), (pcm.Replay(now=T0), B, [])):
+            with self.subTest(replay=r is not None, me=me):
+                self.assertEqual(self.check(r, message(), me=me)["skipped"], skipped)
+
+    def test_a_message_rejected_for_its_recipient_or_schema_spends_no_nonce(self):
+        r, m = pcm.Replay(now=T0), message()
+        self.assertEqual(self.check(r, m, me=C)["verdict"], "reject")
+        out = pcm.verify(m, TRUST, [], replay=r, now=T0)   # a schema this receiver doesn't have yet
+        self.assertEqual((out["verdict"], out["schema"]["errors"], out["replay"]), (
+            "reject", [f"unknown schema {REF}"], {"ok": True, "detail": "fresh"}))
+        with self.assertRaises(ValueError):   # a bad schema document: the receiver's own error
+            pcm.verify(m, TRUST, [{"name": "x"}], replay=r, now=T0)
+        self.assertEqual(self.check(r, m, me=B)["verdict"], "accept")
+        self.assertIn("replayed", self.check(r, m, me=B)["replay"]["detail"])
 
     def test_a_ts_that_is_no_real_time(self):
         body = {k: v for k, v in message().items() if k != "sig"}

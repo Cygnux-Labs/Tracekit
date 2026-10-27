@@ -228,6 +228,8 @@ def verify_grants(msg, doc, trust):
                 out.append(f"{at}: the root grant has a parent")
             if g["issuer"]["kind"] != "person":
                 out.append(f"{at}: the root grant must come from a person's approval")
+            elif not g["issuer"].get("person"):   # authority comes from a person the signer's config names
+                out.append(f"{at}: the root grant's issuer names no person")
             if g["issuer"]["id"] == g["subject"]:
                 out.append(f"{at}: the root grant's issuer is its own subject")
             continue
@@ -266,8 +268,8 @@ class Replay:
         self.started = time.time() if now is None else now
         self.seen, self.floor = {}, {}
 
-    def check(self, msg, now=None):
-        """(ok, detail) for a message whose signature passed; a passing one is remembered."""
+    def check(self, msg, now=None, record=True):
+        """(ok, detail) for a message whose signature passed; a passing one is remembered when `record`."""
         now = time.time() if now is None else now
         try:
             t, sender = _epoch(msg["ts"]), (msg["sig"]["key"], msg["from"]["agent"])
@@ -280,9 +282,11 @@ class Replay:
                 return False, "sent before this receiver started: ask for it again"
         if t <= self.floor.get(sender, float("-inf")):
             return False, "older than the messages this receiver remembers from the sender"
-        seen = self.seen.setdefault(sender, collections.OrderedDict())
-        if msg["nonce"] in seen:
+        if msg["nonce"] in self.seen.get(sender, ()):
             return False, "replayed: this nonce was seen before"
+        if not record:
+            return True, "fresh"
+        seen = self.seen.setdefault(sender, collections.OrderedDict())
         seen[msg["nonce"]] = t
         while seen and self.window_s is not None and next(iter(seen.values())) < now - self.window_s:
             seen.popitem(last=False)   # the window refuses it now
@@ -307,12 +311,18 @@ def _verdict(out, doc, strict):
 
 def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     """Check a message: envelope and signature, replay and recipient (`me`), its intent's schema among the documents
-    `schemas`, its grants and its claims. `verdict` is accept, accept-unproven or reject, with one reason per cause.
-    `strict`: a claim type the schema requires must be proven."""
-    for vk in trust.get("logs", []) + [w["vkey"] for w in trust.get("witnesses", [])]:
-        checkpoint.parse_vkey(vk)   # a bad pin is the receiver's own error (NoteError), wherever it sits in the list
+    `schemas`, its grants and its claims. `verdict` is accept, accept-unproven or reject, with one reason per cause;
+    `skipped` names the checks not asked for (replay without `replay`, recipient without `me`). `strict`: a claim type
+    the schema requires must be proven."""
+    logs = [checkpoint.parse_vkey(vk) for vk in trust.get("logs", [])]
+    for w in trust.get("witnesses", []):
+        checkpoint.parse_vkey(w["vkey"])   # a bad pin is the receiver's own error (NoteError), wherever it sits
+    for name, n in collections.Counter(x for x, _, type_, _ in logs if type_ == checkpoint.ED25519).items():
+        if n > 1:
+            raise ValueError(f"trust.json pins {n} Ed25519 keys of log {name}: PCM 0.1 declares no key rotation, so "
+                             "give it a trust.json that pins only the log's current key")
     out = {"signature": None, "replay": None, "schema": None, "grants": None, "claims": None, "verdict": "reject",
-           "reasons": []}
+           "reasons": [], "skipped": ["replay"] * (replay is None) + ["recipient"] * (me is None)}
     errs = _errors(PCM_MESSAGE, msg)
     if errs:
         out["reasons"] = [f"envelope: {e}" for e in errs[:8]]
@@ -322,10 +332,6 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     if e:
         out["reasons"] = [f"signature: {e}"]
         return out
-    ok, detail = replay.check(msg, now) if replay is not None else (None, "not checked")
-    if me is not None and msg["to"]["agent"] != me:
-        ok, detail = False, f"addressed to {msg['to']['agent']}, not {me}"
-    out["replay"] = {"ok": ok, "detail": detail}
     docs = {}
     for i, d in enumerate(schemas):
         if errs := check_schema(d):
@@ -334,6 +340,11 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     ref = msg["intent"]["type"]
     doc = docs.get(ref)
     errs = [f"unknown schema {ref}"] if doc is None else check_args(doc, msg["intent"]["args"])
+    if me is not None and msg["to"]["agent"] != me:   # for another receiver, or failing its schema: no nonce spent
+        ok, detail = False, f"addressed to {msg['to']['agent']}, not {me}"
+    else:
+        ok, detail = replay.check(msg, now, record=not errs) if replay is not None else (None, "not checked")
+    out["replay"] = {"ok": ok, "detail": detail}
     out["schema"] = {"ok": not errs, "ref": ref, "errors": errs}
     if doc is not None:
         out["grants"] = verify_grants(msg, doc, trust)

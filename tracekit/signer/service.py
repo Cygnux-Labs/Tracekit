@@ -4025,9 +4025,9 @@ class SignerService:
             "intent": m["intent"]["type"]}, {"message": msg})
 
     def _pcm_grant(self, identity, req):
-        """A root grant of exactly the args of the run's `pcm.grant` call, from its consumed approval: a person's, not
-        self-approved, by neither the run's agent nor the grant's subject, before the call completes; it expires within
-        MAX_GRANT_S."""
+        """A root grant of exactly the args of the run's `pcm.grant` call, from its consumed approval: by a person
+        approvals.persons names, not self-approved, by neither the run's agent nor the grant's subject, before the call
+        completes; it expires within MAX_GRANT_S."""
         key, agent = self._pcm_agent(identity, req)
         if self.approvals is None:   # without it any identity of the run's tenant may answer, and none is a person
             raise RPCError("forbidden", "a root grant needs signer.yaml's approvals, which names the people who answer")
@@ -4050,6 +4050,9 @@ class SignerService:
             if answer.get("self_approved") or a["answered"]["by"] == args["subject"]:   # the run's agent: self_approved
                 raise RPCError("forbidden", "a root grant needs the approval of a person other than the run's agent "
                                             "and the grant's subject")
+            if not answer.get("person"):
+                raise RPCError("forbidden", "a root grant needs the approval of a person signer.yaml's "
+                                            f"approvals.persons names: {a['answered']['by'][:256]} maps to none")
             # lean: until the call completes, each pcm_grant mints another grant of this approval (the same but for
             # ts); record the grants per approval if that matters
             if a["decision_id"] not in run["decisions"]:   # its tool.result is written
@@ -4062,7 +4065,7 @@ class SignerService:
         grant = aid and self._pcm_signed("pcm-grant", {
             "pcm_grant": 0, "ts": _iso(time.time()), "issuer": {
                 "kind": "person", "id": a["answered"]["by"], "run": key[1], "tenant": key[0], "approval_id": aid,
-                **({"person": a["answer"]["person"]} if "person" in a["answer"] else {})},
+                "person": a["answer"]["person"]},
             "subject": args["subject"], "intent": args["intent"], "caveats": args.get("caveats", []),
             "expires_at": args["expires_at"], "delegable": args["delegable"], "parent": None})
 
@@ -4075,7 +4078,7 @@ class SignerService:
 
     def _pcm_delegate(self, identity, req):
         """A child of grant `parent`, which this signer signed for the calling run's agent and which may be passed on:
-        the same intent, caveats that narrow the parent's (pcm.narrows) and an expiry no later than its."""
+        the same intent, caveats that narrow the parent's (pcm.narrows) and an expiry after now, no later than its."""
         key, agent = self._pcm_agent(identity, req)
         parent, caveats, now = req["parent"], req.get("caveats", []), _iso(time.time())
         # lean: this signer's own grants only, and no approval, as a child only narrows; accept other pinned signers'
@@ -4089,6 +4092,7 @@ class SignerService:
         if not parent["delegable"]:
             raise RPCError("forbidden", "this grant can't be passed on")
         problems = [f"the parent expired at {parent['expires_at']}"] * (parent["expires_at"] <= now) + [
+            f"expires_at {req['expires_at']} is not in the future"] * (req["expires_at"] <= now) + [
             f"expires_at is after the parent's, {parent['expires_at']}"] * (req["expires_at"] > parent["expires_at"]) \
             + pcm.narrows(parent["caveats"], caveats)
         if problems:

@@ -8,7 +8,9 @@ import unittest
 
 from test_pcm_signer import DOC, Case
 from tracekit import cli, pcm
+from tracekit.format import checkpoint
 from tracekit.pcm import cli as pcm_cli
+from tracekit.signer import logkey
 from tracekit.wiki import wiki_url
 
 
@@ -50,12 +52,17 @@ class TestVerify(Case):
 
     def test_exit_codes(self):
         msg = self.call("pcm_sign", message=self.body())["message"]
-        self.assertEqual(self.verify(msg)[:2], (0, "ACCEPT  signature ok · schema ok\n"))
+        self.assertEqual(self.verify(msg)[:2], (0, "ACCEPT  signature ok · schema ok · not checked: replay, "
+                                                   "recipient\n"))
+        self.assertEqual(self.verify(msg, "--me", "uid:990102")[:2], (0, "ACCEPT  signature ok · schema ok · "
+                                                                         "not checked: replay\n"))
         unproven = self.call("pcm_sign", message=self.body(claims=[
             {"type": "tests_passed", "args": {"suite": "pytest -q"}}]))["message"]
-        self.assertEqual(self.verify(unproven)[:2], (3, "ACCEPT-UNPROVEN  tests_passed: unproven (no evidence)\n"))
+        self.assertEqual(self.verify(unproven)[:2], (3, "ACCEPT-UNPROVEN  tests_passed: unproven (no evidence); "
+                                                        "not checked: replay, recipient\n"))
         code, out, _ = self.verify(msg, "--me", "uid:990103")
-        self.assertEqual((code, out), (1, "REJECT  replay: addressed to uid:990102, not uid:990103\n"))
+        self.assertEqual((code, out), (1, "REJECT  replay: addressed to uid:990102, not uid:990103; not checked: "
+                                          "replay\n"))
         code, out, _ = self.verify(dict(msg, intent=dict(msg["intent"], args={"amount": 50000, "order": 81})), "--json")
         self.assertEqual((code, json.loads(out)["reasons"]), (1, ["signature: bad signature"]))
 
@@ -77,13 +84,24 @@ class TestVerify(Case):
         self.assertEqual(code, 2)
         self.assertIn(f"tracekit pcm verify: {self.files['schema']}: ", err)
 
+    def test_two_keys_of_one_log_exit_2(self):
+        msg = self.call("pcm_sign", message=self.body())["message"]
+        name = checkpoint.parse_vkey(self.s.vkey)[0]
+        twin = checkpoint.vkey(name, checkpoint.ED25519, logkey.FileKey(os.urandom(32)).public)
+        self.files["trust"] = self.write("trust", dict(self.trust, logs=[self.s.vkey, twin]))
+        code, _, err = self.verify(msg)
+        self.assertEqual(code, 2)
+        self.assertIn(f"tracekit pcm verify: trust.json pins 2 Ed25519 keys of log {name}", err)
+
     def test_strict(self):
         doc = dict(DOC, claims=["approved_by"])
         self.files["schema"] = self.write("schema", doc)
         msg = self.call("pcm_sign", message=self.body(
             intent={"type": pcm.schema_ref(doc), "args": {"amount": 12000, "order": 81}}))["message"]
-        self.assertEqual(self.verify(msg)[:2], (3, "ACCEPT-UNPROVEN  approved_by: required, not proven\n"))
-        self.assertEqual(self.verify(msg, "--strict")[:2], (1, "REJECT  approved_by: required, not proven\n"))
+        self.assertEqual(self.verify(msg)[:2], (3, "ACCEPT-UNPROVEN  approved_by: required, not proven; not checked: "
+                                                   "replay, recipient\n"))
+        self.assertEqual(self.verify(msg, "--strict")[:2], (1, "REJECT  approved_by: required, not proven; not "
+                                                               "checked: replay, recipient\n"))
 
 
 if __name__ == "__main__":

@@ -294,6 +294,16 @@ class TestGrantWithoutApprovals(Case):
         self.assertIn("signer.yaml's approvals", self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args))
 
 
+class TestGrantWithoutPersons(Case):
+    approvals = {"approvers": ["uid:990001"]}
+
+    def test_refused_as_the_approver_maps_to_no_person(self):
+        args = self.args()
+        self.approve(args)
+        self.assertIn("uid:990001 maps to none", self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args))
+        self.assertEqual([e for e in self.records() if e["type"] == "ext"], [])
+
+
 class TestGrantSelfApproved(Case):
     approvals = dict(APPROVALS, persons=dict(APPROVALS["persons"], **{"uid:990101": "alice"}), self_approval="allow")
 
@@ -367,7 +377,11 @@ class TestDelegate(Case):
         self.assertIn("issued in tenant acme, not default", self.refused(
             "forbidden", "pcm_delegate", parent=acme, subject="uid:990102", caveats=NARROWER, delegable=True,
             expires_at=root["expires_at"]))
-        gone = self.delegate(root, subject="uid:990101", expires=-60)["grant"]   # A's own child, already expired
+        self.assertIn("is not in the future", self.refused(
+            "invalid_request", "pcm_delegate", parent=root, subject="uid:990102", caveats=NARROWER, delegable=True,
+            expires_at=svc._iso(time.time() - 60)))
+        gone = self.s._pcm_signed("pcm-grant", {k: v for k, v in root.items() if k != "sig"} | {
+            "expires_at": svc._iso(time.time() - 60)})   # A's own grant, already expired
         self.assertIn("expired at", self.refused(
             "invalid_request", "pcm_delegate", parent=gone, subject="uid:990102", caveats=NARROWER, delegable=True,
             expires_at=gone["expires_at"]))
