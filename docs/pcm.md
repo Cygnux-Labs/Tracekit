@@ -128,13 +128,16 @@ Each claim gets one result:
   A matching call of a tool the placement table doesn't class so is unproven too (`a tool the verifier can't place
   as a shell tool`), and so is a record that says less than the claim: a connect a kernel sensor or OpenShell saw
   (`the run try to connect to api.example.com, an attempt`), an egress minute in which no connection opened
-  (`saw no connection to api.example.com open`), a host that won't parse, or a `Write` whose path the verifier can't
-  tell from the claimed one ([Paths](#paths)). A connect the sensor marked `denied` counts for nothing, so a
-  `reached_host` claim that rests on one alone fails.
+  (`saw no connection to api.example.com open`), a host the verifier can't tell (a URL outside printable ASCII, a host
+  with `%`: [Hosts](#hosts)), or a `Write` whose path the verifier can't tell from the claimed one ([Paths](#paths)). A
+  connect the sensor marked `denied` counts for nothing, so a `reached_host` claim that rests on one alone fails.
 - **failed**: the evidence does not verify, no record in it says what the claim says, or the claim is malformed (a
   relative `file_written` path, a `tests_passed` suite that is no test command). An `approval` without the
   `approval.request` and `policy.decision` that say what was approved fails too: the sender chooses its evidence and
-  can always add them. A malformed claim fails with or without evidence.
+  can always add them. So do records that disagree on what the person approved, in any order: two `approval.request`
+  records of one approval that name different decisions, or approvals of the call that name decisions of different
+  tools or args (`the evidence holds 2 different decisions approved as call c1 by alice: send the records of one
+  approval`). A malformed claim fails with or without evidence.
 
 ### What `approved_by` says
 
@@ -197,33 +200,38 @@ not rely on the runner list.
 
 ### Hosts
 
-The claim's `host`, the call's URL host and the effect's `host` are each put in one form before they are compared,
-and a port is ignored:
+PCM 0.1 compares hosts in ASCII only. The claim's `host`, the call's URL host and the effect's `host` are each put in
+one form before they are compared, and a port is ignored:
 
-1. A claim's or effect's host is read as the host of `http://<host>/` (a bare IPv6 address as `http://[<host>]/`); a
+1. The URL, or the claim's or effect's host, must be printable ASCII: every character from `!` to `~` (U+0021 to
+   U+007E). A space, tab, newline or other control character, DEL or any non-ASCII character anywhere in it, the path
+   too, makes it one the verifier can't tell. An international name is compared in its `xn--` form, as DNS names it:
+   claim and fetch `xn--bcher-kva.example`, not `bücher.example`.
+2. Before anything else reads the URL, a `[` or `]` in its authority (between `//` and the first `/`, `?` or `#`) is
+   taken only as one pair around an IPv6 or IPvFuture address that opens the host after the last `@`, followed by
+   nothing or `:` and a port: `http://[::1]:8080/` and `http://u@[::1]/x` have a host; `http://[x]@good.com/`,
+   `http://[zz]@[::1]/`, `http://[::1]x/` and an authority of `[::1]@` alone can't be told. Brackets in the path or
+   query (`http://good.com/a[1]`) don't count.
+3. A claim's or effect's host is read as the host of `http://<host>/` (a bare IPv6 address as `http://[<host>]/`); a
    port after it must be 1 to 5 digits. A URL's host is read as a browser (WHATWG URL) reads it, and must also be the
-   host Python's `urllib` reads (`http://a.example\@b.example/` is read apart, so it won't parse). Only `http`,
-   `https`, `ws`, `wss`, `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
-2. The host is percent-decoded and NFKC-normalised. If it then holds `ß`, `ẞ`, `ς`, ZWNJ or ZWJ, which IDNA 2003 maps
-   away and a browser keeps (`faß.example` and `faẞ.example` are `fass.example` to Python and `xn--fa-hia.example` to
-   a browser), it won't parse; for a URL, that holds for the whole URL. Then `。` becomes `.`, and it is casefolded. An
-   IPv4 address in any form `inet_aton` takes (`0x7f.1`) is written as dotted decimal; an IPv6 address in brackets in
-   its short form, an IPv4-mapped or NAT64 one as the IPv4 address it reaches.
-3. A name loses one trailing dot and goes to ASCII label by label with Python's `idna` codec (IDNA 2003 ToASCII,
-   unassigned code points allowed, without the STD3 rules): `bücher.example` is `xn--bcher-kva.example`. A name with a
-   Cherokee letter won't parse: the codec lower-cases it by the Unicode of the verifier's Python, where IDNA 2003's
-   own table and a browser keep it (`aᎠb.example` is `xn--ab-5f1i.example` to Python, `xn--ab-y8l.example` to
-   them). The result must be labels of `a`-`z`, `0`-`9`, `_` and `-` joined by dots.
+   host Python's `urllib` reads (`http://a.example\@b.example/` is read apart). Only `http`, `https`, `ws`, `wss`,
+   `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
+4. A host is never percent-decoded: one with a `%`, as either reads it, can't be told (`http://%61.example/` is not
+   `a.example`, `http://[::1%25eth0]/` not `::1`).
+5. The host is then written for comparison:
+   - a name: lowercased, without one trailing dot, of labels of 1 to 63 of `a`-`z`, `0`-`9`, `_` and `-` joined by
+     dots. An `xn--` label is compared as written, without a punycode check.
+   - an IPv4 address, in any form `inet_aton` takes (`0x7f.1`, `2130706433`, `01.2.3.4` with `01` octal): dotted
+     decimal (`127.0.0.1`, `1.2.3.4`).
+   - an IPv6 address in brackets: RFC 5952 section 4 text (`[2001:DB8:0:0::1]` is `2001:db8::1`), an IPv4-mapped or
+     NAT64 one the IPv4 address it reaches. One whose dotted quad has a leading zero (`[::ffff:01.2.3.4]`) can't be
+     told: Python before 3.9.5 reads `01` as `1`, later releases refuse it.
 
-A host that won't parse (an empty label, a label over 63 characters, something that looks like an address and is
-none, `[` without an IPv6 address, a NUL or `%`, a URL Python can't split) makes that record unproven, never proven
-or failed; a claimed host that won't parse makes the claim unproven.
-
-A `[` or `]` in a URL's authority (between `//` and the first `/`, `?` or `#`) is taken only as one pair around an
-IPv6 address that opens the host after the last `@`, followed by nothing or `:` and a port: `http://[::1]:8080/` and
-`http://u@[::1]/x` have a host, `http://[x]@good.com/`, `http://[zz]@[::1]/` and `http://[::1]x/` don't, so a call of
-one is unproven. The verifier checks this itself, so its verdict is the same on every Python: `urlsplit`'s own check
-differs between releases. Brackets in the path or query (`http://good.com/a[1]`) don't count.
+A record whose host the verifier can't tell (any of the above, an empty label, something that looks like an address
+and is none, a URL Python can't split) is unproven, never proven or failed; a claimed host it can't tell makes the
+claim unproven. The verifier checks each rule itself, so its verdict is the same on every Python: `urlsplit`'s own
+bracket check, and what it strips from a URL (leading controls and spaces, tabs and newlines), differ between
+releases.
 
 ### Paths
 
@@ -273,7 +281,8 @@ The receiver checks, in order:
 
 1. The checkpoint note is signed by a log key trust.json pins, has the cosignatures `witnesses_required` asks for,
    and is of the same log as the key that signed the message.
-2. Each record's hash is the hash of its event, and its inclusion proof leads to the note's root.
+2. Each record's hash is the hash of its event, its inclusion proof leads to the note's root, and no record is listed
+   twice (`record 4: the same record as record 3`).
 3. Each record is from the sender's own run and tenant (`from.run`, `from.tenant`).
 4. Where a claim reads a call's args (`command`, `url`, `content`), the record is a `policy.decision` and carries
    `salt` and `args` that open its `args_commitment`. The signer never stores args in clear; the salt is what proves
@@ -448,7 +457,9 @@ ACCEPT  signature ok · schema ok · grant ok (alice, 1 step) · approved_by pro
 It exits 0 for accept, 3 for accept-unproven, 1 for reject and 2 when it can't read its inputs (trust.json with two
 keys of one log too: [Trust and keys](#trust-and-keys)). `--strict` rejects when a claim type the schema lists is not
 proven; `--json` prints the whole result. It does not check replay: it reads one message, and a new process remembers
-no nonces. So its line ends `not checked: replay`, and `not checked: replay, recipient` without `--me`.
+no nonces. So its line ends `not checked: replay`, and `not checked: replay, recipient` without `--me`. The sender
+chose parts of the line, so it prints a character a terminal would act on, and `\`, as JSON escapes it (`\u001b`,
+`\\`): a `\u001b` the sender wrote shows as `\\u001b`.
 
 ## Signer calls
 
@@ -522,12 +533,12 @@ Because the log key signs all three, a fault in PCM signing is a fault of the lo
 
 PCM 0.1 takes one Ed25519 key per log. A trust.json that pins two under one log name is the receiver's own error:
 `pcm.verify` raises and `tracekit pcm verify` exits 2 (`trust.json pins 2 Ed25519 keys for log …; PCM verifies with
-one: pass a trust file with only the current key`). PCM declares no
-rotation, so it can't tell which of the two may sign a message now, and an old key that leaked would sign grants for
-as long as it stays pinned. For bundles, [signing](signing.md) says to keep old public keys pinned after a rotation,
-so old bundles still verify; that trust.json is not one for PCM. Give PCM its own trust.json that pins only each log's
-current key. To rotate, replace the key in it: messages, grants and evidence the old key signed then don't verify, so
-senders ask for new grants and send again.
+one: pass a trust file with only the current key`, and `tracekit signer trust --config <signer.yaml> -o pcm-trust.json`
+writes one). PCM declares no rotation, so it can't tell which of the two may sign a message now, and an old key that
+leaked would sign grants for as long as it stays pinned. For bundles, [signing](signing.md) says to keep old public
+keys pinned after a rotation, so old bundles still verify; that trust.json is not one for PCM. Give PCM its own
+trust.json that pins only each log's current key. To rotate, replace the key in it: messages, grants and evidence the
+old key signed then don't verify, so senders ask for new grants and send again.
 
 There is no revocation and no key validity period. A leaked log key signs any message, grant or evidence checkpoint,
 with any time and expiry, until every receiver removes it from trust.json: the 24-hour grant cap binds only an honest

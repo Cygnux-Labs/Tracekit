@@ -320,7 +320,8 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     for name, n in collections.Counter(x for x, _, type_, _ in logs if type_ == checkpoint.ED25519).items():
         if n > 1:
             raise ValueError(f"trust.json pins {n} Ed25519 keys for log {name}; PCM verifies with one: pass a trust "
-                             "file with only the current key (`tracekit signer trust -o pcm-trust.json` writes one)")
+                             "file with only the current key (`tracekit signer trust --config <signer.yaml> -o "
+                             "pcm-trust.json` writes one)")
     out = {"signature": None, "replay": None, "schema": None, "grants": None, "claims": None, "verdict": "reject",
            "reasons": [], "skipped": ["replay"] * (replay is None) + ["recipient"] * (me is None)}
     errs = _errors(PCM_MESSAGE, msg)

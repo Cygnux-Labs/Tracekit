@@ -92,17 +92,20 @@ class TestVerify(Case):
         code, _, err = self.verify(msg)
         self.assertEqual(code, 2)
         self.assertEqual(err, f"tracekit pcm verify: trust.json pins 2 Ed25519 keys for log {name}; PCM verifies with "
-                              "one: pass a trust file with only the current key (`tracekit signer trust -o "
-                              "pcm-trust.json` writes one)\n")
+                              "one: pass a trust file with only the current key (`tracekit signer trust --config "
+                              "<signer.yaml> -o pcm-trust.json` writes one)\n")
 
     def test_sender_text_is_printed_escaped(self):
+        """Characters a terminal acts on, and `\\`, so a literal `\\u001b` the sender wrote can't pass for an escaped
+        ESC."""
+        path = "/x/\x1b[2J‮\\u001b/.."
         msg = self.call("pcm_sign", message=self.body(claims=[
-            {"type": "file_written", "args": {"path": "/x/\x1b[2J‮/..", "digest": "sha256:" + "0" * 64}}]))["message"]
+            {"type": "file_written", "args": {"path": path, "digest": "sha256:" + "0" * 64}}]))["message"]
         code, out, _ = self.verify(msg)
         self.assertEqual(code, 1)
         self.assertNotIn("\x1b", out)
         self.assertNotIn("‮", out)
-        self.assertIn("/x/\\u001b[2J\\u202e/.. has a `..`", out)
+        self.assertIn("/x/\\u001b[2J\\u202e\\\\u001b/.. has a `..`", out)
 
     def test_strict(self):
         doc = dict(DOC, claims=["approved_by"])

@@ -13,8 +13,7 @@ import os
 import posixpath
 import re
 import shlex
-import unicodedata
-from urllib.parse import unquote
+from urllib.parse import urlsplit
 
 from tracekit import core, merkle
 from tracekit.format import checkpoint
@@ -38,11 +37,11 @@ NO_TESTS, NO_TESTS_LONG = frozenset(("-h", "-V")), ("--help", "--version", "--co
 # escapes ($'\'' quotes apart in shlex and sh), comments, braces, globs and control characters but the tab
 _NOT_IN_SUITE = re.compile(r"[;&|()<>$`\\#{}*?\[\]\x00-\x08\x0a-\x1f\x7f]")
 _DRIVE = re.compile(r"[A-Za-z]:[\\/]")   # a Windows drive path, the only one read with `\` as `/`
-# UTS 46's deviation characters, and capital sharp s, which casefolding makes ss and UTS 46 a sharp s
-_DEVIATIONS = re.compile("[\u00df\u03c2\u1e9e\u200c\u200d]")
-# Cherokee letters: Nameprep's Unicode 3.2 table has no case pairs for them, Python's codec lower-cases them by its own
-_CHEROKEE = re.compile("[\u13a0-\u13f5\u13f8-\u13fd\uab70-\uabbf]")
-_C0 = "".join(map(chr, range(0x21)))
+# lean: URLs and hosts are read in printable ASCII (U+0021 to U+007E) only, where IDNA 2003, UTS 46 and every urlsplit
+# release agree; add one IDNA rule all verifiers share when receivers need hosts in Unicode
+_PRINTABLE = re.compile(r"[!-~]*")
+# a leading zero in an IPv6 address's dotted quad (::ffff:01.2.3.4): Python before 3.9.5 reads 01 as 1, later refuses it
+_ZERO_QUAD = re.compile(r"\.0[0-9]|:0[0-9]+\.")
 
 
 class EvidenceError(ValueError):
@@ -62,7 +61,7 @@ def evidence(ev, msg, trust):
         raise EvidenceError(f"checkpoint: of log {origin[:128]}, not the one that signed the message")
     if len(cosigs) < trust.get("witnesses_required", 0):
         raise EvidenceError(f"checkpoint: {len(cosigs)} pinned cosignature(s), {trust['witnesses_required']} required")
-    out = []
+    out, listed = [], {}
     for i, r in enumerate(ev["records"], 1):
         e = r["event"]
         if not isinstance(e, dict) or event_hash(e) != r["hash"]:
@@ -74,6 +73,9 @@ def evidence(ev, msg, trust):
         if type(e.get("seq")) is not int or proof is None or not merkle.verify_inclusion(
                 e["seq"], size, merkle.leaf_hash(bytes.fromhex(r["hash"][7:])), proof, root):
             raise EvidenceError(f"record {i}: not in the checkpoint")
+        if e["seq"] in listed:   # opened once and not once, a decision would say what was approved by their order
+            raise EvidenceError(f"record {i}: the same record as record {listed[e['seq']]}")
+        listed[e["seq"]] = i
         # lean: the sender's own run only; accept a parent session's runs when sub-agents' records are needed
         if (e.get("tenant"), e.get("run_id")) != (msg["from"]["tenant"], msg["from"]["run"]):
             raise EvidenceError(f"record {i}: from run {str(e.get('run_id'))[:128]}, not the sender's")
@@ -171,66 +173,49 @@ def approved_by(a, recs):
     """Proven by the person's approval of call `call` with the approval.request it answers and the policy.decision
     that request names: the call id is the agent's own name for the call, so only the decision says what was approved.
     A proven claim adds {tool, args} of that decision (args None unless the evidence opens it), which the detail shows
-    too, the agent's tool name as JSON so it can't spell args."""
-    best = ("failed", f"no approval of {a['call']} by the person {a['person']}")
+    too, the agent's tool name as JSON so it can't spell args. Records that disagree on what was approved fail it in
+    any order: requests of one approval that name two decisions, or approvals of the call that name two."""
+    mine = []
     for e, _ in recs:
         d = e["data"]
-        if not (e["type"] == "approval" and d["decision"] == "approve" and d["tool_use_id"] == a["call"]
-                and d.get("person") == a["person"] and d.get("approver_kind", "person") == "person"
-                and d.get("self_approved") is not True):
-            continue
+        if e["type"] == "approval" and d["decision"] == "approve" and d["tool_use_id"] == a["call"] \
+                and d.get("person") == a["person"] and d.get("approver_kind", "person") == "person" \
+                and d.get("self_approved") is not True:
+            mine.append(e)
+    if not mine:
+        return "failed", f"no approval of {a['call']} by the person {a['person']}"
+    found = {}   # {[tool, args] in JCS: (the first approval of it, tool, args)}
+    for e in sorted(mine, key=lambda e: e["seq"]):
         asked = {x["data"]["decision_id"] for x, _ in recs
-                 if x["type"] == "approval.request" and x["data"]["approval_id"] == d.get("approval_id")}
+                 if x["type"] == "approval.request" and x["data"]["approval_id"] == e["data"].get("approval_id")}
+        if len(asked) > 1:
+            return "failed", f"approval seq {e['seq']}: its approval.request records name {len(asked)} decisions"
         for x, args in recs:
             c = x["data"]
             if x["type"] == "policy.decision" and c.get("decision_id") in asked and c["tool_use_id"] == a["call"] \
                     and c.get("tool"):
-                return "proven", (f"approval seq {e['seq']} by {a['person']} of {canonical(c['tool']).decode()} call "
-                                  f"{a['call']}" + ("" if args is None else f" with args {canonical(args).decode()}")), \
-                    {"tool": c["tool"], "args": args}
+                found.setdefault(canonical([c["tool"], args]), (e, c["tool"], args))
+    if len(found) > 1:
+        return "failed", (f"the evidence holds {len(found)} different decisions approved as call {a['call']} by "
+                          f"{a['person']}: send the records of one approval")
+    if not found:
         # failed, not unproven: the sender picks the evidence and can always add both; without them the agent's call
         # id is all that would say what was approved
-        best = ("failed", f"approval seq {e['seq']} by {a['person']} of {a['call']}, but the evidence holds no decision "
-                          "of the call it approved: add the approval.request it answers and the policy.decision that "
-                          "request names")
-    return best
-
-
-def _deviant(text):
-    """Whether `text`, percent-decoded and NFKC-normalised, holds one of the four UTS 46 deviation characters (sharp s,
-    final sigma, ZWNJ, ZWJ): IDNA 2003 maps them away (fass.example for the name with a sharp s) where a browser keeps
-    them, so a host with one names two hosts."""
-    return bool(_DEVIATIONS.search(unicodedata.normalize("NFKC", unquote(text))))
-
-
-def _a_label(info):
-    """The host of classes.url_info's `info` as PCM 0.1 compares hosts: an IPv6 address as url_info writes it, an IPv4
-    address or a name without its one trailing dot and in ASCII by Python's `idna` codec, of labels of a-z, 0-9, `_`
-    and `-` only; None when it has none or it won't encode."""
-    h = info.get("host")
-    if h is None:
-        return None
-    if h.startswith("["):   # url_info writes an IPv6 address so; `[` alone (from %5b) is none
-        try:
-            return h if h.endswith("]") and ipaddress.IPv6Address(h[1:-1]) else None
-        except ValueError:
-            return None
-    name = h[:-1] if h.endswith(".") else h
-    if not name or name.endswith(".") or _CHEROKEE.search(name):
-        return None
-    # lean: IDNA 2003 (the stdlib), not UTS 46; take the idna package if a host they read apart matters
-    try:
-        label = name.encode("idna").decode("ascii")
-    except UnicodeError:
-        return None
-    return label if re.fullmatch(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*", label) else None
+        return "failed", (f"approval seq {min(e['seq'] for e in mine)} by {a['person']} of {a['call']}, but the "
+                          "evidence holds no decision of the call it approved: add the approval.request it answers and "
+                          "the policy.decision that request names")
+    [(e, tool, args)] = found.values()
+    opened = "" if args is None else f" with args {canonical(args).decode()}"
+    return "proven", f"approval seq {e['seq']} by {a['person']} of {canonical(tool).decode()} call {a['call']}" \
+        + opened, {"tool": tool, "args": args}
 
 
 def _brackets_ok(url):
-    """Whether the authority of `url`, as url_info's urlsplit reads it, passes PCM 0.1's bracket rule: no `[` or `]`,
-    or one of each around an IPv6 or IPvFuture address that opens the host after the last `@`, followed by nothing
-    or `:`. urlsplit's own check differs between Python releases; every release reads a URL that passes alike."""
-    u = re.sub(r"[\t\n\r]", "", classes.with_scheme(url).lstrip(_C0))
+    """Whether the authority of printable-ASCII `url`, as urlsplit reads it, passes PCM 0.1's bracket rule: no `[` or
+    `]`, or one of each around an IPv6 or IPvFuture address that opens the host after the last `@`, followed by
+    nothing or `:`. urlsplit's own check differs between Python releases; every release reads a URL that passes
+    alike."""
+    u = classes.with_scheme(url)
     u = u[m.end():] if (m := re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", u)) else u
     auth = re.split(r"[/?#]", u[2:], maxsplit=1)[0] if u.startswith("//") else ""
     if "[" not in auth and "]" not in auth:
@@ -243,16 +228,42 @@ def _brackets_ok(url):
         ipaddress.IPv6Address(inside)
     except ValueError:
         return re.fullmatch(r"v[0-9A-Fa-f]+\..+", inside) is not None
-    return True
+    return not _ZERO_QUAD.search(inside)
+
+
+def _url_host(url):
+    """The host `url` reaches as PCM 0.1 compares hosts: "" for none (no host, or a scheme without one: file:,
+    mailto:), None when the verifier can't tell. It reads only a URL of printable ASCII that passes the bracket rule,
+    whose host the browser (WHATWG URL) and urllib read alike and without `%`. A name is lowercased and loses one
+    trailing dot, and has labels of 1 to 63 of a-z, 0-9, `_` and `-` (an `xn--` label as written); an IPv4 address in
+    any form inet_aton takes is dotted decimal; an IPv6 address is RFC 5952 section 4 text in brackets, an IPv4-mapped
+    or NAT64 one the IPv4 address it reaches (classes.url_info), and one with a leading zero in a dotted quad is none
+    (_ZERO_QUAD)."""
+    if not _PRINTABLE.fullmatch(url) or not _brackets_ok(url):
+        return None
+    info = classes.url_info(url)
+    if "host" not in info and not info.get("internal") or info.get("scheme") not in (*classes.SPECIAL, None):
+        return ""
+    h, u = info.get("host"), classes.with_scheme(url)
+    if h is None or info.get("ambiguous") or any("%" in r or ":" in r and _ZERO_QUAD.search(r)
+                                                 for r in (classes._whatwg_host(u)[1], urlsplit(u).hostname) if r):
+        return None
+    if h.startswith("["):   # url_info writes an IPv6 address so; the browser's `[h.com]` (from http:\\[h.com]/) is none
+        try:
+            return h if h.endswith("]") and ipaddress.IPv6Address(h[1:-1]) else None
+        except ValueError:
+            return None
+    name = h[:-1] if h.endswith(".") else h
+    return name if re.fullmatch(r"[a-z0-9_-]{1,63}(\.[a-z0-9_-]{1,63})*", name) else None
 
 
 def _host(host):
     """A claim's or an effect's host (a name or address, maybe with a port of 1 to 5 digits) as PCM 0.1 compares
     hosts, None when it won't parse."""
-    if not isinstance(host, str) or re.search(r"[/\\?#@\s\[\]]", host) or _deviant(host) \
+    if not isinstance(host, str) or re.search(r"[/\\?#@\[\]]", host) \
             or host.count(":") == 1 and not re.fullmatch(r"[^:]*:[0-9]{1,5}", host):
         return None
-    return _a_label(classes.url_info(f"http://[{host}]/" if host.count(":") > 1 else f"http://{host}/"))
+    return _url_host(f"http://[{host}]/" if host.count(":") > 1 else f"http://{host}/") or None
 
 
 def reached_host(a, recs):
@@ -276,14 +287,7 @@ def reached_host(a, recs):
                     f"the run try to connect to {a['host']}, an attempt"))
 
     def match(tool, args):
-        info = classes.url_info(args["url"]) if isinstance(args.get("url"), str) else {}
-        # no URL, or one with no host a browser reads (file:, mailto:, gopher:)
-        if "host" not in info and not info.get("internal") or info.get("scheme") not in (*classes.SPECIAL, None):
-            return False
-        # lean: a deviation character anywhere in the URL, its path too, makes it unproven; read the host alone if a
-        # path with one matters
-        got = None if info.get("ambiguous") or _deviant(args["url"]) or not _brackets_ok(args["url"]) else \
-            _a_label(info)
+        got = _url_host(args["url"]) if isinstance(args.get("url"), str) else ""
         return None if got is None else got == want
     return min(_ran(recs, match, f"reached {a['host']}", "http"), seen, key=lambda o: _RANK[o[0]])
 

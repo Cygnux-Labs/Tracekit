@@ -460,6 +460,19 @@ class TestEvidence(Claims):
         self.assertClaim("failed", self.claim("approved_by", self.args_, self.with_record(proof=[bent, *proof[1:]])),
                          "record 1: not in the checkpoint")
 
+    def test_a_record_listed_twice(self):
+        """The decision listed once unopened and once opened would give `approved` by their order: any record listed
+        twice fails the claim."""
+        args, claim = self.args(), {"person": "alice", "call": "g2"}
+        self.approve(args, tcid="g2")
+        d, r, a = approval_seqs(self.records(), "g2")
+        ev = self.evidence([d, r, a], {d: args})
+        self.assertEqual(self.result("approved_by", claim, ev)["approved"], {"tool": "pcm.grant", "args": args})
+        unopened = {k: v for k, v in ev["records"][0].items() if k not in ("salt", "args")}
+        for records, detail in (([unopened, *ev["records"]], "record 2: the same record as record 1"),
+                                ([*ev["records"], ev["records"][-1]], "record 4: the same record as record 3")):
+            self.assertClaim("failed", self.claim("approved_by", claim, dict(ev, records=records)), detail)
+
     def test_a_bad_proof_or_seq(self):
         fake = {"seq": "x"}
         for ev in (self.with_record(proof=["é" * 4]), self.with_record(event=fake, hash=event_hash(fake))):
@@ -664,6 +677,37 @@ class PCM01(unittest.TestCase):
             with self.subTest(edit=edit):
                 self.assertEqual(claims.approved_by(claim, approval(**edit))[0], "failed")
 
+    def test_approved_by_does_not_depend_on_record_order(self):
+        """Records that disagree on what the person approved fail the claim in either order: a decision listed
+        unopened and opened, two requests of one approval naming two decisions (the other one in the evidence or
+        not), two approvals of the call naming different decisions. Records that agree prove it, by the first approval;
+        an opened decision gives its args."""
+        claim, motd = {"person": "alice", "call": "c1"}, {"path": "/etc/motd"}
+        dec, req, app = approval("read_file")
+        pay = ({"type": "policy.decision", "seq": 4, "data": {"tool": "pay", "decision": "ask", "decision_id": "d2",
+                                                              "tool_use_id": "c1"}}, None)
+        again = ({"type": "approval", "seq": 6, "data": dict(app[0]["data"], approval_id="a2")}, None)
+
+        def request(aid, did):
+            return {"type": "approval.request", "seq": 5, "data": {"approval_id": aid, "decision_id": did}}, None
+        two = "approval seq 3: its approval.request records name 2 decisions"
+        for recs, why in (([dec, (dec[0], motd), req, app], "2 different decisions approved as call c1 by alice"),
+                          ([dec, req, pay, request("a1", "d2"), app], two),
+                          ([dec, req, app, request("a1", "d2")], two),
+                          ([dec, req, app, pay, request("a2", "d2"), again], "2 different decisions approved as")):
+            for order in (recs, recs[::-1]):
+                with self.subTest(order=order):
+                    got = claims.approved_by(claim, order)
+                    self.assertEqual(got[0], "failed", got)
+                    self.assertIn(why, got[1])
+        for recs, want in (([dec, req, app, request("a2", "d1"), again], {"tool": "read_file", "args": None}),
+                           ([(dec[0], motd), req, app], {"tool": "read_file", "args": motd})):
+            end = "" if want["args"] is None else ' with args {"path":"/etc/motd"}'
+            for order in (recs, recs[::-1]):
+                with self.subTest(order=order):
+                    self.assertEqual(claims.approved_by(claim, order),
+                                     ("proven", f'approval seq 3 by alice of "read_file" call c1{end}', want))
+
     def test_approved_by_writes_the_tool_as_json(self):
         """data.tool is the agent's own string: as JSON in the detail it can't spell opened args, and `approved`
         carries it apart."""
@@ -672,11 +716,15 @@ class PCM01(unittest.TestCase):
                          (f"approval seq 3 by alice of {canonical(tool).decode()} call c1", {"tool": tool, "args": None}))
 
     def test_reached_host_compares_canonical_hosts(self):
-        for host, recs in (("xn--bcher-kva.example", call("fetch", {"url": "https://BÜCHER.example:8443/x"})),
+        for host, recs in (("xn--bcher-kva.example", call("fetch", {"url": "https://XN--BCHER-KVA.Example:8443/x"})),
+                           ("xn--zz.example", call("fetch", {"url": "http://XN--zz.example/"})),   # no valid punycode
                            ("api.example.com", call("fetch", {"url": "https://api.example.com./"})),
                            ("api.example.com.", call("fetch", {"url": "https://api.example.com/"})),
                            ("api.example.com:443", call("fetch", {"url": "https://api.example.com/"})),
                            ("::1", call("fetch", {"url": "http://[::1]:8080/"})),
+                           ("2001:db8::1", call("fetch", {"url": "http://[2001:DB8:0:0::1]/"})),
+                           ("127.0.0.1", call("fetch", {"url": "http://0x7f.1/"})),
+                           ("1.2.3.4", call("fetch", {"url": "http://01.2.3.4/"})),   # inet_aton: 01 is octal
                            ("api.example.com", effect("api.example.com.")),
                            ("10.0.0.1", effect("::ffff:10.0.0.1"))):
             with self.subTest(host=host, recs=recs):
@@ -685,32 +733,63 @@ class PCM01(unittest.TestCase):
                          "failed")
 
     def test_a_host_that_wont_parse_is_unproven(self):
+        long = "a" * 64 + ".example"   # a label over 63 characters
         for host, recs in (("999.1.1.1", []), ("a..example", call("fetch", {"url": "http://a..example/"})),
                            ("a.example", call("fetch", {"url": "http://a..example/"})),
-                           ("a.example", effect("a..example")),
+                           ("a.example", effect("a..example")), (long, call("fetch", {"url": f"http://{long}/"})),
                            # a browser reads a.example, Python's urllib b.example
                            ("a.example", call("fetch", {"url": "http://a.example\\@b.example/"})),
-                           # sharp s: a browser reads xn--fa-hia.example, IDNA 2003 fass.example; U+03F2 is a final
-                           # sigma after NFKC; ZWJ
-                           ("fass.example", call("fetch", {"url": "http://fa%C3%9F.example/"})),
-                           ("xn--4xa.example", call("fetch", {"url": "http://\u03f2.example/"})),
-                           ("ab.example", effect("a\u200db.example")), ("fass.example", effect("FA\u00df.example")),
-                           # capital sharp s: NFKC keeps it, casefolding makes it ss, UTS 46 a sharp s
-                           ("fass.example", call("fetch", {"url": "http://fa\u1e9e.example/"})),
-                           ("fass.example", call("fetch", {"url": "http://fa%E1%BA%9E.example/"})),
-                           ("fass.example", effect("FA\u1e9e.example")),
-                           # Cherokee: the stdlib codec lower-cases U+13A0 to U+AB70 (xn--ab-5f1i), Nameprep's Unicode
-                           # 3.2 table and UTS 46 keep it (xn--ab-y8l)
-                           ("xn--ab-5f1i.example", call("fetch", {"url": "http://a\u13a0b.example/"})),
-                           ("xn--ab-5f1i.example", call("fetch", {"url": "http://a\uab70b.example/"})),
-                           ("xn--ab-5f1i.example", effect("a\u13a0b.example")),
-                           # no IPv6 address in brackets, a NUL, a port that is no number
-                           ("h.com", call("fetch", {"url": "http://%5b::1%5d/"})),
-                           ("h.com.evil", call("fetch", {"url": "http://h.com%00.evil/"})),
+                           # no IPv6 address in brackets, a port that is no number
+                           ("h.com", call("fetch", {"url": "http:\\\\[h.com]/"})),
                            ("example.com:abc", []), ("example.com:", []), ("1.2.3.4:123456", []),
                            ("a.example", effect("a.example:x"))):
             with self.subTest(host=host, recs=recs):
                 self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
+
+    def test_only_printable_ascii_is_read(self):
+        """A URL or host with any character outside U+0021 to U+007E is one the verifier can't tell: IDNA 2003, UTS 46
+        and Python's codec name some hosts apart (sharp s, U+1806, U+3164, U+0378), and urlsplit releases drop leading
+        controls and spaces, tabs and newlines differently, even inside a percent-escape."""
+        for host, recs in (("fass.example", call("fetch", {"url": "http://fa%C3\t%9F.example/"})),
+                           ("fass.example", call("fetch", {"url": "http://fa\u00df.example/"})),
+                           ("ab.example", call("fetch", {"url": "http://a\u1806b.example/"})),
+                           ("ab.example", call("fetch", {"url": "http://a\u3164b.example/"})),
+                           ("xn--x-qib.example", call("fetch", {"url": "http://x\u0378.example/"})),
+                           ("xn--bcher-kva.example", call("fetch", {"url": "http://b\u00fccher.example/"})),
+                           *(("a.example", call("fetch", {"url": url})) for url in (
+                               "http://a.example/caf\u00e9", " http://a.example/", "\x01http://a.example/",
+                               "http://a.ex\tample/", "http://a.example/ x", "http://a.example/\x7f")),
+                           ("xn--bcher-kva.example", effect("b\u00fccher.example")),
+                           ("b\u00fccher.example", effect("xn--bcher-kva.example"))):
+            with self.subTest(host=host, recs=recs):
+                self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
+
+    def test_a_host_with_a_percent_is_unproven(self):
+        """Hosts are never percent-decoded: a `%` in the host the browser or urllib reads makes it one the verifier
+        can't tell."""
+        for host, recs in (("a.example", call("fetch", {"url": "http://%61.example/"})),
+                           ("a.example", call("fetch", {"url": "http:\\\\%61.example/"})),   # the browser's host
+                           ("a.example", call("fetch", {"url": "http://a.example\\@%61.example/"})),   # urllib's
+                           ("h.com", call("fetch", {"url": "http://%5bh.com%5d/"})),
+                           ("h.com.evil", call("fetch", {"url": "http://h.com%00.evil/"})),
+                           ("::1", call("fetch", {"url": "http://[::1%25eth0]/"})),
+                           ("a.example", effect("%61.example")), ("%61.example", effect("a.example"))):
+            with self.subTest(host=host, recs=recs):
+                self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
+
+    def test_an_ipv6_dotted_quad_with_a_leading_zero_is_unproven(self):
+        """Python before 3.9.5 reads ::ffff:01.2.3.4 as ::ffff:1.2.3.4, later releases refuse it: PCM 0.1 refuses it
+        on every release, emulated here."""
+        octet = ipaddress._BaseV4._parse_octet.__func__
+        lenient = classmethod(lambda cls, s: octet(cls, s.lstrip("0") or "0"))
+        for old in (False, True):
+            with self.subTest(old=old), mock.patch.object(ipaddress._BaseV4, "_parse_octet", lenient) if old \
+                    else contextlib.nullcontext():
+                for host, recs in (("1.2.3.4", call("fetch", {"url": "http://[::ffff:01.2.3.4]/"})),
+                                   ("1.2.3.4", call("fetch", {"url": "file://[::ffff:01.2.3.4]/"})),   # bracket rule
+                                   ("1.2.3.4", effect("::ffff:1.2.03.4")),
+                                   ("::ffff:01.2.3.4", call("fetch", {"url": "http://1.2.3.4/"}))):
+                    self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven", (host, recs))
 
     def test_a_url_whose_scheme_has_no_host_reaches_none(self):
         for url in ("file://a.example/x", "gopher://a.example/", "FILE://a.example/x"):
@@ -719,11 +798,12 @@ class PCM01(unittest.TestCase):
         self.assertEqual(claims.reached_host({"host": "a.example"}, call("fetch", {"url": "//a.example/x"}))[0],
                          "proven")
 
-    def test_the_bracket_rule_is_pcm_01s_not_urlsplits(self):
+    def test_no_verdict_depends_on_the_urlsplit_release(self):
         """A `[` or `]` in a URL's authority reaches a host only as one pair around an IPv6 or IPvFuture address that
-        opens the host after the last `@`. urlsplit's own check differs between Python releases (none, the first
-        bracketed part of the authority, the part after the last `@`), so each is emulated: the verdicts must not
-        move."""
+        opens the host after the last `@`, checked before anything else reads the URL. urlsplit's own check differs
+        between Python releases (none, the first bracketed part of the authority, the part after the last `@`), and so
+        does what it strips (leading controls and spaces from 3.11.4, tabs and newlines from 3.9.5), so each is
+        emulated: the verdicts must not move."""
         def first_part(netloc):   # earlier CPython releases' check, from 3.11.4 on
             inside = netloc.partition("[")[2].partition("]")[0]
             if not (re.fullmatch(r"v[0-9A-Fa-f]+\..+", inside) if inside.startswith("v")
@@ -734,14 +814,21 @@ class PCM01(unittest.TestCase):
                                                                   "unproven"),
                  ("::1", "http://[zz]@[::1]/", "unproven"), ("::1", "http://[::1]x/", "unproven"),
                  ("x", "http://[@x::1]/", "unproven"),
+                 # agent-flow:allow-secret (no password: an IPv6 address before an empty host)
+                 ("api.example.com", "http://[::1]@/", "unproven"), ("::1", "http://[::1]@/", "unproven"),
+                 ("a.example", " http://a.example\\@b.example/", "unproven"),
+                 ("a.example", "\x01http://a.example/", "unproven"),
+                 ("a.example", "ht\ttp://a.example\\@b.example/", "unproven"),
                  ("::1", "http://[::1]:8080/", "proven"), ("::1", "http://u@[::1]/x", "proven"),
                  ("1.2.3.4", "http://[::ffff:1.2.3.4]/", "proven"), ("good.com", "http://good.com/a[1]", "proven"),
                  ("good.com", "http://good.com/?q=]", "proven"), ("other.com", "http://good.com/?q=]", "failed"))
         self.addCleanup(urllib.parse.clear_cache)
-        for check in (None, lambda netloc: None, first_part):
+        for emu in ({}, {"_check_bracketed_netloc": lambda netloc: None}, {"_check_bracketed_netloc": first_part},
+                    {"_WHATWG_C0_CONTROL_OR_SPACE": ""},
+                    {"_WHATWG_C0_CONTROL_OR_SPACE": "", "_UNSAFE_URL_BYTES_TO_REMOVE": []}):
             urllib.parse.clear_cache()   # urlsplit caches what it read
-            with self.subTest(check=check), mock.patch("urllib.parse._check_bracketed_netloc", check, create=True) \
-                    if check else contextlib.nullcontext():
+            with self.subTest(emu=emu), mock.patch.multiple(urllib.parse, create=True, **emu) if emu \
+                    else contextlib.nullcontext():
                 for host, url, want in cases:
                     self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url}))[0], want, url)
 
@@ -766,11 +853,6 @@ class PCM01(unittest.TestCase):
             self.assertEqual(claims.tests_passed({"suite": "pytest"}, call("deploy_sh", {"command": "pytest"})),
                              ("unproven", "a tool the verifier can't place as a shell tool"))
             self.assertNotIn("deploy_sh", claims.placed())
-
-    def test_idna_2003_takes_unassigned_code_points(self):
-        """CPython's codec doesn't check Nameprep's table A.1, so PCM 0.1 has AllowUnassigned on."""
-        self.assertEqual(claims.reached_host({"host": "xn--x-qib.example"},
-                                             call("fetch", {"url": "http://x\u0378.example/"}))[0], "proven")
 
     def test_file_written_names_an_absolute_path(self):
         content = "x = 1\n"
