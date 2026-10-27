@@ -287,6 +287,13 @@ class Grants(unittest.TestCase):
         self.refused([grant([cv("amount", "<=", 20000)], intent=ref)], "amount 50000 breaks amount <= 20000",
                      args={"amount": 50000, "order": 81})
         self.refused([grant([cv("kind", "==", "full")], intent=ref)], "kind missing breaks")
+        self.refused([grant(intent=ref, issuer={"kind": "agent", "id": C, "run": "r"})],
+                     "the root grant must come from a person's approval")
+
+    def test_args_not_an_object(self):
+        ref = pcm.schema_ref(self.DOC)
+        for args in ("amount", ["amount"], 5):
+            self.refused([grant([cv("amount", "<=", 20000)], intent=ref)], "amount missing breaks", args=args)
 
     def test_grant_required(self):
         out = self.run_chain([])

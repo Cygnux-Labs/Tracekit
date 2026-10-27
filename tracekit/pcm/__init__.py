@@ -169,9 +169,9 @@ def narrows(parent, child):
 
 
 def satisfies(args, c):
-    """Whether intent args pass caveat `c` (a missing field does not)."""
+    """Whether intent args pass caveat `c` (a missing field, or args that are not an object, do not)."""
     n = _norm(c)
-    return c["field"] in args and n is not None and _implies(("==", args[c["field"]]), n)
+    return isinstance(args, dict) and c["field"] in args and n is not None and _implies(("==", args[c["field"]]), n)
 
 
 def sign(key, vkey, purpose, body):
@@ -218,11 +218,13 @@ def verify_grants(msg, doc, trust):
             out.append(f"{at}: expired at {g['expires_at']}")
         for c in g["caveats"]:   # every caveat of every grant: the check does not rest on narrowing alone
             if not satisfies(args, c):
-                got = json.dumps(args[c["field"]])[:64] if c["field"] in args else "missing"
+                got = json.dumps(args[c["field"]])[:64] if isinstance(args, dict) and c["field"] in args else "missing"
                 out.append(f"{at}: {c['field']} {got} breaks {_show(c)}")
         if i == 0:
             if g["parent"] is not None:
                 out.append(f"{at}: the root grant has a parent")
+            if g["issuer"]["kind"] != "person":
+                out.append(f"{at}: the root grant must come from a person's approval")
             if g["issuer"]["id"] == g["subject"]:
                 out.append(f"{at}: the root grant's issuer is its own subject")
             continue
