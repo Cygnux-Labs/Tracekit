@@ -5,7 +5,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:06d9a04fdf034abbb5bb972bc4a45b3fdc93922c7b182aa97c6a5ae8f6270b22",
+      "policy_hash": "sha256:bf127f6f266eae5bb22d04e28bb69aaf5cef0e47caabf5844056e8298a120e5b",
       "heldout": {
         "recall": 0.5833333333333334,
         "deny_recall": 0.25952380952380955,
@@ -2163,7 +2163,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:be21431565e7b2276690dcae20ff93c8d7915d14c39be2406998c9fefaed4bb0",
+      "policy_hash": "sha256:bc7937310491a4e2a755add76ce5d8b1dd954df527a7b1a8ea25470059e73a41",
       "heldout": {
         "recall": 0.6523809523809524,
         "deny_recall": 0.35714285714285715,
