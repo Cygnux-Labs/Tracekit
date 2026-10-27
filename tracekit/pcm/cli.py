@@ -95,9 +95,11 @@ def demo():
         call(A, "complete", **run, stream="a", client_seq=1, tool_call_id="grant-1", decision_id=dec["decision_id"],
              args_digest=event_hash({"tool": "pcm.grant", "args": args}), status="ok",
              result={"grant": event_hash(grant)})
-        seq = next(e["run_seq"] for e in call(A, "read", **run, limit=1000)["events"] if e["type"] == "approval")
+        # the approval, the approval.request it answers and the decision that request names: what alice approved
+        seqs = [e["run_seq"] for e in call(A, "read", **run, limit=1000)["events"]
+                if e["type"] in ("policy.decision", "approval.request", "approval")]
         s.checkpoint()
-        ev = call(A, "pcm_evidence", **run, run_seqs=[seq])
+        ev = call(A, "pcm_evidence", **run, run_seqs=seqs)
         ev = {"checkpoint": ev["checkpoint"], "records": [{k: x[k] for k in ("event", "hash", "proof")}
                                                          for x in ev["records"]]}
         approved = {"type": "approved_by", "args": {"person": "alice", "call": "grant-1"}, "evidence": ev}

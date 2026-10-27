@@ -8,21 +8,23 @@ agent's process reported (T1) is its own word, so a claim that rests on one is u
 import functools
 import hmac
 import ipaddress
+import json
 import os
+import posixpath
 import re
 import shlex
+import sys
 import unicodedata
 from urllib.parse import unquote
 
-from tracekit import core, merkle, yamlmini
+from tracekit import core, merkle
 from tracekit.format import checkpoint
-from tracekit.format.canon import event_hash
+from tracekit.format.canon import canonical, event_hash
 from tracekit.pcm import CLAIM_ARGS, check_args
 from tracekit.policy2 import classes
 from tracekit.schema import V2, validate
 
 _RANK = {"proven": 0, "unproven": 1, "failed": 2}
-PACKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs")
 # PCM 0.1's test runners: the leading words of a suite, its program by its bare name (a strict subset of the test
 # runners command_facts knows, without wrappers such as `uv run` or `sudo`), and flags with which a runner runs no
 # tests, with the long ones' prefixes (argparse takes `--he` for `--help`)
@@ -36,8 +38,11 @@ NO_TESTS, NO_TESTS_LONG = frozenset(("-h", "-V")), ("--help", "--version", "--co
 # what a suite may not hold, so that shlex reads its words as sh does: operators and redirections, expansions and
 # escapes ($'\'' quotes apart in shlex and sh), comments, braces, globs and control characters but the tab
 _NOT_IN_SUITE = re.compile(r"[;&|()<>$`\\#{}*?\[\]\x00-\x08\x0a-\x1f\x7f]")
-_ABSOLUTE = re.compile(r"/|[A-Za-z]:/")   # what fs_path keeps absolute
+_DRIVE = re.compile(r"[A-Za-z]:[\\/]")   # a Windows drive path, the only one read with `\` as `/`
 _DEVIATIONS = re.compile("[\u00df\u03c2\u200c\u200d]")   # UTS 46's deviation characters
+# urlsplit refuses a netloc whose brackets hold no IPv6 address from Python 3.11.4 on (http://[x]@good.com/), and
+# reads good.com in it before
+URLSPLIT_CHECKS_BRACKETS = sys.version_info >= (3, 11, 4)
 
 
 class EvidenceError(ValueError):
@@ -89,14 +94,11 @@ def evidence(ev, msg, trust):
 
 @functools.lru_cache(maxsize=None)
 def placed():
-    """{tool: class} of the tool names the policy packs shipped with tracekit map (verifier code, never a bundle's
-    policy); a pattern, or a name two packs class differently, is left out."""
-    seen = {}
-    for name in sorted(os.listdir(PACKS)):
-        if name.endswith(".yaml"):
-            for tool, cls in (yamlmini.loads(core.read_text(os.path.join(PACKS, name))).get("tools") or {}).items():
-                seen.setdefault(tool, set()).add(cls)
-    return {tool: cls for tool, (cls, *more) in seen.items() if not more and "*" not in tool}
+    """{tool: class}: PCM 0.1's tool placement table, tools.json beside this module (verifier code, never a bundle's
+    policy). It froze the tool names the policy packs of tracekit 1.4 mapped, but patterns and names two packs class
+    differently, so a pack added or edited since changes no verdict."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools.json"), encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _ran(recs, match, what, cls=None):
@@ -114,7 +116,7 @@ def _ran(recs, match, what, cls=None):
                        key=lambda o: _RANK[o[0]])
         if not m:
             continue
-        # lean: the shipped packs' tools map; a custom shell or http tool is unproven until the verifier takes one
+        # lean: PCM 0.1's frozen table; a custom shell or http tool is unproven until a later PCM version places it
         if cls and placed().get(d["tool"]) != cls:   # a `command` or `url` field alone is not a shell or http call
             got = ("unproven", f"a tool the verifier can't place as a {cls} tool")
             best = min(got, best, key=lambda o: _RANK[o[0]])
@@ -151,11 +153,12 @@ def malformed(type_, a):
     None. A malformed claim fails with or without evidence."""
     if type_ == "tests_passed" and not test_command(a["suite"]):
         return f"{a['suite'][:64]!r} is not a single test command"
-    path = a.get("path", "").replace("\\", "/")
-    if type_ == "file_written" and ".." in path.split("/"):   # fs_path keeps only what follows the last `..`
-        return f"{a['path'][:64]} has a `..`: name the file's own path"
-    if type_ == "file_written" and not _ABSOLUTE.match(path):
-        return f"{a['path'][:64]} is relative: name the file's absolute path"
+    if type_ == "file_written":
+        path, windows = a["path"], _DRIVE.match(a["path"])
+        if ".." in (path.replace("\\", "/") if windows else path).split("/"):   # only what follows it is certain
+            return f"{path[:64]} has a `..`: name the file's own path"
+        if not (windows or path.startswith("/")):
+            return f"{path[:64]} is relative: name the file's absolute path"
     return None
 
 
@@ -165,13 +168,30 @@ def tests_passed(a, recs):
 
 
 def approved_by(a, recs):
+    """Proven by the person's approval of call `call` with the approval.request it answers and the policy.decision
+    that request names: the call id is the agent's own name for the call, so only the decision says what was approved
+    (its tool, and its args when the evidence opens them, which the detail shows)."""
+    best = ("failed", f"no approval of {a['call']} by the person {a['person']}")
     for e, _ in recs:
         d = e["data"]
-        if e["type"] == "approval" and d["decision"] == "approve" and d["tool_use_id"] == a["call"] \
-                and d.get("person") == a["person"] and d.get("approver_kind", "person") == "person" \
-                and d.get("self_approved") is not True:
-            return "proven", f"approval seq {e['seq']} by {a['person']} of {a['call']}"
-    return "failed", f"no approval of {a['call']} by the person {a['person']}"
+        if not (e["type"] == "approval" and d["decision"] == "approve" and d["tool_use_id"] == a["call"]
+                and d.get("person") == a["person"] and d.get("approver_kind", "person") == "person"
+                and d.get("self_approved") is not True):
+            continue
+        asked = {x["data"]["decision_id"] for x, _ in recs
+                 if x["type"] == "approval.request" and x["data"]["approval_id"] == d.get("approval_id")}
+        for x, args in recs:
+            c = x["data"]
+            if x["type"] == "policy.decision" and c.get("decision_id") in asked and c["tool_use_id"] == a["call"] \
+                    and c.get("tool"):
+                return "proven", (f"approval seq {e['seq']} by {a['person']} of {c['tool']} call {a['call']}"
+                                  + ("" if args is None else f" with args {canonical(args).decode()}"))
+        # failed, not unproven: the sender picks the evidence and can always add both; without them the agent's call
+        # id is all that would say what was approved
+        best = ("failed", f"approval seq {e['seq']} by {a['person']} of {a['call']}, but the evidence holds no decision "
+                          "of the call it approved: add the approval.request it answers and the policy.decision that "
+                          "request names")
+    return best
 
 
 def _deviant(text):
@@ -202,6 +222,13 @@ def _a_label(info):
     return label if label and re.fullmatch(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*", label) else None
 
 
+def _old_brackets(url, info):
+    """Whether `url` holds a `[` or `]` but the brackets of its IPv6 host (url_info's `info`), on a Python whose
+    urlsplit doesn't check them."""
+    n = 1 if (info.get("host") or "").startswith("[") else 0   # an IPv4-mapped address compares as IPv4: none
+    return not URLSPLIT_CHECKS_BRACKETS and (url.count("["), url.count("]")) != (n, n)
+
+
 def _host(host):
     """A claim's or an effect's host (a name or address, maybe with a port of 1 to 5 digits) as PCM 0.1 compares
     hosts, None when it won't parse."""
@@ -220,10 +247,16 @@ def reached_host(a, recs):
         d = e["data"]
         if e["type"] == "effect.observed" and d.get("kind") in ("net", "connect") and not d.get("denied"):
             got = _host(d.get("host"))
-            if got == want:
+            # only a connection opened reaches a host: a kernel sensor's connect is the attempt, and an egress minute
+            # with none is a connect that failed (egress._forward) or a later minute of one opened before
+            if got == want and d["kind"] == "net" and d["connections"] > 0:
                 return "proven", f"effect.observed seq {e['seq']}: {d['observer']} saw the run reach {a['host']}"
             if got is None:
                 seen = ("unproven", f"effect.observed seq {e['seq']}: a host the verifier can't read")
+            elif got == want:
+                seen = ("unproven", f"effect.observed seq {e['seq']}: {d['observer']} saw " + (
+                    f"no connection to {a['host']} open" if d["kind"] == "net" else
+                    f"the run try to connect to {a['host']}, an attempt"))
 
     def match(tool, args):
         info = classes.url_info(args["url"]) if isinstance(args.get("url"), str) else {}
@@ -232,23 +265,41 @@ def reached_host(a, recs):
             return False
         # lean: a deviation character anywhere in the URL, its path too, makes it unproven; read the host alone if a
         # path with one matters
-        got = None if info.get("ambiguous") or _deviant(args["url"]) else _a_label(info)
+        got = None if info.get("ambiguous") or _deviant(args["url"]) or _old_brackets(args["url"], info) else \
+            _a_label(info)
         return None if got is None else got == want
     return min(_ran(recs, match, f"reached {a['host']}", "http"), seen, key=lambda o: _RANK[o[0]])
 
 
+def _path(raw, windows):
+    """(path, absolute) of a file path as PCM 0.1 compares it, by Windows rules (`\\` and `/` separate; absolute: a
+    drive path) or POSIX ones (`/` alone separates, `\\` is part of a name; absolute: from `/`, so `C:/x` is not). An
+    absolute path without `..` is normalised as POSIX normpath does; of any other only what follows its last `..`
+    is certain, without empty and `.` segments. classes.fs_path, which policy rules match, reads `\\` as `/` always."""
+    path = raw.replace("\\", "/") if windows else raw
+    parts = path.split("/")
+    if (_DRIVE.match(raw) if windows else path.startswith("/")) and ".." not in parts:
+        return posixpath.normpath(path), True
+    tail = parts[len(parts) - parts[::-1].index(".."):] if ".." in parts else parts
+    return "/".join(p for p in tail if p not in ("", ".")), False
+
+
 def file_written(a, recs):
-    want = classes.fs_path(a["path"])
+    windows = bool(_DRIVE.match(a["path"]))   # the claim's rules read the call's path too
+    want = _path(a["path"], windows)[0]
 
     def match(tool, args):   # the op by the tool's name: an `op` in the args is the agent's word
-        got, content = classes.extract("fs", tool, args).get("path"), args.get("content")
-        if not (classes.FS_OPS.get(tool) == "write" and isinstance(got, str) and isinstance(content, str)
+        raw, content = classes.first(args, *classes.PATH_KEYS), args.get("content")
+        if not (classes.FS_OPS.get(tool) == "write" and isinstance(raw, str) and isinstance(content, str)
                 and "sha256:" + core.sha256_hex(content) == a["digest"]):
             return False
-        if got == want:
-            return True
+        got, absolute = _path(raw, windows)
+        if absolute and got == want:
+            # one file on Windows; on POSIX, where `\\` is part of a name and C:/x relative, maybe two: there only the
+            # claim's own string is surely its file
+            return True if raw == a["path"] or not windows else None
         # a relative path (or what follows a `..`) may be this file, from a working directory the record doesn't hold
-        return None if not _ABSOLUTE.match(got) and ("/" + want).endswith("/" + got) else False
+        return None if not absolute and ("/" + want).endswith("/" + got) else False
     return _ran(recs, match, f"wrote {a['path'][:64]} with {a['digest']}")
 
 

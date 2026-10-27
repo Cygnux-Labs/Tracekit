@@ -115,22 +115,51 @@ A claim says something happened in the sender's run. There are four types:
 
 | Claim | Proven when the evidence holds |
 |---|---|
-| `tests_passed {suite}` | a call of a tool the shipped policy packs class as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one [test command](#test-commands) (`pytest -q tests/x.py`, not `pytest -q; true`, `pytest &`, `pytest --co` or `echo hi`) |
-| `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved |
-| `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md) or kernel sensor, to `host`, not denied; or a call of a tool the shipped packs class as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok`. Hosts are compared in [canonical form](#hosts) |
-| `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok`. `path` must be absolute (`/repo/refund.py`, `C:\repo\refund.py`) and have no `..` |
+| `tests_passed {suite}` | a call of a tool the [placement table](#tool-placement) classes as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one [test command](#test-commands) (`pytest -q tests/x.py`, not `pytest -q; true`, `pytest &`, `pytest --co` or `echo hi`) |
+| `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved; with the `approval.request` it answers (the same `approval_id`) and the `policy.decision` that request names (its `decision_id`), of call `call` and with its `tool`. The detail says which tool call was approved: [read it](#what-approved_by-says) |
+| `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md), to `host`, in which a connection opened (`connections` above 0); or a call of a tool the placement table classes as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok`. Hosts are compared in [canonical form](#hosts) |
+| `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok`. `path` must be absolute (`/repo/refund.py`, `C:\repo\refund.py`) and have no `..`; it is compared as [Paths](#paths) says |
 
 Each claim gets one result:
 
 - **proven**: the evidence verifies and says what the claim says.
 - **unproven**: there is no evidence, or the only matching result is the agent's own report (T1:
   `the result is the agent's own report (T1)`). The agent's process said the call succeeded; nothing else saw it.
-  A matching call of another tool is unproven too (`a tool the verifier can't place as a shell tool`), and so is a
-  call the verifier can't tell apart: a host that won't parse, or a `Write` whose path is relative (its working
-  directory is not in the record) and ends with the claimed path.
+  A matching call of a tool the placement table doesn't class so is unproven too (`a tool the verifier can't place
+  as a shell tool`), and so is a record that says less than the claim: a connect a kernel sensor or OpenShell saw
+  (`the run try to connect to api.example.com, an attempt`), an egress minute in which no connection opened
+  (`saw no connection to api.example.com open`), a host that won't parse, or a `Write` whose path the verifier can't
+  tell from the claimed one ([Paths](#paths)).
 - **failed**: the evidence does not verify, no record in it says what the claim says, or the claim is malformed (a
-  relative `file_written` path, a `tests_passed` suite that is no test command). A malformed claim fails with or
-  without evidence.
+  relative `file_written` path, a `tests_passed` suite that is no test command). An `approval` without the
+  `approval.request` and `policy.decision` that say what was approved fails too: the sender chooses its evidence and
+  can always add them. A malformed claim fails with or without evidence.
+
+### What `approved_by` says
+
+`call` is the agent's own name for its call: an agent can name a `read_file` call `refund-81-approved`. Only the
+decision the approval answers says what the person approved, so the detail names its tool, and its args, whole and
+in JCS, when the evidence opens that decision:
+
+```text
+approval seq 4 by alice of pcm.grant call grant-1
+approval seq 4 by alice of read_file call refund-81-approved with args {"path":"/etc/motd"}
+```
+
+Both are `proven`: alice approved that call. Whether that call is the authority the message needs is for the receiver
+to judge from the detail; the verdict doesn't compare the tool or args with the intent. A grant is the authority the
+verifier checks.
+
+### Tool placement
+
+`tests_passed` and `reached_host` count a call only when PCM 0.1 places its tool as shell or http. The placement
+table is part of the protocol: 54 tool names and their class, frozen from the policy packs of Tracekit 1.4 and
+shipped as `tracekit/pcm/tools.json`. The verifier reads no deployment's policy, and a pack Tracekit adds or edits
+later changes no verdict.
+
+A T2 record's tool name stands for its class: the verifier takes a `Bash` call an executor ran as a shell call,
+whatever the action runs. Name executor actions and gateway tools after what they do, never after a placed tool of
+another class; an HTTP action called `Bash` would prove `tests_passed`.
 
 ### Test commands
 
@@ -182,16 +211,51 @@ A host that won't parse (an empty label, a label over 63 characters, something t
 none, `[` without an IPv6 address, a NUL or `%`, a URL Python can't split) makes that record unproven, never proven
 or failed; a claimed host that won't parse makes the claim unproven.
 
+Python's `urlsplit` checks the brackets in a URL's authority from 3.11.4 on: `http://[x]@good.com/` has no host
+there. On an older Python, which doesn't, a URL with a `[` or `]` anywhere but around its IPv6 host is unproven,
+`http://good.com/a[1]` too.
+
+### Paths
+
+`file_written` reads the claimed path by one of two sets of rules, and the call's path by the same set:
+
+- A path that begins with `/` is a POSIX path: only `/` separates and `\` is part of a name, so `/repo\refund.py` is
+  one file in `/`, not `/repo/refund.py`. Both are compared after POSIX normalisation (`/repo//./refund.py` is
+  `/repo/refund.py`). A call's `C:/repo/refund.py` is a relative path under these rules.
+- A drive path (`C:\repo\refund.py`, `C:/repo/refund.py`) is a Windows path: `\` and `/` both separate. Only a call of
+  the very same string proves it. The same path spelled otherwise (`C:/repo/refund.py`, `C:\repo\.\refund.py`) is
+  unproven: the record doesn't say which system ran the call, and on POSIX that is a relative path.
+
+Case counts under both: a call of `c:\repo\refund.py` doesn't prove `C:\repo\refund.py`. A claimed path that is relative
+on either system is malformed: `repo/refund.py`, `\repo\refund.py` (the current drive's), `C:refund.py` (the drive's
+working directory) and a UNC path (`\\server\share\refund.py`); so is one with a `..`. A call's path that is relative,
+or holds a `..` (only what follows the last one is certain), is unproven when it ends with the claimed path, and fails
+otherwise.
+
+### Evidence
+
 The evidence for a claim is self-contained. It needs only trust.json:
 
 ```json
 {"checkpoint": "tracekit.local/39efd223d635ba423b1faced04a8e7d7\n8\nMOdodHINu4iy4en2EA2+YPnEKH/Nt5/aXOJHRgr4qaY=\n\n— tracekit.local/39efd223d635ba423b1faced04a8e7d7 UuvN7Jot…\n",
- "records": [{"event": {"type": "approval", "seq": 4, "run_id": "4205598ec8ab06b650a402d019b1592a", "tenant": "default",
-                        "data": {"tool_use_id": "grant-1", "decision": "approve", "approver": "uid:990001",
-                                 "person": "alice", "self_approved": false, "…": "…"}, "…": "…"},
-              "hash": "sha256:5bf218dc39a3c41efdfaccd33e99bc7f7a6e8f365c7aaaa01b708b2332b47cfa",
-              "proof": ["zq3sGmbBpb1ungBDmMhpS6xl1UszRL8GQa4msQbSm9w=", "8xx0dD16…", "s5+blM63…"]}]}
+ "records": [
+  {"event": {"type": "policy.decision", "seq": 2, "run_id": "4205598ec8ab06b650a402d019b1592a", "tenant": "default",
+             "data": {"tool_use_id": "grant-1", "tool": "pcm.grant", "decision": "ask",
+                      "decision_id": "dec-85e37303efb88bac7da4e610d711ab3f", "…": "…"}, "…": "…"},
+   "hash": "sha256:…", "proof": ["…"]},
+  {"event": {"type": "approval.request", "seq": 3,
+             "data": {"approval_id": "apr-982067cfc47a41b2d652f9a51860d02d",
+                      "decision_id": "dec-85e37303efb88bac7da4e610d711ab3f", "…": "…"}, "…": "…"},
+   "hash": "sha256:…", "proof": ["…"]},
+  {"event": {"type": "approval", "seq": 4,
+             "data": {"tool_use_id": "grant-1", "approval_id": "apr-982067cfc47a41b2d652f9a51860d02d",
+                      "decision": "approve", "approver": "uid:990001", "person": "alice", "self_approved": false,
+                      "…": "…"}, "…": "…"},
+   "hash": "sha256:5bf218dc39a3c41efdfaccd33e99bc7f7a6e8f365c7aaaa01b708b2332b47cfa",
+   "proof": ["zq3sGmbBpb1ungBDmMhpS6xl1UszRL8GQa4msQbSm9w=", "8xx0dD16…", "s5+blM63…"]}]}
 ```
+
+That is the demo's `approved_by` evidence: the decision, the approval.request that names it and alice's approval.
 
 The receiver checks, in order:
 
@@ -326,7 +390,7 @@ The receiver checks the whole chain again (`verify_grants`), so a chain the sign
  "schema": {"ok": true, "ref": "refund.request@sha256:d8636b6f…", "errors": []},
  "grants": {"result": "ok", "steps": 1, "root": {"kind": "person", "id": "uid:990001", "person": "alice"},
             "problems": []},
- "claims": [{"type": "approved_by", "result": "proven", "detail": "approval seq 4 by alice of grant-1"}],
+ "claims": [{"type": "approved_by", "result": "proven", "detail": "approval seq 4 by alice of pcm.grant call grant-1"}],
  "verdict": "accept", "reasons": []}
 ```
 
@@ -396,8 +460,14 @@ with Client().run("agent-a") as run:
     grant = run.pcm_grant("uid:990101", REF, in_an_hour.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                           caveats=[{"field": "amount", "op": "<=", "value": 20000},
                                    {"field": "order", "op": "==", "value": 81}])
-    [a] = [e for e in run.call("read", limit=1000)["events"] if e["type"] == "approval"]
-    ev = run.pcm_evidence([a["run_seq"]])   # waits for a checkpoint that covers it
+    # the approval, the approval.request it answers and the decision that request names
+    recs = run.call("read", limit=1000)["events"]
+    [a] = [e for e in recs if e["type"] == "approval"]
+    [r] = [e for e in recs if e["type"] == "approval.request"
+           and e["data"]["approval_id"] == a["data"]["approval_id"]]
+    [d] = [e for e in recs if e["type"] == "policy.decision"
+           and e["data"].get("decision_id") == r["data"]["decision_id"]]
+    ev = run.pcm_evidence([d["run_seq"], r["run_seq"], a["run_seq"]])   # waits for a checkpoint that covers them
     msg = run.pcm_send("uid:990102", REF, {"amount": 12000, "order": 81}, grants=[grant], claims=[
         {"type": "approved_by", "args": {"person": "alice", "call": a["data"]["tool_use_id"]}, "evidence": ev}])
 
@@ -424,6 +494,12 @@ each evidence checkpoint. A malformed or non-canonical vkey anywhere in `logs` o
 error: `pcm.verify` raises on it before it checks a message.
 
 Because the log key signs all three, a fault in PCM signing is a fault of the log key: the fix is rotating it.
+
+There is no revocation and no key validity period. A leaked log key signs any message, grant or evidence checkpoint,
+with any time and expiry, until every receiver removes it from trust.json: the 24-hour grant cap binds only an honest
+signer, and witness cosignatures (`witnesses_required`) limit forged evidence, not forged messages or grants. Keep the
+log key where only the signer reads it ([signing](signing.md)). If it leaks, remove it from every receiver's
+trust.json, rotate it, and treat what you accepted under it since the leak as unverified.
 
 ## Agent-to-agent transport (later)
 

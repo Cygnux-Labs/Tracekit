@@ -6,19 +6,23 @@ import concurrent.futures
 import hashlib
 import hmac
 import itertools
+import json
+import math
 import os
 import time
+import types
 import unittest
 from unittest import mock
 
 import test_pcm_signer
 import test_signer_service as ts
 from test_pcm_signer import A, ALICE, APPROVALS, ASK, AUTHORIZE, CAVEATS, DOC, NARROWER, REF, REVIEWER, Case, rid
-from tracekit import crypto, merkle, pcm
+from tracekit import core, crypto, egress, merkle, pcm
 from tracekit.format import checkpoint
-from tracekit.format.canon import event_hash
+from tracekit.format.canon import canonical, event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.pcm import claims
+from tracekit.policy2 import classes
 from tracekit.policy2.engine import Engine
 from tracekit.sdk import client
 from tracekit.sdk.client import Refused, RunHandle, SignerUnavailable
@@ -33,6 +37,15 @@ WRITE = {"file_path": "/repo/refund.py", "content": "def refund():\n    return 1
 DIGEST = "sha256:" + hashlib.sha256(WRITE["content"].encode()).hexdigest()
 URL = {"url": "https://api.example.com/v1/refunds"}
 T1 = "the result is the agent's own report (T1)"
+
+
+def approval_seqs(recs, tcid):
+    """run_seqs of the decision, approval.request and approval of call `tcid`'s latest approval, among records as
+    `read` returns them."""
+    a = [x for x in recs if x["type"] == "approval" and x["data"]["tool_use_id"] == tcid][-1]
+    r = next(x for x in recs if x["type"] == "approval.request" and x["data"]["approval_id"] == a["data"]["approval_id"])
+    d = next(x for x in recs if x["type"] == "policy.decision" and x["data"]["decision_id"] == r["data"]["decision_id"])
+    return [d["run_seq"], r["run_seq"], a["run_seq"]]
 
 
 class InProcess(client.Client):
@@ -89,6 +102,12 @@ class Claims(Case):
     def evidence(self, seqs, opened=None):
         self.s.checkpoint()
         return self.h.pcm_evidence(seqs, args=opened)
+
+    def approved(self, tcid="g1", args=None):
+        """Evidence of call `tcid`'s approval, the approval.request it answers and the decision that request names
+        (opened with `args`)."""
+        d, r, a = approval_seqs(self.records(), tcid)
+        return self.evidence([d, r, a], args and {d: args})
 
     def claim(self, type_, args, ev=None, trust=None, h=None):
         """(result, detail) of the claim as B verifies it in a message A's run sends."""
@@ -240,6 +259,19 @@ class TestReachedHost(Claims):
         ev = self.evidence([self.effect(SENSOR, denied=True)])
         self.assertClaim("failed", self.claim("reached_host", {"host": "api.example.com"}, ev))
 
+    def test_an_attempt_is_unproven(self):
+        """A connect the egress proxy could not open (egress._forward counts its minute with no connection) and a
+        kernel sensor's connect, which is the attempt, say the run tried the host, not that it reached it."""
+        obs = egress.Observer(types.SimpleNamespace(observe_effect=lambda req: self.s.call(OBS, "observe_effect", req)))
+        obs.add(("token", self.run["run_id"], self.run["run_token"], None), "api.example.com", 443)
+        obs.flush(math.inf)
+        [e] = [x for x in self.records() if x["type"] == "effect.observed"]
+        self.assertEqual((e["data"]["connections"], e["data"]["bytes_out"], e["data"]["bytes_in"]), (0, 0, 0))
+        self.assertClaim("unproven", self.claim("reached_host", {"host": "api.example.com"},
+                                                self.evidence([e["run_seq"]])), "saw no connection to")
+        self.assertClaim("unproven", self.claim("reached_host", {"host": "api.example.com"},
+                                                self.evidence([self.effect(SENSOR)])), "an attempt")
+
     def test_by_an_http_call(self):
         d, r = self.ran("fetch", URL, t2=True)
         self.assertClaim("proven", self.claim("reached_host", {"host": "api.example.com"},
@@ -254,22 +286,64 @@ class TestReachedHost(Claims):
 
 
 class TestApprovedBy(Claims):
+    policy = {"ask": ASK["ask"] + [{"id": "READ", "tool": "read_file", "pattern": "^"}]}
+
     def approval(self):
         self.approve(self.args())
-        return self.evidence([[x for x in self.records() if x["type"] == "approval"][-1]["run_seq"]])
+        return self.approved()
 
     def test_proven_by_the_persons_approval_of_that_call(self):
         ev = self.approval()
-        self.assertClaim("proven", self.claim("approved_by", {"person": "alice", "call": "g1"}, ev), "by alice of g1")
+        self.assertClaim("proven", self.claim("approved_by", {"person": "alice", "call": "g1"}, ev),
+                         "by alice of pcm.grant call g1")
         for args in ({"person": "bob", "call": "g1"}, {"person": "alice", "call": "g2"},
                      {"person": "uid:990001", "call": "g1"}):   # the person's name, not the identity that answered
             with self.subTest(args=args):
                 self.assertClaim("failed", self.claim("approved_by", args, ev), "no approval of")
 
+    def test_the_approval_alone_says_nothing_of_what_was_approved(self):
+        """The call id is the agent's: without the decision the approval answers, the claim fails."""
+        self.approve(self.args())
+        seqs = {x["type"]: x["run_seq"] for x in self.records()}
+        for kept in (["approval"], ["approval.request", "approval"], ["policy.decision", "approval"]):
+            with self.subTest(kept=kept):
+                self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"},
+                                                      self.evidence([seqs[k] for k in kept])),
+                                 "holds no decision of the call it approved")
+
+    def test_names_the_tool_and_args_that_were_approved(self):
+        """alice approved a read_file call the agent named refund-81-approved: the claim says so, not that she
+        approved a refund."""
+        args, tcid = {"path": "/etc/motd"}, "refund-81-approved"
+        d = self.call("decide", stream="s", client_seq=next(self.seqs), tool_call_id=tcid, tool="read_file",
+                      args_source="parsed", args=args)
+        self.assertEqual(d["decision"], "ask")
+        aid = self.call("approval_request", tool_call_id=tcid)["approval_id"]
+        self.call("approval_decide", ALICE, {}, approval_id=aid, decision="approve")
+        claim = {"person": "alice", "call": tcid}
+        for opened, end in ((None, ""), (args, f" with args {canonical(args).decode()}")):
+            result, detail = self.claim("approved_by", claim, self.approved(tcid, opened))
+            self.assertEqual(result, "proven", detail)
+            self.assertTrue(detail.endswith(f"by alice of read_file call {tcid}{end}"), detail)
+
+    def test_the_decision_its_request_names(self):
+        """Two decisions of one call id: the approval is of the one its approval.request names, not the other."""
+        first = self.call("decide", stream="s", client_seq=next(self.seqs), tool_call_id="x", tool="pay",
+                          args_source="parsed", args={"amount": 50000})
+        self.call("decide", stream="s", client_seq=next(self.seqs), tool_call_id="x", tool="read_file",
+                  args_source="parsed", args={"path": "/etc/motd"})
+        aid = self.call("approval_request", tool_call_id="x")["approval_id"]
+        self.call("approval_decide", ALICE, {}, approval_id=aid, decision="approve")
+        seqs = {x["type"]: x["run_seq"] for x in self.records()}
+        claim = {"person": "alice", "call": "x"}
+        self.assertClaim("failed", self.claim("approved_by", claim, self.evidence(
+            [first["run_seq"], seqs["approval.request"], seqs["approval"]])), "holds no decision of the call")
+        self.assertClaim("proven", self.claim("approved_by", claim, self.approved("x")), "of read_file call x")
+
     def test_a_rejection(self):
         self.approve(self.args(), decision="reject", consume=False)
-        ev = self.evidence([[x for x in self.records() if x["type"] == "approval"][-1]["run_seq"]])
-        self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"}, ev), "no approval of")
+        self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"}, self.approved()),
+                         "no approval of")
 
     def test_not_from_another_run(self):
         ev = self.approval()
@@ -343,8 +417,7 @@ class TestEvidence(Claims):
     def setUp(self):
         super().setUp()
         self.approve(self.args())
-        seq = [x for x in self.records() if x["type"] == "approval"][-1]["run_seq"]
-        self.ev = self.evidence([seq])
+        self.ev = self.approved()
         self.args_ = {"person": "alice", "call": "g1"}
         self.assertClaim("proven", self.claim("approved_by", self.args_, self.ev))
 
@@ -416,14 +489,17 @@ class TestMalformedRecords(Claims):
 
     def test_no_valid_event(self):
         self.approve(self.args())
-        seq = [x for x in self.records() if x["type"] == "approval"][-1]["run_seq"]
-        a = self.evidence([seq])["records"][0]["event"]
-        self.assertClaim("proven", self.claim("approved_by", {"person": "alice", "call": "g1"}, self.relog([a])))
+        *rest, a = (r["event"] for r in self.approved()["records"])
+        self.assertClaim("proven", self.claim("approved_by", {"person": "alice", "call": "g1"},
+                                              self.relog([a, *rest])))
         for bad in ({k: v for k, v in a.items() if k != "data"}, dict(a, data=[]),
                     dict(a, data={k: v for k, v in a["data"].items() if k != "decision"})):
             with self.subTest(bad=bad):
                 self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"},
-                                                      self.relog([bad])), "record 1: not a valid event")
+                                                      self.relog([bad, *rest])), "record 1: not a valid event")
+        dec = dict(rest[0], data={k: v for k, v in rest[0]["data"].items() if k != "tool"})   # a decision says no tool
+        self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"},
+                                              self.relog([a, dec, rest[1]])), "holds no decision of the call")
 
     def test_a_decision_without_its_tool_or_id(self):
         dec, res = (r["event"] for r in self.evidence(self.ran("Bash", {"command": SUITE}, t2=True))["records"])
@@ -493,11 +569,13 @@ class TestSDK(Claims):
         [a] = [x for x in recs if x["type"] == "approval"]
         [res] = [x for x in recs if x["type"] == "tool.result"]
         self.assertEqual(res["data"]["tool_use_id"], a["data"]["tool_use_id"])   # the pcm.grant call completed
-        ev = self.h.pcm_evidence([a["run_seq"]], wait_s=20)   # nudges until a checkpoint covers it
+        # nudges until a checkpoint covers them
+        ev = self.h.pcm_evidence(approval_seqs(recs, a["data"]["tool_use_id"]), wait_s=20)
         msg = self.h.pcm_send("uid:990102", REF, {"amount": 12000, "order": 81}, grants=[root], claims=[
             {"type": "approved_by", "args": {"person": "alice", "call": a["data"]["tool_use_id"]}, "evidence": ev}])
         out = pcm.verify(msg, self.trust, [DOC], me="uid:990102")
         self.assertEqual((out["verdict"], out["grants"]["root"]["person"]), ("accept", "alice"), out)
+        self.assertIn(f"by alice of pcm.grant call {a['data']['tool_use_id']}", out["claims"][0]["detail"])
         kid = self.h.pcm_grant("uid:990102", REF, root["expires_at"], NARROWER, parent=root)
         self.assertEqual((kid["parent"], kid["delegable"]), (event_hash(root), False))
         b = self.handle(B, self.register(B))
@@ -544,7 +622,9 @@ def call(tool, args, t2=True):
 
 
 def effect(host):
-    return [({"type": "effect.observed", "seq": 3, "data": {"kind": "connect", "host": host, "observer": "obs"}}, None)]
+    """An egress observer's minute in which a connection to `host` opened."""
+    return [({"type": "effect.observed", "seq": 3, "data": {"kind": "net", "host": host, "observer": "obs",
+                                                           "connections": 1}}, None)]
 
 
 class PCM01(unittest.TestCase):
@@ -589,6 +669,45 @@ class PCM01(unittest.TestCase):
         self.assertEqual(claims.reached_host({"host": "a.example"}, call("fetch", {"url": "//a.example/x"}))[0],
                          "proven")
 
+    def test_below_python_3_11_4_a_bracket_but_an_ipv6_hosts_is_unproven(self):
+        """urlsplit refuses http://[x]@good.com/ from Python 3.11.4 on, and reads good.com before it: there, a URL
+        with a bracket anywhere but around an IPv6 host can't be told apart."""
+        fetch = lambda url: call("fetch", {"url": url})   # noqa: E731
+        self.assertEqual(claims.reached_host({"host": "good.com"}, fetch("http://[x]@good.com/"))[0], "unproven")
+        for old in (True, False):
+            with self.subTest(old=old), mock.patch.object(claims, "URLSPLIT_CHECKS_BRACKETS", not old):
+                if old:
+                    # agent-flow:allow-secret (a bracketed IPv6 address before the @, not a password)
+                    for url in ("http://[x]@good.com/", "http://[::1]@good.com/"):
+                        self.assertEqual(claims.reached_host({"host": "good.com"}, fetch(url))[0], "unproven")
+                for url in ("http://[::1]:8080/", "http://u@[::1]/x"):
+                    self.assertEqual(claims.reached_host({"host": "::1"}, fetch(url))[0], "proven")
+                for url in ("http://good.com/a[1]", "http://good.com/?q=]"):
+                    self.assertEqual(claims.reached_host({"host": "good.com"}, fetch(url))[0],
+                                     "unproven" if old else "proven")
+
+    def test_placement_is_pcm_01s_frozen_table(self):
+        """The tool placement table is data shipped with tracekit, the same as the PCM repo's registry/tools.json."""
+        with open(os.path.join(os.path.dirname(claims.__file__), "tools.json"), "rb") as f:
+            raw = f.read()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "15f8410f513344e4c60327d4fc3dd14949ebeaf7722f641d985d3ca721c8fe07")
+        self.assertEqual(claims.placed(), json.loads(raw))
+
+    def test_a_tool_a_live_pack_adds_is_not_placed(self):
+        """A pack tracekit ships later, or a pack edited, changes no PCM 0.1 verdict."""
+        packs = os.path.join(os.path.dirname(os.path.abspath(classes.__file__)), "packs")
+        extra, listdir, read = os.path.join(packs, "zz-extra.yaml"), os.listdir, core.read_text
+        claims.placed.cache_clear()
+        self.addCleanup(claims.placed.cache_clear)
+        with mock.patch("os.listdir", lambda p: listdir(p) + ["zz-extra.yaml"] * (os.path.abspath(p) == packs)), \
+                mock.patch.object(core, "read_text", lambda p, *a, **k: "tools:\n  deploy_sh: shell\n"
+                                  if os.path.abspath(p) == extra else read(p, *a, **k)):
+            self.assertIn("zz-extra.yaml", os.listdir(packs))
+            self.assertEqual(claims.tests_passed({"suite": "pytest"}, call("deploy_sh", {"command": "pytest"})),
+                             ("unproven", "a tool the verifier can't place as a shell tool"))
+            self.assertNotIn("deploy_sh", claims.placed())
+
     def test_idna_2003_takes_unassigned_code_points(self):
         """CPython's codec doesn't check Nameprep's table A.1, so PCM 0.1 has AllowUnassigned on."""
         self.assertEqual(claims.reached_host({"host": "xn--x-qib.example"},
@@ -598,7 +717,7 @@ class PCM01(unittest.TestCase):
         content = "x = 1\n"
         digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
         wrote = lambda path, t2=True: call("Write", {"file_path": path, "content": content}, t2)   # noqa: E731
-        for claim, path in (("/repo/a.py", "/repo/a.py"), ("C:\\repo\\a.py", "C:/repo/a.py")):
+        for claim, path in (("/repo/a.py", "/repo/a.py"), ("C:\\repo\\a.py", "C:\\repo\\a.py")):
             self.assertEqual(claims.file_written({"path": claim, "digest": digest}, wrote(path))[0], "proven")
         for rel in ("a.py", "repo/a.py", "./a.py"):   # a relative claim is malformed
             self.assertEqual(claims.malformed("file_written", {"path": rel, "digest": digest}),
@@ -608,6 +727,34 @@ class PCM01(unittest.TestCase):
                 self.assertEqual(claims.file_written({"path": "/repo/a.py", "digest": digest}, wrote(rel))[0],
                                  "unproven")
         self.assertEqual(claims.file_written({"path": "/repo/a.py", "digest": digest}, wrote("b.py"))[0], "failed")
+
+    def test_a_backslash_separates_only_in_a_drive_path(self):
+        """A path that begins with / is read by POSIX rules, where `\\` is part of a name (/repo\\a.py is one file in
+        /); a drive path by Windows rules, and proven only by a call of its very string, because the record doesn't
+        say which system ran the call: C:/repo/a.py is C:\\repo\\a.py on Windows and a relative path on POSIX."""
+        content = "x = 1\n"
+        digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+        for claim, path, want in (("/repo\\a.py", "/repo\\a.py", "proven"), ("/repo//./a\\b", "/repo/a\\b", "proven"),
+                                  ("/repo\\a.py", "/repo/a.py", "failed"), ("/repo/a.py", "/repo\\a.py", "failed"),
+                                  ("/repo/a.py", "\\repo\\a.py", "failed"), ("/repo/x/a.py", "x\\a.py", "failed"),
+                                  ("/repo/a.py", "C:/repo/a.py", "failed"),
+                                  ("/home/u/C:/repo/a.py", "C:/repo/a.py", "unproven"),   # relative on POSIX
+                                  ("C:/repo/a.py", "C:/repo/a.py", "proven"),
+                                  ("C:\\repo\\a.py", "C:/repo/a.py", "unproven"),
+                                  ("C:/repo/a.py", "C:\\repo\\.\\a.py", "unproven"),
+                                  ("C:\\repo\\a.py", "repo\\a.py", "unproven"),   # from C:\ on Windows
+                                  ("C:\\repo\\a.py", "\\repo\\a.py", "unproven"),   # the current drive's
+                                  ("C:\\repo\\a.py", "D:\\repo\\a.py", "failed"),
+                                  ("C:\\repo\\a.py", "c:\\repo\\a.py", "failed")):
+            with self.subTest(claim=claim, path=path):
+                self.assertIsNone(claims.malformed("file_written", {"path": claim, "digest": digest}))
+                self.assertEqual(claims.file_written({"path": claim, "digest": digest},
+                                                     call("Write", {"file_path": path, "content": content}))[0], want)
+        self.assertIsNone(claims.malformed("file_written", {"path": "/repo\\..\\a.py", "digest": digest}))   # a name
+        for path, why in (("C:\\repo\\..\\a.py", "has a `..`"), ("\\\\server\\share\\a.py", "is relative"),
+                          ("C:a.py", "is relative"), ("\\repo\\a.py", "is relative")):
+            with self.subTest(path=path):
+                self.assertIn(why, claims.malformed("file_written", {"path": path, "digest": digest}))
 
     def test_tests_passed_knows_a_fixed_list_of_runners(self):
         for suite in ("pytest -q tests/x.py", "python -m pytest -x", "python3 -m unittest", "npm test",
