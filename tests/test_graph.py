@@ -407,10 +407,19 @@ class ReviewRegressions(unittest.TestCase):
         doc["nodes"] = [{"id": "file:x", "kind": "file", "label": "billing\u202eyp.exe"}]
         data = {"summary": {"text": "billing\u200byp.exe"}, "sections": []}
         self.assertIn("\\u200B", graph.report(doc, data))
+        # and control characters: a terminal showing the report must not take an escape sequence from a label
+        out = graph.report(doc, {"summary": {"text": "run\x1b[2Jx\x00y"}, "sections": []})
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("\x00", out)
+        self.assertIn("\\u001B", out)
 
     def test_graph_shape_refuses_malformed_source_entries(self):
-        self.assertFalse(graph._is_tracekit_graph({"schema_version": graph.SCHEMA_VERSION,
-                                                   "sources": [{"sha256": "x"}], "nodes": [], "edges": []}))
+        for sources, graphify in (([{"sha256": "x"}], None), ([{"name": "source.tkb"}], None),
+                                  ([{"name": "source.tkb", "sha256": ["x"]}], None),
+                                  ([{"name": "source.tkb", "sha256": "x"}], {"name": "graph.json"})):
+            with self.subTest(sources=sources, graphify=graphify):
+                self.assertFalse(graph._is_tracekit_graph({"schema_version": graph.SCHEMA_VERSION, "sources": sources,
+                                                           "graphify": graphify, "nodes": [], "edges": []}))
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFOs")
     def test_verify_refuses_a_non_regular_recorded_source(self):

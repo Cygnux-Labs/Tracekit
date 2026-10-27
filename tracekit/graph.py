@@ -554,8 +554,13 @@ def _graph(doc: Dict[str, Any]) -> Graph:
 def _is_tracekit_graph(doc: Any) -> bool:
     return (isinstance(doc, dict) and doc.get("schema_version") == SCHEMA_VERSION
             and all(isinstance(doc.get(k), list) for k in ("sources", "nodes", "edges"))
-            and all(isinstance(source, dict) and isinstance(source.get("name"), str)
-                    for source in doc["sources"]))
+            and all(_named(source) for source in doc["sources"])
+            and (doc.get("graphify") is None or _named(doc["graphify"])))
+
+
+def _named(entry: Any) -> bool:
+    """Whether a sources or graphify entry of graph.json has the name and digest verify reads."""
+    return isinstance(entry, dict) and isinstance(entry.get("name"), str) and isinstance(entry.get("sha256"), str)
 
 
 def _run_of(e: Dict[str, Any]) -> Optional[str]:
@@ -805,7 +810,7 @@ def report(doc: Dict[str, Any], data: Optional[Dict[str, Any]] = None) -> str:
     data = data or highlights(doc)
     def text(value: str) -> str:
         value = " ".join(value.splitlines())
-        return "".join((f"\\u{ord(c):04X}" if unicodedata.category(c) == "Cf"
+        return "".join((f"\\u{ord(c):04X}" if unicodedata.category(c) in ("Cc", "Cf")
                          else "\\" + c if c in "\\`*_[]()<>#!|~" else c) for c in value)
 
     out = [f"# Tracekit graph report\n\n{text(data['summary']['text'])}"]
