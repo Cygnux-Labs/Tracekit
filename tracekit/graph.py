@@ -124,16 +124,17 @@ def _graph_data(e: Dict[str, Any]) -> None:
 
 
 def _secure_source(path: str) -> bytes:
-    """Read a verify source through one descriptor, refusing an unsafe final component."""
-    mode = os.lstat(path).st_mode
-    if not stat.S_ISREG(mode):
+    """Read a verify source through one descriptor, refusing an unsafe final component: the file opened must be the
+    regular file lstat saw (same device and inode), so a swap to a symlink between the two is refused also where
+    O_NOFOLLOW doesn't exist (Windows)."""
+    seen = os.lstat(path)
+    if not stat.S_ISREG(seen.st_mode):
         raise OSError(f"{path}: source is not a regular file")
-    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(path, flags)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (seen.st_dev, seen.st_ino):
             raise OSError(f"{path}: source is not a regular file")
         with os.fdopen(fd, "rb", closefd=False) as f:
             data = f.read(MAX_SOURCE_BYTES + 1)

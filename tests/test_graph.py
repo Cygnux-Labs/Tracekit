@@ -401,6 +401,25 @@ class ReviewRegressions(unittest.TestCase):
             os.symlink(parent, linked)
             self.assertEqual(graph._secure_source(os.path.join(linked, "source.tkb")), b"bundle")
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symlinks")
+    def test_secure_source_refuses_a_swap_between_the_check_and_the_open_without_o_nofollow(self):
+        # where O_NOFOLLOW doesn't exist (Windows), the file opened must still be the regular file lstat saw
+        with tempfile.TemporaryDirectory() as d:
+            source, other = os.path.join(d, "source.tkb"), os.path.join(d, "other.tkb")
+            for path in (source, other):
+                with open(path, "wb") as f:
+                    f.write(b"bundle")
+            real_open = os.open
+
+            def swap_then_open(path, flags, *a):
+                os.remove(source)
+                os.symlink(other, source)   # swapped after lstat, before open
+                return real_open(path, flags, *a)
+            with mock.patch.object(graph.os, "O_NOFOLLOW", 0, create=True), \
+                    mock.patch.object(graph.os, "open", swap_then_open):
+                with self.assertRaisesRegex(OSError, "not a regular file"):
+                    graph._secure_source(source)
+
 
 @unittest.skipUnless(os.name == "posix", "the Claude Code hook runs through a POSIX shell")
 class EndToEnd(unittest.TestCase):
