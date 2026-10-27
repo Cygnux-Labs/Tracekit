@@ -226,7 +226,7 @@ class Surfaces(unittest.TestCase):
     def public_witness(self):
         home = os.path.join(self.d, "pw")
         public_witness_server.init(home, "witness.example.org/w1")
-        srv = public_witness_server.serve(home)
+        srv = public_witness_server.serve(home, port=0)
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 404), ("POST", f"/nope?token={SECRET}", {}, 404),
                              ("POST", "/add-checkpoint", {}, 413), ("POST", "/register", {"Content-Length": BIG}, 413),
                              ("PUT", "/register", {}, 501)]
