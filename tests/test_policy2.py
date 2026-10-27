@@ -856,7 +856,7 @@ class Shell(unittest.TestCase):
                 shell.parse(build(n))
                 small, big = best(build(n // 4)), best(build(n))
                 # linear: 4 times the text takes about 4 times as long (quadratic would be 16); 3-80 ms on a laptop
-                self.assertLess(big, 8 * small + 0.05 * SLOWER)
+                self.assertLess(big, 8 * small + 0.005 * SLOWER)
                 self.assertLess(big, 2 * SLOWER)
         # each level reads the text of the levels inside it again: the budget stops it
         for cmd in ("echo " + "$(( $(echo " * 10 + " " * 60000 + ") ))" * 10, "echo " + "$(( " * 5000,
