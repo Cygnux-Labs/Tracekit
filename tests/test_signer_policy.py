@@ -554,7 +554,10 @@ class CodingPack(unittest.TestCase):
                   "sed -i.bak -e 's/a/b/' ~/.claude/projects/-x/a.jsonl", "perl -pi -e 's/a/b/' ~/.codex/sessions/a.jsonl",
                   "mv ~/.claude/projects/p/a.jsonl /tmp/", "mv /tmp/x ~/.claude/projects/p/a.jsonl",
                   "ln -sf /dev/null ~/.codex/sessions/a.jsonl", "dd if=/dev/zero of=$HOME/.claude/projects/p/a.jsonl",
-                  "echo x | tee -a ~/.config/opencode/x", "cp /dev/null ~/.claude/projects/p/a.jsonl",
+                  "cp /dev/null ~/.claude/projects/p/a.jsonl", "rm ~/.local/share/opencode/opencode.db",
+                  "echo x > ~/.local/share/opencode/storage/message/s/m.json", 'rm "$XDG_DATA_HOME/opencode/opencode.db-wal"',
+                  "truncate -s0 ${XDG_DATA_HOME}/opencode/opencode-dev.db",
+                  r"rm 'C:\Users\u\.local\share\opencode\storage\part\p.json'",
                   "find ~/.claude/projects -name '*.jsonl' -delete", "find -L ~/.codex/sessions -name x -delete",
                   "find ~/.claude/projects -exec rm {} +", "find ~/.gemini/tmp -execdir shred -u {} \\;",
                   "find ~/.claude/projects -type f -exec sed -i 's/a/b/' {} +",
@@ -572,7 +575,10 @@ class CodingPack(unittest.TestCase):
                  "ln -sf ~/.claude/projects/p/a.jsonl ./latest.jsonl", "grep -r x ~/.gemini/tmp > hits.txt",
                  "cat ~/.claude/projects/p/a.jsonl | tee /tmp/copy.jsonl",
                  "find ~/.claude/projects -name '*.jsonl' -exec grep -l x {} +",
-                 "find ~/.claude/projects -exec sed -n 1p {} \\;")
+                 "find ~/.claude/projects -exec sed -n 1p {} \\;",
+                 # OpenCode's config (TK-F015 flags it), its plans and worktrees beside its sessions
+                 "echo x | tee -a ~/.config/opencode/x", "echo x > ~/.local/share/opencode/plans/p.md",
+                 "rm -rf ~/.local/share/opencode/worktree/p/w", "rm -rf ~/.config", "rm ~/.claude.json.bak")
         for pack, engine, e in self.every_pack():
             for command in writes:
                 with self.subTest(pack=pack, engine=engine, command=command):
@@ -584,6 +590,35 @@ class CodingPack(unittest.TestCase):
             # a line the parser can't read is still held (TK-SHELL-PARSE)
             self.assertIn(e.decide("Bash", {"command": "rm ~/.claude/projects/p/a.jsonl; echo '"})["verdict"],
                           ("ask", "deny"))
+
+    def test_transcript_rule_holds_deletes_of_the_folders_that_hold_transcripts(self):
+        """Deleting ~/.claude, ~/.codex, ~/.gemini or OpenCode's data folder (or a folder above it in the home)
+        deletes the transcripts in it; TK-F015 only flagged it. Writing into those folders outside the transcripts,
+        or deleting a project's own .claude, isn't held."""
+        deletes = ("rm -rf ~/.claude", "rm -rf ~/.codex/", "rm -rf $HOME/.gemini", "rm -rf ~/.claude/*",
+                   "rm -rf ~/.local/share/opencode", 'rm -rf "$XDG_DATA_HOME/opencode"', "rm -rf ${XDG_DATA_HOME}",
+                   "rm -rf ~/.local/share/*", "rm -rf ~/.local", "mv ~/.codex /tmp/codex-old", "rm -rf ~/.Gemini",
+                   "find ~/.claude -name '*.jsonl' -delete", r"rm -r 'C:\Users\u\.codex'", "rm -rf /home/u/.claude//",
+                   "rm -rf /Users/u/.gemini", "rm -rf /root/.codex")
+        kept = ("cp settings.json ~/.gemini", "mv x ~/.claude", "rm -rf ~/.claude/hooks", "rm ~/.codex/config.toml",
+                "rm -rf ~/.claude-old", "rm -rf ~/.local/share/opencode/log", "rm -rf ~/.local/bin",
+                "echo x > ~/.local/share/opencode/storage.txt",
+                # a project's own harness folders hold its settings, not transcripts (TK-F015 flags them)
+                "rm -rf .claude", "rm -rf repo/.gemini/", "mv .codex .codex.bak", "rm -rf /Users/u/repo/.claude")
+        for pack, engine, e in self.every_pack():
+            for command in deletes:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D008" in d["rule_ids"]), ("deny", True), d)
+            for command in kept:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D008", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_opencode_sessions_are_transcripts_to_the_file_tools(self):
+        self.verdicts([({"file_path": "/home/u/.local/share/opencode/storage/message/s/m.json"}, "TK-D009"),
+                       ({"file_path": "/Users/u/.local/share/opencode/opencode.db"}, "TK-D009")], tool="Write")
+        self.assertNotIn("TK-D009", self.e.decide("Write", {"file_path": "/Users/u/.local/share/opencode/plans/p.md"})[
+            "rule_ids"])
 
     def test_dev_signer_dirs_and_installed_packs_are_protected(self):
         for path in ("/Users/u/Library/Application Support/tracekit/data/keys/log.key", "/home/u/.local/share/tracekit/x",
@@ -643,13 +678,15 @@ class CodingPack(unittest.TestCase):
                     "cp x 'a\n/../.claude/settings.json'", "tee 'a\n/../.mcp.json'",
                     "echo '{}' > .qwen/settings.json", "sed -i s/true/false/ ~/.qwen/settings.json", "rm -rf ~/.qwen",
                     r"cp x 'C:\repo\.qwen\settings.json'", 'echo x > "$QWEN_HOME/settings.json"',
-                    "tee ${QWEN_HOME}/settings.json", 'rm -rf "$QWEN_HOME"')
+                    "tee ${QWEN_HOME}/settings.json", 'rm -rf "$QWEN_HOME"',
+                    "echo x > ~/.config/opencode/plugin/tracekit.js", "rm ~/.config/opencode/plugins/tracekit.js",
+                    r"cp x 'C:\Users\u\.config\opencode\plugin\x.js'", "rm -rf ~/.config/opencode")
         benign = [("Bash", {"command": c}) for c in (
             "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
             "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
             "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt",
             "cat .qwen/settings.json", "ls ~/.qwen", 'cat "$QWEN_HOME/settings.json"', "echo x > qwen-settings.json",
-            "cp x .qwen-backup/settings.json")]
+            "cp x .qwen-backup/settings.json", "ls ~/.config/opencode/plugin", "echo x > ~/.config/opencode-old/x")]
         benign += [(tool, args) for tool, args in (
             ("Read", {"file_path": "opencode.json"}),
             ("Read", {"file_path": "/home/u/.qwen/settings.json"}),
