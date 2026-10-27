@@ -361,13 +361,49 @@ class TestCli(unittest.TestCase):
         self.assertIn("may not answer its own run's approval", out.stderr)
         self.assertIn("approvals.approvers lists, or set approvals: {self_approval: allow}", out.stderr)
 
+    def test_the_v1_approve_and_reject_answer_a_v2_id_as_approvals_does(self):
+        """`tracekit approve|reject apr-...` said "signer unavailable": they are tracekitd's commands (#420). An id of
+        the v2 signer's shape, `[<route>.]apr-` and 32 hex digits, is answered as `tracekit approvals` does; any other
+        id, one that only contains "apr-" too, stays tracekitd's."""
+        for route in (None, "tk-0"):
+            d = ts.tmpdir(self)
+            cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "approvals": {"self_approval": "allow"},
+                   "route": route}
+            service = svc.open_service(cfg, policy=ts.PAY_ASKS)
+            self.addCleanup(service.close)
+            for srv in svc.serve(cfg, service):
+                self.addCleanup(srv.server_close)
+                self.addCleanup(srv.shutdown)
+            client = Client(cfg["socket"])
+            self.addCleanup(client.close)
+            run = client.run(agent="a")
+            aids = []
+            for tcid in ("tc-1", "tc-2"):
+                run.decide(tcid, "pay", PAY)
+                aids.append(run.call("approval_request", tool_call_id=tcid)["approval_id"])
+            env = dict(os.environ, TRACEKIT_SIGNER=cfg["socket"])
+            for cmd, aid, state in (("approve", aids[0], "approved"), ("reject", aids[1], "rejected")):
+                out = tracekit(cmd, aid, env=env)
+                self.assertEqual((out.returncode, out.stdout.strip()),
+                                 (0, f"{state}: {aid} (self-approved: dev mode only)"), out.stderr)
+            self.assertTrue(run.approval_consume("tc-1", "pay", PAY)["ok"])
+            self.assertEqual(run.approval_consume("tc-2", "pay", PAY)["rule_ids"], ["TK-APPROVAL-REJECTED"])
+        self.assertTrue(aids[0].startswith("tk-0.apr-"), aids[0])
+        v1 = dict(env, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"),
+                  TRACEKIT_SOCKET=os.path.join(d, "tracekitd.sock"))   # no tracekitd runs there
+        # a v1 id, a prefix of one, and ids with "apr-" in them that no v2 signer makes
+        for aid in ("0" * 32, "0a1b", "apr-0004", aids[0] + "0"):
+            out = tracekit("approve", aid, env=v1)
+            self.assertEqual(out.returncode, 2, (aid, out.stderr))
+            self.assertIn("signer unavailable", out.stderr)
+
 
 @unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
 class TestCliDevSigner(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp(dir="/tmp")
-        self.addCleanup(shutil.rmtree, self.d, True)
-        env = {"TRACEKIT_RUNTIME_DIR": os.path.join(self.d, "run"), "TRACEKIT_DEV_IDLE": "60", "PYTHONPATH": ts.ROOT}
+    def test_approve_round_trip_with_the_dev_signer(self):
+        d = tempfile.mkdtemp(dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, True)
+        env = {"TRACEKIT_RUNTIME_DIR": os.path.join(d, "run"), "TRACEKIT_DEV_IDLE": "60", "PYTHONPATH": ts.ROOT}
         fake = mock.patch.object(autospawn, "SIGNER_ARGV", [sys.executable, "-m", "tracekit.testing", "--ask", "pay"])
         fake.start()
         self.addCleanup(fake.stop)
@@ -377,8 +413,6 @@ class TestCliDevSigner(unittest.TestCase):
         self.addCleanup(lambda: [os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
                                  for k, v in saved.items()])
         self.addCleanup(autospawn.down)
-
-    def test_approve_round_trip_with_the_dev_signer(self):
         run = Client().run(agent="a")
         run.decide("tc-1", "pay", PAY)
         aid = run.call("approval_request", tool_call_id="tc-1")["approval_id"]
@@ -389,26 +423,6 @@ class TestCliDevSigner(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(cli.main(["approvals", "list"]), 0)
         self.assertIn(f"{aid}  consumed", buf.getvalue())
-
-    def test_the_v1_approve_and_reject_answer_a_v2_id_as_approvals_does(self):
-        """`tracekit approve|reject apr-...` said "signer unavailable": they are tracekitd's commands (#420)."""
-        run = Client().run(agent="a")
-        aids = []
-        for tcid in ("tc-1", "tc-2"):
-            run.decide(tcid, "pay", PAY)
-            aids.append(run.call("approval_request", tool_call_id=tcid)["approval_id"])
-        for cmd, aid, state in (("approve", aids[0], "approved"), ("reject", aids[1], "rejected")):
-            out = tracekit(cmd, aid, env=dict(os.environ))
-            self.assertEqual((out.returncode, out.stdout.strip()), (0, f"{state}: {aid} (self-approved: dev mode only)"),
-                             out.stderr)
-        self.assertTrue(run.approval_consume("tc-1", "pay", PAY)["ok"])
-        self.assertEqual(run.approval_consume("tc-2", "pay", PAY)["rule_ids"], ["TK-APPROVAL-REJECTED"])
-        v1 = dict(os.environ, TRACEKIT_CLIENT_HOME=os.path.join(self.d, "client"),
-                  TRACEKIT_SOCKET=os.path.join(self.d, "tracekitd.sock"))   # no tracekitd runs there
-        for aid in ("0" * 32, "0a1b"):   # a v1 id, and a prefix of one: still tracekitd's
-            out = tracekit("approve", aid, env=v1)
-            self.assertEqual(out.returncode, 2)
-            self.assertIn("signer unavailable", out.stderr)
 
 
 if __name__ == "__main__":

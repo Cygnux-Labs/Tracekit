@@ -557,6 +557,46 @@ class CodingPack(unittest.TestCase):
                        ("del %LOCALAPPDATA%\\tracekit", "TK-D007"), ("rm /tmp/tracekit-501/signer.sock", "TK-D007"),
                        ("cp x .venv/lib/python3.12/site-packages/tracekit/policy2/packs/coding.yaml", "TK-D007")])
 
+    def test_an_agent_answering_an_approval_itself_is_denied_in_every_pack(self):
+        """The hold line names `tracekit approvals approve ID` for a person (#420); the agent reads it too, and the dev
+        signer lets the agent's own uid answer its run's approvals. Every form of the answer is denied; listing or
+        showing approvals, and text that names the command, are not."""
+        aid = "apr-" + "0123456789abcdef" * 2
+        answers = [f"tracekit approve {aid}", f"tracekit reject {aid}", "tracekit approve", f"tracekit -- reject {aid}",
+                   f"tracekit approvals approve {aid}", f"tracekit approvals reject {aid} --reason ok",
+                   f"tracekit approvals --signer /tmp/s.sock approve {aid}", f"tracekit approvals --signer=tcp://h:1 reject {aid}",
+                   f"tracekit approvals --signer '/tmp/a b;x.sock' approve {aid}", f"tracekit approvals -- approve {aid}",
+                   f"TRACEKIT approve {aid}", f"TRACEKIT_SIGNER=/tmp/s.sock tracekit approve {aid}",
+                   # wrappers, nested shells, the module, a path to the binary
+                   f"env TRACEKIT_SIGNER=/tmp/s.sock tracekit approve {aid}", f"sudo -u alice tracekit approve {aid}",
+                   f"nohup tracekit approvals approve {aid} &", f"timeout 5 tracekit reject {aid}",
+                   f"echo {aid} | xargs tracekit approve", f"nice -n 5 tracekit approve {aid}",
+                   f"command tracekit approve {aid}", f"exec tracekit approvals reject {aid}",
+                   f"bash -c 'tracekit approve {aid}'", f"sh -c \"tracekit approvals approve {aid}\"",
+                   f"zsh -lc 'tracekit reject {aid}'", f"python -m tracekit approve {aid}",
+                   f"python3 -m tracekit approvals --signer /tmp/s.sock approve {aid}", f"python3.12 -I -X dev -m tracekit reject {aid}",
+                   f"python3 -Im tracekit approve {aid}", f"python3 -mtracekit approve {aid}", f"python3 -m tracekit.cli approve {aid}",
+                   f"/Users/u/.venv/bin/tracekit approve {aid}", f"~/.local/bin/tracekit approvals approve {aid}",
+                   f"/usr/bin/python3 -m tracekit reject {aid}", f"uv run tracekit approve {aid}",
+                   f"bash <<'EOF'\ntracekit approve {aid}\nEOF"]
+        others = [("Bash", {"command": c}) for c in (
+            "tracekit approvals list", f"tracekit approvals show {aid}", f"tracekit approvals --signer /tmp/s.sock show {aid}",
+            "tracekit verify run.tkb", "python3 -m tracekit verify run.tkb", "tracekit pending", f"echo tracekit approve {aid}",
+            f"echo 'tracekit approvals approve {aid}' > notes.md", f"git commit -m 'tracekit approve {aid}'",
+            "grep -rn 'tracekit approve' docs", f"cat > notes.md <<'EOF'\ntracekit approvals approve {aid}\nEOF")] + [
+            ("Write", {"file_path": "notes.md", "content": f"run `tracekit approvals approve {aid}` from a terminal"}),
+            ("Edit", {"file_path": "notes.md", "old_string": "x", "new_string": f"tracekit approve {aid}"})]
+        for pack, engine, e in self.every_pack():
+            for cmd in answers:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual((d["verdict"], "TK-D012" in d["rule_ids"]), ("deny", True), d)
+            for tool, args in others:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertNotIn("TK-D012", d["rule_ids"])
+                    self.assertNotEqual(d["verdict"], "deny", d)
+
     def test_each_harness_config_an_agent_could_turn_its_sandbox_or_hooks_off_in_is_flagged(self):
         for tool, args in (("Write", {"file_path": "/home/u/.gemini/settings.json", "content": "{}"}),
                            ("Edit", {"file_path": "/home/u/p/.gemini/settings.json", "old_string": "a", "new_string": "b"}),

@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-32'
+version: '2026.10-v2-33'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -142,6 +142,20 @@ deny:
     reason: writing Tracekit's own files, signer state or policy
     remedy: Leave Tracekit's files, signer state and policy alone; a person changes them through the signer's own configuration.
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
+  - id: TK-D012
+    class: shell
+    # each command's argv (wrappers, `sh -c` and a path to the binary resolved): `tracekit approve|reject` and
+    # `tracekit approvals [OPTIONS] approve|reject`, also as `python -m tracekit[.cli]` (up to eight options, with a
+    # value, before -m; or -Im), and after a `--` (Python 3.14's argparse takes one before the command). The hold line
+    # names these commands for a person, and the agent reads it too: the dev signer takes the agent's own answer,
+    # labelled self_approved. Listing and showing approvals aren't held. `[\w\W]*?` crosses a --signer path with a
+    # space in it; anchored and lazy, so the fallback engine stays linear
+    # lean: a tripwire, as TK-D007: code that calls approval_decide itself (python -c, a script) isn't read; when that
+    # must hold too, run system mode, whose signer refuses the agent's own answer
+    pattern: '^(tracekit|python[0-9.]* (-[^ ]+ ([^- ][^ ]* )?){0,8}-[A-Za-z]*m ?tracekit(\.cli|\.__main__)?)( --)? (approve|reject|approvals( [\w\W]*?)? (approve|reject))( |$)'
+    reason: answering an approval from the agent's session
+    remedy: Wait for a person to approve or reject the held call from their own terminal; `tracekit approvals list` and `show` stay allowed.
+    rationale: An approval is a person's decision; an agent that answers its own held calls turns every ask into an allow.
   - id: TK-D020
     class: shell
     field: argv

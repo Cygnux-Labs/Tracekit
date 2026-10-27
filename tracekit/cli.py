@@ -3,6 +3,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 
 from . import __version__
@@ -589,7 +590,8 @@ def _run(a):
             return 2
         return proxy.main(["--home", _signer_home(a)] + (["--port", str(a.port)] if a.port is not None else []) +
                           (["--upstream", a.upstream] if a.upstream else []))
-    if a.cmd in ("approve", "reject") and "apr-" in (a.approval_id or ""):   # a v2 id: tracekitd's are hex
+    # a v2 id, `[<route>.]apr-` and 32 hex digits (signer/service.py): tracekitd's are hex
+    if a.cmd in ("approve", "reject") and re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval_id or ""):
         return _approvals(argparse.Namespace(action=a.cmd, approval_id=a.approval_id, signer=None, reason=None))
     if a.cmd in ("pending", "approve", "reject"):
         from . import client
