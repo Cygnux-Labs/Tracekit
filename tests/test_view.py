@@ -37,7 +37,7 @@ from tracekit.storage.file import FileStorage
 from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run, referenced_refs
 from tracekit.why.demo import EXFIL_TARGET, SYSTEM
 from tracekit.why.graph import target_hits
-from tracekit.why import cli as why_cli
+from tracekit.why import cli as why_cli, import_v2
 from tracekit.why.import_v2 import _target, store_records
 from tracekit.why.server import Feed as WhyFeed, IngestError, Store, tape
 
@@ -421,9 +421,11 @@ class View(unittest.TestCase):
         run_id = self.finished_run()
         feed = store_feed(self, {"data_dir": self.d})
         self.report(feed, run_id)
-        with mock.patch.object(view, "check", wraps=view.check) as checked:
+        with mock.patch.object(import_v2, "bundle_records", wraps=import_v2.bundle_records) as checked:
             rows = feed.rows(observe.ALL, "default", run_id)
-            self.assertIs(feed.rows(observe.ALL, "default", run_id), rows)   # asked again: checked once a checkpoint
+            self.assertIs(feed.rows(observe.ALL, "default", run_id), rows)   # asked again: checked once
+            other = self.finished_run()   # another run moves the log's checkpoint; this run's own records did not grow
+            self.assertIs(feed.rows(observe.ALL, "default", run_id), rows)
         self.assertEqual(checked.call_count, 1)
         self.assertEqual([r["tool_use_id"] for r in rows if r["event"] == "PreToolUse"], ["c1", "c2", "c3"])
         self.assertEqual({r["tenant"] for r in rows}, {"default"})
@@ -442,7 +444,31 @@ class View(unittest.TestCase):
             body = json.loads(r.read())
         c.request("GET", f"/api/rows?tenant=default&run={run_id}")
         self.assertEqual(c.getresponse().status, 401)
-        self.service.close()   # a record edited after it was shown: the viewer's re-check fails it, and it is refused
+        # two checks at once at most: a third request is told to come back, not queued behind them
+        feed.verifying = threading.BoundedSemaphore(1)
+        feed.verifying.acquire()
+        with self.assertRaises(observe.Busy):
+            feed.rows(observe.ALL, "default", other)
+        c.request("GET", f"/api/rows?tenant=default&run={other}", headers={"Authorization": "Bearer t0k"})
+        r = c.getresponse()
+        self.assertEqual((r.status, r.getheader("Retry-After")), (503, "5"))
+        r.read()
+        feed.verifying.release()
+        # the rows are of the records the check verified, not a second read of the store after it
+        real = view.export
+
+        def export_then_edit(*a, **k):
+            real(*a, **k)
+            with open(os.path.join(self.d, "store", "records.jsonl"), encoding="utf-8") as f:
+                data = f.read()
+            with open(os.path.join(self.d, "store", "records.jsonl"), "w", encoding="utf-8") as f:
+                f.write(data.replace('"tool":"Bash"', '"tool":"Bosh"'))
+        self.service.close()
+        feed.rowcache.clear()
+        with mock.patch.object(view, "export", side_effect=export_then_edit):
+            rows = feed.rows(observe.ALL, "default", run_id)
+        self.assertEqual([x["tool_name"] for x in rows if x["event"] == "PreToolUse"], ["Bash", "rm", "pay"])
+        # a record edited after it was shown: the viewer's re-check fails it, and it is refused
         path = os.path.join(self.d, "store", "records.jsonl")
         with open(path, encoding="utf-8") as f:
             data = f.read()

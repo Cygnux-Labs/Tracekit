@@ -366,6 +366,10 @@ COOKIE = "tracekit_observe"
 LOGIN_COOKIE = "tracekit_login"
 SESSION_S = 8 * 3600   # how long a session cookie the token was exchanged for lasts
 ALL = object()   # a session's scope: every tenant
+class Busy(Exception):
+    """A feed at its limit of a costly request (view.StoreFeed.rows): answered 503 with Retry-After."""
+
+
 RETRACTED = {}   # a feed's row taken back (view.StoreFeed: a run that failed verification): kept for its position only
 CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -542,6 +546,9 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                     return self._send(400, '{"error":"needs tenant and run"}')
                 try:
                     rows = feed.rows(scope, q["tenant"], q["run"])
+                except Busy:
+                    return self._send(503, '{"error":"checking other runs: try again shortly"}',
+                                      headers=[("Retry-After", "5")])
                 except (OSError, StorageUnavailable, StorageCorrupt):
                     return self._send(502, '{"error":"store unavailable"}')
                 if rows is None:

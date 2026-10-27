@@ -473,7 +473,7 @@ class Permissions(unittest.TestCase):
                 {**hold(15, "c7"), "v2": {"decision": "allow"}}, {**hold(16, "c8"), "analysis": True},
                 hold(17, "c9", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 18}]
         out = json.loads(page_js(["ANSWER", "permRows"], f"""
-            const ALL = {json.dumps(recs)}; let scope = null, permKey = [], permList = [];
+            const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
             const rows = r => r.map(x => [x.rec.tool_use_id, x.tabs.filter(Boolean).join(" "), x.out[1], x.ans?.v2.approver ?? null,
                                           x.req?.v2.approval_id ?? null]);
             const seen = [rows(permRows())];
@@ -487,16 +487,14 @@ class Permissions(unittest.TestCase):
                                   ["c2", "all flag", "RAN · FLAGGED", None, None], ["c1", "all deny", "BLOCKED", None, None]])
         self.assertEqual(out[1], [["c9", "all ask expired", "NOT ANSWERED", None, None]])
 
-    def test_a_run_review_keeps_every_permission_with_its_outcome_after_the_records_leave(self):
+    def test_a_run_review_counts_every_permission_by_outcome(self):
         """Run reviews listed only approve and reject answers: a hold that expired, was abandoned or got no answer was in
-        none, and a review is what the page keeps of a run whose records left the live view."""
+        none. A review is what each snapshot carries of every run, so it counts; the run's rows have each one."""
         alice = {"scheme": "oidc", "subject": "alice", "attested": True}
         req = lambda seq, aid, call: v2rec(seq, "approval.request", {"approval_id": aid, "binding": {"tool_call_id": call}})  # noqa: E731
-        prov = [{"field": "to", "kind": "email", "source": {"run_seq": 1, "tool": "fetch_page"}}]
         recs = [v2rec(1, "policy.decision", {"tool_use_id": "c1", "tool": "rm", "decision": "deny", "rule_ids": ["T-DENY"]}),
                 v2rec(2, "policy.decision", {"tool_use_id": "c2", "tool": "ls", "decision": "allow", "rule_ids": []}),
-                v2rec(3, "policy.decision", {"tool_use_id": "c3", "tool": "pay", "decision": "ask", "rule_ids": ["T-PAY"],
-                                             "provenance": prov}),
+                v2rec(3, "policy.decision", {"tool_use_id": "c3", "tool": "pay", "decision": "ask", "rule_ids": ["T-PAY"]}),
                 req(4, "apr-3", "c3"),
                 v2rec(5, "approval", {"tool_use_id": "c3", "approval_id": "apr-3", "decision": "approve",
                                       "approver_identity": alice}),
@@ -507,20 +505,37 @@ class Permissions(unittest.TestCase):
                 v2rec(11, "policy.decision", {"tool_use_id": "c6", "tool": "pay", "decision": "ask", "rule_ids": ["T-PAY"]})]
         rep = mock.Mock(integrity="VERIFIED", assurance="dev")
         got = view.review(recs, rep, "verified")
-        self.assertEqual([(p["tool_use_id"], p["decision"], p["outcome"], p.get("approval_id"), p.get("by"),
-                           p.get("answer_seq")) for p in got["permissions"]],
-                         [("c1", "deny", "blocked", None, None, None),
-                          ("c3", "ask", "approved · ran", "apr-3", "oidc:alice (attested)", 5),
-                          ("c4", "ask", "expired", "apr-4", None, 9), ("c5", "flag", "flagged", None, None, None),
-                          ("c6", "ask", "waiting", None, None, None)])
-        self.assertEqual(got["permissions"][1]["provenance"], prov)
+        self.assertEqual(got["permissions"], {"blocked": 1, "approved · ran": 1, "expired": 1, "flagged": 1, "waiting": 1})
         self.assertEqual(len(got["approvals"]), 1)   # the approvals list is as it was
         final = view.review(recs + [v2rec(12, "run.final", {})], rep, "verified")
-        self.assertEqual(final["permissions"][-1]["outcome"], "not answered")
-        with mock.patch.object(view, "PERMISSIONS_KEPT", 2):
-            kept = view.review(recs, rep, "verified")
-        self.assertEqual(([p["tool_use_id"] for p in kept["permissions"]], kept["permissions_left_out"]),
-                         (["c5", "c6"], 3))
+        self.assertEqual(final["permissions"]["not answered"], 1)
+        many = recs + [v2rec(20 + i, "policy.decision", {"tool_use_id": f"d{i}", "tool": "rm", "decision": "deny",
+                                                          "rule_ids": ["T-DENY"]}) for i in range(2000)]
+        self.assertEqual(view.review(many, rep, "verified")["permissions"]["blocked"], 2001)   # a count, not a list
+        self.assertLess(len(json.dumps(view.review(many, rep, "verified")["permissions"])), 200)
+
+    def test_a_run_past_the_live_view_is_read_from_the_store_and_its_permissions_from_its_rows(self):
+        """/api/rows and the reviews' permissions were served but the page read neither: a run whose records had left
+        the live view showed nothing, in its views or PERMISSIONS."""
+        needs_node(self)
+        rows = [{**hold(5, "c1"), "v2": {"decision": "deny", "rules": [{"id": "T-DENY", "reason": "rm"}]}}]
+        out = json.loads(page_js(["ANSWER", "loadRun", "permRows"], f"""
+            const LOADED = new Map(), RUNS = new Map([["r1", {{ verdict: "verified", records: 9, tenant: "default", permissions: {{ blocked: 1 }} }}],
+                                                      ["r2", {{ verdict: "failed", records: 4 }}]]);
+            const ALL = [], asked = [], seen = [], document = {{ URL: "http://127.0.0.1/" }};
+            let DROPPED = 7, scope = "r1", R = null, permKey = [], permList = [], rebuilt = 0, later = [];
+            const rebuild = () => rebuilt++, schedule = () => {{}}, setTimeout = f => later.push(f);
+            const inScope = r => r.session_id === scope, runRows = () => LOADED.get(scope) || ALL;
+            let answer = Promise.resolve({{ rows: {json.dumps(rows)} }}); const getJSON = p => {{ asked.push(p); return answer; }};
+            (async () => {{
+              loadRun("r1"); loadRun("r1"); await answer; await null;   // asked once; rebuilt with its rows
+              seen.push([[...asked], rebuilt, LOADED.get("r1").length, permRows().map(r => [r.rec.tool_use_id, r.out[1]])]);
+              loadRun("r2"); DROPPED = 0; LOADED.clear(); loadRun("r1"); seen.push(asked.length);   // failed; nothing left out
+              DROPPED = 7; answer = Promise.reject(new Error("503")); loadRun("r1"); await answer.catch(() => {{}}); await null;
+              seen.push([LOADED.get("r1"), later.length]); later[0](); seen.push(LOADED.has("r1"));   // tried again later
+              process.stdout.write(JSON.stringify(seen)); }})();"""))
+        self.assertEqual(out, [[["api/rows?tenant=default&run=r1"], 1, 1, [["c1", "BLOCKED"]]], 1, [None, 1], False])
+        self.assertIn("function permCounts(", PAGE)   # while they load, PERMISSIONS shows the review's counts
 
     def test_the_view_is_reachable_without_why_logs_and_from_a_link(self):
         needs_node(self)

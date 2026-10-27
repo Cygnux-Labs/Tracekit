@@ -680,7 +680,6 @@ CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only
                "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
 
 
-PERMISSIONS_KEPT = 500   # a run review's newest non-allow decisions; `permissions_left_out` counts the older ones
 # an approval's later records, as a permission's outcome
 OUTCOMES = {"approval.consumed": "approved · ran", "approval.expired": "expired", "approval.abandoned": "abandoned",
             "approval.refused": "refused", "approval.binding_mismatch": "refused: arguments changed",
@@ -689,15 +688,16 @@ OUTCOMES = {"approval.consumed": "approved · ran", "approval.expired": "expired
 
 def review(records, rep, verdict):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
-    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: each
-    decision that was not a plain allow, with its outcome, who answered and when, its approval id and the signed
-    provenance of its arguments (whose words they are), newest PERMISSIONS_KEPT."""
+    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
+    decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
+    answered, waiting, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
+    when the run's records have left the live view. Counts keep each snapshot small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0,
            "state": "open", "first": {}}
-    perms, calls = {}, {}   # tool_use_id -> its permission; approval_id -> its tool_use_id
+    perms, calls = {}, {}   # tool_use_id -> its outcome; approval_id -> its tool_use_id
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -715,10 +715,7 @@ def review(records, rep, verdict):
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
             if key != "allow":
-                perms[d.get("tool_use_id")] = {"seq": e.get("seq"), "ts": e.get("ts"), "tool": d.get("tool"),
-                                               "tool_use_id": d.get("tool_use_id"), "decision": key,
-                                               "rule_ids": d.get("rule_ids") or [], "provenance": d.get("provenance") or [],
-                                               "outcome": {"deny": "blocked", "flag": "flagged"}.get(key, "waiting")}
+                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, "waiting")
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -754,25 +751,17 @@ def review(records, rep, verdict):
             out["state"] = "closing"
         if t == "approval.request":
             calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
-        p = t.startswith("approval") and perms.get(d.get("tool_use_id") or e.get("tool_call_id")
-                                                    or calls.get(d.get("approval_id")))
-        if p and t == "approval.request":
-            p["approval_id"] = d.get("approval_id")
-        elif p and t == "approval":
-            p.update(outcome={"approve": "approved", "reject": "rejected", "timeout": "timed out",
-                              "self_approval_refused": "self-approval refused"}.get(d.get("decision"), d.get("decision")),
-                     by=out["approvals"][-1]["approver"], at=e.get("ts"), answer_seq=e.get("seq"))
-        elif p and t in OUTCOMES:
-            p.update(outcome=OUTCOMES[t], **({} if p.get("at") else {"at": e.get("ts"), "answer_seq": e.get("seq")}))
+        call = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id") or calls.get(d.get("approval_id")))
+        if call in perms and t == "approval":
+            perms[call] = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
+                           "self_approval_refused": "self-approval refused"}.get(d.get("decision"), d.get("decision"))
+        elif call in perms and t in OUTCOMES:
+            perms[call] = OUTCOMES[t]
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
-    if out["state"] == "final":   # a hold the run ended without an answer to
-        for p in perms.values():
-            if p["outcome"] == "waiting":
-                p["outcome"] = "not answered"
-    # lean: the newest PERMISSIONS_KEPT a run; the run's records (its bundle) hold every one
-    out["permissions"] = list(perms.values())[-PERMISSIONS_KEPT:]
-    out["permissions_left_out"] = max(0, len(perms) - PERMISSIONS_KEPT)
+    # a hold the run ended without an answer to
+    out["permissions"] = collections.Counter("not answered" if o == "waiting" and out["state"] == "final" else o
+                                             for o in perms.values())
     return out
 
 
@@ -859,7 +848,8 @@ class StoreFeed:
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
-        self.rowcache = collections.OrderedDict()   # (tenant, run_id, checkpoint size) -> rows (): its newest ROWCACHE_MAX
+        self.rowcache = collections.OrderedDict()   # (tenant, run_id, its covered records) -> rows: the newest ROWCACHE_MAX
+        self.verifying = threading.BoundedSemaphore(2)   # /api/rows checks at once
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
         self.stopped = None   # why the watch thread ended, when it did: the page then says verification stopped
         self.on_run, self.content, self.analyze = on_run, content, analyze
@@ -1146,11 +1136,13 @@ class StoreFeed:
             self.base += over
 
     def rows(self, scope, tenant, run_id):
-        """GET /api/rows?tenant&run: a run's rows as the tape shows them, read from the store and verified (the rows
-        served are of the records checked), so a run whose records left the live view opens in full; None when `scope`
-        may not read its tenant, the store has no such run, no checkpoint covers it or it fails. At most max_records
-        records, its first. An answer is kept until a newer checkpoint, or until the viewer's own re-check of the run
-        fails it (RECHECK_S), as the run list's verdict is."""
+        """GET /api/rows?tenant&run: a run's rows as the tape shows them, from the records of its bundle that verified
+        (exported from the store, verified, then translated: the file is read once), so a run whose records left the
+        live view opens in full; None when `scope` may not read its tenant, the store has no such run, no checkpoint
+        covers it or it fails. At most max_records records, its first. An answer is kept while the run's own covered
+        records don't change, or until the viewer's own re-check of the run fails it (RECHECK_S), as the run list's
+        verdict is. Two checks run at once at most: past that, observe.Busy (503, try again)."""
+        from .why.import_v2 import bundle_records
         if scope is not observe.ALL and tenant != scope:
             return None
         r = reader(self.cfg)
@@ -1159,16 +1151,25 @@ class StoreFeed:
         try:
             note, run = r.checkpoint_latest(), r.runs.get((tenant, run_id))
             count = bisect.bisect_left(run["seqs"], note[0]) if run and note else 0
-            key = (tenant, run_id, note and note[0])   # checked once a checkpoint: a page that asks again costs a lookup
+            key = (tenant, run_id, count)   # its own covered records: another run's checkpoint costs it a lookup
             with self.lock:
                 rows = self.rowcache.get(key)
             if rows is not None or not count:
                 return rows
-            if check(r, tenant, run_id, note[1], self.trust, out)[1]:
+            if not self.verifying.acquire(blocking=False):
+                raise observe.Busy()
+            try:
+                export(r, tenant, run_id, note[1], out)
+                verified, _, code = bundle_records(out, self.trust)
+            except ValueError:   # the store does not match its own checkpoint
+                return None
+            finally:
+                self.verifying.release()
+            if code:
                 return None
             # lean: the retained arguments are not read again (each read is a signed content.accessed record); the
             # live view shows them
-            records = list(itertools.islice(r.iter_run(tenant, run_id), min(count, self.max_records)))
+            records = verified.get(run_id, [])[:self.max_records]
         finally:
             r.close()
             os.unlink(out)

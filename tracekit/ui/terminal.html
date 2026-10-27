@@ -3880,10 +3880,10 @@
     const PERM = { tab: "all", page: 0 }, PERM_PAGE = 50;
     let permKey = [], permList = [];
     function permRows() {
-      const key = [ALL.length, ALL[ALL.length - 1], scope];
+      const key = [ALL.length, ALL[ALL.length - 1], scope, LOADED.get(scope)];
       if (key.every((x, i) => x === permKey[i])) return permList;
       const by = new Map(), ended = new Set(), rows = [];
-      for (const r of ALL) {
+      for (const r of runRows()) {
         if (r.analysis || scope && r.session_id !== scope) continue;
         const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id);
         if (r.event === "SessionEnd") ended.add(r.session_id);
@@ -3900,12 +3900,18 @@
         return { ...row, ans, req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
       });
     }
+    // a run's review counts its permissions by outcome: what PERMISSIONS says while its rows are not on the page
+    function permCounts(r) {
+      return `<p class="dim" style="padding:0 8px">${esc((LOADED.get(scope) === null ? "Reading this run's decisions from the store…" : "This run's decisions are not on the page.")
+        + " Its review counts " + Object.entries(r.permissions).map(([o, k]) => `${k} ${o}`).join(" · ") + ".")}</p>`;
+    }
     function permissionsView(el) {
-      const rows = permRows(), n = k => rows.filter(r => r.tabs.includes(k)).length;
+      const rows = permRows(), n = k => rows.filter(r => r.tabs.includes(k)).length, run = scope && RUNS.get(scope);
       const list = rows.filter(r => r.tabs.includes(PERM.tab)), pages = Math.max(1, Math.ceil(list.length / PERM_PAGE));
       PERM.page = Math.min(PERM.page, pages - 1);
       const from = PERM.page * PERM_PAGE, shown = list.slice(from, from + PERM_PAGE), DEC = { deny: ["s-deny", "DENY"], ask: ["s-flag", "HOLD"], flag: ["s-flag", "FLAG"] };
       put("whyv", `<div class="wbar">` + PTABS.map(([k, l]) => `<button type="button" data-ptab="${esc(k)}" class="${PERM.tab === k ? "on" : ""}">${esc(l)} ${esc(n(k))}</button>`).join("") + `</div>`
+        + (!rows.length && run?.permissions && Object.keys(run.permissions).length ? permCounts(run) : "")
         + `<p class="dim" style="padding:0 8px">Every decision that was not a plain allow, and what came of it, ${scope ? "in this run" : "in every run this page has"}. An answer happens on the signer's approval path: copy its command${DESK() ? ", or use the approvals page" : ""}. This page answers nothing.</p>`
         + `<table class="wt"><thead><tr><th>TIME</th><th>AGENT</th><th>CALL</th><th>ARGUMENTS (SIGNER'S COPY)</th><th>DECISION</th><th>RULE, IN WORDS</th><th>OUTCOME</th><th>WHO · WHEN</th><th></th></tr></thead><tbody>`
         + (shown.map(r => {
@@ -4593,14 +4599,31 @@
     }
     function rebuild() {
       reset();
-      if (R) for (let i = 0; i < rpos; i++) ingest(R[i]); else for (const r of ALL) if (inScope(r)) ingest(r);
+      const loaded = scope && LOADED.get(scope);   // a run read from the store: its rows, then the viewer's own about it
+      if (R) for (let i = 0; i < rpos; i++) ingest(R[i]);
+      else { for (const r of loaded || ALL) if (inScope(r)) ingest(r); if (loaded) for (const r of ALL) if (inScope(r) && r.analysis) ingest(r); }
       tapeShown = S.tape.length;
+    }
+    // the selected run's rows: read from the store when its records left the live view, else the live view's
+    const runRows = () => scope && LOADED.get(scope) || ALL;
+    // a run whose records left the live view (some of its signed records are not on the page): its rows from the store,
+    // verified for the request (/api/rows); the newest four runs kept, a failure (503: busy) tried again 10 s later
+    const LOADED = new Map();
+    function loadRun(id) {
+      const r = id && RUNS.get(id), seqs = new Set(ALL.filter(x => x.session_id === id && x.tk_seq != null && !x.analysis).map(x => x.tk_seq));
+      if (!r || r.verdict !== "verified" || !DROPPED || seqs.size >= (r.records || 0) || LOADED.has(id) || document.URL.startsWith("file:")) return;
+      LOADED.set(id, null);
+      getJSON("api/rows?" + new URLSearchParams({ tenant: r.tenant || "default", run: id })).then(d => {
+        LOADED.set(id, d.rows);
+        while (LOADED.size > 4) LOADED.delete(LOADED.keys().next().value);
+        if (scope === id && !R) { rebuild(); schedule(); }
+      }, () => setTimeout(() => LOADED.delete(id), 10000));
     }
     function setScope(id) {
       if (R) stopRun(true);
       // the why views follow the run selected here, from the start of its own graph
       if (id !== scope) { WRUN = WPICK = WNODE = null; GV.focus = null; wvKey = ""; tapeMax = TAPE_PAGE; }
-      scope = id; selected = null; rebuild(); updRp(); schedule();
+      scope = id; selected = null; rebuild(); loadRun(id); updRp(); schedule();
     }
     function updRp() {
       $("rp").hidden = $("rp2").hidden = !(V2 && scope);
@@ -4610,7 +4633,7 @@
       mode = R ? "replay" : "live";
     }
     // a replay steps through the run's records, not the rows the viewer made (its verdict, its analysis)
-    const runRecs = () => ALL.filter(r => inScope(r) && !r.analysis);
+    const runRecs = () => runRows().filter(r => inScope(r) && !r.analysis);
     function startRun() { R = runRecs(); rpos = 0; rebuild(); updRp(); }
     function stopRun(quiet) { clearTimeout(rtimer); R = null; rplay = false; if (!quiet) { rebuild(); updRp(); schedule(); } }
     function seekRun(n, pick) {
