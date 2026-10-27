@@ -940,6 +940,18 @@ class NothingLost(unittest.TestCase):
             "why": ["run", "why", "why"], "agents": ["run", "agents", "agents"], "evidence": ["run", "evidence", "evidence"],
             "timeline": ["run", "calls", "timeline"]})   # the why log's TIMELINE: CALLS with its events
 
+    def test_a_phone_stacks_each_page_and_shows_a_tape_row_as_a_two_line_card(self):
+        """At 390px the run header overlapped its own title, the stats strip ran past the edge, the lanes' times
+        overlapped and the inspector came before the run's view."""
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        phone = css[css.index("/* phones: every page stacks"):]
+        for rule in (".tape thead {\n        display: none", "grid-template-columns: 72px 56px minmax(0, 1fr)",
+                     ".tape tr.row td.tgt {\n        grid-column: 1/-1", ".pg-run main>.detail {\n        order: 3",
+                     ".ticker {\n        flex-wrap: wrap", ".runhead,\n      .wsplit {\n        grid-template-columns: minmax(0, 1fr)"):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, phone)
+        self.assertIn("tickStep(t1 - t0, Math.max(2, (W - labelW) / 90))", PAGE)   # the lanes: a tick per 90px at most
+
     def test_each_page_places_the_panels_it_had(self):
         css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
         for rule in ("body.pg-run main>.p.agents", "body.pg-run main>.p.mix", "body.pg-run main>.p.detail",

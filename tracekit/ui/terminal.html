@@ -1446,6 +1446,13 @@
       color: var(--red)
     }
 
+    /* a claim the records contradict weighs as a blocked call: filled */
+    .mark.x {
+      background: var(--red);
+      border-color: var(--red);
+      color: var(--ink)
+    }
+
     /* footer */
     .foot {
       display: flex;
@@ -2573,6 +2580,86 @@
       .need .do {
         grid-column: 1/3;
         white-space: normal
+      }
+    }
+
+    /* phones: every page stacks, a tape row is a two-line card, nothing scrolls the page sideways */
+    @media (max-width:700px) {
+      .rviews {
+        flex-wrap: wrap
+      }
+
+      .ticker {
+        flex-wrap: wrap;
+        overflow: visible
+      }
+
+      .tk {
+        flex: 1 0 25%;
+        padding: 3px 8px
+      }
+
+      .runhead,
+      .wsplit {
+        grid-template-columns: minmax(0, 1fr)
+      }
+
+      .runhead .acts {
+        grid-row: auto;
+        grid-column: auto;
+        align-items: flex-start
+      }
+
+      /* a run's page: its agents, then the view, then the inspector, then the tool mix */
+      .pg-run main>.agents {
+        order: 1
+      }
+
+      .pg-run main>.tape,
+      .pg-run main>.lanes,
+      .pg-run main>.whyv {
+        order: 2
+      }
+
+      .pg-run main>.detail {
+        order: 3
+      }
+
+      .pg-run main>.mix {
+        order: 4
+      }
+
+      /* the tape: time, event and status on a row's first line, what it is on the second */
+      .tape thead {
+        display: none
+      }
+
+      .tape tr.row {
+        display: grid;
+        grid-template-columns: 72px 56px minmax(0, 1fr);
+        border-bottom: 1px solid var(--row-line)
+      }
+
+      .tape tr.row td {
+        border: 0;
+        max-width: none;
+        width: auto
+      }
+
+      .tape tr.row td.c-st {
+        text-align: right
+      }
+
+      .tape tr.row td.tgt {
+        grid-column: 1/-1;
+        order: 1;
+        white-space: normal;
+        overflow-wrap: anywhere
+      }
+
+      #toasts {
+        left: 10px;
+        right: 10px
       }
     }
   </style>
@@ -3908,7 +3995,7 @@
       const x = ts => labelW + (ts - t0) / (t1 - t0) * (W - labelW - 8);
       // time axis
       g.strokeStyle = css("--line"); g.fillStyle = css("--muted"); g.lineWidth = 1;
-      const step = tickStep(t1 - t0);
+      const step = tickStep(t1 - t0, Math.max(2, (W - labelW) / 90));   // a label needs about 90px: fewer ticks when narrow
       for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
         const xx = Math.round(x(t)) + .5; g.beginPath(); g.moveTo(xx, top - 4); g.lineTo(xx, H); g.stroke();
         g.fillText(tickText(t, step), xx + 3, 7);
