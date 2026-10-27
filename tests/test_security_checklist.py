@@ -132,7 +132,7 @@ class Surfaces(unittest.TestCase):
 
     def viewer(self):
         feed = types.SimpleNamespace(records=[{"tool_name": s} for s in HOSTILE], base=0, lock=threading.Condition(),
-                                     verify=lambda: (0, [], None))
+                                     verify=lambda: (0, [], None), rows=lambda scope, tenant, run: None)
         login = OidcLogin({"issuer": "corp", "client_id": "viewer", "redirect_uri": "https://127.0.0.1/callback",
                            "roles": {"auditor": ["group:corp/auditors"]}},
                           {"corp": {"issuer": "https://idp.invalid", "audience": "viewer"}})
@@ -147,6 +147,8 @@ class Surfaces(unittest.TestCase):
                              ("GET", f"/api/run?log=0&tenant=t&run={SECRET}", auth, 400),
                              ("GET", f"/api/bundle?log=0&tenant=t&run={SECRET}", {}, 401),
                              ("GET", "/api/stream?from=x", auth, 400),
+                             ("GET", f"/api/rows?tenant=t&run={SECRET}", {}, 401), ("GET", "/api/rows?run=x", auth, 400),
+                             ("GET", f"/api/rows?tenant=t&run={SECRET}", auth, 404),
                              ("GET", f"/callback?state=x&code={SECRET}", {"Cookie": "tracekit_login=x"}, 403),
                              ("GET", "/api/snapshot", {"Cookie": f"tracekit_observe={SECRET}"}, 401),
                              ("GET", f"/api/why/runs/{SECRET}", auth, 404), ("GET", "/api/why/runs/..%2f..", auth, 400),

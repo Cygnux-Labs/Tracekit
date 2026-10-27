@@ -37,7 +37,7 @@ from tracekit.storage.file import FileStorage
 from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run, referenced_refs
 from tracekit.why.demo import EXFIL_TARGET, SYSTEM
 from tracekit.why.graph import target_hits
-from tracekit.why import cli as why_cli
+from tracekit.why import cli as why_cli, import_v2
 from tracekit.why.import_v2 import _target, store_records
 from tracekit.why.server import Feed as WhyFeed, IngestError, Store, tape
 
@@ -59,7 +59,8 @@ def page_js(names, script):
     page = observe.read_text(observe.UI)
     code = "".join(re.search(rf"^    (?:function {n}\(.*?^    }}|const {n} = .*?;)$", page, re.M | re.S).group(0) + "\n"
                    for n in names)
-    return subprocess.run(["node", "-e", code + script], capture_output=True, encoding="utf-8", check=True).stdout
+    # on stdin: Linux caps one argument at 128 KiB (MAX_ARG_STRLEN), which a test's records can pass
+    return subprocess.run(["node", "-"], input=code + script, capture_output=True, encoding="utf-8", check=True).stdout
 
 
 def v2rec(seq, typ, data, run="r1", **top):
@@ -92,7 +93,8 @@ class Translate(unittest.TestCase):
         self.assertEqual(call["policy"], {"decision": "deny", "reasons": ["TK-N001", "TK-S001", "TK-NEW"], "flags": []})
         self.assertEqual(call["v2"], {"type": "policy.decision", "run_seq": 2, "tool_use_id": "c3", "decision": "deny",
                                       "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
-                                      "decision_id": "dec-1", "rules": [
+                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 6, "flag": 3},
+                                      "secs": {"TK-N001": "deny", "TK-S001": "deny"}, "rules": [
                                           {"id": "TK-N001", "reason": "request to an internal address"},
                                           {"id": "TK-S001", "reason": "cloud metadata service",
                                            "remedy": "Use the credentials the deployment gives the tool; no tool call "
@@ -102,6 +104,7 @@ class Translate(unittest.TestCase):
                                                          "rule_ids": ["TK-S001"], "policy_hash": "sha256:unknown"}))
         # a decision of a policy the viewer does not have: its rule ids only
         self.assertEqual((other["target"], other["policy"]["flags"]), ("TK-S001", ["held_for_approval"]))
+        self.assertNotIn("read", other["v2"])
 
     def test_a_model_message_of_any_shape_reads_as_what_it_says(self):
         """{"output": [{"type": ["x"]}]}, an agent's own words the dev vault keeps, raised TypeError in the parser and
@@ -154,6 +157,27 @@ class Translate(unittest.TestCase):
                                 ["EARLIER RECORD", "BEFORE", "AFTER", "COMMITTED"],
                                 ["EARLIER RECORD", "COMMITTED"]])
 
+    def test_said_vs_did_and_whose_words_get_the_tier_the_claims_and_the_input_source(self):
+        """SAID VS DID needs who wrote a call's result (a gateway or executor, tier T2, or the agent) and which
+        sentences state an outcome (TK-X205's reader); WHOSE WORDS where an input came from: none reached the page."""
+        tr = view.Translator()
+        tr.content[("r1", 4)] = {"output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "I will push it now."}]},
+            {"type": "message", "content": [{"type": "output_text", "text": "All 12 tests pass. Pushed the fix."}]}]}
+        rows = [x for r in (
+            v2rec(1, "input.observed", {"source": "msg:planner->executor run:p1", "trust": "untrusted"}),
+            v2rec(2, "tool.result", {"tool_use_id": "c1", "ok": True, "via": "mtls:executor"}, source="gateway",
+                  tier="T2"),
+            v2rec(3, "tool.result", {"tool_use_id": "c2", "ok": True}, source="sdk"),
+            v2rec(4, "model.exchange", {"phase": "response", "exchange_id": "x1", "content_digest": "sha256:c"}))
+            for x in tr.feed(r)]
+        inp, ran, own, turn = rows
+        self.assertEqual((inp["v2"]["source"], inp["v2"]["trust"]), ("msg:planner->executor run:p1", "untrusted"))
+        self.assertEqual((ran["tk_tier"], ran["tk_source"], ran["v2"]["via"]), ("T2", "gateway", "mtls:executor"))
+        self.assertEqual(("tk_tier" in own, "via" in own["v2"]), (False, False))
+        self.assertEqual([b.get("claims") for b in turn["blocks"]],
+                         [None, ["All 12 tests pass.", "Pushed the fix."]])   # a plan states no outcome
+
     def test_content_redaction_changed_is_not_shown_as_the_records(self):
         """The dev content source dropped `opened`: content that opens no commitment (redacted) showed as the call's
         arguments, as content that does."""
@@ -199,7 +223,8 @@ class Translate(unittest.TestCase):
         req, ans, used = rows[1:]
         self.assertEqual((req["tape"], req["title"]), ("HOLD", "APPROVAL REQUESTED · create_refund"))
         self.assertEqual(req["text"], "requested by uid:501 · rules TK-M001 sending money · expires 18:00:34 UTC")
-        self.assertEqual((req["v2"]["approval"], req["v2"]["tool_use_id"]), ("requested", "c6"))
+        self.assertEqual((req["v2"]["approval"], req["v2"]["tool_use_id"], req["v2"]["approval_id"]),
+                         ("requested", "c6", "apr-1"))
         self.assertEqual((ans["tape"], ans["severity"], ans["title"]), ("APPROVE", "high", "APPROVED · create_refund"))
         self.assertEqual(ans["text"], "by oidc:alice (not attested) · vouched for by mtls:spiffe://acme/viewer "
                                       "(attested) via web · “on call” · not self-approved · BREAK-GLASS")
@@ -389,6 +414,116 @@ class View(unittest.TestCase):
     def report(self, feed, run_id):
         wait_for(lambda: any(r.get("title", "").startswith(f"RUN {run_id}") for r in self.rows(feed, run_id)), 15)
         return [r for r in self.rows(feed, run_id) if r.get("title", "").startswith(f"RUN {run_id}")]
+
+    @pytest.mark.unverified_bundles
+    def test_a_run_opens_from_the_store_verified_again_and_only_for_its_tenant(self):
+        """Past the live view's newest 50,000 records older runs had no rows on the page; /api/rows reads a run from the
+        store, checked again for the request, for the token or a session of its tenant."""
+        run_id = self.finished_run()
+        feed = store_feed(self, {"data_dir": self.d})
+        self.report(feed, run_id)
+        with mock.patch.object(import_v2, "bundle_records", wraps=import_v2.bundle_records) as checked:
+            rows = feed.rows(observe.ALL, "default", run_id)
+            self.assertIs(feed.rows(observe.ALL, "default", run_id), rows)   # asked again: checked once
+            other = self.finished_run()   # another run moves the log's checkpoint; this run's own records did not grow
+            self.assertIs(feed.rows(observe.ALL, "default", run_id), rows)
+        self.assertEqual(checked.call_count, 1)
+        self.assertEqual([r["tool_use_id"] for r in rows if r["event"] == "PreToolUse"], ["c1", "c2", "c3"])
+        self.assertEqual({r["tenant"] for r in rows}, {"default"})
+        self.assertIsNone(feed.rows("other", "default", run_id))   # an OIDC session of another tenant
+        self.assertIsNone(feed.rows(observe.ALL, "default", "nope"))
+        srv = view.server(feed, "127.0.0.1", 0, "t0k")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+        for path, code in ((f"/api/rows?tenant=default&run={run_id}", 200), (f"/api/rows?run={run_id}", 400),
+                           ("/api/rows?tenant=default&run=nope", 404)):
+            c.request("GET", path, headers={"Authorization": "Bearer t0k"})
+            r = c.getresponse()
+            self.assertEqual((path, r.status), (path, code))
+            body = json.loads(r.read())
+        c.request("GET", f"/api/rows?tenant=default&run={run_id}")
+        self.assertEqual(c.getresponse().status, 401)
+        # two checks at once at most: a third request is told to come back, not queued behind them
+        feed.verifying = threading.BoundedSemaphore(1)
+        feed.verifying.acquire()
+        with self.assertRaises(observe.Busy):
+            feed.rows(observe.ALL, "default", other)
+        c.request("GET", f"/api/rows?tenant=default&run={other}", headers={"Authorization": "Bearer t0k"})
+        r = c.getresponse()
+        self.assertEqual((r.status, r.getheader("Retry-After")), (503, "5"))
+        r.read()
+        feed.verifying.release()
+        # the rows are of the records the check verified, not a second read of the store after it
+        real = view.export
+
+        def export_then_edit(*a, **k):
+            real(*a, **k)
+            with open(os.path.join(self.d, "store", "records.jsonl"), encoding="utf-8") as f:
+                data = f.read()
+            with open(os.path.join(self.d, "store", "records.jsonl"), "w", encoding="utf-8") as f:
+                f.write(data.replace('"tool":"Bash"', '"tool":"Bosh"'))
+        self.service.close()
+        feed.rowcache.clear()
+        with mock.patch.object(view, "export", side_effect=export_then_edit):
+            rows = feed.rows(observe.ALL, "default", run_id)
+        self.assertEqual([x["tool_name"] for x in rows if x["event"] == "PreToolUse"], ["Bash", "rm", "pay"])
+        # a record edited after it was shown: the viewer's re-check fails it, and it is refused
+        path = os.path.join(self.d, "store", "records.jsonl")
+        with open(path, encoding="utf-8") as f:
+            data = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(data.replace('"tool":"Bash"', '"tool":"Bosh"'))
+        with mock.patch.object(view.time, "time", return_value=time.time() + view.RECHECK_S + 1):
+            for _ in range(2):   # one stale run a pass: the signer's own, then this one
+                feed.refresh()
+        self.assertIsNone(feed.rows(observe.ALL, "default", run_id))
+        self.assertIsNone(store_feed(self, {"data_dir": self.d}).rows(observe.ALL, "default", run_id))
+        self.assertIn("error", body)
+
+    def test_rows_never_outlive_a_failed_check_and_a_checkpoint_written_while_reading_is_read_again(self):
+        """An answer cached as the watcher failed the run (or cached before, with the same covered count after an edit
+        in place) was served again; and a checkpoint written while rows() read the store made it miss the run."""
+        run_id = self.finished_run()
+        feed = store_feed(self, {"data_dir": self.d})
+        self.report(feed, run_id)
+        key = ("default", run_id)
+        self.assertIsNotNone(feed.rows(observe.ALL, *key))
+        with feed.lock:   # the watcher failed it; the cached answer stays (the same covered count)
+            feed.runs[key] = dict(feed.runs[key], failed="FAILED")
+        self.assertIsNone(feed.rows(observe.ALL, *key))
+        with feed.lock:
+            feed.runs[key] = dict(feed.runs[key], failed=None)
+        feed.rowcache.clear()
+        real = import_v2.bundle_records
+
+        def failed_meanwhile(*a, **k):   # the watcher fails the run while this request checks it
+            out = real(*a, **k)
+            with feed.lock:
+                feed.runs[key] = dict(feed.runs[key], failed="FAILED")
+            return out
+        with mock.patch.object(import_v2, "bundle_records", side_effect=failed_meanwhile):
+            self.assertIsNone(feed.rows(observe.ALL, *key))
+        self.assertEqual(dict(feed.rowcache), {})
+        with feed.lock:
+            feed.runs[key] = dict(feed.runs[key], failed=None)
+        opened, real_reader = [], view.reader
+
+        class Behind:   # a reader opened before the checkpoint its note names: its tree is shorter
+            def __init__(self, r):
+                self.r, self.tree = r, types.SimpleNamespace(size=0)
+
+            def __getattr__(self, name):
+                return getattr(self.r, name)
+
+        def reader(cfg):
+            opened.append(1)
+            r = real_reader(cfg)
+            return Behind(r) if len(opened) == 1 else r
+        with mock.patch.object(view, "reader", side_effect=reader):
+            self.assertIsNotNone(feed.rows(observe.ALL, *key))
+        self.assertEqual(len(opened), 2)
 
     def test_with_a_content_source_each_decision_carries_its_arguments(self):
         """The tape named every allowed call "no rule matched": with the dev signer's retained arguments each decision
@@ -1075,6 +1210,15 @@ class WhyData(WhyServer):
         sub = {r["agent_id"] for r in rows if r["event"] == "SubagentStart"}
         self.assertEqual(sub, {e["agent"] for e in run.of_type("agent.start")})
 
+    def test_a_why_log_time_the_tape_cannot_read_shows_as_now_and_is_marked(self):
+        """load_run does not check a log's ts: a row whose ts the tape cannot read shows as now (never 1970) and is
+        marked ts_unread, which HORIZON sorts oldest."""
+        run = load_run(SYSTEM.run(seed=0, out_dir=self.store.root, run_id="t1").path)
+        run.events[1]["ts"] = "2026-10-27T10:00:00+00:00"
+        rows, node = tape(run), "ev:" + run.events[1]["id"]
+        self.assertEqual({r["why"]["node"] for r in rows if r.get("ts_unread")}, {node})
+        self.assertTrue(all(abs(r["ts"] - time.time()) < 5 for r in rows if r["why"]["node"] == node))
+
     def test_replay_without_the_program_says_what_to_run(self):
         store = Store(os.path.join(self.tmp, "srv2"))
         SYSTEM.run(seed=0, out_dir=store.root, run_id="r")
@@ -1199,7 +1343,8 @@ class WhyPage(WhyServer):
             self.assertIn(directive, h["Content-Security-Policy"])
         self.assertIn(b'data-wtab="why"', page)
         self.assertEqual(unescaped(script_of(page.decode())), [])
-        self.assertIn("DESK · RUNS · OVERVIEW · TIMELINE · WHY DID IT HAPPEN? · GRAPH · AGENTS · INFLUENCE".encode(), page)
+        self.assertIn("DESK · RUNS · LIVE · APPROVALS · PERMISSIONS · HORIZON · INFLUENCE".encode(), page)
+        self.assertIn("1–7 · OVERVIEW · CALLS · TIMELINE · GRAPH · WHY · AGENTS · EVIDENCE".encode(), page)
         self.assertIn(b'<option value="${esc(a)}"', page)   # an agent name with odd spaces still matches its filter
         self.assertEqual(self.request("GET", "/api/why/workspace", session)[0], 200)
 
@@ -1311,7 +1456,11 @@ class OneViewer(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertIn('<a href="/" class="%s">LIVE</a><a href="/runs" class="%s">RUNS</a>'
                           % ("on" if on == "LIVE" else "", "on" if on == "RUNS" else ""), page)
-            self.assertNotIn("APPROVALS", page)
+            # no way to the approval pages this server lacks: none in its nav, and the terminal page's own links to it
+            # are drawn only from the nav's link (its APPROVALS page lists the holds read-only on every server)
+            self.assertNotIn("APPROVALS", re.search(r'<nav class="nav">.*?</nav>', page).group(0))
+            for link in re.findall(r'.{0,60}<a href="/approvals">', page):
+                self.assertIn("DESK()", link)
         self.assertEqual(self.get(port, "/runs", {})[0], 401)
 
     def test_observe_and_why_serve_say_they_are_part_of_view_and_keep_working(self):
@@ -1368,8 +1517,8 @@ class Pages(unittest.TestCase):
         for row in ('data-run="" tabindex="0"', 'data-run="${esc(r.id)}" tabindex="0"',
                     'data-i="${esc(row.i)}" tabindex="0"', 'data-al="${esc(al.i)}" tabindex="0"'):
             self.assertIn(row, page)
-        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],'
-                      '[data-al][tabindex]")) e.target.click();', page)
+        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],'
+                      '[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex]")) e.target.click();', page)
 
 
 VERIFIED = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")
@@ -1466,7 +1615,7 @@ class LiveRuns(unittest.TestCase):
             self.assertEqual(json.loads(page_js(["accept"], f"""
                 let V2 = true, R = null, scope = null, DROPPED = 0, MAXREC = 50000;
                 const ALL = [], RUNS = new Map(), document = {{ body: {{ classList: {{ add() {{}} }} }} }};
-                const inScope = () => true, ingest = () => {{}}, rebuild = () => {{}}, stopRun = () => {{}};
+                const inScope = () => true, ingest = () => {{}}, rebuild = () => {{}}, stopRun = () => {{}}, toastOf = () => {{}}, LOADED = new Map();
                 for (const r of {json.dumps(rows)}) accept(r);
                 accept({{ session_id: "r1", tenant: "default", analysis: true, review: {{ verdict: "failed" }} }});
                 process.stdout.write(JSON.stringify(ALL.map(r => [r.session_id, r.review?.verdict ?? r.tape])));""")),
@@ -1623,12 +1772,12 @@ class LiveRuns(unittest.TestCase):
         self.assertEqual(json.loads(c.getresponse().read())["stopped"], feed.stopped)
         if not shutil.which("node"):
             self.skipTest("needs node to run the page's renderTop()")
-        top = json.loads(page_js(["renderTop"], f"""
+        top = json.loads(page_js(["renderTop", "filterChips"], f"""
             const el = {{}}, $ = id => el[id] ??= {{ classList: {{ toggle() {{}} }} }};
             const document = {{ URL: "http://127.0.0.1/", body: {{ classList: {{ toggle() {{}} }} }} }};
             let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = {json.dumps(feed.stopped)};
             const BOOT = null, V2 = true, scope = null, RUNS = new Map(), F = {{}}, TZ = "UTC", nowTs = () => 0;
-            const chainState = {{ ok: false, n: 0, detail: "" }}, esc = s => s;
+            const chainState = {{ ok: false, n: 0, detail: "" }}, esc = s => s, put = () => {{}};
             renderTop();
             process.stdout.write(JSON.stringify([el.mode.textContent, el.lost.hidden, el.lost.textContent,
                                                  el.chain.textContent]));"""))
