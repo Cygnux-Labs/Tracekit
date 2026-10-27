@@ -22,6 +22,11 @@ LABEL org.opencontainers.image.source="https://github.com/Cygnux-Labs/Tracekit" 
       org.opencontainers.image.title="tracekit-signer" \
       org.opencontainers.image.licenses="MIT"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+# lean: the pinned base ships OpenSSL 3.0.22-1~deb12u1 (CVE-2026-84782, #428); drop this step once BASE is re-pinned to
+# a python:3.12-slim-bookworm digest with 3.0.22-1~deb12u2 or later
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade libssl3 openssl \
+ && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=bind,from=build,source=/wheels,target=/wheels \
     pip install --no-cache-dir --no-index /wheels/*.whl \
  && install -d -m 0755 /etc/tracekit \
