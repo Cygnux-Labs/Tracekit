@@ -259,5 +259,30 @@ class NeedsYou(unittest.TestCase):
         self.assertIn('`ALL CLEAR · ${esc(plural(working, "agent"))} working · nothing needs you`', PAGE)
 
 
+
+class AlertGroups(unittest.TestCase):
+    def test_repeats_of_one_kind_are_one_ranked_group_and_every_alert_stays_in_it(self):
+        """13,040 alert rows, mostly one capture-gap alert whose text differed each time: ALERTS read as a flood."""
+        needs_node(self)
+        out = json.loads(page_js(["srcOf", "SEV_RANK", "alertGroups"], """
+            const rec = (run, seq) => ({ rec: { session_id: run, tk_seq: seq } });
+            const alerts = [];
+            const add = (sev, key, run, text) => alerts.push({ sev, key, text, ref: rec(run, alerts.length), i: alerts.length });
+            for (let i = 0; i < 5; i++) add("med", "GAP · signer_unavailable", i < 3 ? "r1" : "r2", `missed ${i}`);
+            add("high", "BLOCKED · TK-D003", "r1", "BLOCKED Bash: git push --force");
+            add("info", "SIGNER EPOCH", "r3", "1 key");
+            add("med", "FLAGGED · TK-F001", "r1", "FLAGGED · Bash");
+            process.stdout.write(JSON.stringify(alertGroups(alerts).map(g => [g.key, g.all.length, g.runs, g.al.text])));"""))
+        self.assertEqual(out, [["BLOCKED · TK-D003", 1, 1, "BLOCKED Bash: git push --force"],
+                               ["FLAGGED · TK-F001", 1, 1, "FLAGGED · Bash"],
+                               ["GAP · signer_unavailable", 5, 2, "missed 4"], ["SIGNER EPOCH", 1, 1, "1 key"]])
+        self.assertIn("g.all.slice(-GRP_PAGE * (OPENGRP.get(g.key)))", PAGE)   # an open group lists its alerts, paged
+
+    def test_each_alert_is_keyed_by_its_rule_or_kind_not_its_changing_text(self):
+        for key in ('"BLOCKED · " + (act.reasons.join(" ") || act.tool)', '"GAP · " + v.kind',
+                    '"FINDING " + v.finding.rule', 'String(r.title || "ALERT").replace(/\\b\\d+\\b/g, "n")'):
+            self.assertIn(key, PAGE)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -980,6 +980,16 @@
       text-decoration: none
     }
 
+    /* a group's alerts, opened under it */
+    .al.in {
+      padding-left: 22px;
+      background: var(--panel2)
+    }
+
+    .al.grp.on {
+      background: var(--amber-bg)
+    }
+
     .al:hover {
       background: var(--panel2)
     }
@@ -1958,7 +1968,8 @@
       return w.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) + "·" + a.id.slice(0, 4);
     }
     function pushTape(row) { row.i = S.tape.length; S.tape.push(row); return row; }
-    function alert(sev, text, sub, ref, ts, agent) { S.alerts.push({ sev, text, sub, ref, ts, agent, i: S.alerts.length }); }
+    // `key`: the alert's kind, which ALERTS groups by (a rule, a gap's kind), its text the default
+    function alert(sev, text, sub, ref, ts, agent, key = text) { S.alerts.push({ sev, text, sub, ref, ts, agent, key, i: S.alerts.length }); }
     // a v2 tool_call_id is the client's ("c1"), unique only within its run
     const tuid = r => (r.v2 ? r.session_id + "|" : "") + (r.tool_use_id ?? r.v2?.tool_use_id);
     // a held call's answers in words; consumed (the approved call ran) is no answer of its own
@@ -2034,11 +2045,11 @@
           f.last = a; f.acts.push(act); S.files.set(p, f);
         }
         if (act.tool === "Agent" || act.tool === "Task") S.spawnQ.push(act);
-        if (act.denied) { a.blocked++; alert("high", `BLOCKED ${act.tool}: ${act.target}`, act.reasons.join("; "), act, r.ts, a); }
+        if (act.denied) { a.blocked++; alert("high", `BLOCKED ${act.tool}: ${act.target}`, act.reasons.join("; "), act, r.ts, a, "BLOCKED · " + (act.reasons.join(" ") || act.tool)); }
         for (const f of act.flags) {
           if (f === "denied" || (act.v2 && f === "held_for_approval")) continue;  // v2: its approval.request is the alert
           a.flags++;
-          alert(SEVERE.has(f) ? "high" : "med", `${f.replace(/_/g, " ").toUpperCase()} · ${act.tool}`, act.target, act, r.ts, a);
+          alert(SEVERE.has(f) ? "high" : "med", `${f.replace(/_/g, " ").toUpperCase()} · ${act.tool}`, act.target, act, r.ts, a, `${f.replace(/_/g, " ").toUpperCase()} · ` + (act.reasons.join(" ") || act.tool));
         }
         pushTape({ ts: r.ts, agent: a, ev: act.denied ? "BLOCK" : act.v2?.decision === "ask" ? "HOLD" : "TOOL", act, rec: r });
         return;
@@ -2100,7 +2111,9 @@
         if (r.v2?.approval === "approve") S.approved++;
         // a finding and the records it cites link both ways (a signed finding's cites are of the run it is about)
         for (const c of r.v2?.cites || []) { const k = (r.v2.about || r.session_id) + "|" + c.run_seq; S.cited.set(k, [...(S.cited.get(k) || []), r]); }
-        alert(r.severity || "med", r.title || "ALERT", r.text || "", { rec: r }, r.ts, a);
+        const v = r.v2 || {};
+        alert(r.severity || "med", r.title || "ALERT", r.text || "", { rec: r }, r.ts, a, v.kind && r.tape === "GAP" ? "GAP · " + v.kind : v.finding?.rule ? "FINDING " + v.finding.rule
+          : v.effect ? "EFFECT · " + v.effect.kind : String(r.title || "ALERT").replace(/\b\d+\b/g, "n"));
         const row = pushTape({ ts: r.ts, agent: a, ev: r.tape || "ALERT", text: (r.title || "") + " · " + (r.text || ""), rec: r });
         if (act) { row.under = act; (act.subs ||= []).push(row); }   // an approval is shown under its call's row
         return;
@@ -2350,18 +2363,13 @@
     }
     function renderAlerts() {
       const why = whyAlerts(), src = al => srcOf(al.ref?.pre || al.ref?.rec);
-      // the same alert repeated (one per call of a long run) is one line with its count; it opens the newest
-      const groups = new Map();
-      for (const al of S.alerts) {
-        if (al.agent && !agentMatch(al.agent)) continue;
-        const k = al.sev + "|" + src(al) + "|" + al.text, g = groups.get(k);
-        if (g) { g.n++; g.al = al; } else groups.set(k, { al, n: 1 });
-      }
-      const list = [...groups.values()].sort((x, y) => y.al.i - x.al.i).slice(0, 200);
+      const list = alertGroups(S.alerts.filter(al => !al.agent || agentMatch(al.agent))).slice(0, 200);
+      const row = (al, n, cls = "") => `<div class="al${esc(cls)}" data-al="${esc(al.i)}" tabindex="0"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`;
       const wait = waiting().filter(w => !scope || w.rec.session_id === scope);
       put("alerts", wait.map(w => `<a class="al" href="${esc(w.link)}"><span class="sev wait">WAIT</span><span class="tx"><span class="src">WAITING FOR YOU</span>${esc(w.rec.tool_name)} · ${esc(w.rec.agent)}</span><span class="sub">${esc(fmtT(w.rec.ts))} · ${esc((w.rec.v2.rules || []).map(x => x.id).join(" ") || "held")} · ${esc(w.req ? "approval " + w.req.v2.approval_id : "no approval requested yet")}</span></a>`).join("")
         + why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
-        + list.map(({ al, n }) => `<div class="al" data-al="${esc(al.i)}" tabindex="0"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
+        + list.map(g => g.all.length === 1 ? row(g.al, 1) : `<div class="al grp${OPENGRP.has(g.key) ? " on" : ""}" data-grp="${esc(g.key)}" tabindex="0"><span class="sev ${esc(g.al.sev)}">${esc(String(g.al.sev).toUpperCase())}</span><span class="tx">${src(g.al) ? `<span class="src">${esc(src(g.al))}</span>` : ""}${esc(g.key)}<span class="n">× ${esc(g.all.length)}</span> in ${esc(plural(g.runs, "run"))}</span><span class="sub">${esc(String(g.al.text).slice(0, 160))} · newest ${esc(fmtT(g.al.ts))} · ${esc(OPENGRP.has(g.key) ? "▾ listed below" : "▸ click to list")}</span></div>`
+          + (OPENGRP.has(g.key) ? g.all.slice(-GRP_PAGE * (OPENGRP.get(g.key))).reverse().map(al => row(al, 1, " in")).join("") + (g.all.length > GRP_PAGE * OPENGRP.get(g.key) ? `<div class="al in" data-grpmore="${esc(g.key)}">SHOW ${esc(Math.min(GRP_PAGE, g.all.length - GRP_PAGE * OPENGRP.get(g.key)))} MORE · ${esc(g.all.length - GRP_PAGE * OPENGRP.get(g.key))} NOT SHOWN</div>` : "") : "")).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
       $("alsum").textContent = (wait.length ? `${wait.length} waiting · ` : "") + `${S.alerts.length + why.length} total · ${highCount()} high`;
     }
     // the calls a person must answer, in every run the page has: a hold (ask) no answer has ended, in a run still open;
@@ -2434,6 +2442,19 @@
       const box = $("toasts"); box.prepend(t);
       while (box.children.length > 3) box.lastChild.remove();
       setTimeout(() => t.remove(), 12000);
+    }
+    // ALERTS as groups of one kind (a rule, a gap's kind) and source: "GAP · signer_unavailable ×812 in 3 runs";
+    // ranked by severity, then by their newest; a group opens to list every alert in it (GRP_PAGE at a time)
+    const SEV_RANK = { high: 0, med: 1, review: 1, low: 2, info: 3 }, GRP_PAGE = 100, OPENGRP = new Map();
+    function alertGroups(alerts) {
+      const groups = new Map();
+      for (const al of alerts) {
+        const k = al.sev + "|" + srcOf(al.ref?.pre || al.ref?.rec) + "|" + al.key, g = groups.get(k);
+        if (g) { g.all.push(al); g.al = al; g.sessions.add(al.ref?.pre?.session_id ?? al.ref?.rec?.session_id); }
+        else groups.set(k, { key: al.key, al, all: [al], sessions: new Set([al.ref?.pre?.session_id ?? al.ref?.rec?.session_id]) });
+      }
+      return [...groups.values()].map(g => ({ ...g, runs: g.sessions.size }))
+        .sort((x, y) => (SEV_RANK[x.al.sev] ?? 4) - (SEV_RANK[y.al.sev] ?? 4) || y.al.i - x.al.i);
     }
     function renderMix() {
       const counts = new Map();
@@ -2715,7 +2736,9 @@
       if (navigator.clipboard?.writeText) navigator.clipboard.writeText(b.dataset.copy).then(() => done(true), fallback); else fallback();
     }, true);
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-i],[data-al],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump],[data-older]"); if (!t) return;
+      const t = e.target.closest("[data-i],[data-al],[data-grp],[data-grpmore],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump],[data-older]"); if (!t) return;
+      if (t.dataset.grp !== undefined) { OPENGRP.has(t.dataset.grp) ? OPENGRP.delete(t.dataset.grp) : OPENGRP.set(t.dataset.grp, 1); return schedule(); }
+      if (t.dataset.grpmore !== undefined) { OPENGRP.set(t.dataset.grpmore, OPENGRP.get(t.dataset.grpmore) + 1); return schedule(); }
       if (t.dataset.run !== undefined) return setScope(t.dataset.run || null);
       if (t.dataset.kind !== undefined) { F.kind = t.dataset.kind || null; return schedule(); }
       if (t.dataset.jump) return jump(t.dataset.jump);
@@ -2778,7 +2801,7 @@
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
       // a run, tape row or alert reached with Tab opens with Enter, as a click does
       // lean: a panel redrawn as records arrive loses the focus inside it; keep the focused row's key across redraws if that bites
-      if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-al][tabindex]")) e.target.click();
+      if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-al][tabindex],[data-grp][tabindex]")) e.target.click();
       else if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
       else if (V2 && !BOOT && scope && rpKeys(e)) return;
       else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; schedule(); }
