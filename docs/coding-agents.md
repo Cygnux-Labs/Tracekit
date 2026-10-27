@@ -151,7 +151,7 @@ wait (milliseconds for Gemini CLI and Qwen Code). Re-run init for the active mod
 (`tracekit init --dev --v2 --agent NAME` in dev, or `sudo tracekit init --v2 --user AGENT --agent NAME` in system
 mode). `tracekit doctor` also checks Droid's hook presence and timeout. OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
 
-For the other coding agents (Antigravity CLI too), `D-HOOKS-EVENT` also warns when a call can run that no hook
+For the other coding agents (Antigravity CLI too, not OpenCode, whose plugin doctor doesn't read), `D-HOOKS-EVENT` also warns when a call can run that no hook
 decided: no Tracekit v2 hook is on the pre-tool event, Cursor's `preToolUse` hook has no `failClosed: true`, or goose's
 `PreToolUse` hook has no `on_failure: "block"`. Without those two, Cursor and goose let a call through when its hook
 can't run. Re-run init to put them back.

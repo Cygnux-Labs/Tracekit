@@ -820,11 +820,12 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
         # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
         # which both run
-        # Qwen Code runs hooks under cmd.exe; assume Droid does too
-        if os.name != "nt" or harness in ("cursor", "droid", "qwen"):
+        # assume Droid runs hooks under cmd.exe; Qwen Code does, so a path that needs quotes keeps cmd.exe's form there,
+        # and one that doesn't goes bare, which either shell runs
+        if os.name != "nt" or harness in ("cursor", "droid"):
             return c
         m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
-        return m.group(1) + c[m.end():] if m else f"& {c}"
+        return m.group(1) + c[m.end():] if m else c if harness == "qwen" else f"& {c}"
 
     def ours(cmds):
         vs = {_version(c) for c in cmds} - {None}

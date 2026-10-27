@@ -646,7 +646,9 @@ class Installer(unittest.TestCase):
                     with open(agent_hooks.config_path(harness, d)) as f:
                         config = json.load(f)
                     command = (config if harness == "droid" else config["hooks"])["PreToolUse"][0]["hooks"][0]["command"]
-                    self.assertTrue(command.startswith(f'"{exe}" -I '), command)
+                    # a path that needs no quotes goes bare for Qwen Code, which either shell runs
+                    plain = harness == "qwen" and " " not in exe
+                    self.assertTrue(command.startswith(f'{exe} -I ' if plain else f'"{exe}" -I '), command)
                     self.assertFalse(command.startswith("&"), command)
 
     @unittest.skipUnless(os.name == "nt", "Droid runs Windows hooks under cmd.exe")
