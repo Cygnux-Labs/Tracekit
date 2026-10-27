@@ -1165,6 +1165,118 @@
       background: var(--c)
     }
 
+    /* a run's TIMELINE by call: one row per call on one time axis (a waterfall); waiting for a person is hatched */
+    #wf {
+      position: absolute;
+      inset: 0;
+      overflow: auto;
+      scrollbar-gutter: stable
+    }
+
+    .wfr {
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid var(--row-line);
+      cursor: pointer
+    }
+
+    .wfr:hover {
+      background: var(--row-hover)
+    }
+
+    .wfr.on {
+      background: var(--amber-bg);
+      box-shadow: inset 2px 0 0 var(--amber)
+    }
+
+    .wfr .wl {
+      flex: none;
+      width: var(--lw);
+      padding: 0 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap
+    }
+
+    .wfr.on .wl b {
+      color: var(--amber)
+    }
+
+    .wfr svg {
+      flex: none;
+      display: block
+    }
+
+    .wfh {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .08em;
+      cursor: default
+    }
+
+    .wfh:hover {
+      background: var(--panel)
+    }
+
+    .wfmore {
+      padding: 2px 8px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--row-line)
+    }
+
+    #wf line {
+      stroke: var(--line)
+    }
+
+    #wf text {
+      fill: var(--muted);
+      font: 10px var(--mono)
+    }
+
+    #wf .wk-ok {
+      fill: var(--green)
+    }
+
+    #wf .wk-flag {
+      fill: var(--cyan)
+    }
+
+    #wf .wk-deny {
+      fill: var(--red)
+    }
+
+    #wf .wk-wait {
+      fill: url(#wfhatch)
+    }
+
+    #wf .hatch-a {
+      fill: var(--amber)
+    }
+
+    #wf .hatch-b {
+      fill: var(--amber-bg)
+    }
+
+    .legend .wk-ok {
+      --c: var(--green)
+    }
+
+    .legend .wk-flag {
+      --c: var(--cyan)
+    }
+
+    .legend .wk-deny {
+      --c: var(--red)
+    }
+
+    .legend .wk-wait {
+      --c: repeating-linear-gradient(45deg, var(--amber) 0 2px, var(--amber-bg) 2px 4px)
+    }
+
     /* reasoning */
     .rs {
       padding: 6px 8px;
@@ -1924,7 +2036,7 @@
     }
     @media (max-width:700px) {
       /* phones: keep time, event, tool, target and status readable; agent and duration live in DETAIL */
-      th.c-ms, td.c-ms, th.c-agent, td.c-agent {
+      th.c-ms, td.c-ms, th.c-agent, td.c-agent, .wfr .wa {
         display: none
       }
 
@@ -2046,12 +2158,15 @@
         <div class="body" id="mix"></div>
       </section>
       <section class="p lanes">
-        <h2><b>5</b>TIMELINE · ONE LANE PER AGENT
-          <span class="legend"><span style="--c:var(--cyan)">read</span><span style="--c:var(--amber)">write</span><span
+        <h2><b>5</b><span id="lanetitle">TIMELINE · ONE LANE PER AGENT</span><span id="wfby" hidden><button class="wtab"
+              data-wfby="call" type="button">BY CALL</button><button class="wtab" data-wfby="agent"
+              type="button">BY AGENT</button></span>
+          <span class="legend" id="lanelegend"><span style="--c:var(--cyan)">read</span><span style="--c:var(--amber)">write</span><span
               style="--c:var(--magenta)">exec</span><span style="--c:var(--blue)">net</span><span
               style="--c:var(--green)">agent</span><span style="--c:var(--red)">blocked/error</span></span>
+          <span class="legend" id="wflegend" hidden></span>
         </h2>
-        <div class="body" id="lanewrap"><canvas id="lanes"></canvas></div>
+        <div class="body" id="lanewrap"><canvas id="lanes"></canvas><div id="wf" hidden></div></div>
       </section>
       <section class="p reason">
         <h2><b>6</b>REASONING<small>self-reported, not proof</small></h2>
@@ -2466,12 +2581,12 @@
       for (const v of RVIEWS) document.body.classList.toggle("rv-" + v, PAGE === "run" && RV === v);
       document.body.classList.toggle("callslog", CALLSLOG);
       renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunHead(); renderRunsPage(); renderApprovalsPage();
-      renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
+      renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderWaterfall(); renderReason(); renderFiles();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
       document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
       renderWhyView();
       $("wtabnode").hidden = !WNODE;
-      document.querySelectorAll(".p>h2 .wtab").forEach(b => b.classList.toggle("on", b.dataset.wtab === WTAB));
+      document.querySelectorAll(".p>h2 [data-wtab]").forEach(b => b.classList.toggle("on", b.dataset.wtab === WTAB));
       if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
       syncLink();
     }
@@ -2951,6 +3066,9 @@
       }).join("") || `<div class="empty">No actions yet.</div>`);
       $("mixsum").textContent = `${counts.size} tools`;
     }
+    // a time axis: its step, at most `most` ticks (down to a millisecond in a v2 run), and a tick's words
+    const tickStep = (span, most = 10) => [...(V2 ? [.001, .002, .005, .01, .02, .05, .1, .2, .5] : []), 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].find(s => span / s <= most) || 3600;
+    const tickText = (t, step) => step < 1 ? fmtT(t) + "." + String(Math.round(t * 1000) % 1000).padStart(3, "0") : fmtT(t);
     let laneHits = [];
     function renderLanes() {
       const cv = $("lanes"), wrap = $("lanewrap"), dpr = window.devicePixelRatio || 1;
@@ -2975,11 +3093,10 @@
       const x = ts => labelW + (ts - t0) / (t1 - t0) * (W - labelW - 8);
       // time axis
       g.strokeStyle = css("--line"); g.fillStyle = css("--muted"); g.lineWidth = 1;
-      const span = t1 - t0, steps = [...(V2 ? [.001, .002, .005, .01, .02, .05, .1, .2, .5] : []), 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
-      const step = steps.find(s => span / s <= 10) || 3600;
+      const step = tickStep(t1 - t0);
       for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
         const xx = Math.round(x(t)) + .5; g.beginPath(); g.moveTo(xx, top - 4); g.lineTo(xx, H); g.stroke();
-        g.fillText(step < 1 ? fmtT(t) + "." + String(Math.round(t * 1000) % 1000).padStart(3, "0") : fmtT(t), xx + 3, 7);
+        g.fillText(tickText(t, step), xx + 3, 7);
       }
       agents.forEach((a, i) => {
         const y = top + i * laneH;
@@ -3004,6 +3121,52 @@
       });
       if (R && rpos) { const px = Math.round(Math.min(W - 2, Math.max(labelW, x(R[rpos - 1].ts)))) + .5; g.strokeStyle = css("--cyan"); g.lineWidth = 2; g.beginPath(); g.moveTo(px, top - 4); g.lineTo(px, H); g.stroke(); g.lineWidth = 1; }
       if (mode === "live" && !V2) { const nx = x(Date.now() / 1000); g.strokeStyle = css("--red"); g.beginPath(); g.moveTo(nx + .5, top - 4); g.lineTo(nx + .5, H); g.stroke(); }
+    }
+    // a run's TIMELINE: BY CALL, one row per call on one time axis (a waterfall), or BY AGENT, the lanes above
+    let WFBY = "call";
+    const WFMAX = 600, WFK = { ok: "allowed", flag: "flagged", deny: "blocked, refused or failed", wait: "waiting for a person" };
+    // a call's bars, [kind, from, to]; to null: still waiting or running, so to the axis' right edge. A hold waits (hatched)
+    // from its decision to its answer, then runs if it was approved; a refused one ends there, red
+    function wfBars(a) {
+      if (a.denied) return [["deny", a.start, a.start]];
+      const kind = a.error ? "deny" : a.flags.some(f => f !== "held_for_approval") ? "flag" : "ok", run = from => [kind, from, a.end ?? (ended(a) ? from : null)];
+      if (a.v2?.decision !== "ask") return [run(a.start)];
+      const ans = a.approvals.filter(x => x.v2.approval in ANSWER).pop();
+      if (!ans) return [["wait", a.start, null]];
+      return [["wait", a.start, ans.ts], ans.v2.approval === "approve" ? run(ans.ts) : ["deny", ans.ts, ans.ts]];
+    }
+    function renderWaterfall() {
+      const on = PAGE === "run" && RV === "waterfall", by = on && WFBY === "call", wf = $("wf");
+      $("wfby").hidden = !on; $("lanes").hidden = by; wf.hidden = !by; $("lanelegend").hidden = by; $("wflegend").hidden = !by;
+      $("lanetitle").textContent = by ? "TIMELINE · ONE ROW PER CALL" : "TIMELINE · ONE LANE PER AGENT";
+      document.querySelectorAll("[data-wfby]").forEach(b => b.classList.toggle("on", b.dataset.wfby === WFBY));
+      if (!by) return;
+      const all = [];
+      S.actList.forEach((a, i) => actMatch(a) && all.push(i));
+      const rows = all.slice(-WFMAX).map(i => [i, S.actList[i], wfBars(S.actList[i])]), more = all.length - rows.length;
+      // the axis fits the calls drawn; a replay's fits its whole run, so the bars keep their place as it plays
+      let lo = Infinity, hi = -Infinity;
+      for (const r of R || []) if (r.event === "PreToolUse" || r.event === "PostToolUse" || r.v2?.approval in ANSWER) { lo = Math.min(lo, r.ts); hi = Math.max(hi, r.ts); }
+      if (!R) for (const [, , bars] of rows) for (const [, f, t] of bars) { lo = Math.min(lo, f); hi = Math.max(hi, t ?? f); }
+      const kinds = new Set(rows.flatMap(r => r[2].map(b => b[0])));
+      put("wflegend", Object.entries(WFK).filter(([k]) => kinds.has(k)).map(([k, w]) => `<span class="wk-${esc(k)}">${esc(w)}</span>`).join(""));
+      if (!rows.length || lo > hi) return put("wf", `<div class="empty">${esc(S.actList.length ? "No call matches the filters." : "No calls yet.")}</div>`);
+      const W = wf.clientWidth, LW = Math.min(340, Math.round(W * .4)), TW = Math.max(60, W - LW), RH = 18;
+      const span = Math.max(hi - lo, .01), t0 = lo - span * .03, t1 = lo + span * 1.03, x = t => (t - t0) / (t1 - t0) * TW;
+      const step = tickStep(t1 - t0, Math.max(2, TW / 90)), ticks = [];
+      for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) ticks.push([x(t).toFixed(1), tickText(t, step)]);
+      const grid = ticks.map(([xx]) => `<line x1="${esc(xx)}" x2="${esc(xx)}" y1="0" y2="${esc(RH)}"/>`).join("");
+      const dur = d => d < 1 ? Math.round(d * 1000) + " ms" : fmtDur(d);
+      const bar = (a, [k, f, t]) => {
+        const x0 = x(f), x1 = Math.max(x0 + 3, t == null ? TW : x(t));
+        return `<rect class="wk-${esc(k)}" x="${esc(x0.toFixed(1))}" y="4" width="${esc((x1 - x0).toFixed(1))}" height="${esc(RH - 8)}"><title>${esc((k === "wait" ? "waiting for a person" : callState(a)[1].toLowerCase()) + (t != null && t > f ? " · " + dur(t - f) : ""))}</title></rect>`;
+      };
+      wf.style.setProperty("--lw", LW + "px");
+      put("wf", `<div class="wfr wfh"><span class="wl"><span class="wa">AGENT · </span>TOOL · TARGET</span><svg width="${esc(TW)}" height="${esc(RH)}"><defs><pattern id="wfhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect class="hatch-b" width="6" height="6"/><rect class="hatch-a" width="2" height="6"/></pattern></defs>`
+        + grid + ticks.filter(([xx, w]) => +xx + 3 + w.length * 6 <= TW).map(([xx, w]) => `<text x="${esc(+xx + 3)}" y="12">${esc(w)}</text>`).join("") + `</svg></div>`
+        + (more ? `<div class="wfmore">${esc(`${more} earlier ${more === 1 ? "call is" : "calls are"} not drawn: the newest ${WFMAX} are. Narrow them with AGT, TOOL, FIND or FLAG.`)}</div>` : "")
+        + rows.map(([i, a, bars]) => `<div class="wfr${selected === a ? " on" : ""}" data-wf="${esc(i)}" tabindex="0" title="${esc(`${label(a.agent)} · ${(a.tool + " " + a.target).trim()} · ${callState(a)[1]}`)}"><span class="wl"><span class="dim wa">${esc(label(a.agent))} </span><b>${esc(a.tool)}</b> <span class="dim">${esc(a.target)}</span></span><svg width="${esc(TW)}" height="${esc(RH)}">`
+          + grid + bars.map(b => bar(a, b)).join("") + `</svg></div>`).join(""));
     }
     function renderReason() {
       const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
@@ -3228,7 +3391,7 @@
       if (navigator.clipboard?.writeText) navigator.clipboard.writeText(b.dataset.copy).then(() => done(true), fallback); else fallback();
     }, true);
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-i],[data-al],[data-grp],[data-grpmore],[data-orun],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump],[data-older]"); if (!t) return;
+      const t = e.target.closest("[data-i],[data-wf],[data-al],[data-grp],[data-grpmore],[data-orun],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump],[data-older]"); if (!t) return;
       if (t.dataset.orun !== undefined) return openRec(t.dataset.orun, t.dataset.oseq);
       if (t.dataset.grp !== undefined) { OPENGRP.has(t.dataset.grp) ? OPENGRP.delete(t.dataset.grp) : OPENGRP.set(t.dataset.grp, 1); return schedule(); }
       if (t.dataset.grpmore !== undefined) { OPENGRP.set(t.dataset.grpmore, OPENGRP.get(t.dataset.grpmore) + 1); return schedule(); }
@@ -3246,6 +3409,7 @@
       if (t.dataset.clear === "all") { runCommand("CLR"); return setScope(null); }
       if (t.dataset.clear) { F[t.dataset.clear] = t.dataset.clear === "flag" ? false : null; return schedule(); }
       if (t.dataset.i) { const row = S.tape[+t.dataset.i]; return row && select(row.act || row.rec); }
+      if (t.dataset.wf) return select(S.actList[+t.dataset.wf]);
       if (t.dataset.al) { const al = S.alerts[+t.dataset.al]; return select(al.ref?.pre ? al.ref : al.ref?.rec); }
       if (t.dataset.agent) { F.agent = F.agent === t.dataset.agent ? null : t.dataset.agent; return schedule(); }
       if (t.dataset.tool) { F.tool = F.tool === t.dataset.tool ? null : t.dataset.tool; return schedule(); }
@@ -3294,7 +3458,7 @@
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
       // a run, tape row or alert reached with Tab opens with Enter, as a click does
       // lean: a panel redrawn as records arrive loses the focus inside it; keep the focused row's key across redraws if that bites
-      if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex]")) e.target.click();
+      if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex]")) e.target.click();
       else if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
       else if (V2 && !BOOT && scope && rpKeys(e)) return;
       else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; schedule(); }
@@ -3879,7 +4043,7 @@
       $("wvsum").textContent = `${S2.length} sources · ${T.length} tools`;
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage]"); if (!t) return;
       e.preventDefault();
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
       if (t.dataset.rv) { show(t.dataset.rv); wvKey = ""; return schedule(); }
@@ -3887,6 +4051,7 @@
       if (t.dataset.ptab) { PERM.tab = t.dataset.ptab; PERM.page = 0; return schedule(); }
       if (t.dataset.ppage) { PERM.page = Math.max(0, PERM.page + +t.dataset.ppage); return schedule(); }
       if (t.dataset.wtab) { WTAB = t.dataset.wtab; return schedule(); }
+      if (t.dataset.wfby) { WFBY = t.dataset.wfby; return schedule(); }
       if (t.dataset.gfit !== undefined) { GV.fit = !!t.dataset.gfit; return schedule(); }
       if (t.dataset.wgo) { WRUN = t.dataset.wgo; show("overview"); return schedule(); }
       if (t.dataset.wpick) { WPICK = t.dataset.wpick; return schedule(); }

@@ -470,6 +470,92 @@ class Evidence(unittest.TestCase):
         self.assertEqual(out, "5 [PASS] keys")
 
 
+# a run's calls in each state the TIMELINE draws; `ended` reads the run's session
+CALLS_JS = """
+    const S = { sessions: new Map([["open", { end: null }], ["done", { end: 9 }]]), actList: [] };
+    const ag = { session: "done", name: "coder" }, live = { session: "open", name: "orch" }, ask = { decision: "ask" };
+    const call = (tool, o) => ({ tool, target: "", agent: ag, end: null, flags: [], approvals: [], ...o });
+    const C = {
+      ok: call("Read", { start: 1, end: 2, post: {} }),
+      failed: call("Bash", { start: 2, end: 2.5, post: {}, error: true, flags: ["error"] }),
+      blocked: call("Bash", { start: 3, denied: true, flags: ["denied"] }),
+      flagged: call("WebFetch", { start: 4, end: 5, post: {}, flags: ["flagged"] }),
+      approved: call("send_email", { start: 5, end: 7, post: {}, flags: ["held_for_approval"], v2: ask, approvals: [
+        { ts: 5.5, v2: { approval: "requested" } }, { ts: 6, v2: { approval: "approve" } }, { ts: 6.9, v2: { approval: "consumed" } }] }),
+      rejected: call("send_email", { start: 7, flags: ["held_for_approval"], v2: ask, approvals: [{ ts: 8, v2: { approval: "reject" } }] }),
+      waiting: call("Agent", { agent: live, start: 8, flags: ["held_for_approval"], v2: ask, approvals: [{ ts: 8.2, v2: { approval: "requested" } }] }),
+      running: call("Read", { agent: live, start: 8.5 }),
+      noresult: call("Read", { start: 8.6 }),
+    };"""
+
+
+class Waterfall(unittest.TestCase):
+    """TIMELINE showed only one lane per agent: which call waited for a person, and how long, was not drawn."""
+
+    def test_each_call_is_bars_by_its_outcome_and_a_hold_waits_until_its_answer(self):
+        needs_node(self)
+        out = json.loads(page_js(["ANSWER", "ended", "wfBars"], CALLS_JS + """
+            process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(C).map(([k, a]) => [k, wfBars(a)]))));"""))
+        self.assertEqual(out, {
+            "ok": [["ok", 1, 2]], "failed": [["deny", 2, 2.5]], "blocked": [["deny", 3, 3]], "flagged": [["flag", 4, 5]],
+            "approved": [["wait", 5, 6], ["ok", 6, 7]],          # waited from the decision to the answer, then ran
+            "rejected": [["wait", 7, 8], ["deny", 8, 8]],        # refused: never ran
+            "waiting": [["wait", 8, None]],                      # still waiting: to the right edge
+            "running": [["ok", 8.5, None]], "noresult": [["ok", 8.6, 8.6]]})
+
+    def test_by_call_draws_a_row_per_call_and_by_agent_the_lanes(self):
+        needs_node(self)
+        out = json.loads(page_js(["esc", "fmtDur", "tickStep", "tickText", "ANSWER", "lastAnswer", "ended", "callState",
+                                  "WFMAX", "wfBars", "renderWaterfall"], CALLS_JS + """
+            const V2 = true, R = null, fmtT = ts => "t" + ts, label = a => a.name, actMatch = a => !a.hide;
+            const el = {}, $ = id => el[id] ??= { style: { setProperty() {} }, clientWidth: 900 }, put = (id, h) => { $(id).html = h; };
+            const btn = by => ({ dataset: { wfby: by }, classList: { toggle(c, on) { this.on = on; } } }), btns = [btn("call"), btn("agent")];
+            const document = { querySelectorAll: () => btns };
+            let PAGE = "run", RV = "waterfall", WFBY = "call", selected = C.flagged, seen = [];
+            S.actList = [{ ...C.ok, hide: true }, ...Object.values(C)];
+            const look = () => seen.push([el.lanetitle.textContent, el.wfby.hidden, el.lanes.hidden, el.wf.hidden,
+              el.lanelegend.hidden, el.wflegend.hidden, btns.map(b => b.classList.on)]);
+            renderWaterfall(); look(); seen.push(el.wf.html, el.wflegend.html);
+            WFBY = "agent"; renderWaterfall(); look();
+            PAGE = "desk"; renderWaterfall(); look();
+            PAGE = "run"; WFBY = "call"; S.actList = Array.from({ length: 605 }, (_, i) => ({ ...C.ok, start: i, end: i + 1 }));
+            renderWaterfall(); seen.push(el.wf.html, el.wflegend.html);
+            S.actList = [{ ...C.ok, hide: true }]; renderWaterfall(); seen.push(el.wf.html);
+            process.stdout.write(JSON.stringify(seen));"""))
+        by_call, html, legend, by_agent, desk, capped, capped_legend, none = out
+        self.assertEqual(by_call, ["TIMELINE · ONE ROW PER CALL", False, True, False, True, False, [True, False]])
+        self.assertEqual(by_agent, ["TIMELINE · ONE LANE PER AGENT", False, False, True, False, True, [False, True]])
+        self.assertEqual(desk[:6], ["TIMELINE · ONE LANE PER AGENT", True, False, True, False, True])
+        # one row per call the filters keep, each opening its call; the selected one marked
+        self.assertEqual(re.findall(r'data-wf="(\d+)"', html), [str(i) for i in range(1, 10)])
+        self.assertEqual(re.findall(r'class="wfr( on)?" data-wf="(\d+)"', html)[3], (" on", "4"))
+        bars = re.findall(r'<rect class="wk-(\w+)" x="([\d.]+)" y="4" width="([\d.]+)"', html)
+        self.assertEqual([b[0] for b in bars], ["ok", "deny", "deny", "flag", "wait", "ok", "wait", "deny", "wait", "ok", "ok"])
+        self.assertIn('<pattern id="wfhatch"', html)
+        _, x, w = bars[8]                                          # the hold still waiting runs to the right edge
+        self.assertAlmostEqual(float(x) + float(w), 900 - 340, places=0)
+        self.assertIn('title="coder · send_email · REJECTED"', html)
+        self.assertIn("<title>waiting for a person · 1s</title><", html)
+        self.assertIn("<title>failed · 500 ms</title>", html)
+        self.assertIn("<title>rejected</title>", html)
+        # the legend names only what the run shows
+        self.assertEqual(re.findall(r'class="wk-(\w+)">([^<]+)<', legend),
+                         [("ok", "allowed"), ("flag", "flagged"), ("deny", "blocked, refused or failed"),
+                          ("wait", "waiting for a person")])
+        self.assertEqual(re.findall(r'class="wk-(\w+)">([^<]+)<', capped_legend), [("ok", "allowed")])
+        # the newest 600 are drawn, and it says how many are not
+        self.assertEqual(len(re.findall(r'data-wf="', capped)), 600)
+        self.assertIn('data-wf="5"', capped)
+        self.assertNotIn('data-wf="4"', capped)
+        self.assertIn("5 earlier calls are not drawn: the newest 600 are.", capped)
+        self.assertIn("No call matches the filters.", none)
+
+    def test_a_row_and_the_toggle_are_opened_by_the_pages_click_handlers(self):
+        self.assertIn("if (t.dataset.wf) return select(S.actList[+t.dataset.wf]);", PAGE)
+        self.assertIn("if (t.dataset.wfby) { WFBY = t.dataset.wfby; return schedule(); }", PAGE)
+        self.assertIn("[data-wf][tabindex]", PAGE)   # Enter opens a row reached with Tab
+
+
 PAGE_TEXT = " ".join(PAGE.split())
 APPROVALS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "approvals.html"))
 RUNS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "runs.html"))
@@ -513,6 +599,9 @@ class NothingLost(unittest.TestCase):
             "tape columns": ["TIME", "AGENT", "EVT", "TOOL", "TARGET / TEXT", "STATUS", "MS"],
             "alerts with why": ['<span class="src">WHY</span>'],
             "tool mix": ["function renderMix()"], "lanes": ["TIMELINE · ONE LANE PER AGENT"],
+            "timeline by call and by agent": ["function renderWaterfall()", "TIMELINE · ONE ROW PER CALL",
+                                              'data-wfby="call"', 'data-wfby="agent"', '<pattern id="wfhatch"',
+                                              '"waiting for a person"'],
             "reasoning": ["REASONING<small>self-reported, not proof</small>"],
             "files": ["<th>PATH</th>", "LAST AGENT"],
             "detail, why, node": ['data-wtab="detail"', 'data-wtab="why"', 'data-wtab="node"', "LEDGER EVIDENCE · SEQ"],
