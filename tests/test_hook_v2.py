@@ -5,6 +5,7 @@ import hmac
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import statistics
@@ -150,6 +151,34 @@ class HookV2(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("TK-SHELL-PARSE", err)
         self.assertIn("rejected", err)
+
+    def test_the_waiting_line_names_the_commands_that_answer_the_call(self):
+        """`tracekit approve ID`, the v1 command, is what a person guessed (#420). The line names the v2 ones, with
+        --signer when the hook's signer is a named one, quoted: pasted into the person's shell (here, for the named
+        one, a shell whose own default is another signer), each answers the call."""
+        named_sock = os.path.join(self.dir, "a b;x.sock")
+        for tid, decision, state, code in (("t1", "approve", "approved", 0), ("t2", "reject", "rejected", 2),
+                                           ("t3", "approve", "approved", 0)):
+            named, person = "", None
+            if tid == "t3":   # the dev signer, now running, named as `tracekit init --remote --v2` names a signer
+                os.symlink(os.path.join(self.dir, "run", autospawn.SOCK), named_sock)
+                os.environ["TRACEKIT_SIGNER"] = named_sock
+                named, person = f" --signer '{named_sock}'", dict(os.environ, TRACEKIT_SIGNER=self.dir + "/x.sock")
+            proc = self.pre('echo "open', tid=tid, wait=False)
+            line = proc.stderr.readline()
+            aid = line.split()[4]
+            self.assertIn(f"; a person approves it from another terminal with `tracekit approvals{named} approve {aid}` "
+                          f"or rejects it with `tracekit approvals{named} reject {aid}`", line)
+            cmd = dict(zip(("approve", "reject"), re.findall(r"`tracekit ([^`]+)`", line)))[decision]
+            out = subprocess.run(f"{shlex.quote(sys.executable)} -m tracekit {cmd}", shell=True, capture_output=True,
+                                 text=True, timeout=60, env=person)
+            self.assertEqual((out.returncode, out.stdout.strip()), (0, f"{state}: {aid} (self-approved: dev mode only)"),
+                             out.stderr)
+            err = proc.stderr.read()
+            proc.wait(60)
+            proc.stdout.close()
+            proc.stderr.close()
+            self.assertEqual(proc.returncode, code, err)
 
     def test_a_prompt_is_recorded_and_its_constraints_hold_the_call_that_breaks_them(self):
         """UserPromptSubmit adds what the prompt keeps away as a live constraint, then records the harness's copy of
@@ -669,7 +698,7 @@ class PreBudget(unittest.TestCase):
         """Every signer call takes all the time it may, and the approval comes on the last wait: the hook still
         answers within APPROVAL_WAIT_S, below its timeout."""
         now, calls = [0.0], []
-        client = mock.Mock(timeout=30.0)
+        client = mock.Mock(timeout=30.0, signer=None)
 
         def call(method, **fields):
             calls.append(method)
