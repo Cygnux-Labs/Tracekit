@@ -26,6 +26,8 @@ is bound to the exact arguments of one call attempt, and is consumed once. The v
    ```sh
    tracekit approvals list                 # pending and recent approvals you may see
    tracekit approvals show apr-…           # the signer's copy of the arguments, in full
+   tracekit approvals list --json          # all pages as one JSON array; [] when empty
+   tracekit approvals show apr-… --json    # redacted arguments decoded in one JSON object, no pager
    tracekit approvals approve apr-… --reason "checked the target"
    tracekit approvals reject apr-…
    ```
