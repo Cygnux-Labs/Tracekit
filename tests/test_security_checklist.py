@@ -23,8 +23,8 @@ from http.server import ThreadingHTTPServer
 
 from test_e13_approvals import Sessions
 from test_observe_render import XSS
-from tracekit import (egress, executor, gateway, ingest, mcp_gateway, observe, otlp, proxy, public_witness_server,
-                      slack_approvals, witness_server)
+from tracekit import (a2a_gateway, egress, executor, gateway, ingest, mcp_gateway, observe, otlp, proxy,
+                      public_witness_server, slack_approvals, witness_server)
 from tracekit.observe import _session
 from tracekit.identity.token import BearerToken
 from tracekit.ledger import Keys
@@ -50,6 +50,7 @@ SURFACES = {
     "tracekit/gateway.py:_Handler": "LLM gateway",
     "tracekit/executor.py:_Executor": "tool executor",
     "tracekit/mcp_gateway.py:_McpGateway": "MCP gateway",
+    "tracekit/a2a_gateway.py:_A2aGateway": "A2A gateway",
     "tracekit/egress.py:_Handler": "egress observer (forward and CONNECT proxy)",
     "tracekit/signer/metrics.py:Handler": "signer metrics, logs list and tlog tiles",
     "tracekit/otlp.py:H": "local OTLP receiver (tracekit otel serve)",
@@ -163,14 +164,16 @@ class Surfaces(unittest.TestCase):
         srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, lambda identity, frame: {})
         auth = {"Authorization": f"Bearer {SECRET}"}
         return srv, SECRET, [("POST", f"/nope?token={SECRET}", auth, 404), ("GET", transport.PATH, auth, 501),
-                             ("POST", transport.PATH, {**auth, "Content-Length": BIG}, 413)]
+                             ("POST", transport.PATH, {**auth, "Content-Length": BIG}, 413),
+                             ("POST", transport.PATH, {**auth, "Transfer-Encoding": "chunked", "Content-Length": "2"}, 400)]
 
     def gateway(self):
         srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None, handler=gateway._Handler)
         srv.gateway = types.SimpleNamespace(max_body=1024)
         auth = {"Authorization": f"Bearer {SECRET}", "X-Tracekit-Run": f"run.{SECRET}.mac"}
         return srv, SECRET, [("POST", "/nope", auth, 404), ("POST", "/v1/chat/completions", {}, 401),
-                             ("POST", "/v1/chat/completions", {**auth, "Content-Length": BIG}, 413)]
+                             ("POST", "/v1/chat/completions", {**auth, "Content-Length": BIG}, 413),
+                             ("POST", "/v1/chat/completions", {**auth, "Transfer-Encoding": "chunked", "Content-Length": "2"}, 400)]
 
     def executor(self):
         srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None, handler=executor._Executor)
@@ -179,6 +182,7 @@ class Surfaces(unittest.TestCase):
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", auth, 404), ("GET", "/v1/actions", {}, 401),
                              ("POST", f"/v1/actions/{SECRET}", {}, 401), ("POST", "/v1/actions/pay", {}, 401),
                              ("POST", "/v1/actions/pay", {**auth, "Content-Length": BIG}, 413),
+                             ("POST", "/v1/actions/pay", {**auth, "Transfer-Encoding": "chunked", "Content-Length": "2"}, 400),
                              ("PUT", "/v1/actions", auth, 501)]
 
     def mcp_gateway(self):
@@ -188,7 +192,18 @@ class Surfaces(unittest.TestCase):
         auth = {"Authorization": f"Bearer {SECRET}", "X-Tracekit-Run": f"run.{SECRET}.mac"}
         return srv, SECRET, [("POST", f"/nope?token={SECRET}", auth, 404), ("GET", "/mcp", auth, 405),
                              ("POST", "/mcp", {}, 401), ("POST", "/mcp", {**auth, "Content-Length": BIG}, 413),
+                             ("POST", "/mcp", {**auth, "Transfer-Encoding": "chunked", "Content-Length": "2"}, 400),
                              ("PUT", "/mcp", auth, 501)]
+
+    def a2a_gateway(self):
+        srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None,
+                                   handler=a2a_gateway._A2aGateway)
+        srv.a2a = {"max_body": 1024, "upstreams": {}}
+        auth = {"Authorization": f"Bearer {SECRET}", "X-Tracekit-Run": f"run.{SECRET}.mac"}
+        return srv, SECRET, [("POST", f"/nope?token={SECRET}", auth, 404), ("GET", "/a2a/up", auth, 405),
+                             ("POST", f"/a2a/{SECRET}", {}, 401),
+                             ("POST", "/a2a/up", {**auth, "Content-Length": BIG}, 413),
+                             ("PUT", "/a2a/up", auth, 501)]
 
     def egress(self):
         srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None, handler=egress._Handler)
@@ -207,7 +222,8 @@ class Surfaces(unittest.TestCase):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), otlp.make_handler(otlp.Receiver(lambda event, attach: {})))
         auth = {"Authorization": f"Bearer {SECRET}"}
         return srv, SECRET, [("POST", f"/nope?token={SECRET}", auth, 404),
-                             ("POST", "/v1/traces", {**auth, "Content-Length": BIG}, 413)]
+                             ("POST", "/v1/traces", {**auth, "Content-Length": BIG}, 413),
+                             ("POST", "/v1/traces", {**auth, "Transfer-Encoding": "chunked", "Content-Length": "2"}, 400)]
 
     def ingest(self):
         token = ingest.add_token(self.d, "box")
@@ -228,7 +244,7 @@ class Surfaces(unittest.TestCase):
     def public_witness(self):
         home = os.path.join(self.d, "pw")
         public_witness_server.init(home, "witness.example.org/w1")
-        srv = public_witness_server.serve(home)
+        srv = public_witness_server.serve(home, port=0)
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 404), ("POST", f"/nope?token={SECRET}", {}, 404),
                              ("POST", "/add-checkpoint", {}, 413), ("POST", "/register", {"Content-Length": BIG}, 413),
                              ("PUT", "/register", {}, 501)]
@@ -237,7 +253,8 @@ class Surfaces(unittest.TestCase):
         srv = proxy.Server(("127.0.0.1", 0), proxy.Handler)
         auth = {"x-api-key": SECRET}
         return srv, SECRET, [("POST", "/v1/messages", {**auth, "Content-Length": "abc"}, 400),
-                             ("POST", "/v1/messages", {**auth, "Content-Length": BIG}, 413)]
+                             ("POST", "/v1/messages", {**auth, "Content-Length": BIG}, 413),
+                             ("POST", "/v1/messages", {**auth, "Transfer-Encoding": "chunked", "Content-Length": "2"}, 400)]
 
     def slack(self):
         bridge = slack_approvals.Bridge({"signing_secret": b"slack-signing"}, None)
@@ -250,6 +267,7 @@ class Surfaces(unittest.TestCase):
     PROBES = {"tracekit/observe.py:Handler": viewer, "tracekit/transport/http.py:_Handler": signer_http,
               "tracekit/gateway.py:_Handler": gateway, "tracekit/executor.py:_Executor": executor,
               "tracekit/mcp_gateway.py:_McpGateway": mcp_gateway, "tracekit/signer/metrics.py:Handler": metrics,
+              "tracekit/a2a_gateway.py:_A2aGateway": a2a_gateway,
               "tracekit/egress.py:_Handler": egress,
               "tracekit/otlp.py:H": otlp, "tracekit/ingest.py:H": ingest, "tracekit/witness_server.py:H": witness,
               "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack,

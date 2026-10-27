@@ -34,13 +34,9 @@ def _fmt_test(r):
             + (" (budget: raise --max-calls or --max-cost to go on)" if r.get("stopped") == "budget" else ""))
 
 
-def _investigation(a):
-    """The signed run --run, from --store or a verified --bundle, with the signer ($TRACEKIT_SIGNER) for its content and
-    --gateway for its replays."""
-    import ssl
-    from ..sdk.client import Client
-    from ..usage import Prices
-    from . import import_v2, signed
+def _records(a):
+    """The records of the signed run --run, from --store or a verified --bundle."""
+    from . import import_v2
     if a.store:
         records = import_v2.store_records(a.store, a.signed_run).get(a.signed_run)
     elif a.bundle and a.trust:
@@ -52,6 +48,17 @@ def _investigation(a):
         raise SystemExit("tracekit why: --run needs --store DIR, or --bundle FILE with --trust FILE")
     if not records:
         raise SystemExit(f"tracekit why: no run {a.signed_run}")
+    return records
+
+
+def _investigation(a):
+    """The signed run --run, from --store or a verified --bundle, with the signer ($TRACEKIT_SIGNER) for its content and
+    --gateway for its replays."""
+    import ssl
+    from ..sdk.client import Client
+    from ..usage import Prices
+    from . import signed
+    records = _records(a)
     if not a.gateway:
         raise SystemExit("tracekit why: replays of a signed run go through the Tracekit gateway: pass --gateway URL")
     headers = {}
@@ -340,6 +347,25 @@ def cmd_attribute(a):
            "from the thread, never the real tools)")
 
 
+def cmd_transfer(a):
+    import importlib
+    from ..sdk.client import Client
+    from .signed import EvidenceAlert
+    from .transfer import effect
+    mod, _, attr = a.receiver.partition(":")
+    receiver = getattr(importlib.import_module(mod), attr or "receiver")
+    try:
+        r = effect(Client(), _records(a), receiver, a.investigation or "tracekit why transfer", seq=a.transfer)
+    except EvidenceAlert as e:
+        print(f"tracekit why: [HIGH] {e}", file=sys.stderr)
+        return 1
+    except _signed_errors() as e:
+        return _signed_error("transfer", e)
+    _p(json.dumps(r, indent=2) if a.json else
+       f"  transfer {r['seq']} {r['sender']} -> {r['receiver']}: change {r['change']:.3f}\n  {r['sentence']}")
+    return 0
+
+
 def cmd_matrix(a):
     run = load_run(a.run)
     rows = influence_matrix(run, a.target, n=a.n, system=_system(a, run))
@@ -600,6 +626,20 @@ def main(argv=None):
     p.add_argument("--workers", type=int, default=1, help="parallel replays")
     p.add_argument("--no-roles", action="store_true", help="skip sizing each cause (primary vs contributing): cheaper")
     p.add_argument("--system"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_attribute)
+
+    p = sp.add_parser("transfer", help="how much a kept transfer changed its receiver's answer: re-run it with and "
+                                       "without what was sent (experimental)")
+    p.add_argument("--run", dest="signed_run", required=True, help="a Tracekit v2 run id; the transfer's content comes "
+                   "from the signer's vault ($TRACEKIT_SIGNER)")
+    p.add_argument("--store", metavar="DIR", help="the signer data dir holding the run")
+    p.add_argument("--bundle", metavar="FILE", help="a v2 bundle holding the run, verified with --trust")
+    p.add_argument("--trust", help="with --bundle: the v2 trust config")
+    p.add_argument("--receiver", required=True, metavar="MODULE:ATTR", help="the receiver: called with what was sent "
+                   "(a C2C cache, else bytes) and with None, it returns the answer (only name code you trust)")
+    p.add_argument("--transfer", type=int, metavar="SEQ", help="the run_seq of the transfer's decision (default: the "
+                   "run's last completed transfer)")
+    p.add_argument("--investigation", help="content_get's purpose (default: tracekit why transfer)")
+    p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_transfer)
 
     p = sp.add_parser("matrix", help="test every channel and input against targets")
     p.add_argument("run"); p.add_argument("--target", action="append", required=True); p.add_argument("--n", type=_positive, default=20)

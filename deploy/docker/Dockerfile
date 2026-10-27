@@ -26,6 +26,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 # a python:3.12-slim-bookworm digest with 3.0.22-1~deb12u2 or later
 RUN apt-get update \
  && apt-get install -y --no-install-recommends --only-upgrade libssl3 openssl \
+ && { dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libssl3)" ge 3.0.22-1~deb12u2 \
+      || { echo "libssl3 is older than 3.0.22-1~deb12u2 (CVE-2026-84782): re-pin BASE or wait for the mirror" >&2; exit 1; }; } \
  && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=bind,from=build,source=/wheels,target=/wheels \
     pip install --no-cache-dir --no-index /wheels/*.whl \

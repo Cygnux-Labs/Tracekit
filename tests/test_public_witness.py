@@ -37,7 +37,7 @@ class Server(unittest.TestCase):
         self.leaves = [merkle.leaf_hash(b"%d" % i) for i in range(40)]
 
     def start(self, proxied=False):
-        self.srv = pws.serve(self.home, proxied=proxied)
+        self.srv = pws.serve(self.home, port=0, proxied=proxied)
         threading.Thread(target=self.srv.serve_forever, args=(0.05,), daemon=True).start()
         self.addCleanup(self.stop)
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
@@ -325,7 +325,7 @@ class OptIn(unittest.TestCase):
         self.dir = tmpdir(self)
         self.home = os.path.join(self.dir, "pw")
         vkey = pws.init(self.home, NAME)
-        self.srv = pws.serve(self.home)
+        self.srv = pws.serve(self.home, port=0)
         threading.Thread(target=self.srv.serve_forever, args=(0.05,), daemon=True).start()
         self.addCleanup(self.srv.server_close)
         self.addCleanup(self.srv.shutdown)

@@ -9,7 +9,7 @@ import re
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
-from tracekit.format.canon import event_hash
+from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
 PATH_KEYS = ("file_path", "notebook_path", "path")
@@ -224,6 +224,51 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
     return "".join(out)
 
 
+A2A_PARTS = ("text", "file", "data")
+A2A_NAME = re.compile(r"[!-~]+")   # printable ASCII without spaces: a name with one spelling for each logical name
+
+
+def a2a_fields(args):
+    """An agent-to-agent call's fields: what the A2A gateway sends (sender, the caller it authenticated; receiver, the
+    upstream it names; skills, the ids of the skills the receiver's Agent Card lists; params, the JSON-RPC params) or
+    run.transfer does (sender, receiver, modality, projector, size, digest, and with tracekit.integrations.c2c the
+    fuser's weights hash), so a sender is the gateway's authenticated caller at tier T2 and the agent's own claim from
+    run.transfer. `route` is sender->receiver, then ` via <projector>` when a transfer names one; `skills` the skill
+    ids, sorted, matched as one JSON list like every list field, so a deny rule on it with `unless:
+    '^\\[(("search"|"summarize"),?)*\\]$'` lets a message reach only a receiver offering no skill but those; `kinds` the
+    message's part kinds, `hosts` the hosts its file parts point at, `size` the message's bytes (canonical JSON) or the
+    transfer's; `weights` the hash the fuser's weights had, which a policy pins where an id (`projector`) is only the
+    caller's word. The names (sender, receiver, projector, modality, weights, each skill and part kind) are matched in
+    lower case, and the class's rules match in any case (Engine); a name that isn't printable ASCII without spaces (a
+    look-alike or fullwidth letter, a zero-width or control character, a space around it) has spellings no rule
+    written for its logical name matches, so `unreadable` names its field and the engine denies the call
+    (TK-A2A-NAME). The signed arguments keep the caller's spelling."""
+    params = args.get("params")
+    message = params.get("message") if isinstance(params, dict) else None
+    parts = [p for p in message["parts"] if isinstance(p, dict)] if isinstance(message, dict) and \
+        isinstance(message.get("parts"), list) else []
+    uris = [p["file"].get("uri") for p in parts if isinstance(p.get("file"), dict)]
+    size = len(canonical(params)) if isinstance(params, dict) else args.get("size")
+    names = {k: _name(args[k]) for k in ("sender", "receiver", "projector", "modality", "weights")
+             if args.get(k) is not None}
+    lists = {"skills": args.get("skills") or None,
+             "kinds": [p.get("kind") or next((k for k in A2A_PARTS if k in p), "unknown") for p in parts] or None}
+    names.update({k: [_name(x) for x in (v if isinstance(v, list) else [v])] for k, v in lists.items() if v})
+    unreadable = [k for k, v in names.items() if v is None or isinstance(v, list) and None in v]
+    names = {k: v for k, v in names.items() if k not in unreadable}
+    sender, receiver, projector = names.get("sender"), names.get("receiver"), names.get("projector")
+    return {**names, "skills": sorted(names["skills"]) if "skills" in names else None,
+            "route": f"{sender}->{receiver}" + (f" via {projector}" if projector else "")
+            if sender and receiver and "projector" not in unreadable else None,
+            "hosts": sorted({url_info(u).get("host") or u for u in uris if isinstance(u, str)}) or None, "size": size,
+            "unreadable": unreadable or None}
+
+
+def _name(v):
+    """`v` in lower case when it is a name (A2A_NAME), else None."""
+    return v.lower() if isinstance(v, str) and A2A_NAME.fullmatch(v) else None
+
+
 def extract(cls, tool, args):
     """{field: value} for `cls`; a missing value is left out."""
     if cls == "shell":
@@ -275,6 +320,8 @@ def extract(cls, tool, args):
         elif tool.startswith("mcp:"):
             server, _, name = tool[4:].partition("/")
         out = {"server": server, "tool": name, "args": args}
+    elif cls == "a2a":
+        out = a2a_fields(args)
     else:
         out = {}
     return {k: v for k, v in out.items() if v is not None}

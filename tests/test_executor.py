@@ -75,9 +75,9 @@ class InProcess:
                 raise SignerUnavailable("down")
             if "request_id" in REQUESTS[method]["properties"]:
                 req = {"request_id": uuid.uuid4().hex, **req}
-            if "client_seq" in REQUESTS[method]["properties"]:
-                req = {"stream": "ex", "client_seq": self.s.log.runs[("default", req["run_id"])]["streams"].get("ex", -1)
-                       + 1, **req}
+            if "client_seq" in REQUESTS[method]["properties"]:   # a run it doesn't know: the signer refuses it
+                run = self.s.log.runs.get(("default", req["run_id"]), {"streams": {}})
+                req = {"stream": "ex", "client_seq": run["streams"].get("ex", -1) + 1, **req}
             return self.s.call(self.identity, method, req)
         return call
 

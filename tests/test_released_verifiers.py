@@ -1,7 +1,8 @@
 """Bundles of today's signer, checked by the released verifiers: the Python verifier of each tag in RELEASED, from the
 tag itself (`git archive`), in a child process. A bundle that declares a verifier_min_version up to the release's must
 verify there with the same check lines (names and statuses) as here; one that needs more (a run in parts among them) is
-`UNVERIFIABLE (needs tracekit >= x)`, exit 2, never FAILED. Skipped when the clone lacks a tag (CI fetches the release tags)."""
+`UNVERIFIABLE (needs tracekit >= x)`, exit 2, never FAILED. Skipped when the clone has no release tags; under CI, a
+clone with some tags but not this one fails (CI's test job fetches them)."""
 import io
 import json
 import os
@@ -53,7 +54,9 @@ class Released(Signed):
 
     def released_verify(self, tag, bundle, trust):
         if tag not in self.roots:
-            self.skipTest(f"{tag} is not in this clone: git fetch origin tag {tag}")
+            # under CI, a clone that fetched the release tags (it has some) must have every one; a plain checkout skips
+            missing = self.fail if os.environ.get("CI") and self.roots else self.skipTest
+            missing(f"{tag} is not in this clone: git fetch origin tag {tag}")
         p = subprocess.run([sys.executable, "-c", VERIFY, bundle, trust], cwd=self.roots[tag], capture_output=True,
                            text=True, env={**os.environ, "PYTHONPATH": self.roots[tag]})
         out = json.loads(p.stdout or "null") or self.fail(p.stderr)

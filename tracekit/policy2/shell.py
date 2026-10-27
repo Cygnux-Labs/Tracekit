@@ -16,8 +16,9 @@ command line; the words that name something besides the commands' argv: redirect
 and the program an interpreter reads from a heredoc or herestring; the targets of the redirections that write a
 file (`>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&` to a name rather than a descriptor); and the code: the command and the
 normalised lines without the text a command only writes into a file (the words of an echo or printf, the heredoc or
-herestring a cat or tee copies, with its output redirected to a file a literal names; a word with an expansion, or a
-body with a command substitution, is kept; out of the command, only the top level's is cut).
+herestring a cat or tee copies, with its output redirected to a file a literal names; the text is cut only if every
+later command in the same call is inert; a word with an expansion, or a body with a command substitution, is kept;
+out of the command, only the top level's is cut).
 """
 import re
 
@@ -34,6 +35,20 @@ MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings, t
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "rbash", "mksh", "ksh93", "yash", "posh", "lksh", "oksh"}
 # shells whose language the parser doesn't read: the commands they get on their line or from stdin are opaque
 FOREIGN_SHELLS = {"fish", "csh", "tcsh", "pwsh", "powershell", "nu", "xonsh", "elvish"}
+# the options of uv run and uv tool run (uvx) that take a value, as uv 0.13 lists them, and their hidden aliases
+# (--constraint, --trusted-host, ...): neither takes the other's, so the union reads both
+UV_OPTS = ("--from", "-w", "--with", "--with-editable", "--with-requirements", "-c", "--constraints", "--constraint",
+           "-b", "--build-constraints", "--build-constraint", "--overrides", "--override", "--env-file",
+           "--python-platform", "--torch-backend", "--index", "--default-index", "-i", "--index-url",
+           "--extra-index-url", "-f", "--find-links", "--index-strategy", "--keyring-provider", "-P",
+           "--upgrade-package", "--upgrade-group", "--resolution", "--prerelease", "--prerelease-package",
+           "--fork-strategy", "--exclude-newer", "--exclude-newer-package", "--no-sources-package",
+           "--reinstall-package", "--link-mode", "-C", "--config-setting", "--config-settings",
+           "--config-settings-package", "--no-build-isolation-package", "--no-build-package", "--no-binary-package",
+           "--cache-dir", "--refresh-package", "-p", "--python", "--python-preference", "--python-fetch", "--color",
+           "--allow-insecure-host", "--trusted-host", "--directory", "--project", "--config-file",
+           "--preview-features", "--preview-feature", "--package", "--extra", "--no-extra", "--group", "--no-group",
+           "--only-group", "--no-editable-package")
 # wrapper -> (options that take a value, positional arguments before the command)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"), 0), "nohup": ((), 0),
             "time": (("-f", "-o", "--format", "--output"), 0),
@@ -60,15 +75,7 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
             "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
             "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
-            "uvx": (("--from", "-w", "--with", "--with-editable", "--with-requirements", "-c", "--constraints", "-b",
-                     "--build-constraints", "--overrides", "--env-file", "--python-platform", "--torch-backend",
-                     "--index", "--default-index", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
-                     "--index-strategy", "--keyring-provider", "-P", "--upgrade-package", "--upgrade-group",
-                     "--resolution", "--prerelease", "--prerelease-package", "--fork-strategy", "--exclude-newer",
-                     "--exclude-newer-package", "--no-sources-package", "--reinstall-package", "--link-mode", "-C",
-                     "--config-setting", "--config-settings-package", "--no-build-isolation-package",
-                     "--no-build-package", "--no-binary-package", "--cache-dir", "--refresh-package", "-p",
-                     "--python", "--color", "--allow-insecure-host", "--directory", "--project", "--config-file"), 0),
+            "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
             "proxychains": (("-f",), 0), "proxychains4": (("-f",), 0), "firejail": ((), 0),
             "sandbox-exec": (("-f", "-n", "-p", "-D"), 0), "ssh-agent": (("-a", "-E", "-t", "-O", "-P"), 0),
@@ -83,9 +90,8 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
 # "--": the command follows a `--`, after the tools to run it with)
 # lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
 # anchored on a command's name (TK-D001, TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
-RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirements", "--python", "-p", "--package",
-                             "--extra", "--group", "--only-group", "--env-file", "--directory", "--project", "--index",
-                             "--default-index", "--index-url", "--extra-index-url"), 0),
+RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
+           "conda": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0),
            "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
            "pdm": (("run",), ("-p", "--project"), 0), "direnv": (("exec",), (), 1),
            "pipx": (("run",), ("--spec", "--python", "--python-args", "--with", "--fetch-python", "-i", "--index-url",
@@ -96,6 +102,8 @@ RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirem
            "npm": (("exec", "x"), ("-p", "--package", "-w", "--workspace"), 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
            "yarn": (("exec", "dlx"), ("-p", "--package"), 0), "bun": (("x",), ("-p", "--package"), 0)}
+# runners whose argparse takes any unambiguous prefix of a long option (`pipx run --sp tracekit-ai tracekit`)
+ARGPARSE = {"pipx", "conda"}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -114,6 +122,9 @@ CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "r"
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c"}
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
+_COMMAND_NAME_ASSIGN = re.compile(r"(?:PATH|BASH_ENV|ENV)(?:\[[^]]*\])?\+?=")
+_VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typeset", "local", "export", "readonly",
+                             "let", "eval", "unset"}
 _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
@@ -141,9 +152,15 @@ def parse(command):
 def analyse(command):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code)."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "pipes": 0, "depth": 0, "work": 0,
-           "exp": 0}
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
+           "command_names_mutable": False,
+           "pipes": 0, "depth": 0, "work": 0, "exp": 0}
     _Parser(command, ctx, []).script()
+    active = False
+    for step in reversed(ctx["steps"]):
+        if not ctx["command_names_mutable"] and not active:
+            ctx["cut"] += step["marks"]
+        active |= not step["inert"]
     code, at = [], 0
     for a, b in sorted(ctx["cut"]):   # each cut a space, so the text on either side doesn't join
         code += [command[at:a], " "]
@@ -154,8 +171,9 @@ def analyse(command):
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "pipes": 1, "depth": 0, "work": 0,
-           "exp": 0}
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
+           "command_names_mutable": False,
+           "pipes": 1, "depth": 0, "work": 0, "exp": 0}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
     return (ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"],
@@ -192,6 +210,11 @@ def data_words(argv):
     return set()
 
 
+def _redefined(redefined, name):
+    """Whether name may have been redefined."""
+    return name in redefined
+
+
 def _name_unreadable(text):
     """A command name an expansion builds: anything other than a literal name, or a path under a leading $VAR/."""
     return bool(re.search(r"[$`]", re.sub(r"^(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/", "", text)))
@@ -219,12 +242,15 @@ def _unwrap(name, args):
         if name == "command" and a in ("-v", "-V"):
             return []   # a lookup, not a run
         if a.startswith("-"):   # a bare `-` too (env - cmd: an empty environment)
-            i += 2 if a in opts else 1
-        elif _ASSIGN.match(a):
+            i += 2 if a in opts or name in ARGPARSE and a.startswith("--") and any(o.startswith(a) for o in opts) else 1
+        elif _ASSIGN.match(a) or name == "hatch" and a.startswith("+"):   # hatch run's +var=… matrix selection
             i += 1
         else:
             break
-    return args[i + positional:]
+    inner = args[i + positional:]
+    if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
+        inner = [inner[0].split(":", 1)[-1]] + inner[1:]
+    return inner
 
 
 def _shell_mode(args):
@@ -420,6 +446,7 @@ def _ansi_c(text):
 class _Parser:
     def __init__(self, src, ctx, via):
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
+        self.cwd_changed = False
         self.data = set()   # indexes in self.out of the words the code leaves out
         self.charge(len(src))
 
@@ -526,7 +553,8 @@ class _Parser:
 
     def simple(self, pid, piped=False):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
-        consumed = loop_header = stdin_redirect = to_file = False
+        consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
+        dynamic = False
         while True:
             self.blank()
             c = self.peek()
@@ -549,10 +577,11 @@ class _Parser:
                 target = self.word()
                 if target is None:
                     raise ParseError("redirection without a target")
+                dynamic |= bool(re.search(r"[$`]", target[1]))
                 self.out += [m.group(0), target[0]]
                 if m.group(2) in ("<<", "<<-"):
                     docs.append({"delim": target[0], "strip": m.group(2) == "<<-", "expand": target[0] == target[1],
-                                 "via": self.via, "cmds": [], "data": False})
+                                 "via": self.via, "cmds": [], "data": False, "step": None})
                     self.heredocs.append(docs[-1])
                 elif m.group(2) == "<<<":
                     strings.append(target[0])
@@ -566,9 +595,11 @@ class _Parser:
                     if writes:
                         self.ctx["written"].append(target[0])
                     if m.group(2) in ("&>", "&>>") or m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&"):
+                        stdout_redirect = True
                         # stdout, the last one: into a file a literal names, not a descriptor, a device or a variable
-                        to_file = writes and not target[3] and (
-                            target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
+                        to_file = writes and not target[2] and not target[3] and \
+                            (target[0].startswith("/") or not self.cwd_changed) and \
+                            (target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
@@ -584,8 +615,10 @@ class _Parser:
                 raise ParseError(f"{text} is not supported")
             if not words and _ASSIGN.match(self.s, start, self.i):   # within the word, as bash reads it
                 self.ctx["refs"].append(text)
+                self.ctx["command_names_mutable"] |= bool(_COMMAND_NAME_ASSIGN.match(text))
                 continue
             words.append(text)
+            dynamic |= bool(re.search(r"[$`]", raw))
             idx.append(len(self.out) - 1)
             spans.append(None if expanded else (len(self.out) - 1, start, self.i))
             globs.append(g)
@@ -594,17 +627,22 @@ class _Parser:
         self.progs += [idx[k] for k in _programs(words, cmds)]
         # cat, tee, echo or printf into a file only copies text there: its herestring and echo's or printf's words
         # (and its heredoc, read_heredocs) are data, which the code leaves out.
-        # lean: the code doesn't follow the text into that file, so a later command of the same call that runs or reads
-        # it (`sh x.sh`, `xargs rm < list`) acts on what it names unseen, as a second call would; keep the text when
-        # another command of the call names the file it wrote if that shows up
-        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf")
+        # lean: a later, separate call can still consume a file whose copied text this call cut; that later call is
+        # evaluated as its own policy input.
+        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
+            not _redefined(self.ctx["redefined"], words[0])
+        marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
             self.data.update(i for i, _, _ in marks)
-            if not self.via:   # the top level's text is the command's own
-                self.ctx["cut"] += [(a, b) for _, a, b in marks]
+        inert = bool(words) and words[0] in ("cd", "pushd", "popd", "pwd", "ls", "mkdir", "true", ":") or \
+            bool(words) and words[0] in ("echo", "printf") and "-v" not in words[1:] and not stdout_redirect
+        step = {"inert": (data and not dynamic) or
+                         (inert and not (stdin_redirect or docs or strings or loop_header or dynamic)),
+                "marks": [(a, b) for _, a, b in marks] if not self.via else []}
+        self.ctx["steps"].append(step)
         for d in docs:
-            d["cmds"], d["data"] = cmds, data
+            d["cmds"], d["data"], d["step"] = cmds, data, step
         shell = _stdin_shell(cmds)
         if shell and not docs and not strings:
             shell["opaque"] = True   # its script comes from a pipe, a file or inherited stdin
@@ -615,7 +653,27 @@ class _Parser:
             interp["opaque"] = True   # its program comes from a pipe or a file
         for text in strings if interp else ():
             self.program(interp, text, " <<<")
+        if words and words[0] in ("cd", "pushd", "popd"):
+            self.cwd_changed = True
+        self.track_redefinitions(cmds)
         return consumed
+
+    def track_redefinitions(self, cmds):
+        """Record redefinitions and mutations which make command names untrustworthy."""
+        copies = {"cat", "tee", "echo", "printf"}
+        for cmd in cmds:
+            argv = cmd["argv"]
+            self.ctx["command_names_mutable"] |= (argv[0] in ("alias", "unalias", "shopt", "enable", "source", ".", "hash") or
+                                                  argv[0] in _VARIABLE_SETTING_BUILTINS or
+                                                  (argv[0] == "printf" and "-v" in argv[1:]) or
+                                                  "command_not_found_handle" in argv or
+                                                  any(_COMMAND_NAME_ASSIGN.match(a) for a in argv[1:]))
+            if argv[0] == "alias":
+                self.ctx["redefined"].update(a.split("=", 1)[0] for a in argv[1:] if a.split("=", 1)[0] in copies)
+            elif argv[0] == "enable" and "-n" in argv:
+                self.ctx["redefined"].update(a for a in argv[1:] if a in copies)
+            elif argv[0] in ("source", ".") and len(argv) > 1:
+                self.ctx["redefined"].update(copies)
 
     def program(self, cmd, text, label):
         """An interpreter's program from a heredoc or herestring: scanned as its -c code would be, and a ref."""
@@ -663,6 +721,10 @@ class _Parser:
             elif (name == "npx" or name == "npm" and args[:1] in (["exec"], ["x"])) and \
                     (script := _npm_call(args if name == "npx" else args[1:])) is not None:
                 self.nested(script, via + [name + " -c"])
+            elif name == "uv" and args[:2] in (["tool", "run"], ["tool", "uvx"]):   # uvx's long forms
+                argv, via, unreadable = ["uvx"] + args[2:], via + ["uv tool run"], unreadable[2:]
+                self.charge(len(argv))
+                continue
             elif name in WRAPPERS or name in RUNNERS and args[:1] and args[0] in RUNNERS[name][0]:
                 if name == "runuser" and _dash_c(args) is not None:
                     self.nested(_dash_c(args), via + ["runuser -c"])
@@ -753,7 +815,7 @@ class _Parser:
             # a data heredoc's body, unless a command substitution in it runs (what it runs may read a heredoc of its
             # own, which only this text holds)
             if d["data"] and not d["via"] and not (d["expand"] and re.search(r"\$\(|`", body)):
-                self.ctx["cut"].append((start, at))
+                d["step"]["marks"].append((start, at))
             shell, interp = _stdin_shell(d["cmds"]), _stdin_interpreter(d["cmds"])
             if shell:
                 self.nested(body, shell["via"] + [shell["argv"][0] + " <<"])
