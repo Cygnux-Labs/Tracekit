@@ -2880,10 +2880,12 @@
     const esc = s => String(s ?? "").replace(/[&<>"'\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0")));
     // the same for text set as textContent, which needs no markup escaped
     const vis = s => String(s ?? "").replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
-    const FIELD = { Bash: "command", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", Read: "file_path", NotebookEdit: "notebook_path", WebFetch: "url", WebSearch: "query", Glob: "pattern", Grep: "pattern", Agent: "description", Task: "description" };
-    const FILE_TOOLS = { Read: "R", Write: "W", Edit: "W", MultiEdit: "W", NotebookEdit: "W" };
+    const FIELD = Object.assign(Object.create(null), { Bash: "command", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", Read: "file_path", NotebookEdit: "notebook_path", WebFetch: "url", WebSearch: "query", Glob: "pattern", Grep: "pattern", Agent: "description", Task: "description" });
+    const FILE_TOOLS = Object.assign(Object.create(null), { Read: "R", Write: "W", Edit: "W", MultiEdit: "W", NotebookEdit: "W" });   // looked up by a tool's name: no prototype
     const SEVERE = new Set(["denied", "out_of_scope_write", "secrets_access"]);
     const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    // a map keyed by what records hold (a place, a tool, a node id): no prototype, so "constructor" or "__proto__" is a key
+    const dict = (entries = []) => Object.assign(Object.create(null), Object.fromEntries(entries));
 
     function subject(tool, ti) {
       if (!ti || typeof ti !== "object") return String(ti ?? "");
@@ -3273,7 +3275,7 @@
     // a call's arguments (the signer's copy), else its tool. Each mark is a call, or an effect a sensor saw, graded signed,
     // observed or unverified (its run did not verify)
     const HZMAX = 500;   // lean: the newest 500 calls are drawn; past that a run's own views have every call
-    const HZ = { t: 0, n: 0, play: null, pick: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: {}, t0: performance.now() };
+    const HZ = { t: 0, n: 0, play: null, pick: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: Object.create(null), t0: performance.now() };
     const HZACT = { read: "read", run: "ran", write: "wrote", net: "reached", seen: "was seen at", blocked: "was blocked at", held: "was held at", flag: "was flagged at", approved: "was approved at" };
     const HZSYM = { read: "●", run: "●", net: "●", seen: "●", write: "■", approved: "■", blocked: "✕", held: "◯", flag: "◆" };
     const HZWORST = ["blocked", "held", "flag", "write", "approved", "net", "seen", "run", "read"];
@@ -3299,7 +3301,7 @@
     function hzData() {
       const key = [ALL.length, ALL[ALL.length - 1], RUNS.size, chainState.ok];
       if (key.every((x, i) => x === hzKey[i])) return hzD;
-      const ans = new Map(), raw = [], places = {}, parent = {}, cwds = new Set(), groups = {}, dirs = [];
+      const ans = new Map(), raw = [], places = dict(), parent = dict(), cwds = new Set(), groups = dict(), dirs = [];
       for (const r of ALL) if (r.v2?.approval in ANSWER) ans.set(r.session_id + "|" + r.v2.tool_use_id, r.v2.approval);
       for (const r of ALL) {
         const fx = r.v2?.effect, d = r.v2?.decision ?? (r.policy?.decision === "deny" ? "deny" : "allow"), rules = r.v2?.rules || [];
@@ -3343,7 +3345,7 @@
       const D = HZ.d = hzData(), N = D.ev.length, pal = css("--hz-agents").split(/\s+/);
       if (!HZ.play && (HZ.t === HZ.n || HZ.t > N)) HZ.t = N;   // at the end it follows new calls; a replay or a step back stays
       HZ.n = N;
-      HZ.col = Object.fromEntries(D.agents.map(([a], n) => [a, pal[n % pal.length]]));
+      HZ.col = dict(D.agents.map(([a], n) => [a, pal[n % pal.length]]));
       if (!(HZ.follow in HZ.col)) HZ.follow = null;
       if (!D.places[HZ.pick]) HZ.pick = null;
       const ev = D.ev.slice(0, HZ.t), cur = D.ev[HZ.t - 1], P = k => D.places[k], last = [-99, -99], MIL = { blocked: "BLOCK", approved: "APPROVED", held: "HOLD", flag: "FLAG" };
@@ -3462,7 +3464,7 @@
       x.letterSpacing = "0px";
       if (i > .6) { x.textAlign = "center"; x.fillStyle = A(ink, (i - .6) / .4 * .5); for (const q of D.dirs) { const [px, py] = P(q.r, q.th); x.fillText(q.label, px, py + 3); } }
       // what happened, up to the move shown: jets where data left the machine, the routes, then the places
-      const ev = D.ev.slice(0, HZ.t), mine = e => !HZ.follow || e.ag === HZ.follow, seen = {};
+      const ev = D.ev.slice(0, HZ.t), mine = e => !HZ.follow || e.ag === HZ.follow, seen = dict();
       for (const e of ev) if (mine(e)) (seen[e.at] ||= []).push(e);
       x.lineWidth = 1.6;
       for (const e of ev) if (mine(e) && D.places[e.at].kind === "outside") {
@@ -4155,7 +4157,7 @@
         steps.push([hit.length ? sec : "", sec.toUpperCase() + " RULES", `read ${esc(v.read[sec])} · ` + (hit.length ? `matched ` + hit.map(rule).join("") : `<span class="dim">none matched</span>`)]);
       }
       else steps.push(["", "POLICY", `<span class="dim">${esc(short(v.policy_hash) || "none recorded")}: not a policy this viewer has, so only the rules that matched are known (start the viewer with the signer's --config)</span>`]);
-      const own = rules.filter(x => !(x.id in secs));
+      const own = rules.filter(x => !Object.hasOwn(secs, x.id));
       if (own.length) steps.push([v.decision, v.read ? "ENGINE" : "MATCHED", own.map(rule).join("")]);
       steps.push([v.decision, "DECISION", `${esc(String(v.decision).toUpperCase())} <span class="dim">the first section with a match decides: deny, then ask, then flag; none, allow</span>`]);
       steps.push([out[0] === "s-ok" ? "allow" : out[0] === "s-deny" ? "deny" : "ask", "OUTCOME", `<span class="${esc(out[0])}">${esc(out[1])}</span>` + (ans ? ` <span class="dim">${esc(ans.text)}</span>` : "")]);
@@ -4722,7 +4724,7 @@
       return v;
     }
     function lineageHtml(d, chains) {
-      const by = Object.fromEntries(d.nodes.map(n => [n.id, n])), groups = new Map();
+      const by = dict(d.nodes.map(n => [n.id, n])), groups = new Map();
       for (const ch of chains) { const k = ch.slice(1).join(">"); if (!groups.has(k)) groups.set(k, { tail: ch.slice(1), roots: [] }); groups.get(k).roots.push(ch[0]); }
       const step = id => { const n = by[id] || {}; return `<span class="wstep${n.trust === "untrusted" && n.type === "input" ? " unt" : ""}" data-wnode="${esc(id)}">${esc(WTYPE[n.type] || n.type)} · ${esc(n.agent)} · ${esc(String(n.label).slice(0, 40))}</span>`; };
       return [...groups.values()].map(g => `<div class="wflow">` + g.roots.map(step).join(" ") + " " + g.tail.map(id => "→ " + step(id)).join(" ") + `</div>`).join("") || `<div class="wflow dim">No upstream inputs recorded.</div>`;
@@ -4737,7 +4739,7 @@
     const recSeq = n => (n?.evidence || []).map(x => x.seq).find(Number.isInteger);
     // COPY THIS EXPLANATION: the call, the verdict, how it got here oldest first (each step's signed record) and the run, as text
     function whyText(ref, d, A) {
-      const by = Object.fromEntries(d.nodes.map(n => [n.id, n])), n = by[ref.node] || {};
+      const by = dict(d.nodes.map(n => [n.id, n])), n = by[ref.node] || {};
       const steps = [...new Set(A.lineage.flat())].map(id => by[id] || { label: id }).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
       return [`Why did ${n.agent} run ${n.label}?`, verdict(A), "How it got here:", ...steps.map((x, i) => `${i + 1}. ${WTYPE[x.type] || x.type} · ${x.agent} · ${x.label}`
         + (x.trust === "untrusted" ? " (untrusted)" : "") + (recSeq(x) != null ? ` (record ${recSeq(x)})` : "")), ...steps.length ? [] : ["No upstream inputs recorded."], `run ${d.run_id}`].join("\n");
@@ -4782,7 +4784,7 @@
       $("detsum").textContent = vis(`why · ${WNODE.run}`);
       const n = d && !d.error && d.nodes.find(x => x.id === WNODE.id);
       if (!n) { put("detail", `<div class="empty">${esc(!d ? "loading…" : d.error || "This node is not in the run's why log any more.")}</div>`); return; }
-      const by = Object.fromEntries(d.nodes.map(x => [x.id, x])), ms = v => v == null ? "–" : `${(+v).toFixed(1)} ms`;
+      const by = dict(d.nodes.map(x => [x.id, x])), ms = v => v == null ? "–" : `${(+v).toFixed(1)} ms`;
       const link = id => { const x = by[id]; return x ? `<a href="#" data-wopen="${esc(id)}">${esc(WTYPE[x.type] || x.type)} · ${esc(x.agent)} · ${esc(String(x.label).slice(0, 50))}</a>` : esc(id); };
       const kv = (rows, more = "") => `<dl class="kv">` + rows.filter(r => r[1] != null && r[1] !== "").map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("") + more + `</dl>`;
       const act = n.type === "action" && S.actList.find(a => { const r = whyRef(a); return r && r.run === WNODE.run && r.node === n.id; });
@@ -4924,7 +4926,7 @@
     function whyView(el, d) {
       const acts = d.nodes.filter(n => n.type === "action");
       if (!acts.length) { el.innerHTML = runHead(d) + `<div class="empty">This run has no tool calls to investigate.</div>`; return; }
-      const sev = {}, rank = { high: 0, review: 1, info: 2 };
+      const sev = dict(), rank = { high: 0, review: 1, info: 2 };
       d.alerts.forEach(a => { if (a.node && !(a.node in sev)) sev[a.node] = a.severity; });
       const ordered = [...acts].sort((a, b) => (rank[sev[a.id]] ?? 3) - (rank[sev[b.id]] ?? 3) || a.seq - b.seq);
       const pick = WPICK && d.actions[WPICK] ? WPICK : ordered.find(a => d.actions[a.id])?.id, A = pick && d.actions[pick];
@@ -4977,7 +4979,7 @@
         $("wvsum").textContent = `${d.nodes.length} nodes · too large to draw`; return;
       }
       const show = e => e.evidence === "observed" || (e.evidence === "inferred" && GV.inferred) || (e.evidence === "tested" && (e.verdict === "causal" || e.verdict === "suppressive" || GV.ruled));
-      const N = [...d.nodes], by = {}, depth = {}, cols = {}, lanes = d.agents.map(a => a.name);
+      const N = [...d.nodes], by = dict(), depth = dict(), cols = dict(), lanes = d.agents.map(a => a.name);
       N.forEach(n => { by[n.id] = n; depth[n.id] = 0; });
       // a tool call nothing recorded flowing into follows the call before it (a signed run's calls): run order, not a cause
       const acts = N.filter(n => n.type === "action").sort((a, b) => a.seq - b.seq), into = new Set(d.edges.filter(e => e.evidence === "observed").map(e => e.dst));
@@ -4989,7 +4991,7 @@
       N.forEach(n => (cols[depth[n.id]] = cols[depth[n.id]] || []).push(n));
       Object.values(cols).forEach(c => c.sort((a, b) => lanes.indexOf(a.agent) - lanes.indexOf(b.agent) || a.seq - b.seq));
       const BW = 158, BH = 42, CX = 210, RY = 58, PAD = 24, nc = Object.keys(cols).length, maxr = Math.max(1, ...Object.values(cols).map(c => c.length));
-      const W = PAD * 2 + (nc - 1) * CX + BW, H = PAD * 2 + maxr * RY, pos = {};
+      const W = PAD * 2 + (nc - 1) * CX + BW, H = PAD * 2 + maxr * RY, pos = dict();
       Object.entries(cols).forEach(([c, arr]) => { const off = (maxr - arr.length) * RY / 2; arr.forEach((n, i) => pos[n.id] = [PAD + c * CX, PAD + off + i * RY]); });
       const TC = { input: "--cyan", decision: "--magenta", action: "--green", message: "--amber" }, keep = GV.focus && by[GV.focus] ? reach(E, GV.focus) : null;
       // FIT: the whole graph in the panel, its width and its height; ACTUAL SIZE: scroll
@@ -5052,7 +5054,7 @@
     // INFLUENCE: Causeway's citation index across every run: sources to the tools they reached, confirmed links red
     function influenceView(el) {
       const I = WHY.influence, S2 = I.sources, T = I.outcomes, rows = Math.max(S2.length, T.length, 1);
-      const W = Math.max(640, el.clientWidth - 24), RY = 40, H = rows * RY + 24, LX = 250, RX = W - 190, sy = {}, ty = {};
+      const W = Math.max(640, el.clientWidth - 24), RY = 40, H = rows * RY + 24, LX = 250, RX = W - 190, sy = dict(), ty = dict();
       S2.forEach((x, i) => sy[x.id] = 20 + i * RY + (rows - S2.length) * RY / 2);
       T.forEach((x, i) => ty[x.id] = 20 + i * RY + (rows - T.length) * RY / 2);
       const maxr = Math.max(1, ...I.edges.map(e => e.reach_runs));

@@ -754,7 +754,7 @@ class GraphGrades(unittest.TestCase):
                       {"src": "dec", "dst": "ok", "kind": "invoked", "evidence": "observed"},
                       {"src": "dec", "dst": "no", "kind": "invoked", "evidence": "observed"},
                       {"src": "in", "dst": "no", "kind": "argument", "evidence": "inferred"}]}
-        out = json.loads(page_js(["esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
+        out = json.loads(page_js(["dict", "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
                                   "whyRef", "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"], f"""
             const GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, CSS = {{ escape: s => s }}, got = {{}};
             const el = {{ clientWidth: 900, clientHeight: 600, querySelector: () => null }}, $ = id => id === "gsvg" ? null : (got[id] ??= {{}});
@@ -803,7 +803,7 @@ class WhyCauses(unittest.TestCase):
     command was a template with SPEC to fill in (Causeway U25: a ready command per cause)."""
 
     def body(self, run):
-        return json.loads(page_js(["esc", "shq", "cp", "WSTATUS", "CHAIN", "pct", "effectBar", "verdict", "lineageHtml",
+        return json.loads(page_js(["dict", "esc", "shq", "cp", "WSTATUS", "CHAIN", "pct", "effectBar", "verdict", "lineageHtml",
                                    "WTYPE", "PROV", "recSeq", "whyText", "whyBody"], f"""
             const WTARGET = {{}}, WJOINT = new Set(), WBUSY = null, WMSG = "", d = {json.dumps(run)}, A = {json.dumps(WHY_CALL)};
             process.stdout.write(JSON.stringify([whyText({{ run: "w1", node: "ev:call" }}, d, A), whyBody({{ run: "w1", node: "ev:call" }}, d, A).join("")]));"""))
@@ -861,7 +861,7 @@ class Horizon(unittest.TestCase):
         runs = [{"id": "r1", "agent": "orchestrator", "verdict": "verified"},
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
-        out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
+        out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
                                   "hzRad", "hzPath", "hzPlace", "hzRest", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
@@ -888,13 +888,40 @@ class Horizon(unittest.TestCase):
         self.assertEqual((out["bare"], out["cwd"], out["laid"], out["same"]), (2, "shop", True, True))
         self.assertEqual(out["more"], [["outside", "outside.example"], ["outside", "github.com"], None, ["outside", "evil.example"]])
 
+    def test_a_place_named_like_an_object_key_is_a_place(self):
+        """A call to http://constructor/ made every frame throw (seen[e.at].push), and a place named __proto__ set the
+        maps' prototype: the page's maps keyed by what records hold have no prototype."""
+        needs_node(self)
+        recs = [hz_call(1, "Bash", {"command": "curl http://constructor/x"}), hz_call(2, "Bash", {"command": "curl http://__proto__/y"}),
+                hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
+        runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
+        out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
+                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRgba", "hzDraw", "hzFrame"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
+            const ctx = new Proxy({{}}, {{ get: (o, k) => k in o ? o[k] : () => ({{ addColorStop() {{}}, width: 10 }}) }});
+            const cv = {{ clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => {{ frames++; return ctx; }} }};
+            const $ = id => id === "hzcv" ? cv : null, window = {{}}, document = {{ createElement: () => ({{ width: 0, height: 0, getContext: () => ctx }}) }};
+            const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
+            const matchMedia = () => ({{ matches: true }}), requestAnimationFrame = () => {{}};
+            HZ.d = hzData(); HZ.t = HZ.d.ev.length; HZ.col = dict(HZ.d.agents.map(([a]) => [a, "#d98bff"]));
+            hzDraw();
+            process.stdout.write(JSON.stringify([frames, Object.keys(HZ.d.places).sort(), Object.keys(Object.prototype),
+                                                 typeof FIELD.constructor, typeof FILE_TOOLS.toString]));"""))
+        self.assertEqual(out, [1, ["__proto__", "constructor", "tostring.example"], [], "undefined", "undefined"])
+        # every other map the page keys by a record's string (a node id, a tool, a source) is one with no prototype
+        script = PAGE[PAGE.index("<script"):]
+        self.assertEqual(re.findall(r"\b(?:by|depth|cols|pos|sev|sy|ty|places|parent|groups|seen|col)\s*[=:]\s*\{\}", script), [])
+        self.assertNotIn("Object.fromEntries(d.nodes", script)
+
     def test_calls_without_arguments_are_said_on_the_page(self):
         self.assertIn("calls have their arguments only as a commitment here, so each is placed by its tool", PAGE)
         self.assertIn("A TOOL, NO FILE OR HOST RECORDED", PAGE)
 
     def test_reduced_motion_draws_a_still_frame_on_each_change_and_no_loop(self):
         needs_node(self)
-        out = json.loads(page_js(["HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], """
             const ctx = new Proxy({}, { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {}, width: 10 }) });
             let frames = 0, reduce = true, PAGE = "horizon";
             const queued = [], cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => { frames++; return ctx; } };
