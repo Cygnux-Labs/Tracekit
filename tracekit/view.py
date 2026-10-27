@@ -671,14 +671,24 @@ CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only
                "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
 
 
+PERMISSIONS_KEPT = 500   # a run review's newest non-allow decisions; `permissions_left_out` counts the older ones
+# an approval's later records, as a permission's outcome
+OUTCOMES = {"approval.consumed": "approved · ran", "approval.expired": "expired", "approval.abandoned": "abandoned",
+            "approval.refused": "refused", "approval.binding_mismatch": "refused: arguments changed",
+            "approval.revoked": "revoked"}
+
+
 def review(records, rep, verdict):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
-    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record."""
+    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: each
+    decision that was not a plain allow, with its outcome, who answered and when, its approval id and the signed
+    provenance of its arguments (whose words they are), newest PERMISSIONS_KEPT."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0,
            "state": "open", "first": {}}
+    perms, calls = {}, {}   # tool_use_id -> its permission; approval_id -> its tool_use_id
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -695,6 +705,11 @@ def review(records, rep, verdict):
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
+            if key != "allow":
+                perms[d.get("tool_use_id")] = {"seq": e.get("seq"), "ts": e.get("ts"), "tool": d.get("tool"),
+                                               "tool_use_id": d.get("tool_use_id"), "decision": key,
+                                               "rule_ids": d.get("rule_ids") or [], "provenance": d.get("provenance") or [],
+                                               "outcome": {"deny": "blocked", "flag": "flagged"}.get(key, "waiting")}
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -728,8 +743,27 @@ def review(records, rep, verdict):
             out["state"] = "final"
         elif t == "run.closing" and out["state"] == "open":
             out["state"] = "closing"
+        if t == "approval.request":
+            calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
+        p = t.startswith("approval") and perms.get(d.get("tool_use_id") or e.get("tool_call_id")
+                                                    or calls.get(d.get("approval_id")))
+        if p and t == "approval.request":
+            p["approval_id"] = d.get("approval_id")
+        elif p and t == "approval":
+            p.update(outcome={"approve": "approved", "reject": "rejected", "timeout": "timed out",
+                              "self_approval_refused": "self-approval refused"}.get(d.get("decision"), d.get("decision")),
+                     by=out["approvals"][-1]["approver"], at=e.get("ts"), answer_seq=e.get("seq"))
+        elif p and t in OUTCOMES:
+            p.update(outcome=OUTCOMES[t], **({} if p.get("at") else {"at": e.get("ts"), "answer_seq": e.get("seq")}))
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
+    if out["state"] == "final":   # a hold the run ended without an answer to
+        for p in perms.values():
+            if p["outcome"] == "waiting":
+                p["outcome"] = "not answered"
+    # lean: the newest PERMISSIONS_KEPT a run; the run's records (its bundle) hold every one
+    out["permissions"] = list(perms.values())[-PERMISSIONS_KEPT:]
+    out["permissions_left_out"] = max(0, len(perms) - PERMISSIONS_KEPT)
     return out
 
 
@@ -1098,6 +1132,30 @@ class StoreFeed:
                                    next(iter(self.kept))))
             del self.records[:over]
             self.base += over
+
+    def rows(self, scope, tenant, run_id):
+        """GET /api/rows?tenant&run: a run's rows as the tape shows them, read from the store and verified again for
+        this request (the rows served are of the records checked), so a run whose records left the live view opens in
+        full; None when `scope` may not read its tenant, the store has no such run, no checkpoint covers it or it fails.
+        At most max_records records, its first."""
+        if scope is not observe.ALL and tenant != scope:
+            return None
+        r = reader(self.cfg)
+        fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)   # requests run concurrently: a file each
+        os.close(fd)
+        try:
+            note, run = r.checkpoint_latest(), r.runs.get((tenant, run_id))
+            count = bisect.bisect_left(run["seqs"], note[0]) if run and note else 0
+            if not count or check(r, tenant, run_id, note[1], self.trust, out)[1]:
+                return None
+            # lean: the retained arguments are not read again (each read is a signed content.accessed record); the
+            # live view shows them
+            records = list(itertools.islice(r.iter_run(tenant, run_id), min(count, self.max_records)))
+        finally:
+            r.close()
+            os.unlink(out)
+        tr = Translator(self.tr.reasons)
+        return [dict(x, tenant=tenant) for rec in records for x in tr.feed(rec)]
 
     def verify(self, tenant=None):
         """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""

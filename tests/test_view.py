@@ -393,6 +393,40 @@ class View(unittest.TestCase):
         wait_for(lambda: any(r.get("title", "").startswith(f"RUN {run_id}") for r in self.rows(feed, run_id)), 15)
         return [r for r in self.rows(feed, run_id) if r.get("title", "").startswith(f"RUN {run_id}")]
 
+    @pytest.mark.unverified_bundles
+    def test_a_run_opens_from_the_store_verified_again_and_only_for_its_tenant(self):
+        """Past the live view's newest 50,000 records older runs had no rows on the page; /api/rows reads a run from the
+        store, checked again for the request, for the token or a session of its tenant."""
+        run_id = self.finished_run()
+        feed = store_feed(self, {"data_dir": self.d})
+        self.report(feed, run_id)
+        rows = feed.rows(observe.ALL, "default", run_id)
+        self.assertEqual([r["tool_use_id"] for r in rows if r["event"] == "PreToolUse"], ["c1", "c2", "c3"])
+        self.assertEqual({r["tenant"] for r in rows}, {"default"})
+        self.assertIsNone(feed.rows("other", "default", run_id))   # an OIDC session of another tenant
+        self.assertIsNone(feed.rows(observe.ALL, "default", "nope"))
+        srv = view.server(feed, "127.0.0.1", 0, "t0k")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+        for path, code in ((f"/api/rows?tenant=default&run={run_id}", 200), (f"/api/rows?run={run_id}", 400),
+                           ("/api/rows?tenant=default&run=nope", 404)):
+            c.request("GET", path, headers={"Authorization": "Bearer t0k"})
+            r = c.getresponse()
+            self.assertEqual((path, r.status), (path, code))
+            body = json.loads(r.read())
+        c.request("GET", f"/api/rows?tenant=default&run={run_id}")
+        self.assertEqual(c.getresponse().status, 401)
+        self.service.close()   # a record edited after it was shown: the run is checked again, and refused
+        path = os.path.join(self.d, "store", "records.jsonl")
+        with open(path, encoding="utf-8") as f:
+            data = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(data.replace('"tool":"Bash"', '"tool":"Bosh"'))
+        self.assertIsNone(feed.rows(observe.ALL, "default", run_id))
+        self.assertIn("error", body)
+
     def test_with_a_content_source_each_decision_carries_its_arguments(self):
         """The tape named every allowed call "no rule matched": with the dev signer's retained arguments each decision
         carries them (the page names the call by them), asked for once, for exactly the run's decisions."""
@@ -1372,7 +1406,7 @@ class Pages(unittest.TestCase):
                     'data-i="${esc(row.i)}" tabindex="0"', 'data-al="${esc(al.i)}" tabindex="0"'):
             self.assertIn(row, page)
         self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],'
-                      '[data-al][tabindex],[data-grp][tabindex]")) e.target.click();', page)
+                      '[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex]")) e.target.click();', page)
 
 
 VERIFIED = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")

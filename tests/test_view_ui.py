@@ -180,7 +180,7 @@ def answer(seq, call, how, run="r1", **v2):
 
 
 class WaitingForYou(unittest.TestCase):
-    def test_every_runs_unanswered_holds_count_and_each_links_to_its_record(self):
+    def test_every_runs_unanswered_holds_count_and_each_opens_its_record(self):
         """The page showed a hold only inside its own run: nothing said a person was needed somewhere else."""
         needs_node(self)
         recs = [hold(1, "c1"), answer(2, "c1", "requested", approval_id="apr-1"), hold(3, "c2"),
@@ -191,21 +191,23 @@ class WaitingForYou(unittest.TestCase):
         out = json.loads(page_js(["waiting", "renderWaiting"], f"""
             const ALL = {json.dumps(recs)}, el = {{}}, $ = id => el[id] ??= {{}};
             let desk = false, waitKey = [], waitList = []; const DESK = () => desk;
-            const seen = [waiting().map(w => [w.rec.tool_use_id, w.req?.v2.approval_id ?? null, w.link])];
-            renderWaiting(); seen.push([el.waiting.hidden, el.waiting.textContent, el.waiting.href]);
-            desk = true; renderWaiting(); seen.push(el.waiting.href);
+            const seen = [waiting().map(w => [w.rec.tool_use_id, w.req?.v2.approval_id ?? null, w.open])];
+            renderWaiting(); seen.push([el.waiting.hidden, el.waiting.textContent, el.waiting.title]);
+            desk = true; renderWaiting(); seen.push(el.waiting.title);
             ALL.push({json.dumps(answer(14, "c1", "reject"))}); seen.push(waiting().map(w => w.rec.tool_use_id));
             process.stdout.write(JSON.stringify(seen));"""))
-        self.assertEqual(out, [[["c1", "apr-1", "#run=r1&seq=1"], ["c4", None, "#run=r1&seq=9"],
-                                ["c5", None, "#run=r+3%26x&seq=11"]],
-                               [False, "WAITING FOR YOU 3", "#run=r1&seq=1"], "/approvals", ["c4", "c5"]])
+        self.assertEqual(out, [[["c1", "apr-1", ["r1", 1]], ["c4", None, ["r1", 9]], ["c5", None, ["r 3&x", 11]]],
+                               [False, "WAITING FOR YOU 3", "open the oldest: its detail has the command that answers it"],
+                               "answer them on the approvals page", ["c4", "c5"]])
+        # no link carries data: a hold opens through the page's state (checklist item 3)
+        self.assertIn("if (DESK()) DESK().click(); else if (w) openRec(...w.open);", PAGE)
 
     def test_a_new_hold_or_high_alert_toasts_as_text_and_the_snapshot_does_not(self):
         needs_node(self)
         out = json.loads(page_js(["vis", "toastOf"], f"""
             const made = [], box = {{ children: [], prepend(t) {{ this.children.unshift(t); }} }};
             Object.defineProperty(box, "lastChild", {{ get() {{ return {{ remove: () => box.children.pop() }}; }} }});
-            const document = {{ createElement: tag => {{ const e = {{ tag, kids: [], append(...k) {{ this.kids.push(...k); }},
+            const document = {{ createElement: tag => {{ const e = {{ tag, kids: [], dataset: {{}}, append(...k) {{ this.kids.push(...k); }},
                                                                remove() {{}} }}; made.push(e); return e; }} }};
             const $ = () => box, DESK = () => false, setTimeout = () => {{}};
             let toasting = false;
@@ -216,10 +218,10 @@ class WaitingForYou(unittest.TestCase):
             toastOf({{ event: "tk_alert", severity: "med", title: "quiet", session_id: "r", tk_seq: 4 }});
             for (let i = 0; i < 3; i++) toastOf({json.dumps(hold(5, "c5"))});
             process.stdout.write(JSON.stringify([box.children.length, made.filter(e => e.tag === "b").map(e => e.textContent),
-                                                 made.filter(e => e.tag === "a").map(e => e.href)]));"""))
+                                                 made.filter(e => e.dataset.orun).map(e => [e.dataset.orun, e.dataset.oseq])]));"""))
         self.assertEqual(out[0], 3)
         self.assertEqual(out[1][:2], ["HELD · send_email waits for a person", "HIGH · rm\\u202e<b>"])
-        self.assertEqual(out[2][:2], ["#run=r1&seq=2", "#run=r&seq=3"])
+        self.assertEqual(out[2][:2], [["r1", 2], ["r", 3]])
         self.assertIn("toasting = false; snap.records.forEach(accept); toasting = true;", PAGE)
 
 
@@ -231,7 +233,7 @@ class NeedsYou(unittest.TestCase):
             let waitKey = [], waitList = [];
             process.stdout.write(JSON.stringify(needsYou()));"""))
 
-    def test_what_needs_a_person_comes_first_with_its_command_and_link(self):
+    def test_what_needs_a_person_comes_first_with_its_command_and_record(self):
         """A person asked "do I need to do anything?" and the answer was spread over runs, alerts and pages."""
         needs_node(self)
         held = {**hold(1, "c1"), "tool_input": {"to": "x@outside.example"},
@@ -242,9 +244,9 @@ class NeedsYou(unittest.TestCase):
                 {"incident_id": "inc-0", "trigger": "rule", "rule_ids": [], "state": "resumed"}]},
             {"id": "r2xxxxxxxx", "agent": "coder", "verdict": "failed", "state": "final",
              "report": "[PASS] chain\n[FAIL] signatures\n  seq 4: bad signature"}], stopped="verification stopped")
-        self.assertEqual([(n["kind"], n["link"]) for n in out], [
-            ("HOLD", "#run=r1&seq=1"), ("HOLD", "#run=r1&seq=3"), ("CONTAINED", "#run=r1"), ("FAILED", "#run=r2xxxxxxxx"),
-            ("STOPPED", "")])
+        self.assertEqual([(n["kind"], n["open"]) for n in out], [
+            ("HOLD", ["r1", 1]), ("HOLD", ["r1", 3]), ("CONTAINED", ["r1", ""]), ("FAILED", ["r2xxxxxxxx", ""]),
+            ("STOPPED", None)])
         self.assertEqual(out[0]["what"], "send_email · billing waits for a person: TK-P001 an email outside the company")
         self.assertEqual(out[0]["detail"], 'binds { "to": "x@outside.example" }')
         self.assertEqual(out[0]["cmds"], ["tracekit approvals approve apr-1", "tracekit approvals reject apr-1"])
@@ -312,6 +314,41 @@ class Permissions(unittest.TestCase):
                                   ["c3", "all ask approved", "APPROVED · RAN", "oidc:alice", "apr-3"],
                                   ["c2", "all flag", "RAN · FLAGGED", None, None], ["c1", "all deny", "BLOCKED", None, None]])
         self.assertEqual(out[1], [["c9", "all ask expired", "NOT ANSWERED", None, None]])
+
+    def test_a_run_review_keeps_every_permission_with_its_outcome_after_the_records_leave(self):
+        """Run reviews listed only approve and reject answers: a hold that expired, was abandoned or got no answer was in
+        none, and a review is what the page keeps of a run whose records left the live view."""
+        alice = {"scheme": "oidc", "subject": "alice", "attested": True}
+        req = lambda seq, aid, call: v2rec(seq, "approval.request", {"approval_id": aid, "binding": {"tool_call_id": call}})  # noqa: E731
+        prov = [{"field": "to", "kind": "email", "source": {"run_seq": 1, "tool": "fetch_page"}}]
+        recs = [v2rec(1, "policy.decision", {"tool_use_id": "c1", "tool": "rm", "decision": "deny", "rule_ids": ["T-DENY"]}),
+                v2rec(2, "policy.decision", {"tool_use_id": "c2", "tool": "ls", "decision": "allow", "rule_ids": []}),
+                v2rec(3, "policy.decision", {"tool_use_id": "c3", "tool": "pay", "decision": "ask", "rule_ids": ["T-PAY"],
+                                             "provenance": prov}),
+                req(4, "apr-3", "c3"),
+                v2rec(5, "approval", {"tool_use_id": "c3", "approval_id": "apr-3", "decision": "approve",
+                                      "approver_identity": alice}),
+                v2rec(6, "approval.consumed", {"approval_id": "apr-3"}, tool_call_id="c3"),
+                v2rec(7, "policy.decision", {"tool_use_id": "c4", "tool": "pay", "decision": "ask", "rule_ids": ["T-PAY"]}),
+                req(8, "apr-4", "c4"), v2rec(9, "approval.expired", {"approval_id": "apr-4"}),
+                v2rec(10, "policy.decision", {"tool_use_id": "c5", "tool": "curl", "decision": "flag", "rule_ids": ["T-F"]}),
+                v2rec(11, "policy.decision", {"tool_use_id": "c6", "tool": "pay", "decision": "ask", "rule_ids": ["T-PAY"]})]
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        got = view.review(recs, rep, "verified")
+        self.assertEqual([(p["tool_use_id"], p["decision"], p["outcome"], p.get("approval_id"), p.get("by"),
+                           p.get("answer_seq")) for p in got["permissions"]],
+                         [("c1", "deny", "blocked", None, None, None),
+                          ("c3", "ask", "approved · ran", "apr-3", "oidc:alice (attested)", 5),
+                          ("c4", "ask", "expired", "apr-4", None, 9), ("c5", "flag", "flagged", None, None, None),
+                          ("c6", "ask", "waiting", None, None, None)])
+        self.assertEqual(got["permissions"][1]["provenance"], prov)
+        self.assertEqual(len(got["approvals"]), 1)   # the approvals list is as it was
+        final = view.review(recs + [v2rec(12, "run.final", {})], rep, "verified")
+        self.assertEqual(final["permissions"][-1]["outcome"], "not answered")
+        with mock.patch.object(view, "PERMISSIONS_KEPT", 2):
+            kept = view.review(recs, rep, "verified")
+        self.assertEqual(([p["tool_use_id"] for p in kept["permissions"]], kept["permissions_left_out"]),
+                         (["c5", "c6"], 3))
 
     def test_the_view_is_reachable_without_why_logs_and_from_a_link(self):
         self.assertIn('VIEWS.filter(k => WHY || !NEEDWHY.has(k))', PAGE)
