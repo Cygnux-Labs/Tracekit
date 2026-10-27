@@ -557,6 +557,51 @@ class CodingPack(unittest.TestCase):
                        ("del %LOCALAPPDATA%\\tracekit", "TK-D007"), ("rm /tmp/tracekit-501/signer.sock", "TK-D007"),
                        ("cp x .venv/lib/python3.12/site-packages/tracekit/policy2/packs/coding.yaml", "TK-D007")])
 
+    def test_text_only_written_into_a_file_may_name_tracekits_paths(self):
+        # TK-D007 matched a Tracekit path anywhere in the command, so writing a source file whose help text names one
+        # was denied (#423); reading, writing, moving or deleting one, stopping the signer, and code an interpreter
+        # runs are still denied
+        acts = ("rm /etc/tracekit/client.json", "cp x.json /etc/tracekit/client.json",
+                "mv /var/lib/tracekit/keys/log.key /tmp/k", "cat ~/.local/share/tracekit/keys/log.key",
+                "tee /etc/tracekit/policy.yaml < p.yaml", "sed -i s/enforce/off/ /etc/tracekit/policy.yaml",
+                "echo x > /etc/tracekit/policy.yaml", "cat < /etc/tracekit/client.json", "kill $(pgrep tracekitd)",
+                "pkill -f tracekit", "systemctl stop tracekit", "launchctl bootout gui/501/com.example.tracekit",
+                "python3 -c \"open('/etc/tracekit/client.json','w')\"",
+                "node -e \"require('fs').rmSync('/var/lib/tracekit', {recursive: true})\"",
+                "perl -e 'unlink \"/etc/tracekit/client.json\"'",
+                "ruby -e 'File.delete(\"/etc/tracekit/client.json\")'",
+                "sh -c 'rm /etc/tracekit/x'", "zsh -c 'rm /etc/tracekit/x'", "bash <<EOF\nrm /etc/tracekit/x\nEOF",
+                "python3 <<'EOF'\nopen('/etc/tracekit/client.json', 'w')\nEOF",
+                "python3 <<< \"open('/etc/tracekit/client.json', 'w')\"",
+                # text a command acts on, or that goes on to one
+                "echo /etc/tracekit/client.json | xargs rm", "xargs rm <<< /etc/tracekit/client.json",
+                "xargs rm > log.txt <<'EOF'\n/etc/tracekit/client.json\nEOF",
+                "cat <<'EOF' | xargs rm\n/etc/tracekit/client.json\nEOF",
+                "echo /etc/tracekit/client.json >/dev/stdout | xargs rm",
+                # a write of text that acts too: on its file, on the file it copies, or through a command it runs
+                "cat > /etc/tracekit/policy.yaml <<'EOF'\nmode: off\nEOF",
+                "tee /etc/tracekit/policy.yaml > /dev/null <<'EOF'\nmode: off\nEOF",
+                "cat /var/lib/tracekit/keys/log.key > /tmp/k",
+                "echo \"$(cat /var/lib/tracekit/keys/log.key)\" > /tmp/k",
+                "cat > notes.txt <<EOF\n$(rm /etc/tracekit/client.json)\nEOF",
+                "echo $(xargs rm <<X\n/etc/tracekit/client.json\nX\n) > notes.txt",
+                "cat > notes.txt <<EOF\n$(xargs rm <<X\n/etc/tracekit/client.json\nX\n)\nEOF")
+        data = ("cat > cmd/tool/main.go <<'EOF'\nfmt.Println(\"reads /etc/tracekit/client.json\")\nEOF",
+                "cat <<EOF > README.md\nThe signer keeps its keys in /var/lib/tracekit.\nEOF",
+                "mkdir -p docs && cat >> docs/setup.md <<'EOF'\nsystemctl stop tracekit\nEOF",
+                "tee notes.md > /dev/null <<'EOF'\npkill -f tracekitd\nEOF",
+                "cat <<< '/etc/tracekit/client.json' > paths.txt", 'echo "reads /etc/tracekit/client.json" > main.go',
+                "printf '%s\\n' ~/.local/share/tracekit >> notes.txt",
+                "echo 'del %LOCALAPPDATA%\\tracekit' > notes.txt")
+        for pack, engine, e in self.every_pack():
+            for command in acts:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True), d)
+            for command in data:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D007", e.decide("Bash", {"command": command})["rule_ids"])
+
     def test_each_harness_config_an_agent_could_turn_its_sandbox_or_hooks_off_in_is_flagged(self):
         for tool, args in (("Write", {"file_path": "/home/u/.gemini/settings.json", "content": "{}"}),
                            ("Edit", {"file_path": "/home/u/p/.gemini/settings.json", "old_string": "a", "new_string": "b"}),
