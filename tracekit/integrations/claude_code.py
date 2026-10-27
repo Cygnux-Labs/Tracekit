@@ -50,6 +50,7 @@ import glob
 import hashlib
 import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -302,8 +303,12 @@ def _pre(client, p, sid, tid):
         try:
             cap()
             aid = run.call("approval_request", tool_call_id=tid)["approval_id"]
-            print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])}){why}", file=sys.stderr,
-                  flush=True)
+            # a named signer (system mode's, or $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside
+            # system mode the agent may have set it
+            cmd = "tracekit approvals" + (f" --signer {shlex.quote(client.signer)}" if client.signer else "")
+            print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])}){why}; a person approves it "
+                  f"from another terminal with `{cmd} approve {aid}` or rejects it with `{cmd} reject {aid}`",
+                  file=sys.stderr, flush=True)
             state, deadline = "requested", end - 2 * per_call   # time left for the last wait's answer and the consume
             while state == "requested" and deadline > time.monotonic():
                 left_s = min(deadline - time.monotonic(), 300)
