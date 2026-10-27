@@ -752,6 +752,30 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertNotIn("TK-D007", e.decide("Bash", {"command": command})["rule_ids"])
 
+    def test_stdout_data_cut_requires_a_literal_unchanged_file_target_and_builtin(self):
+        path = "/etc/tracekit/client.json"
+        glob_targets = ("/dev/std?ut", "/d[e]v/stdout", "/dev/*out", "/dev/fd/?")
+        changed_directories = ("cd /dev", "pushd /dev", "cd /proc/self/fd")
+        copies = {
+            "echo": f"echo {path} > out | xargs rm",
+            "printf": f"printf '%s\\n' {path} > out | xargs rm",
+            "cat": f"cat <<'EOF' > out | xargs rm\n{path}\nEOF",
+            "tee": f"tee <<'EOF' > out | xargs rm\n{path}\nEOF",
+        }
+        commands = [f"echo {path} > {target} | xargs rm" for target in glob_targets]
+        commands += [f"{directory} && echo {path} > stdout | xargs rm" for directory in changed_directories]
+        for name, command in copies.items():
+            commands += [f"alias {name}=x; {command}", f"{name}() {{ :; }}; {command}",
+                         f"enable -n {name}; {command}"]
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True), d)
+            for command in (f"echo {path} > main.go; echo *", f"echo {path} > main.go; cd /tmp"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D007", e.decide("Bash", {"command": command})["rule_ids"])
+
     def test_each_harness_config_an_agent_could_turn_its_sandbox_or_hooks_off_in_is_flagged(self):
         for tool, args in (("Write", {"file_path": "/home/u/.gemini/settings.json", "content": "{}"}),
                            ("Edit", {"file_path": "/home/u/p/.gemini/settings.json", "old_string": "a", "new_string": "b"}),

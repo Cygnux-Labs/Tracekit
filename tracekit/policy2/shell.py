@@ -192,6 +192,17 @@ def data_words(argv):
     return set()
 
 
+def _redefined(cmds, name):
+    """Whether an earlier alias or enable command changes a data-copying builtin."""
+    for cmd in cmds:
+        argv = cmd["argv"]
+        if argv[0] == "alias" and any(a.split("=", 1)[0] == name for a in argv[1:]):
+            return True
+        if argv[0] == "enable" and name in argv[1:]:
+            return True
+    return False
+
+
 def _name_unreadable(text):
     """A command name an expansion builds: anything other than a literal name, or a path under a leading $VAR/."""
     return bool(re.search(r"[$`]", re.sub(r"^(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/", "", text)))
@@ -420,6 +431,7 @@ def _ansi_c(text):
 class _Parser:
     def __init__(self, src, ctx, via):
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
+        self.cwd_changed = False
         self.data = set()   # indexes in self.out of the words the code leaves out
         self.charge(len(src))
 
@@ -567,8 +579,9 @@ class _Parser:
                         self.ctx["written"].append(target[0])
                     if m.group(2) in ("&>", "&>>") or m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&"):
                         # stdout, the last one: into a file a literal names, not a descriptor, a device or a variable
-                        to_file = writes and not target[3] and (
-                            target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
+                        to_file = writes and not target[2] and not target[3] and \
+                            (target[0].startswith("/") or not self.cwd_changed) and \
+                            (target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
@@ -597,7 +610,8 @@ class _Parser:
         # lean: the code doesn't follow the text into that file, so a later command of the same call that runs or reads
         # it (`sh x.sh`, `xargs rm < list`) acts on what it names unseen, as a second call would; keep the text when
         # another command of the call names the file it wrote if that shows up
-        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf")
+        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
+            not _redefined(self.ctx["cmds"], words[0])
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
             self.data.update(i for i, _, _ in marks)
@@ -615,6 +629,8 @@ class _Parser:
             interp["opaque"] = True   # its program comes from a pipe or a file
         for text in strings if interp else ():
             self.program(interp, text, " <<<")
+        if words and words[0] in ("cd", "pushd", "popd"):
+            self.cwd_changed = True
         return consumed
 
     def program(self, cmd, text, label):
