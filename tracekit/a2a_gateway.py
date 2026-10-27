@@ -112,7 +112,10 @@ def _task_refs(method, params):
     message = params.get("message")
     if not isinstance(message, dict):
         return ()
-    return tuple(message.get(field) for field in ("taskId", "contextId") if field in message)
+    refs = tuple(message.get(field) for field in ("taskId", "contextId") if field in message)
+    if isinstance(message.get("referenceTaskIds"), list):
+        refs += tuple(message["referenceTaskIds"])
+    return refs
 
 
 def _task_created(value):

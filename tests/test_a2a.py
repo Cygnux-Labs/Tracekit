@@ -249,8 +249,10 @@ class Gateway(unittest.TestCase):
         for method, params in (("tasks/get", {"id": "task-1"}),
                                ("message/send", {"message": dict(TEXT, taskId="task-1")}),
                                ("message/send", {"message": dict(TEXT, contextId="task-1")}),
+                               ("message/send", {"message": dict(TEXT, referenceTaskIds=["task-1"])}),
                                ("message/stream", {"message": dict(TEXT, taskId="task-1")}),
-                               ("message/stream", {"message": dict(TEXT, contextId="task-1")})):
+                               ("message/stream", {"message": dict(TEXT, contextId="task-1")}),
+                               ("message/stream", {"message": dict(TEXT, referenceTaskIds=["task-1"])})):
             with self.subTest(method=method):
                 with mock.patch.object(a2a_gateway._Handler, "_authenticated", other_caller):
                     _, _, body = self.post("researcher", method, params, run=other_run)
