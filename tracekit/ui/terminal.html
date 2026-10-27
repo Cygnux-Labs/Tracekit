@@ -379,7 +379,8 @@
         animation: none
       }
 
-      .flash {
+      .flash,
+      .walk .node {
         animation: none !important
       }
     }
@@ -1534,6 +1535,127 @@
       background: var(--bg)
     }
 
+    /* EVIDENCE: the chain walk left, the viewer's checks and its stamp right; a node fills when the check covered it */
+    .evid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+      border-bottom: 1px solid var(--line)
+    }
+
+    .evid>div+div {
+      border-left: 1px solid var(--line)
+    }
+
+    .evid .pad {
+      padding: 2px 8px 4px
+    }
+
+    .walk {
+      padding: 2px 0 6px
+    }
+
+    .walk .rec {
+      display: grid;
+      grid-template-columns: 14px 5ch minmax(0, 1fr) 8ch;
+      gap: 6px;
+      align-items: center;
+      padding: 1px 8px;
+      position: relative;
+      cursor: pointer
+    }
+
+    .walk .rec:hover {
+      background: var(--row-hover)
+    }
+
+    .walk .rec:not(:last-child)::before {
+      content: "";
+      position: absolute;
+      left: 14.5px;
+      top: 50%;
+      height: 100%;
+      width: 1px;
+      background: var(--line2)
+    }
+
+    .walk .node {
+      width: 9px;
+      height: 9px;
+      justify-self: center;
+      border: 1px solid var(--line2);
+      background: var(--panel);
+      position: relative
+    }
+
+    .walk .rec.ok .node {
+      background: var(--green);
+      border-color: var(--green);
+      animation: walk .15s calc(var(--i) * 15ms) both
+    }
+
+    .walk .rec.ok:not(:last-child)::before {
+      background: var(--green)
+    }
+
+    @keyframes walk {
+      from {
+        background: var(--panel);
+        border-color: var(--line2)
+      }
+    }
+
+    .walk .what {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap
+    }
+
+    .checks {
+      list-style: none;
+      margin: 0;
+      padding: 4px 8px;
+      display: grid;
+      gap: 2px
+    }
+
+    .checks li {
+      display: grid;
+      grid-template-columns: 2ch minmax(0, 1fr);
+      overflow-wrap: anywhere
+    }
+
+    .stamp {
+      display: inline-block;
+      margin: 6px 8px 2px;
+      padding: 4px 10px;
+      border: 1px solid;
+      font-weight: 600;
+      letter-spacing: .2em
+    }
+
+    .stamp.ok {
+      color: var(--ink);
+      background: var(--green);
+      border-color: var(--green)
+    }
+
+    .stamp.bad {
+      color: var(--ink);
+      background: var(--red);
+      border-color: var(--red)
+    }
+
+    .stamp.wait {
+      color: var(--yellow)
+    }
+
+    .evid .tip {
+      margin: 4px 8px 8px;
+      padding: 4px 8px;
+      border-left: 2px solid var(--amber);
+      color: var(--amber)
+    }
+
     #whyv button:not([disabled]):not(.on),
     #detail button:not([disabled]) {
       font: inherit;
@@ -2427,11 +2549,46 @@
         + `<div class="sec">ANSWERED</div><table class="wt"><tbody>` + (answered.map(r => `<tr class="row" data-orun="${esc(r.session_id)}" data-oseq="${esc(r.tk_seq)}"><td class="dim">${esc(fmtT(r.ts))}</td><td class="${r.v2.approval === "approve" ? "s-ok" : "s-deny"}">${esc(ANSWER[r.v2.approval])}</td><td>${esc(r.title)}</td><td class="dim">${esc(r.text)}</td></tr>`).join("") || `<tr><td class="empty">No answers in the live view.</td></tr>`) + `</tbody></table>`);
       $("apprsum").textContent = `${w.length} waiting · ${answered.length} answered`;
     }
-    // EVIDENCE: the run's review and the verifier's report, from the viewer's check; the commands that make it evidence
+    // EVIDENCE: the chain walk (the run's signed records in order, each marked covered when the viewer's check verified
+    // the run), the checks its verifier report lists and the stamp. All of it is the server's result as it reported it:
+    // the page computes no hash and verifies nothing. {rows (the newest WALK_MAX), total: the run's records, checks,
+    // stamp: [class, words], ok}; a verdict that is none of verified, failed and pending (error) was not checked
+    const WALK_MAX = 2000;
+    function evidenceOf(r, recs) {
+      const all = recs.filter(x => x.tk_seq != null && !x.analysis), rows = all.slice(-WALK_MAX), checks = [];
+      for (const l of String(r.report || "").split("\n")) {
+        const m = /^\[([A-Z]+)\] (.*?)(?: — (.*))?$/.exec(l);
+        if (m) checks.push({ status: m[1].toLowerCase(), check: m[2], detail: m[3] || "", problems: [] });
+        else if (/^\s+\S/.test(l) && checks.length) checks[checks.length - 1].problems.push(l.trim());
+      }
+      const fail = checks.find(c => c.status === "fail"), ok = r.verdict === "verified";
+      const stamp = ok ? ["ok", "VERIFIED"] : r.verdict === "failed" ? ["bad", "FAILED" + (fail ? " · " + fail.check.toUpperCase() : "")]
+        : r.verdict === "pending" ? ["wait", "PENDING"] : ["bad", "NOT CHECKED"];
+      return { ok, checks, stamp, total: Math.max(r.records || 0, all.length), rows: rows.map(x => {
+        const a = (x.event === "PreToolUse" || x.event === "PostToolUse") && S.actions.get(tuid(x));   // a call: its tool and target
+        return { seq: x.tk_seq, hash: x.hash || "", type: x.v2?.type || x.event, what: a ? (a.pre === x ? `${a.tool} · ${a.target}` : `${a.tool} · result`) : x.title || x.v2?.type || x.event };
+      }) };
+    }
     function evidenceView(el) {
       const r = scope && RUNS.get(scope);
-      put("whyv", r ? reviewHtml(r) + (r.report ? `<div class="sec">VERIFIER REPORT · THE VIEWER'S CHECK, OPERATOR-SIDE</div><pre>${esc(r.report)}</pre>` : "") : `<div class="empty">Select a run: its evidence is its bundle.</div>`);
-      $("wvsum").textContent = "download the bundle and check it with tracekit verify";
+      if (!r) { put("whyv", `<div class="empty">Select a run: its evidence is its bundle.</div>`); $("wvsum").textContent = ""; return; }
+      const e = evidenceOf(r, S.recs), [exp, ver] = runCmds(r), MARK = { pass: ["s-ok", "✓"], fail: ["s-deny", "✗"], warn: ["s-flag", "!"] };
+      const note = r.verdict === "failed" ? "None of its records are shown: a run that fails verification shows only its report."
+        : !e.ok ? "Its records are shown once a checkpoint covers the run and the viewer's check verifies it." : "Its records left the live view; the bundle has every one.";
+      const left = e.total - e.rows.length;
+      put("whyv", `<div class="evid"><div><div class="sec">CHAIN · EACH SIGNED RECORD IN ORDER</div>`
+        + (e.ok && e.rows.length ? `<div class="dim pad"><span class="s-ok">■</span> covered by the viewer's check · click a record to open it</div>` : `<div class="dim pad">${esc(note)}</div>`) + `<div class="walk">`
+        + e.rows.map((x, i) => `<div class="rec${e.ok ? " ok" : ""}" data-tkseq="${esc(x.seq)}" title="${esc(x.type + " · " + x.hash)}" style="--i:${esc(Math.min(i, 40))}"><span class="node"></span><span class="dim">${esc(x.seq)}</span><span class="what">${esc(x.what)}</span><span class="dim">${esc(x.hash.replace(/^sha256:/, "").slice(0, 7))}…</span></div>`).join("") + `</div>`
+        + (left ? `<div class="dim pad">${esc(`${left} of its ${e.total} records are not listed: the walk lists the newest ${WALK_MAX} rows this page holds, and a record with no row of its own is not one. The bundle has every one.`)}</div>` : "")
+        + `</div><div><div class="sec">CHECKS · THE VIEWER'S VERIFIER REPORT</div><ul class="checks">` + e.checks.map(c => {
+          const [cls, m] = MARK[c.status] || ["dim", "·"];
+          return `<li><span class="${esc(cls)}">${esc(m)}</span><span><span class="${esc(c.status === "pass" ? "" : cls)}">${esc(c.check)}</span>${c.detail ? `<span class="dim"> — ${esc(c.detail)}</span>` : ""}` + c.problems.map(p => `<div class="${esc(cls)}">${esc(p)}</div>`).join("") + `</span></li>`;
+        }).join("") + `</ul>` + (e.checks.length ? "" : `<div class="dim pad">${esc(r.report || "No report yet.")}</div>`)
+        + `<div class="stamp ${esc(e.stamp[0])}">${esc(e.stamp[1])}</div><div class="dim pad">THE VIEWER'S CHECK, OPERATOR-SIDE: tracekit view exported this run's bundle and ran the verifier on it. This is its result; the page itself checks nothing.</div>`
+        + `<dl class="kv"><dt>EXPORT` + cp(exp) + `</dt><dd><code class="shell">${esc(exp)}</code></dd><dt>VERIFY` + cp(ver) + `</dt><dd><code class="shell">${esc(ver)}</code><div class="dim">trust.json pins the signer's log key</div></dd></dl>`
+        + `<div class="tip">Download the bundle and check it with tracekit verify from the signed release: that, not this page, is the evidence.</div></div></div>`
+        + reviewHtml(r, false) + (r.decisions && r.report ? `<div class="sec">VERIFIER REPORT · AS THE VIEWER PRINTED IT</div><pre>${esc(r.report)}</pre>` : ""));
+      $("wvsum").textContent = "the server's result · the bundle is the evidence";
     }
     /* ---------------- deep links: #page=…&run=…&view=…&seq=…; Back and Forward step through what was opened ---------------- */
     let linked = false, following = false;   // linked: the page's link was read (until then the URL keeps it)
@@ -3018,7 +3175,8 @@
       const file = r.id + ".tkb", word = x => /^[\w.:@/=-]+$/.test(x) ? x : shq(x);
       return [`tracekit export --v2 --run ${word(r.id)}` + (r.tenant && r.tenant !== "default" ? ` --tenant ${word(r.tenant)}` : "") + ` --with-findings -o ${word(file)}`, `tracekit verify ${word(file)} --trust trust.json`];
     }
-    function reviewHtml(r) {
+    // cmds: the export and verify commands (EVIDENCE shows them above the review)
+    function reviewHtml(r, cmds = true) {
       const d = r.decisions || {}, f = r.first || {};
       const line = (seq, k, text, cls, tip) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}" title="${esc(tip || "")}">${esc(text)}</dd>`;
       let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span>${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
@@ -3033,7 +3191,7 @@
           + (r.findings ? line(null, "FINDINGS", r.findings.line) + (r.findings.monitorability ? line(null, "MONITORABILITY", r.findings.monitorability + " (the share of actions whose reasoning can be read)") : "")
             + (r.findings.not_checkable?.length ? `<dt>NOT CHECKABLE</dt><dd class="s-flag">` + r.findings.not_checkable.map(g => `<div title="${esc(g.code)}">${esc(`${g.rule} for ${g.n}: ${g.text}`)}</div>`).join("") + `<div class="dim">never counted as a pass: tracekit analyze --v2 says what makes each checkable</div></dd>` : "") : "");
         const [exp, ver] = runCmds(r);
-        left += `<dt>EXPORT` + cp(exp) + `</dt><dd><code class="shell">${esc(exp)}</code></dd><dt>VERIFY` + cp(ver) + `</dt><dd><code class="shell">${esc(ver)}</code><div class="dim">trust.json pins the signer's log key; that check, not this page, is the evidence</div></dd>`;
+        if (cmds) left += `<dt>EXPORT` + cp(exp) + `</dt><dd><code class="shell">${esc(exp)}</code></dd><dt>VERIFY` + cp(ver) + `</dt><dd><code class="shell">${esc(ver)}</code><div class="dim">trust.json pins the signer's log key; that check, not this page, is the evidence</div></dd>`;
         right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", d.ask || 0, d.ask ? "s-flag" : "");
         // only an approval can be a self-approval: a requester rejecting their own call is no risk
         for (const a of r.approvals) right += line(a.seq, "→ " + (ANSWER[a.decision] || String(a.decision).toUpperCase()), `${a.tool_use_id} by ${a.approver}` + (a.via ? ` vouched for by ${a.via}` : "") + (a.decision === "approve" ? (a.self_approved ? " · SELF-APPROVED" : " · not self-approved") : a.self_approved ? " · by the requester" : "") + (a.break_glass ? " · BREAK-GLASS" : ""), a.decision !== "approve" || a.self_approved || a.break_glass ? "s-deny" : "s-ok");
@@ -3255,7 +3413,8 @@
       if (r.event === "why") return whyChanged(r.why);   // a why log changed: not a record of the run
       ALL.push(r); toastOf(r);
       if ((r.v2 || r.review) && !V2) { V2 = true; document.body.classList.add("v2"); }
-      if (r.review && !r.signer) RUNS.set(r.session_id, { ...r.review, id: r.session_id, tenant: r.tenant, report: r.text });
+      // a run's later reviews (a checkpoint as it grows, its findings) come without the report: it keeps the last one
+      if (r.review && !r.signer) RUNS.set(r.session_id, { ...r.review, id: r.session_id, tenant: r.tenant, report: r.text ?? RUNS.get(r.session_id)?.report });
       // a run that verified at one checkpoint and fails at a later one: the records it showed are taken back, and the
       // reports and findings of when it verified
       let n = 0;

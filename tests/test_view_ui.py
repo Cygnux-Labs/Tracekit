@@ -366,6 +366,110 @@ class Permissions(unittest.TestCase):
             process.stdout.write(PAGES.includes("permissions") + " " + centre());"""), "true permissions")
 
 
+def page_rec(seq, event, typ, **kw):
+    return {"event": event, "session_id": "r1", "tk_seq": seq, "hash": f"sha256:{seq:064x}", "v2": {"type": typ}, **kw}
+
+
+VERIFIED_REPORT = """tenant default · agent a · final
+operator-side view — re-verify with the signed release for evidence
+
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[WARN] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] run chain — contiguous from run_seq 0
+
+Integrity: VERIFIED.
+"""
+FAILED_REPORT = """operator-side view — re-verify with the signed release for evidence
+
+[PASS] manifest — every file is listed with its SHA-256
+[FAIL] signatures — 1 record(s) whose signature does not verify
+        record 4: bad signature
+[FAIL] run chain — broken at run_seq 4
+
+Integrity: FAILED.
+"""
+
+
+class Evidence(unittest.TestCase):
+    """EVIDENCE was the run review with the report as one block of text: no record-by-record walk, no stamp."""
+
+    def test_the_walk_checks_and_stamp_are_the_servers_result(self):
+        needs_node(self)
+        recs = [page_rec(5, "SessionStart", "run.registered"),
+                page_rec(6, "PreToolUse", "policy.decision", tool_use_id="c1"),
+                page_rec(7, "tk_alert", "approval", title="APPROVED · send_email"),
+                page_rec(8, "PostToolUse", "tool.result", tool_use_id="c1"),
+                {"event": "tk_alert", "session_id": "r1", "tk_seq": None, "analysis": True, "title": "RUN r1"},
+                page_rec(9, "tk_model", "model.exchange")]
+        out = json.loads(page_js(["tuid", "WALK_MAX", "evidenceOf"], f"""
+            const recs = {json.dumps(recs)}, S = {{ actions: new Map([["r1|c1", {{ tool: "send_email", target: "to a@b", pre: recs[1] }}]]) }};
+            const of = r => {{ const e = evidenceOf(r, recs); return [e.ok, e.stamp, e.total, e.rows.map(x => [x.seq, x.what, x.type, x.hash.slice(-2)]),
+                                                                   e.checks.map(c => [c.status, c.check, c.detail, c.problems])]; }};
+            const many = Array.from({{ length: 2005 }}, (_, i) => ({{ tk_seq: i, event: "tk_note", title: "n" }}));
+            const capped = evidenceOf({{ verdict: "verified", records: 2010 }}, many);
+            process.stdout.write(JSON.stringify([of({{ verdict: "verified", records: 6, report: {json.dumps(VERIFIED_REPORT)} }}),
+                of({{ verdict: "failed", report: {json.dumps(FAILED_REPORT)} }}), of({{ verdict: "pending", report: "No checkpoint covers the run's last record yet." }}),
+                of({{ verdict: "error" }}), [capped.rows.length, capped.rows[0].seq, capped.total]]));"""))
+        verified, failed, pending, error, capped = out
+        self.assertEqual(verified[:3], [True, ["ok", "VERIFIED"], 6])
+        self.assertEqual(verified[3], [[5, "run.registered", "run.registered", "05"],
+                                       [6, "send_email · to a@b", "policy.decision", "06"],
+                                       [7, "APPROVED · send_email", "approval", "07"],
+                                       [8, "send_email · result", "tool.result", "08"],
+                                       [9, "model.exchange", "model.exchange", "09"]])
+        self.assertEqual(verified[4], [["pass", "keys", "1 record key(s) from 1 key record(s)", []],
+                                       ["warn", "witness quorum", "0 pinned cosignature(s), 0 required", []],
+                                       ["pass", "run chain", "contiguous from run_seq 0", []]])
+        self.assertEqual(failed[:2], [False, ["bad", "FAILED · SIGNATURES"]])   # its first FAIL line
+        self.assertEqual(failed[4], [["pass", "manifest", "every file is listed with its SHA-256", []],
+                                     ["fail", "signatures", "1 record(s) whose signature does not verify",
+                                      ["record 4: bad signature"]],
+                                     ["fail", "run chain", "broken at run_seq 4", []]])
+        self.assertEqual((pending[:2], pending[4]), ([False, ["wait", "PENDING"]], []))
+        self.assertEqual(error[:2], [False, ["bad", "NOT CHECKED"]])
+        self.assertEqual(capped, [2000, 5, 2010])   # the newest 2,000; the run's count says how many are left out
+
+    def test_the_view_draws_the_walk_stamp_commands_tip_and_review(self):
+        needs_node(self)
+        recs = [page_rec(5, "SessionStart", "run.registered"), page_rec(6, "tk_note", "input.observed", title="INPUT · task")]
+        out = json.loads(page_js(["esc", "cp", "tuid", "WALK_MAX", "evidenceOf", "evidenceView"], f"""
+            const S = {{ recs: {json.dumps(recs)}, actions: new Map() }}, RUNS = new Map(), el = {{}}, html = {{}};
+            const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }};
+            const runCmds = r => ["tracekit export --v2 --run " + r.id, "tracekit verify " + r.id + ".tkb"], reviewHtml = (r, cmds) => `<REVIEW cmds=${{cmds}}>`;
+            let scope = "r1"; const seen = [];
+            for (const verdict of ["verified", "failed"]) {{
+              RUNS.set("r1", {{ id: "r1", verdict, records: 2, decisions: {{}}, report: {json.dumps(VERIFIED_REPORT)} }});
+              evidenceView(); seen.push(html.whyv);
+            }}
+            scope = null; evidenceView(); seen.push(html.whyv);
+            process.stdout.write(JSON.stringify(seen));"""))
+        ok, bad, none = out
+        self.assertEqual(re.findall(r'<div class="rec( ok)?" data-tkseq="(\d+)"', ok), [(" ok", "5"), (" ok", "6")])
+        self.assertIn('<div class="stamp ok">VERIFIED</div>', ok)
+        self.assertIn("THE VIEWER'S CHECK, OPERATOR-SIDE: tracekit view exported this run's bundle", ok)
+        for text in ("tracekit export --v2 --run r1", "tracekit verify r1.tkb", "<REVIEW cmds=false>",
+                     "Download the bundle and check it with tracekit verify from the signed release: that, not this "
+                     "page, is the evidence.", "VERIFIER REPORT · AS THE VIEWER PRINTED IT"):
+            self.assertIn(text, ok)
+        self.assertNotIn("sha256:", re.sub(r'title="[^"]*"', "", ok))   # a short hash, the whole one on hover
+        self.assertEqual(re.findall(r'<div class="rec( ok)?"', bad), ["", ""])   # a failed run's walk covers nothing
+        self.assertIn('<div class="stamp bad">FAILED</div>', bad)
+        self.assertIn("Select a run", none)
+
+    def test_a_runs_later_review_keeps_the_report_it_came_without(self):
+        """A growing run's next checkpoint and its findings send the review alone: the report went, and with it the
+        EVIDENCE checks."""
+        needs_node(self)
+        out = page_js(["accept"], """
+            let V2 = true, R = null, scope = null, DROPPED = 0, MAXREC = 50000;
+            const ALL = [], RUNS = new Map(), document = { body: { classList: { add() {} } } };
+            const inScope = () => true, ingest = () => {}, rebuild = () => {}, stopRun = () => {}, toastOf = () => {};
+            accept({ session_id: "r1", tenant: "default", analysis: true, review: { verdict: "verified", records: 3 }, text: "[PASS] keys" });
+            accept({ session_id: "r1", tenant: "default", analysis: true, event: "tk_run", review: { verdict: "verified", records: 5 } });
+            process.stdout.write(RUNS.get("r1").records + " " + RUNS.get("r1").report);""")
+        self.assertEqual(out, "5 [PASS] keys")
+
+
 PAGE_TEXT = " ".join(PAGE.split())
 APPROVALS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "approvals.html"))
 RUNS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "runs.html"))
@@ -422,11 +526,15 @@ class NothingLost(unittest.TestCase):
                           "HOW TO READ THE EVIDENCE"],
             "new v7 pieces": ["function renderRunHead()", "function renderRunsPage()", "function renderApprovalsPage()",
                               "function evidenceView(", "NEEDS YOU", "WHY THIS DECISION", "WAITING FOR YOU"],
+            "evidence": ["function evidenceOf(", "CHAIN · EACH SIGNED RECORD IN ORDER",
+                         "CHECKS · THE VIEWER'S VERIFIER REPORT", '<div class="stamp ${esc(e.stamp[0])}">',
+                         "reviewHtml(r, false)", "VERIFIER REPORT · AS THE VIEWER PRINTED IT"],
             "honesty tips": ["A row is a signed record of the hash-chained ledger unless it says ANALYSIS",
                              "Times are this browser's local time",
                              "Reasoning is what the model reported about itself; actions are what it did",
                              "trust.json pins the signer's log key; that check, not this page, is the evidence",
-                             "operator-side"],
+                             "Download the bundle and check it with tracekit verify from the signed release: that, "
+                             "not this page, is the evidence", "THE VIEWER'S CHECK, OPERATOR-SIDE", "operator-side"],
             "security": ["const esc = s =>", "const vis = s =>", "\\\\u\" + c.charCodeAt(0)"],
         }
         for feature, marks in rows.items():
