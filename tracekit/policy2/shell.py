@@ -115,6 +115,7 @@ CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "r"
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c"}
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
+_COMMAND_NAME_ASSIGN = re.compile(r"(?:PATH|BASH_ENV|ENV)(?:\[[^]]*\])?\+?=")
 _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
@@ -143,11 +144,12 @@ def analyse(command):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code)."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
+           "command_names_mutable": False,
            "pipes": 0, "depth": 0, "work": 0, "exp": 0}
     _Parser(command, ctx, []).script()
     active = False
     for step in reversed(ctx["steps"]):
-        if not active:
+        if not ctx["command_names_mutable"] and not active:
             ctx["cut"] += step["marks"]
         active |= not step["inert"]
     code, at = [], 0
@@ -161,6 +163,7 @@ def analyse(command):
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
+           "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": 0, "exp": 0}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
@@ -600,6 +603,7 @@ class _Parser:
                 raise ParseError(f"{text} is not supported")
             if not words and _ASSIGN.match(self.s, start, self.i):   # within the word, as bash reads it
                 self.ctx["refs"].append(text)
+                self.ctx["command_names_mutable"] |= bool(_COMMAND_NAME_ASSIGN.match(text))
                 continue
             words.append(text)
             dynamic |= bool(re.search(r"[$`]", raw))
@@ -643,10 +647,13 @@ class _Parser:
         return consumed
 
     def track_redefinitions(self, cmds):
-        """Record data-copying builtins that may have been redefined by this command."""
+        """Record redefinitions and mutations which make command names untrustworthy."""
         copies = {"cat", "tee", "echo", "printf"}
         for cmd in cmds:
             argv = cmd["argv"]
+            self.ctx["command_names_mutable"] |= (argv[0] in ("alias", "unalias", "shopt", "enable", "source", ".", "hash") or
+                                                  "command_not_found_handle" in argv or
+                                                  any(_COMMAND_NAME_ASSIGN.match(a) for a in argv[1:]))
             if argv[0] == "alias":
                 self.ctx["redefined"].update(a.split("=", 1)[0] for a in argv[1:] if a.split("=", 1)[0] in copies)
             elif argv[0] == "enable" and "-n" in argv:

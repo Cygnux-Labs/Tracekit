@@ -796,6 +796,29 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertNotIn("TK-D007", e.decide("Bash", {"command": command})["rule_ids"])
 
+    def test_stdout_data_cut_stops_when_a_command_name_can_change(self):
+        path = "/etc/tracekit/client.json"
+        commands = (
+            f"shopt -s expand_aliases\nalias ls='sh out'\necho {path} > out\nls",
+            f"enable -f ./evil.so ls; echo {path} > out; ls",
+            f"unalias ls; echo {path} > out; ls",
+            f"shopt -u expand_aliases; echo {path} > out; ls",
+            f"enable -n ls; echo {path} > out; ls",
+            f"ls() {{ :; }}; echo {path} > out; ls",
+            f"source defs; echo {path} > out; ls",
+            f". defs; echo {path} > out; ls",
+            f"hash -p ./evil ls; echo {path} > out; ls",
+            f"command_not_found_handle() {{ :; }}; echo {path} > out; ls",
+            f"PATH=./evil; echo {path} > out; ls",
+            f"BASH_ENV=./defs; echo {path} > out; ls",
+            f"ENV=./defs; echo {path} > out; ls",
+        )
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True), d)
+
     def test_each_harness_config_an_agent_could_turn_its_sandbox_or_hooks_off_in_is_flagged(self):
         for tool, args in (("Write", {"file_path": "/home/u/.gemini/settings.json", "content": "{}"}),
                            ("Edit", {"file_path": "/home/u/p/.gemini/settings.json", "old_string": "a", "new_string": "b"}),
