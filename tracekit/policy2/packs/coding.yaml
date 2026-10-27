@@ -4,11 +4,12 @@
 # Shell rules without a field match each command's argv (wrappers, paths, quoting and the program name's case resolved
 # by policy2/shell.py); `field: command` matches the raw command line; `field: line` matches it and each line
 # policy2/shell.py normalised (quotes and escapes resolved, redirections kept), as typed and again with its program
-# names in lower case. File rules match the signer-normalised `path` (and, with `..`, the lexically normalised one),
-# with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
-# is the signer, its storage and the witnesses.
+# names in lower case; `field: code` the same without the text a command only writes into a file (echo's or printf's
+# words, the heredoc or herestring cat or tee copies). File rules match the signer-normalised `path` (and, with `..`,
+# the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
+# stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-32'
+version: '2026.10-v2-33'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -127,9 +128,9 @@ deny:
   # --- harness self-protection ---
   - id: TK-D007
     class: shell
-    field: line
+    field: code
     # the dev signer's data and runtime dirs (signer/service.py dev_data_dir, sdk/autospawn.py runtime_dir) and the
-    # installed packs too
+    # installed packs too, wherever a command acts on them: not in text it only writes into another file (#423)
     pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|AppData[/\\]Local[/\\]tracekit|LOCALAPPDATA%?[/\\]tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
     reason: touching Tracekit's own files or signer
     remedy: Leave Tracekit's files, signer and policy alone; a person changes them through the signer's own configuration.

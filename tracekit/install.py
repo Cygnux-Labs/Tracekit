@@ -5,7 +5,6 @@ ledger; tracekitd runs as that user under systemd (launchd on macOS).
 Dev mode (--dev): the signer runs as *your* user. Convenient, but the agent could rewrite the
 ledger, so every run is labelled signer_isolation=same-user and verify says so.
 """
-import base64
 import errno
 import json
 import os
@@ -27,7 +26,7 @@ try:
 except ImportError:
     grp = pwd = None
 
-from .core import read_json, read_text
+from .core import b64e, read_json, read_text
 from . import client, harness_helper
 from .deploy import files
 from .wiki import wiki_url
@@ -286,7 +285,9 @@ def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None, p
 
 def _dev_hook_argv(module, func, args):
     """argv that runs `module.func(*args)` with this interpreter under -I: -m where tracekit is installed in a
-    site-packages -I keeps, else with the directory tracekit is in (a checkout, a --user install) put on sys.path."""
+    site-packages -I keeps, else with the directory tracekit is in (a checkout, a --user install) put on sys.path.
+    From a git working tree, a hook that can't import tracekit there (a branch switch, a rebase) prints one line in
+    place of the traceback: the tree, the branch it is on now and the one it was on here, and how to fix it."""
     try:
         import importlib.util
         import site
@@ -298,9 +299,46 @@ def _dev_hook_argv(module, func, args):
         installed = False
     if installed:
         return [sys.executable, "-I", "-m", module, *args]
-    encoded_root = base64.b64encode(ROOT.encode("utf-8")).decode("ascii")
-    return [sys.executable, "-I", "-c", f"import base64,sys; sys.path.insert(0, base64.b64decode('{encoded_root}')"
-            f".decode('utf-8')); from {module} import {func}; raise SystemExit({func}({', '.join(map(repr, args))}))"]
+    # base64: a path or branch name can hold any quote or shell character
+    code = (f"import base64,sys; r=base64.b64decode('{b64e(ROOT.encode('utf-8'))}').decode('utf-8'); "
+            "sys.path.insert(0, r); ")
+    call = f"raise SystemExit({func}({', '.join(map(repr, args))}))"
+    branch = _branch(ROOT)
+    if branch:
+        # lean: the hooks still run the working tree, so a branch switch there still breaks them and this only says
+        # what happened; run them from a copy init makes if switching branches under them keeps happening
+        # lean: the hook's command doesn't carry --remote or --project, so a hook init wired with them is told this
+        # command without them; carry them here if those installs from a working tree hit this
+        init = "tracekit init --dev" + (" --v2" if module in V2_HOOKS else "") + (
+            "" if module in ("tracekit.hook", V2_HOOK) else f" --agent {args[0]}")
+        # exec: a try statement can't follow `;` on one line, and the command must stay one line (Windows); git that
+        # can't run (not on the hook's PATH) gives the plain traceback
+        code += (f"import os,shlex,subprocess; w=base64.b64decode('{b64e(branch.encode('utf-8'))}').decode('utf-8'); "
+                 "exec('''def h(t,e,b):\\n try: n=subprocess.run(['git','-C',r,'symbolic-ref','-q','--short','HEAD'],"
+                 "capture_output=True,text=True,env={k:v for k,v in os.environ.items() if not k.startswith('GIT_')})"
+                 ".stdout.strip() or 'a detached HEAD'\\n except OSError: return sys.__excepthook__(t,e,b)\\n "
+                 "print(f'tracekit: the hook runs Tracekit from the working tree {r}, which cannot import it now "
+                 "({t.__name__}: {e}): it is on {n} there, and was on {w} when the hooks were installed. Check out {w} "
+                 "there again (git -C {shlex.quote(r)} checkout {shlex.quote(w)}) if a branch switch broke it, or run "
+                 f"{init} again from a Tracekit installed outside a working tree (pip install, not pip install -e)', "
+                 "file=sys.stderr)'''); sys.excepthook=h; ")
+        call = "sys.excepthook=sys.__excepthook__; " + call
+    return [sys.executable, "-I", "-c", f"{code}from {module} import {func}; {call}"]
+
+
+def _branch(root):
+    """The branch (else the commit) of the git working tree `root`, or None when it isn't one."""
+    if not os.path.exists(os.path.join(root, ".git")):
+        return None
+    for args in (("symbolic-ref", "-q", "--short", "HEAD"), ("rev-parse", "--short", "HEAD")):
+        try:
+            out = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True,
+                                 env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")}).stdout.strip()
+        except OSError:   # no git
+            return None
+        if out:
+            return out
+    return None
 
 
 def _dev_hook_command(module, func, args):
