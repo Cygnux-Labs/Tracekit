@@ -115,7 +115,7 @@ A claim says something happened in the sender's run. There are four types:
 
 | Claim | Proven when the evidence holds |
 |---|---|
-| `tests_passed {suite}` | a call of a tool the shipped policy packs class as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one [test command](#test-commands) (`pytest -q tests/x.py`, not `pytest -q; true`, `pytest --co` or `echo hi`) |
+| `tests_passed {suite}` | a call of a tool the shipped policy packs class as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one [test command](#test-commands) (`pytest -q tests/x.py`, not `pytest -q; true`, `pytest &`, `pytest --co` or `echo hi`) |
 | `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved |
 | `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md) or kernel sensor, to `host`, not denied; or a call of a tool the shipped packs class as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok`. Hosts are compared in [canonical form](#hosts) |
 | `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok`. `path` must be absolute (`/repo/refund.py`, `C:\repo\refund.py`) and have no `..` |
@@ -129,13 +129,16 @@ Each claim gets one result:
   call the verifier can't tell apart: a host that won't parse, or a `Write` whose path is relative (its working
   directory is not in the record) and ends with the claimed path.
 - **failed**: the evidence does not verify, no record in it says what the claim says, or the claim is malformed (a
-  relative `file_written` path, a `tests_passed` suite that is no test command).
+  relative `file_written` path, a `tests_passed` suite that is no test command). A malformed claim fails with or
+  without evidence.
 
 ### Test commands
 
-`suite` is one simple command: no `;`, `&&`, `||`, `|`, `&`, parentheses or newline. Its words (as a POSIX shell
-splits and unquotes them; a `#` starts a comment only at the start of a word) must begin with one of these, the first
-word compared by its base name (`.venv/bin/pytest` is `pytest`):
+`suite` is one line of plain words. It may not hold any of `` ; & | ( ) < > $ ` \ # { } * ? [ ] `` or a control
+character other than tab, so it has no operator, redirection, background `&`, expansion, escape, comment or glob, and
+its quotes must balance. Its words (split at spaces and tabs, `'…'` and `"…"` grouping) must begin with one of these,
+compared exactly, so the program is a bare name looked up on `PATH` (`./pytest` and `.venv/bin/pytest` are not
+`pytest`):
 
 ```text
 pytest  py.test  python -m pytest  python3 -m pytest  python -m unittest  python3 -m unittest  tox  nox  nose2
@@ -145,9 +148,17 @@ go test  cargo test  cargo nextest run  dotnet test  deno test  swift test  mix 
 make test  make check  mvn test  mvn verify  gradle test  gradle check
 ```
 
-and no word may be `--co`, `--collect-only`, `--help`, `-h` or `--version`, with which a runner runs no tests. A
-wrapper or an assignment in front (`uv run pytest`, `CI=1 pytest`, `sudo pytest`) is no test command: claim the
-command the way the list writes it.
+and no word may be `-h` or `-V`, or 3 or more characters that begin `--help`, `--version` or `--collect-only`
+(`--he`, `--co`), with which a runner runs no tests. A wrapper or an assignment in front (`uv run pytest`,
+`CI=1 pytest`, `sudo pytest`) is no test command: claim the command the way the list writes it. The list is a
+deliberately strict subset of the test commands `tracekit analyze` knows (no `./gradlew`, `npm t` or
+`npm run test:unit`).
+
+`proven` means only that this exact command line exited 0 through an executor. Runners take other flags that run no
+tests and exit 0 (`pytest -qh`, `pytest --fixtures`, `go test -run NONE`, `go test -exec true`,
+`make test SHELL=/bin/true`, `npm test --script-shell=true`, `cargo test --no-run`, `mvn test -DskipTests`), and the
+program is whatever `PATH` names `pytest` on the executor. A receiver must compare `suite` with the suites it accepts,
+not rely on the runner list.
 
 ### Hosts
 
@@ -155,17 +166,21 @@ The claim's `host`, the call's URL host and the effect's `host` are each put in 
 and a port is ignored:
 
 1. A claim's or effect's host is read as the host of `http://<host>/` (a bare IPv6 address as `http://[<host>]/`); a
-   URL's host is read as a browser (WHATWG URL) reads it, and must also be the host Python's `urllib` reads
-   (`http://a.example\@b.example/` is read apart, so it won't parse).
-2. The host is percent-decoded, NFKC-normalised, `。` becomes `.`, and it is casefolded. An IPv4 address in any form
-   `inet_aton` takes (`0x7f.1`) is written as dotted decimal; an IPv6 address in brackets in its short form, an
+   port after it must be 1 to 5 digits. A URL's host is read as a browser (WHATWG URL) reads it, and must also be the
+   host Python's `urllib` reads (`http://a.example\@b.example/` is read apart, so it won't parse). Only `http`,
+   `https`, `ws`, `wss`, `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
+2. The host is percent-decoded and NFKC-normalised. If it then holds `ß`, `ς`, ZWNJ or ZWJ, which IDNA 2003 maps away
+   and a browser keeps (`faß.example` is `fass.example` to Python and `xn--fa-hia.example` to a browser), it won't
+   parse; for a URL, that holds for the whole URL. Then `。` becomes `.`, and it is casefolded. An IPv4 address in any
+   form `inet_aton` takes (`0x7f.1`) is written as dotted decimal; an IPv6 address in brackets in its short form, an
    IPv4-mapped or NAT64 one as the IPv4 address it reaches.
 3. A name loses one trailing dot and goes to ASCII label by label with Python's `idna` codec (IDNA 2003 ToASCII,
-   without the STD3 rules): `bücher.example` is `xn--bcher-kva.example`.
+   unassigned code points allowed, without the STD3 rules): `bücher.example` is `xn--bcher-kva.example`. The result
+   must be labels of `a`-`z`, `0`-`9`, `_` and `-` joined by dots.
 
 A host that won't parse (an empty label, a label over 63 characters, something that looks like an address and is
-none, a URL Python can't split) makes that record unproven, never proven or failed; a claimed host that won't parse
-makes the claim unproven.
+none, `[` without an IPv6 address, a NUL or `%`, a URL Python can't split) makes that record unproven, never proven
+or failed; a claimed host that won't parse makes the claim unproven.
 
 The evidence for a claim is self-contained. It needs only trust.json:
 
@@ -405,7 +420,8 @@ verifier.
 
 A receiver needs nothing new. The log key that signs checkpoints signs messages and grants too, and trust.json
 already pins it under `logs`. Witnesses in trust.json apply to evidence: `witnesses_required` counts cosignatures on
-each evidence checkpoint.
+each evidence checkpoint. A malformed or non-canonical vkey anywhere in `logs` or `witnesses` is the receiver's own
+error: `pcm.verify` raises on it before it checks a message.
 
 Because the log key signs all three, a fault in PCM signing is a fault of the log key: the fix is rotating it.
 

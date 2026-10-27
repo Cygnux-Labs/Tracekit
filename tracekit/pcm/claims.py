@@ -7,12 +7,14 @@ tool.result a gateway or executor wrote (T2: the record's own `source` and `tier
 agent's process reported (T1) is its own word, so a claim that rests on one is unproven."""
 import functools
 import hmac
+import ipaddress
 import os
-import posixpath
 import re
+import shlex
+import unicodedata
+from urllib.parse import unquote
 
 from tracekit import core, merkle, yamlmini
-from tracekit.findings_text import _simple
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.pcm import CLAIM_ARGS, check_args
@@ -21,16 +23,21 @@ from tracekit.schema import V2, validate
 
 _RANK = {"proven": 0, "unproven": 1, "failed": 2}
 PACKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs")
-# PCM 0.1's test runners: the leading words of a suite, its program by its base name (the test runners command_facts
-# knows, without wrappers such as `uv run` or `sudo`), and flags with which a runner runs no tests
+# PCM 0.1's test runners: the leading words of a suite, its program by its bare name (a strict subset of the test
+# runners command_facts knows, without wrappers such as `uv run` or `sudo`), and flags with which a runner runs no
+# tests, with the long ones' prefixes (argparse takes `--he` for `--help`)
 TEST_RUNNERS = [r.split() for r in (
     "pytest", "py.test", "python -m pytest", "python3 -m pytest", "python -m unittest", "python3 -m unittest", "tox",
     "nox", "nose2", "trial", "behave", "jest", "vitest", "mocha", "ava", "karma", "cucumber", "playwright test",
     "phpunit", "rspec", "ctest", "npm test", "npm run test", "yarn test", "yarn run test", "pnpm test", "pnpm run test",
     "bun test", "go test", "cargo test", "cargo nextest run", "dotnet test", "deno test", "swift test", "mix test",
     "bazel test", "make test", "make check", "mvn test", "mvn verify", "gradle test", "gradle check")]
-NO_TESTS = frozenset(("--co", "--collect-only", "--help", "-h", "--version"))
+NO_TESTS, NO_TESTS_LONG = frozenset(("-h", "-V")), ("--help", "--version", "--collect-only")
+# what a suite may not hold, so that shlex reads its words as sh does: operators and redirections, expansions and
+# escapes ($'\'' quotes apart in shlex and sh), comments, braces, globs and control characters but the tab
+_NOT_IN_SUITE = re.compile(r"[;&|()<>$`\\#{}*?\[\]\x00-\x08\x0a-\x1f\x7f]")
 _ABSOLUTE = re.compile(r"/|[A-Za-z]:/")   # what fs_path keeps absolute
+_DEVIATIONS = re.compile("[\u00df\u03c2\u200c\u200d]")   # UTS 46's deviation characters
 
 
 class EvidenceError(ValueError):
@@ -127,12 +134,32 @@ def _ran(recs, match, what, cls=None):
     return best
 
 
+def test_command(suite):
+    """Whether `suite` is a PCM 0.1 test command: one line of plain words (in `pytest || true`, `pytest &` or
+    `pytest; true` the call's status is not the tests'), a listed runner by its bare name, no flag that runs no
+    tests."""
+    try:
+        words = [] if _NOT_IN_SUITE.search(suite) else shlex.split(suite)
+    except ValueError:   # unbalanced quotes
+        return False
+    return any(words[:len(r)] == r for r in TEST_RUNNERS) and not any(
+        w in NO_TESTS or len(w) > 2 and any(f.startswith(w) for f in NO_TESTS_LONG) for w in words)
+
+
+def malformed(type_, a):
+    """Why the args `a` of a claim of `type_`, valid by their table, still say nothing a verifier can check; else
+    None. A malformed claim fails with or without evidence."""
+    if type_ == "tests_passed" and not test_command(a["suite"]):
+        return f"{a['suite'][:64]!r} is not a single test command"
+    path = a.get("path", "").replace("\\", "/")
+    if type_ == "file_written" and ".." in path.split("/"):   # fs_path keeps only what follows the last `..`
+        return f"{a['path'][:64]} has a `..`: name the file's own path"
+    if type_ == "file_written" and not _ABSOLUTE.match(path):
+        return f"{a['path'][:64]} is relative: name the file's absolute path"
+    return None
+
+
 def tests_passed(a, recs):
-    # one simple command: in `pytest || true` or `pytest; true` the call's status is not the tests'
-    cmds = list(_simple(a["suite"]))
-    words = [posixpath.basename(cmds[0][0]), *cmds[0][1:]] if len(cmds) == 1 else []
-    if NO_TESTS & set(words) or not any(words[:len(r)] == r for r in TEST_RUNNERS):
-        return "failed", f"{a['suite'][:64]!r} is not a single test command"
     return _ran(recs, lambda tool, args: classes.extract("shell", tool, args).get("command") == a["suite"],
                 f"ran {a['suite'][:64]!r}", "shell")
 
@@ -147,24 +174,39 @@ def approved_by(a, recs):
     return "failed", f"no approval of {a['call']} by the person {a['person']}"
 
 
+def _deviant(text):
+    """Whether `text`, percent-decoded and NFKC-normalised, holds one of the four UTS 46 deviation characters (sharp s,
+    final sigma, ZWNJ, ZWJ): IDNA 2003 maps them away (fass.example for the name with a sharp s) where a browser keeps
+    them, so a host with one names two hosts."""
+    return bool(_DEVIATIONS.search(unicodedata.normalize("NFKC", unquote(text))))
+
+
 def _a_label(info):
-    """The host of classes.url_info's `info` as PCM 0.1 compares hosts: an address as url_info writes it, a name
-    without its one trailing dot and in ASCII by Python's `idna` codec; None when it has none or it won't encode."""
+    """The host of classes.url_info's `info` as PCM 0.1 compares hosts: an IPv6 address as url_info writes it, an IPv4
+    address or a name without its one trailing dot and in ASCII by Python's `idna` codec, of labels of a-z, 0-9, `_`
+    and `-` only; None when it has none or it won't encode."""
     h = info.get("host")
-    if h is None or h.startswith("["):
-        return h
+    if h is None:
+        return None
+    if h.startswith("["):   # url_info writes an IPv6 address so; `[` alone (from %5b) is none
+        try:
+            return h if h.endswith("]") and ipaddress.IPv6Address(h[1:-1]) else None
+        except ValueError:
+            return None
     name = h[:-1] if h.endswith(".") else h
     # lean: IDNA 2003 (the stdlib), not UTS 46; take the idna package if a host they read apart matters
     try:
-        return name.encode("idna").decode("ascii") if name and not name.endswith(".") else None
+        label = name.encode("idna").decode("ascii") if name and not name.endswith(".") else None
     except UnicodeError:
         return None
+    return label if label and re.fullmatch(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*", label) else None
 
 
 def _host(host):
-    """A claim's or an effect's host (a name or address, maybe with a port) as PCM 0.1 compares hosts, None when it
-    won't parse."""
-    if not isinstance(host, str) or re.search(r"[/\\?#@\s\[\]]", host):
+    """A claim's or an effect's host (a name or address, maybe with a port of 1 to 5 digits) as PCM 0.1 compares
+    hosts, None when it won't parse."""
+    if not isinstance(host, str) or re.search(r"[/\\?#@\s\[\]]", host) or _deviant(host) \
+            or host.count(":") == 1 and not re.fullmatch(r"[^:]*:[0-9]{1,5}", host):
         return None
     return _a_label(classes.url_info(f"http://[{host}]/" if host.count(":") > 1 else f"http://{host}/"))
 
@@ -185,20 +227,18 @@ def reached_host(a, recs):
 
     def match(tool, args):
         info = classes.url_info(args["url"]) if isinstance(args.get("url"), str) else {}
-        if "host" not in info and not info.get("internal"):   # no URL, or one with no host (file:, mailto:)
+        # no URL, or one with no host a browser reads (file:, mailto:, gopher:)
+        if "host" not in info and not info.get("internal") or info.get("scheme") not in (*classes.SPECIAL, None):
             return False
-        got = None if info.get("ambiguous") else _a_label(info)
+        # lean: a deviation character anywhere in the URL, its path too, makes it unproven; read the host alone if a
+        # path with one matters
+        got = None if info.get("ambiguous") or _deviant(args["url"]) else _a_label(info)
         return None if got is None else got == want
     return min(_ran(recs, match, f"reached {a['host']}", "http"), seen, key=lambda o: _RANK[o[0]])
 
 
 def file_written(a, recs):
-    path = a["path"].replace("\\", "/")
-    if ".." in path.split("/"):   # fs_path keeps only what follows the last `..`
-        return "failed", f"{a['path'][:64]} has a `..`: name the file's own path"
-    if not _ABSOLUTE.match(path):
-        return "failed", f"{a['path'][:64]} is relative: name the file's absolute path"
-    want = classes.fs_path(path)
+    want = classes.fs_path(a["path"])
 
     def match(tool, args):   # the op by the tool's name: an `op` in the args is the agent's word
         got, content = classes.extract("fs", tool, args).get("path"), args.get("content")
@@ -219,8 +259,9 @@ CHECKERS = {"tests_passed": tests_passed, "approved_by": approved_by, "reached_h
 def check_claim(c, msg, trust):
     """{type, result: proven, unproven or failed, detail} of claim `c` of message `msg`."""
     errs = check_args({"fields": CLAIM_ARGS[c["type"]]}, c["args"])
-    if errs:
-        result, detail = "failed", "; ".join(errs)
+    bad = "; ".join(errs) if errs else malformed(c["type"], c["args"])
+    if bad:
+        result, detail = "failed", bad
     elif "evidence" not in c:
         result, detail = "unproven", "no evidence"
     else:

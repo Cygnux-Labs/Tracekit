@@ -400,6 +400,13 @@ class Signature(unittest.TestCase):
                                "schema": None, "grants": None, "claims": None, "verdict": "reject",
                                "reasons": ["signature: bad signature"]})
 
+    def test_a_bad_pin_is_the_receivers_error_wherever_it_sits(self):
+        """PCM 0.1 10.1: a malformed or non-canonical vkey in trust.json is refused before any message is checked."""
+        for bad in ("not a vkey", VKEY + "="):
+            for trust in ({"logs": [VKEY, bad]}, {"logs": [bad, VKEY]}, {"logs": [VKEY], "witnesses": [{"vkey": bad}]}):
+                with self.subTest(trust=trust), self.assertRaises(checkpoint.NoteError):
+                    pcm.verify(message(), trust, [DOC])
+
 
 class ReplayTests(unittest.TestCase):
     def check(self, r, m, now=T0, me=None):

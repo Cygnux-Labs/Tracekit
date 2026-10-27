@@ -119,6 +119,12 @@ class TestTestsPassed(Claims):
         self.assertEqual(self.claim("tests_passed", {"suite": SUITE}, ev), ("unproven", T1))
         self.assertEqual(self.claim("tests_passed", {"suite": SUITE}), ("unproven", "no evidence"))
 
+    def test_a_malformed_claim_fails_without_evidence(self):
+        self.assertClaim("failed", self.claim("tests_passed", {"suite": SUITE + " || true"}),
+                         "not a single test command")
+        self.assertClaim("failed", self.claim("file_written", {"path": "repo/refund.py", "digest": DIGEST}),
+                         "is relative")
+
     def test_a_tool_the_verifier_cannot_place_as_a_shell(self):
         d, r = self.ran("mcp:ci/run", {"command": SUITE}, t2=True)
         self.assertEqual(self.claim("tests_passed", {"suite": SUITE}, self.evidence([d, r], {d: {"command": SUITE}})),
@@ -130,8 +136,8 @@ class TestTestsPassed(Claims):
                          "no call in the evidence ran")
         _, _, ev = self.run_suite(ok=False, t2=True)
         self.assertClaim("failed", self.claim("tests_passed", {"suite": SUITE}, ev), "and failed")
-        # || true: the call succeeds whatever the tests do; a `#` inside a word starts no comment, so `|| true` runs
-        for cmd in ("echo hi", SUITE + " || true", SUITE + "#|| true"):
+        # || true, &, or a quote shlex and sh read apart ($'\''): the call succeeds whatever the tests do
+        for cmd in ("echo hi", SUITE + " || true", SUITE + "#|| true", SUITE + " &", "pytest $'\\'';true #'"):
             _, _, ev = self.run_suite(cmd, t2=True)
             self.assertClaim("failed", self.claim("tests_passed", {"suite": cmd}, ev), "not a single test command")
         d, r = self.ran("Bash", {"command": "pytest -q tests/other.py"}, t2=True)
@@ -562,9 +568,31 @@ class PCM01(unittest.TestCase):
                            ("a.example", call("fetch", {"url": "http://a..example/"})),
                            ("a.example", effect("a..example")),
                            # a browser reads a.example, Python's urllib b.example
-                           ("a.example", call("fetch", {"url": "http://a.example\\@b.example/"}))):
+                           ("a.example", call("fetch", {"url": "http://a.example\\@b.example/"})),
+                           # sharp s: a browser reads xn--fa-hia.example, IDNA 2003 fass.example; U+03F2 is a final
+                           # sigma after NFKC; ZWJ
+                           ("fass.example", call("fetch", {"url": "http://fa%C3%9F.example/"})),
+                           ("xn--4xa.example", call("fetch", {"url": "http://\u03f2.example/"})),
+                           ("ab.example", effect("a\u200db.example")), ("fass.example", effect("FA\u00df.example")),
+                           # no IPv6 address in brackets, a NUL, a port that is no number
+                           ("h.com", call("fetch", {"url": "http://%5b::1%5d/"})),
+                           ("h.com.evil", call("fetch", {"url": "http://h.com%00.evil/"})),
+                           ("example.com:abc", []), ("example.com:", []), ("1.2.3.4:123456", []),
+                           ("a.example", effect("a.example:x"))):
             with self.subTest(host=host, recs=recs):
                 self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
+
+    def test_a_url_whose_scheme_has_no_host_reaches_none(self):
+        for url in ("file://a.example/x", "gopher://a.example/", "FILE://a.example/x"):
+            with self.subTest(url=url):
+                self.assertEqual(claims.reached_host({"host": "a.example"}, call("fetch", {"url": url}))[0], "failed")
+        self.assertEqual(claims.reached_host({"host": "a.example"}, call("fetch", {"url": "//a.example/x"}))[0],
+                         "proven")
+
+    def test_idna_2003_takes_unassigned_code_points(self):
+        """CPython's codec doesn't check Nameprep's table A.1, so PCM 0.1 has AllowUnassigned on."""
+        self.assertEqual(claims.reached_host({"host": "xn--x-qib.example"},
+                                             call("fetch", {"url": "http://x\u0378.example/"}))[0], "proven")
 
     def test_file_written_names_an_absolute_path(self):
         content = "x = 1\n"
@@ -573,8 +601,8 @@ class PCM01(unittest.TestCase):
         for claim, path in (("/repo/a.py", "/repo/a.py"), ("C:\\repo\\a.py", "C:/repo/a.py")):
             self.assertEqual(claims.file_written({"path": claim, "digest": digest}, wrote(path))[0], "proven")
         for rel in ("a.py", "repo/a.py", "./a.py"):   # a relative claim is malformed
-            out = claims.file_written({"path": rel, "digest": digest}, wrote(rel))
-            self.assertEqual(out, ("failed", f"{rel} is relative: name the file's absolute path"))
+            self.assertEqual(claims.malformed("file_written", {"path": rel, "digest": digest}),
+                             f"{rel} is relative: name the file's absolute path")
         for rel in ("a.py", "repo/a.py", "../repo/a.py"):   # the call's cwd is unknown
             with self.subTest(rel=rel):
                 self.assertEqual(claims.file_written({"path": "/repo/a.py", "digest": digest}, wrote(rel))[0],
@@ -582,16 +610,28 @@ class PCM01(unittest.TestCase):
         self.assertEqual(claims.file_written({"path": "/repo/a.py", "digest": digest}, wrote("b.py"))[0], "failed")
 
     def test_tests_passed_knows_a_fixed_list_of_runners(self):
-        for suite in ("pytest -q tests/x.py", ".venv/bin/pytest", "python -m pytest -x", "python3 -m unittest",
-                      "npm test", "go test ./...", "cargo test", "cargo nextest run", "make test", "jest"):
+        for suite in ("pytest -q tests/x.py", "python -m pytest -x", "python3 -m unittest", "npm test",
+                      "go test ./...", "go test -short ./...", "cargo test", "cargo nextest run", "make test", "jest",
+                      "pytest -k 'not slow' --verbose", 'pytest -k "a or b"', "pytest\t-q", "pytest --color=yes"):
             with self.subTest(suite=suite):
-                self.assertIn("no call in the evidence ran", claims.tests_passed({"suite": suite}, [])[1])
+                self.assertIsNone(claims.malformed("tests_passed", {"suite": suite}))
         for suite in ("pytest --co", "pytest --collect-only -q", "pytest --help", "go test -h", "cargo test --version",
                       "npm test -- -h", "echo pytest", "python -m http.server", "npm run build", "go build", "make",
-                      "CI=1 pytest", "uv run pytest", "pytest; true", "pytest\ntrue", "pytest | tee out"):
+                      "CI=1 pytest", "uv run pytest", "pytest; true", "pytest\ntrue", "pytest | tee out",
+                      # in the background, in a subshell, after a separator, redirected: sh's status is not pytest's
+                      "pytest &", "(pytest &)", "(pytest) &", "pytest ;", "pytest &&", "pytest 2>&1",
+                      # quotes and escapes shlex and sh read apart, expansions, comments, globs, other lines
+                      "pytest $'\\'';true #'", "pytest $'\\'';true''", "pytest 'a", "pytest $X", "pytest `x`",
+                      "pytest \\-h", "pytest # x", "pytest -{h,q}", "pytest -[h]", "pytest -?", "pytest\r-q",
+                      "pytest\n", "pytest\x00",
+                      # flags that run no tests, short and abbreviated
+                      "pytest -V", "pytest '-h'", "pytest -'-'help", "python -m unittest --he",
+                      "python -m pytest --vers", "pytest --c", "pytest --coll",
+                      # a program that is the runner by its base name only
+                      ".venv/bin/pytest", "./pytest", "/tmp/evil/pytest -q"):
             with self.subTest(suite=suite):
-                self.assertEqual(claims.tests_passed({"suite": suite}, []),
-                                 ("failed", f"{suite!r} is not a single test command"))
+                self.assertEqual(claims.malformed("tests_passed", {"suite": suite}),
+                                 f"{suite!r} is not a single test command")
 
 
 if __name__ == "__main__":

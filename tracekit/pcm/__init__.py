@@ -309,6 +309,8 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     """Check a message: envelope and signature, replay and recipient (`me`), its intent's schema among the documents
     `schemas`, its grants and its claims. `verdict` is accept, accept-unproven or reject, with one reason per cause.
     `strict`: a claim type the schema requires must be proven."""
+    for vk in trust.get("logs", []) + [w["vkey"] for w in trust.get("witnesses", [])]:
+        checkpoint.parse_vkey(vk)   # a bad pin is the receiver's own error (NoteError), wherever it sits in the list
     out = {"signature": None, "replay": None, "schema": None, "grants": None, "claims": None, "verdict": "reject",
            "reasons": []}
     errs = _errors(PCM_MESSAGE, msg)

@@ -48,7 +48,7 @@ def _load(path):
 def verify(a):
     try:
         out = pcm.verify(_load(a.msg), load_trust(a.trust), [_load(p) for p in a.schema], me=a.me, strict=a.strict)
-    except (OSError, ValueError) as e:   # a file, or a schema document that is not one
+    except (OSError, ValueError) as e:   # a file, a schema document that is not one, or a bad vkey in trust.json
         print(f"tracekit pcm verify: {e}", file=sys.stderr)
         return 2
     print(json.dumps(out, indent=2) if a.json else f"{out['verdict'].upper()}  {summary(out)}")
