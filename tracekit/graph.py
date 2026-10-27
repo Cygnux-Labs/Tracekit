@@ -41,6 +41,7 @@ import stat
 import statistics
 import sys
 import tempfile
+import unicodedata
 from collections import Counter, deque
 from typing import Any, Callable, Dict, List, Optional
 
@@ -208,6 +209,8 @@ def vault() -> Content:
 
 def _node(g: Graph, nid: str, kind: str, label: str, **attrs: Any) -> str:
     n = g.nodes.setdefault(nid, {"id": nid, "kind": kind, "label": label})
+    if n["label"] == "?" and label != "?":
+        n["label"] = label
     for k, v in attrs.items():   # a node first named by another run (a child run, an analysed one) gets its own later
         n.setdefault(k, v)
     return nid
@@ -227,7 +230,7 @@ def _of(g: Graph, e: Dict[str, Any]) -> str:
     d = e.get("data") or {}
     nid = (f"call:{e['run_id']}:{d.get('tool_use_id')}" if e["type"] in ("policy.decision", "tool.result", "approval")
            else f"input:{e['run_id']}:{e['run_seq']}" if e["type"] == "input.observed" else "")
-    return nid if nid in g.nodes else "run:" + e["run_id"]
+    return nid if nid in g.nodes or nid in getattr(g, "_committed_nodes", {}) else "run:" + e["run_id"]
 
 
 def _about(recs: List[Dict[str, Any]]) -> Optional[str]:
@@ -364,7 +367,15 @@ def _add_run(g: Graph, recs: List[Dict[str, Any]], ok: bool, args: Optional[Dict
                       f"{v.get('rule')} ({v.get('severity')}): {v.get('title')}", reviewer=d.get("reviewer"))
             cited = [(c, (index or {}).get((about, c.get("run_seq")))) for c in d.get("cites") or []]
             # a cite whose hash is not its record's names no node: the finding is then about its run
-            for n in sorted({_of(g, x["event"]) for c, x in cited if x and x.get("hash") == c.get("hash")}) or [
+            cited_nodes = set()
+            for c, x in cited:
+                if not x or x.get("hash") != c.get("hash"):
+                    continue
+                n = _of(g, x["event"])
+                if n.startswith("call:") and n not in g.nodes:
+                    _node(g, n, "call", str((x["event"].get("data") or {}).get("tool") or "?"))
+                cited_nodes.add(n)
+            for n in sorted(cited_nodes) or [
                     _node(g, "run:" + str(about), "run", str(about))]:
                 _edge(g, ok, f, n, "found in", "SIGNED", at)
         elif t == "why.finding":
@@ -429,30 +440,30 @@ def _add_why(g: Graph, recs: List[Dict[str, Any]], ok: bool, tests=()) -> None:
 
 def _merge(g: Graph, staged: Graph) -> None:
     """Commit a source-local graph only after all of its records built successfully."""
-    for nid, node in staged.nodes.items():
-        g.nodes.setdefault(nid, node)
+    for nid, node in sorted(staged.nodes.items()):
+        committed = g.nodes.setdefault(nid, dict(node))
+        for key, value in sorted(node.items()):
+            committed.setdefault(key, value)
     for edge in staged.edges:
         g.add_edge(edge["src"], edge["dst"], edge["kind"], edge["grade"],
                    **{k: v for k, v in edge.items() if k not in ("src", "dst", "kind", "grade")})
 
 
 def _staged(g: Graph) -> Graph:
-    """A private copy of the committed graph for one source's tentative work."""
-    copy = Graph(None, "grade")  # type: ignore[arg-type]
-    copy.nodes = {nid: dict(node) for nid, node in g.nodes.items()}
-    for edge in g.edges:
-        copy.add_edge(edge["src"], edge["dst"], edge["kind"], edge["grade"],
-                      **{k: v for k, v in edge.items() if k not in ("src", "dst", "kind", "grade")})
-    return copy
+    """An empty source-local overlay, committed only when this source built successfully."""
+    staged = Graph(None, "grade")  # type: ignore[arg-type]
+    staged._committed_nodes = g.nodes  # type: ignore[attr-defined]
+    return staged
 
 
-def _graphify(g: Graph, path: str) -> Dict[str, Any]:
+def _graphify(g: Graph, path: str, data: Optional[bytes] = None) -> Dict[str, Any]:
     """The Graphify join: each code node of the Graphify graph at `path` whose `source_file` is a file node's path, or
     its end, linked from that file (INFERRED, or UNVERIFIED if only an unverified source names the file): what the
     agents changed, by function and concept. Read-only.
     lean: Graphify's own edges (calls, imports) are left out; add them when a query must reach past the file"""
-    with open(path, "rb") as f:
-        data = f.read()
+    if data is None:
+        with open(path, "rb") as f:
+            data = f.read()
     top = json.loads(data)
     if not (isinstance(top, dict) and isinstance(top.get("nodes"), list)):
         raise ValueError(f"{path} is not a Graphify graph.json (it has no list of nodes); pass --graphify '' to build "
@@ -482,7 +493,8 @@ def _graphify(g: Graph, path: str) -> Dict[str, Any]:
 
 
 def build(paths: List[str], trust: str, content: Optional[Content] = None,
-          graphify: Optional[str] = None, _source_data: Optional[Dict[str, bytes]] = None) -> Dict[str, Any]:
+          graphify: Optional[str] = None, _source_data: Optional[Dict[str, bytes]] = None,
+          _graphify_data: Optional[bytes] = None) -> Dict[str, Any]:
     """graph.json's document from v2 bundles `paths`, each verified against trust config `trust`. `content`: a run's
     decided arguments (vault()), read for verified runs only; `graphify`: a Graphify graph.json to join. Verified
     sources go first, so that a node's label comes from a verified record wherever one has it, and findings runs after
@@ -517,7 +529,7 @@ def build(paths: List[str], trust: str, content: Optional[Content] = None,
             src["unreadable"] = f"{type(e).__name__}: {e}"
         else:
             _merge(g, staged)
-    joined = _graphify(g, graphify) if graphify else None
+    joined = _graphify(g, graphify, _graphify_data) if graphify else None
     with open(trust, "rb") as f:
         trust_sha256 = hashlib.sha256(f.read()).hexdigest()
     return {"schema_version": SCHEMA_VERSION, "tracekit": __version__, "trust_sha256": trust_sha256,
@@ -541,7 +553,9 @@ def _graph(doc: Dict[str, Any]) -> Graph:
 
 def _is_tracekit_graph(doc: Any) -> bool:
     return (isinstance(doc, dict) and doc.get("schema_version") == SCHEMA_VERSION
-            and all(isinstance(doc.get(k), list) for k in ("sources", "nodes", "edges")))
+            and all(isinstance(doc.get(k), list) for k in ("sources", "nodes", "edges"))
+            and all(isinstance(source, dict) and isinstance(source.get("name"), str)
+                    for source in doc["sources"]))
 
 
 def _run_of(e: Dict[str, Any]) -> Optional[str]:
@@ -791,7 +805,8 @@ def report(doc: Dict[str, Any], data: Optional[Dict[str, Any]] = None) -> str:
     data = data or highlights(doc)
     def text(value: str) -> str:
         value = " ".join(value.splitlines())
-        return "".join("\\" + c if c in "\\`*_[]()<>#!|~" else c for c in value)
+        return "".join((f"\\u{ord(c):04X}" if unicodedata.category(c) == "Cf"
+                         else "\\" + c if c in "\\`*_[]()<>#!|~" else c) for c in value)
 
     out = [f"# Tracekit graph report\n\n{text(data['summary']['text'])}"]
     for s in data["sections"]:
@@ -867,7 +882,7 @@ def _drawn(g: Graph, outcomes: OutcomeIndex, hits: List[str], things: List[str],
         if not call:
             return ""
         ok = [a for a in g.in_edges(call, ("SIGNED",)) if g.nodes[a["src"]]["kind"] == "person"]
-        rules = [a for a in g.in_edges(call, GRADES) if g.nodes[a["src"]]["kind"] == "rule"]
+        rules = [a for a in g.in_edges(call, ("SIGNED",)) if g.nodes[a["src"]]["kind"] == "rule"]
         return "; ".join(filter(None, [
             ", ".join(f"{g.nodes[a['src']]['label']} {a['kind']}" for a in rules),
             ", ".join(f"{g.nodes[a['src']]['label']} {a['kind']}d it" + (" (the run's own identity)"
@@ -903,18 +918,21 @@ def matching(doc: Dict[str, Any], kind: str, needle: str) -> Dict[str, Any]:
     files = sorted({e["src"] for h in hits for e in g.in_edges(h, GRADES)}) if kind == "code" else hits
     touching = [e for h in files for e in g.in_edges(h, GRADES) + g.out_edges(h, GRADES)
                 if _run_of(e) and _shown(e, outcomes)]
+    touching_by_run: Dict[Optional[str], List[Dict[str, Any]]] = {}
+    for e in touching:
+        touching_by_run.setdefault(_run_of(e), []).append(e)
     by_run: Dict[Optional[str], List[Dict[str, Any]]] = {}
     for e in g.edges:
         if _shown(e, outcomes):
             by_run.setdefault(_run_of(e), []).append(e)
-    runs = sorted({_run_of(e) for e in touching}, key=lambda r: (g.nodes.get(f"run:{r}", {}).get("ts", ""), r),
+    runs = sorted(touching_by_run, key=lambda r: (g.nodes.get(f"run:{r}", {}).get("ts", ""), r),
                   reverse=True)
     out = []
     for rid in runs:
         es = by_run[rid]
         facts = {k: [e for e in es if g.nodes[e["src"]]["kind"] == k or g.nodes[e["dst"]]["kind"] == k] for k in FACTS}
         out.append({"run": rid, "ts": g.nodes.get(f"run:{rid}", {}).get("ts"), **facts,
-                    "matched": [e for e in touching if _run_of(e) == rid]})
+                    "matched": touching_by_run[rid]})
     code = sorted({e["dst"] for f in files for e in g.out_edges(f, GRADES) if g.nodes[e["dst"]]["kind"] == "code"})
     return {"matched": hits, "code": [g.nodes[n] for n in code], "runs": out,
             "map": _drawn(g, outcomes, hits, sorted(set(hits) | set(files)), touching, runs)}
@@ -1032,8 +1050,10 @@ def verify(out: str, trust: str, content: Optional[Content] = None, paths: Optio
         raise ValueError("not a Tracekit graph (Graphify's graph.json is joined with --graphify, not queried)")
     listed = have["sources"]
     default_paths = paths is None
-    paths = paths if paths is not None else [os.path.join(out, os.path.basename(s["name"])) for s in listed]
-    duplicates = sorted({s["name"] for s in listed if sum(x["name"] == s["name"] for x in listed) > 1})
+    source_dir = os.path.dirname(os.path.abspath(out))
+    paths = paths if paths is not None else [os.path.join(source_dir, os.path.basename(s["name"])) for s in listed]
+    names = Counter(s["name"] for s in listed)
+    duplicates = sorted(name for name, count in names.items() if count > 1)
     if default_paths and duplicates:
         return [f"multiple sources are named {name}; pass SOURCES explicitly" for name in duplicates]
     def regular(path: str) -> bool:
@@ -1042,10 +1062,13 @@ def verify(out: str, trust: str, content: Optional[Content] = None, paths: Optio
         except OSError:
             return False
 
-    missing = ([s["name"] for s in listed if not regular(os.path.join(out, os.path.basename(s["name"])))]
-               if default_paths else [s["name"] for s in listed
-                                      if not any(os.path.basename(p) == os.path.basename(s["name"]) and regular(p)
-                                                 for p in paths)])
+    by_basename = {os.path.basename(path): path for path in paths}
+    missing = [s["name"] for s in listed
+               if not regular(by_basename.get(os.path.basename(s["name"]), ""))]
+    if missing and not default_paths:
+        supplied = by_basename.get(os.path.basename(missing[0]))
+        if supplied and os.path.lexists(supplied):
+            return [f"{supplied}: source is not a regular file"]
     problems = [f"{name}: source is missing; pass it to tracekit graph verify" for name in missing]
     if missing:
         return problems
@@ -1056,15 +1079,18 @@ def verify(out: str, trust: str, content: Optional[Content] = None, paths: Optio
     except (OSError, ValueError) as e:
         return [f"{e}: source is missing; pass SOURCES to tracekit graph verify"]
     gf = have.get("graphify")
+    if gf is not None and (not isinstance(gf, dict) or not isinstance(gf.get("name"), str)):
+        raise ValueError("not a Tracekit graph (its Graphify entry is malformed)")
     if graphify is None:
-        graphify = (GRAPHIFY if gf and gf["name"] == os.path.basename(GRAPHIFY) and os.path.exists(GRAPHIFY)
-                    else None if gf and gf["name"] == os.path.basename(GRAPHIFY) else gf and gf["name"])
-    if gf and (not graphify or not os.path.exists(graphify)):
+        graphify = (gf and os.path.join(source_dir, GRAPHIFY if gf["name"] == os.path.basename(GRAPHIFY)
+                                        else os.path.basename(gf["name"])))
+    if gf and (not graphify or not regular(graphify)):
         return [f"the Graphify graph {gf['name']} is missing; pass --graphify PATH"]
     try:
-        doc = build(paths, trust, content if have.get("content") else None, graphify, source_data)
-    except OSError as e:
-        return [f"{e.filename or e}: source is missing; pass SOURCES to tracekit graph verify"]
+        graphify_data = _secure_source(graphify) if graphify else None
+        doc = build(paths, trust, content if have.get("content") else None, graphify, source_data, graphify_data)
+    except (OSError, ValueError) as e:
+        return [f"{getattr(e, 'filename', None) or e}: source is missing; pass SOURCES to tracekit graph verify"]
     expected = sorted((s["name"], s["sha256"]) for s in listed)
     actual = sorted((s["name"], s["sha256"]) for s in doc["sources"])
     if actual != expected:

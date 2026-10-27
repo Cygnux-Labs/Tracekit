@@ -150,22 +150,23 @@ the same. Build and verification do not use a network service or a model, apart 
 to read retained content.
 
 `tracekit graph verify [DIR] [SOURCES...] --trust trust.json [--graphify FILE]` rebuilds the graph and compares all
-three files. When `SOURCES` are omitted, it tries each recorded basename beside `DIR`; it never follows a path named
+three files. When `SOURCES` are omitted, it tries each recorded basename beside `DIR` (in `DIR`'s parent directory);
+it never follows a path named
 inside `graph.json`. It refuses ambiguous duplicate recorded names, missing sources, and a source that is itself a
 symlink, a FIFO, a device, or anything other than a regular file, including one swapped in between its check and its read (on a Windows file system that reports no file id, such as FAT, a swap there can't be seen, but the digest check below still fails other content). Parent directories may be symlinks. Sources are
 checked by their recorded basename and SHA-256 digest, so moving the output directory does not matter.
 
-If the built graph used `--content`, verify reads the vault again. For a default Graphify input it tries
-`graphify-out/graph.json`; otherwise pass `--graphify` when the recorded Graphify file is not in the current directory.
+If the built graph used `--content`, verify reads the vault again. A recorded Graphify input is found by basename
+beside `DIR`; the default `graphify-out/graph.json` is looked up in that directory. Otherwise pass `--graphify`.
 
 ```text
 $ tracekit graph verify tracekit-graph --trust run.trust.json
 tracekit-graph: graph.json, GRAPH_REPORT.json and GRAPH_REPORT.md are what their sources give
 ```
 
-Verification exits 0 for that result. It exits 1 and prints each problem when a source digest, Graphify input, trust
-configuration, or output file differs. A missing source, invalid graph, invalid trust configuration, or unavailable
-signer is an error and exits 2.
+Verification exits 0 for that result. It exits 1 and prints each problem when a source is missing or differs, or when
+a source digest, Graphify input, trust configuration, or output file differs. An invalid graph, invalid trust
+configuration, or unavailable signer is an error and exits 2.
 
 ## `graph.json`
 

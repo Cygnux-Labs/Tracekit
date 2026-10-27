@@ -364,6 +364,54 @@ class ReviewRegressions(unittest.TestCase):
         graph.highlights(doc)
         self.assertLess(doc["edges"].visits, 10 * len(doc["edges"]))
 
+    def test_host_matching_groups_touching_edges_once_per_run(self):
+        g = Graph(None, "grade")
+        for i in range(500):
+            graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "a"}}, f"r{i}"),
+                               rec(1, "effect.observed", {"kind": "net", "host": "api.example", "port": 443}, f"r{i}")], True)
+        doc = self.doc(g)
+        real_run_of, calls = graph._run_of, 0
+        def counted(edge):
+            nonlocal calls
+            calls += 1
+            return real_run_of(edge)
+        with mock.patch.object(graph, "_run_of", side_effect=counted):
+            self.assertEqual(len(graph.matching(doc, "host", "api.example")["runs"]), 500)
+        self.assertLess(calls, 20 * len(doc["edges"]))
+
+    def test_merge_keeps_later_node_fields_without_copying_committed_graph(self):
+        committed = Graph(None, "grade")
+        for i in range(2000):
+            graph._node(committed, f"run:{i}", "run", str(i))
+        graph._node(committed, "run:C", "run", "C")
+        staged = graph._staged(committed)
+        self.assertEqual(staged.nodes, {})
+        graph._node(staged, "run:C", "run", "C", ts=TS, unread_args=2)
+        graph._merge(committed, staged)
+        self.assertEqual(committed.nodes["run:C"], {"id": "run:C", "kind": "run", "label": "C",
+                                                       "ts": TS, "unread_args": 2})
+
+    def test_unverified_rules_do_not_explain_signed_answers(self):
+        g = Graph(None, "grade")
+        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "coder"}}),
+                           rec(1, "policy.decision", {"tool_use_id": "c", "decision_id": "d", "tool": "Write",
+                                                        "decision": "allow"})], True, {1: {"file_path": "x"}})
+        graph._add_run(g, [rec(0, "policy.decision", {"tool_use_id": "c", "decision_id": "d", "tool": "Write",
+                                                        "decision": "deny", "rule_ids": ["TK-FORGED"]})], False,
+                       {0: {"file_path": "x"}})
+        answer = next(a for a in graph.matching(self.doc(g), "file", "x")["map"]["answers"] if "asked to write" in a["text"])
+        self.assertNotIn("TK-FORGED", answer["note"])
+
+    def test_report_escapes_unicode_format_characters(self):
+        doc = {"nodes": [], "edges": [], "sources": [], "tracekit": "test", "content": False}
+        doc["nodes"] = [{"id": "file:x", "kind": "file", "label": "billing\u202eyp.exe"}]
+        data = {"summary": {"text": "billing\u200byp.exe"}, "sections": []}
+        self.assertIn("\\u200B", graph.report(doc, data))
+
+    def test_graph_shape_refuses_malformed_source_entries(self):
+        self.assertFalse(graph._is_tracekit_graph({"schema_version": graph.SCHEMA_VERSION,
+                                                   "sources": [{"sha256": "x"}], "nodes": [], "edges": []}))
+
     @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFOs")
     def test_verify_refuses_a_non_regular_recorded_source(self):
         with tempfile.TemporaryDirectory() as d:
