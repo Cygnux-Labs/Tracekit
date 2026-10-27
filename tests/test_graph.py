@@ -21,6 +21,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest import mock
 
 from factories import ROOT, patch_env, rewrite_bundle
 from tracekit import cli, graph, install
@@ -59,7 +60,7 @@ def net(host, st):
             "first_ts": TS, "last_ts": TS, "run_id": st["run_id"], "run_token": st["run_token"]}
 
 
-class ResultGrades(unittest.TestCase):
+class CallOutcomes(unittest.TestCase):
     def test_agent_reports_are_named_but_t2_results_attest_effects(self):
         def kinds(result=None):
             records = [rec(0, "run.registered", {"agent": {"name": "a"}}),
@@ -77,7 +78,7 @@ class ResultGrades(unittest.TestCase):
         self.assertEqual(kinds(t2), {("wrote", 2), ("reached", 2)})
         self.assertEqual(kinds(), {("asked to write", 1), ("asked to reach", 1)})
 
-    def test_result_grades_only_its_named_decision(self):
+    def test_result_applies_only_to_its_named_decision(self):
         records = [rec(0, "run.registered", {"agent": {"name": "a"}}),
                    rec(1, "policy.decision", {"tool_use_id": "c", "decision_id": "deny", "tool": "Write",
                                                 "decision": "deny"}),
@@ -127,6 +128,64 @@ class ResultGrades(unittest.TestCase):
                          ["reported writing"])
         self.assertEqual([answer["map"]["edges"][a["edge"]]["kind"] for a in answer["map"]["answers"]
                           if answer["map"]["edges"][a["edge"]]["dst"] == "file:/repo/.env"], ["reported writing"])
+
+    def test_ask_is_superseded_only_by_later_same_arguments_and_grade(self):
+        def decision(seq, did, commitment):
+            return rec(seq, "policy.decision", {"tool_use_id": "c", "decision_id": did, "tool": "Write",
+                                                  "decision": "allow", "args_commitment": commitment})
+
+        g = Graph(None, "grade")
+        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "a"}}), decision(1, "first", "same"),
+                           decision(2, "second", "same"), rec(3, "tool.result", {"tool_use_id": "c",
+                           "decision_id": "second", "ok": True})], True,
+                       {1: {"file_path": "/repo/x", "content": "first"},
+                        2: {"file_path": "/repo/x", "content": "second"}})
+        doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
+               "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
+        self.assertEqual(set(e["kind"] for r in graph.matching(doc, "file", "/repo/x")["runs"]
+                             for e in r["matched"]), {"asked to write", "reported writing"})
+
+        g = Graph(None, "grade")
+        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "a"}}), decision(1, "first", "one"),
+                           rec(2, "tool.result", {"tool_use_id": "c", "decision_id": "first", "ok": True}),
+                           decision(3, "later", "one")], True,
+                       {1: {"file_path": "/repo/x", "content": "same"},
+                        3: {"file_path": "/repo/x", "content": "same"}})
+        doc["nodes"], doc["edges"] = list(g.nodes.values()), g.edges
+        self.assertEqual(set(e["kind"] for r in graph.matching(doc, "file", "/repo/x")["runs"]
+                             for e in r["matched"]), {"asked to write", "reported writing"})
+
+        digest = next(e["args_digest"] for e in g.edges if e["kind"] == "asked to write")
+        g.add_edge("call:r-obs:c", "file:/repo/x", "reported writing", "UNVERIFIED",
+                   record={"run_id": "r-obs", "run_seq": 4, "seq": 104, "ts": TS}, claimed="SIGNED",
+                   args_commitment="one", args_digest=digest)
+        doc["edges"] = g.edges
+        self.assertIn("asked to write", {e["kind"] for r in graph.matching(doc, "file", "/repo/x")["runs"]
+                                           for e in r["matched"]})
+
+    def test_many_asked_edges_are_indexed_once_per_query(self):
+        class CountingEdges(list):
+            visits = 0
+
+            def __iter__(self):
+                for edge in super().__iter__():
+                    self.visits += 1
+                    yield edge
+
+        g = Graph(None, "grade")
+        records = [rec(0, "run.registered", {"agent": {"name": "a"}})]
+        args = {}
+        for seq in range(1, 501):
+            records.append(rec(seq, "policy.decision", {"tool_use_id": f"c{seq}", "decision_id": f"d{seq}",
+                                                           "tool": "Write", "decision": "deny"}))
+            args[seq] = {"file_path": f"/repo/{seq}"}
+        graph._add_run(g, records, True, args)
+        g.edges = CountingEdges(g.edges)
+        doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
+               "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
+        with mock.patch.object(graph, "_graph", return_value=g):
+            graph.matching(doc, "file", "/repo/1")
+        self.assertLessEqual(g.edges.visits, 3 * len(g.edges))
 
 
 class QueryInput(unittest.TestCase):

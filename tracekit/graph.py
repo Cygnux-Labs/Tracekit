@@ -166,6 +166,11 @@ def _host(args: Any) -> Optional[str]:
     return url_info(url).get("host") if isinstance(url, str) else None
 
 
+def _args_digest(args: Any) -> str:
+    """A stable, non-revealing identity for the opened arguments behind a call-target edge."""
+    return hashlib.sha256(json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
 def _add_run(g: Graph, recs: List[Dict[str, Any]], ok: bool, args: Optional[Dict[int, Any]] = None,
              index: Optional[Dict[tuple, Dict[str, Any]]] = None) -> None:
     """The nodes and SIGNED and OBSERVED edges of one run's records. `args`: run_seq -> the decided arguments of a
@@ -217,11 +222,14 @@ def _add_run(g: Graph, recs: List[Dict[str, Any]], ok: bool, args: Optional[Dict
             for p in _written(d.get("tool"), body):
                 _edge(g, ok, call, _node(g, "file:" + p, "file", p),
                       "wrote" if attested else "reported writing" if done else "asked to write", "SIGNED",
-                      result_at)
+                      result_at, args_digest=_args_digest(body),
+                      **({"args_commitment": d["args_commitment"]} if d.get("args_commitment") else {}))
             host = _host(body)
             if host:
                 _edge(g, ok, call, _node(g, "host:" + host, "host", host),
-                      "reached" if attested else "reported reaching" if done else "asked to reach", "SIGNED", result_at)
+                      "reached" if attested else "reported reaching" if done else "asked to reach", "SIGNED", result_at,
+                      args_digest=_args_digest(body),
+                      **({"args_commitment": d["args_commitment"]} if d.get("args_commitment") else {}))
         elif t == "tool.result":
             by_seq[e["run_seq"]] = _node(g, f"call:{rid}:{d.get('tool_use_id')}", "call", "?",
                                          **({"ok": bool(d.get("ok"))} if ok else {}))
@@ -404,6 +412,11 @@ def _graph(doc: Dict[str, Any]) -> Graph:
     return g
 
 
+def _is_tracekit_graph(doc: Any) -> bool:
+    return (isinstance(doc, dict) and doc.get("schema_version") == SCHEMA_VERSION
+            and all(isinstance(doc.get(k), list) for k in ("sources", "nodes", "edges")))
+
+
 def _run_of(e: Dict[str, Any]) -> Optional[str]:
     return (e.get("record") or {}).get("run_id")   # None: a Graphify edge
 
@@ -412,17 +425,32 @@ def _n(k: int, word: str) -> str:
     return f"{k} {word}{'' if k == 1 else 's'}"
 
 
-def _not_run(g: Graph, e: Dict[str, Any]) -> bool:
-    """Whether an asked edge has no later outcome for its call and target."""
-    return e["kind"] in ("asked to write", "asked to reach") and not any(
-        other["src"] == e["src"] and other["dst"] == e["dst"]
-        and other["kind"] in ("wrote", "reported writing", "reached", "reported reaching")
-        for other in g.edges)
+ASKED = ("asked to write", "asked to reach")
+OUTCOMES = ("wrote", "reported writing", "reached", "reported reaching")
+OutcomeIndex = Dict[tuple, List[Dict[str, Any]]]
 
 
-def _shown(g: Graph, e: Dict[str, Any]) -> bool:
+def _outcomes(g: Graph) -> OutcomeIndex:
+    """Later call outcomes by (call, target), indexed in one pass over the graph's edges."""
+    out: OutcomeIndex = {}
+    for e in g.edges:
+        if e["kind"] in OUTCOMES:
+            out.setdefault((e["src"], e["dst"]), []).append(e)
+    return out
+
+
+def _not_run(e: Dict[str, Any], outcomes: OutcomeIndex) -> bool:
+    """Whether an asked edge has no later same-argument outcome at its own evidence grade."""
+    return e["kind"] in ASKED and not any(
+        other["grade"] == e["grade"]
+        and other.get("args_digest", other.get("args_commitment")) == e.get("args_digest", e.get("args_commitment"))
+        and other["record"].get("run_seq", -1) > e["record"].get("run_seq", -1)
+        for other in outcomes.get((e["src"], e["dst"]), ()))
+
+
+def _shown(e: Dict[str, Any], outcomes: OutcomeIndex) -> bool:
     """Whether a query should show this edge as the call's outcome."""
-    return e["kind"] not in ("asked to write", "asked to reach") or _not_run(g, e)
+    return e["kind"] not in ASKED or _not_run(e, outcomes)
 
 
 # --------------------------------------------------------------------------- report
@@ -434,6 +462,7 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
     grades behind it."""
     g = _graph(doc)
     nodes = g.nodes
+    outcomes = _outcomes(g)
 
     def lab(n: str) -> str:
         return nodes[n]["label"]
@@ -491,7 +520,7 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
     writes = {f: [e for e in g.in_edges(f, GRADES) if e["kind"] == "wrote" or e["kind"].startswith("file event")]
               for f in of("file")}
     reported = {f: [e for e in g.in_edges(f, GRADES) if e["kind"] == "reported writing"] for f in of("file")}
-    tried = {f: [e for e in g.in_edges(f, GRADES) if _not_run(g, e)] for f in of("file")}
+    tried = {f: [e for e in g.in_edges(f, GRADES) if _not_run(e, outcomes)] for f in of("file")}
     files = []
     for f in sorted(writes, key=lambda f: (-len(writes[f]), -len(reported[f]), -len(tried[f]), f)):
         es, calls = writes[f], sorted({e["src"] for e in writes[f] + reported[f]
@@ -529,7 +558,7 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
 
     hosts = []
     for h in sorted(of("host"), key=lambda h: (-len(runs(g.in_edges(h, GRADES))), h)):
-        es = [e for e in g.in_edges(h, GRADES) if _shown(g, e)]
+        es = [e for e in g.in_edges(h, GRADES) if _shown(e, outcomes)]
 
         def said(e: Dict[str, Any]) -> str:
             if nodes[e["src"]]["kind"] == "run" and e["kind"].startswith("blocked from"):
@@ -642,7 +671,7 @@ def report(doc: Dict[str, Any], data: Optional[Dict[str, Any]] = None) -> str:
 COLUMNS = ("who", "run", "call", "thing", "after")
 
 
-def _drawn(g: Graph, hits: List[str], things: List[str], touching: List[Dict[str, Any]],
+def _drawn(g: Graph, outcomes: OutcomeIndex, hits: List[str], things: List[str], touching: List[Dict[str, Any]],
            runs: List[str]) -> Dict[str, Any]:
     """A query's answer as the viewer draws it: each node in a column, who (agents, people) -> run -> call (calls,
     inputs) -> the thing (the matched nodes, the files a code node is in, the code in a matched file) -> after (where
@@ -674,7 +703,7 @@ def _drawn(g: Graph, hits: List[str], things: List[str], touching: List[Dict[str
         for e in g.in_edges(n, GRADES):
             if g.nodes[e["src"]]["kind"] in ("agent", "person"):
                 put(e["src"], "who")
-    after = [e for n, c in list(col.items()) for e in g.out_edges(n, GRADES) if _shown(g, e)
+    after = [e for n, c in list(col.items()) for e in g.out_edges(n, GRADES) if _shown(e, outcomes)
              if _run_of(e) and e["dst"] not in col and (c == "call" and "INFERRED" in (e["grade"], e.get("claimed"))
                                                          or c == "run" and "OBSERVED" in (e["grade"], e.get("claimed")))]
     for e in after:
@@ -686,7 +715,7 @@ def _drawn(g: Graph, hits: List[str], things: List[str], touching: List[Dict[str
         return (COLUMNS.index(col[n]), rank.get(run, len(rank)), v["kind"], v["label"], n)
 
     shown = sorted(col, key=order)
-    edges = sorted((e for e in g.edges if _shown(g, e) and e["src"] in col and e["dst"] in col),
+    edges = sorted((e for e in g.edges if _shown(e, outcomes) and e["src"] in col and e["dst"] in col),
                    key=lambda e: (e["src"], e["dst"], e["kind"], e["grade"]))
     index = {id(e): i for i, e in enumerate(edges)}
 
@@ -732,14 +761,15 @@ def matching(doc: Dict[str, Any], kind: str, needle: str) -> Dict[str, Any]:
     findings and gaps, and the edges to the matched nodes; `code`: the Graphify code nodes in the matched files;
     `map`: the answer drawn (_drawn)."""
     g = _graph(doc)
+    outcomes = _outcomes(g)
     hits = sorted(n for n, v in g.nodes.items() if v["kind"] == kind
                   and (v["label"] == needle or kind == "file" and v["label"].endswith("/" + needle.lstrip("/"))))
     files = sorted({e["src"] for h in hits for e in g.in_edges(h, GRADES)}) if kind == "code" else hits
     touching = [e for h in files for e in g.in_edges(h, GRADES) + g.out_edges(h, GRADES)
-                if _run_of(e) and _shown(g, e)]
+                if _run_of(e) and _shown(e, outcomes)]
     by_run: Dict[Optional[str], List[Dict[str, Any]]] = {}
     for e in g.edges:
-        if _shown(g, e):
+        if _shown(e, outcomes):
             by_run.setdefault(_run_of(e), []).append(e)
     runs = sorted({_run_of(e) for e in touching}, key=lambda r: (g.nodes.get(f"run:{r}", {}).get("ts", ""), r),
                   reverse=True)
@@ -751,7 +781,7 @@ def matching(doc: Dict[str, Any], kind: str, needle: str) -> Dict[str, Any]:
                     "matched": [e for e in touching if _run_of(e) == rid]})
     code = sorted({e["dst"] for f in files for e in g.out_edges(f, GRADES) if g.nodes[e["dst"]]["kind"] == "code"})
     return {"matched": hits, "code": [g.nodes[n] for n in code], "runs": out,
-            "map": _drawn(g, hits, sorted(set(hits) | set(files)), touching, runs)}
+            "map": _drawn(g, outcomes, hits, sorted(set(hits) | set(files)), touching, runs)}
 
 
 def _find(g: Graph, spec: str) -> str:
@@ -767,35 +797,37 @@ def _find(g: Graph, spec: str) -> str:
 def blast(doc: Dict[str, Any], spec: str) -> Dict[str, Any]:
     """Everything downstream of a node, each with the shortest path to it (why's forward reachability)."""
     g = _graph(doc)
+    outcomes = _outcomes(g)
     start = _find(g, spec)
     parent: Dict[str, Optional[str]] = {start: None}
     q = deque([start])
     while q:
         n = q.popleft()
         for e in g.out_edges(n, GRADES):
-            if _shown(g, e) and e["dst"] not in parent:
+            if _shown(e, outcomes) and e["dst"] not in parent:
                 parent[e["dst"]] = n
                 q.append(e["dst"])
     reached = sorted(parent)
-    touching = [e for e in g.edges if _shown(g, e) and e["src"] in parent and e["dst"] in parent and _run_of(e)]
+    touching = [e for e in g.edges if _shown(e, outcomes) and e["src"] in parent and e["dst"] in parent and _run_of(e)]
     runs = sorted({_run_of(e) for e in touching}, key=lambda r: (g.nodes.get(f"run:{r}", {}).get("ts", ""), r), reverse=True)
     things = [n for n in reached if g.nodes[n]["kind"] not in ("run", "call", "input")]
     return {"from": start, "reached": [{"node": n, "kind": g.nodes[n]["kind"], "label": g.nodes[n]["label"],
                                         "path": Graph.path(parent, n)}
                                        for n in reached if n != start],
-            "map": _drawn(g, [start], things, touching, runs)}
+            "map": _drawn(g, outcomes, [start], things, touching, runs)}
 
 
 def path(doc: Dict[str, Any], a: str, b: str) -> Dict[str, Any]:
     """The shortest chain of edges between two nodes, either way along each edge, the stronger grade first at each
     step."""
     g = _graph(doc)
+    outcomes = _outcomes(g)
     a, b = _find(g, a), _find(g, b)
     via: Dict[str, Optional[Dict[str, Any]]] = {a: None}
     q = deque([a])
     while q and b not in via:
         n = q.popleft()
-        for e in sorted((e for e in g.out_edges(n, GRADES) + g.in_edges(n, GRADES) if _shown(g, e)),
+        for e in sorted((e for e in g.out_edges(n, GRADES) + g.in_edges(n, GRADES) if _shown(e, outcomes)),
                         key=lambda e: GRADES.index(e["grade"])):
             m = e["dst"] if e["src"] == n else e["src"]
             if m not in via:
@@ -809,7 +841,7 @@ def path(doc: Dict[str, Any], a: str, b: str) -> Dict[str, Any]:
     edges = edges[::-1]
     runs = sorted({_run_of(e) for e in edges if _run_of(e)}, key=lambda r: (g.nodes.get(f"run:{r}", {}).get("ts", ""), r), reverse=True)
     return {"from": a, "to": b, "found": b in via, "edges": edges,
-            "map": _drawn(g, [a, b], [b], [e for e in edges if _run_of(e)], runs)}
+            "map": _drawn(g, outcomes, [a, b], [b], [e for e in edges if _run_of(e)], runs)}
 
 
 # --------------------------------------------------------------------------- CLI
@@ -842,6 +874,8 @@ def verify(out: str, trust: str, content: Optional[Content] = None, paths: Optio
     reader, used when graph.json was built with call arguments from it."""
     with open(os.path.join(out, GRAPH), encoding="utf-8") as f:
         have = json.load(f)
+    if not _is_tracekit_graph(have):
+        raise ValueError("not a Tracekit graph (Graphify's graph.json is joined with --graphify, not queried)")
     listed = have["sources"]
     default_paths = paths is None
     paths = paths if paths is not None else [s["name"] for s in listed]
@@ -937,7 +971,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (OSError, ValueError, SignerUnavailable, RPCError) as e:
         print(f"tracekit graph: {e}", file=sys.stderr)
         return 2
-    if not isinstance(doc, dict) or doc.get("schema_version") != SCHEMA_VERSION or not isinstance(doc.get("sources"), list):
+    if not _is_tracekit_graph(doc):
         print("tracekit graph: not a Tracekit graph (Graphify's graph.json is joined with --graphify, not queried)",
               file=sys.stderr)
         return 2

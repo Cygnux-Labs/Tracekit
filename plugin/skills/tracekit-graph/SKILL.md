@@ -5,7 +5,7 @@ description: Answer questions about what AI agents did across runs (which runs c
 
 # Answer from the Tracekit graph
 
-`tracekit graph build` turns verified v2 evidence bundles into one graph of what agents did. Every edge has an
+`tracekit graph build` turns verified v2 evidence bundles into one graph of what agents did. Every edge has a
 `grade` and cites the record it came from. Answer from that graph, never from agent logs, transcripts or
 memory, and keep each answer's grade.
 
@@ -73,7 +73,10 @@ Exit 1 means nothing matched; 2 means a bad node or graph. For a question no mod
   `UNVERIFIED`. A person's approval with `self_approved: true` is the run's own identity, not a second person.
 - `reported writing` and `reported reaching` are the agent's signed completion report, not an observed effect.
   Only `wrote` and `reached` come from a Tracekit T2 executor or gateway result; observer edges remain `OBSERVED`.
-- "asked to write" or a call without `ok: true` did not run (or did not succeed): don't report it as done.
+- An `asked to write` or `asked to reach` edge did not run (or did not succeed) only when no later edge from the same
+  call to the same target has the same arguments and grade and says `wrote`, `reported writing`, `reached`, or
+  `reported reaching`. In graph.json, compare `args_digest` (or `args_commitment` in older graphs), grade, and
+  `record.run_seq`; superseded asked edges remain there, so do not report them as a failed attempt.
 - Say what the graph cannot show: it holds what the records hold, nothing outside them. No edge means no record,
   not proof that nothing happened (check gaps and `unread_args`).
 - Point the person to the record: the run id and record (`run_seq`) of each edge, and the source bundle in `sources`
