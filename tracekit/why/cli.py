@@ -628,7 +628,7 @@ def main(argv=None):
     p.add_argument("--system"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_attribute)
 
     p = sp.add_parser("transfer", help="how much a kept transfer changed its receiver's answer: re-run it with and "
-                                       "without what was sent")
+                                       "without what was sent (experimental)")
     p.add_argument("--run", dest="signed_run", required=True, help="a Tracekit v2 run id; the transfer's content comes "
                    "from the signer's vault ($TRACEKIT_SIGNER)")
     p.add_argument("--store", metavar="DIR", help="the signer data dir holding the run")

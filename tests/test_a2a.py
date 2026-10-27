@@ -1,26 +1,32 @@
 """Agent-to-agent traffic: the A2A gateway (tracekit/a2a_gateway.py) in front of a fake A2A server, deciding and
-recording through an in-process v2 signer as source gateway (tier T2); RunHandle.transfer, a non-text exchange
-recorded and gated by its digest; and the policy's a2a class (policy2/classes.a2a_fields)."""
+recording through an in-process v2 signer as source gateway (tier T2), with the security checklist's API-surface items
+probed on it (docs/security-checklist.md); RunHandle.transfer, a non-text exchange recorded and gated by its digest;
+and the policy's a2a class (policy2/classes.a2a_fields)."""
+import contextlib
 import hashlib
 import http.client
 import http.server
+import io
 import json
 import os
+import socket
 import threading
 import time
 import unittest
+import uuid
+from unittest import mock
 
 from adapter_contract import _serve, tmpdir
 from test_executor import InProcess
-from test_gateway import AGENT, SECRET, serve
+from test_gateway import AGENT, OTHER, SECRET, serve
 from test_signer_service import records
 from tracekit import a2a_gateway
 from tracekit.bundle_v2 import export
-from tracekit.format.canon import event_hash
+from tracekit.format.canon import canonical, event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
-from tracekit.sdk.client import Client
+from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import REQUESTS
 from tracekit.verify import v2
@@ -28,19 +34,30 @@ from tracekit.verify import v2
 GW = CallerIdentity("mtls", "spiffe://acme/a2a", True)
 UPSTREAM_KEY = "Bearer a2a-upstream-0123456789"
 CARD = {"name": "researcher", "url": "http://researcher.example/a2a", "skills": [{"id": "search"}]}
-# only token:http (the agent the gateway authenticates) to researcher, and one (sender, receiver, projector) triple
+PAYER_CARD = {"name": "payer", "skills": [{"id": "search"}, {"id": "payments"}]}
+# only token:http (the agent the gateway authenticates) to researcher or payer, and one (sender, receiver, projector)
+# triple; only receivers whose Agent Card lists no skill but search
 POLICY = {"tools": {"a2a:*": "a2a"},
           "deny": [{"id": "R-ROUTE", "class": "a2a", "field": "route", "pattern": ".",
-                    "unless": "^(token:http->researcher|qwen-7b@1->llama-1b@2 via c2c@0\\.1)$"},
+                    "unless": "^(token:http->(researcher|payer)|qwen-7b@1->llama-1b@2 via c2c@0\\.1)$"},
+                   {"id": "R-SKILL", "class": "a2a", "field": "skills", "pattern": ".",
+                    "unless": '^\\[("search",?)*\\]$'},   # the card's skill ids, one JSON list
                    {"id": "R-SIZE", "class": "a2a", "field": "size", "pattern": "^[0-9]{5,}$"}],   # 10,000 bytes up
           "ask": [{"id": "R-FILE", "class": "a2a", "field": "kinds", "pattern": "file"}]}
 TEXT = {"role": "user", "messageId": "m1", "parts": [{"kind": "text", "text": "find the Q3 report"}]}
 FILE = {"role": "user", "messageId": "m2", "parts": [{"kind": "file", "file": {"uri": "https://files.example/q3.pdf"}}]}
+# a message/stream's events: the task, two updates and the final one; AUTH is the authorization header the server got
+STREAM = [{"kind": "task", "id": "task-1", "status": {"state": "submitted"}},
+          {"kind": "status-update", "taskId": "task-1", "status": {"state": "working"}, "final": False},
+          {"kind": "artifact-update", "taskId": "task-1", "artifact": {"parts": [{"kind": "text", "text": "AUTH"}]}},
+          {"kind": "status-update", "taskId": "task-1", "status": {"state": "completed"}, "final": True}]
 
 
 class A2aServer(http.server.BaseHTTPRequestHandler):
-    """Serves the Agent Card; answers message/send with a completed task whose artifact echoes the authorization header
-    it got (a server that echoes its credential)."""
+    """Serves the Agent Card (PAYER_CARD at /payer-card); answers message/send and tasks/get with a completed task
+    whose artifact echoes the authorization header it got (a server that echoes its credential), and message/stream
+    with the events of server.stream ("pause": a second without a byte), then closes; `big`: 4,000 more bytes in
+    each artifact."""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *a):
@@ -55,70 +72,110 @@ class A2aServer(http.server.BaseHTTPRequestHandler):
         self.wfile.write(out)
 
     def do_GET(self):
-        self._send(CARD)
+        self.server.cards.append(self.path)
+        self._send(PAYER_CARD if self.path == "/payer-card" else CARD)
 
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
         self.server.seen.append((self.path, req))
-        self._send({"jsonrpc": "2.0", "id": req["id"], "result": {
-            "kind": "task", "id": "task-1", "status": {"state": "completed"},
-            "artifacts": [{"parts": [{"kind": "text", "text": f"done as {self.headers.get('authorization')}"}]}]}})
+        echo = f"done as {self.headers.get('authorization')}" + "x" * 4000 * self.server.big
+        if req["method"] != "message/stream":
+            return self._send({"jsonrpc": "2.0", "id": req["id"], "result": {
+                "kind": "task", "id": "task-1", "status": {"state": "completed"},
+                "artifacts": [{"parts": [{"kind": "text", "text": echo}]}]}})
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("connection", "close")
+        self.end_headers()
+        try:
+            for ev in self.server.stream:
+                if ev == "pause":
+                    time.sleep(1)
+                    continue
+                data = json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": ev}).replace("AUTH", echo)
+                self.wfile.write(f"data: {data}\n\n".encode())
+                self.wfile.flush()
+        except OSError:   # the gateway gave up on the stream
+            pass
 
 
 class Gateway(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(self.dir, policy=Engine(POLICY), gateways=["mtls:spiffe://acme/*"], grace_s=0,
+                                   tenants={f"{OTHER.scheme}:{OTHER.subject}": "beta"},
                                    authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/a2a": ["decide", "complete", "approval_request",
-                                                                         "approval_wait", "approval_consume"]})
+                                                                         "approval_wait", "approval_consume",
+                                                                         "observe"]})
         self.closed = False
         self.addCleanup(self.close)
         self.a2a = http.server.ThreadingHTTPServer(("127.0.0.1", 0), A2aServer)
-        self.a2a.seen = []
+        self.a2a.seen, self.a2a.cards, self.a2a.stream, self.a2a.big = [], [], STREAM, False
         port = serve(self, self.a2a)
         for name, value in (("bearer", SECRET), ("up.header", UPSTREAM_KEY)):
             with open(os.path.join(self.dir, name), "w") as f:
                 f.write(value)
-        cfg = os.path.join(self.dir, "a2a-gateway.yaml")
-        with open(cfg, "w") as f:
-            json.dump({"http": {"listen": "127.0.0.1:0", "insecure_loopback": True, "authenticators": ["token"],
-                                "token_file": "bearer"}, "signer": "unused", "approval_wait_s": 5,
-                       "upstreams": [{"name": "researcher", "url": f"http://127.0.0.1:{port}/researcher",
-                                      "headers": {"authorization": "up.header"}},
-                                     {"name": "billing", "url": f"http://127.0.0.1:{port}/billing"}]}, f)
+        self.cfg = {"http": {"listen": "127.0.0.1:0", "insecure_loopback": True, "authenticators": ["token"],
+                             "token_file": "bearer"}, "signer": "unused", "approval_wait_s": 5,
+                    "upstreams": [{"name": "researcher", "url": f"http://127.0.0.1:{port}/researcher",
+                                   "headers": {"authorization": "up.header"}},
+                                  {"name": "billing", "url": f"http://127.0.0.1:{port}/billing"},
+                                  {"name": "payer", "url": f"http://127.0.0.1:{port}/payer",
+                                   "card": f"http://127.0.0.1:{port}/payer-card"}]}
         self.signer = InProcess(self.s, GW)
-        self.srv = a2a_gateway.serve(a2a_gateway.load_config(cfg), self.signer)
+        self.srv = a2a_gateway.serve(a2a_gateway.load_config(self.config(self.cfg)), self.signer)
         self.port = serve(self, self.srv)
-        out = self.s.call(AGENT, "register_run", {"request_id": "r1", "agent": {"name": "planner"}})
-        self.run = {"run_id": out["run_id"], "run_token": out["run_token"]}
+        self.run = self.register(AGENT)
+
+    def config(self, cfg):
+        path = os.path.join(self.dir, f"a2a-{uuid.uuid4().hex}.yaml")
+        with open(path, "w") as f:
+            json.dump(cfg, f)
+        return path
 
     def close(self):
         if not self.closed:
             self.closed = True
             self.s.close()
 
-    def send(self, to, message=TEXT, method="message/send"):
+    def register(self, who):
+        out = self.s.call(who, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "planner"}})
+        return {"run_id": out["run_id"], "run_token": out["run_token"]}
+
+    def post(self, to, method="message/send", params=None, run=None, headers=None):
+        """(status, content type, body): a cut stream's body is what came before the connection broke."""
+        run = run or self.run
+        h = {"authorization": "Bearer " + SECRET, "content-type": "application/json",
+             "x-tracekit-run": f"{run['run_id']}.{run['run_token']}", **(headers or {})}
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
         self.addCleanup(c.close)
         c.request("POST", f"/a2a/{to}", json.dumps({"jsonrpc": "2.0", "id": 7, "method": method,
-                                                    "params": {"message": message}}),
-                  {"authorization": "Bearer " + SECRET, "content-type": "application/json",
-                   "x-tracekit-run": f"{self.run['run_id']}.{self.run['run_token']}"})
-        return json.loads(c.getresponse().read())
+                                                    "params": {"message": TEXT} if params is None else params}),
+                  {k: v for k, v in h.items() if v is not None})
+        r = c.getresponse()
+        try:
+            body = r.read()
+        except http.client.IncompleteRead as e:   # a cut stream ends without its last chunk
+            body = e.partial
+        return r.status, r.getheader("content-type"), body
 
-    def events(self):
+    def send(self, to, message=TEXT, method="message/send", **kw):
+        """The answer, or a stream's events, each a JSON-RPC response."""
+        status, ctype, body = self.post(to, method, {"message": message}, **kw)
+        self.assertEqual(status, 200, body)
+        if ctype == "text/event-stream":
+            return [json.loads(line[6:]) for line in body.split(b"\n") if line.startswith(b"data: ")]
+        return json.loads(body)
+
+    def events(self, run=None):
         self.close()
-        return [r["event"] for r in records(self.dir) if r["event"]["run_id"] == self.run["run_id"]]
+        return [r["event"] for r in records(self.dir) if r["event"]["run_id"] == (run or self.run)["run_id"]]
 
-    def test_an_allowed_pair_is_decided_sent_completed_t2_and_its_bundle_verifies(self):
-        out = self.send("researcher")
-        self.assertEqual((out["id"], out["result"]["id"]), (7, "task-1"))
-        self.assertEqual(out["result"]["artifacts"][0]["parts"][0]["text"], "done as [REDACTED:executor_secret]")
-        [(path, req)] = self.a2a.seen
-        self.assertEqual((path, req["method"], req["params"]), ("/researcher", "message/send", {"message": TEXT}))
+    def verified(self):
+        """The run's records, once it is final (past the wait for calls a gateway holds) and its bundle verified."""
         self.s.call(AGENT, "close_run", {"request_id": "cl", **self.run})
-        self.s.sweep(time.monotonic() + 1)
+        self.s.sweep(time.monotonic() + self.s.gateway_wait_s + 1)
         self.s.checkpoint()
         bundle, trust = os.path.join(self.dir, "b.tkb"), os.path.join(self.dir, "trust.json")
         export(self.s.log.storage, "default", self.run["run_id"], self.s.log.storage.checkpoint_latest()[1], bundle)
@@ -126,27 +183,61 @@ class Gateway(unittest.TestCase):
             json.dump({"logs": [self.s.vkey], "algs": ["ed25519"]}, f)
         rep, code = v2.verify(bundle, trust)
         self.assertEqual(code, 0, [c for c in rep.checks if c["status"] != "ok"])
-        evs = [e for e in self.events() if e["type"] in ("policy.decision", "tool.result")]
+        return self.events()
+
+    def test_an_allowed_pair_is_decided_sent_completed_t2_and_its_bundle_verifies(self):
+        out = self.send("researcher")
+        self.assertEqual((out["id"], out["result"]["id"]), (7, "task-1"))
+        self.assertEqual(out["result"]["artifacts"][0]["parts"][0]["text"], "done as [REDACTED:executor_secret]")
+        [(path, req)] = self.a2a.seen
+        self.assertEqual((path, req["method"], req["params"]), ("/researcher", "message/send", {"message": TEXT}))
+        evs = [e for e in self.verified() if e["type"] in ("policy.decision", "tool.result")]
         self.assertEqual([(e["type"], e["source"], e["tier"]) for e in evs],
                          [("policy.decision", "gateway", "T2"), ("tool.result", "gateway", "T2")])
         d = evs[0]["data"]
         self.assertEqual((d["tool"], d["decision"], d["caller"]), ("a2a:researcher/message/send", "allow", "token:http"))
         # the signed decision commits to who sent what to whom, and to the receiver's Agent Card as it was served
         card = "sha256:" + hashlib.sha256(json.dumps(CARD).encode()).hexdigest()
-        args = {"sender": "token:http", "receiver": "researcher", "agent_card": card, "params": {"message": TEXT}}
+        args = {"sender": "token:http", "receiver": "researcher", "agent_card": card, "skills": ["search"],
+                "params": {"message": TEXT}}
         self.assertTrue(self.s._opens(d["args_commitment"], d["decision_id"],
                                       event_hash({"tool": d["tool"], "args": args})))
         self.assertTrue(evs[1]["data"]["ok"])
         with open(os.path.join(self.dir, "store", "records.jsonl")) as f:
             self.assertNotIn("a2a-upstream-0123456789", f.read())
 
+    def test_tasks_get_is_decided_sent_and_completed(self):
+        status, _, body = self.post("researcher", "tasks/get", {"id": "task-1"})
+        self.assertEqual(json.loads(body)["result"]["status"]["state"], "completed")
+        self.assertEqual([(p, r["method"], r["params"]) for p, r in self.a2a.seen],
+                         [("/researcher", "tasks/get", {"id": "task-1"})])
+        evs = self.events()
+        self.assertEqual([e["data"]["tool"] for e in evs if e["type"] == "policy.decision"],
+                         ["a2a:researcher/tasks/get"])
+        self.assertEqual([e["data"]["ok"] for e in evs if e["type"] == "tool.result"], [True])
+
     def test_a_pair_the_policy_does_not_list_never_reaches_the_receiver(self):
-        out = self.send("billing")
-        self.assertEqual(out["error"]["code"], -32000)
-        self.assertIn("R-ROUTE", out["error"]["message"])
+        for method in ("message/send", "message/stream", "tasks/get"):
+            with self.subTest(method):
+                out = self.send("billing", method=method)
+                self.assertEqual(out["error"]["code"], -32000)
+                self.assertIn("R-ROUTE", out["error"]["message"])
+        self.assertEqual(self.a2a.seen, [])
+        self.assertEqual([(e["data"]["tool"], e["data"]["decision"]) for e in self.events()
+                          if e["type"] == "policy.decision"],
+                         [("a2a:billing/message/send", "deny"), ("a2a:billing/message/stream", "deny"),
+                          ("a2a:billing/tasks/get", "deny")])
+
+    def test_a_receiver_whose_card_lists_an_unlisted_skill_never_gets_the_message(self):
+        out = self.send("payer")
+        self.assertIn("R-SKILL", out["error"]["message"])
         self.assertEqual(self.a2a.seen, [])
         [d] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
-        self.assertEqual((d["tool"], d["decision"]), ("a2a:billing/message/send", "deny"))
+        card = "sha256:" + hashlib.sha256(json.dumps(PAYER_CARD).encode()).hexdigest()
+        args = {"sender": "token:http", "receiver": "payer", "agent_card": card, "skills": ["payments", "search"],
+                "params": {"message": TEXT}}
+        self.assertTrue(self.s._opens(d["args_commitment"], d["decision_id"],
+                                      event_hash({"tool": "a2a:payer/message/send", "args": args})))
 
     def test_a_message_over_the_size_rule_never_reaches_the_receiver(self):
         out = self.send("researcher", dict(TEXT, parts=[{"kind": "text", "text": "x" * 10000}]))
@@ -154,37 +245,183 @@ class Gateway(unittest.TestCase):
         self.assertEqual(self.a2a.seen, [])
 
     def test_a_held_message_is_sent_only_once_a_person_approves(self):
-        got = {}
-        t = threading.Thread(target=lambda: got.update(out=self.send("researcher", FILE)))
-        t.start()
-        for _ in range(500):
-            aids = [a["approval_id"] for a in self.s.call(AGENT, "approval_list", {"run_id": self.run["run_id"]})["approvals"]]
-            if aids:
-                break
-            time.sleep(0.01)
-        self.assertEqual(self.a2a.seen, [])   # held: nothing sent yet
-        self.s.call(AGENT, "approval_decide", {"request_id": "d1", "approval_id": aids[0], "decision": "approve"})
-        t.join(20)
-        self.assertEqual(got["out"]["result"]["id"], "task-1")
-        self.assertEqual([r["params"]["message"] for _, r in self.a2a.seen], [FILE])
+        for decision, sent in (("reject", []), ("approve", [FILE])):
+            with self.subTest(decision):
+                got = {}
+                t = threading.Thread(target=lambda: got.update(out=self.send("researcher", FILE)))
+                t.start()
+                for _ in range(500):
+                    aids = [a["approval_id"] for a in self.s.call(AGENT, "approval_list", {
+                        "run_id": self.run["run_id"], "state": "requested"})["approvals"]]
+                    if aids:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(self.a2a.seen, [])   # held: nothing sent yet
+                self.s.call(AGENT, "approval_decide", {"request_id": uuid.uuid4().hex, "approval_id": aids[0],
+                                                       "decision": decision})
+                t.join(20)
+                self.assertEqual([r["params"]["message"] for _, r in self.a2a.seen], sent)
+                if sent:
+                    self.assertEqual(got["out"]["result"]["id"], "task-1")
+                else:
+                    self.assertIn("R-FILE: approval rejected", got["out"]["error"]["message"])
 
     def test_the_signer_unreachable_fails_closed(self):
         self.signer.down = True
-        out = self.send("researcher")
-        self.assertIn("signer is unreachable", out["error"]["message"])
+        for method in ("message/send", "message/stream"):
+            with self.subTest(method):
+                out = self.send("researcher", method=method)
+                self.assertIn("signer is unreachable", out["error"]["message"])
         self.assertEqual(self.a2a.seen, [])
 
-    def test_a_stream_is_refused_not_relayed_unrecorded(self):
-        out = self.send("researcher", method="message/stream")
-        self.assertEqual(out["error"]["code"], -32004)
+    def test_a_stream_is_recorded_event_by_event_and_completed_at_its_final_event(self):
+        got = self.send("researcher", method="message/stream")
+        self.assertEqual([e["id"] for e in got], [7] * 4)
+        self.assertEqual([e["result"] for e in got[:2] + got[3:]], STREAM[:2] + STREAM[3:])
+        self.assertEqual(got[2]["result"]["artifact"]["parts"][0]["text"], "done as [REDACTED:executor_secret]")
+        [(_, req)] = self.a2a.seen
+        self.assertEqual((req["method"], req["params"]), ("message/stream", {"message": TEXT}))
+        evs = [e for e in self.verified() if e["type"] in ("policy.decision", "input.observed", "tool.result")]
+        self.assertEqual([(e["type"], e["source"], e["tier"]) for e in evs],
+                         [("policy.decision", "gateway", "T2")] + [("input.observed", "gateway", "T2")] * 4
+                         + [("tool.result", "gateway", "T2")])
+        d, tcid = evs[0]["data"], evs[0]["tool_call_id"]
+        self.assertEqual((d["tool"], d["decision"]), ("a2a:researcher/message/stream", "allow"))
+        self.assertEqual({(e["data"]["source"], e["data"]["trust"]) for e in evs[1:5]},
+                         {(f"a2a:researcher/message/stream#{tcid}", "untrusted")})
+        # the call's result is every event the client got, in order
+        out = evs[5]["data"]
+        events = [{"result": e["result"]} for e in got]
+        self.assertTrue(out["ok"])
+        self.assertTrue(self.s._opens(out["output"]["hash"], "result:" + d["decision_id"],
+                                      "sha256:" + hashlib.sha256(canonical({"result": events})).hexdigest()))
+        with open(os.path.join(self.dir, "store", "records.jsonl")) as f:
+            self.assertNotIn("a2a-upstream-0123456789", f.read())
+
+    def test_a_stream_cut_mid_way_ends_in_an_error_and_a_signed_gap(self):
+        self.a2a.stream = STREAM[:2]   # the upstream goes away before its final event
+        got = self.send("researcher", method="message/stream")
+        self.assertEqual([e["result"] for e in got[:2]], STREAM[:2])
+        self.assertEqual(got[2]["error"]["code"], -32603)
+        self.assertIn("the stream was cut after 2 event(s): the upstream ended it before its final event",
+                      got[2]["error"]["message"])
+        evs = self.verified()
+        [tcid] = [e["tool_call_id"] for e in evs if e["type"] == "policy.decision"]
+        self.assertEqual(len([e for e in evs if e["type"] == "input.observed"]), 2)
+        self.assertEqual([e for e in evs if e["type"] == "tool.result"], [])
+        self.assertEqual([(e["data"]["kind"], e["source"]) for e in evs if e["type"] == "capture.gap"
+                          and e["data"].get("tool_use_id") == tcid], [("held_call_unresolved", "signer")])
+
+    def test_an_event_the_signer_cannot_record_is_never_passed_on(self):
+        observe, seen = self.signer.observe, []
+
+        def flaky(req):   # the signer goes away after the stream's second event
+            if len(seen) == 2:
+                raise SignerUnavailable("down")
+            seen.append(req)
+            return observe(req)
+        self.signer.observe = flaky
+        got = self.send("researcher", method="message/stream")
+        self.assertEqual([e.get("result") for e in got[:2]], STREAM[:2])
+        self.assertEqual(len(got), 3)
+        self.assertIn("an event could not be recorded, so it was not passed on", got[2]["error"]["message"])
+        evs = self.events()
+        self.assertEqual(len([e for e in evs if e["type"] == "input.observed"]), 2)
+        self.assertEqual([e for e in evs if e["type"] == "tool.result"], [])
+
+    def test_any_other_method_is_refused_and_nothing_is_decided_or_sent(self):
+        for method in ("tasks/cancel", "tasks/resubscribe", "tasks/pushNotificationConfig/set", "nope"):
+            with self.subTest(method):
+                out = self.send("researcher", method=method)
+                self.assertEqual(out["error"]["code"], -32601)
+                self.assertIn("relays message/send, message/stream, tasks/get", out["error"]["message"])
         self.assertEqual(self.a2a.seen, [])
+        self.assertEqual([e for e in self.events() if e["type"] == "policy.decision"], [])
 
     def test_an_unknown_upstream_is_not_found(self):
-        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        self.addCleanup(c.close)
-        c.request("POST", "/a2a/nope", "{}", {"authorization": "Bearer " + SECRET, "content-type": "application/json",
-                                              "x-tracekit-run": f"{self.run['run_id']}.{self.run['run_token']}"})
-        self.assertEqual(c.getresponse().status, 404)
+        self.assertEqual(self.post("nope")[0], 404)
+
+    # the checklist's API-surface items (docs/security-checklist.md), on this surface
+
+    def test_refusals_never_reach_the_upstream(self):   # 9, 11: credentials on every request; a run's own token only
+        other = self.register(OTHER)
+        for case, status, kw in (
+                ("no identity", 401, {"headers": {"authorization": None}}),
+                ("a wrong token", 401, {"headers": {"authorization": "Bearer " + "w" * 40}}),
+                ("no run", 401, {"headers": {"x-tracekit-run": None}}),
+                ("a malformed run", 401, {"headers": {"x-tracekit-run": "run-1"}}),
+                ("an unknown run", 200, {"run": {**self.run, "run_id": "nope"}}),
+                ("another run's token", 200, {"run": {**self.run, "run_token": self.register(AGENT)["run_token"]}}),
+                ("another tenant's run", 200, {"run": other})):
+            with self.subTest(case):
+                code, _, body = self.post("researcher", **kw)
+                self.assertEqual(code, status)
+                if code == 200:
+                    self.assertIn("the signer refused the call", json.loads(body)["error"]["message"])
+        self.assertEqual(self.a2a.seen, [])
+
+    def test_failed_authentications_are_limited_per_address(self):   # 15
+        for _ in range(25):
+            code, _, body = self.post("researcher", headers={"authorization": "Bearer " + "w" * 40})
+            self.assertEqual(code, 401)
+        self.assertIn(b"too many failed authentications", body)
+        self.assertNotIn(b"w" * 40, body)
+        self.assertIn("result", self.send("researcher"))   # a valid credential still gets in
+        self.assertEqual(len(self.a2a.seen), 1)
+
+    def test_a_slow_client_is_cut_off(self):   # 15
+        self.srv.read_timeout = 0.5
+        run = f"{self.run['run_id']}.{self.run['run_token']}".encode()
+        for partial in (b"POST /a2a/researcher HTTP/1.1\r\nHost: x\r\n",
+                        b"POST /a2a/researcher HTTP/1.1\r\nAuthorization: Bearer " + SECRET.encode() +
+                        b"\r\nX-Tracekit-Run: " + run + b"\r\nContent-Length: 50\r\n\r\n{"):
+            s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            self.addCleanup(s.close)
+            s.sendall(partial)
+            t = time.monotonic()
+            self.assertEqual(s.recv(65536), b"")   # closed by the gateway after its read timeout
+            self.assertLess(time.monotonic() - t, 3)
+        self.assertEqual(self.a2a.seen, [])
+
+    def test_plain_http_beyond_loopback_is_refused_before_any_card_is_read(self):   # 17
+        cards = list(self.a2a.cards)
+        wide = dict(self.cfg, http=dict(self.cfg["http"], listen="0.0.0.0:0"))
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(a2a_gateway.main(["serve", "--config", self.config(wide)]), 2)
+        self.assertRegex(err.getvalue(), "plain HTTP only with insecure_loopback on a loopback address")
+        self.assertEqual(self.a2a.cards, cards)
+
+    def test_an_upstream_that_is_down_gets_nothing_and_the_call_says_so(self):   # 16: errors without internals
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        down = f"http://127.0.0.1:{s.getsockname()[1]}/a2a"
+        s.close()
+        up = self.srv.a2a["upstreams"]["researcher"]
+        up["url"] = up["action"]["url_template"] = down
+        for method in ("message/send", "message/stream"):
+            with self.subTest(method):
+                err = self.send("researcher", method=method)["error"]
+                self.assertEqual(err["code"], -32603)
+                self.assertIn("upstream unreachable, the message was not sent", err["message"])
+                for leak in ("Traceback", 'File "', UPSTREAM_KEY):
+                    self.assertNotIn(leak, err["message"])
+        self.assertEqual([e["data"]["ok"] for e in self.events() if e["type"] == "tool.result"], [False, False])
+
+    def test_answers_and_streams_over_max_body_are_cut(self):   # 14: response sizes too
+        self.srv.a2a["max_body"], self.a2a.big = 1024, True
+        err = self.send("researcher")["error"]
+        self.assertIn("the message was sent but its answer could not be read (upstream response over 1024 bytes)",
+                      err["message"])
+        got = self.send("researcher", method="message/stream")
+        self.assertIn("it broke (over 1024 bytes in all)", got[-1]["error"]["message"])
+        self.assertEqual(len(got), 3)   # the task and the first update, then the error: the artifact passed max_body
+
+    def test_a_stream_idle_past_its_timeout_is_cut(self):   # timeouts
+        self.a2a.stream = STREAM[:1] + ["pause"] + STREAM[1:]
+        with mock.patch.object(a2a_gateway, "STREAM_IDLE_S", 0.3):
+            got = self.send("researcher", method="message/stream")
+        self.assertEqual(got[0]["result"], STREAM[0])
+        self.assertIn("the stream was cut after 1 event(s): it broke (timed out)", got[1]["error"]["message"])
 
 
 class Transfer(unittest.TestCase):
@@ -237,3 +474,11 @@ class Policy(unittest.TestCase):
         self.assertEqual(e.decide("a2a:researcher/message/send", args)["rule_ids"], ["R-FILE"])
         self.assertEqual(e.decide("a2a:researcher/message/send", dict(args, sender="token:other"))["rule_ids"],
                          ["R-ROUTE", "R-FILE"])
+
+    def test_skills_from_the_receivers_card_meet_an_allow_list(self):
+        e = Engine(POLICY)
+        args = {"sender": "token:http", "receiver": "researcher", "params": {"message": TEXT}}
+        for skills, rule_ids in ((["search"], []), (["payments", "search"], ["R-SKILL"]), ([], [])):
+            with self.subTest(skills):
+                self.assertEqual(e.decide("a2a:researcher/message/send", dict(args, skills=skills))["rule_ids"],
+                                 rule_ids)

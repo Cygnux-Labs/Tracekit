@@ -1,6 +1,6 @@
-"""Tracekit for C2C (Cache-to-Cache, github.com/thu-nics/C2C; docs/c2c.md): `fuse` records and gates one sharer
-model's KV cache crossing into a receiver's through a C2C fuser, as a transfer (RunHandle.transfer), before the fuser
-runs. A deny, an ask no one approved or the signer unreachable raises Refused, and nothing is fused.
+"""Tracekit for C2C (Cache-to-Cache, github.com/thu-nics/C2C; docs/c2c.md), experimental: `fuse` records and gates one
+sharer model's KV cache crossing into a receiver's through a C2C fuser, as a transfer (RunHandle.transfer), before the
+fuser runs. A deny, an ask no one approved or the signer unreachable raises Refused, and nothing is fused.
 
     from tracekit.integrations import c2c
     cache = c2c.fuse(run, rosetta, sharer_cache, receiver_cache, sender="qwen2.5-0.5b@<rev>",

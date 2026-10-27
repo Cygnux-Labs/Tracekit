@@ -675,20 +675,20 @@ class RunHandle:
         return self.call("observe", value=value, source=source, trust=trust, **fields)
 
     def transfer(self, sender, receiver, payload, modality, projector=None, measured=None, keep=False):
-        """Record and gate a transfer from `sender` to `receiver` before it happens: text, a tool call, or a model's
-        internal state (`modality` kv-cache, embedding, activations) through `projector` (the adapter). Each is an id
-        with its version ("qwen2.5-7b@<sha>"). `payload` (bytes or text) is hashed here: the signer gets its size and
-        sha256 digest, never the payload. `measured`: more fields the calling code computed itself from what it sends
-        (tracekit.integrations.c2c: the fuser's weights hash and layer map). The arguments name those, size and digest
-        under `measured`, and the caller's word (the ids, the modality) under `claimed`; all of it comes from this
-        process (tier T1), so the signer takes none of it on trust. Decided as tool a2a:transfer, of the class the
-        policy maps it to (a2a: a rule on `route`, "sender->receiver via projector", allows listed triples); an ask
-        waits up to 5 minutes for a person. Fails closed: with the signer unreachable the transfer may not happen,
-        whatever the run's fail modes. Returns the decision with `ok`, whether the transfer may happen now; one that
-        may is recorded as made before this returns. `keep`: its result is the payload (hex), which a signer keeping
-        content (content.retain) encrypts in its vault for `tracekit why transfer`; the records hold only commitments.
-        It proves who sent which bytes to whom, through which adapter, and when, not what the state meant; a transfer
-        the code doesn't pass through here is not recorded."""
+        """Experimental: record and gate a transfer from `sender` to `receiver` before it happens: text, a tool call,
+        or a model's internal state (`modality` kv-cache, embedding, activations) through `projector` (the adapter).
+        Each is an id with its version ("qwen2.5-7b@<sha>"). `payload` (bytes or text) is hashed here: the signer gets
+        its size and sha256 digest, never the payload. `measured`: more fields the calling code computed itself from
+        what it sends (tracekit.integrations.c2c: the fuser's weights hash and layer map). The arguments name those,
+        size and digest under `measured`, and the caller's word (the ids, the modality) under `claimed`; all of it
+        comes from this process (tier T1), so the signer takes none of it on trust. Decided as tool a2a:transfer, of
+        the class the policy maps it to (a2a: a rule on `route`, "sender->receiver via projector", allows listed
+        triples); an ask waits up to 5 minutes for a person. Fails closed: with the signer unreachable the transfer may
+        not happen, whatever the run's fail modes. Returns the decision with `ok`, whether the transfer may happen now;
+        one that may is recorded as made before this returns. `keep`: its result is the payload (hex), which a signer
+        keeping content (content.retain) encrypts in its vault for `tracekit why transfer`; the records hold only
+        commitments. It proves who sent which bytes to whom, through which adapter, and when, not what the state
+        meant; a transfer the code doesn't pass through here is not recorded."""
         data = payload.encode() if isinstance(payload, str) else bytes(payload)
         more = measured or {}
         args = {"sender": sender, "receiver": receiver, "modality": modality,

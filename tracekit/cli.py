@@ -191,8 +191,8 @@ def main(argv=None):
     p = sub.add_parser("mcp-gateway", help="MCP gateway for the v2 signer: `mcp-gateway serve --config mcp-gateway.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("a2a-gateway", help="A2A gateway for the v2 signer: `a2a-gateway serve --config a2a-gateway.yaml`",
-                       add_help=False)
+    p = sub.add_parser("a2a-gateway", help="A2A gateway for the v2 signer (experimental): `a2a-gateway serve --config "
+                                           "a2a-gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("srt-decider", help="decide every request srt-proxy (Anthropic's sandbox-runtime) asks about: "
                                            "`srt-decider --allow-domain HOST -- srt-proxy ...`", add_help=False)

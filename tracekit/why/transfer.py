@@ -1,4 +1,5 @@
 """How much a transfer changed what its receiver answered: the receiver re-run with what was sent and without it.
+Experimental, as transfers are (RunHandle.transfer).
 
     tracekit why transfer --run R --store DIR --receiver MODULE:ATTR [--transfer SEQ]
 

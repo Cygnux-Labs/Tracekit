@@ -1,6 +1,7 @@
-"""A2A gateway (tier T2): a reverse proxy in front of configured A2A servers (the Agent2Agent protocol, JSON-RPC over
-HTTP) whose credentials stay in the gateway; every message an agent sends another agent, and every task call, is
-decided, sent and completed in the signer by the gateway, for the calling agent's run. docs/a2a.md.
+"""A2A gateway (tier T2, experimental): a reverse proxy in front of configured A2A servers (the Agent2Agent protocol,
+JSON-RPC over HTTP) whose credentials stay in the gateway; every message an agent sends another agent through it, and
+every task it reads, is decided, sent and completed in the signer by the gateway, for the calling agent's run.
+docs/a2a.md.
 
     tracekit a2a-gateway serve --config a2a-gateway.yaml
 
@@ -10,30 +11,41 @@ a2a-gateway.yaml:
     signer: https://signer.internal:8443   # the gateway's own identity: $TRACEKIT_SIGNER_* (tracekit.sdk.client);
                                            # signer.yaml lists it under `gateways`
     approval_wait_s: 300                   # how long a message the policy asks about waits for a person
-    max_body: 1048576                      # request and response bodies
+    max_body: 1048576                      # request and response bodies; a stream's events in all
     upstreams:
-      - name: researcher                   # [A-Za-z0-9-]+: the agent posts to /a2a/researcher
+      - name: researcher                   # [A-Za-z0-9-]{1,64}: the agent posts to /a2a/researcher
         url: https://researcher.internal/a2a                   # the A2A server's JSON-RPC endpoint
         card: https://researcher.internal/.well-known/agent-card.json   # default: that path on url's host
         headers: {authorization: secrets/researcher.header}   # header -> the file holding its value (a secret: cut)
 
 The calling agent POSTs JSON-RPC to `/a2a/<upstream>` with its run, as at the LLM gateway (`X-Tracekit-Run:
-<run_id>.<run token>` and an identity the authenticators accept). Each method of METHODS is decided as tool
-`a2a:<upstream>/<method>` (a2a:researcher/message/send) with the arguments {sender: the caller the gateway
-authenticated, receiver: the upstream's name, agent_card: the sha256 digest of its Agent Card, params: the JSON-RPC
-params}, with `caller` under the agent's run token, so the records are source gateway, tier T2, and the policy's a2a
-class reads the sender, the receiver and the message's parts from them (policy2/classes.a2a_fields). On `ask` the
-message waits for a person, up to approval_wait_s. The gateway sends the signer's copy of the params upstream and
-completes the call with the response, which the signer redacts. A denial, any other refusal or the signer unreachable
-(fail closed, whatever the run's fail modes) is a JSON-RPC error and the upstream never sees the message. The header
-values never reach the agent or the signer: each is cut from the response and from errors before they are recorded or
-answered. Relative paths are from the config file.
+<run_id>.<run token>` and an identity the authenticators accept). message/send, message/stream and tasks/get are each
+decided as tool `a2a:<upstream>/<method>` (a2a:researcher/message/send) with the arguments {sender: the caller the
+gateway authenticated, receiver: the upstream's name, agent_card: the sha256 digest of its Agent Card, skills: the ids
+of the skills that card lists, params: the JSON-RPC params}, with `caller` under the agent's run token, so the records
+are source gateway, tier T2, and the policy's a2a class reads the sender, the receiver, the skills and the message's
+parts from them (policy2/classes.a2a_fields). On `ask` the request waits for a person, up to approval_wait_s. The
+gateway sends the signer's copy of the params upstream and completes the call with the answer, which the signer
+redacts. Any other method is refused and nothing is sent. A denial, any other refusal or the signer unreachable (fail
+closed, whatever the run's fail modes) is a JSON-RPC error and the upstream never sees the request.
+
+message/stream passes the upstream's events (server-sent events, each a JSON-RPC response) to the agent as they come,
+each recorded first as an input the run observed (source a2a:<upstream>/message/stream#<the call's id>). The final one
+(an error, a message, an update marked final, a task in a state that ends the stream) completes the call, with every
+event as its result, before the agent gets it. A stream cut short (the upstream ending or breaking before its final
+event, an event the signer could not record or that is not JSON-RPC, over max_body bytes in all, STREAM_IDLE_S without
+a byte) ends for the agent in an error event, and the call keeps no result, which the signer signs as a
+held_call_unresolved gap when the run ends: never a clean end, never silent.
+
+The header values never reach the agent or the signer: each is cut from answers, events and errors before they are
+recorded or answered. Relative paths are from the config file.
 """
 import hashlib
 import http.client
 import json
 import os
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -43,21 +55,21 @@ from tracekit.client import remote_url_error
 from tracekit.executor import (APPROVAL_WAIT_S, HEADER_NAME, MAX_BODY, UPSTREAM_TIMEOUT_S, Custody, Unsent, _send, cut,
                                main as _main, read_secret, secret_values)
 from tracekit.gateway import OPEN, _Handler
-from tracekit.sdk.client import Client, result_field
+from tracekit.sdk.client import Client, SignerUnavailable, result_field
+from tracekit.signer.rpc_schema import RPCError
 from tracekit.transport import http as transport
 
 KEYS = {"http", "signer", "upstreams", "approval_wait_s", "max_body"}
 UPSTREAM_KEYS = {"name", "url", "card", "headers"}
-NAME = re.compile(r"[A-Za-z0-9-]+")
+NAME = re.compile(r"[A-Za-z0-9-]{1,64}")
 PREFIX = "/a2a/"
 CARD_PATH = "/.well-known/agent-card.json"
 MAX_CARD = 1 << 20
-METHODS = {"message/send", "tasks/get", "tasks/cancel", "tasks/pushNotificationConfig/set",
-           "tasks/pushNotificationConfig/get", "tasks/pushNotificationConfig/list",
-           "tasks/pushNotificationConfig/delete"}
-# lean: a streamed answer (SSE) is refused, not relayed; relay it event by event, each recorded, a cut stream a signed
-# gap, once agents need message/stream through the gateway
-STREAMING = {"message/stream", "tasks/resubscribe"}
+# lean: these three only; tasks/cancel, tasks/resubscribe and the push notification config methods are refused, and
+# push notifications an upstream sends anywhere else are not seen. Relay each, decided, once agents need it here
+METHODS = {"message/send", "message/stream", "tasks/get"}
+ENDS = {"completed", "canceled", "failed", "rejected", "input-required", "auth-required"}   # task states ending a stream
+STREAM_IDLE_S = 600   # how long a stream may go without a byte, as at the LLM gateway
 
 
 class _A2aGateway(_Handler):
@@ -81,28 +93,32 @@ class _A2aGateway(_Handler):
             out = self._call(gw, key, up, msg)
         except _Error as e:
             out = {"error": {"code": e.args[0], "message": e.args[1]}}
-        self._json(200, {"jsonrpc": "2.0", "id": msg.get("id"), **out})
+        if out is not None:   # None: a stream, answered already
+            self._json(200, {"jsonrpc": "2.0", "id": msg.get("id"), **out})
 
     def _call(self, gw, key, up, msg):
         """The upstream's answer ({result} or {error}) to the JSON-RPC request `msg`, decided, sent and completed as
-        tool a2a:<upstream>/<method>; _Error when it may not be sent."""
+        tool a2a:<upstream>/<method> (None once a stream was answered); _Error when it may not be sent."""
         method, params = msg.get("method"), msg.get("params")
         if "id" not in msg:
             raise _Error(-32600, "an A2A request has an id")
-        if method in STREAMING:
-            raise _Error(-32004, f"{method} is not supported through the gateway yet: use message/send")
         if method not in METHODS:
-            raise _Error(-32601, f"method not found: {str(method)[:64]}")
+            raise _Error(-32601, f"method not found: {str(method)[:64]}; the gateway relays "
+                                 f"{', '.join(sorted(METHODS))}")
         if not isinstance(params, dict):
             raise _Error(-32602, "params is an object")
         tool, tcid = f"a2a:{up['name']}/{method}", "a2a-" + uuid.uuid4().hex
-        args = {"sender": key[2], "receiver": up["name"], "agent_card": up["card_digest"], "params": params}
+        args = {"sender": key[2], "receiver": up["name"], "agent_card": up["card_digest"], "skills": up["skills"],
+                "params": params}
         why, d, args = gw["custody"].gate(key, tcid, tool, args)
         if why is not None:
-            raise _Error(-32000, "Message blocked by Tracekit: " + why[1])
+            raise _Error(-32000, "Blocked by Tracekit: " + why[1])
+        request = {"jsonrpc": "2.0", "id": msg["id"], "method": method, "params": args["params"]}
         try:
-            status, value = _send(up["action"], {"jsonrpc": "2.0", "id": msg["id"], "method": method,
-                                                 "params": args["params"]}, gw["max_body"])
+            if method == "message/stream":
+                with _open(up, request) as resp:
+                    return self._stream(gw, up, resp, (key, tcid, d, tool, args), msg["id"])
+            status, value = _send(up["action"], request, gw["max_body"])
         except (http.client.HTTPException, OSError, ValueError) as e:
             err = cut(f"upstream unreachable, the message was not sent: {e.args[0]}" if isinstance(e, Unsent) else
                       f"the message was sent but its answer could not be read ({e}): it may have been acted on; "
@@ -117,23 +133,124 @@ class _A2aGateway(_Handler):
                                result=result_field(True, value))
         return out
 
+    def _stream(self, gw, up, resp, call, rid):
+        """Pass the upstream's message/stream answer `resp` to the client event by event, each recorded first, and
+        complete `call` (key, tool call id, decision, tool, args) at its final event; a stream cut short ends in an
+        error event and leaves the call without a result (the module docstring)."""
+        key, tcid, d, tool, args = call
+        events, err = [], None
+        try:
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("cache-control", "no-store")
+            self.send_header("transfer-encoding", "chunked")
+            self.end_headers()
+            for data in _events(resp, gw["max_body"]):
+                ev = json.loads(data)
+                out = cut({k: ev[k] for k in ("result", "error") if isinstance(ev, dict) and k in ev},
+                          up["action"]["cut"])
+                if len(out) != 1:
+                    raise ValueError("an event without a JSON-RPC result or error")
+                gw["custody"].client.observe({"run_id": key[0], "run_token": key[1], "caller": key[2],
+                                              "source": f"{tool}#{tcid}", "value": result_field(True, out),
+                                              "trust": "untrusted"})
+                events.append(out)
+                if _final(out):   # the call's result is recorded before the client gets its last event
+                    gw["custody"].complete(key, tcid, d, tool, args, "error" if "error" in out else "ok",
+                                           result=result_field(True, events))
+                    return self._chunks(_sse(rid, out), b"")
+                self._chunks(_sse(rid, out))
+            err = "the upstream ended it before its final event"
+        except (SignerUnavailable, RPCError) as e:
+            err = f"an event could not be recorded, so it was not passed on ({e})"
+        except (http.client.HTTPException, OSError, ValueError, RecursionError) as e:
+            err = f"it broke ({e})"
+        self.close_connection = True
+        try:   # an error event, then no last chunk: never a clean end
+            self._chunks(_sse(rid, {"error": {"code": -32603, "message": cut(
+                f"{self.NAME}: the stream was cut after {len(events)} event(s): {err}; the task may go on, and "
+                "tasks/get reads its state", up["action"]["cut"])[:4096]}}))
+        except OSError:   # the client went away
+            pass
+
+    def _chunks(self, *parts):
+        for p in parts:
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(p), p))
+        self.wfile.flush()
+
 
 class _Error(Exception):
     pass
 
 
+def _open(up, request):
+    """The upstream's answer to the JSON-RPC `request`, asked for as an event stream, at any status; Unsent when it was
+    not sent."""
+    req = urllib.request.Request(up["url"], data=json.dumps(request).encode(), method="POST", headers={
+        "content-type": "application/json", "accept": "text/event-stream", "accept-encoding": "identity",
+        **up["action"]["headers"]})
+    try:
+        return OPEN(req, timeout=STREAM_IDLE_S)
+    except urllib.error.HTTPError as e:
+        return e
+    except (urllib.error.URLError, ValueError) as e:   # as executor._send: connecting or sending failed
+        raise Unsent(getattr(e, "reason", e)) from None
+
+
+def _events(resp, max_body):
+    """The data of each event of the upstream's answer `resp`: its whole body, as one event, when it is not an event
+    stream (an error); ValueError past max_body bytes in all."""
+    if resp.headers.get_content_type() != "text/event-stream":
+        data = resp.read(max_body + 1)
+        if len(data) > max_body:
+            raise ValueError(f"an answer over {max_body} bytes")
+        yield data
+        return
+    data, size = [], 0
+    while True:
+        line = resp.readline(max_body + 1 - size)
+        size += len(line)
+        if size > max_body:
+            raise ValueError(f"over {max_body} bytes in all")
+        if not line:
+            return
+        line = line.rstrip(b"\r\n")
+        if line.startswith(b"data:"):
+            data.append(line[5:].removeprefix(b" "))
+        elif not line and data:
+            yield b"\n".join(data)
+            data = []
+
+
+def _final(out):
+    """Whether event `out` ({result} or {error}) ends a message/stream: an error, a message, an update marked final or
+    a task in a state that ends it."""
+    r = out.get("result")
+    if not isinstance(r, dict):
+        return True
+    state = r["status"].get("state") if isinstance(r.get("status"), dict) else None
+    return r.get("kind") == "message" or r.get("final") is True or r.get("kind") == "task" and state in ENDS
+
+
+def _sse(rid, out):
+    return b"data: " + json.dumps({"jsonrpc": "2.0", "id": rid, **out}).encode() + b"\n\n"
+
+
 def _card(url):
-    """The sha256 digest of the Agent Card `url` serves, as bytes."""
+    """(the sha256 digest of the Agent Card `url` serves, as bytes; the ids of the skills it lists)."""
     # lean: read once, at start; restart the gateway when a receiver's card changes, or re-read it per call if cards
     # change while it runs
     try:
         with OPEN(urllib.request.Request(url, headers={"accept": "application/json"}), timeout=UPSTREAM_TIMEOUT_S) as r:
             data = r.read(MAX_CARD + 1)
-        if len(data) > MAX_CARD or not isinstance(json.loads(data), dict):
+        card = json.loads(data) if len(data) <= MAX_CARD else None
+        if not isinstance(card, dict):
             raise ValueError(f"not a JSON object of at most {MAX_CARD} bytes")
-    except (OSError, http.client.HTTPException, ValueError) as e:
+    except (OSError, http.client.HTTPException, ValueError, RecursionError) as e:
         raise ValueError(f"{url}: the Agent Card could not be read: {e}") from None
-    return "sha256:" + hashlib.sha256(data).hexdigest()
+    skills = card.get("skills") if isinstance(card.get("skills"), list) else []
+    return ("sha256:" + hashlib.sha256(data).hexdigest(),
+            sorted({s["id"] for s in skills if isinstance(s, dict) and isinstance(s.get("id"), str)}))
 
 
 def load_config(path):
@@ -152,7 +269,7 @@ def load_config(path):
         if not isinstance(u, dict) or set(u) - UPSTREAM_KEYS or "url" not in u:
             raise ValueError(f"{where}: needs name and url; takes {sorted(UPSTREAM_KEYS)}")
         if not (isinstance(u.get("name"), str) and NAME.fullmatch(u["name"])) or u["name"] in upstreams:
-            raise ValueError(f"{where}: name is unique, [A-Za-z0-9-]+")
+            raise ValueError(f"{where}: name is unique, [A-Za-z0-9-]{{1,64}}")
         for k in ("url", "card"):
             if k in u and (remote_url_error(str(u[k])) or set("{}") & set(str(u[k]))):
                 raise ValueError(f"{where}: {k}: {remote_url_error(str(u[k])) or 'no { or } in it'}")
@@ -171,14 +288,16 @@ def load_config(path):
 def serve(cfg, client=None):
     """The gateway's server for a loaded config, each upstream's Agent Card read, not yet serving; stop it with
     shutdown() and server_close()."""
+    addr, auths, tls = transport.configure(cfg["http"])   # first: a listener it refuses reads no card
     ups = {}
     for name, u in cfg["upstreams"].items():
         headers = {k: read_secret(p, header=True) for k, p in u["headers"].items()}
         # what executor._send posts: the JSON-RPC request to url, with the headers, their values cut from the answer
         action = {"method": "POST", "url_template": u["url"], "path_fields": (), "headers": headers,
                   "cut": secret_values(headers.values())}
-        ups[name] = dict(u, card_digest=_card(u["card"]), action=action)
-    srv = transport.HttpServer(*transport.configure(cfg["http"]), None, handler=_A2aGateway)
+        digest, skills = _card(u["card"])
+        ups[name] = dict(u, card_digest=digest, skills=skills, action=action)
+    srv = transport.HttpServer(addr, auths, tls, None, handler=_A2aGateway)
     srv.a2a = {"upstreams": ups, "max_body": cfg.get("max_body", MAX_BODY),
                "custody": Custody(client or Client(cfg["signer"]), cfg.get("approval_wait_s", APPROVAL_WAIT_S))}
     return srv
