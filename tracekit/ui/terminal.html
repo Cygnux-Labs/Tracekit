@@ -2418,6 +2418,50 @@
         + n.cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join(" ") + (n.link ? ` <a href="${esc(n.link)}">OPEN</a>` : "") + `</span></div>`).join("")
         : `ALL CLEAR · ${esc(plural(working, "agent"))} working · nothing needs you`) + `</div>`);
     }
+    // PERMISSIONS: every decision that was not a plain allow (deny, hold, flag) and what came of it, in the selected run
+    // or in every run the page has; each row's `tabs`: all, its decision, its outcome. Newest first
+    const PTABS = [["all", "ALL"], ["waiting", "WAITING"], ["deny", "BLOCKED"], ["ask", "HELD"], ["flag", "FLAGGED"], ["approved", "APPROVED"], ["rejected", "REJECTED"], ["expired", "EXPIRED OR UNANSWERED"]];
+    const PERM = { tab: "all", page: 0 }, PERM_PAGE = 50;
+    let permKey = [], permList = [];
+    function permRows() {
+      const key = [ALL.length, ALL[ALL.length - 1], scope];
+      if (key.every((x, i) => x === permKey[i])) return permList;
+      const by = new Map(), ended = new Set(), rows = [];
+      for (const r of ALL) {
+        if (r.analysis || scope && r.session_id !== scope) continue;
+        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id);
+        if (r.event === "SessionEnd") ended.add(r.session_id);
+        else if (r.event === "PreToolUse" && r.v2 && r.v2.decision !== "allow") { const row = { rec: r, answers: [] }; by.set(k, row); rows.push(row); }
+        else if (r.event === "PostToolUse" && by.has(k)) by.get(k).post = r;
+        else if (r.v2?.approval && by.has(k)) by.get(k).answers.push(r);
+      }
+      permKey = key;
+      return permList = rows.reverse().map(row => {
+        const d = row.rec.v2.decision, ans = row.answers.filter(x => x.v2.approval in ANSWER).pop(), a = ans?.v2.approval, done = ended.has(row.rec.session_id);
+        const [tab, out] = d === "deny" ? ["", ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
+          : a === "approve" ? ["approved", ["s-ok", row.post ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
+          : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "WAITING"]];
+        return { ...row, ans, req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
+      });
+    }
+    function permissionsView(el) {
+      const rows = permRows(), n = k => rows.filter(r => r.tabs.includes(k)).length;
+      const list = rows.filter(r => r.tabs.includes(PERM.tab)), pages = Math.max(1, Math.ceil(list.length / PERM_PAGE));
+      PERM.page = Math.min(PERM.page, pages - 1);
+      const from = PERM.page * PERM_PAGE, shown = list.slice(from, from + PERM_PAGE), DEC = { deny: ["s-deny", "DENY"], ask: ["s-flag", "HOLD"], flag: ["s-flag", "FLAG"] };
+      put("whyv", `<div class="wbar">` + PTABS.map(([k, l]) => `<button type="button" data-ptab="${esc(k)}" class="${PERM.tab === k ? "on" : ""}">${esc(l)} ${esc(n(k))}</button>`).join("") + `</div>`
+        + `<p class="dim" style="padding:0 8px">Every decision that was not a plain allow, and what came of it, ${scope ? "in this run" : "in every run this page has"}. An answer happens on the signer's approval path: copy its command${DESK() ? ", or use the approvals page" : ""}. This page answers nothing.</p>`
+        + `<table class="wt"><thead><tr><th>TIME</th><th>AGENT</th><th>CALL</th><th>ARGUMENTS (SIGNER'S COPY)</th><th>DECISION</th><th>RULE, IN WORDS</th><th>OUTCOME</th><th>WHO · WHEN</th><th></th></tr></thead><tbody>`
+        + (shown.map(r => {
+          const v = r.rec.v2, args = r.rec.tool_input && Object.keys(r.rec.tool_input).length ? j(r.rec.tool_input).replace(/\s+/g, " ") : "";
+          const cmds = r.tabs.includes("waiting") && r.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${r.req.v2.approval_id}`) : [];
+          return `<tr class="row" data-tkseq="${esc(r.rec.tk_seq)}"><td class="dim">${esc(fmtD(r.rec.ts) + " " + fmtT(r.rec.ts))}</td><td class="s-flag">${esc(r.rec.agent)}</td><td>${esc(r.rec.tool_name)}</td><td title="${esc(args)}" class="${args ? "" : "dim"}">${esc(args ? args.slice(0, 160) : "kept as a commitment only")}</td>`
+            + `<td class="${esc((DEC[v.decision] || DEC.flag)[0])}">${esc((DEC[v.decision] || DEC.flag)[1])}</td><td>${esc((v.rules || []).map(x => (x.id + " " + (x.reason || "")).trim()).join("; ") || "–")}</td><td class="${esc(r.out[0])}">${esc(r.out[1])}</td>`
+            + `<td class="dim">${esc(r.ans ? `${r.ans.v2.approver || "?"} · ${fmtT(r.ans.ts)}` : v.decision === "deny" ? "nobody may: never held" : r.tabs.includes("waiting") && !r.req ? "no approval requested yet" : "–")}</td><td>` + cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join("<br>") + `</td></tr>`;
+        }).join("") || `<tr><td colspan="9" class="empty">Nothing here.</td></tr>`) + `</tbody></table>`
+        + (pages > 1 ? `<div class="wbar"><button type="button" data-ppage="-1">◀</button><span>${esc(`${from + 1}–${from + shown.length} of ${list.length} · newest first`)}</span><button type="button" data-ppage="1">▶</button></div>` : ""));
+      $("wvsum").textContent = `${plural(rows.length, "decision")} · ${n("waiting")} waiting`;
+    }
     function renderWaiting() {
       const w = waiting(), el = $("waiting");
       el.hidden = !w.length;
@@ -2996,7 +3040,9 @@
 
     /* ---------------- why logs (why.server.Store; docs/viewer.md#why) ---------------- */
     // WHY: /api/why/workspace; WD: why run id -> its detail (null while loading); VIEW: the lower panels' view
-    const VIEWS = ["desk", "runs", "overview", "timeline", "why", "graph", "agents", "influence"];
+    // the lower panels' views; those of NEEDWHY need why logs, the others are built from the runs' records
+    const VIEWS = ["desk", "permissions", "runs", "overview", "timeline", "why", "graph", "agents", "influence"];
+    const NEEDWHY = new Set(["runs", "overview", "timeline", "why", "graph", "agents", "influence"]);
     let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "", WNODE = null, WPICK = null;
     const TL = { agent: "", type: "", flag: false, q: "" };   // TIMELINE's filters
     const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null, fit: true };
@@ -3171,16 +3217,21 @@
     }
     function renderWhyView() {
       document.body.classList.toggle("wv", VIEW !== "desk");
-      if (!WHY) return;
-      const VNAME = { why: "WHY DID IT HAPPEN?" };
-      $("views").innerHTML = VIEWS.map(k => `<button type="button" data-view="${esc(k)}" class="${VIEW === k ? "on" : ""}">${esc(VNAME[k] || k.toUpperCase())}</button>`).join("");
+      const VNAME = { why: "WHY DID IT HAPPEN?" }, el = $("whyv");
+      $("views").hidden = !(V2 || WHY);
+      put("views", VIEWS.filter(k => WHY || !NEEDWHY.has(k)).map(k => `<button type="button" data-view="${esc(k)}" class="${VIEW === k ? "on" : ""}">${esc(VNAME[k] || k.toUpperCase())}</button>`).join(""));
       if (VIEW === "desk") return;
+      if (!NEEDWHY.has(VIEW)) {   // a view of the runs' records: drawn with put, so a live re-render keeps its scroll
+        wvKey = ""; $("wvtitle").textContent = VIEW.toUpperCase(); $("wrun").hidden = true;
+        return { permissions: permissionsView }[VIEW](el);
+      }
+      el._h = null;   // the why views set their HTML themselves
+      if (!WHY) { el.innerHTML = `<div class="empty">This view needs why logs: none are loaded (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).</div>`; return; }
       const runs = WHY.runs.map(r => r.run_id), run = V2 && scope ? RUNS.get(scope) : null;
       // a selected signed run shows its own why run (or says why it has none), never another run's
       if (!runs.includes(WRUN)) WRUN = run ? Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0] || null
         : whyRef(selected)?.run || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
-      const el = $("whyv");
-      const key = [VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit, WPICK, WBUSY, WMSG, WHY.runs.length, scope, run?.verdict, el.clientWidth, el.clientHeight].join("|");
+      const key =[VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit, WPICK, WBUSY, WMSG, WHY.runs.length, scope, run?.verdict, el.clientWidth, el.clientHeight].join("|");
       if (key === wvKey || document.activeElement?.closest("#whyv input")) return;   // never under a field being typed in
       wvKey = key;
       $("wvtitle").textContent = VNAME[VIEW] || VIEW.toUpperCase();
@@ -3381,8 +3432,10 @@
       $("wvsum").textContent = `${S2.length} sources · ${T.length} tools`;
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage]"); if (!t) return;
       e.preventDefault();
+      if (t.dataset.ptab) { PERM.tab = t.dataset.ptab; PERM.page = 0; return schedule(); }
+      if (t.dataset.ppage) { PERM.page = Math.max(0, PERM.page + +t.dataset.ppage); return schedule(); }
       if (t.dataset.wtab) { WTAB = t.dataset.wtab; return schedule(); }
       if (t.dataset.view) { VIEW = t.dataset.view; wvKey = ""; return schedule(); }
       if (t.dataset.gfit !== undefined) { GV.fit = !!t.dataset.gfit; return schedule(); }

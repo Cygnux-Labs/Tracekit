@@ -284,5 +284,39 @@ class AlertGroups(unittest.TestCase):
             self.assertIn(key, PAGE)
 
 
+
+class Permissions(unittest.TestCase):
+    def test_every_decision_but_a_plain_allow_with_its_outcome_and_who_answered(self):
+        """The dev viewer has no approvals page and run reviews listed approvals for 17 of 250 runs with holds."""
+        needs_node(self)
+        recs = [{**hold(1, "c1"), "v2": {"decision": "deny"}}, {**hold(2, "c2"), "v2": {"decision": "flag"}},
+                {"event": "PostToolUse", "session_id": "r1", "tool_use_id": "c2", "tk_seq": 3},
+                hold(4, "c3"), answer(5, "c3", "requested", approval_id="apr-3"),
+                answer(6, "c3", "approve", approver="oidc:alice"), answer(7, "c3", "consumed"),
+                {"event": "PostToolUse", "session_id": "r1", "tool_use_id": "c3", "tk_seq": 8},
+                hold(9, "c4"), answer(10, "c4", "reject", approver="uid:501"), hold(11, "c5"), answer(12, "c5", "expired"),
+                hold(13, "c6"), answer(14, "c6", "requested", approval_id="apr-6"),
+                {**hold(15, "c7"), "v2": {"decision": "allow"}}, {**hold(16, "c8"), "analysis": True},
+                hold(17, "c9", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 18}]
+        out = json.loads(page_js(["ANSWER", "permRows"], f"""
+            const ALL = {json.dumps(recs)}; let scope = null, permKey = [], permList = [];
+            const rows = r => r.map(x => [x.rec.tool_use_id, x.tabs.filter(Boolean).join(" "), x.out[1], x.ans?.v2.approver ?? null,
+                                          x.req?.v2.approval_id ?? null]);
+            const seen = [rows(permRows())];
+            scope = "r2"; seen.push(rows(permRows()));
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out[0], [["c9", "all ask expired", "NOT ANSWERED", None, None],
+                                  ["c6", "all ask waiting", "WAITING", None, "apr-6"],
+                                  ["c5", "all ask expired", "EXPIRED", None, None],
+                                  ["c4", "all ask rejected", "REJECTED", "uid:501", None],
+                                  ["c3", "all ask approved", "APPROVED · RAN", "oidc:alice", "apr-3"],
+                                  ["c2", "all flag", "RAN · FLAGGED", None, None], ["c1", "all deny", "BLOCKED", None, None]])
+        self.assertEqual(out[1], [["c9", "all ask expired", "NOT ANSWERED", None, None]])
+
+    def test_the_view_is_reachable_without_why_logs_and_from_a_link(self):
+        self.assertIn('VIEWS.filter(k => WHY || !NEEDWHY.has(k))', PAGE)
+        self.assertNotIn('"permissions"', re.search(r"const NEEDWHY = new Set\(\[[^\]]*\]\)", PAGE).group(0))
+
+
 if __name__ == "__main__":
     unittest.main()
