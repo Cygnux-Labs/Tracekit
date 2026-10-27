@@ -225,7 +225,8 @@ def main(argv=None):
     sub.add_parser("pending", help="list tool calls waiting for approval")
     for name in ("approve", "reject"):
         p = sub.add_parser(name, help=f"{name} a held tool call (run from a terminal outside the agent's session)")
-        p.add_argument("approval_id", nargs="?", help="id from `tracekit pending` (default: the only pending one)")
+        p.add_argument("approval_id", nargs="?", help="id from `tracekit pending` (default: the only pending one), or "
+                       f"a v2 one (apr-...), answered as `tracekit approvals {name}` does")
 
     p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`, "
                        "`approvals slack serve --config slack.yaml`")
@@ -588,6 +589,8 @@ def _run(a):
             return 2
         return proxy.main(["--home", _signer_home(a)] + (["--port", str(a.port)] if a.port is not None else []) +
                           (["--upstream", a.upstream] if a.upstream else []))
+    if a.cmd in ("approve", "reject") and "apr-" in (a.approval_id or ""):   # a v2 id: tracekitd's are hex
+        return _approvals(argparse.Namespace(action=a.cmd, approval_id=a.approval_id, signer=None, reason=None))
     if a.cmd in ("pending", "approve", "reject"):
         from . import client
         try:
