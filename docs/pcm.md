@@ -21,7 +21,7 @@ $ tracekit pcm demo
 tracekit pcm demo: two agents negotiate a refund (an in-process signer in /var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/tk-pcm-lo5rs176)
   alice approves agent A's grant: refund.request, amount <= $200.00, order == 81, until 18:00Z, can be passed on: no
   A -> B  refund.request {amount $120.00, order 81} + approved_by(alice)
-      B: ACCEPT           signature ok · replay ok · schema ok · grant ok (alice, 1 step) · approved_by proven
+      B: ACCEPT           signature ok · replay ok · schema ok · grant ok (alice, 1 step) · approved_by proven (approval seq 4 by alice of "pcm.grant" call grant-1)
   A -> B  same request + tests_passed(pytest tests/test_refund.py), no evidence
       B: ACCEPT-UNPROVEN  tests_passed: unproven (no evidence)
   A -> B  approved_by with one record hash changed
@@ -116,7 +116,7 @@ A claim says something happened in the sender's run. There are four types:
 | Claim | Proven when the evidence holds |
 |---|---|
 | `tests_passed {suite}` | a call of a tool the [placement table](#tool-placement) classes as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one [test command](#test-commands) (`pytest -q tests/x.py`, not `pytest -q; true`, `pytest &`, `pytest --co` or `echo hi`) |
-| `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved; with the `approval.request` it answers (the same `approval_id`) and the `policy.decision` that request names (its `decision_id`), of call `call` and with its `tool`. The detail says which tool call was approved: [read it](#what-approved_by-says) |
+| `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved; with the `approval.request` it answers (the same `approval_id`) and the `policy.decision` that request names (its `decision_id`), of call `call` and with its `tool`. The result's `approved` says which tool call was approved: [read it](#what-approved_by-says) |
 | `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md), to `host`, in which a connection opened (`connections` above 0); or a call of a tool the placement table classes as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok`. Hosts are compared in [canonical form](#hosts) |
 | `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok`. `path` must be absolute (`/repo/refund.py`, `C:\repo\refund.py`) and have no `..`; it is compared as [Paths](#paths) says |
 
@@ -129,7 +129,8 @@ Each claim gets one result:
   as a shell tool`), and so is a record that says less than the claim: a connect a kernel sensor or OpenShell saw
   (`the run try to connect to api.example.com, an attempt`), an egress minute in which no connection opened
   (`saw no connection to api.example.com open`), a host that won't parse, or a `Write` whose path the verifier can't
-  tell from the claimed one ([Paths](#paths)).
+  tell from the claimed one ([Paths](#paths)). A connect the sensor marked `denied` counts for nothing, so a
+  `reached_host` claim that rests on one alone fails.
 - **failed**: the evidence does not verify, no record in it says what the claim says, or the claim is malformed (a
   relative `file_written` path, a `tests_passed` suite that is no test command). An `approval` without the
   `approval.request` and `policy.decision` that say what was approved fails too: the sender chooses its evidence and
@@ -138,17 +139,22 @@ Each claim gets one result:
 ### What `approved_by` says
 
 `call` is the agent's own name for its call: an agent can name a `read_file` call `refund-81-approved`. Only the
-decision the approval answers says what the person approved, so the detail names its tool, and its args, whole and
-in JCS, when the evidence opens that decision:
+decision the approval answers says what the person approved, so a proven claim's result carries it as `approved`:
+the decision's `tool`, and its `args` when the evidence opens that decision (else `null`). The detail says the same,
+the tool as a JSON string, so a tool the agent named `pay call x with args {…} and read_file` can't pass for opened
+args, and the args whole and in JCS:
 
-```text
-approval seq 4 by alice of pcm.grant call grant-1
-approval seq 4 by alice of read_file call refund-81-approved with args {"path":"/etc/motd"}
+```json
+{"type": "approved_by", "result": "proven", "detail": "approval seq 4 by alice of \"pcm.grant\" call grant-1",
+ "approved": {"tool": "pcm.grant", "args": null}}
+{"type": "approved_by", "result": "proven",
+ "detail": "approval seq 4 by alice of \"read_file\" call refund-81-approved with args {\"path\":\"/etc/motd\"}",
+ "approved": {"tool": "read_file", "args": {"path": "/etc/motd"}}}
 ```
 
 Both are `proven`: alice approved that call. Whether that call is the authority the message needs is for the receiver
-to judge from the detail; the verdict doesn't compare the tool or args with the intent. A grant is the authority the
-verifier checks.
+to judge from `approved`; the verdict doesn't compare the tool or args with the intent. `tracekit pcm verify` prints
+the detail of a proven `approved_by` on its line. A grant is the authority the verifier checks.
 
 ### Tool placement
 
@@ -198,22 +204,26 @@ and a port is ignored:
    port after it must be 1 to 5 digits. A URL's host is read as a browser (WHATWG URL) reads it, and must also be the
    host Python's `urllib` reads (`http://a.example\@b.example/` is read apart, so it won't parse). Only `http`,
    `https`, `ws`, `wss`, `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
-2. The host is percent-decoded and NFKC-normalised. If it then holds `ß`, `ς`, ZWNJ or ZWJ, which IDNA 2003 maps away
-   and a browser keeps (`faß.example` is `fass.example` to Python and `xn--fa-hia.example` to a browser), it won't
-   parse; for a URL, that holds for the whole URL. Then `。` becomes `.`, and it is casefolded. An IPv4 address in any
-   form `inet_aton` takes (`0x7f.1`) is written as dotted decimal; an IPv6 address in brackets in its short form, an
-   IPv4-mapped or NAT64 one as the IPv4 address it reaches.
+2. The host is percent-decoded and NFKC-normalised. If it then holds `ß`, `ẞ`, `ς`, ZWNJ or ZWJ, which IDNA 2003 maps
+   away and a browser keeps (`faß.example` and `faẞ.example` are `fass.example` to Python and `xn--fa-hia.example` to
+   a browser), it won't parse; for a URL, that holds for the whole URL. Then `。` becomes `.`, and it is casefolded. An
+   IPv4 address in any form `inet_aton` takes (`0x7f.1`) is written as dotted decimal; an IPv6 address in brackets in
+   its short form, an IPv4-mapped or NAT64 one as the IPv4 address it reaches.
 3. A name loses one trailing dot and goes to ASCII label by label with Python's `idna` codec (IDNA 2003 ToASCII,
-   unassigned code points allowed, without the STD3 rules): `bücher.example` is `xn--bcher-kva.example`. The result
-   must be labels of `a`-`z`, `0`-`9`, `_` and `-` joined by dots.
+   unassigned code points allowed, without the STD3 rules): `bücher.example` is `xn--bcher-kva.example`. A name with a
+   Cherokee letter won't parse: the codec lower-cases it by the Unicode of the verifier's Python, where IDNA 2003's
+   own table and a browser keep it (`aᎠb.example` is `xn--ab-5f1i.example` to Python, `xn--ab-y8l.example` to
+   them). The result must be labels of `a`-`z`, `0`-`9`, `_` and `-` joined by dots.
 
 A host that won't parse (an empty label, a label over 63 characters, something that looks like an address and is
 none, `[` without an IPv6 address, a NUL or `%`, a URL Python can't split) makes that record unproven, never proven
 or failed; a claimed host that won't parse makes the claim unproven.
 
-Python's `urlsplit` checks the brackets in a URL's authority from 3.11.4 on: `http://[x]@good.com/` has no host
-there. On an older Python, which doesn't, a URL with a `[` or `]` anywhere but around its IPv6 host is unproven,
-`http://good.com/a[1]` too.
+A `[` or `]` in a URL's authority (between `//` and the first `/`, `?` or `#`) is taken only as one pair around an
+IPv6 address that opens the host after the last `@`, followed by nothing or `:` and a port: `http://[::1]:8080/` and
+`http://u@[::1]/x` have a host, `http://[x]@good.com/`, `http://[zz]@[::1]/` and `http://[::1]x/` don't, so a call of
+one is unproven. The verifier checks this itself, so its verdict is the same on every Python: `urlsplit`'s own check
+differs between releases. Brackets in the path or query (`http://good.com/a[1]`) don't count.
 
 ### Paths
 
@@ -224,7 +234,9 @@ there. On an older Python, which doesn't, a URL with a `[` or `]` anywhere but a
   `/repo/refund.py`). A call's `C:/repo/refund.py` is a relative path under these rules.
 - A drive path (`C:\repo\refund.py`, `C:/repo/refund.py`) is a Windows path: `\` and `/` both separate. Only a call of
   the very same string proves it. The same path spelled otherwise (`C:/repo/refund.py`, `C:\repo\.\refund.py`) is
-  unproven: the record doesn't say which system ran the call, and on POSIX that is a relative path.
+  unproven: the record doesn't say which system ran the call, and on POSIX that is a relative path. So a proven drive
+  path assumes the call ran on Windows: an executor on Linux that wrote `C:\deploy\a.py` made a file of that name in
+  its working directory, and the claim is still proven, since the claim and the call carry the same string.
 
 Case counts under both: a call of `c:\repo\refund.py` doesn't prove `C:\repo\refund.py`. A claimed path that is relative
 on either system is malformed: `repo/refund.py`, `\repo\refund.py` (the current drive's), `C:refund.py` (the drive's
@@ -394,7 +406,9 @@ The receiver checks the whole chain again (`verify_grants`), so a chain the sign
  "schema": {"ok": true, "ref": "refund.request@sha256:d8636b6f…", "errors": []},
  "grants": {"result": "ok", "steps": 1, "root": {"kind": "person", "id": "uid:990001", "person": "alice"},
             "problems": []},
- "claims": [{"type": "approved_by", "result": "proven", "detail": "approval seq 4 by alice of pcm.grant call grant-1"}],
+ "claims": [{"type": "approved_by", "result": "proven",
+             "detail": "approval seq 4 by alice of \"pcm.grant\" call grant-1",
+             "approved": {"tool": "pcm.grant", "args": null}}],
  "verdict": "accept", "reasons": [], "skipped": []}
 ```
 
@@ -428,7 +442,7 @@ passes once it reaches its receiver, or once the receiver has its schema.
 
 ```text
 $ tracekit pcm verify msg.json --trust trust.json --schema refund.request.json --me uid:990102
-ACCEPT  signature ok · schema ok · grant ok (alice, 1 step) · approved_by proven · not checked: replay
+ACCEPT  signature ok · schema ok · grant ok (alice, 1 step) · approved_by proven (approval seq 4 by alice of "pcm.grant" call grant-1) · not checked: replay
 ```
 
 It exits 0 for accept, 3 for accept-unproven, 1 for reject and 2 when it can't read its inputs (trust.json with two

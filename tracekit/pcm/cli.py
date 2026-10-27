@@ -28,14 +28,16 @@ DOC = {"pcm_schema": 0, "name": "refund.request",
 
 
 def summary(out):
-    """One line for a verify result: its reasons, or for an accept what passed; then the checks it skipped."""
+    """One line for a verify result: its reasons, or for an accept what passed, with what a proven approved_by
+    approved; then the checks it skipped."""
     skipped = [f"not checked: {', '.join(out['skipped'])}"] * bool(out["skipped"])
     if out["reasons"]:
         return "; ".join(out["reasons"] + skipped)
     g, parts = out["grants"], ["signature ok"] + ["replay ok"] * bool(out["replay"]["ok"]) + ["schema ok"]
     if g["result"] == "ok":
         parts.append(f"grant ok ({g['root']['person']}, {g['steps']} step{'s' * (g['steps'] > 1)})")
-    return " · ".join(parts + [f"{c['type']} {c['result']}" for c in out["claims"]] + skipped)
+    return " · ".join(parts + [f"{c['type']} {c['result']}" + f" ({c['detail']})" * ("approved" in c)
+                               for c in out["claims"]] + skipped)
 
 
 def _load(path):

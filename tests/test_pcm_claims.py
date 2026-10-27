@@ -3,15 +3,19 @@ a signer-side or T2 record, unproven on the agent's own report (T1), failed on a
 verify; the verdicts; and the Python SDK's pcm_send, pcm_evidence and pcm_grant."""
 import base64
 import concurrent.futures
+import contextlib
 import hashlib
 import hmac
+import ipaddress
 import itertools
 import json
 import math
 import os
+import re
 import time
 import types
 import unittest
+import urllib.parse
 from unittest import mock
 
 import test_pcm_signer
@@ -109,11 +113,15 @@ class Claims(Case):
         d, r, a = approval_seqs(self.records(), tcid)
         return self.evidence([d, r, a], args and {d: args})
 
-    def claim(self, type_, args, ev=None, trust=None, h=None):
-        """(result, detail) of the claim as B verifies it in a message A's run sends."""
+    def result(self, type_, args, ev=None, trust=None, h=None):
+        """The claim's result as B verifies it in a message A's run sends."""
         c = {"type": type_, "args": args, **({"evidence": ev} if ev else {})}
         msg = (h or self.h).pcm_send("uid:990102", REF, {"amount": 12000, "order": 81}, claims=[c])
-        out = pcm.verify(msg, trust or self.trust, [DOC])["claims"][0]
+        return pcm.verify(msg, trust or self.trust, [DOC])["claims"][0]
+
+    def claim(self, *a, **kw):
+        """(result, detail) of the claim as B verifies it in a message A's run sends."""
+        out = self.result(*a, **kw)
         return out["result"], out["detail"]
 
     def assertClaim(self, want, got, detail=""):
@@ -295,7 +303,7 @@ class TestApprovedBy(Claims):
     def test_proven_by_the_persons_approval_of_that_call(self):
         ev = self.approval()
         self.assertClaim("proven", self.claim("approved_by", {"person": "alice", "call": "g1"}, ev),
-                         "by alice of pcm.grant call g1")
+                         'by alice of "pcm.grant" call g1')
         for args in ({"person": "bob", "call": "g1"}, {"person": "alice", "call": "g2"},
                      {"person": "uid:990001", "call": "g1"}):   # the person's name, not the identity that answered
             with self.subTest(args=args):
@@ -322,9 +330,10 @@ class TestApprovedBy(Claims):
         self.call("approval_decide", ALICE, {}, approval_id=aid, decision="approve")
         claim = {"person": "alice", "call": tcid}
         for opened, end in ((None, ""), (args, f" with args {canonical(args).decode()}")):
-            result, detail = self.claim("approved_by", claim, self.approved(tcid, opened))
-            self.assertEqual(result, "proven", detail)
-            self.assertTrue(detail.endswith(f"by alice of read_file call {tcid}{end}"), detail)
+            out = self.result("approved_by", claim, self.approved(tcid, opened))
+            self.assertEqual(out["result"], "proven", out["detail"])
+            self.assertTrue(out["detail"].endswith(f'by alice of "read_file" call {tcid}{end}'), out["detail"])
+            self.assertEqual(out["approved"], {"tool": "read_file", "args": opened})
 
     def test_the_decision_its_request_names(self):
         """Two decisions of one call id: the approval is of the one its approval.request names, not the other."""
@@ -338,7 +347,7 @@ class TestApprovedBy(Claims):
         claim = {"person": "alice", "call": "x"}
         self.assertClaim("failed", self.claim("approved_by", claim, self.evidence(
             [first["run_seq"], seqs["approval.request"], seqs["approval"]])), "holds no decision of the call")
-        self.assertClaim("proven", self.claim("approved_by", claim, self.approved("x")), "of read_file call x")
+        self.assertClaim("proven", self.claim("approved_by", claim, self.approved("x")), 'of "read_file" call x')
 
     def test_a_rejection(self):
         self.approve(self.args(), decision="reject", consume=False)
@@ -382,8 +391,8 @@ class TestApprovedWithoutApprovals(Claims):
         self.approve(self.args(), who=CallerIdentity("uid", "990103", True))   # any identity of the tenant may answer
         [a] = [x for x in self.records() if x["type"] == "approval"]
         self.assertNotIn("person", a["data"])
-        self.assertClaim("failed", self.claim("approved_by", {"person": "uid:990103", "call": "g1"},
-                                              self.evidence([a["run_seq"]])), "no approval of")
+        self.assertClaim("failed", self.claim("approved_by", {"person": "uid:990103", "call": "g1"}, self.approved()),
+                         "no approval of")
 
 
 class TestApprovedByAnAgent(Claims):
@@ -395,8 +404,8 @@ class TestApprovedByAnAgent(Claims):
         self.approve(args, who=REVIEWER, consume=False)
         [a] = [x for x in self.records() if x["type"] == "approval"]
         self.assertEqual(a["data"]["approver_kind"], "agent")
-        ev = self.evidence([a["run_seq"]])
-        self.assertClaim("failed", self.claim("approved_by", {"person": "token:reviewer", "call": "g1"}, ev))
+        self.assertClaim("failed", self.claim("approved_by", {"person": "token:reviewer", "call": "g1"},
+                                              self.approved()), "no approval of")
 
 
 class TestApprovedBySelf(Claims):
@@ -406,8 +415,8 @@ class TestApprovedBySelf(Claims):
         self.approve(self.args())   # alice approves her own agent's call
         [a] = [x for x in self.records() if x["type"] == "approval"]
         self.assertTrue(a["data"]["self_approved"])
-        self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"},
-                                              self.evidence([a["run_seq"]])))
+        self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"}, self.approved()),
+                         "no approval of")
 
 
 class TestEvidence(Claims):
@@ -575,7 +584,8 @@ class TestSDK(Claims):
             {"type": "approved_by", "args": {"person": "alice", "call": a["data"]["tool_use_id"]}, "evidence": ev}])
         out = pcm.verify(msg, self.trust, [DOC], me="uid:990102")
         self.assertEqual((out["verdict"], out["grants"]["root"]["person"]), ("accept", "alice"), out)
-        self.assertIn(f"by alice of pcm.grant call {a['data']['tool_use_id']}", out["claims"][0]["detail"])
+        self.assertIn(f'by alice of "pcm.grant" call {a["data"]["tool_use_id"]}', out["claims"][0]["detail"])
+        self.assertEqual(out["claims"][0]["approved"], {"tool": "pcm.grant", "args": None})
         kid = self.h.pcm_grant("uid:990102", REF, root["expires_at"], NARROWER, parent=root)
         self.assertEqual((kid["parent"], kid["delegable"]), (event_hash(root), False))
         b = self.handle(B, self.register(B))
@@ -627,8 +637,39 @@ def effect(host):
                                                            "connections": 1}}, None)]
 
 
+def approval(tool="pay", **edit):
+    """alice's approval of call c1, the approval.request it answers and the decision of `tool` that request names, as
+    evidence() returns them; `edit`: {record type: fields to change in its data}."""
+    recs = [{"type": "policy.decision", "seq": 1, "data": {"tool": tool, "decision": "ask", "decision_id": "d1",
+                                                           "tool_use_id": "c1"}},
+            {"type": "approval.request", "seq": 2, "data": {"approval_id": "a1", "decision_id": "d1"}},
+            {"type": "approval", "seq": 3, "data": {"decision": "approve", "tool_use_id": "c1", "approval_id": "a1",
+                                                    "person": "alice"}}]
+    return [(dict(r, data={**r["data"], **edit.get(r["type"].replace(".", "_"), {})}), None) for r in recs]
+
+
 class PCM01(unittest.TestCase):
     """PCM 0.1's decisions on what a claim names, on records as evidence() returns them."""
+
+    def test_approved_by_is_a_persons_own_approval_of_the_decision_its_request_names(self):
+        """Records a hostile pinned log could write: an agent approver's answer naming a person, a self-approval, a
+        rejection, a request of another approval, a decision of another call or of no tool prove nothing."""
+        claim = {"person": "alice", "call": "c1"}
+        for edit in ({}, {"approval": {"approver_kind": "person", "self_approved": False}}):
+            self.assertEqual(claims.approved_by(claim, approval(**edit)),
+                             ("proven", 'approval seq 3 by alice of "pay" call c1', {"tool": "pay", "args": None}))
+        for edit in ({"approval": {"approver_kind": "agent"}}, {"approval": {"self_approved": True}},
+                     {"approval": {"decision": "reject"}}, {"approval_request": {"approval_id": "a2"}},
+                     {"policy_decision": {"tool_use_id": "c2"}}, {"policy_decision": {"tool": ""}}):
+            with self.subTest(edit=edit):
+                self.assertEqual(claims.approved_by(claim, approval(**edit))[0], "failed")
+
+    def test_approved_by_writes_the_tool_as_json(self):
+        """data.tool is the agent's own string: as JSON in the detail it can't spell opened args, and `approved`
+        carries it apart."""
+        tool = 'pay call c1 with args {"amount":20000,"to":"acct-9"} and read_file'
+        self.assertEqual(claims.approved_by({"person": "alice", "call": "c1"}, approval(tool))[1:],
+                         (f"approval seq 3 by alice of {canonical(tool).decode()} call c1", {"tool": tool, "args": None}))
 
     def test_reached_host_compares_canonical_hosts(self):
         for host, recs in (("xn--bcher-kva.example", call("fetch", {"url": "https://BÜCHER.example:8443/x"})),
@@ -654,6 +695,15 @@ class PCM01(unittest.TestCase):
                            ("fass.example", call("fetch", {"url": "http://fa%C3%9F.example/"})),
                            ("xn--4xa.example", call("fetch", {"url": "http://\u03f2.example/"})),
                            ("ab.example", effect("a\u200db.example")), ("fass.example", effect("FA\u00df.example")),
+                           # capital sharp s: NFKC keeps it, casefolding makes it ss, UTS 46 a sharp s
+                           ("fass.example", call("fetch", {"url": "http://fa\u1e9e.example/"})),
+                           ("fass.example", call("fetch", {"url": "http://fa%E1%BA%9E.example/"})),
+                           ("fass.example", effect("FA\u1e9e.example")),
+                           # Cherokee: the stdlib codec lower-cases U+13A0 to U+AB70 (xn--ab-5f1i), Nameprep's Unicode
+                           # 3.2 table and UTS 46 keep it (xn--ab-y8l)
+                           ("xn--ab-5f1i.example", call("fetch", {"url": "http://a\u13a0b.example/"})),
+                           ("xn--ab-5f1i.example", call("fetch", {"url": "http://a\uab70b.example/"})),
+                           ("xn--ab-5f1i.example", effect("a\u13a0b.example")),
                            # no IPv6 address in brackets, a NUL, a port that is no number
                            ("h.com", call("fetch", {"url": "http://%5b::1%5d/"})),
                            ("h.com.evil", call("fetch", {"url": "http://h.com%00.evil/"})),
@@ -669,22 +719,31 @@ class PCM01(unittest.TestCase):
         self.assertEqual(claims.reached_host({"host": "a.example"}, call("fetch", {"url": "//a.example/x"}))[0],
                          "proven")
 
-    def test_below_python_3_11_4_a_bracket_but_an_ipv6_hosts_is_unproven(self):
-        """urlsplit refuses http://[x]@good.com/ from Python 3.11.4 on, and reads good.com before it: there, a URL
-        with a bracket anywhere but around an IPv6 host can't be told apart."""
-        fetch = lambda url: call("fetch", {"url": url})   # noqa: E731
-        self.assertEqual(claims.reached_host({"host": "good.com"}, fetch("http://[x]@good.com/"))[0], "unproven")
-        for old in (True, False):
-            with self.subTest(old=old), mock.patch.object(claims, "URLSPLIT_CHECKS_BRACKETS", not old):
-                if old:
-                    # agent-flow:allow-secret (a bracketed IPv6 address before the @, not a password)
-                    for url in ("http://[x]@good.com/", "http://[::1]@good.com/"):
-                        self.assertEqual(claims.reached_host({"host": "good.com"}, fetch(url))[0], "unproven")
-                for url in ("http://[::1]:8080/", "http://u@[::1]/x"):
-                    self.assertEqual(claims.reached_host({"host": "::1"}, fetch(url))[0], "proven")
-                for url in ("http://good.com/a[1]", "http://good.com/?q=]"):
-                    self.assertEqual(claims.reached_host({"host": "good.com"}, fetch(url))[0],
-                                     "unproven" if old else "proven")
+    def test_the_bracket_rule_is_pcm_01s_not_urlsplits(self):
+        """A `[` or `]` in a URL's authority reaches a host only as one pair around an IPv6 or IPvFuture address that
+        opens the host after the last `@`. urlsplit's own check differs between Python releases (none, the first
+        bracketed part of the authority, the part after the last `@`), so each is emulated: the verdicts must not
+        move."""
+        def first_part(netloc):   # earlier CPython releases' check, from 3.11.4 on
+            inside = netloc.partition("[")[2].partition("]")[0]
+            if not (re.fullmatch(r"v[0-9A-Fa-f]+\..+", inside) if inside.startswith("v")
+                    else ipaddress.ip_address(inside).version == 6):
+                raise ValueError("Invalid IPv6 URL")
+        cases = (("good.com", "http://[x]@good.com/", "unproven"), ("good.com", "http://[v1.x]@good.com/", "unproven"),
+                 ("good.com", "[v1.x]@good.com/", "unproven"), ("evil.example", "http://[v1.x]@evil.example/",
+                                                                  "unproven"),
+                 ("::1", "http://[zz]@[::1]/", "unproven"), ("::1", "http://[::1]x/", "unproven"),
+                 ("x", "http://[@x::1]/", "unproven"),
+                 ("::1", "http://[::1]:8080/", "proven"), ("::1", "http://u@[::1]/x", "proven"),
+                 ("1.2.3.4", "http://[::ffff:1.2.3.4]/", "proven"), ("good.com", "http://good.com/a[1]", "proven"),
+                 ("good.com", "http://good.com/?q=]", "proven"), ("other.com", "http://good.com/?q=]", "failed"))
+        self.addCleanup(urllib.parse.clear_cache)
+        for check in (None, lambda netloc: None, first_part):
+            urllib.parse.clear_cache()   # urlsplit caches what it read
+            with self.subTest(check=check), mock.patch("urllib.parse._check_bracketed_netloc", check, create=True) \
+                    if check else contextlib.nullcontext():
+                for host, url, want in cases:
+                    self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url}))[0], want, url)
 
     def test_placement_is_pcm_01s_frozen_table(self):
         """The tool placement table is data shipped with tracekit, the same as the PCM repo's registry/tools.json."""

@@ -13,7 +13,6 @@ import os
 import posixpath
 import re
 import shlex
-import sys
 import unicodedata
 from urllib.parse import unquote
 
@@ -39,10 +38,11 @@ NO_TESTS, NO_TESTS_LONG = frozenset(("-h", "-V")), ("--help", "--version", "--co
 # escapes ($'\'' quotes apart in shlex and sh), comments, braces, globs and control characters but the tab
 _NOT_IN_SUITE = re.compile(r"[;&|()<>$`\\#{}*?\[\]\x00-\x08\x0a-\x1f\x7f]")
 _DRIVE = re.compile(r"[A-Za-z]:[\\/]")   # a Windows drive path, the only one read with `\` as `/`
-_DEVIATIONS = re.compile("[\u00df\u03c2\u200c\u200d]")   # UTS 46's deviation characters
-# urlsplit refuses a netloc whose brackets hold no IPv6 address from Python 3.11.4 on (http://[x]@good.com/), and
-# reads good.com in it before
-URLSPLIT_CHECKS_BRACKETS = sys.version_info >= (3, 11, 4)
+# UTS 46's deviation characters, and capital sharp s, which casefolding makes ss and UTS 46 a sharp s
+_DEVIATIONS = re.compile("[\u00df\u03c2\u1e9e\u200c\u200d]")
+# Cherokee letters: Nameprep's Unicode 3.2 table has no case pairs for them, Python's codec lower-cases them by its own
+_CHEROKEE = re.compile("[\u13a0-\u13f5\u13f8-\u13fd\uab70-\uabbf]")
+_C0 = "".join(map(chr, range(0x21)))
 
 
 class EvidenceError(ValueError):
@@ -169,8 +169,9 @@ def tests_passed(a, recs):
 
 def approved_by(a, recs):
     """Proven by the person's approval of call `call` with the approval.request it answers and the policy.decision
-    that request names: the call id is the agent's own name for the call, so only the decision says what was approved
-    (its tool, and its args when the evidence opens them, which the detail shows)."""
+    that request names: the call id is the agent's own name for the call, so only the decision says what was approved.
+    A proven claim adds {tool, args} of that decision (args None unless the evidence opens it), which the detail shows
+    too, the agent's tool name as JSON so it can't spell args."""
     best = ("failed", f"no approval of {a['call']} by the person {a['person']}")
     for e, _ in recs:
         d = e["data"]
@@ -184,8 +185,9 @@ def approved_by(a, recs):
             c = x["data"]
             if x["type"] == "policy.decision" and c.get("decision_id") in asked and c["tool_use_id"] == a["call"] \
                     and c.get("tool"):
-                return "proven", (f"approval seq {e['seq']} by {a['person']} of {c['tool']} call {a['call']}"
-                                  + ("" if args is None else f" with args {canonical(args).decode()}"))
+                return "proven", (f"approval seq {e['seq']} by {a['person']} of {canonical(c['tool']).decode()} call "
+                                  f"{a['call']}" + ("" if args is None else f" with args {canonical(args).decode()}")), \
+                    {"tool": c["tool"], "args": args}
         # failed, not unproven: the sender picks the evidence and can always add both; without them the agent's call
         # id is all that would say what was approved
         best = ("failed", f"approval seq {e['seq']} by {a['person']} of {a['call']}, but the evidence holds no decision "
@@ -214,19 +216,34 @@ def _a_label(info):
         except ValueError:
             return None
     name = h[:-1] if h.endswith(".") else h
+    if not name or name.endswith(".") or _CHEROKEE.search(name):
+        return None
     # lean: IDNA 2003 (the stdlib), not UTS 46; take the idna package if a host they read apart matters
     try:
-        label = name.encode("idna").decode("ascii") if name and not name.endswith(".") else None
+        label = name.encode("idna").decode("ascii")
     except UnicodeError:
         return None
-    return label if label and re.fullmatch(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*", label) else None
+    return label if re.fullmatch(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*", label) else None
 
 
-def _old_brackets(url, info):
-    """Whether `url` holds a `[` or `]` but the brackets of its IPv6 host (url_info's `info`), on a Python whose
-    urlsplit doesn't check them."""
-    n = 1 if (info.get("host") or "").startswith("[") else 0   # an IPv4-mapped address compares as IPv4: none
-    return not URLSPLIT_CHECKS_BRACKETS and (url.count("["), url.count("]")) != (n, n)
+def _brackets_ok(url):
+    """Whether the authority of `url`, as url_info's urlsplit reads it, passes PCM 0.1's bracket rule: no `[` or `]`,
+    or one of each around an IPv6 or IPvFuture address that opens the host after the last `@`, followed by nothing
+    or `:`. urlsplit's own check differs between Python releases; every release reads a URL that passes alike."""
+    u = re.sub(r"[\t\n\r]", "", classes.with_scheme(url).lstrip(_C0))
+    u = u[m.end():] if (m := re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", u)) else u
+    auth = re.split(r"[/?#]", u[2:], maxsplit=1)[0] if u.startswith("//") else ""
+    if "[" not in auth and "]" not in auth:
+        return True
+    host = auth.rpartition("@")[2]
+    inside, close, after = host[1:].partition("]")
+    if (auth.count("["), auth.count("]")) != (1, 1) or host[:1] != "[" or not close or after[:1] not in ("", ":"):
+        return False
+    try:
+        ipaddress.IPv6Address(inside)
+    except ValueError:
+        return re.fullmatch(r"v[0-9A-Fa-f]+\..+", inside) is not None
+    return True
 
 
 def _host(host):
@@ -265,7 +282,7 @@ def reached_host(a, recs):
             return False
         # lean: a deviation character anywhere in the URL, its path too, makes it unproven; read the host alone if a
         # path with one matters
-        got = None if info.get("ambiguous") or _deviant(args["url"]) or _old_brackets(args["url"], info) else \
+        got = None if info.get("ambiguous") or _deviant(args["url"]) or not _brackets_ok(args["url"]) else \
             _a_label(info)
         return None if got is None else got == want
     return min(_ran(recs, match, f"reached {a['host']}", "http"), seen, key=lambda o: _RANK[o[0]])
@@ -308,16 +325,17 @@ CHECKERS = {"tests_passed": tests_passed, "approved_by": approved_by, "reached_h
 
 
 def check_claim(c, msg, trust):
-    """{type, result: proven, unproven or failed, detail} of claim `c` of message `msg`."""
+    """{type, result: proven, unproven or failed, detail} of claim `c` of message `msg`, and for a proven approved_by
+    `approved`: {tool, args} of the decision the person approved."""
     errs = check_args({"fields": CLAIM_ARGS[c["type"]]}, c["args"])
-    bad = "; ".join(errs) if errs else malformed(c["type"], c["args"])
+    bad, approved = "; ".join(errs) if errs else malformed(c["type"], c["args"]), []
     if bad:
         result, detail = "failed", bad
     elif "evidence" not in c:
         result, detail = "unproven", "no evidence"
     else:
         try:
-            result, detail = CHECKERS[c["type"]](c["args"], evidence(c["evidence"], msg, trust))
+            result, detail, *approved = CHECKERS[c["type"]](c["args"], evidence(c["evidence"], msg, trust))
         except EvidenceError as e:
             result, detail = "failed", str(e)
-    return {"type": c["type"], "result": result, "detail": detail}
+    return {"type": c["type"], "result": result, "detail": detail, **({"approved": approved[0]} if approved else {})}
