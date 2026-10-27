@@ -25,7 +25,79 @@
       --magenta: #d98bff;
       --blue: #7aa2ff;
       --yellow: #ffdd57;
+      --ink: #000;
+      --row-line: #121210;
+      --row-hover: #12100b;
+      --track: #141310;
+      --lane-a: #0b0b0a;
+      --lane-b: #080807;
+      --life: #1a1a17;
+      --flash: #3a2a08;
+      --scrim: rgba(0, 0, 0, .8);
       --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    /* light: the same tokens on paper; it follows the computer's setting until the THEME button picks one */
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) {
+        color-scheme: light;
+        --bg: #f4f2ec;
+        --panel: #fbfaf7;
+        --panel2: #efece4;
+        --line: #dcd8ce;
+        --line2: #c9c4b8;
+        --amber: #b45309;
+        --amber-dim: #a8661c;
+        --amber-bg: #fbecd6;
+        --text: #1d1b16;
+        --muted: #625d52;
+        --faint: #8f897c;
+        --green: #13804a;
+        --red: #c0262d;
+        --cyan: #0a7ea4;
+        --magenta: #8b3fb8;
+        --blue: #2f56c6;
+        --yellow: #8a6a00;
+        --ink: #fff;
+        --row-line: #e8e4da;
+        --row-hover: #f3ead9;
+        --track: #e6e2d8;
+        --lane-a: #f1eee7;
+        --lane-b: #f7f5f0;
+        --life: #d2cdc1;
+        --flash: #f7dfb5;
+        --scrim: rgba(40, 36, 28, .45);
+      }
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f4f2ec;
+      --panel: #fbfaf7;
+      --panel2: #efece4;
+      --line: #dcd8ce;
+      --line2: #c9c4b8;
+      --amber: #b45309;
+      --amber-dim: #a8661c;
+      --amber-bg: #fbecd6;
+      --text: #1d1b16;
+      --muted: #625d52;
+      --faint: #8f897c;
+      --green: #13804a;
+      --red: #c0262d;
+      --cyan: #0a7ea4;
+      --magenta: #8b3fb8;
+      --blue: #2f56c6;
+      --yellow: #8a6a00;
+      --ink: #fff;
+      --row-line: #e8e4da;
+      --row-hover: #f3ead9;
+      --track: #e6e2d8;
+      --lane-a: #f1eee7;
+      --lane-b: #f7f5f0;
+      --life: #d2cdc1;
+      --flash: #f7dfb5;
+      --scrim: rgba(40, 36, 28, .45);
     }
 
     * {
@@ -79,7 +151,7 @@
 
     .brand {
       background: var(--amber);
-      color: #000;
+      color: var(--ink);
       font-weight: 600;
       padding: 2px 8px;
       letter-spacing: .06em
@@ -116,7 +188,7 @@
     }
 
     .cmd kbd {
-      color: #000;
+      color: var(--ink);
       background: var(--amber-dim);
       padding: 0 5px;
       font-size: 11px
@@ -248,7 +320,7 @@
 
     @keyframes flash {
       from {
-        background: #3a2a08
+        background: var(--flash)
       }
 
       to {
@@ -294,7 +366,7 @@
 
     .p>h2 b {
       background: var(--amber);
-      color: #000;
+      color: var(--ink);
       padding: 0 5px
     }
 
@@ -479,7 +551,7 @@
 
     td {
       padding: 2px 6px;
-      border-bottom: 1px solid #121210;
+      border-bottom: 1px solid var(--row-line);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -491,7 +563,7 @@
     }
 
     tr.row:hover td {
-      background: #12100b
+      background: var(--row-hover)
     }
 
     tr.row.sel td {
@@ -711,7 +783,7 @@
 
     .vchip.failed,
     .vchip.error {
-      color: #000;
+      color: var(--ink);
       background: var(--red);
       border-color: var(--red)
     }
@@ -792,12 +864,12 @@
 
     .sev.high {
       background: var(--red);
-      color: #000
+      color: var(--ink);
     }
 
     .sev.med {
       background: var(--amber);
-      color: #000
+      color: var(--ink);
     }
 
     .sev.low {
@@ -807,7 +879,7 @@
 
     .sev.info {
       background: var(--blue);
-      color: #000
+      color: var(--ink);
     }
 
     .al .tx {
@@ -847,7 +919,7 @@
 
     .bar .tr {
       height: 9px;
-      background: #141310
+      background: var(--track)
     }
 
     .bar .fl {
@@ -980,7 +1052,7 @@
 
     .foot kbd {
       background: var(--amber);
-      color: #000;
+      color: var(--ink);
       padding: 0 4px;
       margin-right: 3px
     }
@@ -1021,7 +1093,7 @@
     .help {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, .8);
+      background: var(--scrim);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1058,7 +1130,7 @@
     }
 
     .nav a.on {
-      color: #000;
+      color: var(--ink);
       background: var(--amber);
       border-color: var(--amber)
     }
@@ -1082,7 +1154,7 @@
 
     .views button.on,
     .p>h2 .wtab.on {
-      color: #000;
+      color: var(--ink);
       background: var(--amber);
       border-color: var(--amber)
     }
@@ -1206,7 +1278,7 @@
     }
 
     .wbar button.on {
-      color: #000;
+      color: var(--ink);
       background: var(--amber);
       border-color: var(--amber)
     }
@@ -1286,7 +1358,7 @@
     /* the page's own connection to the viewer: lost means what is shown may be out of date */
     .lost {
       background: var(--red);
-      color: #000;
+      color: var(--ink);
       font-weight: 600;
       padding: 2px 8px
     }
@@ -1550,12 +1622,13 @@
             data-jump="hold" type="button">NEXT HOLD</button><button data-jump="gap" type="button">NEXT GAP</button><button
             id="rlive" type="button">LIVE</button></span>
       </div>
-      <span><kbd>/</kbd>command</span><span><kbd>ESC</kbd>clear</span><span><kbd>F</kbd>flagged</span><span><kbd>?</kbd>help</span>
+      <span><kbd>/</kbd>command</span><span><kbd>ESC</kbd>clear</span><span><kbd>F</kbd>flagged</span><span><kbd>?</kbd>help</span><span><kbd>T</kbd><button class="chip" id="theme" type="button"
+          title="auto follows this computer's setting; light and dark stay picked in this browser">THEME AUTO</button></span>
     </footer>
   </div>
   <div class="help" id="help" hidden>
     <div>
-      <h2 style="margin:0;padding:6px 8px;background:var(--amber);color:#000;font-size:12px">COMMANDS · type then press
+      <h2 style="margin:0;padding:6px 8px;background:var(--amber);color:var(--ink);font-size:12px">COMMANDS · type then press
         ENTER (GO)</h2>
       <table>
         <tbody>
@@ -1901,7 +1974,34 @@
       $("wtabnode").hidden = !WNODE;
       document.querySelectorAll(".p>h2 .wtab").forEach(b => b.classList.toggle("on", b.dataset.wtab === WTAB));
       if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
+      syncLink();
     }
+    /* ---------------- deep links: #run=…&view=…&seq=…; Back and Forward step through what was opened ---------------- */
+    let linked = false, following = false;   // linked: the page's link was read (until then the URL keeps it)
+    function linkOf() {
+      const sel = selected && (selected.pre || selected), seq = sel && lseq(sel), p = new URLSearchParams();
+      if (scope) p.set("run", scope);
+      if (VIEW !== "desk") p.set("view", VIEW);
+      if (seq != null) p.set("seq", seq);
+      return p.toString() ? "#" + p : "";
+    }
+    // a step of a replay, or a link just followed (whose record may open as the row before it), replaces the entry
+    function syncLink() {
+      const h = linkOf(), replace = R || following;
+      if (!linked) return;
+      following = false;
+      if (h !== location.hash) history[replace ? "replaceState" : "pushState"](null, "", h || location.pathname);
+    }
+    function followLink() {
+      const p = new URLSearchParams(location.hash.slice(1)), run = p.get("run") || null, seq = p.get("seq");
+      linked = following = true;
+      if (V2 && run !== scope && (!run || RUNS.has(run))) setScope(run);
+      VIEW = VIEWS.includes(p.get("view")) ? p.get("view") : "desk"; wvKey = "";
+      selected = null;
+      if (seq != null && seq !== "") openSeq(+seq);
+      schedule();
+    }
+    window.addEventListener("popstate", () => linked && followLink());
     function renderTop() {
       const m = $("mode"), live = liveOk && !STOPPED;   // a viewer that stopped checking runs is not live, connected or not
       m.className = "mode " + (mode === "live" ? (live ? "live" : "off") : "replay");
@@ -2105,11 +2205,11 @@
       agents.forEach((a, i) => {
         const y = top + i * laneH;
         if (i && agents[i - 1].session !== a.session) { g.fillStyle = css("--amber-dim"); g.fillRect(0, y, W, 1); }
-        g.fillStyle = i % 2 ? "#0b0b0a" : "#080807"; g.fillRect(labelW, y, W - labelW, laneH);
+        g.fillStyle = css(i % 2 ? "--lane-a" : "--lane-b"); g.fillRect(labelW, y, W - labelW, laneH);
         g.fillStyle = a.status === "running" ? css("--green") : css("--amber"); g.fillText((a.sub ? "  " : "") + label(a), 6, y + laneH / 2);
         // life span
         const xf = Math.max(labelW, x(a.first));  // v2: the run may start before the calls the scale fits
-        g.fillStyle = "#1a1a17"; g.fillRect(xf, y + laneH / 2 - 1, Math.max(1, Math.min(W, x(a.status === "done" ? a.last : t1)) - xf), 2);
+        g.fillStyle = css("--life"); g.fillRect(xf, y + laneH / 2 - 1, Math.max(1, Math.min(W, x(a.status === "done" ? a.last : t1)) - xf), 2);
         for (const act of S.actList) {
           if (act.agent !== a || !actMatch(act)) continue;
           // only a call that may still be running reaches the right edge; a blocked, refused or unanswered one never ran
@@ -2343,6 +2443,12 @@
       for (const h of laneHits) { if (my < h.y0 || my > h.y1) continue; const d = mx < h.x0 ? h.x0 - mx : mx > h.x1 ? mx - h.x1 : 0; if (d < bd) { bd = d; best = h; } }
       if (best) select(best.act);
     });
+    // record n's row; a record with no row of its own (a call's decision, a checkpoint): the row before it; never a row the viewer made
+    function openSeq(n) {
+      const r = S.recs.reduce((b, r) => lseq(r) != null && lseq(r) <= n && (!b || lseq(r) > lseq(b)) ? r : b, null);
+      if (r) select(S.actList.find(a => a.pre === r || a.post === r) || r);
+      return r;
+    }
     const CMD_HINT = $("cmd").placeholder;
     function runCommand(raw) {
       const s = raw.trim(); if (!s) return;
@@ -2355,10 +2461,9 @@
         case "FIND": case "/": F.find = arg || null; break;
         case "FLAG": case "F": F.flag = !F.flag; break;
         case "CLR": case "CLEAR": F.agent = F.tool = F.file = F.find = F.kind = null; F.flag = false; selected = null; break;
-        case "SEQ": {   // a record with no row of its own (a call's decision, a checkpoint): the row before it; never a row the viewer made
-          const n = +arg, r = S.recs.reduce((b, r) => lseq(r) != null && lseq(r) <= n && (!b || lseq(r) > lseq(b)) ? r : b, null);
-          if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); }
-          if (!r || lseq(r) !== n) $("cmd").placeholder = `seq ${arg} has no row of its own on the tape` + (r ? `; showing the row before it, seq ${lseq(r)}` : "");
+        case "SEQ": {
+          const r = openSeq(+arg);
+          if (!r || lseq(r) !== +arg) $("cmd").placeholder = `seq ${arg} has no row of its own on the tape` + (r ? `; showing the row before it, seq ${lseq(r)}` : "");
           break;
         }
         case "HELP": case "?": $("help").hidden = false; break;
@@ -2379,9 +2484,21 @@
       else if (V2 && !BOOT && scope && rpKeys(e)) return;
       else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; schedule(); }
       else if (e.key === "f" || e.key === "F") { F.flag = !F.flag; schedule(); }
+      else if (e.key === "t" || e.key === "T") $("theme").click();
       else if (e.key === "?") { $("help").hidden = !$("help").hidden; }
     });
     $("help").addEventListener("click", e => { if (e.target.id === "help") $("help").hidden = true; });
+    /* ---------------- theme: auto (this computer's setting), light or dark, kept in this browser ---------------- */
+    const THEMES = ["auto", "light", "dark"];
+    function setTheme(t) {
+      t = THEMES.includes(t) ? t : "auto";
+      if (t === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+      $("theme").textContent = "THEME " + t.toUpperCase();
+      try { localStorage.setItem("tracekit-theme", t); } catch { }   // storage refused (a private window): the theme still applies
+      schedule();   // the lanes are drawn on a canvas, in the theme's colours
+    }
+    $("theme").addEventListener("click", () => setTheme(THEMES[(THEMES.indexOf(document.documentElement.dataset.theme || "auto") + 1) % THEMES.length]));
+    matchMedia("(prefers-color-scheme: light)").addEventListener("change", schedule);
     window.addEventListener("resize", schedule);
     setInterval(() => { if (mode === "live") schedule(); }, 1000);
 
@@ -2432,8 +2549,7 @@
         if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); selected = null; reset(); }
         DROPPED = snap.dropped || 0; MAXREC = snap.max || MAXREC;
         snap.records.forEach(accept); tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; loadWhy(); schedule();
-        const want = new URLSearchParams(location.hash.slice(1)).get("run");   // a link to one run: /#run=<id>
-        if (want && RUNS.has(want) && scope !== want) setScope(want);
+        followLink();
         const es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
@@ -2558,6 +2674,7 @@
 
     /* ---------------- why logs (why.server.Store; docs/viewer.md#why) ---------------- */
     // WHY: /api/why/workspace; WD: why run id -> its detail (null while loading); VIEW: the lower panels' view
+    const VIEWS = ["desk", "runs", "overview", "timeline", "why", "graph", "agents", "influence"];
     let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "", WNODE = null, WPICK = null;
     const TL = { agent: "", type: "", flag: false, q: "" };   // TIMELINE's filters
     const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null, fit: true };
@@ -2734,7 +2851,7 @@
       document.body.classList.toggle("wv", VIEW !== "desk");
       if (!WHY) return;
       const VNAME = { why: "WHY DID IT HAPPEN?" };
-      $("views").innerHTML = ["desk", "runs", "overview", "timeline", "why", "graph", "agents", "influence"].map(k => `<button type="button" data-view="${esc(k)}" class="${VIEW === k ? "on" : ""}">${esc(VNAME[k] || k.toUpperCase())}</button>`).join("");
+      $("views").innerHTML = VIEWS.map(k => `<button type="button" data-view="${esc(k)}" class="${VIEW === k ? "on" : ""}">${esc(VNAME[k] || k.toUpperCase())}</button>`).join("");
       if (VIEW === "desk") return;
       const runs = WHY.runs.map(r => r.run_id), run = V2 && scope ? RUNS.get(scope) : null;
       // a selected signed run shows its own why run (or says why it has none), never another run's
@@ -2994,6 +3111,7 @@
     });
 
     reset();
+    try { setTheme(localStorage.getItem("tracekit-theme")); } catch { setTheme("auto"); }
     if (BOOT) startReplay(); else startLive();
     schedule();
   </script>
