@@ -18,6 +18,7 @@ from tracekit import crypto, merkle, pcm
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
+from tracekit.pcm import claims
 from tracekit.policy2.engine import Engine
 from tracekit.sdk import client
 from tracekit.sdk.client import Refused, RunHandle, SignerUnavailable
@@ -364,6 +365,13 @@ class TestEvidence(Claims):
         self.assertClaim("failed", self.claim("approved_by", self.args_, dict(self.ev, checkpoint=forged)),
                          "checkpoint:")
 
+    def test_a_proof_entry_in_non_canonical_base64(self):
+        proof, alpha = self.ev["records"][0]["proof"], "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        bent = proof[0][:42] + alpha[alpha.index(proof[0][42]) ^ 1] + proof[0][43:]   # an unused bit of char 42 set
+        self.assertEqual(base64.b64decode(bent), base64.b64decode(proof[0]))
+        self.assertClaim("failed", self.claim("approved_by", self.args_, self.with_record(proof=[bent, *proof[1:]])),
+                         "record 1: not in the checkpoint")
+
     def test_a_bad_proof_or_seq(self):
         fake = {"seq": "x"}
         for ev in (self.with_record(proof=["é" * 4]), self.with_record(event=fake, hash=event_hash(fake))):
@@ -518,6 +526,72 @@ class TestSDKPolicyAllows(Claims):
         with self.assertRaises(Refused) as cm:
             self.h.pcm_grant("uid:990101", REF, svc._iso(time.time() + 60))
         self.assertIn("not asked", str(cm.exception))
+
+
+def call(tool, args, t2=True):
+    """A call decided and completed (T2 by a gateway, else T1), as evidence() returns its records."""
+    d = {"type": "policy.decision", "seq": 1,
+         "data": {"tool": tool, "decision": "allow", "decision_id": "d1", "tool_use_id": "c1"}}
+    r = {"type": "tool.result", "seq": 2, "source": "gateway" if t2 else "client", "tier": "T2" if t2 else "T1",
+         "data": {"decision_id": "d1", "tool_use_id": "c1", "ok": True, "via": "gw"}}
+    return [(d, args), (r, None)]
+
+
+def effect(host):
+    return [({"type": "effect.observed", "seq": 3, "data": {"kind": "connect", "host": host, "observer": "obs"}}, None)]
+
+
+class PCM01(unittest.TestCase):
+    """PCM 0.1's decisions on what a claim names, on records as evidence() returns them."""
+
+    def test_reached_host_compares_canonical_hosts(self):
+        for host, recs in (("xn--bcher-kva.example", call("fetch", {"url": "https://BÜCHER.example:8443/x"})),
+                           ("api.example.com", call("fetch", {"url": "https://api.example.com./"})),
+                           ("api.example.com.", call("fetch", {"url": "https://api.example.com/"})),
+                           ("api.example.com:443", call("fetch", {"url": "https://api.example.com/"})),
+                           ("::1", call("fetch", {"url": "http://[::1]:8080/"})),
+                           ("api.example.com", effect("api.example.com.")),
+                           ("10.0.0.1", effect("::ffff:10.0.0.1"))):
+            with self.subTest(host=host, recs=recs):
+                self.assertEqual(claims.reached_host({"host": host}, recs)[0], "proven")
+        self.assertEqual(claims.reached_host({"host": "b.example"}, call("fetch", {"url": "http://a.example/"}))[0],
+                         "failed")
+
+    def test_a_host_that_wont_parse_is_unproven(self):
+        for host, recs in (("999.1.1.1", []), ("a..example", call("fetch", {"url": "http://a..example/"})),
+                           ("a.example", call("fetch", {"url": "http://a..example/"})),
+                           ("a.example", effect("a..example")),
+                           # a browser reads a.example, Python's urllib b.example
+                           ("a.example", call("fetch", {"url": "http://a.example\\@b.example/"}))):
+            with self.subTest(host=host, recs=recs):
+                self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
+
+    def test_file_written_names_an_absolute_path(self):
+        content = "x = 1\n"
+        digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+        wrote = lambda path, t2=True: call("Write", {"file_path": path, "content": content}, t2)   # noqa: E731
+        for claim, path in (("/repo/a.py", "/repo/a.py"), ("C:\\repo\\a.py", "C:/repo/a.py")):
+            self.assertEqual(claims.file_written({"path": claim, "digest": digest}, wrote(path))[0], "proven")
+        for rel in ("a.py", "repo/a.py", "./a.py"):   # a relative claim is malformed
+            out = claims.file_written({"path": rel, "digest": digest}, wrote(rel))
+            self.assertEqual(out, ("failed", f"{rel} is relative: name the file's absolute path"))
+        for rel in ("a.py", "repo/a.py", "../repo/a.py"):   # the call's cwd is unknown
+            with self.subTest(rel=rel):
+                self.assertEqual(claims.file_written({"path": "/repo/a.py", "digest": digest}, wrote(rel))[0],
+                                 "unproven")
+        self.assertEqual(claims.file_written({"path": "/repo/a.py", "digest": digest}, wrote("b.py"))[0], "failed")
+
+    def test_tests_passed_knows_a_fixed_list_of_runners(self):
+        for suite in ("pytest -q tests/x.py", ".venv/bin/pytest", "python -m pytest -x", "python3 -m unittest",
+                      "npm test", "go test ./...", "cargo test", "cargo nextest run", "make test", "jest"):
+            with self.subTest(suite=suite):
+                self.assertIn("no call in the evidence ran", claims.tests_passed({"suite": suite}, [])[1])
+        for suite in ("pytest --co", "pytest --collect-only -q", "pytest --help", "go test -h", "cargo test --version",
+                      "npm test -- -h", "echo pytest", "python -m http.server", "npm run build", "go build", "make",
+                      "CI=1 pytest", "uv run pytest", "pytest; true", "pytest\ntrue", "pytest | tee out"):
+            with self.subTest(suite=suite):
+                self.assertEqual(claims.tests_passed({"suite": suite}, []),
+                                 ("failed", f"{suite!r} is not a single test command"))
 
 
 if __name__ == "__main__":

@@ -283,6 +283,9 @@ class Parts(unittest.TestCase):
                          ["python3", "tail"])
         self.assertEqual(findings_effects._programs("echo hi > out.txt && sudo env X=1 ./build.sh"), ["./build.sh"])
         self.assertEqual(findings_effects._programs("cd /x && export A=1"), [])
+        # a `#` starts a comment only at the start of a word, as in a shell
+        self.assertEqual(findings_effects._programs("make a#b && rm -rf c"), ["make", "rm"])
+        self.assertEqual(findings_effects._programs("make all #x && rm -rf c"), ["make"])
         self.assertTrue(findings_effects._matches("/usr/bin/python3.12", "python3"))
         self.assertFalse(findings_effects._matches("/usr/bin/gofmt", "go"))
 

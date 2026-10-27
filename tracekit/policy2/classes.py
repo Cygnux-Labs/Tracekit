@@ -135,7 +135,8 @@ def _special_address(host):
 def url_info(url):
     """{scheme, host, internal} of a URL. `host` is canonical (_canonical_host). `internal`: the host is a loopback,
     private, link-local, shared, reserved or other non-global address (also inside IPv6), looks like an address but is
-    none, or a browser and Python's urllib read different hosts from the URL (http://a\\@b/)."""
+    none, or a browser and Python's urllib read different hosts from the URL (http://a\\@b/), which also sets
+    `ambiguous`."""
     if not re.match(r"(?i)[\x00-\x20]*((https?|wss?|ftp|file):|[a-z][a-z0-9+.-]*:(?![0-9])|[/\\]{2})",
                     re.sub(r"[\t\n\r]", "", url)):
         url = "http://" + url   # host[:port]/path without a scheme: a browser's address bar, and curl, read it as http
@@ -149,7 +150,8 @@ def url_info(url):
         return {"scheme": scheme}
     host = hosts[0]
     internal = _BAD in hosts or len(set(hosts)) > 1 or _special_address(host.strip("[]"))
-    return {"scheme": scheme, "host": None if host is _BAD else host, "internal": internal}
+    return {"scheme": scheme, "host": None if host is _BAD else host, "internal": internal,
+            **({"ambiguous": True} if len(set(hosts)) > 1 else {})}
 
 
 def url_target(url):

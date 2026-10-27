@@ -30,9 +30,9 @@ import datetime
 import itertools
 import math
 import posixpath
-import shlex
 
 from .findings import WRITE_TOOLS
+from .findings_text import _Lexer
 from .wiki import wiki_url
 
 GRACE_S, SKEW_S = 2.0, 0.5
@@ -164,7 +164,7 @@ def _programs(cmd):
     """The programs a shell command runs, as far as a lexer can tell: the first word of each simple command that is
     no builtin, past wrappers (sudo, env, ...) and assignments."""
     try:
-        lex = shlex.shlex(cmd[:1 << 16], posix=True, punctuation_chars=True)
+        lex = _Lexer(cmd[:1 << 16], posix=True, punctuation_chars=True)
         lex.whitespace_split = True
         words = list(lex)
     except ValueError:

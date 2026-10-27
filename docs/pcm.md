@@ -65,6 +65,9 @@ from the demo (its claims and grants left out here):
   `"t": "pcm.grant.v0"`, so one can't pass as the other, and neither can pass as a checkpoint note. The tags are
   PCM's own, not `tracekit.*`, because PCM is an open protocol that other implementations sign too
   ([format](format-v2.md)).
+- `sig.sig`, like every base64 value in PCM (evidence proof entries too), is canonical: the standard alphabet,
+  padded, no whitespace, unused bits of the last character zero. Any other text fails, so a signature has one
+  text form.
 - The media type is `application/vnd.pcm+json`.
 
 Each signed message is one record in the sender's run: `ext` with `name: pcm.sent`, the message's hash, its id, the
@@ -112,18 +115,57 @@ A claim says something happened in the sender's run. There are four types:
 
 | Claim | Proven when the evidence holds |
 |---|---|
-| `tests_passed {suite}` | a call of a tool the shipped policy packs class as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one test command (`pytest -q tests/x.py`, not `pytest -q; true` or `echo hi`) |
+| `tests_passed {suite}` | a call of a tool the shipped policy packs class as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one [test command](#test-commands) (`pytest -q tests/x.py`, not `pytest -q; true`, `pytest --co` or `echo hi`) |
 | `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved |
-| `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md) or kernel sensor, to `host`, not denied; or a call of a tool the shipped packs class as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok` |
-| `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok` |
+| `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md) or kernel sensor, to `host`, not denied; or a call of a tool the shipped packs class as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok`. Hosts are compared in [canonical form](#hosts) |
+| `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok`. `path` must be absolute (`/repo/refund.py`, `C:\repo\refund.py`) and have no `..` |
 
 Each claim gets one result:
 
 - **proven**: the evidence verifies and says what the claim says.
 - **unproven**: there is no evidence, or the only matching result is the agent's own report (T1:
   `the result is the agent's own report (T1)`). The agent's process said the call succeeded; nothing else saw it.
-  A matching call of another tool is unproven too (`a tool the verifier can't place as a shell tool`).
-- **failed**: the evidence does not verify, or no record in it says what the claim says.
+  A matching call of another tool is unproven too (`a tool the verifier can't place as a shell tool`), and so is a
+  call the verifier can't tell apart: a host that won't parse, or a `Write` whose path is relative (its working
+  directory is not in the record) and ends with the claimed path.
+- **failed**: the evidence does not verify, no record in it says what the claim says, or the claim is malformed (a
+  relative `file_written` path, a `tests_passed` suite that is no test command).
+
+### Test commands
+
+`suite` is one simple command: no `;`, `&&`, `||`, `|`, `&`, parentheses or newline. Its words (as a POSIX shell
+splits and unquotes them; a `#` starts a comment only at the start of a word) must begin with one of these, the first
+word compared by its base name (`.venv/bin/pytest` is `pytest`):
+
+```text
+pytest  py.test  python -m pytest  python3 -m pytest  python -m unittest  python3 -m unittest  tox  nox  nose2
+trial  behave  jest  vitest  mocha  ava  karma  cucumber  playwright test  phpunit  rspec  ctest
+npm test  npm run test  yarn test  yarn run test  pnpm test  pnpm run test  bun test
+go test  cargo test  cargo nextest run  dotnet test  deno test  swift test  mix test  bazel test
+make test  make check  mvn test  mvn verify  gradle test  gradle check
+```
+
+and no word may be `--co`, `--collect-only`, `--help`, `-h` or `--version`, with which a runner runs no tests. A
+wrapper or an assignment in front (`uv run pytest`, `CI=1 pytest`, `sudo pytest`) is no test command: claim the
+command the way the list writes it.
+
+### Hosts
+
+The claim's `host`, the call's URL host and the effect's `host` are each put in one form before they are compared,
+and a port is ignored:
+
+1. A claim's or effect's host is read as the host of `http://<host>/` (a bare IPv6 address as `http://[<host>]/`); a
+   URL's host is read as a browser (WHATWG URL) reads it, and must also be the host Python's `urllib` reads
+   (`http://a.example\@b.example/` is read apart, so it won't parse).
+2. The host is percent-decoded, NFKC-normalised, `。` becomes `.`, and it is casefolded. An IPv4 address in any form
+   `inet_aton` takes (`0x7f.1`) is written as dotted decimal; an IPv6 address in brackets in its short form, an
+   IPv4-mapped or NAT64 one as the IPv4 address it reaches.
+3. A name loses one trailing dot and goes to ASCII label by label with Python's `idna` codec (IDNA 2003 ToASCII,
+   without the STD3 rules): `bücher.example` is `xn--bcher-kva.example`.
+
+A host that won't parse (an empty label, a label over 63 characters, something that looks like an address and is
+none, a URL Python can't split) makes that record unproven, never proven or failed; a claimed host that won't parse
+makes the claim unproven.
 
 The evidence for a claim is self-contained. It needs only trust.json:
 
@@ -283,7 +325,8 @@ A forged message stops at the signature; no claim work is done for it.
 
 **Replay.** A receiver keeps one `pcm.Replay()` for its whole life and passes it to every call. A message passes once:
 within 300 s of the receiver's clock, not signed before the receiver started, and with a nonce not seen before from
-that sender. A message signed before the receiver started is refused:
+that sender. A sender is the log key that signed the message and its `from.agent`: the same agent name under two
+pinned logs is two senders. A message signed before the receiver started is refused:
 
 ```text
 replay: sent before this receiver started: ask for it again

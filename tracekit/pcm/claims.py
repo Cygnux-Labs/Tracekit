@@ -5,13 +5,14 @@ each with its inclusion proof, and a policy.decision's args opened by its salt.
 A claim is proven only by what the signer recorded itself: a person's approval, an observer's effect.observed, or a
 tool.result a gateway or executor wrote (T2: the record's own `source` and `tier`, which no client sets). A result the
 agent's process reported (T1) is its own word, so a claim that rests on one is unproven."""
-import base64
 import functools
 import hmac
 import os
+import posixpath
+import re
 
 from tracekit import core, merkle, yamlmini
-from tracekit.findings_text import _simple, command_facts
+from tracekit.findings_text import _simple
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.pcm import CLAIM_ARGS, check_args
@@ -20,6 +21,16 @@ from tracekit.schema import V2, validate
 
 _RANK = {"proven": 0, "unproven": 1, "failed": 2}
 PACKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs")
+# PCM 0.1's test runners: the leading words of a suite, its program by its base name (the test runners command_facts
+# knows, without wrappers such as `uv run` or `sudo`), and flags with which a runner runs no tests
+TEST_RUNNERS = [r.split() for r in (
+    "pytest", "py.test", "python -m pytest", "python3 -m pytest", "python -m unittest", "python3 -m unittest", "tox",
+    "nox", "nose2", "trial", "behave", "jest", "vitest", "mocha", "ava", "karma", "cucumber", "playwright test",
+    "phpunit", "rspec", "ctest", "npm test", "npm run test", "yarn test", "yarn run test", "pnpm test", "pnpm run test",
+    "bun test", "go test", "cargo test", "cargo nextest run", "dotnet test", "deno test", "swift test", "mix test",
+    "bazel test", "make test", "make check", "mvn test", "mvn verify", "gradle test", "gradle check")]
+NO_TESTS = frozenset(("--co", "--collect-only", "--help", "-h", "--version"))
+_ABSOLUTE = re.compile(r"/|[A-Za-z]:/")   # what fs_path keeps absolute
 
 
 class EvidenceError(ValueError):
@@ -45,8 +56,8 @@ def evidence(ev, msg, trust):
         if not isinstance(e, dict) or event_hash(e) != r["hash"]:
             raise EvidenceError(f"record {i}: hash does not match the event")
         try:
-            proof = [base64.b64decode(p, validate=True) for p in r["proof"]]
-        except ValueError:   # binascii.Error, or a non-ASCII entry
+            proof = [checkpoint._unb64(p) for p in r["proof"]]   # canonical base64 only (PCM 0.1)
+        except ValueError:
             proof = None
         if type(e.get("seq")) is not int or proof is None or not merkle.verify_inclusion(
                 e["seq"], size, merkle.leaf_hash(bytes.fromhex(r["hash"][7:])), proof, root):
@@ -83,12 +94,18 @@ def placed():
 
 def _ran(recs, match, what, cls=None):
     """(result, detail) of the claim that a call whose opened args `match(tool, args)` ran and succeeded: proven by a
-    T2 result, unproven by the agent's own (T1) or by a tool the verifier can't place as class `cls`."""
+    T2 result, unproven by the agent's own (T1), by a tool the verifier can't place as class `cls`, or by a call
+    `match` can't tell (None)."""
     best = ("failed", f"no call in the evidence {what}")
     for e, args in recs:
         d = e["data"]
-        if not isinstance(args, dict) or d["decision"] == "deny" or not {"tool", "decision_id"} <= d.keys() \
-                or not match(d["tool"], args):   # the two the event schema leaves optional
+        # the two the event schema leaves optional
+        m = isinstance(args, dict) and d["decision"] != "deny" and {"tool", "decision_id"} <= d.keys() \
+            and match(d["tool"], args)
+        if m is None:
+            best = min(("unproven", f"the verifier can't tell whether call {d['tool_use_id']} {what}"), best,
+                       key=lambda o: _RANK[o[0]])
+        if not m:
             continue
         # lean: the shipped packs' tools map; a custom shell or http tool is unproven until the verifier takes one
         if cls and placed().get(d["tool"]) != cls:   # a `command` or `url` field alone is not a shell or http call
@@ -112,7 +129,9 @@ def _ran(recs, match, what, cls=None):
 
 def tests_passed(a, recs):
     # one simple command: in `pytest || true` or `pytest; true` the call's status is not the tests'
-    if len(list(_simple(a["suite"]))) != 1 or "test" not in command_facts(a["suite"])[0]:
+    cmds = list(_simple(a["suite"]))
+    words = [posixpath.basename(cmds[0][0]), *cmds[0][1:]] if len(cmds) == 1 else []
+    if NO_TESTS & set(words) or not any(words[:len(r)] == r for r in TEST_RUNNERS):
         return "failed", f"{a['suite'][:64]!r} is not a single test command"
     return _ran(recs, lambda tool, args: classes.extract("shell", tool, args).get("command") == a["suite"],
                 f"ran {a['suite'][:64]!r}", "shell")
@@ -128,24 +147,68 @@ def approved_by(a, recs):
     return "failed", f"no approval of {a['call']} by the person {a['person']}"
 
 
+def _a_label(info):
+    """The host of classes.url_info's `info` as PCM 0.1 compares hosts: an address as url_info writes it, a name
+    without its one trailing dot and in ASCII by Python's `idna` codec; None when it has none or it won't encode."""
+    h = info.get("host")
+    if h is None or h.startswith("["):
+        return h
+    name = h[:-1] if h.endswith(".") else h
+    # lean: IDNA 2003 (the stdlib), not UTS 46; take the idna package if a host they read apart matters
+    try:
+        return name.encode("idna").decode("ascii") if name and not name.endswith(".") else None
+    except UnicodeError:
+        return None
+
+
+def _host(host):
+    """A claim's or an effect's host (a name or address, maybe with a port) as PCM 0.1 compares hosts, None when it
+    won't parse."""
+    if not isinstance(host, str) or re.search(r"[/\\?#@\s\[\]]", host):
+        return None
+    return _a_label(classes.url_info(f"http://[{host}]/" if host.count(":") > 1 else f"http://{host}/"))
+
+
 def reached_host(a, recs):
+    want = _host(a["host"])
+    if want is None:
+        return "unproven", f"{a['host'][:64]} is no host the verifier can read"
+    seen = ("failed", "")
     for e, _ in recs:
         d = e["data"]
-        if e["type"] == "effect.observed" and d.get("host") == a["host"] and d.get("kind") in ("net", "connect") \
-                and not d.get("denied"):
-            return "proven", f"effect.observed seq {e['seq']}: {d['observer']} saw the run reach {a['host']}"
-    return _ran(recs, lambda tool, args: classes.extract("http", tool, args).get("host") == a["host"],
-                f"reached {a['host']}", "http")
+        if e["type"] == "effect.observed" and d.get("kind") in ("net", "connect") and not d.get("denied"):
+            got = _host(d.get("host"))
+            if got == want:
+                return "proven", f"effect.observed seq {e['seq']}: {d['observer']} saw the run reach {a['host']}"
+            if got is None:
+                seen = ("unproven", f"effect.observed seq {e['seq']}: a host the verifier can't read")
+
+    def match(tool, args):
+        info = classes.url_info(args["url"]) if isinstance(args.get("url"), str) else {}
+        if "host" not in info and not info.get("internal"):   # no URL, or one with no host (file:, mailto:)
+            return False
+        got = None if info.get("ambiguous") else _a_label(info)
+        return None if got is None else got == want
+    return min(_ran(recs, match, f"reached {a['host']}", "http"), seen, key=lambda o: _RANK[o[0]])
 
 
 def file_written(a, recs):
-    if ".." in a["path"].replace("\\", "/").split("/"):   # fs_path keeps only what follows the last `..`
+    path = a["path"].replace("\\", "/")
+    if ".." in path.split("/"):   # fs_path keeps only what follows the last `..`
         return "failed", f"{a['path'][:64]} has a `..`: name the file's own path"
+    if not _ABSOLUTE.match(path):
+        return "failed", f"{a['path'][:64]} is relative: name the file's absolute path"
+    want = classes.fs_path(path)
 
     def match(tool, args):   # the op by the tool's name: an `op` in the args is the agent's word
-        f, content = classes.extract("fs", tool, args), args.get("content")
-        return classes.FS_OPS.get(tool) == "write" and f.get("path") == classes.fs_path(a["path"]) \
-            and isinstance(content, str) and "sha256:" + core.sha256_hex(content) == a["digest"]
+        got, content = classes.extract("fs", tool, args).get("path"), args.get("content")
+        if not (classes.FS_OPS.get(tool) == "write" and isinstance(got, str) and isinstance(content, str)
+                and "sha256:" + core.sha256_hex(content) == a["digest"]):
+            return False
+        if got == want:
+            return True
+        # a relative path (or what follows a `..`) may be this file, from a working directory the record doesn't hold
+        return None if not _ABSOLUTE.match(got) and ("/" + want).endswith("/" + got) else False
     return _ran(recs, match, f"wrote {a['path'][:64]} with {a['digest']}")
 
 

@@ -1,6 +1,7 @@
 """Proof-carrying messages, the format and offline core (tracekit.pcm): schema documents and args, the exhaustive
 caveat narrowing, satisfies, the grant chain, the signature and its domain separation, replay and the verdicts.
 Messages and grants are signed here with a throwaway log key, as the signer will sign them."""
+import base64
 import datetime
 import itertools
 import json
@@ -363,6 +364,16 @@ class Signature(unittest.TestCase):
         m["sig"] = {**m["sig"], "sig": "not base64!"}
         self.assertEqual(pcm.check_sig(m, "pcm", TRUST), "bad signature")
 
+    def test_only_canonical_base64(self):
+        """PCM 0.1: a signature has one text form; a set unused bit, no padding or whitespace fails it."""
+        m, alpha = message(), "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        s = m["sig"]["sig"]
+        bits = s[:85] + alpha[alpha.index(s[85]) ^ 1] + s[86:]   # char 85 holds 2 bits of the 64th byte and 4 unused
+        self.assertEqual(base64.b64decode(bits), base64.b64decode(s))
+        for text in (bits, s.rstrip("="), s[:40] + "\n" + s[40:87]):
+            self.assertEqual(pcm.check_sig({**m, "sig": {**m["sig"], "sig": text}}, "pcm", TRUST), "bad signature",
+                             text)
+
     def test_domain_separation(self):
         g = grant()
         self.assertIsNone(pcm.check_sig(g, "pcm-grant", TRUST))
@@ -408,6 +419,15 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(self.check(r, m)["verdict"], "accept")
         self.assertEqual(self.check(r, other)["verdict"], "accept")
 
+    def test_same_agent_under_another_log(self):
+        """PCM 0.1: a sender is its log key and agent, so one agent name under two logs shares no nonce."""
+        r, m = pcm.Replay(now=T0), message()
+        other = pcm.sign(OTHER, OTHER_VKEY, "pcm", {k: v for k, v in m.items() if k != "sig"})
+        for x in (m, other):
+            out = pcm.verify(x, {"logs": [VKEY, OTHER_VKEY]}, [DOC], replay=r, now=T0)
+            self.assertEqual(out["verdict"], "accept", out["reasons"])
+        self.assertIn("replayed", self.check(r, m)["replay"]["detail"])
+
     def test_window_and_start(self):
         r = pcm.Replay(now=T0 - 1000)
         for dt in (-301, 301):
@@ -423,7 +443,7 @@ class ReplayTests(unittest.TestCase):
         ms = [message(ts=T0 + i) for i in (1, 2, 3)]
         for m in ms:
             self.assertEqual(self.check(r, m, now=T0 + 3)["verdict"], "accept")
-        self.assertEqual(len(r.seen[A]), 2)
+        self.assertEqual(len(r.seen[ms[0]["sig"]["key"], A]), 2)
         for m in (ms[0], message(ts=T0 + 1)):   # the evicted nonce, and a fresh one as old
             out = self.check(r, m, now=T0 + 3)
             self.assertIn("older than", out["replay"]["detail"])

@@ -6,7 +6,6 @@ A schema document is content-addressed (`schema_ref`): flat typed fields, the cl
 whether a grant is required. A grant is signed by the log key too: a root grant comes from a person's approval in the
 issuer's run, a child from its parent's subject, only narrower (`narrows`) and only below a `delegable` grant."""
 import base64
-import binascii
 import collections
 import datetime
 import json
@@ -191,10 +190,10 @@ def check_sig(obj, purpose, trust):
         name, kid, type_, public = checkpoint.parse_vkey(vk)
         if type_ != checkpoint.ED25519 or f"{name}+{kid.hex()}" != obj["sig"]["key"]:
             continue
-        try:
+        try:   # canonical base64 only (PCM 0.1), so a signature has one text form
             ok = crypto.verify_v2("ed25519", crypto.spki(public), sigmsg.message(purpose, body),
-                                  base64.b64decode(obj["sig"]["sig"], validate=True))
-        except (binascii.Error, ValueError):
+                                  checkpoint._unb64(obj["sig"]["sig"]))
+        except ValueError:
             ok = False
         return None if ok else "bad signature"
     return f"signed by {obj['sig']['key']}, a key trust.json does not pin"
@@ -256,6 +255,7 @@ def _epoch(ts):
 class Replay:
     """One receiver's replay state, in memory. A message passes once: within `window_s` of this receiver's clock, not
     sent before it started (so a restart needs no saved state), newer than the sender's floor and with a new nonce.
+    A sender is the log key that signed and the agent (PCM 0.1): one agent name under two logs is two senders.
     Past `per_sender` nonces the oldest is forgotten and raises the floor. `window_s=None` (an auditor over a saved
     conversation) skips the clocks and checks nonces only."""
     # lean: per process, so replicas behind one address don't share it; share it through the signer's store when the
@@ -270,7 +270,7 @@ class Replay:
         """(ok, detail) for a message whose signature passed; a passing one is remembered."""
         now = time.time() if now is None else now
         try:
-            t, sender = _epoch(msg["ts"]), msg["from"]["agent"]
+            t, sender = _epoch(msg["ts"]), (msg["sig"]["key"], msg["from"]["agent"])
         except ValueError:   # the TS pattern passes a month 13 or a year 0
             return False, f"sent at {msg['ts']}, which is no real time"
         if self.window_s is not None:
