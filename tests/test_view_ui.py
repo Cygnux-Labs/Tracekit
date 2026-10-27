@@ -178,6 +178,147 @@ class WhyThisDecision(unittest.TestCase):
         self.assertIn("nobody yet: the agent has not requested an approval for this call", html)
 
 
+class SaidVsDid(unittest.TestCase):
+    """Rule 2, words are not proof: what the model said of an outcome sat beside nothing; every "tests pass" was re-run
+    by hand to check it."""
+    NAMES = ["esc", "ANSWER", "lastAnswer", "ended", "callState", "MARKS", "TEXT_RULES", "didFact", "reportsOn",
+             "saidMark"]
+    RUN = """
+        const S = { asked: new Map(), actList: [], reasoning: [], cited: new Map(), sessions: new Map([["r1", {}]]), tape: [] };
+        const rec = { session_id: "r1" }, says = (x, seq, text, claims = [text]) => S.reasoning.push({ x, seq, rec, kind: "says", text, claims });
+        // a call asked for by message x (its record's run_seq at), decided at seq
+        const call = (id, x, at, seq, more = {}) => { const c = { id: "r1|" + id, tool: "Bash", agent: { session: "r1" }, approvals: [], flags: [], post: null,
+          pre: { session_id: "r1", tool_use_id: id, tk_seq: seq, v2: { run_seq: seq } }, v2: { decision: "allow", run_seq: seq }, ...more };
+          S.actList.push(c); S.asked.set(c.id, { x, seq: at }); return c; };
+        const post = (seq, more = {}) => ({ session_id: "r1", tk_seq: seq, tk_source: "sdk", v2: { run_seq: seq }, ...more });
+        says("m0", 0, "All done.");                                                // nothing ran before it
+        call("c1", "m0", 0, 2, { post: post(3, { tk_source: "gateway", tk_tier: "T2", v2: { run_seq: 3, via: "mtls:executor" } }) });
+        says("m2", 4, "All 12 tests pass.");                                       // the executor wrote the result: T2
+        call("c2", "m2", 4, 5, { post: post(6) });
+        says("m3", 7, "Done.");                                                    // the agent's own client wrote it
+        const blocked = call("c3", "m3", 7, 8, { denied: true, v2: { decision: "deny", run_seq: 8 } });
+        says("m4", 9, "Pushed the fix to main.");                                  // a blocked call said as done
+        call("c4", "m4", 9, 10, { v2: { decision: "ask", run_seq: 10 }, approvals: [{ tk_seq: 11, v2: { approval: "reject" } }] });
+        says("m5", 12, "The email is sent and done.", ["The email is sent and done."]);   // held, then rejected
+        call("c5", "m5", 12, 13);
+        says("m6", 14, "Fixed.");                                                  // no result recorded
+        call("c6", "m6", 14, 15, { post: post(16, { tk_tier: "T2", tk_source: "gateway" }) });
+        says("m7", 17, "Tests pass.");                                             // a TK-X205 finding cites it
+        S.cited.set("r1|17", [{ title: "FINDING TK-X205 · Success claimed after a failure", v2: { finding: { rule: "TK-X205" } } }]);
+        says("m8", 18, "I did not push anything.", []);                            // a denial a TK-X111 finding cites
+        S.cited.set("r1|18", [{ title: "FINDING TK-X111 · Push denied, but it ran", v2: { finding: { rule: "TK-X111" } } }]);
+    """
+
+    def test_each_statement_of_an_outcome_is_marked_by_the_signed_record_of_the_calls_it_reports_on(self):
+        needs_node(self)
+        out = json.loads(page_js(self.NAMES, self.RUN + """
+            process.stdout.write(JSON.stringify(S.reasoning.map(r => { const s = saidMark(r);
+              return [r.text, MARKS[s.m], s.facts.map(([c, m, w, rec]) => `${c.pre.tool_use_id} ${m} ${w} · seq ${rec.tk_seq}`), s.f?.title || null]; })));"""))
+        self.assertEqual(out, [
+            ["All done.", "AGENT'S WORD", [], None],
+            ["All 12 tests pass.", "BACKED",
+             ["c1 b ran: mtls:executor wrote its result (T2), not the agent · seq 3"], None],
+            ["Done.", "AGENT'S WORD",
+             ["c2 w ran by the agent's own report: its client wrote the result (sdk) · seq 6"], None],
+            ["Pushed the fix to main.", "CONTRADICTED", ["c3 x blocked by the signer: it never ran · seq 8"], None],
+            ["The email is sent and done.", "CONTRADICTED", ["c4 x held, rejected: it has not run · seq 11"], None],
+            ["Fixed.", "AGENT'S WORD", ["c5 w no result recorded · seq 13"], None],
+            ["Tests pass.", "CONTRADICTED",
+             ["c6 b ran: a gateway or tool executor wrote its result (T2), not the agent · seq 16"],
+             "FINDING TK-X205 · Success claimed after a failure"],
+            ["I did not push anything.", "CONTRADICTED",   # the latest calls before it: m7 asked for none
+             ["c6 b ran: a gateway or tool executor wrote its result (T2), not the agent · seq 16"],
+             "FINDING TK-X111 · Push denied, but it ran"]])
+
+    def test_the_inspector_shows_what_was_said_before_and_after_a_call_each_outcome_marked_and_linked(self):
+        needs_node(self)
+        html = json.loads(page_js(self.NAMES + ["markHtml", "saidBefore", "sayLabel", "saidVsDid"], self.RUN + """
+            S.reasoning.push({ x: "m3", seq: 7, rec, kind: "think", text: "Push it." });   // thinking states nothing
+            const denial = S.reasoning.find(r => r.x === "m8");
+            process.stdout.write(JSON.stringify([saidVsDid(blocked), saidVsDid(S.actList[5]), saidVsDid({ ...blocked, id: "r1|c9" }),
+              markHtml(denial), markHtml({ ...denial, kind: "think" }), markHtml(S.reasoning[1]), markHtml({ ...S.reasoning[1], claims: [] })]));"""))
+        self.assertEqual(text(html[0]), (
+            "SAID VS DID · SELF-REPORTED, NOT PROOF, BESIDE THE SIGNED RECORD "
+            "BEFORE in the message that asked for this call "
+            "said Done. signed before this call AGENT&#39;S WORD states “Done.” "
+            "Bash · seq 6 ran by the agent&#39;s own report: its client wrote the result (sdk) "
+            "thinking Push it. signed before this call "
+            "AFTER in the agent&#39;s next message "
+            "said Pushed the fix to main. after this call CONTRADICTED states “Pushed the fix to main.” "
+            "Bash · seq 8 blocked by the signer: it never ran"))
+        self.assertIn('data-tkseq="8" title="c3">', html[0])
+        self.assertIn('<span class="mark x">CONTRADICTED</span>', html[0])
+        self.assertIn("AFTER in the agent&#39;s next message said Tests pass.", text(html[1]))
+        self.assertIn('data-i="-1">FINDING TK-X205', html[1])   # the finding opens its row (not in this fixture's tape)
+        self.assertIn("BEFORE no model message recorded for this call", text(html[2]))
+        # a denial states no outcome but a TK-X111 finding cites it; thinking and a statement of none are not marked
+        self.assertTrue(text(html[3]).startswith("CONTRADICTED FINDING TK-X111 · Push denied, but it ran"))
+        self.assertIn("BACKED</span> <span class=\"dim\">states “All 12 tests pass.”", html[5])
+        self.assertEqual(html[4] + html[6], "")
+
+    def test_the_inspector_reads_why_then_said_vs_did_then_whose_words_then_the_arguments(self):
+        """v7's inspector, top to bottom: WHY THIS DECISION, SAID VS DID, WHOSE WORDS, ARGUMENTS, RESULT, RECORD."""
+        start = PAGE.index("    function detailV2(sel) {")
+        body = PAGE[start:PAGE.index("\n    }\n", start)]
+        order = [body.index(m) for m in ("+ whyDecision(a) + saidVsDid(a) + whoseWords(a);",
+                                         '<div class="sec">ARGUMENTS</div>', '<div class="sec">RESULT</div>',
+                                         "evidence(a.pre)")]
+        self.assertEqual(order, sorted(order))
+
+
+class WhoseWords(unittest.TestCase):
+    """Rule 3: a held or blocked call showed no source of the instruction behind it; words nobody typed became rules."""
+
+    def words(self, call):
+        return json.loads(page_js(["esc", "tuid", "PSTATE", "WHOSE", "wordsOf", "whoseWords"], f"""
+            const S = {{ recs: [], actions: new Map([["r1|c0", {{ tool: "WebFetch" }}]]) }};
+            const rec = (seq, tk_seq, more) => S.recs.push({{ session_id: "r1", tk_seq, ...more, v2: {{ run_seq: seq, ...more.v2 }} }});
+            rec(1, 10, {{ event: "tk_note", v2: {{ type: "input.observed", source: "task", trust: "trusted" }} }});
+            rec(2, 11, {{ event: "tk_note", v2: {{ type: "input.observed", source: "msg:planner->executor run:p1", trust: "untrusted" }} }});
+            rec(3, 12, {{ event: "tk_note", v2: {{ type: "input.observed", source: "web:shipping_faq", trust: "untrusted" }} }});
+            rec(4, 13, {{ event: "PostToolUse", tool_use_id: "c0", v2: {{ type: "tool.result" }} }});
+            rec(5, 14, {{ event: "tk_alert", title: "CONSTRAINT · don't push", v2: {{ type: "constraint.added", constraint: "no_push" }} }});
+            rec(6, 15, {{ event: "UserPromptSubmit", v2: {{ type: "model.exchange" }} }});
+            rec(10, 16, {{ event: "tk_note", v2: {{ type: "input.observed", source: "later", trust: "trusted" }} }});   // after the call
+            const a = {json.dumps(call)};
+            process.stdout.write(JSON.stringify(whoseWords(a)));"""))
+
+    def test_a_held_call_names_the_source_of_each_argument_its_rule_and_the_runs_inputs_each_linked(self):
+        needs_node(self)
+        html = self.words({"pre": {"session_id": "r1"}, "v2": {
+            "decision": "ask", "run_seq": 9, "rules": [{"id": "TK-CONSTRAINT"}], "provenance_state": "complete",
+            "provenance": [{"field": "to", "kind": "email", "source": {"run_seq": 2}},
+                           {"field": "body", "kind": "string", "source": {"run_seq": 2}},
+                           {"field": "url", "kind": "url", "source": {"run_seq": 4, "tool": "WebFetch",
+                                                                       "tool_call_id": "c0"}},
+                           {"field": "path", "kind": "path", "source": {"run_seq": 99, "tool": "Read"}}]}})
+        self.assertEqual(text(html), (
+            "WHOSE WORDS · WHERE THE INSTRUCTION BEHIND IT CAME FROM "
+            "to, body RELAYED a message from agent planner to executor (untrusted) · seq 11 "
+            "url TOOL/WEB the result of WebFetch c0 · seq 13 "
+            "path TOOL/WEB record run_seq 99, the result of Read: not in this view "
+            "TK-CONSTRAINT TYPED CONSTRAINT · don&#39;t push: from the person&#39;s request, as its client reported it "
+            "· seq 14 "
+            "run input TYPED task: the person&#39;s request or task, by its client&#39;s word (trusted) · seq 10 "
+            "run input TOOL/WEB web:shipping_faq: content the run read (untrusted) · seq 12 "
+            "run input TYPED the person&#39;s prompt · seq 15"))
+        for seq in (10, 11, 12, 13, 14, 15):
+            self.assertIn(f'data-tkseq="{seq}"', html)
+        self.assertIn('<span class="ww relayed">RELAYED</span>', html)
+
+    def test_where_the_records_dont_say_it_says_so(self):
+        needs_node(self)
+        blocked = text(self.words({"pre": {"session_id": "r2"}, "v2": {"decision": "deny", "run_seq": 3, "rules": []}}))
+        self.assertIn("arguments no value came only from untrusted content, by the signer&#39;s provenance index: they "
+                      "are the person&#39;s or the model&#39;s own words, and the records don&#39;t say which", blocked)
+        self.assertIn("run input none recorded before it: no task, prompt or message was observed, so the records "
+                      "don&#39;t say whose words asked for this call", blocked)
+        lost = self.words({"pre": {"session_id": "r1"}, "v2": {"decision": "flag", "run_seq": 9,
+                                                              "provenance_state": "unavailable"}})
+        self.assertIn('<dd class="s-flag">unavailable (signer restarted', lost)
+        self.assertEqual(self.words({"pre": {"session_id": "r1"}, "v2": {"decision": "allow", "run_seq": 9}}), "")
+
+
 
 def hold(seq, call, run="r1", **v2):
     return {"event": "PreToolUse", "session_id": run, "tk_seq": seq, "tool_use_id": call, "tool_name": "send_email",
@@ -760,6 +901,10 @@ class NothingLost(unittest.TestCase):
             "why cause chains": ["function whyText(", '"COPY THIS EXPLANATION"', 'data-wopen="${esc(c.node)}"',
                                  'data-tkseq="${esc(seq)}">record&nbsp;${esc(seq)}',
                                  "tracekit why test ${path} --system ${prog} --remove ${shq(c.intervention)} --target ${tq}"],
+            "inspector: said vs did, whose words": ["SAID VS DID · SELF-REPORTED, NOT PROOF", "function saidMark(",
+                                                    'b: "BACKED", w: "AGENT\'S WORD", x: "CONTRADICTED"',
+                                                    "WHOSE WORDS · WHERE THE INSTRUCTION", "function whoseWords(",
+                                                    'typed: "TYPED", relayed: "RELAYED", web: "TOOL/WEB"'],
             "honesty tips": ["A row is a signed record of the hash-chained ledger unless it says ANALYSIS",
                              "Times are this browser's local time",
                              "Reasoning is what the model reported about itself; actions are what it did",

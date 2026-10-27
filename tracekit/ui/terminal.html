@@ -1389,6 +1389,38 @@
       color: var(--ink)
     }
 
+    /* SAID VS DID marks and WHOSE WORDS sources: outlined, the colour says which (a source's outline is dashed but
+       the person's own words) */
+    .mark,
+    .ww {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 0 4px;
+      border: 1px solid currentColor;
+      letter-spacing: .06em;
+      white-space: nowrap
+    }
+
+    .ww {
+      border-style: dashed
+    }
+
+    .mark.b,
+    .ww.typed {
+      color: var(--green);
+      border-style: solid
+    }
+
+    .mark.w,
+    .ww.relayed {
+      color: var(--amber)
+    }
+
+    .mark.x,
+    .ww.web {
+      color: var(--red)
+    }
+
     /* footer */
     .foot {
       display: flex;
@@ -2430,7 +2462,7 @@
         for (const b of r.blocks || []) {
           if ((b.kind === "thinking" || b.kind === "text") && b.text && b.text.trim()) {
             const kind = b.kind === "thinking" ? "think" : "says";
-            S.reasoning.push({ ts: r.ts, agent: a, kind, text: b.text, rec: r, form: b.form, ...at, k: b.after });
+            S.reasoning.push({ ts: r.ts, agent: a, kind, text: b.text, rec: r, form: b.form, ...at, k: b.after, claims: b.claims });
             pushTape({ ts: r.ts, agent: a, ev: kind === "think" ? "THINK" : "SAYS", text: b.text, rec: r });
           } else if (b.kind === "thinking_redacted" && !S.withheldSeen.has(mid)) {
             S.withheldSeen.add(mid);
@@ -3270,21 +3302,106 @@
       steps.push(["", "WHO ANSWERS", who]);
       return `<div class="sec">WHY THIS DECISION</div><div class="steps">` + steps.map(([k, l, h], i) => `<b class="${esc(k)}">${esc(i + 1)}</b><span class="dim">${esc(l)}</span><span>` + h + `</span>`).join("") + `</div>`;
     }
+    /* SAID VS DID (rule 2, words are not proof): a statement of an outcome (claims: the sentences TK-X205's text checks
+       read as one) beside the signed records of the calls it can report on. BACKED: each ran and a gateway, tool
+       executor (T2) or the signer wrote its result; CONTRADICTED: a text check's finding cites it, or none of them ran
+       or each failed; the AGENT'S WORD: anything else, a result only its own client wrote or no result at all */
+    const MARKS = { b: "BACKED", w: "AGENT'S WORD", x: "CONTRADICTED" };
+    const TEXT_RULES = ["TK-X205", "TK-X101", "TK-X102", "TK-X103", "TK-X104", "TK-X111", "TK-X112", "TK-X113", "TK-X114"];
+    // a call's signed outcome: [mark, words, the record that shows it]
+    function didFact(c) {
+      const p = c.post;
+      if (c.denied) return ["x", "blocked by the signer: it never ran", c.pre];
+      if (c.v2?.decision === "ask" && lastAnswer(c) !== "approve") return ["x", `held, ${callState(c)[1].toLowerCase()}: it has not run`, c.approvals.at(-1) || c.pre];
+      if (!p) return ["w", "no result recorded", c.pre];
+      if (c.error) return ["x", "its signed result is a failure", p];
+      if (p.tk_tier === "T2" || p.tk_source === "gateway" || p.tk_source === "signer")
+        return ["b", `ran: ${p.v2?.via || (p.tk_source === "signer" ? "the signer" : "a gateway or tool executor")} wrote its result (T2), not the agent`, p];
+      return ["w", `ran by the agent's own report: its client wrote the result (${p.tk_source || "?"}${p.tk_tier ? " " + p.tk_tier : ""})`, p];
+    }
+    // the calls a statement can report on: those the agent's message before it asked for, whose results it had read
+    // lean: read against every call of that message, not matched to the one it names (TK-X205's families do that in
+    // the run's analysis, whose findings then mark it); match by family here if a mark misleads in real runs
+    function reportsOn(r) {
+      const at = c => S.asked.get(c.id), mine = S.actList.filter(c => c.pre.session_id === r.rec.session_id && at(c) && at(c).seq < r.seq && at(c).x !== r.x);
+      const last = Math.max(...mine.map(c => at(c).seq));
+      return mine.filter(c => at(c).seq === last);
+    }
+    function saidMark(r) {
+      const f = (S.cited.get(r.rec.session_id + "|" + r.seq) || []).find(x => TEXT_RULES.includes(x.v2?.finding?.rule));
+      const facts = reportsOn(r).map(c => [c, ...didFact(c)]);
+      return { f, facts, m: f ? "x" : facts.length && facts.every(x => x[1] === facts[0][1]) ? facts[0][1] : "w" };
+    }
+    function markHtml(r) {   // nothing for what states no outcome, unless a text check's finding cites it (a denial)
+      if (r.kind !== "says") return "";
+      const { f, facts, m } = saidMark(r);
+      if (!r.claims?.length && !f) return "";
+      let h = `<div><span class="mark ${esc(m)}">${esc(MARKS[m])}</span>` + (r.claims?.length ? ` <span class="dim">states ${esc(r.claims.map(q => "“" + q.slice(0, 200) + "”").join(" "))}</span>` : "") + `</div>`;
+      if (f) h += `<div><a href="#" data-i="${esc(S.tape.findIndex(t => t.rec === f))}">${esc(f.title)}</a></div>`;
+      h += facts.map(([c, , w, rec]) => `<div><a href="#" data-tkseq="${esc(rec.tk_seq)}" title="${esc(c.pre.tool_use_id || "")}">${esc(c.tool + " · seq " + rec.tk_seq)}</a> <span class="dim">${esc(w)}</span></div>`).join("");
+      return h + (f || facts.length ? "" : `<div class="dim">no call before it in this run's records: nothing signed to hold it against</div>`);
+    }
+    // what the model said around call `a`: in the message that asked for it, and in its next message, which had read the result
+    function saidVsDid(a) {
+      const asked = S.asked.get(a.id), before = asked ? S.reasoning.filter(r => saidBefore(r, asked, a.pre)) : [];
+      const later = S.reasoning.filter(r => r.rec?.session_id === a.pre.session_id && r.x !== asked?.x && r.seq > (asked ? asked.seq : (a.post || a.pre).v2.run_seq));
+      const first = Math.min(...later.map(r => r.seq)), after = later.filter(r => r.seq === first);
+      const list = (rs, note) => rs.map(r => `<dt>${esc(sayLabel(r).toLowerCase())}</dt><dd>${esc(r.text.slice(0, 1500))}<div class="dim">${esc(note(r))}</div>` + markHtml(r) + `</dd>`).join("");
+      return `<div class="sec">SAID VS DID · SELF-REPORTED, NOT PROOF, BESIDE THE SIGNED RECORD</div><dl class="kv">`
+        + `<dt>BEFORE</dt><dd class="dim">${esc(!asked ? "no model message recorded for this call" : before.length ? "in the message that asked for this call" : "nothing this viewer can read: the model said nothing before this call, or its words are not kept here")}</dd>`
+        + list(before, r => r.seq < a.v2.run_seq ? "signed before this call" : "before the call in the transcript; signed after it")
+        + `<dt>AFTER</dt><dd class="dim">${esc(after.length ? "in the agent's next message" : ended(a) ? "nothing: no model message after this call" : "nothing yet")}</dd>`
+        + list(after, () => "after this call") + `</dl>`;
+    }
+    /* WHOSE WORDS (rule 3): where the words behind a call came from, as far as its records say. TYPED: the person's
+       request (an input its client marked trusted, a prompt, a constraint from it); RELAYED: another agent's message;
+       TOOL/WEB: a tool's result or other untrusted content. Each source opens its record */
+    const WHOSE = { typed: "TYPED", relayed: "RELAYED", web: "TOOL/WEB" };
+    // a record that brought words into the run: [kind, words]
+    function wordsOf(r) {
+      const v = r.v2 || {}, m = /^msg:(.+?)->(\S+)(?: run:(\S+))?/.exec(v.source || "");
+      if (v.type === "input.observed") return m ? ["relayed", `a message from agent ${m[1]} to ${m[2]} (${v.trust})`]
+        : v.trust === "trusted" ? ["typed", `${v.source}: the person's request or task, by its client's word (trusted)`] : ["web", `${v.source}: content the run read (untrusted)`];
+      if (r.event === "UserPromptSubmit") return ["typed", "the person's prompt"];
+      if (v.constraint) return ["typed", `${r.title}: from the person's request, as its client reported it`];
+      return ["web", r.event === "PostToolUse" ? `the result of ${S.actions.get(tuid(r))?.tool || "a tool"} ${r.tool_use_id}` : r.title || r.event];
+    }
+    function whoseWords(a) {
+      const v = a.v2 || {}, recs = S.recs.filter(r => r.session_id === a.pre.session_id && r.v2 && r.v2.run_seq < v.run_seq);
+      if (v.decision === "allow" && !v.provenance) return "";
+      const row = (what, k, w, r) => `<dt>${esc(what)}</dt><dd><span class="ww ${esc(k)}">${esc(WHOSE[k])}</span> ${esc(w)}` + (r ? ` · <a href="#" data-tkseq="${esc(r.tk_seq)}" title="${esc(r.title || "")}">seq ${esc(r.tk_seq)}</a>` : "") + `</dd>`;
+      const line = (what, r) => row(what, ...wordsOf(r), r), say = (what, t, cls) => `<dt>${esc(what)}</dt><dd class="${esc(cls || "")}">${esc(t)}</dd>`;
+      // its arguments: each value that only untrusted content brought in (the decision's signed provenance), by the record that brought it
+      const by = new Map(); for (const p of v.provenance || []) by.set(p.source?.run_seq, [...(by.get(p.source?.run_seq) || []), p]);
+      let h = "", shown = new Set();
+      for (const [n, ps] of by) {
+        const r = recs.find(r => r.v2.run_seq === n), what = [...new Set(ps.map(p => p.field))].join(", ");
+        if (r) shown.add(r);
+        h += r ? line(what, r) : row(what, "web", `record run_seq ${n}` + (ps[0].source?.tool ? ", the result of " + ps[0].source.tool : "") + ": not in this view");
+      }
+      if (v.provenance_state && v.provenance_state !== "complete") h += say("arguments", PSTATE[v.provenance_state] || v.provenance_state, "s-flag");
+      else if (!by.size) h += say("arguments", "no value came only from untrusted content, by the signer's provenance index: they are the person's or the model's own words, and the records don't say which");
+      // its rule: a live constraint holds a call because the person's request said not to do it
+      if (v.rules?.some(x => x.id === "TK-CONSTRAINT")) h += recs.filter(r => r.v2.constraint).map(r => line("TK-CONSTRAINT", r)).join("") || say("TK-CONSTRAINT", "a constraint of the run, not in this view");
+      // what came into the run before it: the person's request, other agents' messages, content it read
+      // lean: the newest 6; the rest are rows of the run's CALLS
+      const all = recs.filter(r => r.v2.type === "input.observed" || r.event === "UserPromptSubmit"), ins = all.filter(r => !shown.has(r));
+      h += ins.slice(-6).map(r => line("run input", r)).join("") + (ins.length > 6 ? say("", `${ins.length - 6} earlier inputs: rows of this run's CALLS`, "dim") : "")
+        + (all.length ? "" : say("run input", "none recorded before it: no task, prompt or message was observed, so the records don't say whose words asked for this call"));
+      return `<div class="sec">WHOSE WORDS · WHERE THE INSTRUCTION BEHIND IT CAME FROM</div><dl class="kv">` + h + `</dl>`;
+    }
     const DESK = () => document.querySelector('.nav a[href="/approvals"]');   // the nav's link: this server has the approval pages
     const cols = (l, r) => `<div>` + l + `</div><div>` + r + `</div>`;  // the detail card's two columns
     function detailV2(sel) {
       if (sel.pre) {
         const a = sel, v = a.v2 || {}, out = callState(a), seq = lseq(a.pre), reveal = `tracekit signer reveal --record ${seq}`;
         const left = `<dl class="kv"><dt>CALL</dt><dd style="color:var(--cyan)">${esc(a.tool)}</dd><dt>RUN</dt><dd>${esc(label(a.agent))}</dd><dt>TIME</dt><dd>${esc(fmtT(a.start))}${a.ms != null ? ` · ${esc(a.ms)} ms` : ""}</dd>
-      <dt>DECISION</dt><dd>${esc(String(v.decision).toUpperCase())} → <span class="${esc(out[0])}">${esc(out[1])}</span></dd>` + verdictLine(a.pre.session_id) + `</dl>
-      <div class="sec">ARGUMENTS</div>` + (Object.keys(a.input).length ? `<pre>${esc(j(a.input).slice(0, 6000))}</pre><div class="dim" style="padding:0 8px">kept by the signer and read by this viewer; the record holds only their commitment</div>` : "")
-          + `<dl class="kv"><dt>commitment` + cp(v.args_commitment) + `</dt><dd class="hash">${esc(v.args_commitment || "")}</dd><dt>reveal` + cp(reveal) + `</dt><dd class="dim"><code class="shell">${esc(reveal)}</code> gives an auditor the salt that opens the commitment</dd><dt>policy</dt><dd class="dim" title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</dd></dl>` + argsFrom(a);
-        let right = whyDecision(a) + (a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "");
+      <dt>DECISION</dt><dd>${esc(String(v.decision).toUpperCase())} → <span class="${esc(out[0])}">${esc(out[1])}</span></dd>` + verdictLine(a.pre.session_id) + `</dl>`
+          + whyDecision(a) + saidVsDid(a) + whoseWords(a);
+        let right = `<div class="sec">ARGUMENTS</div>` + (Object.keys(a.input).length ? `<pre>${esc(j(a.input).slice(0, 6000))}</pre><div class="dim" style="padding:0 8px">kept by the signer and read by this viewer; the record holds only their commitment</div>` : "")
+          + `<dl class="kv"><dt>commitment` + cp(v.args_commitment) + `</dt><dd class="hash">${esc(v.args_commitment || "")}</dd><dt>reveal` + cp(reveal) + `</dt><dd class="dim"><code class="shell">${esc(reveal)}</code> gives an auditor the salt that opens the commitment</dd><dt>policy</dt><dd class="dim" title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</dd></dl>` + argsFrom(a)
+          + (a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "");
         if (a.post) right += `<div class="sec">RESULT</div><dl class="kv"><dt>status</dt><dd>${esc(a.error ? "failed" : "ok")}</dd><dt>output</dt><dd>${esc(j(a.post.tool_response?.output))}</dd></dl>`;
-        // what the model said before this call in the message that asked for it: "signed before this call" only when its record's run_seq is lower than the decision's
-        const asked = S.asked.get(a.id), said = asked ? S.reasoning.filter(r => saidBefore(r, asked, a.pre)) : [];
-        right += `<div class="sec">SAID BEFORE THIS CALL · SELF-REPORTED, NOT PROOF</div>` + (said.length ? `<dl class="kv">` + said.map(r => `<dt>${esc(sayLabel(r).toLowerCase())}</dt><dd>${esc(r.text.slice(0, 1500))}<div class="dim">${r.seq < v.run_seq ? "signed before this call" : "before the call in the transcript; signed after it"}</div></dd>`).join("") + `</dl>`
-          : `<div class="dim">${asked ? "nothing: the model said nothing before this call" : "no model message recorded for this call"}</div>`);
         // what a kernel sensor saw this call cause, as the run's analysis joined it; what doesn't fit the call is marked
         const happened = [...S.effects.values()].filter(e => e.call === a.id);
         right += `<div class="sec">HAPPENED · WHAT THE KERNEL SENSOR SAW</div>` + (happened.length ? `<dl class="kv">` + happened.map(e => `<dt>${esc(e.rec.v2.effect.kind)}</dt><dd class="go" data-tkseq="${esc(e.rec.tk_seq)}">${esc(e.rec.v2.effect.target)}<div class="${e.status === "found" ? "s-deny" : "dim"}">${esc(effectHow(e))}</div></dd>`).join("") + `</dl>`

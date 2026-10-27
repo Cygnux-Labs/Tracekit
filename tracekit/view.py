@@ -65,7 +65,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_v2, parsers
+from . import findings_text, findings_v2, parsers
 from .bundle_v2 import export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -380,8 +380,9 @@ class Translator(observe.Translator):
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
         self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
 
-    def _base(self, e, rec, event):
-        return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent")}
+    def _base(self, e, rec, event):   # tk_tier: T2 a gateway or executor wrote it for its client (said vs did)
+        return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent"),
+                **({"tk_tier": e["tier"]} if e.get("tier") else {})}
 
     def reads(self, d):
         """What WHY THIS DECISION shows of a decision's policy, when the viewer has it: the class it maps the tool to,
@@ -411,7 +412,9 @@ class Translator(observe.Translator):
         # an approval's later records (one that expired at run.final names no call) are its request's call's
         info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": d.get("tool_use_id")
                 or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
-                or self.requests.get(d.get("approval_id"), ("", [], None))[2]}
+                or self.requests.get(d.get("approval_id"), ("", [], None))[2],
+                # the gateway or tool executor that wrote a call's result (tier T2), not the agent
+                **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
             x["v2"] = {**info, **x.get("v2", {})}
             if e["run_id"] == SIGNER_RUN[1]:
@@ -433,7 +436,8 @@ class Translator(observe.Translator):
                                + (f" · findings about run {d['analyzes']}" if d.get("analyzes") else "")}]
         if t == "input.observed":
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
-                                                       "only its commitment", "INPUT", trust=d.get("trust"))
+                                                       "only its commitment", "INPUT", trust=d.get("trust"),
+                        source=d.get("source"))
         if t == "content.accessed":
             seqs = d.get("seqs") or []
             return note("CONTENT READ", f"{d.get('principal')} read the kept content of {len(seqs)} record"
@@ -662,6 +666,9 @@ class Translator(observe.Translator):
                 if s["text"] or s["kind"] == "reasoning":
                     blocks.append({"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] ==
                                    "reasoning" else "text", "text": s["text"], "form": s["form"], "after": len(calls)})
+                    said = s["kind"] != "reasoning" and findings_text.read_message(s["text"])
+                    if said and said["claims"]:   # the outcomes it states, as TK-X205's text checks read them
+                        blocks[-1]["claims"] = sorted({said["quote"][c] for c in said["claims"]})
                 calls += s["tools"]
         turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "calls": calls,
                  "message_id": d.get("exchange_id"), "v2": x}]

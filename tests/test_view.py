@@ -156,6 +156,27 @@ class Translate(unittest.TestCase):
                                 ["EARLIER RECORD", "BEFORE", "AFTER", "COMMITTED"],
                                 ["EARLIER RECORD", "COMMITTED"]])
 
+    def test_said_vs_did_and_whose_words_get_the_tier_the_claims_and_the_input_source(self):
+        """SAID VS DID needs who wrote a call's result (a gateway or executor, tier T2, or the agent) and which
+        sentences state an outcome (TK-X205's reader); WHOSE WORDS where an input came from: none reached the page."""
+        tr = view.Translator()
+        tr.content[("r1", 4)] = {"output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "I will push it now."}]},
+            {"type": "message", "content": [{"type": "output_text", "text": "All 12 tests pass. Pushed the fix."}]}]}
+        rows = [x for r in (
+            v2rec(1, "input.observed", {"source": "msg:planner->executor run:p1", "trust": "untrusted"}),
+            v2rec(2, "tool.result", {"tool_use_id": "c1", "ok": True, "via": "mtls:executor"}, source="gateway",
+                  tier="T2"),
+            v2rec(3, "tool.result", {"tool_use_id": "c2", "ok": True}, source="sdk"),
+            v2rec(4, "model.exchange", {"phase": "response", "exchange_id": "x1", "content_digest": "sha256:c"}))
+            for x in tr.feed(r)]
+        inp, ran, own, turn = rows
+        self.assertEqual((inp["v2"]["source"], inp["v2"]["trust"]), ("msg:planner->executor run:p1", "untrusted"))
+        self.assertEqual((ran["tk_tier"], ran["tk_source"], ran["v2"]["via"]), ("T2", "gateway", "mtls:executor"))
+        self.assertEqual(("tk_tier" in own, "via" in own["v2"]), (False, False))
+        self.assertEqual([b.get("claims") for b in turn["blocks"]],
+                         [None, ["All 12 tests pass.", "Pushed the fix."]])   # a plan states no outcome
+
     def test_content_redaction_changed_is_not_shown_as_the_records(self):
         """The dev content source dropped `opened`: content that opens no commitment (redacted) showed as the call's
         arguments, as content that does."""
