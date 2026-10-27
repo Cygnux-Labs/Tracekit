@@ -960,6 +960,22 @@ class Horizon(unittest.TestCase):
         self.assertEqual((out["bare"], out["cwd"], out["laid"], out["same"]), (2, "shop", True, True))
         self.assertEqual(out["more"], [["outside", "outside.example"], ["outside", "github.com"], None, ["outside", "evil.example"]])
 
+    def test_the_cap_keeps_the_newest_calls_of_all_runs_together(self):
+        """A v2 seq counts within its run: ordered by seq, an older 600-call run kept a newer run's calls off the map."""
+        needs_node(self)
+        recs = [hz_call(i, "Read", {"file_path": f"src/f{i}.py"}, "old") for i in range(1, 601)]
+        recs += [{**hz_call(i, "Read", {"file_path": f"notes/n{i}.md"}, "new"), "ts": 5000 + i} for i in range(1, 4)]
+        runs = [{"id": "old", "agent": "a", "verdict": "verified"}, {"id": "new", "agent": "b", "verdict": "verified"}]
+        out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
+                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null;
+            const D = hzData();
+            process.stdout.write(JSON.stringify({{ ev: D.ev.map(e => [e.run, e.seq]), calls: D.calls }}));"""))
+        self.assertEqual((len(out["ev"]), out["calls"]), (500, 603))
+        self.assertEqual(out["ev"][0], ["old", 104])
+        self.assertEqual(out["ev"][-3:], [["new", 1], ["new", 2], ["new", 3]])
+
     def test_a_place_named_like_an_object_key_is_a_place(self):
         """A call to http://constructor/ made every frame throw (seen[e.at].push), and a place named __proto__ set the
         maps' prototype: the page's maps keyed by what records hold have no prototype."""
@@ -1038,6 +1054,15 @@ class NothingLost(unittest.TestCase):
             "calls": ["run", "calls", "desk"], "waterfall": ["run", "waterfall", "desk"], "graph": ["run", "graph", "graph"],
             "why": ["run", "why", "why"], "agents": ["run", "agents", "agents"], "evidence": ["run", "evidence", "evidence"],
             "timeline": ["run", "calls", "timeline"]})   # the why log's TIMELINE: CALLS with its events
+
+    def test_the_help_names_every_page_and_run_view(self):
+        """The help kept v6's buttons (DESK · RUNS · OVERVIEW · TIMELINE …) after v7 moved them."""
+        helptext = html.unescape(re.sub(r"<[^>]+>|\s+", " ", PAGE[PAGE.index('id="help"'):PAGE.index("</table>", PAGE.index('id="help"'))]))
+        names = re.search(r"const PAGES = (\[[^\]]+\])", PAGE)[1], re.search(r"const RVIEWS = (\[[^\]]+\])", PAGE)[1]
+        for name in json.loads(names[0]) + [{"waterfall": "timeline"}.get(v, v) for v in json.loads(names[1])]:
+            with self.subTest(name=name):
+                self.assertIn(name.upper(), helptext)
+        self.assertNotIn("WHY DID IT HAPPEN?", helptext)   # v6's name for WHY
 
     def test_a_phone_stacks_each_page_and_shows_a_tape_row_as_a_two_line_card(self):
         """At 390px the run header overlapped its own title, the stats strip ran past the edge, the lanes' times

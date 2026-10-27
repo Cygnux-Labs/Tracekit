@@ -1333,7 +1333,8 @@ class WhyPage(WhyServer):
             self.assertIn(directive, h["Content-Security-Policy"])
         self.assertIn(b'data-wtab="why"', page)
         self.assertEqual(unescaped(script_of(page.decode())), [])
-        self.assertIn("DESK · RUNS · OVERVIEW · TIMELINE · WHY DID IT HAPPEN? · GRAPH · AGENTS · INFLUENCE".encode(), page)
+        self.assertIn("DESK · RUNS · LIVE · APPROVALS · PERMISSIONS · HORIZON · INFLUENCE".encode(), page)
+        self.assertIn("1–7 · OVERVIEW · CALLS · TIMELINE · GRAPH · WHY · AGENTS · EVIDENCE".encode(), page)
         self.assertIn(b'<option value="${esc(a)}"', page)   # an agent name with odd spaces still matches its filter
         self.assertEqual(self.request("GET", "/api/why/workspace", session)[0], 200)
 

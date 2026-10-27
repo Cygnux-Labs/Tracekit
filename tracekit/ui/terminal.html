@@ -2858,9 +2858,19 @@
               gap, back to live (also ESC)</td>
           </tr>
           <tr>
-            <td>DESK · RUNS · OVERVIEW · TIMELINE · WHY DID IT HAPPEN? · GRAPH · AGENTS · INFLUENCE</td>
-            <td>With why logs (header buttons): a why view in place of the lower panels; DETAIL · WHY · NODE: the
-              selected record, why the selected call happened, the clicked node</td>
+            <td>DESK · RUNS · LIVE · APPROVALS · PERMISSIONS · HORIZON · INFLUENCE</td>
+            <td>The pages (header): every panel at once; every run; the newest open run; calls waiting for a person;
+              every decision that was not a plain allow; where the agents went; with why logs, what content reached
+              which tools. Back and Forward step through what you opened</td>
+          </tr>
+          <tr>
+            <td>1–7 · OVERVIEW · CALLS · TIMELINE · GRAPH · WHY · AGENTS · EVIDENCE</td>
+            <td>A run's views, on its page (click a run). DETAIL · WHY · NODE (the inspector): the selected record, why
+              the selected call happened, the clicked node</td>
+          </tr>
+          <tr>
+            <td>F · T · ESC · /</td>
+            <td>Flagged only (toggle) · theme: auto, light or dark · clear the selection · the command box</td>
           </tr>
         </tbody>
       </table>
@@ -3295,7 +3305,8 @@
     }
     // a restricted place's rule: a TK-F or TK-D rule whose reason is about secrets, harness configuration or Tracekit's files
     const hzRest = rules => rules.filter(x => /^TK-[FD]\d/.test(x.id) && /secret|credential|harness|tracekit/i.test(x.reason || "")).map(x => x.id + " · " + x.reason)[0] || null;
-    // every run's calls and sensor effects, newest HZMAX in seq order, each at its place; the places laid out on the rings
+    // every run's calls and sensor effects, the newest HZMAX of all runs together in time order (a v2 seq counts within
+    // its run, so it orders only a run's own records), each at its place; the places laid out on the rings
     // (project files by their top folder), the agents in the order their runs started each other
     let hzKey = [], hzD = null;
     function hzData() {
@@ -3315,7 +3326,7 @@
             : p[0] === "outside" ? "net" : FILE_TOOLS[r.tool_name] === "W" ? "write" : /^(Read|Glob|Grep|LS)$/.test(r.tool_name) ? "read" : "run",
           w: fx ? r.title : [r.tool_name, d === "ask" ? ANSWER[a] || "no answer yet" : "", ...rules.map(x => (x.id + " " + (x.reason || "")).trim())].filter(Boolean).join(" · ") });
       }
-      const ev = raw.sort((x, y) => (x.seq ?? 0) - (y.seq ?? 0) || x.t - y.t).slice(-HZMAX);
+      const ev = raw.sort((x, y) => x.t - y.t || (x.seq ?? 0) - (y.seq ?? 0)).slice(-HZMAX);
       for (const e of ev) {
         e.at = (e.p[2] ? "tool:" : "") + e.p[1];
         (places[e.at] ||= { kind: e.p[0], label: vis(e.p[1]), tool: !!e.p[2], rest: null }).rest ||= e.rest;
