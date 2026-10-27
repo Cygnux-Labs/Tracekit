@@ -3,6 +3,7 @@ caveat narrowing, satisfies, the grant chain, the signature and its domain separ
 Messages and grants are signed here with a throwaway log key, as the signer will sign them."""
 import datetime
 import itertools
+import json
 import operator
 import os
 import secrets
@@ -351,6 +352,11 @@ class Signature(unittest.TestCase):
         # PCM's own tags (an open protocol, not a tracekit format), distinct from every tracekit purpose
         self.assertEqual(sigmsg.message("pcm", {}), b'{"t":"pcm.message.v0"}')
         self.assertEqual(sigmsg.message("pcm-grant", {}), b'{"t":"pcm.grant.v0"}')
+        # every purpose is a distinct "t" in the JCS object, so no two purposes sign the same bytes for any body
+        tags = [json.loads(sigmsg.message(p, {}))["t"] for p in sigmsg.PURPOSES]
+        self.assertEqual(len(set(tags)), len(sigmsg.PURPOSES), tags)
+        body = {"pcm": 0, "x": 1}
+        self.assertEqual(len({sigmsg.message(p, body) for p in sigmsg.PURPOSES}), len(sigmsg.PURPOSES))
         text = sigmsg.message("pcm", {"x": 1}).decode() + "\n"   # PCM bytes posing as a checkpoint note
         note = text + "\n" + checkpoint.log_line("pcm-test/log", KEY.public, KEY.sign(text.encode()))
         with self.assertRaises(checkpoint.NoteError):
