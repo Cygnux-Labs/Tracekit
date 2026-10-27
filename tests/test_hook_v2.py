@@ -693,6 +693,52 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class HoldLine(unittest.TestCase):
+    def hold_lines(self, reason):
+        """Return the waiting line and the not-approved follow-up from one ask that is rejected."""
+        client = mock.Mock(timeout=30.0, signer=None)
+        run = mock.Mock(run_id="r1")
+
+        def call(method, **fields):
+            return {"approval_request": {"approval_id": "apr-1"},
+                    "approval_wait": {"state": "rejected"}}[method]
+
+        run.call = call
+        run.approval_consume = mock.Mock(return_value=None)
+
+        def decide(*a, **kw):
+            return run, {"decision": "ask", "rule_ids": ["TK-A003"], "decision_id": "d1",
+                         "reason": reason}
+
+        err = io.StringIO()
+        with mock.patch.object(claude_code, "_run", decide), mock.patch.object(claude_code, "files"), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(claude_code._pre(client, {"tool_name": "Bash", "tool_input": {"command": "x"}}, "s1", "t1"), 2)
+        lines = err.getvalue().splitlines()
+        waiting = next(l for l in lines if "waiting for approval" in l)
+        not_approved = next(l for l in lines if "not approved" in l)
+        return waiting, not_approved
+
+    def test_hold_line_drops_a_trailing_period_from_the_reason(self):
+        """A rule's reason ends with a period (often from the joined remedy). The hold line joins it to the approval
+        hint with `;`, so a trailing period would print as `.;` (#444)."""
+        waiting, not_approved = self.hold_lines("force push. Push without --force.")
+        self.assertIn("(TK-A003): force push. Push without --force; a person approves it", waiting)
+        self.assertNotIn(".;", waiting)
+        self.assertIn("(TK-A003: force push. Push without --force) and not approved:", not_approved)
+        self.assertNotIn(".;", not_approved)
+
+    def test_hold_line_keeps_ellipsis_dots_when_dropping_one_period(self):
+        """Only one trailing period is removed (`removesuffix`), so a reason ending in `...` still shows `..`
+        before the approval hint (#444)."""
+        waiting, not_approved = self.hold_lines("Hold for review...")
+        self.assertIn("(TK-A003): Hold for review..; a person approves it", waiting)
+        self.assertNotIn("Hold for review...;", waiting)
+        self.assertNotRegex(waiting, r"(?<!\.)\.;")   # a lone period before `;` would be the #444 bug
+        self.assertIn("(TK-A003: Hold for review..) and not approved:", not_approved)
+        self.assertNotIn(".;", not_approved)
+
+
 class PreBudget(unittest.TestCase):
     def test_a_held_call_is_answered_within_the_hooks_budget(self):
         """Every signer call takes all the time it may, and the approval comes on the last wait: the hook still
