@@ -54,7 +54,7 @@ CLASSES = {"shell": {"command", "argv", "line", "effects", "package_index", "con
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
            "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
            "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},
-           "a2a": {"sender", "receiver", "route", "kinds", "hosts", "size", "modality", "projector"},
+           "a2a": {"sender", "receiver", "route", "kinds", "hosts", "size", "modality", "projector", "weights"},
            "app": set(), "unknown": set()}
 for _fields in CLASSES.values():
     _fields.add("target")

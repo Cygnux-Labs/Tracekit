@@ -31,7 +31,8 @@ CARD = {"name": "researcher", "url": "http://researcher.example/a2a", "skills": 
 # only token:http (the agent the gateway authenticates) to researcher, and one (sender, receiver, projector) triple
 POLICY = {"tools": {"a2a:*": "a2a"},
           "deny": [{"id": "R-ROUTE", "class": "a2a", "field": "route", "pattern": ".",
-                    "unless": "^(token:http->researcher|qwen-7b@1->llama-1b@2 via c2c@0\\.1)$"}],
+                    "unless": "^(token:http->researcher|qwen-7b@1->llama-1b@2 via c2c@0\\.1)$"},
+                   {"id": "R-SIZE", "class": "a2a", "field": "size", "pattern": "^[0-9]{5,}$"}],   # 10,000 bytes up
           "ask": [{"id": "R-FILE", "class": "a2a", "field": "kinds", "pattern": "file"}]}
 TEXT = {"role": "user", "messageId": "m1", "parts": [{"kind": "text", "text": "find the Q3 report"}]}
 FILE = {"role": "user", "messageId": "m2", "parts": [{"kind": "file", "file": {"uri": "https://files.example/q3.pdf"}}]}
@@ -147,6 +148,11 @@ class Gateway(unittest.TestCase):
         [d] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
         self.assertEqual((d["tool"], d["decision"]), ("a2a:billing/message/send", "deny"))
 
+    def test_a_message_over_the_size_rule_never_reaches_the_receiver(self):
+        out = self.send("researcher", dict(TEXT, parts=[{"kind": "text", "text": "x" * 10000}]))
+        self.assertIn("R-SIZE", out["error"]["message"])
+        self.assertEqual(self.a2a.seen, [])
+
     def test_a_held_message_is_sent_only_once_a_person_approves(self):
         got = {}
         t = threading.Thread(target=lambda: got.update(out=self.send("researcher", FILE)))
@@ -206,7 +212,8 @@ class Transfer(unittest.TestCase):
         self.assertEqual((d["tool"], d["decision"]), ("a2a:transfer", "allow"))
         self.assertTrue([e for e in evs if e["type"] == "tool.result" and e["data"]["ok"]])
         args = {"sender": "qwen-7b@1", "receiver": "llama-1b@2", "modality": "kv-cache", "size": len(payload),
-                "digest": "sha256:" + hashlib.sha256(payload).hexdigest(), "projector": "c2c@0.1"}
+                "digest": "sha256:" + hashlib.sha256(payload).hexdigest(), "projector": "c2c@0.1",
+                "claimed": ["modality", "projector", "receiver", "sender"], "measured": ["digest", "size"]}
         self.assertTrue(self.s._opens(d["args_commitment"], d["decision_id"],
                                       event_hash({"tool": "a2a:transfer", "args": args})))
         for root, _, files in os.walk(self.dir):

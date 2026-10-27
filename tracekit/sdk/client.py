@@ -674,22 +674,31 @@ class RunHandle:
         records a commitment, never the value."""
         return self.call("observe", value=value, source=source, trust=trust, **fields)
 
-    def transfer(self, sender, receiver, payload, modality, projector=None):
+    def transfer(self, sender, receiver, payload, modality, projector=None, measured=None, keep=False):
         """Record and gate a transfer from `sender` to `receiver` before it happens: text, a tool call, or a model's
         internal state (`modality` kv-cache, embedding, activations) through `projector` (the adapter). Each is an id
         with its version ("qwen2.5-7b@<sha>"). `payload` (bytes or text) is hashed here: the signer gets its size and
-        sha256 digest, never the payload. Decided as tool a2a:transfer, of the class the policy maps it to (a2a: a
-        rule on `route`, "sender->receiver via projector", allows listed triples); an ask waits up to 5 minutes for a
-        person. Returns the decision with `ok`, whether the transfer may happen now; one that may is recorded as made
-        before this returns. It proves who sent which bytes to whom, through which adapter, and when, not what the
-        state meant; a transfer the code doesn't pass through here is not recorded."""
+        sha256 digest, never the payload. `measured`: more fields the calling code computed itself from what it sends
+        (tracekit.integrations.c2c: the fuser's weights hash and layer map). The arguments name those, size and digest
+        under `measured`, and the caller's word (the ids, the modality) under `claimed`; all of it comes from this
+        process (tier T1), so the signer takes none of it on trust. Decided as tool a2a:transfer, of the class the
+        policy maps it to (a2a: a rule on `route`, "sender->receiver via projector", allows listed triples); an ask
+        waits up to 5 minutes for a person. Fails closed: with the signer unreachable the transfer may not happen,
+        whatever the run's fail modes. Returns the decision with `ok`, whether the transfer may happen now; one that
+        may is recorded as made before this returns. `keep`: its result is the payload (hex), which a signer keeping
+        content (content.retain) encrypts in its vault for `tracekit why transfer`; the records hold only commitments.
+        It proves who sent which bytes to whom, through which adapter, and when, not what the state meant; a transfer
+        the code doesn't pass through here is not recorded."""
         data = payload.encode() if isinstance(payload, str) else bytes(payload)
-        args = {"sender": sender, "receiver": receiver, "modality": modality, "size": len(data),
-                "digest": "sha256:" + hashlib.sha256(data).hexdigest(), **({"projector": projector} if projector else {})}
+        more = measured or {}
+        args = {"sender": sender, "receiver": receiver, "modality": modality,
+                **({"projector": projector} if projector else {})}
+        args = {**args, "claimed": sorted(args), "size": len(data), "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+                **more, "measured": sorted({"size", "digest", *more})}
         tcid = "tx-" + uuid.uuid4().hex
         d = self.decide(tcid, TRANSFER, args)
-        if d.get("unavailable") or d["decision"] == "deny":   # the run's fail mode, or the policy
-            return {**d, "ok": d["decision"] == "allow"}
+        if d.get("unavailable") or d["decision"] == "deny":
+            return {**d, "ok": False}
         hint = {}
         if d["decision"] == "ask":
             hint = {"approval_id_hint": self.call("approval_request", tool_call_id=tcid)["approval_id"]}
@@ -701,7 +710,14 @@ class RunHandle:
                 return {**d, "ok": False, "reason": f"approval {state}"}
         c = self.approval_consume(tcid, TRANSFER, args, **hint)
         if c["ok"]:
-            self.complete(tcid)
+            kept = {"payload": data.hex()} if keep else None
+            # lean: up to a quarter frame of payload (its hex in half a frame) is kept; send it in parts, each a
+            # record of its own, once larger caches must be kept
+            if kept and not sendable(kept):
+                warnings.warn(f"tracekit: transfer {tcid} is recorded but not kept: its {len(data)} bytes are more "
+                              f"than one frame carries (about {MAX_LINE // 4}); keep a smaller one", stacklevel=2)
+                kept = None
+            self.complete(tcid, **({"result": kept} if kept else {}))
         return {**d, "ok": c["ok"], **({"reason": c["reason"]} if c.get("reason") else {})}
 
     def review_finding(self, reviewer, verdict, cites):

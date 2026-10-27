@@ -230,9 +230,11 @@ A2A_PARTS = ("text", "file", "data")
 def a2a_fields(args):
     """An agent-to-agent call's fields: what the A2A gateway sends (sender, the caller it authenticated; receiver, the
     upstream it names; params, the JSON-RPC params) or run.transfer does (sender, receiver, modality, projector, size,
-    digest), so a sender is the gateway's authenticated caller at tier T2 and the agent's own claim from run.transfer.
-    `route` is sender->receiver, then ` via <projector>` when a transfer names one; `kinds` the message's part kinds,
-    `hosts` the hosts its file parts point at, `size` the message's bytes (canonical JSON) or the transfer's."""
+    digest, and with tracekit.integrations.c2c the fuser's weights hash), so a sender is the gateway's authenticated
+    caller at tier T2 and the agent's own claim from run.transfer. `route` is sender->receiver, then ` via <projector>`
+    when a transfer names one; `kinds` the message's part kinds, `hosts` the hosts its file parts point at, `size` the
+    message's bytes (canonical JSON) or the transfer's; `weights` the hash the fuser's weights had, which a policy pins
+    where an id (`projector`) is only the caller's word."""
     sender, receiver, projector = args.get("sender"), args.get("receiver"), args.get("projector")
     params = args.get("params")
     message = params.get("message") if isinstance(params, dict) else None
@@ -241,6 +243,7 @@ def a2a_fields(args):
     uris = [p["file"].get("uri") for p in parts if isinstance(p.get("file"), dict)]
     size = len(canonical(message)) if message is not None else args.get("size")
     return {"sender": sender, "receiver": receiver, "projector": projector, "modality": args.get("modality"),
+            "weights": args.get("weights"),
             "route": f"{sender}->{receiver}" + (f" via {projector}" if isinstance(projector, str) else "")
             if isinstance(sender, str) and isinstance(receiver, str) else None,
             "kinds": [p.get("kind") or next((k for k in A2A_PARTS if k in p), "unknown") for p in parts] or None,
