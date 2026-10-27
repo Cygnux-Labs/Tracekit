@@ -8,7 +8,7 @@
 
 Nodes: run, agent, person (an approver), call, input, model (a model call), file, host, secret (the name of the
 redaction rule that caught it, never the value), rule, finding, approval, gap, and code (a Graphify node). Every edge
-has a grade (`evidence`) and cites the record it came from (`record`: run_id, run_seq, seq):
+has a grade (`grade`) and cites the record it came from (`record`: run_id, run_seq, seq, ts):
 
     SIGNED      the signer's record says so: agent ran run, run decided call, rule held or denied call, the call's
                 decided arguments wrote a file or reached a host (--content: the arguments the signer's content vault
@@ -19,13 +19,14 @@ has a grade (`evidence`) and cites the record it came from (`record`: run_id, ru
     OBSERVED    an observer outside the agent saw it: egress hosts, kernel sensor connections and files; a run's, never
                 a call's (the call id a process carries is the agent's claim)
     INFERRED    tracekit why's causal graph of the run and the signed why tests about it (why.finding), why's own grade
-                kept (`why_evidence`); and the Graphify join: a code node in a file the graph has (`record` names the
-                Graphify file)
+                kept (`why_evidence`); and the Graphify join (`join`: "graphify"): a code node in a file the graph has
+                (`record` names the Graphify file)
     UNVERIFIED  any of these from a bundle that fails verification against the trust config (`claimed`: the grade it
                 would have): kept, never dropped
 
-The same sources, trust config, vault content and Graphify graph give the same files byte for byte; no network, no
-model.
+build writes FILES: graph.json and its highlights as data (GRAPH_REPORT.json) and as Markdown (GRAPH_REPORT.md). A
+query's --json answer also carries `map`, the answer as the viewer draws it (_drawn). The same sources, trust config, vault
+content and Graphify graph give the same files byte for byte; no network, no model.
 """
 from __future__ import annotations
 
@@ -45,7 +46,8 @@ from .why.graph import Graph
 
 GRADES = ("SIGNED", "OBSERVED", "INFERRED", "UNVERIFIED")
 SCHEMA_VERSION = 1
-GRAPH, REPORT = "graph.json", "GRAPH_REPORT.md"
+GRAPH, REPORT_JSON, REPORT = "graph.json", "GRAPH_REPORT.json", "GRAPH_REPORT.md"
+FILES = (GRAPH, REPORT_JSON, REPORT)
 GRAPHIFY = os.path.join("graphify-out", "graph.json")
 FILTERS = {"file": "file", "host": "host", "agent": "agent", "approved_by": "person", "rule": "rule",
            "secret": "secret", "code": "code"}
@@ -57,10 +59,21 @@ Content = Callable[[str, List[Dict[str, Any]]], Dict[int, Any]]
 
 # --------------------------------------------------------------------------- sources
 
+def _runs(data: bytes) -> Dict[str, List[Dict[str, Any]]]:
+    """run_id -> records of the v2 bundle `data`, unverified."""
+    from .bundle_v2 import run_files
+    from .verify import v2
+    files = v2.read_zip(io.BytesIO(data))
+    runs = {}
+    for parts in run_files(files).values():
+        recs = [r for n in parts for r in v2._jsonl(files[n])]
+        runs[recs[0]["event"]["run_id"]] = recs
+    return runs
+
+
 def _read(path: str, trust: str):
     """(source entry, run_id -> records) of v2 bundle `path`, read once: its records are read even when it fails
     verification, so that its edges are marked UNVERIFIED rather than dropped."""
-    from .bundle_v2 import run_files
     from .verify import v2
     with open(path, "rb") as f:
         data = f.read()
@@ -69,10 +82,7 @@ def _read(path: str, trust: str):
                            "verify": {"ok": code == 0, "integrity": rep.integrity, "failures": rep.failures}}
     runs: Dict[str, List[Dict[str, Any]]] = {}
     try:
-        files = v2.read_zip(io.BytesIO(data))
-        for parts in run_files(files).values():
-            recs = [r for n in parts for r in v2._jsonl(files[n])]
-            runs[recs[0]["event"]["run_id"]] = recs
+        runs = _runs(data)
     except Exception as e:   # not readable as a bundle at all: listed in sources, with no runs
         src["unreadable"] = f"{type(e).__name__}: {e}"
     return src, runs
@@ -105,7 +115,7 @@ def _node(g: Graph, nid: str, kind: str, label: str, **attrs: Any) -> str:
 
 
 def _cite(e: Dict[str, Any]) -> Dict[str, Any]:
-    return {"run_id": e["run_id"], "run_seq": e["run_seq"], "seq": e["seq"]}
+    return {"run_id": e["run_id"], "run_seq": e["run_seq"], "seq": e["seq"], "ts": e["ts"]}
 
 
 def _edge(g: Graph, ok: bool, src: str, dst: str, kind: str, grade: str, cite: Dict[str, Any], **extra: Any) -> None:
@@ -281,7 +291,8 @@ def _add_why(g: Graph, recs: List[Dict[str, Any]], ok: bool, tests=()) -> None:
                 continue
             src, dst = ours(e["src"]), ours(e["dst"])
             if src and dst:
-                _edge(g, ok, src, dst, e["kind"], "INFERRED", _cite(wg.nodes[e["dst"]]["event"]["tracekit"]),
+                ev = wg.nodes[e["dst"]]["event"]
+                _edge(g, ok, src, dst, e["kind"], "INFERRED", _cite({**ev["tracekit"], "ts": ev["ts"]}),
                       why_evidence=e["evidence"])
         for rec, verified in tests:
             t = rec["event"]["data"]
@@ -322,7 +333,8 @@ def _graphify(g: Graph, path: str) -> Dict[str, Any]:
             loc = n.get("source_location")
             code = _node(g, f"code:{n['id']}", "code", str(n.get("label") or n["id"]), source_file=sf,
                          **({"source_location": loc} if isinstance(loc, str) else {}))
-            g.add_edge(f["id"], code, "contains", "INFERRED", record={"graphify": path, "source_file": sf})
+            g.add_edge(f["id"], code, "contains", "INFERRED", record={"graphify": path, "source_file": sf},
+                       join="graphify")
             linked += 1
     return {"path": path, "sha256": hashlib.sha256(data).hexdigest(), "linked": linked}
 
@@ -342,7 +354,7 @@ def build(paths: List[str], trust: str, content: Optional[Content] = None,
             index.setdefault((r["event"]["run_id"], r["event"]["run_seq"]), r)
             if r["event"]["type"] == "why.finding" and _about(recs):
                 tests.setdefault(str(_about(recs)), []).append((r, src["verify"]["ok"]))
-    g = Graph(None)  # type: ignore[arg-type]
+    g = Graph(None, "grade")  # type: ignore[arg-type]
     for src, recs in runs:
         ok, rid = src["verify"]["ok"], recs[0]["event"]["run_id"]
         args = None
@@ -362,7 +374,7 @@ def build(paths: List[str], trust: str, content: Optional[Content] = None,
     return {"schema_version": SCHEMA_VERSION, "tracekit": __version__, "trust_sha256": trust_sha256,
             "content": bool(content), "graphify": joined, "sources": [s for s, _ in read],
             "nodes": sorted(g.nodes.values(), key=lambda n: n["id"]),
-            "edges": sorted(g.edges, key=lambda e: (e["src"], e["dst"], e["kind"], e["evidence"]))}
+            "edges": sorted(g.edges, key=lambda e: (e["src"], e["dst"], e["kind"], e["grade"]))}
 
 
 def dumps(doc: Dict[str, Any]) -> str:
@@ -370,11 +382,11 @@ def dumps(doc: Dict[str, Any]) -> str:
 
 
 def _graph(doc: Dict[str, Any]) -> Graph:
-    g = Graph(None)  # type: ignore[arg-type]
+    g = Graph(None, "grade")  # type: ignore[arg-type]
     g.nodes = {n["id"]: n for n in doc["nodes"]}
     for e in doc["edges"]:
-        g.add_edge(e["src"], e["dst"], e["kind"], e["evidence"],
-                   **{k: v for k, v in e.items() if k not in ("src", "dst", "kind", "evidence")})
+        g.add_edge(e["src"], e["dst"], e["kind"], e["grade"],
+                   **{k: v for k, v in e.items() if k not in ("src", "dst", "kind", "grade")})
     return g
 
 
@@ -388,9 +400,11 @@ def _n(k: int, word: str) -> str:
 
 # --------------------------------------------------------------------------- report
 
-def report(doc: Dict[str, Any]) -> str:
-    """GRAPH_REPORT.md: what can't be trusted first (unverified sources, gaps, arguments not read), then the files
-    changed most, sensitive files, hosts, approvals, secrets, findings and causal chains, every number from the graph."""
+def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """GRAPH_REPORT.json, which GRAPH_REPORT.md renders: what can't be trusted first (unverified sources, gaps,
+    arguments not read), then the files changed most, sensitive files, hosts, approvals, secrets, findings and causal
+    chains, every number from the graph. Each section's items carry their line (`text`) and the node ids, runs and
+    grades behind it."""
     g = _graph(doc)
     nodes = g.nodes
 
@@ -400,22 +414,24 @@ def report(doc: Dict[str, Any]) -> str:
     def of(kind: str) -> List[str]:
         return sorted(n for n, v in nodes.items() if v["kind"] == kind)
 
+    def count(es: List[Dict[str, Any]]) -> Dict[str, int]:
+        c = Counter(e["grade"] for e in es)
+        return {k: c[k] for k in GRADES if c[k]}
+
     def grades(es: List[Dict[str, Any]]) -> str:
-        c = Counter(e["evidence"] for e in es)
-        return ", ".join(f"{c[k]} {k}" for k in GRADES if c[k])
+        return ", ".join(f"{n} {k}" for k, n in count(es).items())
 
     def runs(es: List[Dict[str, Any]]) -> List[str]:
         return sorted({r for e in es if (r := _run_of(e))})
 
-    def agents(rid: str) -> str:
-        return ", ".join(sorted({lab(e["src"]) for e in g.in_edges("run:" + rid, GRADES)
-                                 if nodes[e["src"]]["kind"] == "agent"})) or "?"
+    def agents(rid: str) -> List[str]:
+        return sorted({lab(e["src"]) for e in g.in_edges("run:" + rid, GRADES) if nodes[e["src"]]["kind"] == "agent"})
 
     def approvers(call: str) -> List[Dict[str, Any]]:
         return [e for e in g.in_edges(call, GRADES) if nodes[e["src"]]["kind"] == "person"]
 
     def by_person(call: str) -> bool:   # a person other than the run's own identity approved it, on a verified record
-        return any(e["kind"] == "approve" and not e.get("self_approved") and e["evidence"] == "SIGNED"
+        return any(e["kind"] == "approve" and not e.get("self_approved") and e["grade"] == "SIGNED"
                    for e in approvers(call))
 
     def called(n: str) -> str:   # a call with its decision
@@ -425,23 +441,24 @@ def report(doc: Dict[str, Any]) -> str:
         return "run " + lab(n) if nodes[n]["kind"] == "run" else called(n) + (
             f" in run {n.split(':')[1]}" if nodes[n]["kind"] in ("call", "input", "model", "finding", "gap") else "")
 
-    def capped(lines: List[str], what: str) -> List[str]:
-        return lines[:TOP] + ([f"and {len(lines) - TOP} more {what} (graph.json has them all)"] if len(lines) > TOP
-                              else [])
+    def cite(e: Dict[str, Any]) -> Dict[str, Any]:   # an edge as an item names it
+        return {"src": e["src"], "dst": e["dst"], "kind": e["kind"], "grade": e["grade"], "record": e["record"]}
 
     bad = [s for s in doc["sources"] if not s["verify"]["ok"]]
     unread = [n for n in of("run") if nodes[n].get("unread_args")]
     first = (
-        [f"{s['path']}: {s['verify']['integrity']} ({', '.join(s['verify']['failures'])}): every edge from it is "
-         "UNVERIFIED" for s in bad]
-        + [f"{s['path']}: {p}" for s in doc["sources"]
+        [{"text": f"{s['path']}: {s['verify']['integrity']} ({', '.join(s['verify']['failures'])}): every edge from it "
+                  "is UNVERIFIED", "what": "source failed verification", "source": s["path"],
+          "integrity": s["verify"]["integrity"], "failures": s["verify"]["failures"]} for s in bad]
+        + [{"text": f"{s['path']}: {p}", "what": "not read", "source": s["path"], "detail": p} for s in doc["sources"]
            for p in [s.get("unreadable")] + s.get("unread_runs", []) + s.get("content_unread", []) if p]
-        + [f"run {e['record']['run_id']}: {lab(e['dst'])} (record {e['record']['run_seq']}, {e['evidence']})"
-           for e in doc["edges"] if nodes[e["dst"]]["kind"] == "gap"]
-        + ([f"{_n(sum(nodes[n]['unread_args'] for n in unread), 'call')} in {_n(len(unread), 'run')}: their "
-            "arguments were not read, so the files they wrote and the hosts they named are not in the graph"
-            + ("" if doc.get("content") else " (build with --content, against the signer that recorded them)")]
-           if unread else []))
+        + [{"text": f"run {e['record']['run_id']}: {lab(e['dst'])} (record {e['record']['run_seq']}, {e['grade']})",
+            "what": "gap", "node": e["dst"], "edge": cite(e)} for e in doc["edges"] if nodes[e["dst"]]["kind"] == "gap"]
+        + ([{"text": f"{_n(sum(nodes[n]['unread_args'] for n in unread), 'call')} in {_n(len(unread), 'run')}: their "
+                     "arguments were not read, so the files they wrote and the hosts they named are not in the graph"
+                     + ("" if doc.get("content") else " (build with --content, against the signer that recorded them)"),
+             "what": "arguments not read", "calls": sum(nodes[n]["unread_args"] for n in unread),
+             "runs": [lab(n) for n in unread]}] if unread else []))
 
     # lean: a kernel sensor's file event and the call that made it are two writes; join them when sensors are common
     writes = {f: [e for e in g.in_edges(f, GRADES) if e["kind"] == "wrote" or e["kind"].startswith("file event")]
@@ -450,91 +467,208 @@ def report(doc: Dict[str, Any]) -> str:
     files = []
     for f in sorted(writes, key=lambda f: (-len(writes[f]), -len(tried[f]), f)):
         es, calls = writes[f], sorted({e["src"] for e in writes[f] if e["kind"] == "wrote"})
-        files.append(f"{lab(f)}: " + (f"written {_n(len(es), 'time')} in {_n(len(runs(es)), 'run')} ({grades(es)})"
-                                      if es else "not written")
-                     + (f"; calls that wrote it: {len(calls)}, without a person's approval: "
-                        f"{sum(not by_person(c) for c in calls)}" if calls else "")
-                     + (f"; calls that asked to write it and did not run: {len(tried[f])} ({grades(tried[f])})"
-                        if tried[f] else ""))
+        alone = sum(not by_person(c) for c in calls)
+        files.append({"text": f"{lab(f)}: " + (f"written {_n(len(es), 'time')} in {_n(len(runs(es)), 'run')} "
+                                               f"({grades(es)})" if es else "not written")
+                      + (f"; calls that wrote it: {len(calls)}, without a person's approval: {alone}" if calls else "")
+                      + (f"; calls that asked to write it and did not run: {len(tried[f])} ({grades(tried[f])})"
+                         if tried[f] else ""),
+                      "node": f, "writes": len(es), "runs": runs(es), "grades": count(es), "calls": calls,
+                      "without_person": alone, "asked": len(tried[f]), "asked_grades": count(tried[f])})
 
     sensitive = []
     for f in of("file"):
-        for w in sorted(writes[f] + tried[f], key=lambda e: (e["src"], e["evidence"])):
+        for w in sorted(writes[f] + tried[f], key=lambda e: (e["src"], e["grade"])):
             rules = [e for e in g.in_edges(w["src"], GRADES) if nodes[e["src"]]["kind"] == "rule"]
             if rules:
-                who = [f"{lab(a['src'])} {a['kind']}d it ({a['evidence']}"
+                who = [f"{lab(a['src'])} {a['kind']}d it ({a['grade']}"
                        + (", self-approved)" if a.get("self_approved") else ")") for a in approvers(w["src"])]
-                sensitive.append(f"{lab(f)}: {where(w['src'])} {w['kind']} it ({w['evidence']}) under "
-                                 + ", ".join(f"{lab(e['src'])} {e['kind']} ({e['evidence']})" for e in rules) + "; "
-                                 + ("; ".join(who) if who else "it ran with no person's approval"
-                                    if nodes[w["src"]].get("ok") else "it did not run"))
+                ran = bool(nodes[w["src"]].get("ok"))
+                sensitive.append({"text": f"{lab(f)}: {where(w['src'])} {w['kind']} it ({w['grade']}) under "
+                                          + ", ".join(f"{lab(e['src'])} {e['kind']} ({e['grade']})" for e in rules)
+                                          + "; " + ("; ".join(who) if who else "it ran with no person's approval"
+                                                    if ran else "it did not run"),
+                                  "node": f, "call": w["src"], "edge": cite(w), "rules": [cite(e) for e in rules],
+                                  "approvals": [{**cite(a), "self_approved": bool(a.get("self_approved"))}
+                                                for a in approvers(w["src"])], "ran": ran})
 
     hosts = []
     for h in sorted(of("host"), key=lambda h: (-len(runs(g.in_edges(h, GRADES))), h)):
         es = g.in_edges(h, GRADES)
-        hosts.append(f"{lab(h)}: " + "; ".join(
-            f"run {r} (agent {agents(r)}): " + ", ".join(
-                f"{'the run' if nodes[e['src']]['kind'] == 'run' else lab(e['src'])} {e['kind']} ({e['evidence']}"
+        hosts.append({"text": f"{lab(h)}: " + "; ".join(
+            f"run {r} (agent {', '.join(agents(r)) or '?'}): " + ", ".join(
+                f"{'the run' if nodes[e['src']]['kind'] == 'run' else lab(e['src'])} {e['kind']} ({e['grade']}"
                 + (f", explained by {e['explained_by']}" if "explained_by" in e else "") + ")"
-                for e in es if _run_of(e) == r) for r in runs(es)))
+                for e in es if _run_of(e) == r) for r in runs(es)),
+            "node": h, "runs": [{"run_id": r, "agents": agents(r),
+                                 "edges": [{**cite(e), **({"explained_by": e["explained_by"]} if "explained_by" in e
+                                                          else {})} for e in es if _run_of(e) == r]}
+                                for r in runs(es)]})
 
-    def approvals(p: str) -> str:
+    people = []
+    for p in of("person"):
         es = g.out_edges(p, GRADES)
         waits = [e["wait_ms"] for e in es if "wait_ms" in e]
-        return (", ".join(f"{n} {k}" for k, n in sorted(Counter(e["kind"] for e in es).items()))
-                + (f", median wait {statistics.median(waits):g} ms" if waits else ", no wait recorded")
-                + (f", {sum(bool(e.get('self_approved')) for e in es)} self-approved (the approver is the run's own "
-                   "identity)" if any(e.get("self_approved") for e in es) else "")
-                + (f" ({grades(es)})" if any(e["evidence"] != "SIGNED" for e in es) else ""))
-
-    fates = [f"{lab(a)} in run {_run_of(e)}: {e['kind']} ({e['evidence']})" for a in of("approval")
-             for e in g.out_edges(a, GRADES) if not e["kind"].startswith("consumed")]
+        kinds, selfs = dict(sorted(Counter(e["kind"] for e in es).items())), sum(bool(e.get("self_approved")) for e in es)
+        people.append({"text": f"{lab(p)}: " + ", ".join(f"{n} {k}" for k, n in kinds.items())
+                       + (f", median wait {statistics.median(waits):g} ms" if waits else ", no wait recorded")
+                       + (f", {selfs} self-approved (the approver is the run's own identity)" if selfs else "")
+                       + (f" ({grades(es)})" if any(e["grade"] != "SIGNED" for e in es) else ""),
+                       "node": p, "answers": kinds, "median_wait_ms": statistics.median(waits) if waits else None,
+                       "self_approved": selfs, "grades": count(es)})
+    fates = [{"text": f"{lab(a)} in run {_run_of(e)}: {e['kind']} ({e['grade']})", "node": a, "edge": cite(e)}
+             for a in of("approval") for e in g.out_edges(a, GRADES) if not e["kind"].startswith("consumed")]
 
     chains = []
     for i in (n for n in of("input") if nodes[n].get("trust") == "untrusted"):
         parent = g.descendants([i], ("SIGNED", "INFERRED"))
         reached = [n for n in sorted(parent) if nodes[n]["kind"] in ("call", "file", "host") and n != i]
         if reached:
-            chains.append(f"untrusted {lab(i)} in run {i.split(':')[1]} reached {_n(len(reached), 'node')}: " + "; ".join(
-                " -> ".join(called(x) for x in Graph.path(parent, n)) for n in reached))
-    chains += [f"run {lab(e['src'])} {e['kind']} run {lab(e['dst'])} ({e['evidence']})" for e in doc["edges"]
+            chains.append({"text": f"untrusted {lab(i)} in run {i.split(':')[1]} reached {_n(len(reached), 'node')}: "
+                                   + "; ".join(" -> ".join(called(x) for x in Graph.path(parent, n)) for n in reached),
+                           "what": "untrusted input", "node": i,
+                           "reached": [{"node": n, "path": Graph.path(parent, n)} for n in reached]})
+    chains += [{"text": f"run {lab(e['src'])} {e['kind']} run {lab(e['dst'])} ({e['grade']})", "what": "runs",
+                "edge": cite(e)} for e in doc["edges"]
                if nodes[e["src"]]["kind"] == "run" and nodes[e["dst"]]["kind"] == "run"]
-    chains += [f"{lab(f)} was written by {_n(len(runs(es)), 'run')}: {', '.join(runs(es))}" for f, es in writes.items()
-               if len(runs(es)) > 1]
+    chains += [{"text": f"{lab(f)} was written by {_n(len(runs(es)), 'run')}: {', '.join(runs(es))}",
+                "what": "file written by several runs", "node": f, "runs": runs(es)}
+               for f, es in writes.items() if len(runs(es)) > 1]
 
-    sections = {
-        "Read first: unverified sources, gaps and what was not read": first,
-        "Files agents changed most": capped(files, "files"),
-        "Sensitive files: written by calls a rule flagged, held or denied": sensitive,
-        "Hosts reached, by run and agent": capped(hosts, "hosts"),
-        "Approvals by person": [f"{lab(p)}: {approvals(p)}" for p in of("person")] + fates,
-        "Secrets (by the name of the rule that redacted them)": [
-            f"{lab(s)}: in {_n(len(runs(es)), 'run')}, held by " + ", ".join(sorted({where(e['src']) for e in es}))
-            + f" ({grades(es)})" for s in of("secret") for es in [g.in_edges(s, GRADES)]],
-        "Findings": [f"{lab(f)}: about " + ", ".join(sorted({where(e['dst']) for e in es})) + f" ({grades(es)})"
-                     for f in of("finding") for es in [g.out_edges(f, GRADES)]],
-        "Causal chains (why) and runs linked to other runs": chains,
-    }
-    c = Counter(e["evidence"] for e in doc["edges"])
-    gf = doc.get("graphify")
-    out = [f"# Tracekit graph report\n\n{_n(len(doc['sources']), 'source')} ({len(bad)} failed verification), "
-           f"{_n(len(of('run')), 'run')}, {len(doc['nodes'])} nodes, {len(doc['edges'])} edges: "
-           + (", ".join(f"{c[k]} {k}" for k in GRADES if c[k]) or "none") + ". "
-           + ("Call arguments were read from the signer's content vault. " if doc.get("content") else
-              "Call arguments were not read (no --content). ")
-           + (f"Graphify: {gf['path']}, {gf['linked']} code nodes linked. " if gf else "")
-           + f"Built by tracekit {doc['tracekit']}; every line cites its grade, and graph.json cites each record."]
-    for title, lines in sections.items():
-        out.append(f"\n## {title}\n\n" + "\n".join(f"- {x}" for x in lines or ["none"]))
+    secrets = [{"text": f"{lab(s)}: in {_n(len(runs(es)), 'run')}, held by "
+                        + ", ".join(sorted({where(e['src']) for e in es})) + f" ({grades(es)})",
+                "node": s, "runs": runs(es), "held_by": sorted({e["src"] for e in es}), "grades": count(es)}
+               for s in of("secret") for es in [g.in_edges(s, GRADES)]]
+    findings = [{"text": f"{lab(f)}: about " + ", ".join(sorted({where(e['dst']) for e in es})) + f" ({grades(es)})",
+                 "node": f, "about": sorted({e["dst"] for e in es}), "grades": count(es)}
+                for f in of("finding") for es in [g.out_edges(f, GRADES)]]
+    c, gf = count(doc["edges"]), doc.get("graphify")
+    summary = {"sources": len(doc["sources"]), "failed": len(bad), "runs": len(of("run")), "nodes": len(doc["nodes"]),
+               "edges": len(doc["edges"]), "grades": c, "content": bool(doc.get("content")),
+               "graphify": gf, "tracekit": doc["tracekit"]}
+    summary["text"] = (f"{_n(len(doc['sources']), 'source')} ({len(bad)} failed verification), "
+                       f"{_n(len(of('run')), 'run')}, {len(doc['nodes'])} nodes, {len(doc['edges'])} edges: "
+                       + (", ".join(f"{n} {k}" for k, n in c.items()) or "none") + ". "
+                       + ("Call arguments were read from the signer's content vault. " if doc.get("content") else
+                          "Call arguments were not read (no --content). ")
+                       + (f"Graphify: {gf['path']}, {gf['linked']} code nodes linked. " if gf else "")
+                       + f"Built by tracekit {doc['tracekit']}; every line cites its grade, and graph.json cites each "
+                         "record.")
+    return {"schema_version": SCHEMA_VERSION, "summary": summary, "sections": [
+        {"id": i, "title": t, "items": items} for i, t, items in (
+            ("read_first", "Read first: unverified sources, gaps and what was not read", first),
+            ("files", "Files agents changed most", files),
+            ("sensitive", "Sensitive files: written by calls a rule flagged, held or denied", sensitive),
+            ("hosts", "Hosts reached, by run and agent", hosts),
+            ("approvals", "Approvals by person", people + fates),
+            ("secrets", "Secrets (by the name of the rule that redacted them)", secrets),
+            ("findings", "Findings", findings),
+            ("chains", "Causal chains (why) and runs linked to other runs", chains))]}
+
+
+def report(doc: Dict[str, Any], data: Optional[Dict[str, Any]] = None) -> str:
+    """GRAPH_REPORT.md: highlights(doc) as Markdown, the files and hosts sections cut to the TOP most."""
+    data = data or highlights(doc)
+    out = [f"# Tracekit graph report\n\n{data['summary']['text']}"]
+    for s in data["sections"]:
+        lines = [i["text"] for i in s["items"]]
+        if s["id"] in ("files", "hosts") and len(lines) > TOP:
+            lines = lines[:TOP] + [f"and {len(lines) - TOP} more {s['id']} (graph.json has them all)"]
+        out.append(f"\n## {s['title']}\n\n" + "\n".join(f"- {x}" for x in lines or ["none"]))
     return "\n".join(out) + "\n"
 
 
 # --------------------------------------------------------------------------- query
 
+COLUMNS = ("who", "run", "call", "thing", "after")
+
+
+def _drawn(g: Graph, hits: List[str], things: List[str], touching: List[Dict[str, Any]],
+           runs: List[str]) -> Dict[str, Any]:
+    """A query's answer as the viewer draws it: each node in a column, who (agents, people) -> run -> call (calls,
+    inputs) -> the thing (the matched nodes, the files a code node is in, the code in a matched file) -> after (where
+    tracekit why's edges lead from the calls, and what an observer saw the runs reach); the edges between them; and
+    one answer per edge that touches the thing or leads after it, newest record first."""
+    col: Dict[str, str] = {}
+    rank = {r: i for i, r in enumerate(runs)}
+
+    def put(n: str, c: str) -> None:
+        col.setdefault(n, c)
+
+    for h in hits:
+        put(h, "who" if g.nodes[h]["kind"] in ("agent", "person") else "thing")
+    for n in things:
+        put(n, "thing")
+        for e in g.out_edges(n, GRADES):
+            if e.get("join"):
+                put(e["dst"], "thing")
+    for e in touching:
+        for n in (e["src"], e["dst"]):
+            k = g.nodes[n]["kind"]
+            put(n, "who" if k in ("agent", "person") else "run" if k == "run" else "call")
+    for r in runs:
+        put("run:" + r, "run")
+    for n in [n for n, c in col.items() if c in ("run", "call")]:
+        for e in g.in_edges(n, GRADES):
+            if g.nodes[e["src"]]["kind"] in ("agent", "person"):
+                put(e["src"], "who")
+    after = [e for n, c in list(col.items()) for e in g.out_edges(n, GRADES)
+             if _run_of(e) and e["dst"] not in col and (c == "call" and "INFERRED" in (e["grade"], e.get("claimed"))
+                                                         or c == "run" and "OBSERVED" in (e["grade"], e.get("claimed")))]
+    for e in after:
+        put(e["dst"], "after")
+
+    def order(n: str) -> tuple:
+        v = g.nodes[n]
+        run = v["label"] if v["kind"] == "run" else n.split(":")[1] if v["kind"] in ("call", "input", "model") else ""
+        return (COLUMNS.index(col[n]), rank.get(run, len(rank)), v["kind"], v["label"], n)
+
+    shown = sorted(col, key=order)
+    edges = sorted((e for e in g.edges if e["src"] in col and e["dst"] in col),
+                   key=lambda e: (e["src"], e["dst"], e["kind"], e["grade"]))
+    index = {id(e): i for i, e in enumerate(edges)}
+
+    def note(e: Dict[str, Any]) -> str:
+        if e["grade"] == "UNVERIFIED":
+            return f"from a bundle that failed verification; it would be {e['claimed']}"
+        if e["grade"] == "OBSERVED":
+            return f"seen by {e.get('observer')}" + (f", explained by {e['explained_by']}" if "explained_by" in e else "")
+        if e["grade"] == "INFERRED":
+            return f"tracekit why: {e.get('why_evidence')}" + (f", effect {e['effect']:+g}"
+                                                              if isinstance(e.get("effect"), (int, float)) else "")
+        call = e["src"] if g.nodes[e["src"]]["kind"] == "call" else e["dst"] if g.nodes[e["dst"]]["kind"] == "call" else ""
+        if not call:
+            return ""
+        ok = [a for a in g.in_edges(call, GRADES) if g.nodes[a["src"]]["kind"] == "person"]
+        rules = [a for a in g.in_edges(call, GRADES) if g.nodes[a["src"]]["kind"] == "rule"]
+        return "; ".join(filter(None, [
+            ", ".join(f"{g.nodes[a['src']]['label']} {a['kind']}" for a in rules),
+            ", ".join(f"{g.nodes[a['src']]['label']} {a['kind']}d it" + (" (the run's own identity)"
+                                                                         if a.get("self_approved") else "")
+                      for a in ok)
+            or ("no person approved it" if e["kind"] in ("wrote", "reached") else "")]))
+
+    answers = []
+    for e in sorted({id(e): e for e in touching + after}.values(),
+                    key=lambda e: (e["record"].get("ts", ""), e["record"]["seq"]), reverse=True):
+        rid = _run_of(e)
+        who = sorted({g.nodes[a["src"]]["label"] for a in g.in_edges("run:" + rid, GRADES)
+                      if g.nodes[a["src"]]["kind"] == "agent"})
+        answers.append({"edge": index[id(e)], "grade": e["grade"], **({"claimed": e["claimed"]} if "claimed" in e
+                                                                        else {}),
+                        **e["record"], "agents": who, "note": note(e),
+                        "text": f"{', '.join(who) or 'run ' + rid}: "
+                                + ("the run" if g.nodes[e["src"]]["kind"] == "run" else g.nodes[e["src"]]["label"])
+                                + f" {e['kind']} {g.nodes[e['dst']]['label']}"})
+    return {"columns": list(COLUMNS), "nodes": [{**g.nodes[n], "column": col[n]} for n in shown], "edges": edges,
+            "answers": answers}
+
+
 def matching(doc: Dict[str, Any], kind: str, needle: str) -> Dict[str, Any]:
     """The runs that touched a node of `kind` labelled `needle` (a file also by its last path parts; code: the files
     Graphify places it in), newest first: each run's agents, approvers, approvals, rules, hosts, files, secrets,
-    findings and gaps, and the edges to the matched nodes; `code`: the Graphify code nodes in the matched files."""
+    findings and gaps, and the edges to the matched nodes; `code`: the Graphify code nodes in the matched files;
+    `map`: the answer drawn (_drawn)."""
     g = _graph(doc)
     hits = sorted(n for n, v in g.nodes.items() if v["kind"] == kind
                   and (v["label"] == needle or kind == "file" and v["label"].endswith("/" + needle.lstrip("/"))))
@@ -552,7 +686,8 @@ def matching(doc: Dict[str, Any], kind: str, needle: str) -> Dict[str, Any]:
         out.append({"run": rid, "ts": g.nodes.get(f"run:{rid}", {}).get("ts"), **facts,
                     "matched": [e for e in touching if _run_of(e) == rid]})
     code = sorted({e["dst"] for f in files for e in g.out_edges(f, GRADES) if g.nodes[e["dst"]]["kind"] == "code"})
-    return {"matched": hits, "code": [g.nodes[n] for n in code], "runs": out}
+    return {"matched": hits, "code": [g.nodes[n] for n in code], "runs": out,
+            "map": _drawn(g, hits, sorted(set(hits) | set(files)), touching, runs)}
 
 
 def _find(g: Graph, spec: str) -> str:
@@ -584,7 +719,7 @@ def path(doc: Dict[str, Any], a: str, b: str) -> Dict[str, Any]:
     q = deque([a])
     while q and b not in via:
         n = q.popleft()
-        for e in sorted(g.out_edges(n, GRADES) + g.in_edges(n, GRADES), key=lambda e: GRADES.index(e["evidence"])):
+        for e in sorted(g.out_edges(n, GRADES) + g.in_edges(n, GRADES), key=lambda e: GRADES.index(e["grade"])):
             m = e["dst"] if e["src"] == n else e["src"]
             if m not in via:
                 via[m] = e
@@ -602,12 +737,21 @@ def path(doc: Dict[str, Any], a: str, b: str) -> Dict[str, Any]:
 def _line(g: Dict[str, Dict[str, Any]], e: Dict[str, Any]) -> str:
     r = e["record"]
     where = f"run {r['run_id']} record {r['run_seq']}" if "run_id" in r else f"Graphify {r.get('source_file')}"
-    return f"  {e['evidence']:<10} {g[e['src']]['label']} -{e['kind']}-> {g[e['dst']]['label']}  ({where})"
+    return f"  {e['grade']:<10} {g[e['src']]['label']} -{e['kind']}-> {g[e['dst']]['label']}  ({where})"
+
+
+def _files(doc: Dict[str, Any]) -> Dict[str, str]:
+    data = highlights(doc)
+    return {GRAPH: dumps(doc), REPORT_JSON: dumps(data), REPORT: report(doc, data)}
+
+
+def _and(names) -> str:
+    return ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def write(doc: Dict[str, Any], out: str) -> None:
     os.makedirs(out, exist_ok=True)
-    for name, text in ((GRAPH, dumps(doc)), (REPORT, report(doc))):
+    for name, text in _files(doc).items():
         with open(os.path.join(out, name), "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
 
@@ -627,10 +771,14 @@ def verify(out: str, trust: str, content: Optional[Content] = None) -> List[str]
         problems.append(f"{gf['path']}: the Graphify graph changed since the build")
     if doc["trust_sha256"] != have.get("trust_sha256"):
         problems.append("the trust config is not the one graph.json was built with")
-    for name, text in ((GRAPH, dumps(doc)), (REPORT, report(doc))):
-        with open(os.path.join(out, name), encoding="utf-8", newline="") as f:
-            if f.read() != text:
-                problems.append(f"{name} is not what its sources give")
+    for name, text in _files(doc).items():
+        try:
+            with open(os.path.join(out, name), encoding="utf-8", newline="") as f:
+                same = f.read() == text
+        except OSError:
+            same = False
+        if not same:
+            problems.append(f"{name} is not what its sources give")
     return problems
 
 
@@ -638,7 +786,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="tracekit graph", description="What agents did across runs, from verified "
                                  "bundles; every edge graded SIGNED, OBSERVED, INFERRED or UNVERIFIED.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("build", help="write graph.json and GRAPH_REPORT.md from v2 bundles")
+    p = sub.add_parser("build", help=f"write {_and(FILES)} from v2 bundles")
     p.add_argument("sources", nargs="+", help="v2 bundles (.tkb)")
     p.add_argument("--trust", required=True, help="the verifier's pinned trust config")
     p.add_argument("--content", action="store_true",
@@ -672,14 +820,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             write(doc, a.out)
             bad = [s["path"] for s in doc["sources"] if not s["verify"]["ok"]]
             unread = sum(n.get("unread_args", 0) for n in doc["nodes"])
-            print(f"wrote {os.path.join(a.out, GRAPH)} and {REPORT}: {len(doc['nodes'])} nodes, {len(doc['edges'])} "
-                  "edges" + (f"; UNVERIFIED (failed verification): {', '.join(bad)}" if bad else "")
+            print(f"wrote {_and([os.path.join(a.out, n) for n in FILES])}: {len(doc['nodes'])} nodes, "
+                  f"{len(doc['edges'])} edges"
+                  + (f"; UNVERIFIED (failed verification): {', '.join(bad)}" if bad else "")
                   + (f"; {unread} calls' arguments not read" + ("" if a.content else " (pass --content)")
                      if unread else ""))
             return 0
         if a.cmd == "verify":
             problems = verify(a.dir, a.trust, vault())
-            print("\n".join(problems) or f"{a.dir}: graph.json and {REPORT} are what their sources give")
+            print("\n".join(problems) or f"{a.dir}: {_and(FILES)} are what their sources give")
             return 1 if problems else 0
         with open(os.path.join(a.dir, GRAPH), encoding="utf-8") as f:
             doc = json.load(f)

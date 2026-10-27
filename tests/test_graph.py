@@ -1,5 +1,6 @@
 """`tracekit graph`: every node and edge kind and grade, UNVERIFIED marking of a tampered bundle, every query mode, the
-Graphify join, GRAPH_REPORT.md, deterministic output and `graph verify`.
+Graphify join, GRAPH_REPORT.md, graph.html (its data, and its script run in Node under a stub DOM: there is no browser
+here), deterministic output and `graph verify`.
 
 The end-to-end runs are real: one in-process signer set up as the dev signer is (its content vault on, its user an
 analyzer), plus an egress observer's grant the dev signer doesn't give, records a Claude Code session through the v2
@@ -214,9 +215,13 @@ class EndToEnd(unittest.TestCase):
         [e] = self.edges(**want)
         return e
 
+    def tampered(self):
+        """The tampered copy's decision: the denied rm, rewritten as allowed."""
+        return self.one(dst=next(e["dst"] for e in self.edges(src="rule:TK-F003", kind="deny")), kind="decided allow")
+
     def page(self):
         """The why run's untrusted page."""
-        return self.one(src="run:" + self.mail, kind="observed untrusted", evidence="SIGNED")["dst"]
+        return self.one(src="run:" + self.mail, kind="observed untrusted", grade="SIGNED")["dst"]
 
     def test_every_node_kind_is_in_the_graph_and_every_edge_cites_its_record(self):
         self.assertEqual({n["kind"] for n in self.doc["nodes"]}, KINDS)
@@ -227,75 +232,76 @@ class EndToEnd(unittest.TestCase):
         for e in self.doc["edges"]:
             r = e["record"]
             if "run_id" in r:
-                self.assertEqual(recs[r["run_id"]][r["run_seq"]]["event"]["seq"], r["seq"], e)
+                ev = recs[r["run_id"]][r["run_seq"]]["event"]
+                self.assertEqual((ev["seq"], ev["ts"]), (r["seq"], r["ts"]), e)
             else:
-                self.assertEqual((e["evidence"], r["graphify"]), ("INFERRED", self.graphify))
+                self.assertEqual((e["grade"], e["join"], r["graphify"]), ("INFERRED", "graphify", self.graphify))
 
     def test_the_hook_session_signed_and_observed(self):
         run, me = "run:" + self.session, service._dev_identity()
         write, fetch = self.call(self.session, "Write"), self.call(self.session, "WebFetch")
-        self.one(src="agent:claude-code", dst=run, kind="ran", evidence="SIGNED")
+        self.one(src="agent:claude-code", dst=run, kind="ran", grade="SIGNED")
         # the decided arguments, from the content vault, each opening its record's commitment
-        self.one(src=write, dst="file:" + self.billing, kind="wrote", evidence="SIGNED")
-        self.one(src=fetch, dst="host:docs.example.com", kind="reached", evidence="SIGNED")
+        self.one(src=write, dst="file:" + self.billing, kind="wrote", grade="SIGNED")
+        self.one(src=fetch, dst="host:docs.example.com", kind="reached", grade="SIGNED")
         # the egress observer's: the run's, with what explains the host
-        self.assertEqual(self.one(src=run, dst="host:docs.example.com", evidence="OBSERVED")["explained_by"], "call")
+        self.assertEqual(self.one(src=run, dst="host:docs.example.com", grade="OBSERVED")["explained_by"], "call")
         self.assertEqual(self.one(src=run, dst="host:telemetry.example.net")["explained_by"], "nothing")
         denied, nodes = f"call:{self.session}:b1", {n["id"]: n for n in self.doc["nodes"]}
-        self.one(src="rule:TK-D007", dst=denied, kind="deny", evidence="SIGNED")
-        self.one(src=run, dst=denied, kind="decided deny", evidence="SIGNED")
+        self.one(src="rule:TK-D007", dst=denied, kind="deny", grade="SIGNED")
+        self.one(src=run, dst=denied, kind="decided deny", grade="SIGNED")
         held = f"call:{self.session}:b2"
-        self.one(src="rule:TK-SHELL-PARSE", dst=held, kind="ask", evidence="SIGNED")
+        self.one(src="rule:TK-SHELL-PARSE", dst=held, kind="ask", grade="SIGNED")
         approval = self.one(src=held, kind="held for approval")["dst"]
         self.assertEqual(nodes[approval]["kind"], "approval")
-        self.one(src=approval, dst=held, kind="consumed", evidence="SIGNED")
-        self.assertTrue(self.one(src="person:" + me, dst=held, kind="approve", evidence="SIGNED")["self_approved"])
+        self.one(src=approval, dst=held, kind="consumed", grade="SIGNED")
+        self.assertTrue(self.one(src="person:" + me, dst=held, kind="approve", grade="SIGNED")["self_approved"])
         labels = sorted(nodes[e["dst"]]["label"].split(":")[0]
-                        for e in self.edges(src=run, kind="recorded", evidence="SIGNED"))
+                        for e in self.edges(src=run, kind="recorded", grade="SIGNED"))
         self.assertEqual(labels, ["capture.gap tailer_lost", "reconcile.unexplained_effect net"])
 
     def test_the_why_run_signed_secrets_and_findings(self):
         mail, page = self.call(self.mail, "send_email"), self.page()
-        self.one(src=page, dst=mail, kind="argument to (email), untrusted", evidence="SIGNED")   # provenance, no value
-        self.one(src=page, dst="secret:github_token", kind="held a secret (redacted)", evidence="SIGNED")
+        self.one(src=page, dst=mail, kind="argument to (email), untrusted", grade="SIGNED")   # provenance, no value
+        self.one(src=page, dst="secret:github_token", kind="held a secret (redacted)", grade="SIGNED")
         [cat, rm] = sorted((n for n in self.doc["nodes"] if n["id"].startswith(f"call:{self.mail}:")
                             and n["label"] == "Bash"), key=lambda n: bool(self.edges(dst=n["id"], kind="deny")))
-        self.one(src=cat["id"], dst="secret:aws_access_key", evidence="SIGNED")
-        self.one(src="rule:TK-F003", dst=rm["id"], kind="deny", evidence="SIGNED")
-        self.one(src="run:" + self.findings, dst="run:" + self.mail, kind="analyses", evidence="SIGNED")
-        found = self.one(dst=mail, kind="found in", evidence="SIGNED")["src"]
+        self.one(src=cat["id"], dst="secret:aws_access_key", grade="SIGNED")
+        self.one(src="rule:TK-F003", dst=rm["id"], kind="deny", grade="SIGNED")
+        self.one(src="run:" + self.findings, dst="run:" + self.mail, kind="analyses", grade="SIGNED")
+        found = self.one(dst=mail, kind="found in", grade="SIGNED")["src"]
         self.assertTrue(found.startswith(f"finding:{self.findings}:"))
-        tested = self.one(dst="run:" + self.mail, kind="tested causal", evidence="SIGNED")["src"]
+        tested = self.one(dst="run:" + self.mail, kind="tested causal", grade="SIGNED")["src"]
         self.assertTrue(tested.startswith(f"finding:{self.findings}:"))
 
     def test_inferred_edges_are_whys_and_graphifys(self):
-        inferred = self.edges(evidence="INFERRED")
+        inferred = self.edges(grade="INFERRED")
         self.assertTrue(all(e["why_evidence"] in EVIDENCE for e in inferred if "why_evidence" in e))
         mail, page = self.call(self.mail, "send_email"), self.page()
-        self.assertTrue(self.one(dst=mail, kind="invoked", evidence="INFERRED")["src"].startswith(f"model:{self.mail}:"))
+        self.assertTrue(self.one(dst=mail, kind="invoked", grade="INFERRED")["src"].startswith(f"model:{self.mail}:"))
         # the signed why test: the page removed, no mail; cited to the findings run's why.finding
-        tested = self.one(src=page, dst=mail, kind="causal (tested)", evidence="INFERRED")
+        tested = self.one(src=page, dst=mail, kind="causal (tested)", grade="INFERRED")
         self.assertEqual((tested["why_evidence"], tested["record"]["run_id"]), ("tested", self.findings))
-        code = {e["dst"] for e in self.edges(src="file:" + self.billing, kind="contains", evidence="INFERRED")}
+        code = {e["dst"] for e in self.edges(src="file:" + self.billing, kind="contains", grade="INFERRED")}
         self.assertEqual(code, {"code:billing_total", "code:billing"})   # src/pager.py is no file of the graph
 
     def test_a_tampered_bundle_is_unverified_never_dropped(self):
         self.assertIn("UNVERIFIED (failed verification): " + self.bad, self.said)
         bad = next(s for s in self.doc["sources"] if s["path"] == self.bad)
         self.assertFalse(bad["verify"]["ok"])
-        unverified = self.edges(evidence="UNVERIFIED")
+        unverified = self.edges(grade="UNVERIFIED")
         self.assertTrue(unverified and all(e["claimed"] in ("SIGNED", "OBSERVED", "INFERRED") for e in unverified))
         rm = next(e["dst"] for e in self.edges(src="rule:TK-F003", kind="deny"))
-        good = {(e["src"], e["dst"], e["kind"]) for e in self.doc["edges"] if e["evidence"] != "UNVERIFIED"}
+        good = {(e["src"], e["dst"], e["kind"]) for e in self.doc["edges"] if e["grade"] != "UNVERIFIED"}
         # each edge of the tampered copy is one of the good copy's, but the call it rewrote as allowed
         self.assertEqual({(e["src"], e["dst"], e["kind"]) for e in unverified} - good,
                          {("run:" + self.mail, rm, "decided allow")} | {
                              (r, rm, "allow") for r in ("rule:TK-D001", "rule:TK-D004", "rule:TK-F003")})
-        self.assertFalse(self.edges(dst=rm, kind="decided allow", evidence="SIGNED"))
+        self.assertFalse(self.edges(dst=rm, kind="decided allow", grade="SIGNED"))
         self.assertTrue(self.report.split("\n## ")[1].startswith("Read first"))
         self.assertIn(f"{self.bad}: FAILED", self.report.split("\n## ")[1])
         res = graph.path(self.doc, "agent:mailer", "rule:TK-F003")   # the signed way, not the claimed one
-        self.assertEqual({e["evidence"] for e in res["edges"]}, {"SIGNED"})
+        self.assertEqual({e["grade"] for e in res["edges"]}, {"SIGNED"})
 
     def test_every_query_mode(self):
         res = json.loads(run("query", self.out, "--file", "billing.py", "--json")[1])
@@ -310,7 +316,7 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("SIGNED     Write -wrote-> " + self.billing, text)
         self.assertIn("code in these files (Graphify): compute_total() (src/billing.py L10)", text)
         hits = json.loads(run("query", self.out, "--host", "docs.example.com", "--json")[1])["runs"][0]["matched"]
-        self.assertEqual(sorted(e["evidence"] for e in hits), ["OBSERVED", "SIGNED"])
+        self.assertEqual(sorted(e["grade"] for e in hits), ["OBSERVED", "SIGNED"])
         for flag, value, runs in (("--agent", "claude-code", [self.session]),
                                   ("--approved-by", service._dev_identity(), [self.session]),
                                   ("--rule", "TK-D007", [self.session]), ("--secret", "aws_access_key", [self.mail]),
@@ -325,6 +331,64 @@ class EndToEnd(unittest.TestCase):
                          (True, "agent:claude-code", "host:docs.example.com"))
         self.assertEqual(run("query", self.out, "--host", "nowhere.example")[0], 1)
         self.assertEqual(run("query", self.out, "--blast", "no-such-node")[0], 2)
+
+    def test_the_report_is_data_too_and_the_markdown_is_its_rendering(self):
+        with open(os.path.join(self.out, graph.REPORT_JSON)) as f:
+            data = json.load(f)
+        self.assertEqual(data, json.loads(graph.dumps(graph.highlights(self.doc))))
+        self.assertEqual(graph.report(self.doc, data), self.report)
+        sec = {s["id"]: s["items"] for s in data["sections"]}
+        self.assertEqual(list(sec), ["read_first", "files", "sensitive", "hosts", "approvals", "secrets", "findings",
+                                     "chains"])
+        self.assertEqual({k: data["summary"][k] for k in ("sources", "failed", "runs")}, {"sources": 4, "failed": 1,
+                                                                                          "runs": 3})
+        failed = sec["read_first"][0]
+        self.assertEqual((failed["what"], failed["source"]), ("source failed verification", self.bad))
+        self.assertTrue(failed["failures"])
+        billing = next(i for i in sec["files"] if i["node"] == "file:" + self.billing)
+        self.assertEqual({k: billing[k] for k in ("writes", "runs", "grades", "without_person")},
+                         {"writes": 1, "runs": [self.session], "grades": {"SIGNED": 1}, "without_person": 1})
+        [docs] = [i for i in sec["hosts"] if i["node"] == "host:docs.example.com"]
+        [r] = docs["runs"]
+        self.assertEqual((r["run_id"], r["agents"]), (self.session, ["claude-code"]))
+        self.assertEqual(sorted((e["grade"], e.get("explained_by")) for e in r["edges"]),
+                         [("OBSERVED", "call"), ("SIGNED", None)])
+        me = next(i for i in sec["approvals"] if i["node"] == "person:" + service._dev_identity())
+        self.assertEqual((me["answers"], me["self_approved"], me["median_wait_ms"]), ({"approve": 1}, 1, None))
+        [chain] = [i for i in sec["chains"] if i.get("what") == "untrusted input" and i["node"] == self.page()]
+        mail = self.call(self.mail, "send_email")
+        self.assertEqual(next(x["path"] for x in chain["reached"] if x["node"] == mail), [self.page(), mail])
+
+    def test_a_query_answer_comes_drawn_who_run_call_thing_after_newest_first(self):
+        m = json.loads(run("query", self.out, "--file", "billing.py", "--json")[1])["map"]
+        self.assertEqual(m["columns"], ["who", "run", "call", "thing", "after"])
+        col = {n["id"]: n["column"] for n in m["nodes"]}
+        write = self.call(self.session, "Write")
+        self.assertEqual({n: col.get(n) for n in ("agent:claude-code", "person:" + service._dev_identity(),
+                                                  "run:" + self.session, write, "file:" + self.billing,
+                                                  "code:billing_total", "host:telemetry.example.net")},
+                         {"agent:claude-code": "who", "person:" + service._dev_identity(): None,
+                          "run:" + self.session: "run", write: "call", "file:" + self.billing: "thing",
+                          "code:billing_total": "thing", "host:telemetry.example.net": "after"})
+        self.assertTrue(all(e["src"] in col and e["dst"] in col for e in m["edges"]))
+        self.assertTrue(any(e.get("join") == "graphify" for e in m["edges"]))
+        order = [(a["ts"], a["seq"]) for a in m["answers"]]
+        self.assertEqual(order, sorted(order, reverse=True))   # newest first
+        self.assertTrue(all(m["edges"][a["edge"]]["grade"] == a["grade"] for a in m["answers"]))
+        wrote = next(a for a in m["answers"] if m["edges"][a["edge"]]["kind"] == "wrote")
+        self.assertEqual({k: wrote[k] for k in ("grade", "run_id", "text", "note")},
+                         {"grade": "SIGNED", "run_id": self.session, "text": f"claude-code: Write wrote {self.billing}",
+                          "note": "no person approved it"})
+        seen = next(a for a in m["answers"] if m["edges"][a["edge"]]["dst"] == "host:telemetry.example.net")
+        self.assertEqual(seen["grade"], "OBSERVED")
+        self.assertTrue(seen["note"].startswith("seen by ") and seen["note"].endswith("explained by nothing"), seen)
+        # what came after: tracekit why's edges from the untrusted page that held the token, to the mail it caused
+        m = json.loads(run("query", self.out, "--secret", "github_token", "--json")[1])["map"]
+        col = {n["id"]: n["column"] for n in m["nodes"]}
+        self.assertEqual((col[self.page()], col[self.call(self.mail, "send_email")]), ("call", "after"))
+        causal = next(a for a in m["answers"] if a["grade"] == "INFERRED" and m["edges"][a["edge"]]["kind"]
+                      == "causal (tested)")
+        self.assertEqual(causal["note"], "tracekit why: tested, effect +1")
 
     def test_the_report_puts_what_cant_be_trusted_first_and_counts_from_the_graph(self):
         titles = [s.split("\n", 1)[0] for s in self.report.split("\n## ")[1:]]
@@ -361,17 +425,20 @@ class EndToEnd(unittest.TestCase):
         two = os.path.join(self.dir, "g2")
         self.assertEqual(run("build", *self.sources[::-1], "--trust", self.trust, "--content", "--graphify",
                              self.graphify, "-o", two)[0], 0)
-        for name in (graph.GRAPH, graph.REPORT):
+        for name in graph.FILES:
             with open(os.path.join(self.out, name), "rb") as f, open(os.path.join(two, name), "rb") as g:
                 self.assertEqual(f.read(), g.read())
-        self.assertEqual(run("verify", self.out, "--trust", self.trust), (0, f"{self.out}: graph.json and "
-                                                                             "GRAPH_REPORT.md are what their sources "
-                                                                             "give\n"))
+        self.assertEqual(run("verify", self.out, "--trust", self.trust),
+                         (0, f"{self.out}: {', '.join(graph.FILES[:-1])} and {graph.FILES[-1]} are what their sources "
+                             "give\n"))
         doc = dict(self.doc, edges=[e for e in self.doc["edges"] if e["kind"] != "deny"])   # an edge dropped
         with open(os.path.join(two, graph.GRAPH), "w") as f:
             f.write(graph.dumps(doc))
+        with open(os.path.join(two, graph.FILES[-1]), "a") as f:
+            f.write("an edit\n")
         code, out = run("verify", two, "--trust", self.trust)
-        self.assertEqual((code, out), (1, "graph.json is not what its sources give\n"))
+        self.assertEqual((code, out), (1, f"graph.json is not what its sources give\n{graph.FILES[-1]} is not what its "
+                                          "sources give\n"))
         three, source = os.path.join(self.dir, "g3"), shutil.copy(self.hook_tkb, os.path.join(self.dir, "source.tkb"))
         gf = shutil.copy(self.graphify, os.path.join(self.dir, "graphify.json"))
         graph.write(graph.build([source], self.trust, graph.vault(), gf), three)
@@ -419,7 +486,7 @@ class Records(unittest.TestCase):
     and the Graphify join's file match."""
 
     def test_observers_edges_are_the_runs_and_a_file_query_finds_them(self):
-        g = Graph(None)
+        g = Graph(None, "grade")
         graph._add_run(g, [
             rec(0, "run.registered", {"agent": {"name": "coder"}}),
             rec(1, "policy.decision", {"tool_use_id": "t1", "tool": "Edit", "decision": "allow", "rule_ids": []}),
@@ -435,9 +502,9 @@ class Records(unittest.TestCase):
         ], True)
         doc = {"nodes": list(g.nodes.values()), "edges": g.edges}
         [f] = [e for e in g.edges if e["dst"] == "file:/repo/src/billing.py"]
-        self.assertEqual((f["src"], f["evidence"]), ("run:r-obs", "OBSERVED"))
+        self.assertEqual((f["src"], f["grade"]), ("run:r-obs", "OBSERVED"))
         [h] = [e for e in g.edges if e["dst"] == "host:api.example"]
-        self.assertEqual((h["evidence"], h["explained_by"]), ("OBSERVED", "nothing"))
+        self.assertEqual((h["grade"], h["explained_by"]), ("OBSERVED", "nothing"))
         self.assertEqual([e["kind"] for e in g.edges if e["dst"] in ("gap:r-obs:4", "run:r-child")],
                          ["recorded", "started"])
         self.assertEqual([(e["src"], e["dst"], e["kind"]) for e in g.edges if "approval:apr-1" in (e["src"], e["dst"])],
@@ -450,19 +517,19 @@ class Records(unittest.TestCase):
         self.assertEqual(graph.matching(doc, "file", "ling.py")["runs"], [])
 
     def test_what_a_call_decided_and_did_comes_from_verified_records_only(self):
-        g = Graph(None)
+        g = Graph(None, "grade")
         deny = {"tool_use_id": "t1", "tool": "Bash", "decision": "deny", "rule_ids": ["TK-D001"]}
         graph._add_run(g, [rec(0, "run.registered", {}), rec(1, "policy.decision", deny)], True)
         graph._add_run(g, [rec(0, "run.registered", {}), rec(1, "policy.decision", dict(deny, decision="allow")),
                            rec(2, "tool.result", {"tool_use_id": "t1", "ok": True})], False)   # a tampered copy
         self.assertEqual({k: v for k, v in g.nodes["call:r-obs:t1"].items() if k in ("decision", "ok")},
                          {"decision": "deny"})
-        self.assertEqual(sorted((e["kind"], e["evidence"]) for e in g.edges if e["dst"] == "call:r-obs:t1"),
+        self.assertEqual(sorted((e["kind"], e["grade"]) for e in g.edges if e["dst"] == "call:r-obs:t1"),
                          [("allow", "UNVERIFIED"), ("decided allow", "UNVERIFIED"), ("decided deny", "SIGNED"),
                           ("deny", "SIGNED")])
 
     def test_graphify_links_a_file_to_the_code_of_its_longest_matching_path(self):
-        g = Graph(None)
+        g = Graph(None, "grade")
         graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "coder"}}),
                            rec(1, "policy.decision", {"tool_use_id": "t1", "tool": "Write", "decision": "allow",
                                                       "args_commitment": "hmac-sha256:" + "0" * 64})],
