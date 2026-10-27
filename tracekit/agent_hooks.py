@@ -781,7 +781,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         for ev, timeout in events.items():
             lst = [h for h in entries(ev) if not (isinstance(h, dict) and ours([h.get("command")]))]
             if not uninstall and (v2 or ev not in CURSOR_SAID):   # the v1 hook records no model text
-                lst.append({"command": cmd(ev), "type": "command", "timeout": timeout, "failClosed": closed})
+                lst.append({"command": cmd(ev), "type": "command", "timeout": timeout,
+                            "failClosed": closed and ev in PRE})   # on another event Cursor blocks a prompt too
             if lst:
                 hooks[ev] = lst
             else:

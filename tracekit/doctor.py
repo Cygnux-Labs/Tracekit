@@ -34,6 +34,7 @@ NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", 
 MAX_SKEW_S = 300
 REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>" + (
     " --experimental-macos" if sys.platform == "darwin" else "")   # init refuses macOS system mode without it
+FAIL_CLOSED = "call blocked (fail-closed)"   # the pre-tool wrapper's words (install._blocking); before 1.3 every event's
 
 
 
@@ -234,9 +235,13 @@ def _harness_hook_checks(add, harnesses, prod):
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
         unnamed = sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
-        add("D-HOOKS-EVENT", bool(cmds) and not unnamed,
+        blocking = sorted({ev for ev, h in cmds if ev not in agent_hooks.PRE
+                           and (FAIL_CLOSED in h["command"] or h.get("failClosed") is True)})   # Cursor's failClosed
+        add("D-HOOKS-EVENT", bool(cmds) and not unnamed and not blocking,
             f"{harness} hooks in {path}: {', '.join(unnamed)} command(s) do not name their configured event; "
             "a pre-tool payload the hook cannot read can pass unrecorded" if unnamed else
+            f"{harness} hooks in {path}: the {', '.join(blocking)} hook(s) block their event when the hook can't run, "
+            "not only tool calls (an older init wrote them)" if blocking else
             f"each {harness} hook command in {path} names its event" if cmds else
             f"no v2 {harness} hook commands found in {path}", fix, bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
@@ -557,9 +562,12 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         if hooks is not None:
             cmds = [(ev, h.get("command") or "") for ev, hs in hooks.items() for h in hs]
             unnamed = sorted({ev for ev, c in cmds if not re.search(rf"\b{ev}\b", c)})
-            add("D-HOOKS-EVENT", not unnamed, f"the {', '.join(unnamed)} hook command(s) do not name their event "
-                "(installed before 1.2): a PreToolUse payload the hook cannot read lets the call through unrecorded"
-                if unnamed else "each hook command names its event", hook_fix, bad=WARN)
+            blocking = sorted({ev for ev, c in cmds if ev != "PreToolUse" and FAIL_CLOSED in c})
+            add("D-HOOKS-EVENT", not unnamed and not blocking, f"the {', '.join(unnamed)} hook command(s) do not name "
+                "their event (installed before 1.2): a PreToolUse payload the hook cannot read lets the call through "
+                "unrecorded" if unnamed else f"the {', '.join(blocking)} hook command(s) block the event when the hook "
+                "can't run (installed before 1.3, which did so for each prompt and Stop too)" if blocking else
+                "each hook command names its event", hook_fix, bad=WARN)
             if prod and opt and cmds:
                 python = os.path.join(opt, "bin", "python")
                 stray = [c for ev, c in cmds if c not in (install._hook_command(install.V2_HOOK, args=a, python=python,

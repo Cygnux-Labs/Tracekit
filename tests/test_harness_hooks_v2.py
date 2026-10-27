@@ -19,7 +19,7 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
-from tracekit import agent_hooks, cli, install, parsers
+from tracekit import agent_hooks, cli, client, install, parsers
 from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
 from tracekit.sdk.client import Client
@@ -430,8 +430,9 @@ class Installer(unittest.TestCase):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
-                    if harness == "cursor":
-                        self.assertTrue(all(h["failClosed"] for h in hooks))
+                    if harness == "cursor":   # a hook that can't run blocks a tool call, never a prompt
+                        self.assertEqual({ev for ev, hs in blob["hooks"].items() for h in hs if h["failClosed"]},
+                                         {"preToolUse"})
                     again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
                     self.assertEqual(again[0], f"v2 {harness} hooks: {path}")   # idempotent: nothing replaced
                     if harness == "codex":   # init turned Codex's reasoning summaries on, once
@@ -470,6 +471,40 @@ class Installer(unittest.TestCase):
                         contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                     self.assertEqual(call(), code, err.getvalue())   # blocked: no tool_use_id
                 self.assertIn("tool_use_id", err.getvalue())
+
+    @unittest.skipUnless(os.name == "posix", "a POSIX shell wraps the hook")
+    def test_a_hook_that_cannot_start_blocks_only_a_tool_call(self):
+        # init before 1.3 wrapped every event's command to fail closed, so a Python that moved blocked each prompt too;
+        # init again writes each event's own: only a pre-tool call is blocked, by its exit status or Cursor's failClosed
+        d = ac.tmpdir(self)
+        gone, old = os.path.join(d, "gone", "python"), install._blocking
+        for python in (None, gone):   # dev mode (this interpreter, moved), system mode (OPT_PYTHON)
+            for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h != "opencode")):   # OpenCode: no shell
+                path = os.path.join(d, str(bool(python)), harness, "hooks.json")
+
+                def init():
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        if harness == "claude":
+                            install.install_hooks(path, python=python, module=install.V2_HOOK)
+                        else:
+                            agent_hooks.install(harness, v2=True, python=python, path=path)
+                with self.subTest(python=python, harness=harness), mock.patch.object(sys, "executable", gone), \
+                        mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(d, "client.json")):
+                    with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True: old(run, unless)):
+                        init()   # as init before 1.3 wrote it
+                    init()
+                    with open(path) as f:
+                        blob = json.load(f)
+                    hooks = [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
+                             for g in groups for h in (g["hooks"] if "hooks" in g else [g])]
+                    for ev, h in hooks:
+                        p = subprocess.run(h["command"], shell=True, input="{}", capture_output=True, text=True,
+                                           timeout=30)
+                        blocked = p.returncode == 2 or p.returncode != 0 and bool(
+                            h.get("failClosed") or h.get("on_failure") == "block")
+                        self.assertEqual(blocked, ev in agent_hooks.PRE, (ev, p.returncode, h))
+                        self.assertIn("call blocked (fail-closed)" if ev in agent_hooks.PRE else "event not recorded",
+                                      p.stderr, ev)
 
     def installed_pre(self, harness, d):
         with contextlib.redirect_stdout(io.StringIO()):

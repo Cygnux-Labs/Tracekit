@@ -123,6 +123,15 @@ class CodingAgentHooks(unittest.TestCase):
             {"data_dir": self.d}, "production", harnesses={harness: path})}
         self.assertEqual(got["D-HOOKS-EVENT"]["fix"], doctor.REINIT + f" --agent {harness}")
 
+    def test_cursor_fail_closed_on_an_event_but_a_tool_call_warns(self):
+        # Cursor blocks the event when a failClosed hook can't run: a person's prompt (beforeSubmitPrompt) too
+        path, settings = self.installed("cursor")
+        settings["hooks"]["beforeSubmitPrompt"][0]["failClosed"] = True
+        got = self.check("cursor", path, settings)["D-HOOKS-EVENT"]
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("beforeSubmitPrompt", got["detail"])
+        self.assertEqual(got["fix"], "tracekit init --dev --v2 --agent cursor")
+
     def test_a_short_pre_tool_timeout_warns_in_the_harness_unit(self):
         from tracekit import agent_hooks
         for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
@@ -224,6 +233,38 @@ class CodingAgentHooks(unittest.TestCase):
                     got = self.check(harness, path, settings)
                     self.assertEqual(got["D-HOOKS-EVENT"]["status"], "ok")
                     self.assertEqual(got["D-HOOKS-TIMEOUT"]["status"], "ok")
+
+
+@unittest.skipUnless(os.name == "posix", "a POSIX shell wraps the hook")
+class HooksBefore13(unittest.TestCase):
+    def test_hooks_that_block_every_event_warn_until_init_runs_again(self):
+        # init before 1.3 wrapped every event's command to fail closed: a hook that can't start blocked each prompt
+        from tracekit import agent_hooks
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        old = install._blocking
+        for harness in ("claude", "codex", "cursor", "gemini", "goose", "qwen", "droid"):
+            path = os.path.join(d, harness, "hooks.json")
+
+            def init():
+                with contextlib.redirect_stdout(io.StringIO()):
+                    if harness == "claude":
+                        install.install_hooks(path, module=install.V2_HOOK)
+                    else:
+                        agent_hooks.install(harness, v2=True, path=path)
+
+            def row():
+                kw = {"settings": path} if harness == "claude" else {"harnesses": {harness: path}}
+                return next(r for r in doctor.v2_checks({"data_dir": d}, "dev", **kw) if r["id"] == "D-HOOKS-EVENT")
+            with self.subTest(harness=harness):
+                with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True: old(run, unless)):
+                    init()   # as init before 1.3 wrote it
+                got = row()
+                self.assertEqual(got["status"], "warn", got)
+                self.assertIn("block", got["detail"])
+                self.assertEqual(got["fix"], "tracekit init --dev --v2" + ("" if harness == "claude" else f" --agent {harness}"))
+                init()
+                self.assertEqual(row()["status"], "ok")
 
 
 class DroidHooks(unittest.TestCase):
