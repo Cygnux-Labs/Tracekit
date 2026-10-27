@@ -221,7 +221,8 @@ class ReviewRegressions(unittest.TestCase):
                         "hash": "finding"}]
             table = {bad: ({"name": "bad.tkb", "sha256": "b", "verify": {"ok": False, "integrity": "bad", "failures": ["bad"]}}, {"target": target}),
                      good: ({"name": "good.tkb", "sha256": "g", "verify": {"ok": True, "integrity": "ok", "failures": []}}, {"finding": finding})}
-            with mock.patch.object(graph, "_read", side_effect=lambda p, _: table[p]):
+            with mock.patch.object(graph, "_read", side_effect=lambda p, _: table[p]), \
+                 mock.patch.object(graph, "_add_why"):
                 doc = graph.build([bad, good], trust)
         found = [e for e in doc["edges"] if e["kind"] == "found in"]
         self.assertEqual(found[0]["dst"], "run:target")
@@ -261,20 +262,56 @@ class ReviewRegressions(unittest.TestCase):
             self.assertIn("unreadable", bad_src)
             good_src = {"name": "good.tkb", "sha256": "good", "verify": {"ok": True, "integrity": "ok", "failures": []}}
             good_runs = {"good": [rec(0, "run.registered", {"agent": {"name": "good"}}, "good")]}
-            with mock.patch.object(graph, "_read", side_effect=lambda p, _: (bad_src, bad_runs) if p == bad_path else (good_src, good_runs)):
+            with mock.patch.object(graph, "_read", side_effect=lambda p, _: (bad_src, bad_runs) if p == bad_path else (good_src, good_runs)), \
+                 mock.patch.object(graph, "_add_why"):
                 doc = graph.build([bad_path, good_path], trust)
             graph.write(doc, d)
             self.assertTrue(os.path.isfile(os.path.join(d, graph.GRAPH)))
             self.assertIn("agent:good", {n["id"] for n in doc["nodes"]})
 
     def test_malformed_nested_event_makes_its_source_unreadable(self):
-        bad = {"event": {"run_id": "bad", "run_seq": 0, "type": "run.registered",
-                         "data": {"agent": "not an object"}}}
-        with mock.patch("tracekit.bundle_v2.run_files", return_value={"bad": ["runs/bad.jsonl"]}), \
-             mock.patch("tracekit.verify.v2.read_zip", return_value={"runs/bad.jsonl": b""}), \
-             mock.patch("tracekit.verify.v2._jsonl", return_value=[bad]):
-            with self.assertRaises(ValueError):
-                graph._runs(b"bad")
+        bads = [
+            {"event": {"run_id": "bad", "run_seq": 0, "type": "run.registered",
+                       "data": {"agent": "not an object"}}},
+            {"event": {"run_id": "bad", "run_seq": 0, "type": "tool.result",
+                       "data": {"decision_id": ["not", "a", "key"]}}},
+            {"event": {"run_id": "bad", "run_seq": 0, "type": "policy.decision", "data": {
+                "provenance": [{"source": {"run_seq": [1]}}]}}},
+            {"event": {"run_id": "bad", "run_seq": 0, "type": "review", "data": {
+                "cites": [{"run_seq": [1]}]}}},
+        ]
+        for bad in bads:
+            with self.subTest(bad=bad), \
+                 mock.patch("tracekit.bundle_v2.run_files", return_value={"bad": ["runs/bad.jsonl"]}), \
+                 mock.patch("tracekit.verify.v2.read_zip", return_value={"runs/bad.jsonl": b""}), \
+                 mock.patch("tracekit.verify.v2._jsonl", return_value=[bad]):
+                with self.assertRaises(ValueError):
+                    graph._runs(b"bad")
+
+    def test_a_source_that_fails_while_building_does_not_partly_enter_the_graph(self):
+        with tempfile.TemporaryDirectory() as d:
+            trust = os.path.join(d, "trust.json")
+            with open(trust, "w") as f:
+                f.write("{}")
+            bad_path, good_path = (os.path.join(d, n) for n in ("bad.tkb", "good.tkb"))
+            bad_src = {"name": "bad.tkb", "sha256": "bad", "verify": {"ok": False, "integrity": "bad", "failures": ["bad"]}}
+            good_src = {"name": "good.tkb", "sha256": "good", "verify": {"ok": True, "integrity": "ok", "failures": []}}
+            # This bypasses _runs deliberately: staging also protects future graph readers from a missed validator.
+            bad_runs = {"bad": [rec(0, "run.registered", {"agent": {"name": "bad"}}, "bad"),
+                                rec(1, "policy.decision", {"tool_use_id": "t", "tool": "Write", "decision": "allow",
+                                                           "provenance": [{"source": {"run_seq": []}}]}, "bad")]}
+            good_runs = {"good": [rec(0, "run.registered", {"agent": {"name": "good"}}, "good")]}
+            table = {bad_path: (bad_src, bad_runs), good_path: (good_src, good_runs)}
+            with mock.patch.object(graph, "_read", side_effect=lambda p, *args: table[p]), \
+                 mock.patch.object(graph, "_add_why"):
+                both = graph.build([bad_path, good_path], trust)
+            with mock.patch.object(graph, "_read", return_value=(good_src, good_runs)), \
+                 mock.patch.object(graph, "_add_why"):
+                alone = graph.build([good_path], trust)
+        self.assertIn("unreadable", both["sources"][1])
+        self.assertNotIn("unread_runs", both["sources"][1])
+        self.assertEqual(json.dumps({k: both[k] for k in ("nodes", "edges")}, sort_keys=True),
+                         json.dumps({k: alone[k] for k in ("nodes", "edges")}, sort_keys=True))
 
     def test_unverified_people_and_agents_do_not_describe_signed_answers(self):
         g = Graph(None, "grade")
@@ -352,6 +389,17 @@ class ReviewRegressions(unittest.TestCase):
                 problems = graph.verify(d, os.path.join(d, "trust.json"))
             self.assertIn("source is missing", problems[0])
             build.assert_not_called()
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symlinks")
+    def test_secure_source_allows_a_symlinked_parent_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent, linked = os.path.join(d, "parent"), os.path.join(d, "linked")
+            os.mkdir(parent)
+            path = os.path.join(parent, "source.tkb")
+            with open(path, "wb") as f:
+                f.write(b"bundle")
+            os.symlink(parent, linked)
+            self.assertEqual(graph._secure_source(os.path.join(linked, "source.tkb")), b"bundle")
 
 
 @unittest.skipUnless(os.name == "posix", "the Claude Code hook runs through a POSIX shell")

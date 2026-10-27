@@ -58,6 +58,7 @@ FILTERS = {"file": "file", "host": "host", "agent": "agent", "approved_by": "per
 FACTS = ("agent", "person", "approval", "rule", "host", "file", "secret", "finding", "gap")
 TOP = 20   # lean: the files and hosts GRAPH_REPORT.md lists; graph.json has them all
 Content = Callable[[str, List[Dict[str, Any]]], Dict[int, Any]]
+MAX_SOURCE_BYTES = 512 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------- sources
@@ -78,6 +79,10 @@ def _graph_data(e: Dict[str, Any]) -> None:
         if value is not None and not isinstance(value, str):
             raise ValueError(f"{t} data.{name} must be a string")
 
+    def integer(value: Any, name: str) -> None:
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+            raise ValueError(f"{t} data.{name} must be an integer")
+
     if t == "run.registered":
         obj(d.get("agent"), "agent")
         obj(d.get("identity"), "identity")
@@ -88,15 +93,20 @@ def _graph_data(e: Dict[str, Any]) -> None:
         string(d.get("run_id"), "run_id")
     elif t == "policy.decision":
         strings(d.get("rule_ids"), "rule_ids")
+        string(d.get("decision_id"), "decision_id")
         provenance = d.get("provenance")
         if provenance is not None:
             if not isinstance(provenance, list) or not all(isinstance(p, dict) for p in provenance):
                 raise ValueError("policy.decision data.provenance must be a list of objects")
             for p in provenance:
                 obj(p.get("source"), "provenance.source")
+                if isinstance(p.get("source"), dict):
+                    integer(p["source"].get("run_seq"), "provenance.source.run_seq")
     elif t == "approval.request":
         obj(d.get("binding"), "binding")
         strings(d.get("rule_ids"), "rule_ids")
+    elif t == "tool.result":
+        string(d.get("decision_id"), "decision_id")
     elif t == "effect.observed":
         string(d.get("host"), "host")
         string(d.get("path"), "path")
@@ -105,10 +115,33 @@ def _graph_data(e: Dict[str, Any]) -> None:
         cites = d.get("cites")
         if cites is not None and (not isinstance(cites, list) or not all(isinstance(c, dict) for c in cites)):
             raise ValueError("review data.cites must be a list of objects")
+        for cite in cites or []:
+            integer(cite.get("run_seq"), "cites.run_seq")
     redaction = d.get("redaction")
     obj(redaction, "redaction")
     if isinstance(redaction, dict):
         strings(redaction.get("rules"), "redaction.rules")
+
+
+def _secure_source(path: str) -> bytes:
+    """Read a verify source through one descriptor, refusing an unsafe final component."""
+    mode = os.lstat(path).st_mode
+    if not stat.S_ISREG(mode):
+        raise OSError(f"{path}: source is not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path}: source is not a regular file")
+        with os.fdopen(fd, "rb", closefd=False) as f:
+            data = f.read(MAX_SOURCE_BYTES + 1)
+        if len(data) > MAX_SOURCE_BYTES:
+            raise ValueError(f"{path}: source is more than {MAX_SOURCE_BYTES // (1024 * 1024)} MiB")
+        return data
+    finally:
+        os.close(fd)
 
 def _runs(data: bytes) -> Dict[str, List[Dict[str, Any]]]:
     """run_id -> records of the v2 bundle `data`, unverified."""
@@ -132,12 +165,13 @@ def _runs(data: bytes) -> Dict[str, List[Dict[str, Any]]]:
     return runs
 
 
-def _read(path: str, trust: str):
+def _read(path: str, trust: str, data: Optional[bytes] = None):
     """(source entry, run_id -> records) of v2 bundle `path`, read once: its records are read even when it fails
     verification, so that its edges are marked UNVERIFIED rather than dropped."""
     from .verify import v2
-    with open(path, "rb") as f:
-        data = f.read()
+    if data is None:
+        with open(path, "rb") as f:
+            data = f.read()
     rep, code = v2.verify(io.BytesIO(data), trust)
     src: Dict[str, Any] = {"name": os.path.basename(path), "sha256": hashlib.sha256(data).hexdigest(),
                            "verify": {"ok": code == 0, "integrity": rep.integrity, "failures": rep.failures}}
@@ -389,6 +423,25 @@ def _add_why(g: Graph, recs: List[Dict[str, Any]], ok: bool, tests=()) -> None:
                               why_evidence="tested", effect=t.get("effect"))
 
 
+def _merge(g: Graph, staged: Graph) -> None:
+    """Commit a source-local graph only after all of its records built successfully."""
+    for nid, node in staged.nodes.items():
+        g.nodes.setdefault(nid, node)
+    for edge in staged.edges:
+        g.add_edge(edge["src"], edge["dst"], edge["kind"], edge["grade"],
+                   **{k: v for k, v in edge.items() if k not in ("src", "dst", "kind", "grade")})
+
+
+def _staged(g: Graph) -> Graph:
+    """A private copy of the committed graph for one source's tentative work."""
+    copy = Graph(None, "grade")  # type: ignore[arg-type]
+    copy.nodes = {nid: dict(node) for nid, node in g.nodes.items()}
+    for edge in g.edges:
+        copy.add_edge(edge["src"], edge["dst"], edge["kind"], edge["grade"],
+                      **{k: v for k, v in edge.items() if k not in ("src", "dst", "kind", "grade")})
+    return copy
+
+
 def _graphify(g: Graph, path: str) -> Dict[str, Any]:
     """The Graphify join: each code node of the Graphify graph at `path` whose `source_file` is a file node's path, or
     its end, linked from that file (INFERRED, or UNVERIFIED if only an unverified source names the file): what the
@@ -425,12 +478,14 @@ def _graphify(g: Graph, path: str) -> Dict[str, Any]:
 
 
 def build(paths: List[str], trust: str, content: Optional[Content] = None,
-          graphify: Optional[str] = None) -> Dict[str, Any]:
+          graphify: Optional[str] = None, _source_data: Optional[Dict[str, bytes]] = None) -> Dict[str, Any]:
     """graph.json's document from v2 bundles `paths`, each verified against trust config `trust`. `content`: a run's
     decided arguments (vault()), read for verified runs only; `graphify`: a Graphify graph.json to join. Verified
     sources go first, so that a node's label comes from a verified record wherever one has it, and findings runs after
     the runs they are about."""
-    read = sorted((_read(p, trust) for p in paths), key=lambda s: (not s[0]["verify"]["ok"], s[0]["sha256"], s[0]["name"]))
+    source_data = _source_data or {}
+    read = sorted((_read(p, trust, source_data[p]) if p in source_data else _read(p, trust) for p in paths),
+                  key=lambda s: (not s[0]["verify"]["ok"], s[0]["sha256"], s[0]["name"]))
     runs = sorted(((src, rs[rid]) for src, rs in read for rid in sorted(rs)), key=lambda x: bool(_about(x[1])))
     index: Dict[tuple, Dict[str, Any]] = {}
     tests: Dict[str, List[tuple]] = {}   # run_id -> the why.finding records about it
@@ -442,19 +497,22 @@ def build(paths: List[str], trust: str, content: Optional[Content] = None,
             if r["event"]["type"] == "why.finding" and _about(recs):
                 tests.setdefault(str(_about(recs)), []).append((r, src["verify"]["ok"]))
     g = Graph(None, "grade")  # type: ignore[arg-type]
-    for src, recs in runs:
-        ok, rid = src["verify"]["ok"], recs[0]["event"]["run_id"]
-        args = None
-        if content and ok:
-            try:
-                args = content(rid, recs)
-            except Exception as e:   # the vault's content does not open its record, or the signer gives none
-                src.setdefault("content_unread", []).append(f"run {rid}: {type(e).__name__}: {e}")
+    for src, rs in sorted(read, key=lambda item: all(_about(recs) for recs in item[1].values())):
+        staged = _staged(g)
         try:
-            _add_run(g, recs, ok, args, index)
-            _add_why(g, recs, ok, tests.get(rid, ()))
-        except Exception as e:   # a record an unverified bundle mangled: what was read is kept, the rest named
-            src.setdefault("unread_runs", []).append(f"{rid}: {type(e).__name__}: {e}")
+            for rid in sorted(rs, key=lambda rid: bool(_about(rs[rid]))):
+                recs, ok, args = rs[rid], src["verify"]["ok"], None
+                if content and ok:
+                    try:
+                        args = content(rid, recs)
+                    except Exception as e:   # the vault's content does not open its record, or the signer gives none
+                        src.setdefault("content_unread", []).append(f"run {rid}: {type(e).__name__}: {e}")
+                _add_run(staged, recs, ok, args, index)
+                _add_why(staged, recs, ok, tests.get(rid, ()))
+        except Exception as e:
+            src["unreadable"] = f"{type(e).__name__}: {e}"
+        else:
+            _merge(g, staged)
     joined = _graphify(g, graphify) if graphify else None
     with open(trust, "rb") as f:
         trust_sha256 = hashlib.sha256(f.read()).hexdigest()
@@ -987,6 +1045,12 @@ def verify(out: str, trust: str, content: Optional[Content] = None, paths: Optio
     problems = [f"{name}: source is missing; pass it to tracekit graph verify" for name in missing]
     if missing:
         return problems
+    source_data = {}
+    try:
+        for path in paths:
+            source_data[path] = _secure_source(path)
+    except (OSError, ValueError) as e:
+        return [f"{e}: source is missing; pass SOURCES to tracekit graph verify"]
     gf = have.get("graphify")
     if graphify is None:
         graphify = (GRAPHIFY if gf and gf["name"] == os.path.basename(GRAPHIFY) and os.path.exists(GRAPHIFY)
@@ -994,7 +1058,7 @@ def verify(out: str, trust: str, content: Optional[Content] = None, paths: Optio
     if gf and (not graphify or not os.path.exists(graphify)):
         return [f"the Graphify graph {gf['name']} is missing; pass --graphify PATH"]
     try:
-        doc = build(paths, trust, content if have.get("content") else None, graphify)
+        doc = build(paths, trust, content if have.get("content") else None, graphify, source_data)
     except OSError as e:
         return [f"{e.filename or e}: source is missing; pass SOURCES to tracekit graph verify"]
     expected = sorted((s["name"], s["sha256"]) for s in listed)

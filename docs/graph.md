@@ -151,9 +151,9 @@ to read retained content.
 
 `tracekit graph verify [DIR] [SOURCES...] --trust trust.json [--graphify FILE]` rebuilds the graph and compares all
 three files. When `SOURCES` are omitted, it tries each recorded basename beside `DIR`; it never follows a path named
-inside `graph.json`. It refuses ambiguous duplicate recorded names, missing sources, and anything other than a regular
-file: no symlinks, FIFOs, or devices. Sources are checked by their recorded basename and SHA-256 digest, so moving the
-output directory does not matter.
+inside `graph.json`. It refuses ambiguous duplicate recorded names, missing sources, and a source that is itself a
+symlink, a FIFO, a device, or anything other than a regular file. Parent directories may be symlinks. Sources are
+checked by their recorded basename and SHA-256 digest, so moving the output directory does not matter.
 
 If the built graph used `--content`, verify reads the vault again. For a default Graphify input it tries
 `graphify-out/graph.json`; otherwise pass `--graphify` when the recorded Graphify file is not in the current directory.
