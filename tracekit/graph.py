@@ -69,6 +69,15 @@ def _runs(data: bytes) -> Dict[str, List[Dict[str, Any]]]:
     runs = {}
     for parts in run_files(files).values():
         recs = [r for n in parts for r in v2._jsonl(files[n])]
+        if not recs:
+            raise ValueError("a run has no records")
+        for r in recs:
+            e = r.get("event") if isinstance(r, dict) else None
+            if not (isinstance(e, dict) and isinstance(e.get("run_id"), str)
+                    and isinstance(e.get("run_seq"), int) and not isinstance(e["run_seq"], bool)
+                    and isinstance(e.get("type"), str)
+                    and ("data" not in e or isinstance(e["data"], dict))):
+                raise ValueError("a record must have string run_id and type, integer run_seq, and object data")
         runs[recs[0]["event"]["run_id"]] = recs
     return runs
 
@@ -376,6 +385,8 @@ def build(paths: List[str], trust: str, content: Optional[Content] = None,
     index: Dict[tuple, Dict[str, Any]] = {}
     tests: Dict[str, List[tuple]] = {}   # run_id -> the why.finding records about it
     for src, recs in runs:
+        if not src["verify"]["ok"]:
+            continue
         for r in recs:
             index.setdefault((r["event"]["run_id"], r["event"]["run_seq"]), r)
             if r["event"]["type"] == "why.finding" and _about(recs):
@@ -485,10 +496,11 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
         return sorted({r for e in es if (r := _run_of(e))})
 
     def agents(rid: str) -> List[str]:
-        return sorted({lab(e["src"]) for e in g.in_edges("run:" + rid, GRADES) if nodes[e["src"]]["kind"] == "agent"})
+        return sorted({lab(e["src"]) for e in g.in_edges("run:" + rid, ("SIGNED",))
+                       if nodes[e["src"]]["kind"] == "agent"})
 
     def approvers(call: str) -> List[Dict[str, Any]]:
-        return [e for e in g.in_edges(call, GRADES) if nodes[e["src"]]["kind"] == "person"]
+        return [e for e in g.in_edges(call, ("SIGNED",)) if nodes[e["src"]]["kind"] == "person"]
 
     def by_person(call: str) -> bool:   # a person other than the run's own identity approved it, on a verified record
         return any(e["kind"] == "approve" and not e.get("self_approved") and e["grade"] == "SIGNED"
@@ -531,7 +543,7 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
                                        if e["kind"] in ("wrote", "reported writing")})
         alone = sum(not by_person(c) for c in calls)
         files.append({"text": f"{lab(f)}: " + (f"written {_n(len(es), 'time')} in {_n(len(runs(es)), 'run')} "
-                                               f"({grades(es)})" if es else "not written")
+                                               f"({grades(es)})" if es else "no attested write")
                       + (f"; calls that wrote or reported writing it: {len(calls)}, without a person's approval: {alone}"
                          if calls else "")
                       + (f"; reported written: {len(reported[f])} ({grades(reported[f])})" if reported[f] else "")
@@ -549,7 +561,7 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
                 who = [f"{lab(a['src'])} {a['kind']}d it ({a['grade']}"
                        + (", self-approved)" if a.get("self_approved") else ")") for a in approvers(w["src"])]
                 attested = w["kind"] == "wrote"
-                reported_run = w["kind"] == "reported writing" and bool(nodes[w["src"]].get("ok"))
+                reported_run = w["kind"] == "reported writing"
                 sensitive.append({"text": f"{lab(f)}: {where(w['src'])} {w['kind']} it ({w['grade']}) under "
                                           + ", ".join(f"{lab(e['src'])} {e['kind']} ({e['grade']})" for e in rules)
                                           + "; " + ("; ".join(who) if who else "it ran with no person's approval"
@@ -563,6 +575,10 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
     hosts = []
     for h in sorted(of("host"), key=lambda h: (-len(runs(g.in_edges(h, GRADES))), h)):
         es = [e for e in g.in_edges(h, GRADES) if _shown(e, outcomes)]
+        by_run: Dict[str, List[Dict[str, Any]]] = {}
+        for e in es:
+            if (rid := _run_of(e)):
+                by_run.setdefault(rid, []).append(e)
 
         def said(e: Dict[str, Any]) -> str:
             if nodes[e["src"]]["kind"] == "run" and e["kind"].startswith("blocked from"):
@@ -573,16 +589,16 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
             f"run {r} (agent {', '.join(agents(r)) or '?'}): " + ", ".join(
                 f"{said(e)} ({e['grade']}"
                 + (f", explained by {e['explained_by']}" if "explained_by" in e else "") + ")"
-                for e in es if _run_of(e) == r) for r in runs(es)),
+                for e in by_run[r]) for r in sorted(by_run)),
             "node": h, "runs": [{"run_id": r, "agents": agents(r),
                                  "edges": [{**cite(e), **({"explained_by": e["explained_by"]} if "explained_by" in e
-                                                          else {})} for e in es if _run_of(e) == r]}
-                                for r in runs(es)]})
+                                                          else {})} for e in by_run[r]]}
+                                for r in sorted(by_run)]})
 
     people = []
     for p in of("person"):
         es = g.out_edges(p, GRADES)
-        waits = [e["wait_ms"] for e in es if "wait_ms" in e]
+        waits = [e["wait_ms"] for e in es if e["grade"] == "SIGNED" and "wait_ms" in e]
         kinds, selfs = dict(sorted(Counter(e["kind"] for e in es).items())), sum(bool(e.get("self_approved")) for e in es)
         people.append({"text": f"{lab(p)}: " + ", ".join(f"{n} {k}" for k, n in kinds.items())
                        + (f", median wait {statistics.median(waits):g} ms" if waits else ", no wait recorded")
@@ -661,9 +677,13 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
 def report(doc: Dict[str, Any], data: Optional[Dict[str, Any]] = None) -> str:
     """GRAPH_REPORT.md: highlights(doc) as Markdown, the files and hosts sections cut to the TOP most."""
     data = data or highlights(doc)
-    out = [f"# Tracekit graph report\n\n{data['summary']['text']}"]
+    def text(value: str) -> str:
+        value = " ".join(value.splitlines())
+        return "".join("\\" + c if c in "\\`*_[]()<>#!|~" else c for c in value)
+
+    out = [f"# Tracekit graph report\n\n{text(data['summary']['text'])}"]
     for s in data["sections"]:
-        lines = [i["text"] for i in s["items"]]
+        lines = [text(i["text"]) for i in s["items"]]
         if s["id"] in ("files", "hosts") and len(lines) > TOP:
             lines = lines[:TOP] + [f"and {len(lines) - TOP} more {s['id']} (graph.json has them all)"]
         out.append(f"\n## {s['title']}\n\n" + "\n".join(f"- {x}" for x in lines or ["none"]))
@@ -734,7 +754,7 @@ def _drawn(g: Graph, outcomes: OutcomeIndex, hits: List[str], things: List[str],
         call = e["src"] if g.nodes[e["src"]]["kind"] == "call" else e["dst"] if g.nodes[e["dst"]]["kind"] == "call" else ""
         if not call:
             return ""
-        ok = [a for a in g.in_edges(call, GRADES) if g.nodes[a["src"]]["kind"] == "person"]
+        ok = [a for a in g.in_edges(call, ("SIGNED",)) if g.nodes[a["src"]]["kind"] == "person"]
         rules = [a for a in g.in_edges(call, GRADES) if g.nodes[a["src"]]["kind"] == "rule"]
         return "; ".join(filter(None, [
             ", ".join(f"{g.nodes[a['src']]['label']} {a['kind']}" for a in rules),
@@ -747,7 +767,7 @@ def _drawn(g: Graph, outcomes: OutcomeIndex, hits: List[str], things: List[str],
     for e in sorted({id(e): e for e in touching + after}.values(),
                     key=lambda e: (e["record"].get("ts", ""), e["record"]["seq"]), reverse=True):
         rid = _run_of(e)
-        who = sorted({g.nodes[a["src"]]["label"] for a in g.in_edges("run:" + rid, GRADES)
+        who = sorted({g.nodes[a["src"]]["label"] for a in g.in_edges("run:" + rid, ("SIGNED",))
                       if g.nodes[a["src"]]["kind"] == "agent"})
         answers.append({"edge": index[id(e)], "grade": e["grade"], **({"claimed": e["claimed"]} if "claimed" in e
                                                                         else {}),
@@ -804,19 +824,29 @@ def blast(doc: Dict[str, Any], spec: str) -> Dict[str, Any]:
     outcomes = _outcomes(g)
     start = _find(g, spec)
     parent: Dict[str, Optional[str]] = {start: None}
+    via: Dict[str, Dict[str, Any]] = {}
     q = deque([start])
     while q:
         n = q.popleft()
-        for e in g.out_edges(n, GRADES):
-            if _shown(e, outcomes) and e["dst"] not in parent:
+        for e in sorted((e for e in g.out_edges(n, GRADES) if _shown(e, outcomes)),
+                        key=lambda e: GRADES.index(e["grade"])):
+            if e["dst"] not in parent:
                 parent[e["dst"]] = n
+                via[e["dst"]] = e
                 q.append(e["dst"])
     reached = sorted(parent)
     touching = [e for e in g.edges if _shown(e, outcomes) and e["src"] in parent and e["dst"] in parent and _run_of(e)]
     runs = sorted({_run_of(e) for e in touching}, key=lambda r: (g.nodes.get(f"run:{r}", {}).get("ts", ""), r), reverse=True)
     things = [n for n in reached if g.nodes[n]["kind"] not in ("run", "call", "input")]
+    def grade(n: str) -> str:
+        edges = []
+        while n != start:
+            edges.append(via[n])
+            n = parent[n]  # type: ignore[assignment]
+        return max(edges, key=lambda e: GRADES.index(e["grade"]))["grade"]
+
     return {"from": start, "reached": [{"node": n, "kind": g.nodes[n]["kind"], "label": g.nodes[n]["label"],
-                                        "path": Graph.path(parent, n)}
+                                        "path": Graph.path(parent, n), "grade": grade(n)}
                                        for n in reached if n != start],
             "map": _drawn(g, outcomes, [start], things, touching, runs)}
 
@@ -882,12 +912,14 @@ def verify(out: str, trust: str, content: Optional[Content] = None, paths: Optio
         raise ValueError("not a Tracekit graph (Graphify's graph.json is joined with --graphify, not queried)")
     listed = have["sources"]
     default_paths = paths is None
-    paths = paths if paths is not None else [s["name"] for s in listed]
+    paths = paths if paths is not None else [os.path.join(out, os.path.basename(s["name"])) for s in listed]
     duplicates = sorted({s["name"] for s in listed if sum(x["name"] == s["name"] for x in listed) > 1})
     if default_paths and duplicates:
         return [f"multiple sources are named {name}; pass SOURCES explicitly" for name in duplicates]
-    missing = ([s["name"] for s in listed if not os.path.exists(s["name"])] if default_paths else
-               [s["name"] for s in listed if not any(os.path.basename(p) == s["name"] for p in paths)])
+    missing = ([s["name"] for s in listed if not os.path.isfile(os.path.join(out, os.path.basename(s["name"])))]
+               if default_paths else [s["name"] for s in listed
+                                      if not any(os.path.basename(p) == os.path.basename(s["name"]) and os.path.isfile(p)
+                                                 for p in paths)])
     problems = [f"{name}: source is missing; pass it to tracekit graph verify" for name in missing]
     if missing:
         return problems
@@ -983,7 +1015,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         if a.blast:
             res = blast(doc, a.blast)
-            text = [f"downstream of {res['from']}:"] + [f"  {r['kind']} {r['label']}  via {' -> '.join(r['path'])}"
+            text = [f"downstream of {res['from']}:"] + [f"  {r['grade']:<10} {r['kind']} {r['label']}  via {' -> '.join(r['path'])}"
                                                         for r in res["reached"]]
         elif a.path:
             res = path(doc, *a.path)

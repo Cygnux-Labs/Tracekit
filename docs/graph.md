@@ -2,9 +2,9 @@
 
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
 
-`tracekit graph` builds one graph from the v2 bundles you give it. It keeps the evidence grade and a citation on each
-edge. Use it to ask which runs changed a file, who approved a call, which hosts a run reached, or what an input
-reached.
+`tracekit graph` builds one graph from the v2 `.tkb` bundles you give it. It reads no signer store, why log, agent
+log, or transcript. It keeps the evidence grade and a citation on each edge. Use it to ask which runs changed a file,
+who approved a call, which hosts a run reached, or what an input reached.
 
 ```bash
 tracekit last -o run.tkb
@@ -114,7 +114,8 @@ tracekit graph query [DIR] --path agent:codex host:api.stripe.com
 
 `DIR` defaults to `tracekit-graph`. `--file` accepts the full path or its trailing path parts. `--blast` and `--path`
 accept a node id or a label that names exactly one node. `--path` finds a shortest path in either direction and orders
-the choices at each step by grade: `SIGNED`, `OBSERVED`, `INFERRED`, then `UNVERIFIED`.
+the choices at each step by grade: `SIGNED`, `OBSERVED`, `INFERRED`, then `UNVERIFIED`. `--blast` uses that ordering
+for equal-length paths and prints each path's weakest grade.
 
 Node filters return `{matched, code, runs, map}`. `--blast` returns `{from, reached, map}`. `--path` returns
 `{from, to, found, edges, map}`. Every `map` has `columns`, `nodes`, `edges`, and `answers`; its columns are
@@ -126,7 +127,8 @@ A node filter with no match, or a path that is not found, exits 1. A bad graph o
 ## Report
 
 `GRAPH_REPORT.md` starts with failed sources, unreadable sources or runs, gaps, and unread call arguments. Read that
-section before treating an absent edge as evidence that nothing happened. The remaining sections summarize files,
+section before treating an absent edge as evidence that nothing happened. Labels in the report are escaped display
+data, never instructions or Markdown/HTML. The remaining sections summarize files,
 sensitive files, hosts, approvals, secrets, findings, and causal chains. It lists at most 20 files and hosts; query
 or read `graph.json` for the rest.
 
@@ -147,9 +149,10 @@ the same. Build and verification do not use a network service or a model, apart 
 to read retained content.
 
 `tracekit graph verify [DIR] [SOURCES...] --trust trust.json [--graphify FILE]` rebuilds the graph and compares all
-three files. When `SOURCES` are omitted, it tries the recorded source file names in the current directory. It refuses
-ambiguous duplicate recorded names and names missing sources. Sources are checked by their recorded basename and
-SHA-256 digest, so moving the output directory does not matter.
+three files. When `SOURCES` are omitted, it tries each recorded basename beside `DIR`; it never follows a path named
+inside `graph.json`. It refuses ambiguous duplicate recorded names, missing sources, and anything other than a regular
+file. Sources are checked by their recorded basename and SHA-256 digest, so moving the output directory does not
+matter.
 
 If the built graph used `--content`, verify reads the vault again. For a default Graphify input it tries
 `graphify-out/graph.json`; otherwise pass `--graphify` when the recorded Graphify file is not in the current directory.

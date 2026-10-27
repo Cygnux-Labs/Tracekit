@@ -198,6 +198,125 @@ class QueryInput(unittest.TestCase):
             self.assertIn("not a Tracekit graph", err.getvalue())
 
 
+class ReviewRegressions(unittest.TestCase):
+    def doc(self, g):
+        return {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
+                "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
+
+    def test_finding_cites_only_verified_records(self):
+        with tempfile.TemporaryDirectory() as d:
+            trust = os.path.join(d, "trust.json")
+            with open(trust, "w") as f:
+                f.write("{}")
+            bad, good = (os.path.join(d, n) for n in ("bad.tkb", "good.tkb"))
+            for path in (bad, good):
+                with open(path, "w") as f:
+                    f.write(path)
+            target = [rec(0, "run.registered", {"agent": {"name": "a"}}, "target"),
+                      {**rec(1, "policy.decision", {"tool_use_id": "rewritten", "decision_id": "d", "tool": "Read",
+                                                       "decision": "allow"}, "target"), "hash": "same"}]
+            finding = [rec(0, "run.registered", {"agent": {"name": "review"}, "analyzes": "target"}, "finding"),
+                       {**rec(1, "review", {"verdict": {"kind": "finding", "rule": "TK-X201", "severity": "high",
+                                                           "title": "x"}, "cites": [{"run_seq": 1, "hash": "same"}]}, "finding"),
+                        "hash": "finding"}]
+            table = {bad: ({"name": "bad.tkb", "sha256": "b", "verify": {"ok": False, "integrity": "bad", "failures": ["bad"]}}, {"target": target}),
+                     good: ({"name": "good.tkb", "sha256": "g", "verify": {"ok": True, "integrity": "ok", "failures": []}}, {"finding": finding})}
+            with mock.patch.object(graph, "_read", side_effect=lambda p, _: table[p]):
+                doc = graph.build([bad, good], trust)
+        found = [e for e in doc["edges"] if e["kind"] == "found in"]
+        self.assertEqual(found[0]["dst"], "run:target")
+
+    def test_report_escapes_agent_controlled_labels(self):
+        evil = "x](https://evil.example) <img onerror=x> `tick`\n## forged\n- forged"
+        g = Graph(None, "grade")
+        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "<script>x</script>"}}),
+                           rec(1, "policy.decision", {"tool_use_id": "c", "decision_id": "d", "tool": "Write", "decision": "allow"}),
+                           rec(2, "tool.result", {"tool_use_id": "c", "decision_id": "d", "ok": True}),
+                           rec(3, "effect.observed", {"kind": "net", "host": "api.example", "port": 443})], True,
+                       {1: {"file_path": evil}})
+        md = graph.report(self.doc(g))
+        self.assertNotIn("\n## forged", md)
+        self.assertIn("\\<img", md)
+        self.assertIn("\\<script\\>", md)
+        self.assertIn("\\]", md)
+
+    def test_malformed_bundle_is_unreadable_and_does_not_stop_build(self):
+        for bad in ({"event": {"run_id": "bad", "run_seq": 0, "type": "run.registered", "data": []}},
+                    {"event": {"run_id": "bad", "type": "run.registered", "data": {}}}):
+            with mock.patch("tracekit.bundle_v2.run_files", return_value={"bad": ["runs/bad.jsonl"]}), \
+                 mock.patch("tracekit.verify.v2.read_zip", return_value={"runs/bad.jsonl": b""}), \
+                 mock.patch("tracekit.verify.v2._jsonl", return_value=[bad]):
+                with self.assertRaises(ValueError):
+                    graph._runs(b"bad")
+        with tempfile.TemporaryDirectory() as d:
+            trust, bad_path, good_path = (os.path.join(d, n) for n in ("trust.json", "bad.tkb", "good.tkb"))
+            for path in (trust, bad_path, good_path):
+                with open(path, "w") as f:
+                    f.write("{}")
+            rep = type("Report", (), {"integrity": "bad", "failures": ["bad"]})()
+            with mock.patch("tracekit.verify.v2.verify", return_value=(rep, 1)), \
+                 mock.patch.object(graph, "_runs", side_effect=ValueError("malformed record")):
+                bad_src, bad_runs = graph._read(bad_path, trust)
+            self.assertEqual(bad_runs, {})
+            self.assertIn("unreadable", bad_src)
+            good_src = {"name": "good.tkb", "sha256": "good", "verify": {"ok": True, "integrity": "ok", "failures": []}}
+            good_runs = {"good": [rec(0, "run.registered", {"agent": {"name": "good"}}, "good")]}
+            with mock.patch.object(graph, "_read", side_effect=lambda p, _: (bad_src, bad_runs) if p == bad_path else (good_src, good_runs)):
+                doc = graph.build([bad_path, good_path], trust)
+            graph.write(doc, d)
+            self.assertTrue(os.path.isfile(os.path.join(d, graph.GRAPH)))
+            self.assertIn("agent:good", {n["id"] for n in doc["nodes"]})
+
+    def test_unverified_people_and_agents_do_not_describe_signed_answers(self):
+        g = Graph(None, "grade")
+        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "coder"}}),
+                           rec(1, "policy.decision", {"tool_use_id": "c", "decision_id": "d", "tool": "Write", "decision": "allow"}),
+                           rec(2, "tool.result", {"tool_use_id": "c", "decision_id": "d", "ok": True})], True,
+                       {1: {"file_path": "/repo/x"}})
+        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "other"}}),
+                           rec(1, "approval", {"tool_use_id": "c", "approver": "alice", "decision": "approve"})], False)
+        answer = graph.matching(self.doc(g), "file", "/repo/x")["map"]["answers"]
+        wrote = next(a for a in answer if "reported writing" in a["text"])
+        self.assertEqual(wrote["agents"], ["coder"])
+        self.assertNotIn("alice", wrote["note"])
+
+    def test_blast_reports_weakest_path_grade(self):
+        g = Graph(None, "grade")
+        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "a"}}),
+                           rec(1, "policy.decision", {"tool_use_id": "c", "decision_id": "d", "tool": "Write", "decision": "allow"})], False,
+                       {1: {"url": "https://exfil.example"}})
+        result = graph.blast(self.doc(g), "agent:a")
+        host = next(item for item in result["reached"] if item["node"] == "host:exfil.example")
+        self.assertEqual(host["grade"], "UNVERIFIED")
+
+    def test_hosts_group_edges_by_run_once(self):
+        class CountingEdges(list):
+            visits = 0
+            def __iter__(self):
+                for edge in super().__iter__():
+                    self.visits += 1
+                    yield edge
+        g = Graph(None, "grade")
+        for i in range(300):
+            graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "a"}}, f"r{i}"),
+                               rec(1, "effect.observed", {"kind": "net", "host": "api.example", "port": 443}, f"r{i}")], True)
+        doc = self.doc(g)
+        doc["edges"] = CountingEdges(doc["edges"])
+        graph.highlights(doc)
+        self.assertLess(doc["edges"].visits, 10 * len(doc["edges"]))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFOs")
+    def test_verify_refuses_a_non_regular_recorded_source(self):
+        with tempfile.TemporaryDirectory() as d:
+            fifo = os.path.join(d, "fifo")
+            os.mkfifo(fifo)
+            with open(os.path.join(d, graph.GRAPH), "w") as f:
+                json.dump({"schema_version": graph.SCHEMA_VERSION, "sources": [{"name": fifo, "sha256": "x"}],
+                           "nodes": [], "edges": []}, f)
+            problems = graph.verify(d, os.path.join(d, "trust.json"))
+        self.assertIn("source is missing", problems[0])
+
+
 @unittest.skipUnless(os.name == "posix", "the Claude Code hook runs through a POSIX shell")
 class EndToEnd(unittest.TestCase):
     @classmethod
@@ -544,26 +663,27 @@ class EndToEnd(unittest.TestCase):
                                   "Secrets (by the name of the rule that redacted them)", "Findings",
                                   "Causal chains (why) and runs linked to other runs"])
         sec = dict(s.split("\n\n", 1) for s in self.report.split("\n## ")[1:])
-        self.assertIn(f"run {self.session}: capture.gap tailer_lost", sec[titles[0]])
-        self.assertIn(f"run {self.session}: reconcile.unexplained_effect", sec[titles[0]])
-        self.assertIn(f"- {self.billing}: not written; calls that wrote or reported writing it: 1, without a person's "
-                      "approval: 1; reported written: 1 (1 SIGNED)\n", sec[titles[1]])
-        self.assertIn("- /: not written; calls that asked to write it and did not run: 1 (1 SIGNED)", sec[titles[1]])
+        billing = self.billing.replace("_", "\\_")
+        self.assertIn(f"run {self.session}: capture.gap tailer\\_lost", sec[titles[0]])
+        self.assertIn(f"run {self.session}: reconcile.unexplained\\_effect", sec[titles[0]])
+        self.assertIn(f"- {billing}: no attested write; calls that wrote or reported writing it: 1, without a person's "
+                      "approval: 1; reported written: 1 \\(1 SIGNED\\)\n", sec[titles[1]])
+        self.assertIn("- /: no attested write; calls that asked to write it and did not run: 1 \\(1 SIGNED\\)", sec[titles[1]])
         [rm] = sec[titles[2]].splitlines()
-        self.assertTrue(rm.startswith(f"- /: Bash (deny) in run {self.mail} asked to write it (SIGNED) under "), rm)
-        self.assertIn("TK-F003 allow (UNVERIFIED), TK-F003 deny (SIGNED); it did not run", rm)
-        self.assertIn(f"- docs.example.com: run {self.session} (agent claude-code): WebFetch reported reaching (SIGNED), the run "
-                      "reached :443 (OBSERVED, explained by call)", sec[titles[3]])
+        self.assertTrue(rm.startswith(f"- /: Bash \\(deny\\) in run {self.mail} asked to write it \\(SIGNED\\) under "), rm)
+        self.assertIn("TK-F003 allow \\(UNVERIFIED\\), TK-F003 deny \\(SIGNED\\); it did not run", rm)
+        self.assertIn(f"- docs.example.com: run {self.session} \\(agent claude-code\\): WebFetch reported reaching \\(SIGNED\\), the run "
+                      "reached :443 \\(OBSERVED, explained by call\\)", sec[titles[3]])
         self.assertIn(f"- {service._dev_identity()}: 1 approve, no wait recorded, 1 self-approved", sec[titles[4]])
-        self.assertIn(f"- aws_access_key: in 1 run, held by Bash (allow) in run {self.mail} (1 SIGNED, 1 UNVERIFIED)",
+        self.assertIn(f"- aws\\_access\\_key: in 1 run, held by Bash \\(allow\\) in run {self.mail} \\(1 SIGNED, 1 UNVERIFIED\\)",
                       sec[titles[5]])
-        self.assertIn(f"TK-X202 (medium): Edit of a file not mentioned before: about send_email (flag) in run "
-                      f"{self.mail} (1 SIGNED)", sec[titles[6]])
+        self.assertIn(f"TK-X202 \\(medium\\): Edit of a file not mentioned before: about send\\_email \\(flag\\) in run "
+                      f"{self.mail} \\(1 SIGNED\\)", sec[titles[6]])
         [chain] = [x for x in sec[titles[7]].splitlines() if x.startswith(f"- untrusted web:page in run {self.mail} ")]
-        self.assertIn("web:page -argument to (email), untrusted (SIGNED)-> send_email (flag)", chain)
+        self.assertIn("web:page -argument to \\(email\\), untrusted \\(SIGNED\\)-\\> send\\_email \\(flag\\)", chain)
         self.assertNotIn("asked to write", chain)
-        self.assertIn(f"run {self.findings} analyses run {self.mail} (SIGNED)", sec[titles[7]])
-        self.assertIn("4 sources (1 failed verification), 3 runs, ", self.report)
+        self.assertIn(f"run {self.findings} analyses run {self.mail} \\(SIGNED\\)", sec[titles[7]])
+        self.assertIn("4 sources \\(1 failed verification\\), 3 runs, ", self.report)
 
     def test_the_same_sources_give_the_same_files_and_verify_rebuilds_them(self):
         two = os.path.join(self.dir, "g2")
@@ -629,7 +749,7 @@ class EndToEnd(unittest.TestCase):
         doc = graph.build([self.hook_tkb], self.trust)
         self.assertFalse(doc["content"] or self.edges(doc, kind="wrote") or self.edges(doc, kind="reached"))
         self.assertIn("4 calls in 1 run: their arguments were not read, so the files and hosts they "
-                      "named are not in the graph (build with --content, against the signer that recorded them)",
+                      "named are not in the graph \\(build with --content, against the signer that recorded them\\)",
                       graph.report(doc))
         self.assertIn("4 calls' arguments not read (pass --content)",
                       run("build", self.hook_tkb, "--trust", self.trust, "--graphify", "", "-o",
