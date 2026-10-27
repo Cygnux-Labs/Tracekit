@@ -3290,6 +3290,8 @@
     const HZSYM = { read: "●", run: "●", net: "●", seen: "●", write: "■", approved: "■", blocked: "✕", held: "◯", flag: "◆" };
     const HZWORST = ["blocked", "held", "flag", "write", "approved", "net", "seen", "run", "read"];
     const hzRad = deg => (deg - 90) * Math.PI / 180;
+    // a move's T+: from the first move whose time the viewer read (a why log time it could not read has none: 0)
+    const hzSecs = (ev, cur) => cur && !cur.unread ? cur.t - ev.find(e => !e.unread).t : 0;
     const hzRgba = (hex, a) => `rgba(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(",")},${a})`;
     // a path's ring: the project inside the run's cwd (a relative path is), else this machine, where a home reads as ~
     const hzPath = (p, cwd) => /^[~/]/.test(p) && !(cwd && (p + "/").startsWith(cwd + "/")) ? ["machine", p.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~")] : ["project", rel(p, cwd).replace(/^\.\//, "")];
@@ -3375,7 +3377,7 @@
         + (D.bare ? `<p class="hznote">${esc(`${D.bare} of ${N} calls have their arguments only as a commitment here, so each is placed by its tool (on this machine, or outside for a network tool), not at a file or host.`)}</p>` : ""));
       // the HUD's words go in as text
       const out = ev.filter(e => P(e.at).kind === "outside"), rest = ev.filter(e => P(e.at).rest), ran = rest.filter(e => e.act !== "blocked" && e.act !== "held").length;
-      const unv = ev.filter(e => e.gr === "unverified").length, s = cur ? Math.max(0, cur.t - D.ev[0].t) : 0;
+      const unv = ev.filter(e => e.gr === "unverified").length, s = hzSecs(D.ev, cur);
       $("hzclock").textContent = "T+ " + [s / 3600, s % 3600 / 60, s % 60].map(v => String(Math.floor(v)).padStart(2, "0")).join(":");
       $("hzmove").textContent = `${String(HZ.t).padStart(2, "0")} / ${N}`;
       [[new Set(out.map(e => e.at)).size, out.length ? "warn" : ""], [`${rest.length} · ${ran} RAN`, rest.length ? "warn" : ""], [ev.filter(e => e.act === "blocked").length, ""],

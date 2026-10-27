@@ -911,6 +911,12 @@ def hz_call(seq, tool, args, run="r1", decision="allow", rules=(), cwd="/home/u/
             "tool_input": args, "cwd": cwd, "agent": "?", "v2": {"decision": decision, "rules": [{"id": i, "reason": r} for i, r in rules]}}
 
 
+def why_call(seq, run, ts, **unread):
+    """A call as why.server.tape puts a why log's action on the page: its seq counts within its run."""
+    return {"event": "PreToolUse", "session_id": run, "seq": seq, "ts": ts, "tool_use_id": f"{run}{seq}", "tool_name": "Read",
+            "tool_input": {"file_path": f"src/f{seq}.py"}, "policy": {"decision": "allow"}, "why": {"run": run, "node": f"ev:{seq}"}, **unread}
+
+
 class Horizon(unittest.TestCase):
     """HORIZON: where the agents went, from the calls' arguments, rules and runs, drawn on a canvas."""
 
@@ -974,13 +980,22 @@ class Horizon(unittest.TestCase):
     def test_the_cap_keeps_the_newest_why_log_calls_of_all_runs_together(self):
         """A why log's seq counts within its run (why.server.tape): ordered by seq, an older 600-call why run kept a
         newer one's calls off the map. A log whose ts the tape could not read shows it as now: it sorts oldest."""
-        def why_call(seq, run, ts, **unread):
-            return {"event": "PreToolUse", "session_id": run, "seq": seq, "ts": ts, "tool_use_id": f"{run}{seq}", "tool_name": "Read",
-                    "tool_input": {"file_path": f"src/f{seq}.py"}, "policy": {"decision": "allow"}, "why": {"run": run, "node": f"ev:{seq}"}, **unread}
         ev = self.hz_cap([why_call(i, "old", 1000 + i) for i in range(1, 601)] + [why_call(i, "new", 5000 + i) for i in range(1, 4)]
                          + [why_call(i, "bad", 9000 + i, ts_unread=True) for i in range(1, 601)])
         self.assertEqual(ev[0], ["old", 104])
         self.assertEqual(ev[-3:], [["new", 1], ["new", 2], ["new", 3]])
+
+    def test_the_clock_runs_from_the_first_readable_move_when_an_unread_one_is_drawn(self):
+        """An unread move, timed now, came first and every later move worked out negative: T+ sat at 00:00:00."""
+        needs_node(self)
+        recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
+        out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
+                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData", "hzSecs"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null;
+            const D = hzData();
+            process.stdout.write(JSON.stringify([D.ev.map(e => e.run), [undefined, ...D.ev].map(cur => hzSecs(D.ev, cur))]));"""))
+        self.assertEqual(out, [["bad", "w", "w", "w"], [0, 0, 0, 60, 120]])
 
     def test_the_cap_orders_v1_calls_by_the_signers_time_not_the_agents(self):
         """A v1 event's ts comes from the client (tracekitd's setdefault): a call that backdates its ts stays on the map."""
