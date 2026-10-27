@@ -132,7 +132,7 @@ class Engine:
             hits[self.policy["unknown_tools"]].append("TK-UNKNOWN-TOOL")
         if cls == "sql" and fields.get("statement") is not None and not fields.get("code"):
             hits["ask"].append("TK-SQL-PARSE")   # no dialect reads it: an unclosed literal or comment, or not text
-        parsed, oversize = ([], [], [], []), []
+        parsed, oversize = ([], [], [], [], []), []
         if cls == "shell":
             command = fields.get("command", "")
             if len(_text(command if isinstance(command, str) else canonical(command)).encode()) > MAX_SUBJECT:
@@ -144,8 +144,9 @@ class Engine:
                     parsed = _shell(args)
                 except shell.ParseError:
                     unreadable.append("TK-SHELL-PARSE")
-                    # its own target
-                    parsed = [], [], [command if isinstance(command, str) else canonical(command)], []
+                    # its own target and code
+                    raw = command if isinstance(command, str) else canonical(command)
+                    parsed = [], [], [raw], [], [raw]
                 if any(c["opaque"] for c in parsed[0]):
                     unreadable.append("TK-SHELL-PARSE")
         # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
@@ -195,8 +196,9 @@ class Engine:
     def _subjects(cls, field, args, fields, parsed, split=False):
         """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
-        each line the parser normalised; an fs `path` with `..` also matches its lexically normalised form, and each
-        entry of a `paths` list (every file of a Codex patch) is a path too. `target` (every class) is what the call
+        each line the parser normalised, a shell `code` those without the text a command only writes into a file
+        (shell.analyse); an fs `path` with `..` also matches its lexically normalised form, and each entry of a
+        `paths` list (every file of a Codex patch) is a path too. `target` (every class) is what the call
         acts on rather than what it carries (Engine._targets); shell `effects` the files it writes or deletes
         (_effects); sql `code` is one subject per dialect reading. With
         `split`, a list value is one subject per element (nested lists flattened)."""
@@ -210,6 +212,8 @@ class Engine:
             return _container_host_access(parsed[0])
         if cls == "sql" and field == "code":
             return fields.get("code", [])
+        if cls == "shell" and field == "code":
+            return parsed[4]
         if cls == "shell" and field in (None, "argv"):
             return [" ".join(c["argv"]) for c in parsed[0]]
         if cls == "shell" and field == "line":
@@ -261,8 +265,8 @@ class Engine:
 
 def _shell(args):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
-    redirections write). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool) a list
-    of command lines. Anything else, or more than one of them, raises ParseError."""
+    redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
+    a list of command lines. Anything else, or more than one of them, raises ParseError."""
     present = [k for k in classes.SHELL_KEYS if args.get(k) is not None]
     if len(present) > 1:
         raise shell.ParseError(f"more than one command field: {present}")

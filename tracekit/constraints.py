@@ -770,7 +770,8 @@ def shell(cmd):
     policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
     out = {"paths": [], "dirs": [], "cd": False, "push": False, "network": False, "writes": False}
     try:
-        cmds, _, _, written = _parse(cmd if isinstance(cmd, dict) else {"command": cmd if isinstance(cmd, str) else ""})
+        cmds, _, _, written, _ = _parse(cmd if isinstance(cmd, dict) else
+                                        {"command": cmd if isinstance(cmd, str) else ""})
     except ParseError:
         return out
     for c in cmds:

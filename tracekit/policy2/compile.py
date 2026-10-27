@@ -48,7 +48,7 @@ AGENT_KEYS, BOUND_KEYS, BUDGET_KEYS = {"mode", "allow", "budget", "veto_s"}, {"t
 BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
-CLASSES = {"shell": {"command", "argv", "line", "effects", "package_index", "container_host_access"},
+CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access"},
            "fs": {"path", "op", "content_digest"},
            "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
