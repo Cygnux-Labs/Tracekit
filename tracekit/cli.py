@@ -315,7 +315,7 @@ def main(argv=None):
                    help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
     p.add_argument("--why", action="store_true",
                    help="`tracekit why` on the signer: a 3-agent desk, a held email, its cause found and cited")
-    p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini"],
+    p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini", "opencode", "goose"],
                    help="send the scripted run as this coding agent's own hook payloads (default: claude)")
 
     a = ap.parse_args(argv)
