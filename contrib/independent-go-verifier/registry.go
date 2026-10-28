@@ -337,7 +337,11 @@ func verifyRunSet(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 				seenFinal[key] = true
 			}
 			matched := false
-			for _, r := range run.records {
+			records := run.records
+			if kind == "run.registered" && len(records) > 0 {
+				records = records[:1]
+			}
+			for _, r := range records {
 				if r.seq == seq && r.hash == rec.hash && r.ev["type"] == kind {
 					matched = true
 					break

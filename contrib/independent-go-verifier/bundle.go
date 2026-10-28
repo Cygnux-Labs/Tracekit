@@ -395,8 +395,12 @@ func InspectBundle(bundle, trustBytes []byte) (Inspection, error) {
 	if err != nil {
 		return result, err
 	}
-	result.Files = len(files)
-	if err = checkManifest(files); err != nil {
+	return inspectFiles(files, log, witnesses, quorum)
+}
+
+func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum int) (Inspection, error) {
+	result := Inspection{Files: len(files)}
+	if err := checkManifest(files); err != nil {
 		return result, err
 	}
 	proofs, err := parseFileObject(files, "proofs/records.json")

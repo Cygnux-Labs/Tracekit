@@ -98,7 +98,7 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 		rep.Detail = anchorErr.Error()
 		return rep
 	}
-	_, err = InspectBundle(bundle, trustBytes)
+	_, err = inspectFiles(files, log, witnesses, quorum)
 	if err != nil {
 		rep.Detail = err.Error()
 		return rep

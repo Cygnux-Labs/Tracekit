@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -163,6 +164,180 @@ func TestRunPartsAndRegistry(t *testing.T) {
 			t.Fatal("accepted missing registry record")
 		}
 	})
+}
+
+// Test a signed registry containing two registrations for the same run.
+func TestRunSetRejectsLaterRegistration(t *testing.T) {
+	files, trust := bundleFixture(t)
+	var runName string
+	for name := range files {
+		if strings.HasPrefix(name, "runs/") {
+			runName = name
+		}
+	}
+	original := bytes.Split(bytes.TrimSpace(files[runName]), []byte{'\n'})
+	template, err := decodeRecord(original[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signerSeed := sha256.Sum256([]byte("test signer seed"))
+	signer := ed25519.NewKeyFromSeed(signerSeed[:])
+	spki, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kid := SHA256Hex(spki)
+	keyRecord, err := decodeRecord(bytes.TrimSpace(files["keys/records.jsonl"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := keyRecord.hash
+	var records [][]byte
+	hashes := []string{prev}
+	for i, kind := range []string{"run.registered", "tool.call", "run.registered", "run.final"} {
+		ev := make(map[string]any)
+		for k, v := range template.ev {
+			ev[k] = v
+		}
+		ev["id"] = fmt.Sprintf("%032x", i+2)
+		ev["seq"] = float64(i + 1)
+		ev["run_seq"] = float64(i)
+		ev["prev_hash"] = prev
+		ev["run_prev_hash"] = ZeroHash
+		if i > 0 {
+			ev["run_prev_hash"] = prev
+		}
+		ev["type"] = kind
+		if kind == "tool.call" {
+			ev["data"] = map[string]any{"tool_use_id": "call", "name": "Read", "input": map[string]any{}}
+		}
+		if kind == "run.final" {
+			ev["data"] = map[string]any{"head_run_seq": float64(i - 1), "head_hash": prev}
+		}
+		canonical, err := Canonical(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash := SHA256Hex(canonical)
+		m := map[string]any{"t": "tracekit.record.v2", "alg": "ed25519", "kid": kid, "hash": hash}
+		for _, k := range []string{"log_id", "seq", "prev_hash", "tenant", "run_id", "run_seq", "run_prev_hash"} {
+			m[k] = ev[k]
+		}
+		msg, err := Canonical(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(map[string]any{"v": 2, "event": ev, "hash": hash, "alg": "ed25519", "kid": kid, "sig": base64.StdEncoding.EncodeToString(ed25519.Sign(signer, msg))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, raw)
+		hashes = append(hashes, hash)
+		prev = hash
+	}
+	// Build inclusion paths independently by recursively decomposing the tree.
+	var tree func([][32]byte) [32]byte
+	tree = func(xs [][32]byte) [32]byte {
+		if len(xs) == 1 {
+			return xs[0]
+		}
+		k := 1
+		for k*2 < len(xs) {
+			k *= 2
+		}
+		return nodeHash(tree(xs[:k]), tree(xs[k:]))
+	}
+	var path func([][32]byte, int) [][32]byte
+	path = func(xs [][32]byte, i int) [][32]byte {
+		if len(xs) == 1 {
+			return nil
+		}
+		k := 1
+		for k*2 < len(xs) {
+			k *= 2
+		}
+		if i < k {
+			return append(path(xs[:k], i), tree(xs[k:]))
+		}
+		return append(path(xs[k:], i-k), tree(xs[:k]))
+	}
+	encPath := func(xs [][32]byte) []any {
+		out := make([]any, 0, len(xs))
+		for _, x := range xs {
+			out = append(out, base64.StdEncoding.EncodeToString(x[:]))
+		}
+		return out
+	}
+	var recordLeaves [][32]byte
+	for _, h := range hashes {
+		raw, err := hexDigest(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recordLeaves = append(recordLeaves, leafHash(raw))
+	}
+	config, err := ParseStrict(trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logKey, err := ParseVKey(config.(map[string]any)["logs"].([]any)[0].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logSeed := sha256.Sum256([]byte("test log seed"))
+	logPrivate := ed25519.NewKeyFromSeed(logSeed[:])
+	note := func(key VKey, leaves [][32]byte) []byte {
+		root := tree(leaves)
+		text := fmt.Sprintf("%s\n%d\n%s\n", key.Name, len(leaves), base64.StdEncoding.EncodeToString(root[:]))
+		return []byte(text + "\n— " + key.Name + " " + base64.StdEncoding.EncodeToString(append(key.ID[:], ed25519.Sign(logPrivate, []byte(text))...)) + "\n")
+	}
+	inclusion := map[string]any{}
+	for i := range recordLeaves {
+		inclusion[fmt.Sprint(i)] = encPath(path(recordLeaves, i))
+	}
+	proofs, _ := json.Marshal(map[string]any{"checkpoint": "checkpoints/5.note", "tree_size": 5, "inclusion": inclusion})
+	delete(files, "checkpoints/3.note")
+	files["checkpoints/5.note"] = note(logKey, recordLeaves)
+	files["proofs/records.json"] = proofs
+	files[runName] = append(bytes.Join(records, []byte{'\n'}), '\n')
+	salt := sha256.Sum256([]byte("tenant-specific registry test salt"))
+	origin := registryOrigin(logKey.Name, salt[:])
+	registryKey := renamedLogKey(logKey, origin)
+	rid := sha256.Sum256(append(append([]byte{}, salt[:]...), []byte("run-a")...))
+	logID, _ := hex.DecodeString("0123456789abcdef0123456789abcdef")
+	var leaves [][]byte
+	var leafHashes [][32]byte
+	for _, i := range []int{0, 2, 3} {
+		rec, err := decodeRecord(records[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := make([]byte, 89)
+		raw[0] = 1
+		if i == 3 {
+			raw[0] = 2
+		}
+		copy(raw[1:33], rid[:])
+		copy(raw[33:49], logID)
+		binary.BigEndian.PutUint64(raw[49:57], rec.seq)
+		h, _ := hexDigest(rec.hash)
+		copy(raw[57:], h)
+		leaves = append(leaves, raw)
+		leafHashes = append(leafHashes, leafHash(raw))
+	}
+	var entries []any
+	for i, leaf := range leaves {
+		entries = append(entries, map[string]any{"leaf": base64.StdEncoding.EncodeToString(leaf), "inclusion": encPath(path(leafHashes, i))})
+	}
+	spec, _ := json.Marshal(map[string]any{"tenant_salt": base64.StdEncoding.EncodeToString(salt[:]), "from": 0, "to": 3, "consistency": []any{}, "leaves": entries})
+	files["registry/run-set.json"] = spec
+	files["registry/records.jsonl"] = append(bytes.Join([][]byte{records[0], records[2], records[3]}, []byte{'\n'}), '\n')
+	files["checkpoints/registry-3.note"] = note(registryKey, leafHashes)
+	fixtureManifest(files)
+	result := VerifyBundle(fixtureZip(files), trust)
+	if result.ExitCode == 0 || !strings.Contains(result.Detail, "registry leaf not present in bundled run") {
+		t.Fatalf("later registration was not rejected: %+v", result)
+	}
 }
 
 func TestConsistencyProofs(t *testing.T) {

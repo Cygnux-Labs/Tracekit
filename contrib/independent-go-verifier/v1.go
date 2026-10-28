@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -125,9 +126,44 @@ func readV1Bundle(raw []byte) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(z.File) > 10000 {
+		return nil, fmt.Errorf("ZIP entry count limit")
+	}
 	files := map[string][]byte{}
 	var total uint64
 	for _, f := range z.File {
+		if f.Flags&1 != 0 {
+			return nil, fmt.Errorf("encrypted ZIP member")
+		}
+		offset, err := f.DataOffset()
+		if err != nil {
+			return nil, err
+		}
+		if offset < 0 || offset > int64(len(raw)) {
+			return nil, fmt.Errorf("ZIP local data out of bounds")
+		}
+		start := max(int64(0), offset-30-2*65535)
+		found := false
+		for pos := start; pos+30 <= offset; {
+			i := bytes.Index(raw[pos:offset-26], []byte{'P', 'K', 3, 4})
+			if i < 0 {
+				break
+			}
+			pos += int64(i)
+			h := raw[pos : pos+30]
+			n := int64(binary.LittleEndian.Uint16(h[26:]))
+			extra := int64(binary.LittleEndian.Uint16(h[28:]))
+			if pos+30+n+extra == offset {
+				found = true
+				if string(raw[pos+30:pos+30+n]) != f.Name {
+					return nil, fmt.Errorf("ZIP local/central name mismatch")
+				}
+			}
+			pos++
+		}
+		if !found {
+			return nil, fmt.Errorf("invalid ZIP local header")
+		}
 		if strings.HasSuffix(f.Name, "/") {
 			continue
 		}
@@ -152,9 +188,20 @@ func readV1Bundle(raw []byte) (map[string][]byte, error) {
 	return files, nil
 }
 func parseV1Lines(raw []byte) ([]map[string]any, error) {
+	return parseV1JSONL(raw, false)
+}
+
+func parseV1JSONL(raw []byte, skipBlank bool) ([]map[string]any, error) {
 	var out []map[string]any
-	for _, line := range bytes.Split(raw, []byte{'\n'}) {
-		if len(bytes.TrimSpace(line)) == 0 {
+	lines := bytes.Split(raw, []byte{'\n'})
+	if len(raw) == 0 {
+		return out, nil
+	}
+	if raw[len(raw)-1] == '\n' {
+		lines = lines[:len(lines)-1]
+	}
+	for _, line := range lines {
+		if skipBlank && len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		v, err := ParseStrict(line)
@@ -297,7 +344,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 			fail("manifest sequence range mismatch")
 		}
 	}
-	cps, err := parseV1Lines(files["checkpoints.jsonl"])
+	cps, err := parseV1JSONL(files["checkpoints.jsonl"], true)
 	if err != nil {
 		fail("invalid checkpoint file")
 	}
@@ -333,7 +380,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 	}
 	witnessSeqs := map[uint64]bool{}
 	if witness != nil {
-		ws, e := parseV1Lines(witness)
+		ws, e := parseV1JSONL(witness, true)
 		if e != nil {
 			fail("invalid witness JSONL")
 		}
@@ -529,7 +576,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 }
 
 func v1CompanionRun(run string) bool {
-	return strings.HasPrefix(run, "findings:") || strings.HasPrefix(run, "anchors:") || strings.HasPrefix(run, "review:")
+	return strings.HasPrefix(run, "findings:") || strings.HasPrefix(run, "anchors:")
 }
 
 func checkV1Policies(files map[string][]byte, events []map[string]any, selected map[string]bool) error {
