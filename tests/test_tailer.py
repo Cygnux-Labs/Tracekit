@@ -14,6 +14,7 @@ import uuid
 from unittest import mock
 
 from tracekit import install, tailer
+from tracekit.deploy import files
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import service as svc
@@ -102,12 +103,13 @@ class Tailer(unittest.TestCase):
         self.assertEqual(self.lost(), [])
 
     def sub(self, *entries, name="agent-a1.jsonl"):
-        """Append to a subagent's transcript, where Claude Code writes it: <session>/subagents/agent-*.jsonl."""
-        d = os.path.join(self.d, "session", "subagents")
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, name), "ab") as f:
+        """Append to a subagent's transcript, where Claude Code writes it: <session>/subagents/agent-*.jsonl (a
+        workflow's agent's: <session>/subagents/workflows/<workflow>/agent-*.jsonl)."""
+        path = os.path.join(self.d, "session", "subagents", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "ab") as f:
             f.write(b"".join(line(e) for e in entries))
-        return os.path.join(d, name)
+        return path
 
     def test_subagent_tool_uses_are_reported_as_they_appear(self):
         self.write(TOOL_USE)
@@ -129,6 +131,26 @@ class Tailer(unittest.TestCase):
                 f.write(data.replace(b"a.txt", b"b.txt"))
         self.tail(lambda: None, edit, lambda: None)
         self.assertIn("subagent transcript agent-a1.jsonl: a line already read changed in place", self.lost()[0])
+
+    def test_a_workflows_agents_calls_reconcile_and_a_decide_no_transcript_asks_for_is_still_fabricated(self):
+        """A workflow's agents (Claude Code's Workflow tool) decide under the session's run, and their transcripts are in
+        <session>/subagents/workflows/<workflow>/: the tailer never read them, so each of their calls was a
+        reconcile.fabricated gap (60,227 in one dev store). Read, they reconcile; a decide no transcript asks for is
+        still fabricated."""
+        hook = Run(self.signer, self.out)
+        for tcid, tool, args in (("toolu_1", "Bash", ARGS), ("toolu_2", "Read", {"file_path": "a.txt"}),
+                                 ("toolu_9", "Bash", {"command": "ls /tmp"})):
+            hook.call("decide", tool_call_id=tcid, tool=tool, args=args, args_source="parsed")
+        self.write(TOOL_USE)
+        wf_use = {**NEXT, "message": {**NEXT["message"], "id": "msg_w1"}}
+        self.tail(lambda: self.sub(wf_use, name=os.path.join("workflows", "wf_1-a2b", "agent-a2.jsonl")))
+        hook.call("close_run")
+        self.signer.sweep(time.monotonic() + 3600)
+        with open(os.path.join(self.d, "data", "store", "records.jsonl"), "rb") as f:
+            events = [json.loads(x)["event"] for x in f.read().splitlines()]
+        self.assertEqual([(e["type"], e.get("tool_call_id")) for e in events if e["type"].startswith("reconcile.")],
+                         [("reconcile.fabricated", "toolu_9")])
+        self.assertEqual(self.lost(), [])
 
     def test_a_symlink_in_place_of_the_subagents_directory_is_lost(self):
         self.write(TOOL_USE)
@@ -413,7 +435,7 @@ class HookStartsTheTailer(unittest.TestCase):
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
         self.assertEqual(handle, {"run_id": "run-1", "run_token": "tok", "path": "/home/agent/t.jsonl",
-                                  "until": self.cc._state("s1")})
+                                  "offsets": {"/home/agent/t.jsonl": 0}, "until": self.cc._state("s1")})
         self.start().assert_not_called()   # SessionStart again (resume, clear): the run has its tailer
 
     def test_system_mode_runs_it_as_the_tailer_user_with_a_delegated_token(self):
@@ -424,7 +446,8 @@ class HookStartsTheTailer(unittest.TestCase):
         self.assertEqual(self.client.call.call_args.args,
                          ("delegate_run", {"run_id": "run-1", "run_token": "tok", "identity": "uid:999998"}))
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
-        self.assertEqual(handle, {"run_id": "run-1", "run_token": "delegated", "path": "/home/agent/t.jsonl"})
+        self.assertEqual(handle, {"run_id": "run-1", "run_token": "delegated", "path": "/home/agent/t.jsonl",
+                                  "offsets": {"/home/agent/t.jsonl": 0}})
 
     def test_system_mode_without_a_tailer_records_a_tailer_lost_gap(self):
         self.start({"signer": "/run/s.sock"}).assert_not_called()
@@ -472,15 +495,37 @@ class HookStartsTheTailer(unittest.TestCase):
         path = self.transcript(PROMPT, TOOL_USE)
         self.start(path=path)
         sub = os.path.join(self.d, "t", "subagents", "agent-a1.jsonl")
-        os.makedirs(os.path.dirname(sub))
-        with open(sub, "wb") as f:
-            f.write(line(PROMPT))
+        wf = os.path.join(self.d, "t", "subagents", "workflows", "wf_1", "agent-a2.jsonl")   # a workflow's agent's
+        for p in (sub, wf):
+            os.makedirs(os.path.dirname(p))
+            with open(p, "wb") as f:
+                f.write(line(PROMPT))
         self.transcript(b'{"type": "assistant", "uuid": "u-')   # a line Claude Code is still writing
         self.assertFalse(self.decide())   # run 1 takes it: those lines are its tailer's
-        seen = {path: len(line(PROMPT) + line(TOOL_USE)), sub: len(line(PROMPT))}
+        seen = {path: len(line(PROMPT) + line(TOOL_USE)), sub: len(line(PROMPT)), wf: len(line(PROMPT))}
         self.transcript(b'7"}\n', RESULT, NEXT)   # Claude Code writes on; then an hour passes, and run 1 is closed
         self.client.register_run.return_value = {"run_id": "run-2", "run_token": "tok-2"}
         self.assertEqual(self.decide(closed=True)["offsets"], seen)
+
+    def test_a_session_that_goes_on_with_no_state_reads_on_from_where_its_transcript_ends(self):
+        """A SessionEnd removes the session's state; Claude Code then went on with the session (a message to it, a usage
+        limit's reset) with no SessionStart. Its new run had no tailer until a compaction's SessionStart started one
+        from the transcript's first line: every earlier run's call was a hook_missing gap again (2,840 in one run)."""
+        path = self.transcript(PROMPT, TOOL_USE, RESULT)
+        p = {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "transcript_path": path, "prompt": "go on"}
+        popen = mock.Mock()
+        with mock.patch.object(self.cc.subprocess, "Popen", popen), \
+                mock.patch.object(self.cc, "system_config", return_value=None):
+            self.cc._handle(self.client, p, "UserPromptSubmit", "s1", None)
+        handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
+
+    def test_a_run_whose_tailer_starts_after_its_first_event_reads_on_from_where_the_transcript_ends(self):
+        # a run an earlier hook registered with no transcript known: a compaction's SessionStart names it hours later
+        files.write_json(self.cc._state("s1"), {"run_id": "run-1", "run_token": "tok", "stream": "x", "seq": 3})
+        path = self.transcript(PROMPT, TOOL_USE, RESULT)
+        handle = json.loads(self.start(path=path, source="compact").return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
 
     def test_a_resumed_sessions_run_reads_its_transcript_from_where_it_ends(self):
         path = self.transcript(PROMPT, TOOL_USE, RESULT, b'{"partial')   # the session's history: earlier runs'
