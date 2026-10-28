@@ -123,6 +123,15 @@ the log.
 | **Suppression by agent-supplied text** (S1, S2): the agent phrases its reasoning, transcript or tool output so a check doesn't fire, or addresses a reviewer model | the checks read the agent's own text as data: a finding names the trust tier of the text it relied on (`gateway`, `transcript`, `sdk`) and whether that text was signed before the call; a later text naming what a stated constraint kept away only lowers that TK-X204 finding (`lifted`) and is cited | the model's own text clears the other checks outright: any text before a call clears TK-X201, and text saying it changes the file clears TK-X202 whatever reason it gives (naming it innocently no longer does: E20's `c1` cover is caught in every session of every set, from 17% tuned and 38% on pool v1 before 2026-10-19); adaptive wording defeats text checks; a finding is evidence to read, not proof the agent behaved ([limits](limits.md#intent-reasoning-and-action-checks)) |
 | **Reviewer injection** (S1, S2): text in the run (reasoning, a prompt line the agent appends, tool arguments) tells the reviewer model (`--review`, TK-X210) the run is fine, or tries to steer its answer | the run reaches the model as one JSON value, never as text tags it could imitate, each text labelled with who recorded it; the fixed prompt calls any text addressing a reviewer an injection attempt to flag; the answer must match a closed schema (free text is no verdict and is never read as `ok`), and only `run_seqs` the run has become citations. TK-X210 is warn only: it never changes the exit code or decides a call, and a reviewer's `ok` clears no deterministic finding | a model can still be persuaded, or miss a fault; a missing TK-X210 finding proves nothing. Prefer a reviewer of another model family than the agent's (the analyzer warns when they match) and read TK-X210 as a second opinion ([limits](limits.md#intent-reasoning-and-action-checks)) |
 
+### PCM 0.1: proof-carrying messages (experimental)
+
+An agent sends another agent a message the signer signed ([PCM](pcm.md)). The receiver trusts `from` because the
+signer wrote it:
+
+| Threat | Stopped or shown by | Not stopped |
+|---|---|---|
+| **An agent speaks as another** (S1, S2): it asks the signer to sign a message with another agent's, run's or tenant's `from`, or a process holding a delegated run token (a tailer, an observer) asks to sign as the run's agent | `pcm_sign` refuses (`forbidden: the signer signs only as the calling run's own agent`) unless `from` is exactly the calling run's owner, the identity the transport proved, with its run and tenant; a delegated token or an agent approver is refused before that. The signer adds `ts`, `nonce` and `id` itself, and each message it signs is an `ext pcm.sent` record in the sender's run | an agent that runs code as another agent's identity (dev mode, one uid for both) speaks as it; S2 in the sender's process sends what it likes as that agent, and its claims then rest on records of that run |
+
 ## Invariants
 
 The invariants (I0–I10) every change is checked against:

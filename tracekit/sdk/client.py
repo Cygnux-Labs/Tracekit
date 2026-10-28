@@ -595,7 +595,7 @@ class RunHandle:
     def __init__(self, client, registered):
         self.client, self.registered = client, registered
         self.run_id, self.run_token = registered["run_id"], registered["run_token"]
-        self.closed = False
+        self.closed, self._agent = False, None   # _agent: this client's identity, which pcm_send speaks as
         self._decided = {}   # tool_call_id -> the decision_id and args_digest its `complete` must name
         self._untrusted = set()   # tool_call_ids whose decision asked for the result itself (send_result)
 
@@ -743,6 +743,70 @@ class RunHandle:
         except (SignerUnavailable, RPCError) as e:
             warnings.warn(f"tracekit: {tool} is blocked: approval_consume failed: {e}", stacklevel=2)
             return {"ok": False, "rule_ids": [], "reason": f"approval_consume failed: {e}"[:1024]}
+
+    def pcm_send(self, to, intent, args, claims=(), grants=(), payload=None):
+        """A proof-carrying message (experimental, tracekit.pcm) to agent `to` ("scheme:subject"), signed by the signer
+        as this run's own agent: `intent` a schema ref (pcm.schema_ref) and its `args`, `claims` each with evidence
+        from pcm_evidence, `grants` root first, `payload` {"kind": "text", "text"} or {"kind": "data", "data"}."""
+        if self._agent is None:
+            i = self.client.status()["identity"]
+            self._agent = f"{i['scheme']}:{i['subject']}"
+        body = {"from": {"agent": self._agent, "run": self.run_id, "tenant": self.registered["tenant"]},
+                "to": {"agent": to}, "intent": {"type": intent, "args": args},
+                **({"claims": list(claims)} if claims else {}), **({"grants": list(grants)} if grants else {}),
+                **({"payload": payload} if payload is not None else {})}
+        return self.call("pcm_sign", message=body)["message"]
+
+    def pcm_evidence(self, run_seqs, args=None, wait_s=15.0):
+        """Claim evidence ({checkpoint, records}) of this run's records `run_seqs`, nudging a checkpoint until it covers
+        them (SignerUnavailable past `wait_s`). `args`: {run_seq of a policy.decision: the args it decided}, opened for
+        the receiver (who then sees them); a decision not named keeps its args closed."""
+        args, deadline = args or {}, time.monotonic() + wait_s
+        if set(args) - set(run_seqs):
+            raise ValueError(f"args names run_seq {sorted(set(args) - set(run_seqs))}, not among run_seqs")
+        while (out := self.call("pcm_evidence", run_seqs=list(run_seqs)))["pending"]:
+            if time.monotonic() >= deadline:
+                raise SignerUnavailable(f"run_seq {out['pending']} not in a checkpoint after {wait_s:g}s")
+            self.client.checkpoint_nudge({})
+            time.sleep(0.2)
+        records = []
+        for r in out["records"]:
+            rec = {k: r[k] for k in ("event", "hash", "proof")}
+            if r["run_seq"] in args:
+                if "salt" not in r:
+                    raise ValueError(f"run_seq {r['run_seq']} is a {r['event']['type']}: only a policy.decision's "
+                                     "args open")
+                rec.update(salt=r["salt"], args=args[r["run_seq"]])
+            records.append(rec)
+        return {"checkpoint": out["checkpoint"], "records": records}
+
+    def pcm_grant(self, subject, intent, expires_at, caveats=(), delegable=False, parent=None, timeout_s=300.0):
+        """A grant of `intent` to agent `subject` within `caveats` until `expires_at`; `delegable`: the subject may
+        pass it on, only narrower. With `parent` (a grant to this run's agent): its child, which only narrows. Else a
+        root grant: a `pcm.grant` call a person approves (the policy must ask for it) within `timeout_s`; Refused when
+        it is not asked, rejected or not answered in time."""
+        fields = {"subject": subject, "caveats": list(caveats), "expires_at": expires_at, "delegable": delegable}
+        if parent is not None:
+            if intent != parent["intent"]:
+                raise ValueError(f"a child grant keeps its parent's intent, {parent['intent']}")
+            return self.call("pcm_delegate", parent=parent, **fields)["grant"]
+        args, tcid = {**fields, "intent": intent}, "pcm-grant-" + _new_id()
+        d = self.decide(tcid, "pcm.grant", args)
+        if d["decision"] != "ask":
+            raise Refused(f"pcm.grant was decided {d['decision']}, not asked: a root grant needs a person's approval "
+                          "(the policy's PCM-GRANT ask rule)")
+        state = self.call("approval_request", tool_call_id=tcid)
+        aid, state, deadline = state["approval_id"], state["state"], time.monotonic() + timeout_s
+        while state == "requested" and (left := deadline - time.monotonic()) > 0:
+            state = self.call("approval_wait", approval_id=aid, timeout_ms=int(min(left, 300) * 1000))["state"]
+        if state != "approved":
+            raise Refused(f"pcm.grant approval {aid} is {state}")
+        c = self.approval_consume(tcid, "pcm.grant", args)
+        if not c["ok"]:
+            raise Refused(f"pcm.grant approval {aid}: {c.get('reason') or c['rule_ids']}")
+        grant = self.call("pcm_grant", tool_call_id=tcid, args=args)["grant"]
+        self.complete(tcid, result={"grant": event_hash(grant)})
+        return grant
 
     def close(self, reason=None):
         if not self.closed:

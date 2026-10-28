@@ -331,7 +331,12 @@ is used today; the others are reserved:
 {"t":"tracekit.cert.v2"}
 {"t":"tracekit.retire.v2"}
 {"t":"tracekit.export.v2"}
+{"t":"pcm.message.v0"}
+{"t":"pcm.grant.v0"}
 ```
+
+`pcm` and `pcm-grant` are PCM 0.1 (proof-carrying messages) messages and grants, experimental, signed by the log key.
+Their tags are PCM's own, not `tracekit.*`, because PCM is an open protocol that other implementations sign too.
 
 Worked example: the first record of `tests/vectors/sig_v2.jsonl` (`record-signer-epoch`) has the signature message
 

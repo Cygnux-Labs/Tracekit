@@ -132,13 +132,21 @@ def _special_address(host):
                or a.is_unspecified for a in ips)
 
 
+def with_scheme(url):
+    """`url`, with http:// in front when it has no scheme: a browser's address bar, and curl, read host[:port]/path as
+    http."""
+    if re.match(r"(?i)[\x00-\x20]*((https?|wss?|ftp|file):|[a-z][a-z0-9+.-]*:(?![0-9])|[/\\]{2})",
+                re.sub(r"[\t\n\r]", "", url)):
+        return url
+    return "http://" + url
+
+
 def url_info(url):
     """{scheme, host, internal} of a URL. `host` is canonical (_canonical_host). `internal`: the host is a loopback,
     private, link-local, shared, reserved or other non-global address (also inside IPv6), looks like an address but is
-    none, or a browser and Python's urllib read different hosts from the URL (http://a\\@b/)."""
-    if not re.match(r"(?i)[\x00-\x20]*((https?|wss?|ftp|file):|[a-z][a-z0-9+.-]*:(?![0-9])|[/\\]{2})",
-                    re.sub(r"[\t\n\r]", "", url)):
-        url = "http://" + url   # host[:port]/path without a scheme: a browser's address bar, and curl, read it as http
+    none, or a browser and Python's urllib read different hosts from the URL (http://a\\@b/), which also sets
+    `ambiguous`."""
+    url = with_scheme(url)
     scheme, wh = _whatwg_host(url)
     try:
         rh = urlsplit(url).hostname
@@ -149,7 +157,8 @@ def url_info(url):
         return {"scheme": scheme}
     host = hosts[0]
     internal = _BAD in hosts or len(set(hosts)) > 1 or _special_address(host.strip("[]"))
-    return {"scheme": scheme, "host": None if host is _BAD else host, "internal": internal}
+    return {"scheme": scheme, "host": None if host is _BAD else host, "internal": internal,
+            **({"ambiguous": True} if len(set(hosts)) > 1 else {})}
 
 
 def url_target(url):

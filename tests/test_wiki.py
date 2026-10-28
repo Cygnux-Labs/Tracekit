@@ -60,6 +60,8 @@ class Wiki(unittest.TestCase):
         paths = [os.path.relpath(p, docs).replace(os.sep, "/") for p in glob.glob(os.path.join(docs, "**", "*.md"), recursive=True)]
         names = sorted(wiki.page_name(p) for p in paths if p not in wiki.EXCLUDED)
         self.assertIn("Integrations-OpenShell", names)
+        self.assertIn("A2A", names)
+        self.assertIn("C2C", names)
         self.assertNotIn("RELEASING", self.pages)
         entries = [t for t in links(self.pages["_Sidebar"]) if t != "Home"]
         self.assertEqual(sorted(entries), names)

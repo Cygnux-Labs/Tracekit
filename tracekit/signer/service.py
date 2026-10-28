@@ -301,8 +301,8 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, privacy, provenance, public_witness, \
-    yamlmini
+from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, provenance, \
+    public_witness, yamlmini
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -393,7 +393,8 @@ DEFAULT_GRANTS = frozenset({
     "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
-    "passkey_register", "why_finding", "review_finding", "constraint_add"})
+    "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
+    "pcm_evidence"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
@@ -409,6 +410,8 @@ MAX_CONSTRAINTS = 32   # live file constraints a run takes (constraint_add); pas
 MAX_NAMES = 256   # distinct files of one call checked against a run's file constraints; past it, the call is held
 COOLDOWN_S = 3600   # respond.cooldown_s default: how long new runs of a held owner and principal inherit the hold
 MAX_UNMATCHED = 1 << 16   # (decision, result digest) pairs remembered as not matching; forgotten all at once past it
+# lean: a fixed cap on a PCM grant's life, as v0 has no revocation; make it a config key when deployments need others
+MAX_GRANT_S = 86400
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -3976,6 +3979,162 @@ class SignerService:
             if want.pop(seq) != {r["hash"]}:
                 return f"run_seq {seq} of run {run_id[:128]}, whose hash differs"
         return f"run_seq {min(want)}, which run {run_id[:128]} does not have" if want else None
+
+    # --- proof-carrying messages (tracekit.pcm, experimental) ---
+
+    def _pcm_agent(self, identity, req):
+        """(run key, the run's agent) of a PCM call: only the run's own owner speaks as its agent, never an identity a
+        run token was delegated to (a tailer, an observer)."""
+        key = self._authorize(identity, req)
+        agent = self.log.runs[key]["owner"]
+        if owner(identity) != agent:
+            raise RPCError("forbidden", f"only the run's own agent, {agent}, makes PCM calls in its run")
+        return key, agent
+
+    def _pcm_signed(self, purpose, body):
+        """`body` signed for `purpose` by the log key: off the writer, so a KMS call never blocks it."""
+        try:
+            return pcm.sign(self._log_key, self.vkey, purpose, body)
+        except logkey.KeyUnavailable as e:
+            raise RPCError("unavailable", f"the log key can't sign: {e}") from None
+
+    def _pcm_write(self, identity, method, req, key, data, out, check=None):
+        """`out` with the run_seq of ext record `data` (digests and ids, never args) in run `key`; refused in a
+        held or quarantined run (no new authority leaves it while a person looks), or when `check(run)` raises on the
+        writer."""
+        def fn(tx, run):
+            if run.get("quarantined") or run.get("held"):
+                raise RPCError("forbidden", self._why_contained(run))
+            if check:
+                check(run)
+            return {**out, "run_seq": tx.emit(run, "ext", data, request_id=req["request_id"])}
+        return self.log.submit(identity, method, req, fn, key)
+
+    def _pcm_sign(self, identity, req):
+        """A message signed as the calling run's own agent, with the signer's id, ts and nonce, and its pcm.sent."""
+        key, agent = self._pcm_agent(identity, req)
+        m = req["message"]
+        if m["from"] != {"agent": agent, "run": key[1], "tenant": key[0]}:
+            raise RPCError("forbidden", f"the signer signs only as the calling run's own agent ({agent}, run {key[1]}, "
+                                        f"tenant {key[0]})")
+        self.quotas.take_event(identity)
+        msg = self._pcm_signed("pcm", {**m, "pcm": 0, "id": secrets.token_hex(16), "ts": _iso(time.time()),
+                                       "nonce": secrets.token_hex(16)})
+        return self._pcm_write(identity, "pcm_sign", req, key, {
+            "name": "pcm.sent", "message": event_hash(msg), "id": msg["id"], "to": m["to"]["agent"],
+            "intent": m["intent"]["type"]}, {"message": msg})
+
+    def _pcm_grant(self, identity, req):
+        """A root grant of exactly the args of the run's `pcm.grant` call, from its consumed approval: by a person
+        approvals.persons names, not self-approved, by neither the run's agent nor the grant's subject, before the call
+        completes; it expires within MAX_GRANT_S."""
+        key, agent = self._pcm_agent(identity, req)
+        if self.approvals is None:   # without it any identity of the run's tenant may answer, and none is a person
+            raise RPCError("forbidden", "a root grant needs signer.yaml's approvals, which names the people who answer")
+        tcid, attempt, args, now = req["tool_call_id"], req.get("attempt", 0), req["args"], time.time()
+        if not _iso(now) < args["expires_at"] <= _iso(now + MAX_GRANT_S):
+            raise RPCError("forbidden", f"a grant expires within {MAX_GRANT_S // 3600} h from now")
+        digest = event_hash({"tool": "pcm.grant", "args": args})
+        self.quotas.take_event(identity)
+
+        def approved(run):
+            aid = self.log.approval_index.get((*key, tcid, attempt))
+            a = self.log.approvals.get(aid)
+            if a is None or a["tool"] != "pcm.grant" or a["state"] != "consumed":
+                raise RPCError("forbidden", "a root grant needs the pcm.grant call approved and consumed")
+            if not self._opens(a["commitment"], a["label"], digest):
+                raise RPCError("args_mismatch", f"{tcid} was approved with other arguments")
+            if a["answered"]["kind"] != "person":   # lean: agent approvers once a caveat bound type exists
+                raise RPCError("forbidden", "a root grant needs a person's approval")
+            answer = a.get("answer", {"self_approved": True})   # answered before the signer kept it: fail closed
+            if answer.get("self_approved") or a["answered"]["by"] == args["subject"]:   # the run's agent: self_approved
+                raise RPCError("forbidden", "a root grant needs the approval of a person other than the run's agent "
+                                            "and the grant's subject")
+            if not answer.get("person"):
+                raise RPCError("forbidden", "a root grant needs the approval of a person signer.yaml's "
+                                            f"approvals.persons names: {a['answered']['by'][:256]} maps to none")
+            # lean: until the call completes, each pcm_grant mints another grant of this approval (the same but for
+            # ts); record the grants per approval if that matters
+            if a["decision_id"] not in run["decisions"]:   # its tool.result is written
+                raise RPCError("forbidden", "the pcm.grant call completed: this approval already issued its grant")
+            return aid, a
+        rid = (identity.scheme, identity.subject, req["request_id"])
+        # read on the writer, so the grant is signed off it; the writer checks it all again (a retry: its cached grant)
+        aid, a = self.log.write(lambda tx: (None, None) if rid in self.log.done or self.log.runs[key]["closed"]
+                                else approved(self.log.runs[key]))
+        grant = aid and self._pcm_signed("pcm-grant", {
+            "pcm_grant": 0, "ts": _iso(time.time()), "issuer": {
+                "kind": "person", "id": a["answered"]["by"], "run": key[1], "tenant": key[0], "approval_id": aid,
+                "person": a["answer"]["person"]},
+            "subject": args["subject"], "intent": args["intent"], "caveats": args.get("caveats", []),
+            "expires_at": args["expires_at"], "delegable": args["delegable"], "parent": None})
+
+        def check(run):
+            if approved(run)[0] != aid:
+                raise RPCError("unavailable", "the approval changed while its grant was signed: ask again")
+        return self._pcm_write(identity, "pcm_grant", req, key, {
+            "name": "pcm.grant", "grant": grant and event_hash(grant), "subject": args["subject"],
+            "intent": args["intent"], "approval_id": aid}, {"grant": grant}, check)
+
+    def _pcm_delegate(self, identity, req):
+        """A child of grant `parent`, which this signer signed for the calling run's agent and which may be passed on:
+        the same intent, caveats that narrow the parent's (pcm.narrows) and an expiry after now, no later than its."""
+        key, agent = self._pcm_agent(identity, req)
+        parent, caveats, now = req["parent"], req.get("caveats", []), _iso(time.time())
+        # lean: this signer's own grants only, and no approval, as a child only narrows; accept other pinned signers'
+        # and gate delegation with the a2a policy class when the A2A gateway enforces PCM
+        if e := pcm.check_sig(parent, "pcm-grant", {"logs": [self.vkey]}):
+            raise RPCError("invalid_request", f"parent: {e}")
+        if parent["issuer"]["tenant"] != key[0]:
+            raise RPCError("forbidden", f"the grant was issued in tenant {parent['issuer']['tenant']}, not {key[0]}")
+        if parent["subject"] != agent:
+            raise RPCError("forbidden", f"only the grant's subject, {parent['subject']}, may pass it on")
+        if not parent["delegable"]:
+            raise RPCError("forbidden", "this grant can't be passed on")
+        problems = [f"the parent expired at {parent['expires_at']}"] * (parent["expires_at"] <= now) + [
+            f"expires_at {req['expires_at']} is not in the future"] * (req["expires_at"] <= now) + [
+            f"expires_at is after the parent's, {parent['expires_at']}"] * (req["expires_at"] > parent["expires_at"]) \
+            + pcm.narrows(parent["caveats"], caveats)
+        if problems:
+            raise RPCError("invalid_request", "; ".join(problems))
+        self.quotas.take_event(identity)
+        grant = self._pcm_signed("pcm-grant", {
+            "pcm_grant": 0, "ts": now, "issuer": {"kind": "agent", "id": agent, "run": key[1], "tenant": key[0]},
+            "subject": req["subject"], "intent": parent["intent"], "caveats": caveats, "expires_at": req["expires_at"],
+            "delegable": req["delegable"], "parent": event_hash(parent)})
+        return self._pcm_write(identity, "pcm_delegate", req, key, {
+            "name": "pcm.grant", "grant": event_hash(grant), "subject": req["subject"], "intent": parent["intent"],
+            "parent": grant["parent"]}, {"grant": grant})
+
+    def _pcm_evidence(self, identity, req):
+        """Records of the calling run with their inclusion proofs under the latest checkpoint, for claim evidence; a
+        policy.decision's with its salt, which opens its args commitment, so only the run's own agent may ask.
+        `pending`: those the next checkpoint will cover (checkpoint_nudge, then ask again)."""
+        key, _ = self._pcm_agent(identity, req)
+        self.quotas.take_event(identity)
+        want = sorted(set(req["run_seqs"]))
+
+        def read(tx):   # on the writer, which owns the tree's edges (as tlog)
+            s, records, pending = self.log.storage, [], []
+            try:
+                size, note = s.checkpoint_latest() or (0, None)
+                found = list(s.run_records(*key, want))
+                if len(found) != len(want):
+                    have = {r["event"]["run_seq"] for r in found}
+                    raise RPCError("invalid_request", f"run {key[1][:128]} has no run_seq "
+                                                      f"{', '.join(str(n) for n in want if n not in have)}")
+                for r in found:
+                    e = r["event"]
+                    if e["seq"] >= size:
+                        pending.append(e["run_seq"])
+                        continue
+                    records.append({"run_seq": e["run_seq"], "event": e, "hash": r["hash"], "proof": [
+                        base64.b64encode(h).decode("ascii") for h in s.tree.inclusion_proof(e["seq"], size)]} | (
+                        {"salt": _salt(self._salt_key, salt_label(e)).hex()} if e["type"] == "policy.decision" else {}))
+            except (OSError, StorageUnavailable) as x:
+                raise RPCError("unavailable", f"storage read failed: {x}") from None
+            return {"checkpoint": note, "records": records, "pending": pending}
+        return self.log.write(read)
 
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},

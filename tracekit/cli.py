@@ -40,7 +40,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "a2a-gateway": "a2a_gateway", "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
-              "sensor": "sensor", "ingest": "ingest", "graph": "graph"}  # subcommands with their own parsers
+              "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
@@ -51,7 +51,7 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
-                 "sensor": "the kernel sensor import", "graph": "tracekit graph"}
+                 "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -229,6 +229,9 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("pcm", help="PCM 0.1, proof-carrying messages between agents: `pcm verify MSG --trust T --schema S`, "
+                       "`pcm demo`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
 
     sub.add_parser("pending", help="list tool calls waiting for approval")

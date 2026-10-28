@@ -373,8 +373,8 @@ class ExportAndDemo(unittest.TestCase):
 
 class Packaging(unittest.TestCase):
     def test_package_data_covers_shipped_files(self):
-        """Every policy and schema file must be matched by pyproject's package-data globs,
-        otherwise `pip install .` ships without it (e.g. no default policy)."""
+        """Every policy and schema file, and PCM's tool placement table, must be matched by pyproject's package-data
+        globs, otherwise `pip install .` ships without it (e.g. no default policy)."""
         import fnmatch
         import re
         text = read_text(os.path.join(ROOT, "pyproject.toml"))
@@ -384,6 +384,7 @@ class Packaging(unittest.TestCase):
             for name in os.listdir(os.path.join(ROOT, "tracekit", sub)):
                 rel = f"{sub}/{name}"
                 self.assertTrue(any(fnmatch.fnmatch(rel, g) for g in globs), f"{rel} not in package-data {globs}")
+        self.assertTrue(any(fnmatch.fnmatch("pcm/tools.json", g) for g in globs), f"pcm/tools.json not in {globs}")
         self.assertIn("cryptography", re.search(r"dependencies\s*=\s*\[([^\]]*)\]", text).group(1))
         self.assertRegex(text, r'py-modules\s*=\s*\[[^\]]*"tracekit_sdk"')
 

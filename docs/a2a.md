@@ -4,7 +4,7 @@
 
 `tracekit a2a-gateway serve` is a reverse proxy for configured A2A (Agent2Agent, JSON-RPC over HTTP) servers. Send requests to it instead of to the receiver. It asks the signer before forwarding a request, holds an `ask` for a person, uses credentials held only by the gateway, and records the result as `source: gateway`, tier T2. If the signer is unavailable, it forwards nothing.
 
-The gateway is planned as Tracekit's A2A binding of PCM 0.1 (spec published separately); today it does not check PCM parts. A PCM part in an A2A message has media type `application/vnd.pcm+json`.
+The gateway is planned as Tracekit's A2A binding of [PCM 0.1](pcm.md) (proof-carrying messages); today it does not check PCM parts. A PCM part in an A2A message has media type `application/vnd.pcm+json`.
 
 ```bash
 tracekit a2a-gateway serve --config a2a-gateway.yaml

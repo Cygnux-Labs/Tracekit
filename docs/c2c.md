@@ -4,7 +4,7 @@
 
 C2C (Cache-to-Cache) can hand a model's internal state, such as a KV cache, to another model through a learned adapter. `run.transfer` records and gates that hand-off before it happens. It records the claimed sender, receiver, adapter and modality, plus a local size and SHA-256 measurement; it never sends the payload to the signer by default.
 
-The transfer-record extension is planned for PCM 0.1 (spec published separately); today C2C does not check PCM parts. Tracekit is the reference implementation.
+`run.transfer` records the transfer that [PCM 0.1](pcm.md)'s transfer-record extension describes; the `transfer` payload that would carry its evidence to the receiver is not built yet. Tracekit is the reference implementation.
 
 ## `run.transfer`
 

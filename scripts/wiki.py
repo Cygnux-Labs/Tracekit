@@ -41,7 +41,7 @@ SECTIONS = [
                       "concepts/deployment.md", "concepts/storage-and-performance.md", "concepts/integrations.md",
                       "concepts/security-model.md", "architecture.md", "why-architecture.md"]),
     ("Integrations", ["integrations.md", "adapters.md", "otel.md", "remote-ingest.md", "integrations/*.md"]),
-    ("Policy and approvals", ["policy-v2.md", "approvals.md", "findings.md", "reasoning.md", "incidents.md",
+    ("Policy and approvals", ["policy-v2.md", "approvals.md", "pcm.md", "findings.md", "reasoning.md", "incidents.md",
                               "webhooks.md"]),
     ("Deploy and operate", ["deploy.md", "deploy-container.md", "deploy-kubernetes.md", "deploy-compose.md",
                             "identity.md", "executor.md", "a2a.md", "c2c.md", "mcp-gateway.md", "gateway.md", "egress.md", "witnesses.md",

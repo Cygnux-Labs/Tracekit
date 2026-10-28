@@ -1,6 +1,7 @@
-"""The signer RPC contract, version 19: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 20: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 19 adds `review_finding` (a signed finding of
+Frozen: a change to any schema here is a new RPC_VERSION. Version 20 adds proof-carrying messages (experimental):
+`pcm_sign`, `pcm_grant`, `pcm_delegate` and `pcm_evidence`. Version 19 adds `review_finding` (a signed finding of
 `tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states; its
 response's `refused` past the run's cap), model_event's `amended` (the fields an LLM gateway changed in a request),
 its `said_only` (a response recorded without its calls), register_run's `caller` (a gateway registering the run of a
@@ -29,7 +30,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 19
+RPC_VERSION = 20
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -213,6 +214,44 @@ _AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash"
                       **{k: _SUMMARY["properties"][k] for k in ("approval_id", "state", "tool", "rule_ids",
                                                                 "policy_hash", "expires_at", "escalated", "agent",
                                                                 "run_closing")})
+# proof-carrying messages (tracekit.pcm, experimental): a message the signer signs as the sending run's own agent, with
+# a typed intent (`SCHEMA_REF`: a schema document's name and hash), claims with evidence from the sender's run, and a
+# chain of grants (root first). `pcm` and `pcm_grant` are integer 0, never `false` or `0.0`.
+SCHEMA_REF = _str(136, pattern=r"^[a-z][a-z0-9_.-]{0,63}@sha256:[0-9a-f]{64}" + _END)
+CLAIM_TYPES = ["tests_passed", "approved_by", "reached_host", "file_written"]
+HEX16 = _str(32, pattern=r"^[0-9a-f]{32}" + _END)   # 16 random bytes
+_PCM_SIG = _obj(["key", "sig"], key=_str(300, minLength=1), sig=_str(88))   # the log vkey's name+id, base64 Ed25519
+_PCM_RECORD = _obj(["event", "hash", "proof"], event=ANY, hash=DIGEST,
+                   proof={"type": "array", "maxItems": 64, "items": _str(44)},
+                   salt=_str(64, pattern=r"^[0-9a-f]{64}" + _END), args=ANY)   # opens a policy.decision's commitment
+_EVIDENCE = _obj(["checkpoint", "records"], checkpoint=_str(16384, minLength=1),
+                 records={"type": "array", "minItems": 1, "maxItems": 16, "items": _PCM_RECORD})
+_CLAIM = _obj(["type", "args"], type={"enum": CLAIM_TYPES}, args=ANY, evidence=_EVIDENCE)
+_CAVEAT = _obj(["field", "op", "value"], field=_str(64, pattern=r"^[a-z][a-z0-9_]*" + _END),
+               op={"enum": ["==", "<=", ">=", "<", ">", "in"]}, value=ANY)
+_CAVEATS = {"type": "array", "maxItems": 16, "items": _CAVEAT}
+# `delegable`: the subject may pass the grant on, only narrower (pcm_delegate); the approving person chose it
+PCM_GRANT = _obj(["pcm_grant", "ts", "issuer", "subject", "intent", "caveats", "expires_at", "delegable", "parent",
+                  "sig"],
+                 pcm_grant={"type": "integer", "const": 0}, ts=TS,
+                 issuer=_obj(["kind", "id", "run", "tenant"], kind={"enum": ["person", "agent"]}, id=_str(256),
+                             person=_str(256), run=ID, tenant=ID, approval_id=ID),   # tenant: the issuing run's
+                 subject=IDENTITY, intent=SCHEMA_REF, caveats=_CAVEATS, expires_at=TS, delegable={"type": "boolean"},
+                 parent={"oneOf": [DIGEST, {"type": "null"}]},   # event_hash of the signed parent grant
+                 sig=_PCM_SIG)
+# the args of the tool call `pcm.grant`, which a person approves and pcm_grant turns into a root grant
+GRANT_ARGS = _obj(["subject", "intent", "expires_at", "delegable"], subject=IDENTITY, intent=SCHEMA_REF,
+                  caveats=_CAVEATS, expires_at=TS, delegable={"type": "boolean"})
+PCM_BODY = _obj(["from", "to", "intent"], to=_obj(["agent"], agent=IDENTITY),
+                intent=_obj(["type", "args"], type=SCHEMA_REF, args=ANY),
+                claims={"type": "array", "maxItems": 8, "items": _CLAIM},
+                grants={"type": "array", "maxItems": 8, "items": PCM_GRANT},
+                payload={"oneOf": [_obj(["kind", "text"], kind={"const": "text"}, text=_str(65536)),
+                                   _obj(["kind", "data"], kind={"const": "data"}, data=ANY)]},
+                **{"from": _obj(["agent", "run", "tenant"], agent=IDENTITY, run=ID, tenant=ID)})
+# the signer adds pcm, id, ts and nonce (its clock and randomness) and signs everything but `sig`
+PCM_MESSAGE = _obj(["pcm", "id", "ts", "nonce", "sig", *PCM_BODY["required"]], **PCM_BODY["properties"],
+                   pcm={"type": "integer", "const": 0}, id=HEX16, ts=TS, nonce=HEX16, sig=_PCM_SIG)
 
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
@@ -379,6 +418,15 @@ REQUESTS = {
     # the shared suspension list: `identity` (scheme:subject, or a prefix ending in :* or /*) is refused every call
     **{m: _obj(["request_id", "identity"], request_id=ID, identity=IDENTITY, reason=REASON)
        for m in ("suspend", "unsuspend")},
+    # proof-carrying messages (experimental), the run's own agent only: sign a message as it (the signer adds pcm, id,
+    # ts, nonce and sig); a root grant from the consumed approval of its `pcm.grant` call with these args; a narrower
+    # child of a grant held by the caller; and its run's records with inclusion proofs, for claim evidence
+    "pcm_sign": _obj(_RUN_REQ + ["message"], **_RUN, message=PCM_BODY),
+    "pcm_grant": _obj(_RUN_REQ + ["tool_call_id", "args"], **_RUN, tool_call_id=ID, attempt=SEQ, args=GRANT_ARGS),
+    "pcm_delegate": _obj(_RUN_REQ + ["parent", "subject", "expires_at", "delegable"], **_RUN, parent=PCM_GRANT,
+                         subject=IDENTITY, caveats=_CAVEATS, expires_at=TS, delegable={"type": "boolean"}),
+    "pcm_evidence": _obj(["run_id", "run_token", "run_seqs"], run_id=ID, run_token=TOKEN,
+                         run_seqs={"type": "array", "minItems": 1, "maxItems": 16, "items": SEQ}),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -489,6 +537,16 @@ RESPONSES = {
     **{m: _obj(["enabled"], enabled={"type": "boolean"}) for m in ("response_pause", "response_resume")},
     **{m: _obj(["identity", "state"], identity=IDENTITY, state={"enum": ["suspended", "lifted"]})
        for m in ("suspend", "unsuspend")},
+    "pcm_sign": _obj(["message", "run_seq"], message=PCM_MESSAGE, run_seq=SEQ),
+    **{m: _obj(["grant", "run_seq"], grant=PCM_GRANT, run_seq=SEQ) for m in ("pcm_grant", "pcm_delegate")},
+    # the latest checkpoint note and, for each record it covers, its inclusion proof under it (a policy.decision's salt
+    # too, which opens its args commitment); `pending`: the run_seqs the next checkpoint will cover
+    "pcm_evidence": _obj(["checkpoint", "records", "pending"],
+                         checkpoint={"oneOf": [_str(16384, minLength=1), {"type": "null"}]},
+                         records={"type": "array", "maxItems": 16, "items": _obj(
+                             ["run_seq", "event", "hash", "proof"], run_seq=SEQ,
+                             **{k: _PCM_RECORD["properties"][k] for k in ("event", "hash", "proof", "salt")})},
+                         pending={"type": "array", "maxItems": 16, "items": SEQ}),
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -560,3 +618,7 @@ class SignerAPI(Protocol):
     def response_resume(self, req: dict) -> dict: ...
     def suspend(self, req: dict) -> dict: ...
     def unsuspend(self, req: dict) -> dict: ...
+    def pcm_sign(self, req: dict) -> dict: ...
+    def pcm_grant(self, req: dict) -> dict: ...
+    def pcm_delegate(self, req: dict) -> dict: ...
+    def pcm_evidence(self, req: dict) -> dict: ...
