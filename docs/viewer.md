@@ -29,6 +29,12 @@ The header holds the pages, the command box, and on a run's page that run's view
 | **HORIZON** | where the agents went, around a black hole: the project, this machine and the outside world ([below](#horizon)) |
 | **INFLUENCE** | with why logs: what content reached which tools across every run ([below](#influence)) |
 
+![RUNS: each run with its state, calls, blocked, held, flagged, gaps and verdict, newest first; below, the why log the viewer built for each](viewer/1.5/runs.png)
+
+![APPROVALS: a git push waiting for a person, with the arguments the signer holds, its rules in words and the approve and reject commands; then the answers given](viewer/1.5/approvals.png)
+
+![PERMISSIONS: every decision that was not a plain allow, with its arguments, its rules in words, what came of it and who answered](viewer/1.5/permissions.png)
+
 A run's page shows the run's agents (the run that started it and every run started from there, each with its calls,
 held, blocked and flagged counts) and tool mix on the left, one of its views in the middle and the inspector (DETAIL,
 WHY, NODE) on the right, under a header with the run's verdict, counts and the **EXPORT** and **VERIFY** commands. Its
@@ -37,11 +43,15 @@ views, keys `1` to `7`: **OVERVIEW**, **CALLS** (the run's tape), **TIMELINE** (
 the export and verify commands; [below](#a-runs-timeline-evidence-and-the-inspector)). OVERVIEW, GRAPH, WHY and
 AGENTS need the run's why log, which the viewer builds for each verified run.
 
+![LIVE: the release agent's run, still open, its tape with a git push held and waiting, and the run review](viewer/1.5/live.png)
+
 **NEEDS YOU**, under the stats strip, lists across every run what needs a person, first the calls waiting (oldest
 first), then runs an incident holds, runs that failed verification or weren't checked, and a viewer that stopped
 checking; each with the command that acts on it and **OPEN**. With nothing to do it reads `ALL CLEAR · N agents
 working`. A new hold or high alert also shows for a few seconds in the corner. **THEME** (or `T`) picks auto (this
 computer's setting), light or dark, kept in this browser.
+
+![DESK: NEEDS YOU under the stats strip with a held git push and the commands that answer it; the runs, the tape across runs and the alerts](viewer/1.5/desk.png)
 
 The address bar follows what is open (`#run=…&view=graph&seq=42`, `#page=permissions`), so a link opens the same run,
 view and record, and Back and Forward step through what you opened. Links from before keep working: `#run=…` opens the
@@ -56,12 +66,13 @@ tracekit view --dev                     # the dev signer's runs
 tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM   # after `tracekit why demo --out runs`
 ```
 
-The screenshots below come from two runs of a coding agent (two calls denied by the policy), the `tracekit why demo`
-runs, and the sample v1 bundle.
+The screenshots on this page come from the runs the viewer's browser checks record (`scripts/viewer_qa/gen.py base`: a support
+agent, a Claude Code-style run and others), an agent whose push waits for a person, the `tracekit why demo` runs, and the
+sample v1 bundle.
 
 ### Runs and the tape
 
-![Two verified runs in the run list, the coding agent's run selected, its tape with two BLOCK rows](viewer/runs.png)
+![DESK with the support agent's run selected: the run list with each run's verdict, the run's tape with its held refunds and their answers folded under them, and the run review](viewer/1.5/desk-run.png)
 
 Panel 1 lists each run with its verdict: `VERIFIED` means `tracekit verify`'s checks passed on the run's bundle against
 the pinned log key (here the store's own key: `dev` assurance); `FAILED` means they did not, and the run shows only its
@@ -91,7 +102,7 @@ reloads the records.
 
 ### A run's review
 
-![The run review: integrity VERIFIED, assurance dev, two allowed, one flagged, two denied, no gaps](viewer/review.png)
+![The run review: its sentence (8 calls: 5 ran, 1 blocked, 3 held; 2 findings, 1 high), integrity VERIFIED, assurance dev, the run's constraints, findings and what can't be checked](viewer/1.5/review.png)
 
 With a run selected and no row, panel 8 is the run review. It opens with one sentence ("Verified. 8 calls: 5 ran, 1
 blocked, 3 held (1 rejected, 1 approved, 1 expired). 2 findings, 1 high."), then Integrity, Assurance, how many calls
@@ -102,7 +113,7 @@ bundle yourself with keys you pinned; **EXPORT** and **VERIFY** give the exact `
 
 ### A denied call
 
-![A BLOCK row selected: the call, its decision DENY to BLOCKED, the rules with their reasons, and its ledger evidence](viewer/denied.png)
+![A BLOCK row selected: the call, its decision DENY to BLOCKED, why this decision step by step with the rules that matched, and what the model said around it](viewer/1.5/denied.png)
 
 Click a tape row for its record: the decision (`DENY → BLOCKED`), the rules that matched with their reasons, the run's
 verdict, the arguments the dev signer kept (when it kept them), the arguments commitment (v2 records keep arguments
@@ -114,7 +125,7 @@ so), `L` returns to live.
 
 ### The command box
 
-![HELP lists every command of the box at the top](viewer/help.png)
+![HELP lists every command of the box at the top, the pages and a run's views](viewer/1.5/help.png)
 
 Type `/` (or click the box at the top), then a command and Enter: `AGT name`, `TOOL Bash`, `FILE .env`, `FLAG`
 (flagged, blocked or failed only), `FIND text`, `SEQ n` (open record n), `CLR` (clear every filter), `HELP` (this
@@ -123,7 +134,7 @@ own (a call's decision or result is on the call's row) opens the row before it a
 
 ### Why: the verdict and the path
 
-![The WHY tab of a send_email call: its verdict sentence and how it got here, from the untrusted inputs](viewer/why.png)
+![The WHY tab of a send_email call: where each argument value came from, one only from untrusted content, and its verdict sentence](viewer/1.5/why.png)
 
 With why logs, select a tool call (or click a `WHY` alert, panel 3) and open **WHY** in panel 8. The verdict sentence
 says what replays found; **How it got here** is the recorded path from each untrusted input (red border) through the
@@ -132,14 +143,16 @@ so its tables and values wrap instead of being cut; DETAIL gives the room back.
 
 ### FIND THE CAUSE and RUN TEST
 
-![Candidate causes after FIND THE CAUSE: two primary causes in red, two with no effect seen, two not tested; the graph's tested causes in red](viewer/find-the-cause.png)
+![Candidate causes after FIND THE CAUSE: two primary causes in red, two not tested, two ruled out, each with its effect and its tracekit why test command](viewer/1.5/find-the-cause.png)
 
 **Candidate causes** lists every input and channel upstream of the call. **RUN TEST** replays the run without one of
 them (recorded tool results, new tool calls stubbed: nothing real is re-sent) and compares how often the call
 happens: `PRIMARY CAUSE` (red) means it stops happening without it, `NO EFFECT SEEN` means no change larger than the
-test can detect, `INCONCLUSIVE` means too few replays reproduced the call. **FIND THE CAUSE** runs a group test and
-narrows it down. Both run only for a program passed with `--allow-program`; otherwise the panel prints the command.
-The effect is the drop in how often the call happens, with its 95% interval.
+test can detect, `RULED OUT` means the effect's 95% interval stays within ±0.2 (it makes no real difference),
+`INCONCLUSIVE` means too few replays reproduced the call, and `NOT TESTED` means no replay has measured it yet.
+**FIND THE CAUSE** runs a group test and narrows it down. Both run only for a program passed with
+`--allow-program`; otherwise the panel prints the command. The effect is the drop in how often the call happens,
+with its 95% interval.
 
 ### Runs, overview and timeline (Causeway's)
 
@@ -147,19 +160,19 @@ With why logs a run's page also has Causeway's views of a run, and the picker ne
 run. A why run has that page even with no signed run selected: a why run on RUNS, a lineage step, **SHOW WHAT IT
 REACHED**, **WHY DID THIS HAPPEN?** and a why alert each open it.
 
-![RUNS: every why run with its task, agents, model and tool calls, alerts, tests and whether its log is intact](viewer/runs-list.png)
+![RUNS: every why run with its task, agents, model and tool calls, alerts, tests and whether its log is intact](viewer/1.5/runs-list.png)
 
 **RUNS** lists every run: alerts (`high` red, `review` amber), tests with how many were causal, and `intact` when the
 log's hash chain checks. Click a run for its overview.
 
-![OVERVIEW of a run: LOG INTACT, REPLAYABLE, what the agents did, the alerts that need attention with their confirmed causes, the run's numbers](viewer/overview.png)
+![OVERVIEW of a run: LOG INTACT, REPLAYABLE, what the agents did, the alerts that need attention with their confirmed causes, the run's numbers](viewer/1.5/overview.png)
 
 **OVERVIEW**: `LOG INTACT` (the why log's hash chain checks) and `REPLAYABLE` (the run names a program a replay can
 import), what the agents did (a flagged call is red: click one for why it happened), what needs attention, each with
 its confirmed causes and **INVESTIGATE →**, the run's numbers, and how to read the evidence: *reached* is recorded,
 not proof; a *confirmed cause* changed how often the action happens in replays; *ruled out* changed nothing detectable.
 
-![TIMELINE: every event of the run with its time, agent, type, what happened and how long it took; filters by agent, type, flagged and text](viewer/timeline.png)
+![WHY LOG EVENTS: every event of the run with its time, agent, type, what happened and how long it took; filters by agent, type, flagged and text](viewer/1.5/why-log-events.png)
 
 **TIMELINE** (the tape's **WHY LOG EVENTS** button: on a run's page, and on every page when no v2 runs are loaded):
 every event, filtered by agent, type (inputs, model calls, tool calls, messages), **flagged only** and text. Click a
@@ -167,7 +180,7 @@ row for its NODE.
 
 ### WHY DID IT HAPPEN?
 
-![WHY DID IT HAPPEN?: the run's tool calls with the flagged one first, where each argument value came from, the verdict, how it got here and the candidate causes](viewer/why-view.png)
+![WHY DID IT HAPPEN?: the run's tool calls with the flagged one first, where each argument value came from, the verdict, how it got here and the candidate causes](viewer/1.5/why-view.png)
 
 The run's tool calls, high alerts first; pick one. **Argument value / where the value came from** says, for each
 value, *only from untrusted content*, *from a trusted source* or *written by the model*, and which source. Then the
@@ -193,20 +206,21 @@ it); and **WHOSE WORDS**: where the instruction behind a held or blocked call ca
 RELAYED, another agent's message; TOOL/WEB, a tool result or page), from the signed argument provenance and the run's
 observed inputs, or that the records don't say.
 
+![TIMELINE BY CALL: one row per call on one time axis, the expired push hatched while it waited; the rejected billing.py edit selected, the inspector with why this decision and what the model said before it](viewer/1.5/timeline.png)
+
+![EVIDENCE: the run's signed records in order, each covered by the viewer's check, the checks of its verifier report and the VERIFIED stamp](viewer/1.5/evidence.png)
+
 ### HORIZON
 
-**HORIZON** (Event Horizon: where your agents went: the project, this machine and the outside world) draws every
-run's calls around a black hole: the rings are the project (relative paths, or inside the run's working directory when
-it records one), this machine and the outside world; a shield marks a restricted place (a rule about secrets, harness
-configuration or Tracekit's own files matched), a jet data that left the machine. **REPLAY** plays the calls in order,
-an agent's chip follows its route, ORBIT and TOP change the view, and a click on a place lists who went there and how
-we know (signed, observed by a sensor, or unverified: its run did not verify, or a why log wrote it, which nothing
-signs). Calls whose arguments the viewer has only as commitments are
-placed by their tool, and the page says how many. With reduced motion it draws still frames.
+![HORIZON: six agents' calls around the black hole, on the project, this machine and outside world rings; the .env file shielded as restricted, jets out to the hosts reached, and the key to the marks beside the map](viewer/1.5/horizon.png)
+
+**HORIZON** (Event Horizon) draws every run's calls around a black hole, on three rings: the project, this machine and
+the outside world. A shield marks a restricted place, a jet a call out to a host, and a click on a place lists who went
+there and how we know (signed, observed by a sensor, or unverified). More: [Event Horizon](horizon.md).
 
 ### GRAPH: click a node
 
-![GRAPH with the planner's model call clicked: NODE shows its model, tokens, what it saw, what it produced, where it came from, what it led to and its record](viewer/graph-node.png)
+![GRAPH with the planner's model call clicked: NODE shows its model, time, tokens, what it saw and what it produced](viewer/1.5/graph-node.png)
 
 **GRAPH** (a run's view, key `4`) draws the run's data flow as a left-to-right flowchart, as Causeway did: inputs
 (cyan), model calls (magenta), tool calls (green), messages (amber). Each arrow is graded by its proof: signed (amber,
@@ -226,7 +240,7 @@ tests.
 
 ### A signed run's graph
 
-![GRAPH of a signed run: five tool calls left to right in run order, two Bash calls marked DENIED with their rule ids](viewer/signed-graph.png)
+![GRAPH of a signed run: its model calls and their tool calls in run order, each call with its signed decision (allowed, approved, denied, expired, rejected) and its rule id](viewer/1.5/signed-graph.png)
 
 `tracekit view` on a signer store with no why logs (no `--why`, no `why/` in its data dir) still has GRAPH: each run that verifies is imported read-only
 (`why import --store`'s import) into the viewer's own temp dir, imported again as it grows, and removed once its rows
@@ -241,7 +255,7 @@ verification has no graph, and GRAPH says why.
 
 ### AGENTS
 
-![AGENTS: each agent's role, parent, calls, messages, model time and tokens; the channels and their tested influence](viewer/agents.png)
+![AGENTS: each agent's role, parent, calls, messages, model time and tokens; the channels and their tested influence](viewer/1.5/agents.png)
 
 Per agent: role, who spawned it, model and tool calls, messages, model time and tokens. **Channels used** says whether
 a receiver's model call had each message in its context, and what a replay without the channel changed. The influence
@@ -249,7 +263,7 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 ### INFLUENCE
 
-![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/influence.png)
+![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/1.5/influence.png)
 
 Across every why run, as a citation index: each source (left; a red ring is untrusted) to the tools it reached
 (right), thicker for more runs, red with its effect where a replay confirmed it, dotted where one ruled it out. The
@@ -258,7 +272,7 @@ the tools it is a confirmed cause of.
 
 ### A v1 bundle
 
-![A v1 bundle verified and shown: its tape with a blocked curl upload of .env and the record's ledger evidence](viewer/bundle.png)
+![A v1 bundle verified and shown: its tape with a blocked curl upload of .env selected, its rules and flags in the detail panel](viewer/1.5/bundle.png)
 
 `tracekit view --bundle FILE` verifies a v1 bundle first and shows it only if it verifies; `--ledger` shows the live
 v1 ledger. A tampered bundle is refused before anything is served:
@@ -270,7 +284,7 @@ tracekit view: bundle docs/sample/demo-run-tampered.tkb FAILED verification (exi
 
 ## Laptop viewer
 
-![tracekit view: three runs with their verdicts, the support agent's run selected, its blocked calls with rule reasons, the held refund approved by an ops approver, and the run review](demo/viewer.png)
+![tracekit view: the support agent's run page, its tape with two blocked calls and two held refunds, the approved refund selected with why it was held and who approved it](viewer/1.5/laptop.png)
 
 `tracekit view [--dev | --config signer.yaml | --data-dir DIR]` reads one signer's store, read-only, and verifies each
 run with the code `tracekit verify` runs. The page is the observer's terminal, for runs:
