@@ -55,6 +55,9 @@ NOT_ASCII = ("its URL is not printable ASCII: send it without spaces or control 
 PERCENT = "its host has a %: send the URL with the host as plain ASCII, not percent-encoded"
 NOT_QUAD = ("its host is an IPv4 address not written as a dotted quad: send it as four decimal numbers 0-255 without "
             "leading zeros")
+# what a failed call's detail tells the sender: its record can't tell an HTTP error answer from no answer (6.6)
+NOT_OK = ("its result is not ok, which an HTTP error answer gives too: claim the host from a call that succeeded, or "
+          "from an egress observer's record")
 
 
 class EvidenceError(ValueError):
@@ -116,10 +119,11 @@ def placed():
         return json.load(f)
 
 
-def _ran(recs, match, what, cls=None):
+def _ran(recs, match, what, cls=None, not_ok=""):
     """(result, detail) of the claim that a call whose opened args `match(tool, args)` ran and succeeded: proven by a
     T2 result, unproven by the agent's own (T1), by a tool the verifier can't place as class `cls`, or by a call
-    `match` can't tell (None, or what the sender can do about it)."""
+    `match` can't tell (None, or what the sender can do about it); `not_ok`: what a failed call's detail tells the
+    sender."""
     best = ("failed", f"no call in the evidence {what}")
     for e, args in recs:
         d = e["data"]
@@ -142,7 +146,7 @@ def _ran(recs, match, what, cls=None):
                                                                                            d["tool_use_id"]):
                 continue
             if r["ok"] is not True:
-                got = ("failed", f"call {d['tool_use_id']} {what}, and failed")
+                got = ("failed", f"call {d['tool_use_id']} {what}, and failed" + (f": {not_ok}" if not_ok else ""))
             elif (x["source"], x.get("tier")) == ("gateway", "T2"):
                 return "proven", f"call {d['tool_use_id']} {what}, run by {r.get('via')} (T2)"
             else:
@@ -352,7 +356,7 @@ def reached_host(a, recs):
     def match(tool, args):
         got = _url_host(args["url"]) if isinstance(args.get("url"), str) else ""
         return _why(args["url"]) if got is None else got == want
-    return min(_ran(recs, match, f"reached {a['host']}", "http"), seen, key=lambda o: _RANK[o[0]])
+    return min(_ran(recs, match, f"reached {a['host']}", "http", NOT_OK), seen, key=lambda o: _RANK[o[0]])
 
 
 def _path(raw, windows):

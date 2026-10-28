@@ -856,6 +856,15 @@ class PCM01(unittest.TestCase):
         self.assertEqual(claims.reached_host({"host": "b.example"}, call("fetch", {"url": "http://a.example/"}))[0],
                          "failed")
 
+    def test_a_failed_call_says_how_to_prove_the_host(self):
+        """A call the host answered with an HTTP error is recorded as not ok, as one that reached nothing is: the claim
+        fails, and its detail says how to prove the host instead."""
+        recs = call("fetch", {"url": "http://a.example/"})
+        recs[1][0]["data"]["ok"] = False
+        self.assertEqual(claims.reached_host({"host": "a.example"}, recs), (
+            "failed", "call c1 reached a.example, and failed: its result is not ok, which an HTTP error answer gives "
+                      "too: claim the host from a call that succeeded, or from an egress observer's record"))
+
     def test_a_host_that_wont_parse_is_unproven(self):
         long = "a" * 64 + ".example"   # a label over 63 characters
         for host, recs in (("999.1.1.1", []), ("a..example", call("fetch", {"url": "http://a..example/"})),
