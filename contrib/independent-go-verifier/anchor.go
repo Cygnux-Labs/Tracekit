@@ -328,7 +328,7 @@ func verifyAnchorSignature(spki, sig, data []byte, p256 bool) bool {
 	return false
 }
 
-func verifyAnchor(files map[string][]byte, trustBytes []byte, log VKey, cp Checkpoint) ([]verifiedAnchor, error) {
+func verifyAnchor(files map[string][]byte, trustBytes []byte, log VKey, cp Checkpoint, note []byte) ([]verifiedAnchor, error) {
 	v, err := ParseStrict(trustBytes)
 	if err != nil {
 		return nil, err
@@ -358,7 +358,6 @@ func verifyAnchor(files map[string][]byte, trustBytes []byte, log VKey, cp Check
 	if err != nil {
 		return fail()
 	}
-	note := files[fmt.Sprintf("checkpoints/%d.note", cp.Size)]
 	sections := bytes.SplitN(note, []byte("\n\n"), 2)
 	if len(sections) != 2 {
 		return fail()

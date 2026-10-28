@@ -25,7 +25,7 @@ type VerificationCheck struct {
 	Detail string `json:"detail"`
 }
 
-var versionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,2}$`)
+var versionPattern = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,9}){0,2}$`)
 
 func registryOrigin(origin string, salt []byte) string {
 	digest := sha256.Sum256(append([]byte("registry "), salt...))
@@ -52,11 +52,12 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 		return rep
 	}
 	version, ok := manifest["verifier_min_version"].(string)
-	if manifest["format"] != "tracekit.bundle.v2" || !ok || !versionPattern.MatchString(version) {
+	newer, versionErr := newerVersion(version, "1.4.2")
+	if manifest["format"] != "tracekit.bundle.v2" || !ok || versionErr != nil {
 		rep.Detail = "invalid manifest format or version"
 		return rep
 	}
-	if newerVersion(version, "1.4.2") {
+	if newer {
 		rep.Integrity = "UNVERIFIABLE (needs tracekit >= " + version + ")"
 		return rep
 	}
@@ -91,7 +92,7 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 			}
 		}
 	}
-	anchors, anchorErr := verifyAnchor(files, trustBytes, log, cp)
+	anchors, anchorErr := verifyAnchor(files, trustBytes, log, cp, files[name])
 	rep.Assurance = assuranceFor(files, trustBytes, log, witnesses, quorum, cp, runs, keyRecords, anchors)
 	if anchorErr != nil {
 		rep.Detail = anchorErr.Error()
@@ -176,21 +177,36 @@ func warningChecks(files map[string][]byte, runs []runEvidence) []VerificationCh
 	return checks
 }
 
-func newerVersion(a, b string) bool {
-	aa, bb := strings.Split(a, "."), strings.Split(b, ".")
+func newerVersion(a, b string) (bool, error) {
+	aa, err := parseVersion(a)
+	if err != nil {
+		return false, err
+	}
+	bb, err := parseVersion(b)
+	if err != nil {
+		return false, err
+	}
 	for i := 0; i < 3; i++ {
-		x, y := 0, 0
-		if i < len(aa) {
-			x, _ = strconv.Atoi(aa[i])
-		}
-		if i < len(bb) {
-			y, _ = strconv.Atoi(bb[i])
-		}
-		if x != y {
-			return x > y
+		if aa[i] != bb[i] {
+			return aa[i] > bb[i], nil
 		}
 	}
-	return false
+	return false, nil
+}
+
+func parseVersion(version string) ([3]uint64, error) {
+	var parts [3]uint64
+	if !versionPattern.MatchString(version) {
+		return parts, fmt.Errorf("invalid version")
+	}
+	for i, component := range strings.Split(version, ".") {
+		value, err := strconv.ParseUint(component, 10, 64)
+		if err != nil {
+			return parts, err
+		}
+		parts[i] = value
+	}
+	return parts, nil
 }
 
 // reportRecords parses without granting validity. It permits the report to

@@ -436,6 +436,84 @@ func TestAnchorSecurityMutations(t *testing.T) {
 	}
 }
 
+func TestAnchorUsesRenamedVerifiedCheckpointNote(t *testing.T) {
+	bundle := readGolden(t, "v2/closed.tkb")
+	trust := readGolden(t, "v2/trust-rekor.json")
+	files, err := ReadBundle(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofs, err := parseFileObject(files, "proofs/records.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteName := proofs["checkpoint"].(string)
+	verifiedNote := append([]byte(nil), files[noteName]...)
+	log, _, _, err := loadTrust(trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp, err := VerifyCheckpoint(verifiedNote, log, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamedName := fmt.Sprintf("checkpoints/%d.note", cp.Size+1)
+	files[renamedName] = verifiedNote
+	proofs["checkpoint"] = renamedName
+	files["proofs/records.json"], _ = json.Marshal(proofs)
+	files[fmt.Sprintf("checkpoints/%d.note", cp.Size)] = []byte("foreign checkpoint note\n")
+	fixtureManifest(files)
+	r := VerifyBundle(fixtureZip(files), trust)
+	if r.ExitCode != 0 {
+		t.Fatalf("anchor did not use the verified renamed checkpoint note: %+v", r)
+	}
+}
+
+func TestAnchorDigestBindsSelectedCheckpointBodyAndSignature(t *testing.T) {
+	files, err := ReadBundle(readGolden(t, "v2/closed.tkb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := readGolden(t, "v2/trust-rekor.json")
+	log, _, _, err := loadTrust(trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofs, err := parseFileObject(files, "proofs/records.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteName := proofs["checkpoint"].(string)
+	selectedNote := append([]byte(nil), files[noteName]...)
+	cp, err := VerifyCheckpoint(selectedNote, log, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalPath := fmt.Sprintf("checkpoints/%d.note", cp.Size)
+	canonicalNote, ok := files[canonicalPath]
+	if !ok {
+		t.Fatalf("missing legacy anchor note path %s", canonicalPath)
+	}
+	if _, err := verifyAnchor(files, trust, log, cp, canonicalNote); err != nil {
+		t.Fatalf("legacy canonical-note anchor should verify: %v", err)
+	}
+	sections := bytes.SplitN(selectedNote, []byte("\n\n"), 2)
+	header := bytes.Split(sections[0], []byte("\n"))
+	if len(header) != 3 {
+		t.Fatal("invalid selected checkpoint header")
+	}
+	changedRoot := append([]byte(nil), header[2]...)
+	if changedRoot[0] == 'A' {
+		changedRoot[0] = 'B'
+	} else {
+		changedRoot[0] = 'A'
+	}
+	selectedNote = bytes.Replace(selectedNote, header[2], changedRoot, 1)
+	if _, err := verifyAnchor(files, trust, log, cp, selectedNote); err == nil || !strings.Contains(err.Error(), "timestamp") {
+		t.Fatalf("foreign checkpoint body did not fail the bound timestamp digest: %v", err)
+	}
+}
+
 func TestMalformedTrustAndEmptyEvidenceDoNotPanic(t *testing.T) {
 	files, trust := bundleFixture(t)
 	bundle := fixtureZip(files)
@@ -452,6 +530,24 @@ func TestMalformedTrustAndEmptyEvidenceDoNotPanic(t *testing.T) {
 	fixtureManifest(files)
 	if r := VerifyBundle(fixtureZip(files), trust); r.ExitCode == 0 {
 		t.Fatal("accepted empty run")
+	}
+}
+
+func TestVerifierMinVersionUsesStrictDigitBounds(t *testing.T) {
+	for _, version := range []string{"9999999999", "99999999999999999999"} {
+		t.Run(version, func(t *testing.T) {
+			files, trust := bundleFixture(t)
+			manifest, err := parseFileObject(files, "manifest.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest["verifier_min_version"] = version
+			files["manifest.json"], _ = json.Marshal(manifest)
+			r := VerifyBundle(fixtureZip(files), trust)
+			if r.Integrity != "UNUSABLE BUNDLE" || r.Detail != "invalid manifest format or version" {
+				t.Fatalf("accepted out-of-range version component: %+v", r)
+			}
+		})
 	}
 }
 
