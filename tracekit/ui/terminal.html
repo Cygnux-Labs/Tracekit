@@ -1815,8 +1815,9 @@
       color: var(--amber)
     }
 
+    /* the stage takes the panel's height, never the side card's: a route of 500 rows made the canvas 27,000px tall */
     .hzmain {
-      flex: 1 0 auto;
+      flex: 1 0 0;
       min-height: 480px;
       display: grid;
       grid-template-columns: minmax(0, 1fr) 320px;
@@ -2503,6 +2504,7 @@
       }
 
       .hzmain {
+        flex-basis: auto;
         grid-template-columns: minmax(0, 1fr);
         grid-template-rows: 440px auto
       }
@@ -3482,8 +3484,9 @@
       x.save(); x.globalCompositeOperation = "lighter"; const pr = x.createLinearGradient(cx - Rs, 0, cx + Rs, 0); pr.addColorStop(0, A(hot, .95)); pr.addColorStop(1, A(gold, .5));
       x.strokeStyle = pr; x.lineWidth = 1.1; x.shadowColor = A(gold, .8); x.shadowBlur = 6; x.beginPath(); x.arc(cx, cy, Rs * 1.02, 0, 6.2832); x.stroke(); x.restore();
       half(false); x.globalCompositeOperation = "source-over";
-      // the rings' names, upper left (no callout covers them); in the top view, the project's folders
-      const placed = [];
+      // taken, so no callout covers them: the HUD's readouts, which sit over the stage, and the rings' names, upper left;
+      // in the top view, the project's folders
+      const placed = [...cv.parentNode.querySelectorAll(".hzhud")].map(h => [h.offsetLeft, h.offsetTop, h.offsetLeft + h.offsetWidth, h.offsetTop + h.offsetHeight]);
       x.font = font(600, 9); x.textAlign = "left"; x.letterSpacing = "2.5px";
       for (const [r, l, c] of [[.47, D.cwd ? "PROJECT · " + D.cwd : "PROJECT", A(amber, .8)], [.66, "THIS MACHINE", A(ink, .5)], [1, "OUTSIDE WORLD", A(ink, .4)]]) {
         const [lx, ly] = P(r, hzRad(-40)); x.fillStyle = c; x.fillRect(lx - 2, ly - 2, 4, 4); x.fillText(l, lx + 7, ly - 5);
