@@ -3925,9 +3925,12 @@
       el.hidden = !V2;
       el.classList.toggle("clear", !list.length);
       const working = [...RUNS.values()].filter(r => r.state === "open").length;
+      // runs not read yet (on start): said beside the list too, which can't hold what they need
+      const unread = CHECKING ? `CHECKING · ${plural(CHECKING, "run")} of the store not read yet: what needs you there shows once each is` : "";
       put("needs", `<b>NEEDS YOU</b><div>` + (list.length ? list.map(n => `<div class="need${n.sev === "high" ? " high" : ""}"><span class="sev ${esc(n.sev === "high" ? "high" : "wait")}">${esc(n.kind)}</span><span class="what" title="${esc(n.what + " · " + n.detail)}">${esc(n.what)}<span class="dim"> · ${esc(n.detail)}</span></span><span class="do">`
         + n.cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join(" ") + (n.open ? ` <button type="button" class="cp" data-orun="${esc(n.open[0])}" data-oseq="${esc(n.open[1])}">OPEN</button>` : "") + `</span></div>`).join("")
-        : CHECKING ? `<span class="dim">CHECKING · ${esc(plural(CHECKING, "run"))} of the store not read yet: what needs you there shows once each is</span>`
+          + (unread ? `<div class="dim" style="padding:3px 8px">${esc(unread)}</div>` : "")
+        : unread ? `<span class="dim">${esc(unread)}</span>`
         : `ALL CLEAR · ${esc(plural(working, "agent"))} working · nothing needs you`) + `</div>`);
     }
     // PERMISSIONS: every decision that was not a plain allow (deny, hold, flag) and what came of it, in the selected run

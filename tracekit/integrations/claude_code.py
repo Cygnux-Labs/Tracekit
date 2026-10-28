@@ -137,8 +137,9 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
     order, and sent again on a new run when the signer has closed the stored one (idle); without `register`, the stored
     run is marked ended instead, and the session's next event that registers starts the new one). `transcript` (the
     payload's): kept in the session state; each run of the session gets a tailer on it, which starts at the first line
-    of a new session's (`start`, the SessionStart source: startup or clear), else where the session's earlier run was
-    last seen open (_seen), else (a resumed or forked session, a session with no state left: _tail) where it ends now.
+    of a new session's (`start`, the SessionStart source: startup or clear), at where it ends at registration for a
+    resumed or forked session or one with no state left, else where the session's earlier run was last seen open
+    (_seen; _tail for a run registered before its transcript was known).
     `stated`: the constraints a prompt states, kept in the session state; each run gets the session's (_constrain).
     `skip`: client_seq values left unsent before `send` (_send)."""
     path = _state(sid)
@@ -146,8 +147,9 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
         lock_file(lk)
         st = _load(path)
         if register and (st is None or st.get("ended")):
-            st = _register(client, path, st, _seen(transcript) if start in RESUMED else
-                           {transcript: 0} if transcript and st is None and start in FRESH else None)
+            # where its tailer starts, kept in the state so a retried start (_tail) reads from the same place
+            st = _register(client, path, st, {transcript: 0} if transcript and st is None and start in FRESH else
+                           _seen(transcript) if st is None or start in RESUMED else None)
         if st and transcript:
             st["transcript"] = transcript
         if st and stated:
@@ -266,17 +268,19 @@ def _tail(client, path, st):
     """Start tracekit.tailer for the run, detached, unless it has one. System mode: through sudo as the tailer's own
     user (the root-owned system config names it), with a token the signer issued to that user's uid for this run; with
     no tailer installed, the signer records a tailer_lost gap for the run instead. A run whose state names no offsets
-    (one registered with no state left: Claude Code went on with a session a SessionEnd ended, with no SessionStart,
-    as a message to the session or a usage limit's reset does) starts where the transcripts end now: the lines before
-    are earlier runs'."""
+    (registered before its transcript was known, by an earlier hook) starts where the transcripts end the first time
+    this runs, kept in the state so a retry after a failed start reads from the same place."""
     if (AGENT != "claude-code" or not (st and st.get("transcript")) or st.get("tailer") == st["run_id"]
             or os.name == "nt"):   # Claude Code transcripts only; POSIX only
         return
-    # lean: the lines Claude Code wrote for the run's own first event (a continued session's prompt, its first call's
-    # tool use: then a fabricated gap) count as an earlier run's; keep the transcript's end in the state at SessionEnd if
-    # sessions often go on after one
-    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"],
-              "offsets": st.get("offsets") or _seen(st["transcript"])}
+    # lean: a run a session goes on with after a SessionEnd (no SessionStart: a message to the session, a usage limit's
+    # reset) starts where the transcripts end at its first event; what Claude Code wrote between the SessionEnd and
+    # then (the new prompt, the first call's tool use: then a fabricated gap) is read by no run, as the earlier run's
+    # tailer stopped at the SessionEnd; keep the transcript's end in the state at SessionEnd if sessions often go on
+    if not st.get("offsets"):
+        st["offsets"] = _seen(st["transcript"])
+        files.write_json(path, st)
+    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"], "offsets": st["offsets"]}
     sc = system_config() or {}
     t = sc.get("tailer")
     argv = None   # a tailer that dies or is killed stops its heartbeats: the signer writes the tailer_lost gap
@@ -735,7 +739,8 @@ def _handle(client, p, event, sid, tid):
         finally:
             errors = []
             try:
-                _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=typed)
+                _run(client, sid, send="observe", transcript=transcript, source=f"{AGENT}:UserPromptSubmit",
+                     trust="trusted", value=typed)
             except Exception as e:
                 errors.append(e)
             grouped = {}
@@ -748,7 +753,8 @@ def _handle(client, p, event, sid, tid):
                 recorded = min(text_size, share + (index < extra))
                 for value in _observe_values(values, recorded):
                     try:
-                        _run(client, sid, send="observe", source=f"{AGENT}:{source}", trust="untrusted", value=value)
+                        _run(client, sid, send="observe", transcript=transcript, source=f"{AGENT}:{source}",
+                             trust="untrusted", value=value)
                     except Exception as e:
                         errors.append(e)
                 if recorded < text_size:
@@ -766,7 +772,8 @@ def _handle(client, p, event, sid, tid):
             messages.append(f"[tracekit] {len(unexpected)} constraint(s) in text you pasted or the harness added "
                             f"({sources}: {detail}) were recorded, not made live")
         if cut:   # the cut text is an observation the signer never gets: one client_seq skipped says so (_send)
-            _run(client, sid, send="observe", skip=1, source=f"{AGENT}:harness-cut", trust="untrusted",
+            _run(client, sid, send="observe", skip=1, transcript=transcript, source=f"{AGENT}:harness-cut",
+                 trust="untrusted",
                  value=f"Harness text was cut after {MAX_HARNESS_TEXT} characters ({', '.join(cut)}).")
             messages.append(f"[tracekit] oversized untrusted text was cut after {MAX_HARNESS_TEXT} characters "
                             f"({', '.join(cut)}); for the rest of the run a from: untrusted rule applies to every "

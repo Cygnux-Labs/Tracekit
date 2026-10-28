@@ -17,6 +17,7 @@ from tracekit import install, tailer
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
+from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 
@@ -151,6 +152,28 @@ class Tailer(unittest.TestCase):
         self.assertEqual([(e["type"], e.get("tool_call_id")) for e in events if e["type"].startswith("reconcile.")],
                          [("reconcile.fabricated", "toolu_9")])
         self.assertEqual(self.lost(), [])
+
+    def test_a_symlink_among_a_workflows_transcripts_is_lost(self):
+        """A workflow's directories are checked as the subagents' one is: a symlink in place of `workflows` or of one
+        workflow's directory, or a transcript that is a symlink (opened with O_NOFOLLOW), stops the tailer with a
+        signed tailer_lost."""
+        self.write(TOOL_USE)
+        elsewhere = os.path.join(self.d, "elsewhere")
+        os.makedirs(os.path.join(elsewhere, "wf_9"))
+        with open(os.path.join(elsewhere, "agent-a9.jsonl"), "wb") as f:
+            f.write(line(PROMPT))
+        w = os.path.join(self.d, "session", "subagents", "workflows")
+        for target, link, want in (
+                (elsewhere, w, f"a symlink is in place of {w}"),
+                (elsewhere, os.path.join(w, "wf_1"), f"a symlink is in place of {os.path.join(w, 'wf_1')}"),
+                (os.path.join(elsewhere, "agent-a9.jsonl"), os.path.join(w, "wf_1", "agent-a2.jsonl"),
+                 "subagent transcript agent-a2.jsonl: cannot open the transcript")):
+            with self.subTest(link=os.path.relpath(link, w)):
+                shutil.rmtree(os.path.join(self.d, "session"), ignore_errors=True)
+                os.makedirs(os.path.dirname(link))
+                os.symlink(target, link)
+                self.tail(lambda: None)
+                self.assertIn(want, self.lost()[-1])
 
     def test_a_symlink_in_place_of_the_subagents_directory_is_lost(self):
         self.write(TOOL_USE)
@@ -519,6 +542,37 @@ class HookStartsTheTailer(unittest.TestCase):
             self.cc._handle(self.client, p, "UserPromptSubmit", "s1", None)
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
         self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
+
+    def prompt(self, path, popen, system=None):
+        """A UserPromptSubmit of session s1 naming transcript `path`, tailers started through the mock `popen`."""
+        p = {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "transcript_path": path, "prompt": "go on"}
+        with mock.patch.object(self.cc.subprocess, "Popen", popen), \
+                mock.patch.object(self.cc, "system_config", return_value=system):
+            return self.cc._handle(self.client, p, "UserPromptSubmit", "s1", None)
+
+    def test_a_run_a_prompts_later_call_registers_starts_its_tailer_at_once(self):
+        # the prompt's first call can't reach the signer; one of its observations then registers the run
+        path = self.transcript(PROMPT, TOOL_USE, RESULT)
+        self.client.register_run.side_effect = [SignerUnavailable("busy"), {"run_id": "run-1", "run_token": "tok"}]
+        popen = mock.Mock()
+        with self.assertRaises(SignerUnavailable):
+            self.prompt(path, popen)
+        self.assertEqual(json.loads(popen.return_value.stdin.write.call_args.args[0])["offsets"],
+                         {path: os.path.getsize(path)})
+
+    def test_a_tailer_started_again_after_a_failed_start_reads_from_where_its_run_began(self):
+        path = self.transcript(PROMPT, TOOL_USE, RESULT)
+        begun, popen = os.path.getsize(path), mock.Mock()
+        system = {"signer": "/run/s.sock", "tailer": {"user": "tracekit-tailer", "uid": 999998,
+                                                      "python": "/opt/tracekit/bin/python"}}
+        self.client.call.side_effect = RPCError("forbidden", "delegate_run refused")
+        with self.assertRaises(RPCError):
+            self.prompt(path, popen, system)
+        popen.assert_not_called()
+        self.transcript(NEXT)   # the run's own lines, written before its next event
+        self.client.call.side_effect = None
+        self.assertEqual(self.prompt(path, popen, system), 0)
+        self.assertEqual(json.loads(popen.return_value.stdin.write.call_args.args[0])["offsets"], {path: begun})
 
     def test_a_run_whose_tailer_starts_after_its_first_event_reads_on_from_where_the_transcript_ends(self):
         # a run an earlier hook registered with no transcript known: a compaction's SessionStart names it hours later

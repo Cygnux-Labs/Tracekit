@@ -485,13 +485,18 @@ class NeedsYou(unittest.TestCase):
         needs_node(self)
         out = json.loads(page_js(["esc", "plural", "renderNeeds"], """
             const el = {}, $ = id => el[id] ??= { classList: { toggle() {} } }, html = {}, put = (id, h) => { html[id] = h; };
-            const RUNS = new Map([["r1", { id: "r1", state: "open" }]]), needsYou = () => [], V2 = true;
-            let CHECKING = 24;
-            const seen = []; renderNeeds(); seen.push(html.needs); CHECKING = 0; renderNeeds(); seen.push(html.needs);
+            const RUNS = new Map([["r1", { id: "r1", state: "open" }]]), V2 = true;
+            let CHECKING = 24, items = [];
+            const needsYou = () => items, seen = [];
+            renderNeeds(); seen.push(html.needs); CHECKING = 0; renderNeeds(); seen.push(html.needs);
+            CHECKING = 3; items = [{ kind: "HOLD", sev: "med", what: "send_email waits", detail: "d", cmds: [], open: null }];
+            renderNeeds(); seen.push(html.needs);
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertIn("CHECKING · 24 runs of the store not read yet", out[0])
         self.assertNotIn("ALL CLEAR", out[0])
         self.assertIn("ALL CLEAR · 1 agent working · nothing needs you", out[1])
+        self.assertIn("send_email waits", out[2])   # what is known, and that more may come
+        self.assertIn("CHECKING · 3 runs of the store not read yet", out[2])
 
 
 class Span(unittest.TestCase):
