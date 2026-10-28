@@ -42,10 +42,19 @@ _DRIVE = re.compile(r"[A-Za-z]:[\\/]")   # a Windows drive path, the only one re
 _PRINTABLE = re.compile(r"[!-~]*")
 # a leading zero in an IPv6 address's dotted quad (::ffff:01.2.3.4): Python before 3.9.5 reads 01 as 1, later refuses it
 _ZERO_QUAD = re.compile(r"\.0[0-9]|:0[0-9]+\.")
+# an IPv4 host (its last label a number, as WHATWG URL reads one) counts only as a dotted quad: resolvers read the
+# other forms apart (macOS getaddrinfo reaches 127.0.0.1 from 0127.0.0.1, inet_aton reads 87.0.0.1)
+_NUMBER = re.compile(r"[0-9]+|0[xX][0-9A-Fa-f]*")
+_OCTET = r"(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+_QUAD = re.compile(rf"{_OCTET}(\.{_OCTET}){{3}}")
+# view-source: and blob: (PCM 0.1 6.7 step 4): a browser's address bar reads the URL inside, WHATWG URL no host
+_PEELED = re.compile(r"(?i)(view-source|blob):")
 # what a call's detail tells the sender when its URL's host won't parse for a cause the sender can fix (PCM 0.1 6.6)
 NOT_ASCII = ("its URL is not printable ASCII: send the URL with the host in xn-- form and the path and query "
              "percent-encoded")
 PERCENT = "its host has a %: send the URL with the host as plain ASCII, not percent-encoded"
+NOT_QUAD = ("its host is an IPv4 address not written as a dotted quad: send it as four decimal numbers 0-255 without "
+            "leading zeros")
 
 
 class EvidenceError(ValueError):
@@ -259,24 +268,32 @@ def _brackets_ok(url):
         ipaddress.IPv6Address(inside)
     except ValueError:
         return re.fullmatch(r"v[0-9A-Fa-f]+\..+", inside) is not None
-    return not _ZERO_QUAD.search(inside)
+    return not _ZERO_QUAD.search(inside.partition("%")[0])   # the address's, not the zone id's
+
+
+def _not_quad(host):
+    """Whether a reading of a host is an IPv4 address (its last label, one trailing dot dropped, a number) that is no
+    dotted quad of decimal 0-255 without leading zeros."""
+    name = host[:-1] if host.endswith(".") else host
+    return ":" not in name and bool(_NUMBER.fullmatch(name.rpartition(".")[2])) and not _QUAD.fullmatch(name)
 
 
 def _url_host(url):
     """The host `url` reaches as PCM 0.1 compares hosts: "" for none (no host, or a scheme without one: file:,
-    mailto:), None when the verifier can't tell. It reads only a URL of printable ASCII that passes the bracket rule,
-    whose host the browser (WHATWG URL) and urllib read alike and without `%`. A name is lowercased and loses one
-    trailing dot, and has labels of 1 to 63 of a-z, 0-9, `_` and `-` (an `xn--` label as written); an IPv4 address in
-    any form inet_aton takes is dotted decimal; an IPv6 address is RFC 5952 section 4 text in brackets, an IPv4-mapped
-    or NAT64 one the IPv4 address it reaches (classes.url_info), and one with a leading zero in a dotted quad is none
-    (_ZERO_QUAD)."""
-    if not _PRINTABLE.fullmatch(url) or not _brackets_ok(url):
+    mailto:), None when the verifier can't tell. It reads only a URL of printable ASCII that passes the bracket rule and
+    doesn't start with view-source: or blob:, whose host the browser (WHATWG URL) and urllib read alike and without
+    `%`. A name is lowercased and loses one trailing dot, and has labels of 1 to 63 of a-z, 0-9, `_` and `-` (an
+    `xn--` label as written); an IPv4 address is read only as a dotted quad (_not_quad); an IPv6 address is RFC 5952
+    section 4 text in brackets, an IPv4-mapped or NAT64 one the IPv4 address it reaches (classes.url_info), and one
+    with a leading zero in a dotted quad is none (_ZERO_QUAD)."""
+    u = classes.with_scheme(url)
+    if not _PRINTABLE.fullmatch(url) or not _brackets_ok(url) or _PEELED.match(u):
         return None
     info = classes.url_info(url)
     if "host" not in info and not info.get("internal") or info.get("scheme") not in (*classes.SPECIAL, None):
         return ""
-    h, u = info.get("host"), classes.with_scheme(url)
-    if h is None or info.get("ambiguous") or any("%" in r or ":" in r and _ZERO_QUAD.search(r)
+    h = info.get("host")
+    if h is None or info.get("ambiguous") or any("%" in r or ":" in r and _ZERO_QUAD.search(r) or _not_quad(r)
                                                  for r in (classes._whatwg_host(u)[1], urlsplit(u).hostname) if r):
         return None
     if h.startswith("["):   # url_info writes an IPv6 address so; the browser's `[h.com]` (from http:\\[h.com]/) is none
@@ -289,15 +306,17 @@ def _url_host(url):
 
 
 def _why(url):
-    """NOT_ASCII or PERCENT when that is why the host of `url`, which won't parse, won't; else None."""
+    """NOT_ASCII, PERCENT or NOT_QUAD when that is why the host of `url`, which won't parse, won't; else None."""
     if not _PRINTABLE.fullmatch(url):
         return NOT_ASCII
     u = classes.with_scheme(url)
+    if not _brackets_ok(url) or _PEELED.match(u):
+        return None
     try:   # as in classes.url_info: no urlsplit release refuses a URL the bracket rule passes, a later one may
-        hosts = (classes._whatwg_host(u)[1], urlsplit(u).hostname) if _brackets_ok(url) else ()
+        hosts = [h for h in (classes._whatwg_host(u)[1], urlsplit(u).hostname) if h]
     except ValueError:
         return None
-    return PERCENT if any("%" in h for h in hosts if h) else None
+    return PERCENT if any("%" in h for h in hosts) else NOT_QUAD if any(map(_not_quad, hosts)) else None
 
 
 def _host(host):
@@ -311,8 +330,9 @@ def _host(host):
 
 def reached_host(a, recs):
     want = _host(a["host"])
-    if want is None:
-        return "unproven", f"{a['host'][:64]} is no host the verifier can read"
+    if want is None:   # the claim's host is the sender's own: NOT_QUAD is the one cause its pattern lets through
+        why = _why(f"http://{a['host']}/")
+        return "unproven", f"{a['host'][:64]} is no host the verifier can read" + (f": {why}" if why else "")
     seen = ("failed", "")
     for e, _ in recs:
         d = e["data"]

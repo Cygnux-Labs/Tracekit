@@ -119,7 +119,7 @@ A claim says something happened in the sender's run. There are four types:
 |---|---|
 | `tests_passed {suite}` | a call of a tool the [placement table](#tool-placement) classes as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one [test command](#test-commands) (`pytest -q tests/x.py`, not `pytest -q; true`, `pytest &`, `pytest --co` or `echo hi`) |
 | `approved_by {person, call, covers?}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved; with the `approval.request` it answers (the same `approval_id`) and the `policy.decision` that request names (its `decision_id`), of call `call` and with its `tool`. The result's `approved` says which tool call was approved. With `"covers": true`, that approval must also cover the message's request: [what `approved_by` says](#what-approved_by-says) |
-| `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md), to `host`, in which a connection opened (`connections` above 0); or a call of a tool the placement table classes as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok`. Hosts are compared in [canonical form](#hosts) |
+| `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md), to `host`, in which a connection opened (`connections` above 0); or a call of a tool the placement table classes as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok` (an answer with an HTTP error status, such as a 404, is not `ok`). Hosts are compared in [canonical form](#hosts) |
 | `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok`. `path` must be absolute (`/repo/refund.py`, `C:\repo\refund.py`) and have no `..`; it is compared as [Paths](#paths) says |
 
 Each claim gets one result:
@@ -131,8 +131,9 @@ Each claim gets one result:
   as a shell tool`), and so is a record that says less than the claim: a connect a kernel sensor or OpenShell saw
   (`the run try to connect to api.example.com, an attempt`), an egress minute in which no connection opened
   (`saw no connection to api.example.com open`), a host the verifier can't tell (a URL outside printable ASCII, a host
-  with `%`: [Hosts](#hosts)), or a `Write` whose path the verifier can't tell from the claimed one ([Paths](#paths)). A
-  connect the sensor marked `denied` counts for nothing, so a `reached_host` claim that rests on one alone fails.
+  with `%`, an IPv4 address not written as a dotted quad: [Hosts](#hosts)), or a `Write` whose path the verifier
+  can't tell from the claimed one ([Paths](#paths)). A connect the sensor marked `denied` counts for nothing, so a
+  `reached_host` claim that rests on one alone fails.
 - **failed**: the evidence does not verify, no record in it says what the claim says, or the claim is malformed (a
   relative `file_written` path, a `tests_passed` suite that is no test command). An `approval` without the
   `approval.request` and `policy.decision` that say what was approved fails too: the sender chooses its evidence and
@@ -225,11 +226,13 @@ not rely on the runner list.
 PCM 0.1 compares hosts in ASCII only. The claim's `host`, the call's URL host and the effect's `host` are each put in
 one form before they are compared, and a port is ignored:
 
-1. The URL, or the claim's or effect's host, must be printable ASCII: every character from `!` to `~` (U+0021 to
-   U+007E). A space, tab, newline or other control character, DEL or any non-ASCII character anywhere in it, the path
-   too, makes it one the verifier can't tell. An international name is compared in its `xn--` form, as DNS names it:
-   claim and fetch `xn--bcher-kva.example`, not `bücher.example`. A call's detail then ends with `its URL is not
-   printable ASCII: send the URL with the host in xn-- form and the path and query percent-encoded`.
+1. The URL, or the effect's host, must be printable ASCII: every character from `!` to `~` (U+0021 to U+007E). A
+   space, tab, newline or other control character, DEL or any non-ASCII character anywhere in it, the path too, makes
+   it one the verifier can't tell. An international name is compared in its `xn--` form, as DNS names it: claim and
+   fetch `xn--bcher-kva.example`, not `bücher.example`. A call's detail then ends with `its URL is not printable
+   ASCII: send the URL with the host in xn-- form and the path and query percent-encoded`. A claim's `host` may hold
+   only `a`-`z`, `0`-`9`, `.`, `_`, `:` and `-`: any other character, a capital letter or `%` among them, fails the
+   claim as malformed.
 2. Before anything else reads the URL, a `[` or `]` in its authority (between `//` and the first `/`, `?` or `#`) is
    taken only as one pair around an IPv6 or IPvFuture address that opens the host after the last `@`, followed by
    nothing or `:` and a port: `http://[::1]:8080/` and `http://u@[::1]/x` have a host; `http://[x]@good.com/`,
@@ -240,23 +243,28 @@ one form before they are compared, and a port is ignored:
    host Python's `urllib` reads (`http://a.example\@b.example/` is read apart). The host is read by these rules alone,
    so a URL a browser refuses (a port above 65535, an `xn--` label that is no valid punycode) can still have one.
    Only `http`, `https`, `ws`, `wss`, `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
+   A URL that starts with `view-source:` or `blob:` can't be told: a browser's address bar reads the URL inside it,
+   WHATWG URL no host.
 4. A host is never percent-decoded: one with a `%`, as either reads it, can't be told (`http://%61.example/` is not
    `a.example`, `http://[::1%25eth0]/` not `::1`). A call's detail then ends with `its host has a %: send the URL with
    the host as plain ASCII, not percent-encoded`.
 5. The host is then written for comparison:
    - a name: lowercased, without one trailing dot, of labels of 1 to 63 of `a`-`z`, `0`-`9`, `_` and `-` joined by
      dots. An `xn--` label is compared as written, without a punycode check.
-   - an IPv4 address, in any form `inet_aton` takes (`0x7f.1`, `2130706433`, `01.2.3.4` with `01` octal): dotted
-     decimal (`127.0.0.1`, `1.2.3.4`).
+   - an IPv4 address (a host whose last label is a number: digits, or `0x` and hex digits): only as a dotted quad,
+     four decimal numbers 0 to 255 without leading zeros (`127.0.0.1`, `10.0.0.1`). Any other form can't be told
+     (`0127.0.0.1`, which macOS reaches as `127.0.0.1` and `inet_aton` reads as `87.0.0.1`; `127.1`, `0x7f.0.0.1`,
+     `2130706433`), and a call's or a claim's detail then ends with `its host is an IPv4 address not written as a
+     dotted quad: send it as four decimal numbers 0-255 without leading zeros`.
    - an IPv6 address in brackets: RFC 5952 section 4 text (`[2001:DB8:0:0::1]` is `2001:db8::1`), an IPv4-mapped or
      NAT64 one the IPv4 address it reaches. One whose dotted quad has a leading zero (`[::ffff:01.2.3.4]`) can't be
      told: Python before 3.9.5 reads `01` as `1`, later releases refuse it.
 
 A record whose host the verifier can't tell (any of the above, an empty label, something that looks like an address
-and is none, a URL Python can't split) is unproven, never proven or failed; a claimed host it can't tell makes the
-claim unproven. The verifier checks each rule itself, so its verdict is the same on every Python: `urlsplit`'s own
-bracket check, and what it strips from a URL (leading controls and spaces, tabs and newlines), differ between
-releases.
+and is none, a URL Python can't split) is unproven, never proven or failed; a claimed host it can't tell
+(`a..example`, `0127.0.0.1`, `:80`) makes the claim unproven. The verifier checks each rule itself, so its verdict is
+the same on every Python: `urlsplit`'s own bracket check, and what it strips from a URL (leading controls and spaces,
+tabs and newlines), differ between releases.
 
 ### Paths
 

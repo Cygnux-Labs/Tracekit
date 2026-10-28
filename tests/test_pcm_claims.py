@@ -846,8 +846,8 @@ class PCM01(unittest.TestCase):
                            ("api.example.com:443", call("fetch", {"url": "https://api.example.com/"})),
                            ("::1", call("fetch", {"url": "http://[::1]:8080/"})),
                            ("2001:db8::1", call("fetch", {"url": "http://[2001:DB8:0:0::1]/"})),
-                           ("127.0.0.1", call("fetch", {"url": "http://0x7f.1/"})),
-                           ("1.2.3.4", call("fetch", {"url": "http://01.2.3.4/"})),   # inet_aton: 01 is octal
+                           ("10.0.0.1", call("fetch", {"url": "http://10.0.0.1:8080/"})),
+                           ("127.0.0.1", call("fetch", {"url": "http://127.0.0.1./"})),
                            ("1.2.3.4", call("fetch", {"url": "http://[64:ff9b::102:304]/"})),   # NAT64
                            ("api.example.com", effect("api.example.com.")),
                            ("10.0.0.1", effect("::ffff:10.0.0.1"))):
@@ -906,7 +906,9 @@ class PCM01(unittest.TestCase):
                           ("a.example", "http://a.example\\@%61.example/"),   # urllib's
                           ("b.example", "http://a.example\\@%62.example/"),   # the two read apart too
                           ("h.com", "http://%5bh.com%5d/"), ("h.com.evil", "http://h.com%00.evil/"),
-                          ("::1", "http://[::1%25eth0]/")):
+                          ("::1", "http://[::1%25eth0]/"),
+                          # a zone id is no address, so its .01 is no leading zero: the URL passes the bracket rule
+                          ("::1", "http://[::1%25a.01]/"), ("fe80::1", "http://[fe80::1%25en.05]/")):
             with self.subTest(url=url):
                 self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url})),
                                  ("unproven", f"the verifier can't tell whether call c1 reached {host}: {why}"))
@@ -917,6 +919,62 @@ class PCM01(unittest.TestCase):
             with self.subTest(host=host, recs=recs):
                 self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
 
+    def test_an_ipv4_host_not_written_as_a_dotted_quad_is_unproven(self):
+        """A host whose last label is a number (ASCII digits, or 0x and hex digits or none) is an IPv4 address, read
+        only as four decimal numbers 0-255 without leading zeros: resolvers read the other forms apart (macOS reaches
+        127.0.0.1 from 0127.0.0.1, inet_aton reads 87.0.0.1). The detail of a call or a claim says what the sender can
+        do; an effect's host gets none."""
+        why = ("its host is an IPv4 address not written as a dotted quad: send it as four decimal numbers 0-255 without "
+               "leading zeros")
+        for host, url in (("87.0.0.1", "http://0127.0.0.1/"), ("127.0.0.1", "http://0127.0.0.1:8080/x"),
+                          ("10.0.0.1", "http://010.0.0.1/"), ("192.168.0.10", "http://192.168.0.010/"),
+                          ("127.0.0.1", "http://0127.0.0.1./"), ("127.0.0.1", "http://127.1/"),
+                          ("127.0.0.1", "http://0x7f.0.0.1/"), ("127.0.0.1", "http://0X7F.0.0.1/"),
+                          ("127.0.0.1", "http://2130706433/"), ("0.0.0.0", "http://0x/"),
+                          ("1.2.3.4", "http://1.2.3.4.5/"), ("1.2.3.4", "http://a.1.2.3.4/"),
+                          ("1.2.3.4", "http://1.2.3.256/"), ("8.8.8.8", "http://0128.0.0.1/"),
+                          ("127.0.0.1", "http:\\\\0127.0.0.1/")):   # the browser's reading alone
+            with self.subTest(url=url):
+                self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url})),
+                                 ("unproven", f"the verifier can't tell whether call c1 reached {host}: {why}"))
+        for host in ("0127.0.0.1", "127.1", "2130706433", "0x7f.0.0.1", "127.0.0.01:443"):
+            with self.subTest(host=host):
+                self.assertEqual(claims.reached_host({"host": host}, effect("127.0.0.1")),
+                                 ("unproven", f"{host} is no host the verifier can read: {why}"))
+        for host in ("0127.0.0.1", "127.1", "2130706433"):
+            with self.subTest(host=host):
+                self.assertEqual(claims.reached_host({"host": "127.0.0.1"}, effect(host)),
+                                 ("unproven", "effect.observed seq 3: a host the verifier can't read"))
+        for host, url in (("1a.example", "http://1a.example/"), ("example.0x1g", "http://example.0x1g/")):
+            with self.subTest(url=url):   # a last label that is no number: a name
+                self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url}))[0], "proven")
+
+    def test_a_claimed_host_that_reads_as_none_is_unproven(self):
+        """`:80` passes the claim pattern and reads as no host, which must not match the no host of a file: URL or of an
+        effect's `:443`."""
+        for recs in (call("fetch", {"url": "file:///x"}), effect(":443")):
+            with self.subTest(recs=recs):
+                self.assertEqual(claims.reached_host({"host": ":80"}, recs),
+                                 ("unproven", ":80 is no host the verifier can read"))
+
+    def test_no_advice_for_a_url_the_bracket_rule_refuses(self):
+        """The `%` and dotted-quad sentences are for a URL that passes the bracket rule (PCM 0.1 6.6): a reading of one
+        it refuses moves with the URL and the urlsplit release."""
+        # agent-flow:allow-secret (no password: an IPv6 address in the user info)
+        for host, url in (("::1", "http://[::1]@[::1%25x]/"), ("127.0.0.1", "http://[x]@0127.0.0.1/")):
+            with self.subTest(url=url):
+                self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url})),
+                                 ("unproven", f"the verifier can't tell whether call c1 reached {host}"))
+
+    def test_a_view_source_or_blob_url_is_unproven(self):
+        """A browser's address bar reads the URL inside view-source: and blob:, WHATWG URL reads no host from either:
+        the verifier can't tell, and says nothing the sender could fix in the host."""
+        for url in ("blob:http://a.com/x", "view-source:http://a.com/", "BLOB:view-source:https://a.com/",
+                    "blob:http://[x]@a.com/", "blob:http://%61.com/", "view-source:http://0127.0.0.1/"):
+            with self.subTest(url=url):
+                self.assertEqual(claims.reached_host({"host": "a.com"}, call("fetch", {"url": url})),
+                                 ("unproven", "the verifier can't tell whether call c1 reached a.com"))
+
     def test_an_ipv6_dotted_quad_with_a_leading_zero_is_unproven(self):
         """Python before 3.9.5 reads ::ffff:01.2.3.4 as ::ffff:1.2.3.4, later releases refuse it: PCM 0.1 refuses it
         on every release, emulated here."""
@@ -926,9 +984,11 @@ class PCM01(unittest.TestCase):
             with self.subTest(old=old), mock.patch.object(ipaddress._BaseV4, "_parse_octet", lenient) if old \
                     else contextlib.nullcontext():
                 for host, recs in (("1.2.3.4", call("fetch", {"url": "http://[::ffff:01.2.3.4]/"})),
+                                   ("1.2.3.4", call("fetch", {"url": "http://[::ffff:1.2.03.4]/"})),
                                    ("1.2.3.4", call("fetch", {"url": "file://[::ffff:01.2.3.4]/"})),   # bracket rule
                                    # no authority, so no bracket rule: the readings' own check
                                    ("1.2.3.4", call("fetch", {"url": "http:\\\\[::ffff:01.2.3.4]/"})),
+                                   ("1.2.3.4", call("fetch", {"url": "http:\\\\[::ffff:1.2.3.04]/"})),
                                    ("1.2.3.4", effect("::ffff:1.2.03.4")),
                                    ("::ffff:01.2.3.4", call("fetch", {"url": "http://1.2.3.4/"}))):
                     self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven", (host, recs))
@@ -945,7 +1005,7 @@ class PCM01(unittest.TestCase):
         opens the host after the last `@`, checked before anything else reads the URL. urlsplit's own check differs
         between Python releases (none, the first bracketed part of the authority, the part after the last `@`), and so
         does what it strips (leading controls and spaces from 3.11.4, tabs and newlines from 3.9.5), so each is
-        emulated: the verdicts must not move."""
+        emulated: the verdicts and details must not move."""
         def first_part(netloc):   # earlier CPython releases' check, from 3.11.4 on
             inside = netloc.partition("[")[2].partition("]")[0]
             if not (re.fullmatch(r"v[0-9A-Fa-f]+\..+", inside) if inside.startswith("v")
@@ -955,7 +1015,7 @@ class PCM01(unittest.TestCase):
                  ("good.com", "[v1.x]@good.com/", "unproven"), ("evil.example", "http://[v1.x]@evil.example/",
                                                                   "unproven"),
                  ("::1", "http://[zz]@[::1]/", "unproven"), ("::1", "http://[::1]x/", "unproven"),
-                 ("x", "http://[@x::1]/", "unproven"),
+                 ("x", "http://[@x::1]/", "unproven"), ("a.com", "http://[x]@%61.com/", "unproven"),
                  # agent-flow:allow-secret (no password: an IPv6 address before an empty host)
                  ("api.example.com", "http://[::1]@/", "unproven"), ("::1", "http://[::1]@/", "unproven"),
                  ("a.example", " http://a.example\\@b.example/", "unproven"),
@@ -965,6 +1025,7 @@ class PCM01(unittest.TestCase):
                  ("1.2.3.4", "http://[::ffff:1.2.3.4]/", "proven"), ("good.com", "http://good.com/a[1]", "proven"),
                  ("good.com", "http://good.com/?q=]", "proven"), ("other.com", "http://good.com/?q=]", "failed"))
         self.addCleanup(urllib.parse.clear_cache)
+        details = {}   # this release's, the first run's
         for emu in ({}, {"_check_bracketed_netloc": lambda netloc: None}, {"_check_bracketed_netloc": first_part},
                     {"_WHATWG_C0_CONTROL_OR_SPACE": ""},
                     {"_WHATWG_C0_CONTROL_OR_SPACE": "", "_UNSAFE_URL_BYTES_TO_REMOVE": []}):
@@ -972,7 +1033,8 @@ class PCM01(unittest.TestCase):
             with self.subTest(emu=emu), mock.patch.multiple(urllib.parse, create=True, **emu) if emu \
                     else contextlib.nullcontext():
                 for host, url, want in cases:
-                    self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url}))[0], want, url)
+                    got = claims.reached_host({"host": host}, call("fetch", {"url": url}))
+                    self.assertEqual(got, (want, details.setdefault((host, url), got[1])), url)
 
     def test_placement_is_pcm_01s_frozen_table(self):
         """The tool placement table is data shipped with tracekit, the same as the PCM repo's registry/tools.json."""

@@ -85,6 +85,18 @@ class TestVerify(Case):
         self.assertEqual(code, 2)
         self.assertIn(f"tracekit pcm verify: {self.files['schema']}: ", err)
 
+    def test_a_number_past_the_double_range_exits_2(self):
+        """PCM 0.1 3.3: 1e400 rounds to no finite IEEE 754 double, so the message doesn't parse: bad input, as the
+        standalone verifier says too, not a reject for its signature."""
+        msg = self.call("pcm_sign", message=self.body())["message"]
+        path = os.path.join(self.dir, "big.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(msg)[:-1] + ', "payload": {"kind": "data", "data": {"n": 1e400}}}')
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = pcm_cli.main(["verify", path, "--trust", self.files["trust"], "--schema", self.files["schema"]])
+        self.assertEqual((code, err.getvalue()), (2, f"tracekit pcm verify: {path}: non_finite: 1e400\n"))
+
     def test_two_keys_of_one_log_exit_2(self):
         msg = self.call("pcm_sign", message=self.body())["message"]
         name = checkpoint.parse_vkey(self.s.vkey)[0]
