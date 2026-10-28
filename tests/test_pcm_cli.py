@@ -21,7 +21,8 @@ class TestDemo(unittest.TestCase):
             self.assertEqual(pcm_cli.main(["demo"]), 0)
         text = out.getvalue()
         for line in ("B: ACCEPT           signature ok · replay ok · schema ok · grant ok (alice, 1 step) · "
-                     'approved_by proven (approval seq 4 by alice of "pcm.grant" call grant-1)\n',
+                     'approved_by proven (approval seq 4 by alice of "pcm.grant" call grant-1, which issued this '
+                     "message's root grant)\n",
                      "B: ACCEPT-UNPROVEN  tests_passed: unproven (no evidence)",
                      "B: REJECT           approved_by: failed (record 1: hash does not match the event)",
                      "B: REJECT           grant: grant 0: amount 50000 breaks amount <= 20000",

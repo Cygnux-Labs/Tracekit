@@ -37,7 +37,8 @@ SCHEMA_DOC = _obj(["pcm_schema", "name", "fields"], pcm_schema={"type": "integer
                   fields={"type": "object", "additionalProperties": _FIELD,
                           "propertyNames": {"type": "string", "pattern": r"^[a-z][a-z0-9_]{0,63}" + _END}},
                   claims={"type": "array", "maxItems": len(CLAIM_TYPES), "items": {"enum": CLAIM_TYPES}},
-                  grant={"type": "boolean"})
+                  grant={"type": "boolean"},
+                  tool=_str(256, minLength=1))   # the tool the intent stands for: approved_by's `covers` reads it
 
 
 def _errors(schema, value):
@@ -60,7 +61,8 @@ _OPS = {"int": "== <= >= < >", "money": "== <= >= < >", "time": "== <= >=", "str
 # claim args, in the schema language
 CLAIM_ARGS = {"tests_passed": {"suite": {"type": "string", "max": 4096}},
               "approved_by": {"person": {"type": "string", "max": 256},
-                              "call": {"type": "id", "pattern": ID["pattern"]}},
+                              "call": {"type": "id", "pattern": ID["pattern"]},
+                              "covers": {"type": "bool", "optional": True}},
               "reached_host": {"host": {"type": "id", "pattern": HOST["pattern"]}},
               "file_written": {"path": {"type": "string", "max": 4096},
                                "digest": {"type": "id", "pattern": DIGEST["pattern"]}}}
@@ -295,14 +297,19 @@ class Replay:
         return True, "fresh"
 
 
-def _verdict(out, doc, strict):
+def _verdict(out, doc, strict, sent):
+    """The verdict and its reasons from the parts of `out`, for a message whose claims are `sent`."""
     claims = out["claims"] or []
     bad = [f"replay: {out['replay']['detail']}"] if out["replay"]["ok"] is False else []
     bad += [f"schema: {e}" for e in out["schema"]["errors"]]
     bad += [f"grant: {p}" for p in (out["grants"] or {}).get("problems", [])]
     bad += [f"{c['type']}: failed ({c['detail']})" for c in claims if c["result"] == "failed"]
     proven = {c["type"] for c in claims if c["result"] == "proven"}
-    missing = [f"{t}: required, not proven" for t in (doc or {}).get("claims", []) if t not in proven]
+    # an approved_by meets the schema's need only when it says it covers this request (PCM 0.1 6.6)
+    met = {c["type"] for c, s in zip(claims, sent) if c["result"] == "proven"
+           and (c["type"] != "approved_by" or s["args"].get("covers") is True)}
+    missing = [f"{t}: required, not proven" + " to cover this request: claim it with covers true" * (t in proven)
+               for t in (doc or {}).get("claims", []) if t not in met]
     if bad or strict and missing:
         return "reject", bad + (missing if strict else [])
     soft = [f"{c['type']}: unproven ({c['detail']})" for c in claims if c["result"] == "unproven"] + missing
@@ -350,6 +357,6 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     if doc is not None:
         out["grants"] = verify_grants(msg, doc, trust)
     from tracekit.pcm.claims import check_claim   # claims.py imports this module
-    out["claims"] = [check_claim(c, msg, trust) for c in msg.get("claims", [])]
-    out["verdict"], out["reasons"] = _verdict(out, doc, strict)
+    out["claims"] = [check_claim(c, msg, trust, doc) for c in msg.get("claims", [])]
+    out["verdict"], out["reasons"] = _verdict(out, doc, strict, msg.get("claims", []))
     return out

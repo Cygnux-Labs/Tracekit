@@ -108,7 +108,9 @@ def demo():
         ev = call(A, "pcm_evidence", **run, run_seqs=seqs)
         ev = {"checkpoint": ev["checkpoint"], "records": [{k: x[k] for k in ("event", "hash", "proof")}
                                                          for x in ev["records"]]}
-        approved = {"type": "approved_by", "args": {"person": "alice", "call": "grant-1"}, "evidence": ev}
+        # covers: alice's approval issued the grant these requests are under, so it covers them
+        approved = {"type": "approved_by", "args": {"person": "alice", "call": "grant-1", "covers": True},
+                    "evidence": ev}
         trust, replay, verdicts = {"logs": [s.vkey], "algs": ["ed25519"]}, pcm.Replay(), []
 
         def send(what, claims, amount=12000):

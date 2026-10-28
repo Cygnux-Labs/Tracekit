@@ -173,12 +173,15 @@ def tests_passed(a, recs):
                 f"ran {a['suite'][:64]!r}", "shell")
 
 
-def approved_by(a, recs):
+def approved_by(a, recs, msg, doc):
     """Proven by the person's approval of call `call` with the approval.request it answers and the policy.decision
     that request names: the call id is the agent's own name for the call, so only the decision says what was approved.
     A proven claim adds {tool, args} of that decision (args None unless the evidence opens it), which the detail shows
     too, the agent's tool name as JSON so it can't spell args. Records that disagree on what was approved fail it in
-    any order: requests of one approval that name two decisions, or approvals of the call that name two."""
+    any order: requests of one approval that name two decisions, or approvals of the call that name two.
+
+    With `covers` the sender also says the approval covers message `msg`'s request (PCM 0.1 6.6): it issued the
+    message's root grant, or it is of the tool the intent's schema document `doc` names, with the intent's args."""
     mine = []
     for e, _ in recs:
         d = e["data"]
@@ -188,7 +191,7 @@ def approved_by(a, recs):
             mine.append(e)
     if not mine:
         return "failed", f"no approval of {a['call']} by the person {a['person']}"
-    found = {}   # {[tool, args] in JCS: (the first approval of it, tool, args)}
+    found, aids = {}, set()   # {[tool, args] in JCS: (the first approval of it, tool, args)}, the approvals' ids
     for e in sorted(mine, key=lambda e: e["seq"]):
         asked = {x["data"]["decision_id"] for x, _ in recs
                  if x["type"] == "approval.request" and x["data"]["approval_id"] == e["data"].get("approval_id")}
@@ -199,6 +202,7 @@ def approved_by(a, recs):
             if x["type"] == "policy.decision" and c.get("decision_id") in asked and c["tool_use_id"] == a["call"] \
                     and c.get("tool"):
                 found.setdefault(canonical([c["tool"], args]), (e, c["tool"], args))
+                aids.add(e["data"].get("approval_id"))
     if len(found) > 1:
         return "failed", (f"the evidence holds {len(found)} different decisions approved as call {a['call']} by "
                           f"{a['person']}: send the records of one approval")
@@ -210,8 +214,31 @@ def approved_by(a, recs):
                           "the policy.decision that request names")
     [(e, tool, args)] = found.values()
     opened = "" if args is None else f" with args {canonical(args).decode()}"
-    return "proven", f"approval seq {e['seq']} by {a['person']} of {canonical(tool).decode()} call {a['call']}" \
-        + opened, {"tool": tool, "args": args}
+    said = f"approval seq {e['seq']} by {a['person']} of {canonical(tool).decode()} call {a['call']}" + opened
+    approved = {"tool": tool, "args": args}
+    if a.get("covers") is not True:
+        return "proven", said, approved
+    root, want = (msg.get("grants") or [{}])[0].get("issuer", {}), (doc or {}).get("tool")
+    if tool == "pcm.grant":
+        if root.get("approval_id") in aids and (root["run"], root["tenant"]) == (msg["from"]["run"],
+                                                                                  msg["from"]["tenant"]):
+            return "proven", f"{said}, which issued this message's root grant", approved
+        return "failed", (f"{said}: a pcm.grant approval covers only the requests under the grant it issued, and it "
+                          "did not issue this message's root grant")
+    if want is None:
+        return "unproven", (f"{said}: the intent's schema names no tool, so the verifier can't tell whether it covers "
+                            "this request: name the tool in the schema document, or cite the approval that issued the "
+                            "message's root grant")
+    if tool != want:
+        return "failed", f"{said}: not of {canonical(want).decode()}, the tool the intent's schema names, so it does " \
+            "not cover this request"
+    if args is None:
+        return "unproven", (f"{said}: its args are not opened, so the verifier can't tell whether they are this "
+                            "request's: open the decision")
+    if canonical(args) != canonical(msg["intent"]["args"]):
+        return "failed", f"{said}: not this request's args {canonical(msg['intent']['args']).decode()}, so it does " \
+            "not cover this request"
+    return "proven", f"{said}: this request's tool and args", approved
 
 
 def _brackets_ok(url):
@@ -340,13 +367,13 @@ def file_written(a, recs):
     return _ran(recs, match, f"wrote {a['path'][:64]} with {a['digest']}")
 
 
-CHECKERS = {"tests_passed": tests_passed, "approved_by": approved_by, "reached_host": reached_host,
-            "file_written": file_written}
+CHECKERS = {"tests_passed": tests_passed, "reached_host": reached_host, "file_written": file_written}
 
 
-def check_claim(c, msg, trust):
-    """{type, result: proven, unproven or failed, detail} of claim `c` of message `msg`, and for a proven approved_by
-    `approved`: {tool, args} of the decision the person approved."""
+def check_claim(c, msg, trust, doc):
+    """{type, result: proven, unproven or failed, detail} of claim `c` of message `msg`, whose intent's schema document
+    is `doc` (None when the receiver has none), and for a proven approved_by `approved`: {tool, args} of the decision
+    the person approved."""
     errs = check_args({"fields": CLAIM_ARGS[c["type"]]}, c["args"])
     bad, approved = "; ".join(errs) if errs else malformed(c["type"], c["args"]), []
     if bad:
@@ -355,7 +382,9 @@ def check_claim(c, msg, trust):
         result, detail = "unproven", "no evidence"
     else:
         try:
-            result, detail, *approved = CHECKERS[c["type"]](c["args"], evidence(c["evidence"], msg, trust))
+            recs = evidence(c["evidence"], msg, trust)
+            result, detail, *approved = approved_by(c["args"], recs, msg, doc) if c["type"] == "approved_by" \
+                else CHECKERS[c["type"]](c["args"], recs)
         except EvidenceError as e:
             result, detail = "failed", str(e)
     return {"type": c["type"], "result": result, "detail": detail, **({"approved": approved[0]} if approved else {})}

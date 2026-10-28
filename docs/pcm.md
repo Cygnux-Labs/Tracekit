@@ -21,7 +21,7 @@ $ tracekit pcm demo
 tracekit pcm demo: two agents negotiate a refund (an in-process signer in /var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/tk-pcm-lo5rs176)
   alice approves agent A's grant: refund.request, amount <= $200.00, order == 81, until 18:00Z, can be passed on: no
   A -> B  refund.request {amount $120.00, order 81} + approved_by(alice)
-      B: ACCEPT           signature ok · replay ok · schema ok · grant ok (alice, 1 step) · approved_by proven (approval seq 4 by alice of "pcm.grant" call grant-1)
+      B: ACCEPT           signature ok · replay ok · schema ok · grant ok (alice, 1 step) · approved_by proven (approval seq 4 by alice of "pcm.grant" call grant-1, which issued this message's root grant)
   A -> B  same request + tests_passed(pytest tests/test_refund.py), no evidence
       B: ACCEPT-UNPROVEN  tests_passed: unproven (no evidence)
   A -> B  approved_by with one record hash changed
@@ -94,7 +94,9 @@ schema is a different schema:
 ```
 
 `refund.request@sha256:d8636b6f…` is `name` + `@` + the SHA-256 of the document's JCS. `claims` lists the claim types
-the intent needs; `grant: true` says a message without a grant is rejected.
+the intent needs; `grant: true` says a message without a grant is rejected. An optional `tool` (1 to 256 characters)
+names the tool the intent stands for, such as `"tool": "pay"`: an `approved_by` claim with `covers` is checked against
+it ([What `approved_by` says](#what-approved_by-says)).
 
 | Type | Parameters | A value passes when |
 |---|---|---|
@@ -116,7 +118,7 @@ A claim says something happened in the sender's run. There are four types:
 | Claim | Proven when the evidence holds |
 |---|---|
 | `tests_passed {suite}` | a call of a tool the [placement table](#tool-placement) classes as shell (`Bash`, `shell`, `terminal`…), whose opened args have `command` equal to `suite`, not denied by policy, with a result `ok` written by a gateway or executor (T2). `suite` must be one [test command](#test-commands) (`pytest -q tests/x.py`, not `pytest -q; true`, `pytest &`, `pytest --co` or `echo hi`) |
-| `approved_by {person, call}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved; with the `approval.request` it answers (the same `approval_id`) and the `policy.decision` that request names (its `decision_id`), of call `call` and with its `tool`. The result's `approved` says which tool call was approved: [read it](#what-approved_by-says) |
+| `approved_by {person, call, covers?}` | an `approval` record that approves call `call`, by the person `person` (the name signer.yaml's `persons` gives the approver; an identity no person maps to proves nothing), not an agent approver and not self-approved; with the `approval.request` it answers (the same `approval_id`) and the `policy.decision` that request names (its `decision_id`), of call `call` and with its `tool`. The result's `approved` says which tool call was approved. With `"covers": true`, that approval must also cover the message's request: [what `approved_by` says](#what-approved_by-says) |
 | `reached_host {host}` | an `effect.observed` the signer wrote from an [egress observer](egress.md), to `host`, in which a connection opened (`connections` above 0); or a call of a tool the placement table classes as http (`WebFetch`, `http_request`…) whose opened args have a `url` on `host`, with a T2 result `ok`. Hosts are compared in [canonical form](#hosts) |
 | `file_written {path, digest}` | a `Write` call of `path` whose opened `content` has SHA-256 `digest` (as `sha256sum` prints it, with `sha256:` in front), with a T2 result `ok`. `path` must be absolute (`/repo/refund.py`, `C:\repo\refund.py`) and have no `..`; it is compared as [Paths](#paths) says |
 
@@ -155,9 +157,29 @@ args, and the args whole and in JCS:
  "approved": {"tool": "read_file", "args": {"path": "/etc/motd"}}}
 ```
 
-Both are `proven`: alice approved that call. Whether that call is the authority the message needs is for the receiver
-to judge from `approved`; the verdict doesn't compare the tool or args with the intent. `tracekit pcm verify` prints
-the detail of a proven `approved_by` on its line. A grant is the authority the verifier checks.
+Both are `proven`: alice approved that call. Without `covers`, that is all the claim says: nothing ties the call to
+the request. `tracekit pcm verify` prints the detail of a proven `approved_by` on its line.
+
+With `"covers": true` the sender says the approval covers this message's request, and the verifier checks it. The
+claim is proven only when either:
+
+- the approval issued the message's root grant: a `pcm.grant` approval whose `approval_id`, run and tenant are the
+  root grant's issuer's (`approval seq 4 by alice of "pcm.grant" call grant-1, which issued this message's root
+  grant`); or
+- the schema names the `tool`, the approval is of that tool, the evidence opens the decision, and its args equal the
+  intent's args in JCS (`…: this request's tool and args`).
+
+Else the claim fails when it can tell the approval doesn't cover the request: a `pcm.grant` approval that issued
+another grant or none, a decision of another tool than the schema names (opened or not), or opened args that differ
+(`approval seq 7 by alice of "pay" call pay-6 with args {"amount":500,"order":81}: not this request's args
+{"amount":12000,"order":81}, so it does not cover this request`). It is unproven when it can't tell, with what to do:
+the schema names no tool (`… name the tool in the schema document, or cite the approval that issued the message's
+root grant`), or the decision isn't opened (`… open the decision`).
+
+A schema that lists `approved_by` in `claims` needs a proven `approved_by` with `covers`. One without it doesn't
+count, so a sender that cites alice's approval of a $5 refund for a $50 refund and leaves `covers` out gets
+`accept-unproven`, or `reject` with `--strict`: `approved_by: required, not proven to cover this request: claim it
+with covers true`.
 
 ### Tool placement
 
@@ -419,7 +441,7 @@ The receiver checks the whole chain again (`verify_grants`), so a chain the sign
  "grants": {"result": "ok", "steps": 1, "root": {"kind": "person", "id": "uid:990001", "person": "alice"},
             "problems": []},
  "claims": [{"type": "approved_by", "result": "proven",
-             "detail": "approval seq 4 by alice of \"pcm.grant\" call grant-1",
+             "detail": "approval seq 4 by alice of \"pcm.grant\" call grant-1, which issued this message's root grant",
              "approved": {"tool": "pcm.grant", "args": null}}],
  "verdict": "accept", "reasons": [], "skipped": []}
 ```
@@ -430,8 +452,8 @@ receiver.
 
 | Verdict | When |
 |---|---|
-| `reject` | the envelope or signature fails, replay or recipient fails, the args break the schema, the grant chain fails, any claim fails, or (with `strict`) a claim type the schema lists is not proven |
-| `accept-unproven` | otherwise, when a claim is unproven or a claim type the schema lists has no proven claim |
+| `reject` | the envelope or signature fails, replay or recipient fails, the args break the schema, the grant chain fails, any claim fails, or (with `strict`) a claim type the schema lists is not proven (`approved_by`: not proven with `covers`) |
+| `accept-unproven` | otherwise, when a claim is unproven or a claim type the schema lists has no proven claim (`approved_by`: none proven with `covers`) |
 | `accept` | everything checked passed and every claim is proven |
 
 A forged message stops at the signature; no claim work is done for it.
@@ -454,7 +476,7 @@ passes once it reaches its receiver, or once the receiver has its schema.
 
 ```text
 $ tracekit pcm verify msg.json --trust trust.json --schema refund.request.json --me uid:990102
-ACCEPT  signature ok · schema ok · grant ok (alice, 1 step) · approved_by proven (approval seq 4 by alice of "pcm.grant" call grant-1) · not checked: replay
+ACCEPT  signature ok · schema ok · grant ok (alice, 1 step) · approved_by proven (approval seq 4 by alice of "pcm.grant" call grant-1, which issued this message's root grant) · not checked: replay
 ```
 
 It exits 0 for accept, 3 for accept-unproven, 1 for reject and 2 when it can't read its inputs (trust.json with two
@@ -507,8 +529,10 @@ with Client().run("agent-a") as run:
     [d] = [e for e in recs if e["type"] == "policy.decision"
            and e["data"].get("decision_id") == r["data"]["decision_id"]]
     ev = run.pcm_evidence([d["run_seq"], r["run_seq"], a["run_seq"]])   # waits for a checkpoint that covers them
+    # covers: alice's approval issued the grant this request is under
     msg = run.pcm_send("uid:990102", REF, {"amount": 12000, "order": 81}, grants=[grant], claims=[
-        {"type": "approved_by", "args": {"person": "alice", "call": a["data"]["tool_use_id"]}, "evidence": ev}])
+        {"type": "approved_by", "args": {"person": "alice", "call": a["data"]["tool_use_id"], "covers": True},
+         "evidence": ev}])
 
 # on B's side: one Replay for the receiver's life
 replay = pcm.Replay()

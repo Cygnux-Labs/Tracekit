@@ -419,6 +419,71 @@ class TestApprovedBySelf(Claims):
                          "no approval of")
 
 
+class TestCovers(Claims):
+    """approved_by with covers through a real signer (PCM 0.1 6.6): the PCM-Lies L3.A lies, which cite alice's
+    approval of a smaller pay or of a read_file to ask for a pay of 5000, and the two ways an approval covers a request.
+    The schemas list approved_by, which only a proven approved_by with covers meets."""
+    policy = TestApprovedBy.policy
+    NEED = {**DOC, "name": "refund.paid", "claims": ["approved_by"]}
+    PAY = {**NEED, "tool": "pay"}
+    ASK = {"amount": 5000, "order": 81}
+
+    def approve_call(self, tool, args):
+        """The call id of a `tool` call with `args` that alice approved."""
+        tcid = rid()
+        self.call("decide", stream="s", client_seq=next(self.seqs), tool_call_id=tcid, tool=tool, args_source="parsed",
+                  args=args)
+        aid = self.call("approval_request", tool_call_id=tcid)["approval_id"]
+        self.call("approval_decide", ALICE, {}, approval_id=aid, decision="approve")
+        return tcid
+
+    def verify(self, doc, tcid, opened=None, covers=True, grants=(), strict=False):
+        """B's result for A's message asking for ASK under `doc`, citing alice's approval of `tcid`."""
+        claim = {"type": "approved_by", "args": {"person": "alice", "call": tcid, **({"covers": True} if covers else {})},
+                 "evidence": self.approved(tcid, opened)}
+        msg = self.h.pcm_send("uid:990102", pcm.schema_ref(doc), self.ASK, claims=[claim], grants=list(grants))
+        return pcm.verify(msg, self.trust, [doc], strict=strict)
+
+    def test_the_lies_of_pcm_lies_l3a(self):
+        small, read = {"amount": 500, "order": 81}, {"path": "/etc/motd"}
+        less, motd = self.approve_call("pay", small), self.approve_call("read_file", read)
+        for tcid, opened, result in ((less, small, "failed"), (less, None, "unproven"), (motd, read, "failed"),
+                                     (motd, None, "failed")):
+            with self.subTest(tcid=tcid, opened=opened):
+                out = self.verify(self.PAY, tcid, opened)
+                self.assertEqual((out["verdict"], out["claims"][0]["result"]),
+                                 ("reject" if result == "failed" else "accept-unproven", result), out["reasons"])
+                self.assertNotIn("approved", out["claims"][0])
+                # without covers the claim says only what alice approved, which meets no need
+                out = self.verify(self.PAY, tcid, opened, covers=False)
+                self.assertEqual((out["verdict"], out["claims"][0]["result"], out["reasons"]),
+                                 ("accept-unproven", "proven", ["approved_by: required, not proven to cover this "
+                                                                "request: claim it with covers true"]))
+                self.assertEqual(self.verify(self.PAY, tcid, opened, covers=False, strict=True)["verdict"], "reject")
+
+    def test_the_two_ways_an_approval_covers_a_request(self):
+        exact = self.approve_call("pay", self.ASK)
+        out = self.verify(self.PAY, exact, self.ASK)
+        self.assertEqual((out["verdict"], out["claims"][0]["approved"]), ("accept", {"tool": "pay", "args": self.ASK}))
+        self.assertTrue(out["claims"][0]["detail"].endswith(": this request's tool and args"))
+        out = self.verify(self.NEED, exact, self.ASK)   # its schema names no tool
+        self.assertEqual((out["verdict"], out["claims"][0]["result"]), ("accept-unproven", "unproven"))
+        self.assertIn("name the tool in the schema document", out["claims"][0]["detail"])
+        ref = pcm.schema_ref(self.NEED)
+        root = self.root(intent=ref)
+        out = self.verify(self.NEED, "g1", grants=[root])
+        self.assertEqual((out["verdict"], out["claims"][0]["approved"]), ("accept", {"tool": "pcm.grant", "args": None}))
+        self.assertTrue(out["claims"][0]["detail"].endswith(", which issued this message's root grant"))
+        args = self.args(intent=ref)
+        self.approve(args, tcid="g2")
+        other = self.call("pcm_grant", tool_call_id="g2", args=args)["grant"]
+        for grants in ([other], []):   # under a grant g1's approval did not issue, or none
+            with self.subTest(grants=grants):
+                out = self.verify(self.NEED, "g1", grants=grants)
+                self.assertEqual((out["verdict"], out["claims"][0]["result"]), ("reject", "failed"))
+                self.assertIn("did not issue this message's root grant", out["claims"][0]["detail"])
+
+
 class TestEvidence(Claims):
     """Evidence that does not verify fails the claim: a changed record, a cut proof, a note the pinned key did not
     sign, too few witnesses."""
@@ -661,6 +726,15 @@ def approval(tool="pay", **edit):
     return [(dict(r, data={**r["data"], **edit.get(r["type"].replace(".", "_"), {})}), None) for r in recs]
 
 
+def asking(args, *grants):
+    """A message of run r1 in tenant default asking for `args` under `grants`: what approved_by's covers reads."""
+    return {"from": {"agent": "uid:990101", "run": "r1", "tenant": "default"}, "intent": {"args": args},
+            "grants": list(grants)}
+
+
+ASKED = asking({"amount": 12000, "order": 81})
+
+
 class PCM01(unittest.TestCase):
     """PCM 0.1's decisions on what a claim names, on records as evidence() returns them."""
 
@@ -669,13 +743,13 @@ class PCM01(unittest.TestCase):
         rejection, a request of another approval, a decision of another call or of no tool prove nothing."""
         claim = {"person": "alice", "call": "c1"}
         for edit in ({}, {"approval": {"approver_kind": "person", "self_approved": False}}):
-            self.assertEqual(claims.approved_by(claim, approval(**edit)),
+            self.assertEqual(claims.approved_by(claim, approval(**edit), ASKED, None),
                              ("proven", 'approval seq 3 by alice of "pay" call c1', {"tool": "pay", "args": None}))
         for edit in ({"approval": {"approver_kind": "agent"}}, {"approval": {"self_approved": True}},
                      {"approval": {"decision": "reject"}}, {"approval_request": {"approval_id": "a2"}},
                      {"policy_decision": {"tool_use_id": "c2"}}, {"policy_decision": {"tool": ""}}):
             with self.subTest(edit=edit):
-                self.assertEqual(claims.approved_by(claim, approval(**edit))[0], "failed")
+                self.assertEqual(claims.approved_by(claim, approval(**edit), ASKED, None)[0], "failed")
 
     def test_approved_by_does_not_depend_on_record_order(self):
         """Records that disagree on what the person approved fail the claim in either order: a decision listed
@@ -700,7 +774,7 @@ class PCM01(unittest.TestCase):
                            "2 different decisions approved as")):
             for order in (recs, recs[::-1]):
                 with self.subTest(order=order):
-                    got = claims.approved_by(claim, order)
+                    got = claims.approved_by(claim, order, ASKED, None)
                     self.assertEqual(got[0], "failed", got)
                     self.assertIn(why, got[1])
         for recs, want in (([dec, req, app, request("a2", "d1"), again], {"tool": "read_file", "args": None}),
@@ -708,15 +782,61 @@ class PCM01(unittest.TestCase):
             end = "" if want["args"] is None else ' with args {"path":"/etc/motd"}'
             for order in (recs, recs[::-1]):
                 with self.subTest(order=order):
-                    self.assertEqual(claims.approved_by(claim, order),
+                    self.assertEqual(claims.approved_by(claim, order, ASKED, None),
                                      ("proven", f'approval seq 3 by alice of "read_file" call c1{end}', want))
 
     def test_approved_by_writes_the_tool_as_json(self):
         """data.tool is the agent's own string: as JSON in the detail it can't spell opened args, and `approved`
         carries it apart."""
         tool = 'pay call c1 with args {"amount":20000,"to":"acct-9"} and read_file'
-        self.assertEqual(claims.approved_by({"person": "alice", "call": "c1"}, approval(tool))[1:],
+        self.assertEqual(claims.approved_by({"person": "alice", "call": "c1"}, approval(tool), ASKED, None)[1:],
                          (f"approval seq 3 by alice of {canonical(tool).decode()} call c1", {"tool": tool, "args": None}))
+
+    def test_approved_by_covers_only_this_request(self):
+        """With covers the sender says the approval covers the message's request (PCM 0.1 6.6). The PCM-Lies L3.A
+        lies cite alice's approval of a refund of 500 to ask for 5000, or of a read_file to ask for a refund: opened,
+        a refund of 500 fails; unopened, the verifier can't tell; a read_file fails either way. An approval covers by
+        its tool and args under a schema that names the tool, or as the approval that issued the message's root grant;
+        under a schema that names no tool, or as a pcm.grant approval of another grant, it can't or does not. Without
+        covers the claim only says what alice approved."""
+        claim, ask, pay = {"person": "alice", "call": "c1", "covers": True}, {"amount": 5000, "order": 81}, {
+            "tool": "refund"}
+        dec, req, app = approval("refund")
+        small, (read, *answered) = {"amount": 500, "order": 81}, approval("read_file")
+        said = 'approval seq 3 by alice of "refund" call c1'
+        not_of = 'approval seq 3 by alice of "read_file" call c1{}: not of "refund", the tool the intent\'s schema ' \
+            "names, so it does not cover this request"
+        root = {"issuer": {"kind": "person", "id": "uid:990001", "approval_id": "a1", "run": "r1", "tenant": "default"}}
+        g = approval("pcm.grant")
+        granted = 'approval seq 3 by alice of "pcm.grant" call c1'
+        other = f"{granted}: a pcm.grant approval covers only the requests under the grant it issued, and it did not " \
+            "issue this message's root grant"
+        rows = [([(dec[0], ask), req, app], asking(ask), pay, "proven",
+                 f"{said} with args {canonical(ask).decode()}: this request's tool and args"),
+                ([(dec[0], small), req, app], asking(ask), pay, "failed",   # L3.A.07, L3.A.09
+                 f"{said} with args {canonical(small).decode()}: not this request's args {canonical(ask).decode()}, "
+                 "so it does not cover this request"),
+                ([dec, req, app], asking(ask), pay, "unproven",   # L3.A.08, L3.A.10
+                 f"{said}: its args are not opened, so the verifier can't tell whether they are this request's: open "
+                 "the decision"),
+                ([(read[0], {"path": "/etc/motd"}), *answered], asking(ask), pay, "failed",   # L3.A.11
+                 not_of.format(' with args {"path":"/etc/motd"}')),
+                ([read, *answered], asking(ask), pay, "failed", not_of.format("")),   # L3.A.12
+                ([(dec[0], ask), req, app], asking(ask), None, "unproven",
+                 f"{said} with args {canonical(ask).decode()}: the intent's schema names no tool, so the verifier "
+                 "can't tell whether it covers this request: name the tool in the schema document, or cite the "
+                 "approval that issued the message's root grant"),
+                (g, asking(ask, root), None, "proven", f"{granted}, which issued this message's root grant"),
+                (g, asking(ask, root), pay, "proven", f"{granted}, which issued this message's root grant"),
+                (g, asking(ask), pay, "failed", other)]
+        for k, v in (("approval_id", "a2"), ("run", "r2"), ("tenant", "acme")):
+            rows.append((g, asking(ask, {"issuer": {**root["issuer"], k: v}}), None, "failed", other))
+        for recs, msg, doc, result, detail in rows:
+            with self.subTest(recs=recs, msg=msg, doc=doc):
+                got = claims.approved_by(claim, recs, msg, doc)
+                self.assertEqual(got[:2], (result, detail))
+                self.assertEqual(len(got), 3 if result == "proven" else 2)   # `approved` only when proven
+                self.assertEqual(claims.approved_by({"person": "alice", "call": "c1"}, recs, msg, doc)[0], "proven")
 
     def test_reached_host_compares_canonical_hosts(self):
         for host, recs in (("xn--bcher-kva.example", call("fetch", {"url": "https://XN--BCHER-KVA.Example:8443/x"})),

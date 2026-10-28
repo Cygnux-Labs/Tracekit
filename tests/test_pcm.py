@@ -89,6 +89,13 @@ class Schema(unittest.TestCase):
         self.assertTrue(pcm.check_schema({**DOC, "claims": ["approved_by", "approved_by"]}))
         self.assertTrue(pcm.check_schema({**DOC, "claims": ["looked_fine"]}))
 
+    def test_the_tool_the_intent_stands_for(self):
+        """`tool` (PCM 0.1 5.1) is optional, a string of 1 to 256, and part of the content address."""
+        self.assertEqual(pcm.check_schema({**DOC, "tool": "refund"}), [])
+        for bad in ("", "x" * 257, 1, None, ["refund"]):
+            self.assertTrue(pcm.check_schema({**DOC, "tool": bad}), bad)
+        self.assertNotEqual(pcm.schema_ref({**DOC, "tool": "refund"}), REF)
+
     def test_version_is_integer_zero(self):
         for v in (False, 0.0, "0", 1):
             self.assertTrue(pcm.check_schema({**DOC, "pcm_schema": v}), v)
@@ -533,11 +540,13 @@ class Verdicts(unittest.TestCase):
         self.assertEqual((out["verdict"], out["reasons"][0][:9]), ("reject", "envelope:"))
 
     def test_table_from_parts(self):
-        """Every row of the verdict table, from synthetic parts (proven claims come from evidence checks)."""
-        def parts(claims=(), replay=True, schema=(), grants=()):
+        """Every row of the verdict table, from synthetic parts (proven claims come from evidence checks). A proven
+        approved_by meets the schema's need only when it says it covers the request (PCM 0.1 6.6)."""
+        def parts(claims=(), replay=True, schema=(), grants=(), covers=True):
             return {"replay": {"ok": replay, "detail": "d"}, "schema": {"errors": list(schema)},
                     "grants": {"problems": list(grants)}, "claims": [{"type": t, "result": r, "detail": "d"}
-                                                                     for t, r in claims]}
+                                                                     for t, r in claims]}, \
+                [{"type": t, "args": {"covers": covers}} for t, _ in claims]
         need = {"claims": ["approved_by"]}
         proven, unproven = ("approved_by", "proven"), ("tests_passed", "unproven")
         rows = [(parts([proven]), need, False, "accept"),
@@ -551,9 +560,12 @@ class Verdicts(unittest.TestCase):
                 (parts([proven], replay=False), need, False, "reject"),
                 (parts([proven], schema=["e"]), need, False, "reject"),
                 (parts([proven], grants=["p"]), need, False, "reject"),
-                (parts([proven, ("tests_passed", "failed")]), need, False, "reject")]
-        for out, doc, strict, verdict in rows:
-            self.assertEqual(pcm._verdict(out, doc, strict)[0], verdict, (out, strict))
+                (parts([proven, ("tests_passed", "failed")]), need, False, "reject"),
+                (parts([proven], covers=False), need, False, "accept-unproven"),
+                (parts([proven], covers=False), need, True, "reject"),
+                (parts([proven], covers=False), {}, True, "accept")]
+        for (out, sent), doc, strict, verdict in rows:
+            self.assertEqual(pcm._verdict(out, doc, strict, sent)[0], verdict, (out, strict))
 
 
 if __name__ == "__main__":
