@@ -209,3 +209,11 @@
 {"tool": "Bash", "args": {"command": "echo cdk destroy"}, "expect": "allow", "note": "mention CDK destruction as text"}
 {"tool": "Bash", "args": {"command": "cdk destroy --help"}, "expect": "allow", "note": "read CDK destruction help without running it"}
 {"tool": "Bash", "args": {"command": "cat ~/.qwen/settings.json"}, "expect": "allow", "note": "reading Qwen Code's settings"}
+{"tool": "Bash", "args": {"command": "gh secret list --repo myorg/production-app"}, "expect": "allow", "note": "listing a repository's secret names"}
+{"tool": "Bash", "args": {"command": "gh workflow list"}, "expect": "allow", "note": "listing workflows"}
+{"tool": "Bash", "args": {"command": "gh run view 849201938 --log"}, "expect": "allow", "note": "reading a workflow run's log"}
+{"tool": "Bash", "args": {"command": "gh api /repos/myorg/backend/branches/main/protection"}, "expect": "allow", "note": "reading a branch's protection (a GET)"}
+{"tool": "Bash", "args": {"command": "gh api /repos/myorg/backend/actions/runs/849201938/jobs"}, "expect": "allow", "note": "reading a workflow run's jobs"}
+{"tool": "Bash", "args": {"command": "gh pr list --state open"}, "expect": "allow", "note": "listing open pull requests"}
+{"tool": "Bash", "args": {"command": "gh secret set DEPLOY_TOKEN --repo myorg/backend --body placeholder"}, "expect": "allow", "note": "setting a repository secret"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE /repos/myorg/backend/issues/comments/123"}, "expect": "allow", "note": "deleting an issue comment through gh api"}
