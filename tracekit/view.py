@@ -856,6 +856,7 @@ class StoreFeed:
         # verification stopped
         self.stopped = None
         self.noted = 0   # the most records a checkpoint note covered: a signed note never goes back
+        self.listed = set()   # the store's client runs at the latest refresh (checking)
         self.on_run, self.content, self.analyze = on_run, content, analyze
         # (tenant, run_id) -> the newest records of a run to mirror (on_run), off the watch thread: the tape never
         # waits for a graph, and a run that grew twice meanwhile is mirrored once
@@ -924,6 +925,8 @@ class StoreFeed:
                 raise StorageCorrupt(f"its checkpoint note went back from {self.noted} to {note[0] if note else 0} "
                                      "records: the store was edited or replaced")
             self.noted = note[0] if note else 0
+            with self.lock:
+                self.listed = {k for k in r.runs if k[1] != SIGNER_RUN[1]}
             for key, run in list(r.runs.items()):
                 covered = bisect.bisect_left(run["seqs"], note[0]) if note else 0   # its records the note covers
                 state = self.runs.get(key, {})
@@ -1209,6 +1212,12 @@ class StoreFeed:
             while len(self.rowcache) > ROWCACHE_MAX:
                 self.rowcache.popitem(last=False)
         return body
+
+    def checking(self, tenant=None):
+        """How many of the store's runs (of `tenant`, else of all) this viewer has not checked yet (on start it checks
+        them one at a time): until then the page knows nothing of what they hold, so NEEDS YOU can't say all clear."""
+        with self.lock:
+            return sum(tenant is None or k[0] == tenant for k in self.listed - self.runs.keys())
 
     def verify(self, tenant=None):
         """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""

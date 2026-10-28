@@ -29,8 +29,9 @@ appears or cannot be reached, and a tailer that stops after IDLE_TAILER_S withou
 Every HEARTBEAT_S it sends `tailer_heartbeat` (another refusal, e.g. a quota, is tried again at the next); a tailer that
 is killed stops them, and the signer writes the tailer_lost gap itself (a signer that does not know the call, or a token
 not granted it, just gets none).
-The session's subagents' transcripts (<session>/subagents/agent-*.jsonl, next to the session's) are followed the same
-way, with the same checks, from the wake they appear on.
+The session's subagents' transcripts (<session>/subagents/agent-*.jsonl, next to the session's, and a workflow's agents'
+in <session>/subagents/workflows/<workflow>/) are followed the same way, with the same checks, from the wake they
+appear on: a call one of them makes is decided under the session's run.
 """
 import ctypes
 import hashlib
@@ -184,20 +185,28 @@ class _Transcript:
         self.read, self.checked = hashlib.sha256(), None   # the bytes before `off`; the ctime they were last checked at
 
 
-def _subagents(path):
-    """The paths of the session's subagent transcripts: Claude Code writes them to <session>/subagents/agent-*.jsonl."""
-    d = os.path.join(os.path.splitext(path)[0], "subagents")
-    for p in (os.path.dirname(d), d):
-        try:
+def _listed(*dirs):
+    """The sorted names in the last of `dirs`, none of which may be a symlink; none while one does not exist or is no
+    directory."""
+    try:
+        for p in dirs:
             if stat.S_ISLNK(os.lstat(p).st_mode):
                 raise Lost(f"a symlink is in place of {p}")
-        except FileNotFoundError:
-            return []
-    try:
-        names = os.listdir(d)
+        return sorted(os.listdir(dirs[-1]))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
     except OSError as e:
         raise Lost(f"cannot list the subagent transcripts: {e.strerror}") from None
-    return [os.path.join(d, n) for n in sorted(names) if n.startswith("agent-") and n.endswith(".jsonl")]
+
+
+def _subagents(path):
+    """The paths of the session's subagent transcripts: Claude Code writes them to <session>/subagents/agent-*.jsonl,
+    and those of a workflow's agents to <session>/subagents/workflows/<workflow>/agent-*.jsonl."""
+    d = os.path.join(os.path.splitext(path)[0], "subagents")
+    w = os.path.join(d, "workflows")
+    found = [os.path.join(d, n) for n in _listed(os.path.dirname(d), d)]
+    found += [os.path.join(w, x, n) for x in _listed(w) for n in _listed(os.path.join(w, x))]
+    return [p for p in found if os.path.basename(p).startswith("agent-") and p.endswith(".jsonl")]
 
 
 def _follow(send, t, uid):

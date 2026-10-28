@@ -3224,7 +3224,7 @@
       : PAGE === "permissions" || PAGE === "influence" ? PAGE : "desk";
     // the header: the global pages (APPROVALS counts the holds waiting), and on a run's page its views, keys 1–7
     function renderPages() {
-      const n = waiting().length, on = p => p === "live" ? PAGE === "run" && RUNS.get(scope)?.state === "open" : PAGE === p;
+      const n = waitingCount(), on = p => p === "live" ? PAGE === "run" && RUNS.get(scope)?.state === "open" : PAGE === p;
       put("pages", PAGES.filter(p => p !== "influence" || WHY).map(p => `<button type="button" data-page="${esc(p)}" class="${on(p) ? "on" : ""}">${esc(p.toUpperCase())}${p === "approvals" && n ? `<span class="n">${esc(n)}</span>` : ""}</button>`).join(""));
       $("rviews").hidden = PAGE !== "run";
       put("rviews", RVIEWS.map((v, i) => `<button type="button" data-rv="${esc(v)}" class="${RV === v ? "on" : ""}">${esc(RVNAME[v] || v.toUpperCase())}<kbd>${esc(i + 1)}</kbd></button>`).join(""));
@@ -3260,7 +3260,7 @@
     // then the answers given. The page answers nothing: the approvals page (passkey) or the signer's command does
     function renderApprovalsPage() {
       if (PAGE !== "approvals") return;
-      const w = waiting(), answered = ALL.filter(r => r.v2?.approval in ANSWER && !r.analysis).slice(-100).reverse();
+      const w = waiting(), more = waitingElsewhere(), answered = ALL.filter(r => r.v2?.approval in ANSWER && !r.analysis).slice(-100).reverse();
       put("apprp", `<p class="dim" style="padding:0 8px">Calls the signer is holding until a person answers. An answer binds to the exact arguments, is signed and can't be undone. This page answers nothing: copy the command`
         + (DESK() ? `, or answer on the <a href="/approvals">approvals page</a> with a passkey` : "") + `.</p>`
         + (w.map(x => {
@@ -3270,9 +3270,11 @@
             + `<pre>${esc(args || "arguments kept as a commitment only")}</pre><div>${esc((x.rec.v2.rules || []).map(r => (r.id + " " + (r.reason || "")).trim()).join("; ") || "held")}</div>`
             + `<div class="dim">${esc(x.req ? `approval ${x.req.v2.approval_id}` + (x.req.v2.expires ? ` · expires ${x.req.v2.expires}` : "") : "no approval requested yet: nobody can answer it until the agent asks")}</div>`
             + cmds.map(c => `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`).join("") + `</div>`;
-        }).join("") || `<div class="empty">Nothing is waiting for a person.</div>`)
+        }).join("") + more.map(x => `<div class="hold"><span class="sev wait">WAITING</span> <b>${esc(plural(x.n, "held call"))}</b> · ${esc(x.run.agent || "run")} · run ${esc(x.run.id.slice(0, 8))} <button type="button" class="cp" data-orun="${esc(x.run.id)}" data-oseq="">OPEN</button>`
+          + `<div class="dim">${esc(ELSEWHERE)}</div><div><code class="shell">tracekit approvals list</code>` + cp("tracekit approvals list") + `</div></div>`).join("")
+          || `<div class="empty">Nothing is waiting for a person.</div>`)
         + `<div class="sec">ANSWERED</div><table class="wt"><tbody>` + (answered.map(r => `<tr class="row" data-orun="${esc(r.session_id)}" data-oseq="${esc(r.tk_seq)}"><td class="dim">${esc(fmtT(r.ts))}</td><td class="${r.v2.approval === "approve" ? "s-ok" : "s-deny"}">${esc(ANSWER[r.v2.approval])}</td><td>${esc(r.title)}</td><td class="dim">${esc(r.text)}</td></tr>`).join("") || `<tr><td class="empty">No answers in the live view.</td></tr>`) + `</tbody></table>`);
-      $("apprsum").textContent = `${w.length} waiting · ${answered.length} answered`;
+      $("apprsum").textContent = `${waitingCount()} waiting · ${answered.length} answered`;
     }
     // EVIDENCE: the chain walk (the run's signed records in order, each marked covered when the viewer's check verified
     // the run), the checks its verifier report lists and the stamp. All of it is the server's result as it reported it:
@@ -3717,7 +3719,8 @@
       const t = done ? S.lastTs : nowTs(), recent = S.actList.filter(a => a.start > t - 60).length;
       const blocked = S.actList.filter(a => a.denied).length, errors = S.actList.filter(a => a.error).length;
       const flagged = S.actList.filter(a => a.flags.length).length;
-      const elapsed = S.firstTs ? (V2 || done || document.URL.startsWith("file:") ? S.lastTs : t) - S.firstTs : 0;
+      // DESK's SPAN is its runs' (the live view keeps the newest records, which come in no time order); a run's, its rows'
+      const elapsed = V2 && !scope ? runsSpan() : S.firstTs ? (V2 || done || document.URL.startsWith("file:") ? S.lastTs : t) - S.firstTs : 0;
       const held = S.actList.filter(a => a.v2?.decision === "ask").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = highCount();
       // signed records: the run's own count (its review), else every record the viewer verified (the chain badge's)
       const signed = scope ? RUNS.get(scope)?.records ?? (RUNS.get(scope)?.verdict === "failed" ? "–" : null) : chainState.n;
@@ -3882,6 +3885,22 @@
       return waitList = [...open.values()].filter(w => !ended.has(w.rec.session_id))
         .map(w => ({ ...w, open: [w.rec.session_id, w.rec.tk_seq] }));
     }
+    // the holds an open run's review counts as waiting that waiting() does not list (their rows left the live view, which
+    // keeps the newest records): [{run, n}]; the run's own page reads its rows from the store
+    function waitingElsewhere() {
+      const shown = new Map();
+      for (const w of waiting()) shown.set(w.rec.session_id, (shown.get(w.rec.session_id) || 0) + 1);
+      return [...RUNS.values()].filter(r => r.state === "open")
+        .map(r => ({ run: r, n: (r.permissions?.waiting || 0) - (shown.get(r.id) || 0) })).filter(x => x.n > 0);
+    }
+    const waitingCount = () => waiting().length + waitingElsewhere().reduce((n, x) => n + x.n, 0);
+    const ELSEWHERE = "its records left the live view: open the run, then PERMISSIONS for each with the command that answers it";
+    // the span of the runs the page lists, from the first record of the earliest to the last of the latest
+    function runsSpan() {
+      let lo = Infinity, hi = -Infinity;
+      for (const r of RUNS.values()) { const a = Date.parse(r.first_ts), b = Date.parse(r.last_ts); if (a <= b) { lo = Math.min(lo, a); hi = Math.max(hi, b); } }
+      return hi > lo ? (hi - lo) / 1000 : 0;
+    }
     // NEEDS YOU: everything that needs a person, in every run, ranked: holds waiting (oldest first), runs an incident
     // holds, runs that failed verification or weren't checked, a viewer that stopped checking. Each has its words, the
     // command that acts on it (the page itself acts on nothing) and a link to its record or run
@@ -3893,6 +3912,9 @@
           detail: (args ? "binds " + args.slice(0, 300) : "arguments kept as a commitment only") + (w.req ? "" : " · no approval requested yet"),
           cmds: w.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(w.req.v2.approval_id)}`) : [] });
       }
+      for (const x of waitingElsewhere())
+        out.push({ kind: "HOLD", sev: "med", open: [x.run.id, ""], what: `${x.run.agent || "run"} · run ${x.run.id.slice(0, 8)}: ${plural(x.n, "held call")} waiting for a person`,
+          detail: ELSEWHERE, cmds: ["tracekit approvals list"] });
       const runs = [...RUNS.values()];
       for (const r of runs) for (const i of r.incidents || []) if (i.state === "held" || i.state === "quarantined")
         out.push({ kind: "CONTAINED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${i.state} by incident ${i.incident_id}`, detail: `${i.trigger} ${i.rule_ids.join(" ")}`.trim(), cmds: [`tracekit signer incidents resume -- ${word(r.id)}`] });
@@ -3906,8 +3928,12 @@
       el.hidden = !V2;
       el.classList.toggle("clear", !list.length);
       const working = [...RUNS.values()].filter(r => r.state === "open").length;
+      // runs not read yet (on start): said beside the list too, which can't hold what they need
+      const unread = CHECKING ? `CHECKING · ${plural(CHECKING, "run")} of the store not read yet: what needs you there shows once each is` : "";
       put("needs", `<b>NEEDS YOU</b><div>` + (list.length ? list.map(n => `<div class="need${n.sev === "high" ? " high" : ""}"><span class="sev ${esc(n.sev === "high" ? "high" : "wait")}">${esc(n.kind)}</span><span class="what" title="${esc(n.what + " · " + n.detail)}">${esc(n.what)}<span class="dim"> · ${esc(n.detail)}</span></span><span class="do">`
         + n.cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join(" ") + (n.open ? ` <button type="button" class="cp" data-orun="${esc(n.open[0])}" data-oseq="${esc(n.open[1])}">OPEN</button>` : "") + `</span></div>`).join("")
+          + (unread ? `<div class="dim" style="padding:3px 8px">${esc(unread)}</div>` : "")
+        : unread ? `<span class="dim">${esc(unread)}</span>`
         : `ALL CLEAR · ${esc(plural(working, "agent"))} working · nothing needs you`) + `</div>`);
     }
     // PERMISSIONS: every decision that was not a plain allow (deny, hold, flag) and what came of it, in the selected run
@@ -3961,13 +3987,13 @@
       $("wvsum").textContent = `${plural(rows.length, "decision")} · ${n("waiting")} waiting`;
     }
     function renderWaiting() {
-      const w = waiting(), el = $("waiting");
-      el.hidden = !w.length;
-      el.textContent = `WAITING FOR YOU ${w.length}`;
+      const n = waitingCount(), el = $("waiting");
+      el.hidden = !n;
+      el.textContent = `WAITING FOR YOU ${n}`;
       el.title = DESK() ? "answer them on the approvals page" : "open the oldest: its detail has the command that answers it";
     }
     // the badge: the approvals page where this server has one, else the oldest hold
-    $("waiting").addEventListener("click", () => { const w = waiting()[0]; if (DESK()) DESK().click(); else if (w) openRec(...w.open); });
+    $("waiting").addEventListener("click", () => { const x = waitingElsewhere()[0], w = waiting()[0]?.open || x && [x.run.id, ""]; if (DESK()) DESK().click(); else if (w) openRec(...w); });
     // open record `seq` of run `run` (a hold, a toast, NEEDS YOU) through the page's own state, which the URL follows;
     // no link carries data
     function openRec(run, seq) {
@@ -4562,7 +4588,9 @@
     }
 
     /* ---------------- live mode ---------------- */
-    let liveOk = false, liveErr = "", SOURCE = "", STOPPED = "";   // SOURCE: "bundle" when the server shows a file, not a live log; STOPPED: why the viewer stopped checking runs
+    // SOURCE: "bundle" when the server shows a file, not a live log; STOPPED: why the viewer stopped checking runs;
+    // CHECKING: how many of the store's runs it has not read yet
+    let liveOk = false, liveErr = "", SOURCE = "", STOPPED = "", CHECKING = 0;
     async function getJSON(path) {
       const r = await fetch(path, { credentials: "same-origin" });
       if (r.status === 401) throw Object.assign(new Error("This viewer needs a token: open the URL it printed (?token=…; TRACEKIT_VIEW_TOKEN, or TRACEKIT_OBSERVE_TOKEN for tracekit observe)."), { fatal: true });
@@ -4583,7 +4611,7 @@
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
         es.onerror = () => { es.close(); liveOk = false; liveErr = "Connection to the viewer lost; reconnecting…"; schedule(); setTimeout(startLive, 2000); };
-        const check = async () => { try { const v = await getJSON("api/verify"); STOPPED = v.stopped || ""; chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { if (document.URL.startsWith("file:")) { chainState = { ok: null, n: 0, detail: "A static report: nothing here verifies it. Check the why logs with `tracekit why verify`." }; schedule(); } } };
+        const check = async () => { try { const v = await getJSON("api/verify"); STOPPED = v.stopped || ""; CHECKING = v.checking || 0; chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { if (document.URL.startsWith("file:")) { chainState = { ok: null, n: 0, detail: "A static report: nothing here verifies it. Check the why logs with `tracekit why verify`." }; schedule(); } } };
         check(); if (!checking) checking = setInterval(check, 10000);
       } catch (e) {
         liveOk = false; liveErr = e.message || String(e); schedule();

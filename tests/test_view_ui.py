@@ -374,8 +374,8 @@ class WaitingForYou(unittest.TestCase):
                 hold(7, "c3", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 8},
                 hold(9, "c4"), answer(10, "c4", "escalated"), hold(11, "c5", run="r 3&x"),
                 {**hold(12, "c6"), "v2": {"decision": "flag"}}, answer(13, "c7", "expired")]
-        out = json.loads(page_js(["waiting", "renderWaiting"], f"""
-            const ALL = {json.dumps(recs)}, el = {{}}, $ = id => el[id] ??= {{}};
+        out = json.loads(page_js(["waiting", "waitingElsewhere", "waitingCount", "renderWaiting"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map(), el = {{}}, $ = id => el[id] ??= {{}};
             let desk = false, waitKey = [], waitList = []; const DESK = () => desk;
             const seen = [waiting().map(w => [w.rec.tool_use_id, w.req?.v2.approval_id ?? null, w.open])];
             renderWaiting(); seen.push([el.waiting.hidden, el.waiting.textContent, el.waiting.title]);
@@ -386,7 +386,7 @@ class WaitingForYou(unittest.TestCase):
                                [False, "WAITING FOR YOU 3", "open the oldest: its detail has the command that answers it"],
                                "answer them on the approvals page", ["c4", "c5"]])
         # no link carries data: a hold opens through the page's state (checklist item 3)
-        self.assertIn("if (DESK()) DESK().click(); else if (w) openRec(...w.open);", PAGE)
+        self.assertIn("if (DESK()) DESK().click(); else if (w) openRec(...w);", PAGE)
 
     def test_a_new_hold_or_high_alert_toasts_as_text_and_the_snapshot_does_not(self):
         needs_node(self)
@@ -414,7 +414,8 @@ class WaitingForYou(unittest.TestCase):
 
 class NeedsYou(unittest.TestCase):
     def needs(self, recs, runs, stopped=""):
-        return json.loads(page_js(["j", "plural", "failLines", "shq", "word", "waiting", "needsYou"], f"""
+        return json.loads(page_js(["j", "plural", "failLines", "shq", "word", "waiting", "waitingElsewhere", "ELSEWHERE",
+                                   "needsYou"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), STOPPED = {json.dumps(stopped)};
             let waitKey = [], waitList = [];
             process.stdout.write(JSON.stringify(needsYou()));"""))
@@ -457,6 +458,64 @@ class NeedsYou(unittest.TestCase):
         needs_node(self)
         self.assertEqual(self.needs([], [{"id": "r1", "verdict": "verified", "state": "open"}]), [])
         self.assertIn('`ALL CLEAR · ${esc(plural(working, "agent"))} working · nothing needs you`', PAGE)
+
+    def test_a_hold_whose_rows_left_the_live_view_still_needs_you(self):
+        """DESK said ALL CLEAR while held calls waited: NEEDS YOU, the badge and APPROVALS read only the live view, which
+        keeps the newest 50,000 records. An open run's review counts its waiting holds; past the ones the live view
+        lists, each run is one item that opens it. A final run's unanswered hold waits for nobody."""
+        needs_node(self)
+        runs = [{"id": "r1", "agent": "billing", "state": "open", "permissions": {"waiting": 1}},
+                {"id": "r9xxxxxxxxxx", "agent": "claude-code", "state": "open", "permissions": {"waiting": 2, "blocked": 4}},
+                {"id": "r8", "agent": "claude-code", "state": "final", "permissions": {"not answered": 3}},
+                {"id": "r7", "verdict": "pending"}]
+        out = self.needs([hold(1, "c1")], runs)
+        self.assertEqual([(n["kind"], n["open"], n["cmds"]) for n in out], [
+            ("HOLD", ["r1", 1], []), ("HOLD", ["r9xxxxxxxxxx", ""], ["tracekit approvals list"])])
+        self.assertEqual(out[1]["what"], "claude-code · run r9xxxxxx: 2 held calls waiting for a person")
+        badge = json.loads(page_js(["waiting", "waitingElsewhere", "waitingCount", "renderWaiting"], f"""
+            const ALL = {json.dumps([hold(1, "c1")])}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r]));
+            const el = {{}}, $ = id => el[id] ??= {{}}, DESK = () => null;
+            let waitKey = [], waitList = [];
+            renderWaiting(); process.stdout.write(JSON.stringify(el.waiting.textContent));"""))
+        self.assertEqual(badge, "WAITING FOR YOU 3")
+
+    def test_it_never_reads_all_clear_while_runs_of_the_store_are_not_read_yet(self):
+        """On start the viewer reads the store's runs one at a time (minutes for a big store): DESK said ALL CLEAR with
+        66 of 90 runs read, while a run not read yet had two calls waiting."""
+        needs_node(self)
+        out = json.loads(page_js(["esc", "plural", "renderNeeds"], """
+            const el = {}, $ = id => el[id] ??= { classList: { toggle() {} } }, html = {}, put = (id, h) => { html[id] = h; };
+            const RUNS = new Map([["r1", { id: "r1", state: "open" }]]), V2 = true;
+            let CHECKING = 24, items = [];
+            const needsYou = () => items, seen = [];
+            renderNeeds(); seen.push(html.needs); CHECKING = 0; renderNeeds(); seen.push(html.needs);
+            CHECKING = 3; items = [{ kind: "HOLD", sev: "med", what: "send_email waits", detail: "d", cmds: [], open: null }];
+            renderNeeds(); seen.push(html.needs);
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertIn("CHECKING · 24 runs of the store not read yet", out[0])
+        self.assertNotIn("ALL CLEAR", out[0])
+        self.assertIn("ALL CLEAR · 1 agent working · nothing needs you", out[1])
+        self.assertIn("send_email waits", out[2])   # what is known, and that more may come
+        self.assertIn("CHECKING · 3 runs of the store not read yet", out[2])
+
+
+class Span(unittest.TestCase):
+    def test_desk_spans_its_runs_and_a_run_its_own_rows(self):
+        """DESK's SPAN read 17s over 66 runs across ten days: it was the time from the first row the live view holds,
+        which comes in no time order (a run's latest review first), to the newest."""
+        needs_node(self)
+        runs = [{"id": "r1", "first_ts": "2026-10-18T03:43:23Z", "last_ts": "2026-10-19T00:00:00Z"},
+                {"id": "r2", "first_ts": "2026-10-27T10:00:00Z", "last_ts": "2026-10-28T03:43:23Z"},
+                {"id": "r3", "verdict": "pending"}]
+        out = json.loads(page_js(["esc", "fmtDur", "runsSpan", "renderTicker"], f"""
+            const RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), html = {{}}, put = (id, h) => {{ html[id] = h; }};
+            const S = {{ agents: new Map(), sessions: new Map(), actList: [], firstTs: 1793183000, lastTs: 1793183017, approved: 0, gaps: 0 }};
+            const document = {{ URL: "http://127.0.0.1/" }}, nowTs = () => 1793183017, highCount = () => 0, chainState = {{ n: 9 }};
+            let V2 = true, scope = null, SOURCE = "", lastCounts = {{}};
+            const span = () => /<b>SPAN<\\/b><i class="">([^<]*)</.exec(html.ticker)[1];
+            const seen = []; renderTicker(); seen.push(span()); scope = "r2"; renderTicker(); seen.push(span());
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, ["240.0h", "17s"])
 
 
 
@@ -1192,8 +1251,9 @@ class InvisibleCharacters(unittest.TestCase):
                 "v2": {"decision": "ask", "run_seq": 7, "tool_use_id": "c1", "rules": [{"id": "TK-P001", "reason": "email"}]}}
         req = {"event": "tk_alert", "session_id": "r1", "tk_seq": 8, "ts": 1760000001,
                "v2": {"tool_use_id": "c1", "approval": "requested", "approval_id": "apr-1"}}
-        out = json.loads(page_js(["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "waiting", "renderApprovalsPage"], f"""
-            const ALL = {json.dumps([hold, req])}, html = {{}}, el = {{}};
+        out = json.loads(page_js(["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "waiting", "waitingElsewhere",
+                                  "waitingCount", "renderApprovalsPage"], f"""
+            const ALL = {json.dumps([hold, req])}, RUNS = new Map(), html = {{}}, el = {{}};
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [];
             renderApprovalsPage();

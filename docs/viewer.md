@@ -47,8 +47,12 @@ AGENTS need the run's why log, which the viewer builds for each verified run.
 
 **NEEDS YOU**, under the stats strip, lists across every run what needs a person, first the calls waiting (oldest
 first), then runs an incident holds, runs that failed verification or weren't checked, and a viewer that stopped
-checking; each with the command that acts on it and **OPEN**. With nothing to do it reads `ALL CLEAR · N agents
-working`. A new hold or high alert also shows for a few seconds in the corner. **THEME** (or `T`) picks auto (this
+checking; each with the command that acts on it and **OPEN**. A run whose waiting calls left the live view (it keeps
+the newest 50,000 records) is one line with its count, from its review: OPEN it, and its PERMISSIONS lists each call
+with the command that answers it. With nothing to do it reads `ALL CLEAR · N agents working`; while the viewer is still
+reading the store's runs (on start, one at a time) it says how many are left instead, since it can't know yet. The
+stats strip's **SPAN** on DESK runs from the first record of the earliest run to the last of the latest; on a run's
+page, over that run's records. A new hold or high alert also shows for a few seconds in the corner. **THEME** (or `T`) picks auto (this
 computer's setting), light or dark, kept in this browser.
 
 ![DESK: NEEDS YOU under the stats strip with a held git push and the commands that answer it; the runs, the tape across runs and the alerts](viewer/1.5/desk.png)
