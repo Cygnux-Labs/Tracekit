@@ -45,8 +45,8 @@ SECTIONS = [
                               "webhooks.md"]),
     ("Deploy and operate", ["deploy.md", "deploy-container.md", "deploy-kubernetes.md", "deploy-compose.md",
                             "identity.md", "executor.md", "a2a.md", "c2c.md", "mcp-gateway.md", "gateway.md", "egress.md", "witnesses.md",
-                            "monitor.md", "issuer.md", "observability.md", "viewer.md", "viewer-1.4.md", "why.md",
-                            "migration.md", "portability.md"]),
+                            "monitor.md", "issuer.md", "observability.md", "viewer.md", "horizon.md", "viewer-1.4.md",
+                            "why.md", "migration.md", "portability.md"]),
     ("Verify the evidence", ["for-auditors.md", "verdicts.md", "format-v2.md", "auditor-guide.md", "sample/README.md",
                              "signing.md", "graph.md", "guarantees.md"]),
     ("Security and privacy", ["threat-model-server.md", "threat-model-laptop.md", "security-checklist.md",
@@ -72,6 +72,7 @@ START = [
     ("concepts/README.md", "the design, one concept per page, in reading order"),
     ("integrations.md", "frameworks, sandboxes and gateways"),
     ("verdicts.md", "what each line of `tracekit verify` means"),
+    ("horizon.md", "the map of where your agents went, and how we know"),
     ("deploy.md", "a signer the agent can't reach"),
     ("faq.md", "what a verified run proves, and what it doesn't"),
 ]
