@@ -170,6 +170,10 @@ claim is proven only when either:
 - the schema names the `tool`, the approval is of that tool, the evidence opens the decision, and its args equal the
   intent's args in JCS (`…: this request's tool and args`).
 
+The second way covers every message that asks for that tool with those args, as often as the run sends one: for
+one-time authority, put a field unique to the request (such as `request_id`) in the schema and act once per value, or
+require a grant ([limits](limits.md#pcm-01-proof-carrying-messages-experimental)).
+
 Else the claim fails when it can tell the approval doesn't cover the request: a `pcm.grant` approval that issued
 another grant or none, a decision of another tool than the schema names (opened or not), or opened args that differ
 (`approval seq 7 by alice of "pay" call pay-6 with args {"amount":500,"order":81}: not this request's args
@@ -242,9 +246,11 @@ one form before they are compared, and a port is ignored:
    port after it must be 1 to 5 digits. A URL's host is read as a browser (WHATWG URL) reads it, and must also be the
    host Python's `urllib` reads (`http://a.example\@b.example/` is read apart). The host is read by these rules alone,
    so a URL a browser refuses (a port above 65535, an `xn--` label that is no valid punycode) can still have one.
-   Only `http`, `https`, `ws`, `wss`, `ftp` and scheme-less URLs have a host: `file://a.example/x` reaches no host.
+   Only `http`, `https`, `ws`, `wss`, `ftp` and `//` URLs have a host: `file://a.example/x` reaches no host.
    A URL that starts with `view-source:` or `blob:` can't be told: a browser's address bar reads the URL inside it,
-   WHATWG URL no host.
+   WHATWG URL no host. Nor can a URL with no scheme that doesn't start with `//` (`/api.example.com/x`,
+   `api.example.com/x`): a client given a base URL reads it as a path on the base's host. A call's detail then ends
+   with `its URL has no scheme, so a client may read it against a base URL: send the whole URL, scheme and host`.
 4. A host is never percent-decoded: one with a `%`, as either reads it, can't be told (`http://%61.example/` is not
    `a.example`, `http://[::1%25eth0]/` not `::1`). A call's detail then ends with `its host has a %: send the URL with
    the host as plain ASCII, not percent-encoded`.
@@ -341,7 +347,8 @@ state, check:
   evidence look newer; for `tests_passed` it's no later than the decision, made before the runner ran) and refuse
   the message when its own `ts` is more than your maximum age after that. The signer sets both times from its clock,
   so yours doesn't matter. Use seconds or a minute, not hours: `pcm_evidence` has a checkpoint about a second after
-  the call, and a suite can pass, change and fail within a minute.
+  the call, and a suite can pass, change and fail within a minute. `tracekit pcm verify` prints that age after a
+  proven `tests_passed` or `file_written` (`evidence 2 s before the message: …`).
 - **After the last change you know of.** If you know when what you act on last changed (the commit you'll merge was
   pushed, you sent the request that asked for the check), refuse evidence older than that, allowing for clock skew.
 - **`tests_passed`.** Name the suite you need, compare `suite` with it, and ask the sender to run it after your

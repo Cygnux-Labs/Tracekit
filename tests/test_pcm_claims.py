@@ -829,6 +829,17 @@ class PCM01(unittest.TestCase):
                 (g, asking(ask, root), None, "proven", f"{granted}, which issued this message's root grant"),
                 (g, asking(ask, root), pay, "proven", f"{granted}, which issued this message's root grant"),
                 (g, asking(ask), pay, "failed", other)]
+        # true and 1 are equal in Python, apart in JCS
+        flag, one = {"amount": 5000, "order": True}, {"amount": 5000, "order": 1}
+        rows.append(([(dec[0], flag), req, app], asking(one), pay, "failed",
+                     f"{said} with args {canonical(flag).decode()}: not this request's args {canonical(one).decode()}, "
+                     "so it does not cover this request"))
+        # a second attempt of the grant call, approved too, issued the root grant: the detail names its approval
+        again = [({"type": "policy.decision", "seq": 4, "data": dict(g[0][0]["data"], decision_id="d2")}, None),
+                 ({"type": "approval.request", "seq": 5, "data": {"approval_id": "a2", "decision_id": "d2"}}, None),
+                 ({"type": "approval", "seq": 6, "data": dict(g[2][0]["data"], approval_id="a2")}, None)]
+        rows.append((g + again, asking(ask, {"issuer": {**root["issuer"], "approval_id": "a2"}}), None, "proven",
+                     'approval seq 6 by alice of "pcm.grant" call c1, which issued this message\'s root grant'))
         for k, v in (("approval_id", "a2"), ("run", "r2"), ("tenant", "acme")):
             rows.append((g, asking(ask, {"issuer": {**root["issuer"], k: v}}), None, "failed", other))
         for recs, msg, doc, result, detail in rows:
@@ -928,6 +939,22 @@ class PCM01(unittest.TestCase):
             with self.subTest(host=host, recs=recs):
                 self.assertEqual(claims.reached_host({"host": host}, recs)[0], "unproven")
 
+    def test_a_url_without_a_scheme_is_unproven(self):
+        """A client with a base URL reads `/api.example.com/x` or `api.example.com/x` as a path on the base's host, so
+        the verifier can't tell what a call of one reached, and the detail says what to send; a URL that starts with
+        `//` names its host whatever the base."""
+        why = "its URL has no scheme, so a client may read it against a base URL: send the whole URL, scheme and host"
+        for host, url in (("api.example.com", "/api.example.com/v1/x"), ("api.example.com", "\\api.example.com/x"),
+                          ("api.example.com", "api.example.com/x"), ("api.example.com", "api.example.com"),
+                          ("api.example.com", "api.example.com:8080/x"), ("127.0.0.1", "/127.0.0.1/x")):
+            with self.subTest(url=url):
+                self.assertEqual(claims.reached_host({"host": host}, call("fetch", {"url": url})),
+                                 ("unproven", f"the verifier can't tell whether call c1 reached {host}: {why}"))
+        for url in ("//api.example.com/x", "\\\\api.example.com/x"):
+            with self.subTest(url=url):
+                self.assertEqual(claims.reached_host({"host": "api.example.com"}, call("fetch", {"url": url}))[0],
+                                 "proven")
+
     def test_an_ipv4_host_not_written_as_a_dotted_quad_is_unproven(self):
         """A host whose last label is a number (ASCII digits, or 0x and hex digits or none) is an IPv4 address, read
         only as four decimal numbers 0-255 without leading zeros: resolvers read the other forms apart (macOS reaches
@@ -950,6 +977,10 @@ class PCM01(unittest.TestCase):
             with self.subTest(host=host):
                 self.assertEqual(claims.reached_host({"host": host}, effect("127.0.0.1")),
                                  ("unproven", f"{host} is no host the verifier can read: {why}"))
+        for host in ("1::2:3:4:5:6:7:8", "10:20:30:40:50:60:70:80:90"):   # read in brackets, as _host does: no advice
+            with self.subTest(host=host):
+                self.assertEqual(claims.reached_host({"host": host}, effect("127.0.0.1")),
+                                 ("unproven", f"{host} is no host the verifier can read"))
         for host in ("0127.0.0.1", "127.1", "2130706433"):
             with self.subTest(host=host):
                 self.assertEqual(claims.reached_host({"host": "127.0.0.1"}, effect(host)),

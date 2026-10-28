@@ -5,6 +5,7 @@ import json
 import os
 import re
 import unittest
+import unittest.mock
 
 from test_pcm_signer import DOC, Case
 from tracekit import cli, pcm
@@ -119,6 +120,25 @@ class TestVerify(Case):
         self.assertNotIn("\x1b", out)
         self.assertNotIn("‮", out)
         self.assertIn("/x/\\u001b[2J\\u202e\\\\u001b/.. has a `..`", out)
+
+    def test_proven_evidence_is_printed_with_its_age(self):
+        """A proven tests_passed or file_written claim proves a call happened, not that nothing changed since (PCM 0.1
+        14.13): the text output says how long before the message the claim's oldest record is."""
+        rec = lambda ts: {"event": {"ts": f"2026-10-28T{ts}.000000Z"}}   # noqa: E731
+        msg = {"ts": "2026-10-28T10:05:00.000000Z", "claims": [
+            {"evidence": {"records": [rec("10:00:00"), rec("10:00:01")]}}, {"evidence": {"records": [rec("09:00:00")]}}]}
+        out = {"verdict": "accept", "reasons": [], "skipped": [], "replay": {"ok": None}, "grants": {"result": None},
+               "claims": [{"type": "tests_passed", "result": "proven", "detail": "d"},
+                          {"type": "reached_host", "result": "proven", "detail": "d"}]}
+        note = ("evidence 300 s before the message: a claim proves a call happened, not that nothing changed since: "
+                "check its age (docs/pcm.md#freshness)")
+        with unittest.mock.patch.object(pcm_cli.pcm, "verify", return_value=out):
+            self.assertEqual(self.verify(msg)[1].splitlines()[1:], [f"  {note}"])
+            self.assertNotIn("evidence", self.verify(msg, "--json")[1])
+        self.assertEqual(pcm_cli.freshness(msg, out), note)
+        for claims in ([dict(out["claims"][0], result="unproven"), out["claims"][1]], None):
+            self.assertFalse(pcm_cli.freshness(msg, dict(out, claims=claims)))
+        self.assertIsNone(pcm_cli.freshness(dict(msg, ts="2026-13-28T10:05:00.000000Z"), out))   # no date
 
     def test_strict(self):
         doc = dict(DOC, claims=["approved_by"])

@@ -55,6 +55,7 @@ NOT_ASCII = ("its URL is not printable ASCII: send it without spaces or control 
 PERCENT = "its host has a %: send the URL with the host as plain ASCII, not percent-encoded"
 NOT_QUAD = ("its host is an IPv4 address not written as a dotted quad: send it as four decimal numbers 0-255 without "
             "leading zeros")
+RELATIVE = "its URL has no scheme, so a client may read it against a base URL: send the whole URL, scheme and host"
 # what a failed call's detail tells the sender: its record can't tell an HTTP error answer from no answer (6.6)
 NOT_OK = ("its result is not ok, which an HTTP error answer gives too: claim the host from a call that succeeded, or "
           "from an egress observer's record")
@@ -204,7 +205,7 @@ def approved_by(a, recs, msg, doc):
             mine.append(e)
     if not mine:
         return "failed", f"no approval of {a['call']} by the person {a['person']}"
-    found, aids = {}, set()   # {[tool, args] in JCS: (the first approval of it, tool, args)}, the approvals' ids
+    found, aids = {}, {}   # {[tool, args] in JCS: (the first approval of it, tool, args)}, {approval id: approval}
     for e in sorted(mine, key=lambda e: e["seq"]):
         asked = {x["data"]["decision_id"] for x, _ in recs
                  if x["type"] == "approval.request" and x["data"]["approval_id"] == e["data"].get("approval_id")}
@@ -215,7 +216,7 @@ def approved_by(a, recs, msg, doc):
             if x["type"] == "policy.decision" and c.get("decision_id") in asked and c["tool_use_id"] == a["call"] \
                     and c.get("tool"):
                 found.setdefault(canonical([c["tool"], args]), (e, c["tool"], args))
-                aids.add(e["data"].get("approval_id"))
+                aids[e["data"].get("approval_id")] = e
     if len(found) > 1:
         return "failed", (f"the evidence holds {len(found)} different decisions approved as call {a['call']} by "
                           f"{a['person']}: send the records of one approval")
@@ -226,15 +227,17 @@ def approved_by(a, recs, msg, doc):
                           "evidence holds no decision of the call it approved: add the approval.request it answers and "
                           "the policy.decision that request names")
     [(e, tool, args)] = found.values()
+    root, want = (msg.get("grants") or [{}])[0].get("issuer", {}), (doc or {}).get("tool")
+    issued = a.get("covers") is True and tool == "pcm.grant" and root.get("approval_id") in aids \
+        and (root["run"], root["tenant"]) == (msg["from"]["run"], msg["from"]["tenant"])
+    e = aids[root["approval_id"]] if issued else e   # of two attempts' approvals, the one that issued the root grant
     opened = "" if args is None else f" with args {canonical(args).decode()}"
     said = f"approval seq {e['seq']} by {a['person']} of {canonical(tool).decode()} call {a['call']}" + opened
     approved = {"tool": tool, "args": args}
     if a.get("covers") is not True:
         return "proven", said, approved
-    root, want = (msg.get("grants") or [{}])[0].get("issuer", {}), (doc or {}).get("tool")
     if tool == "pcm.grant":
-        if root.get("approval_id") in aids and (root["run"], root["tenant"]) == (msg["from"]["run"],
-                                                                                  msg["from"]["tenant"]):
+        if issued:
             return "proven", f"{said}, which issued this message's root grant", approved
         return "failed", (f"{said}: a pcm.grant approval covers only the requests under the grant it issued, and it "
                           "did not issue this message's root grant")
@@ -286,12 +289,13 @@ def _url_host(url):
     """The host `url` reaches as PCM 0.1 compares hosts: "" for none (no host, or a scheme without one: file:,
     mailto:), None when the verifier can't tell. It reads only a URL of printable ASCII that passes the bracket rule and
     doesn't start with view-source: or blob:, whose host the browser (WHATWG URL) and urllib read alike and without
-    `%`. A name is lowercased and loses one trailing dot, and has labels of 1 to 63 of a-z, 0-9, `_` and `-` (an
+    `%`, and that has a scheme or starts with `//` (a client with a base URL reads `/api.example.com/x` or
+    `api.example.com/x` as a path on the base's host). A name is lowercased and loses one trailing dot, and has labels of 1 to 63 of a-z, 0-9, `_` and `-` (an
     `xn--` label as written); an IPv4 address is read only as a dotted quad (_not_quad); an IPv6 address is RFC 5952
     section 4 text in brackets, an IPv4-mapped or NAT64 one the IPv4 address it reaches (classes.url_info), and one
     with a leading zero in a dotted quad is none (_ZERO_QUAD)."""
     u = classes.with_scheme(url)
-    if not _PRINTABLE.fullmatch(url) or not _brackets_ok(url) or _PEELED.match(u):
+    if not _PRINTABLE.fullmatch(url) or u != url or not _brackets_ok(url) or _PEELED.match(u):
         return None
     info = classes.url_info(url)
     if "host" not in info and not info.get("internal") or info.get("scheme") not in (*classes.SPECIAL, None):
@@ -310,10 +314,13 @@ def _url_host(url):
 
 
 def _why(url):
-    """NOT_ASCII, PERCENT or NOT_QUAD when that is why the host of `url`, which won't parse, won't; else None."""
+    """NOT_ASCII, RELATIVE, PERCENT or NOT_QUAD when that is why the host of `url`, which won't parse, won't; else
+    None."""
     if not _PRINTABLE.fullmatch(url):
         return NOT_ASCII
     u = classes.with_scheme(url)
+    if u != url:
+        return RELATIVE
     if not _brackets_ok(url) or _PEELED.match(u):
         return None
     try:   # as in classes.url_info: no urlsplit release refuses a URL the bracket rule passes, a later one may
@@ -335,7 +342,7 @@ def _host(host):
 def reached_host(a, recs):
     want = _host(a["host"])
     if want is None:   # the claim's host is the sender's own: NOT_QUAD is the one cause its pattern lets through
-        why = _why(f"http://{a['host']}/")
+        why = _why(f"http://[{a['host']}]/" if a["host"].count(":") > 1 else f"http://{a['host']}/")   # as _host reads
         return "unproven", f"{a['host'][:64]} is no host the verifier can read" + (f": {why}" if why else "")
     seen = ("failed", "")
     for e, _ in recs:

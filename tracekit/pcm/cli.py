@@ -40,6 +40,19 @@ def summary(out):
                                for c in out["claims"]] + skipped)
 
 
+def freshness(msg, out):
+    """What the receiver checks itself after a proven tests_passed or file_written claim (docs/pcm.md#freshness): how
+    long before the message the oldest record of its evidence is. None without one, or when a ts is no date."""
+    try:
+        ages = [pcm._epoch(msg["ts"]) - min(pcm._epoch(r["event"]["ts"]) for r in c["evidence"]["records"])
+                for c, r in (zip(msg["claims"], out["claims"]) if out["claims"] else ())
+                if r["result"] == "proven" and r["type"] in ("tests_passed", "file_written")]
+    except ValueError:   # a hostile pinned log can write a ts in month 13
+        return None
+    return ages and (f"evidence {max(ages):.0f} s before the message: a claim proves a call happened, not that nothing "
+                     "changed since: check its age (docs/pcm.md#freshness)")
+
+
 def _load(path):
     with open(path, "rb") as f:
         try:
@@ -50,7 +63,8 @@ def _load(path):
 
 def verify(a):
     try:
-        out = pcm.verify(_load(a.msg), load_trust(a.trust), [_load(p) for p in a.schema], me=a.me, strict=a.strict)
+        msg = _load(a.msg)
+        out = pcm.verify(msg, load_trust(a.trust), [_load(p) for p in a.schema], me=a.me, strict=a.strict)
     except (OSError, ValueError) as e:   # a file, a schema document that is not one, or a bad vkey in trust.json
         print(f"tracekit pcm verify: {e}", file=sys.stderr)
         return 2
@@ -58,6 +72,8 @@ def verify(a):
     # sender wrote can't pass for an escaped ESC
     line = "".join(c if c.isprintable() and c != "\\" else json.dumps(c)[1:-1] for c in summary(out))
     print(json.dumps(out, indent=2) if a.json else f"{out['verdict'].upper()}  {line}")
+    if not a.json and (note := freshness(msg, out)):
+        print(f"  {note}")
     return EXIT[out["verdict"]]
 
 
