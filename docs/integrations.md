@@ -35,7 +35,14 @@ Another agent: record its calls with the SDK's run handle ([custom agent](quicks
 | Claude Code hooks (`tracekit init --dev --v2`) | Stable | [quickstart](quickstart-v2.md) |
 | The Claude Code plugin | Experimental | [plugin](../plugin/README.md) |
 | Codex CLI, Cursor, Gemini CLI, OpenCode | Experimental | [coding agents](coding-agents.md) |
+| goose (`tracekit init --dev --v2 --agent goose`) | Experimental | [coding agents](coding-agents.md#on-the-v2-signer) |
+| Qwen Code (`tracekit init --dev --v2 --agent qwen`) | Experimental | [coding agents](coding-agents.md) |
+| Factory Droid (`tracekit init --dev --v2 --agent droid`) | Experimental | [coding agents](coding-agents.md) |
+| Antigravity CLI (`tracekit init --dev --v2 --agent antigravity`) | Experimental | [Antigravity CLI](coding-agents.md#antigravity-cli) |
 | Hermes Agent plugin | Experimental | [Hermes Agent](integrations/hermes.md) |
+
+The goose, Qwen Code, Factory Droid and Antigravity CLI hooks are written to each harness's published hook
+documentation and tested against payloads in that shape, not yet in a live session of the tool.
 
 ## Sandboxes, gateways and sensors
 
@@ -48,11 +55,11 @@ pack. What each one records: [sandboxes, gateways and sensors](concepts/integrat
   [Codex's sandbox](integrations/codex-sandbox.md), [Gemini CLI's sandbox](integrations/gemini-sandbox.md),
   [E2B](integrations/e2b.md), [microsandbox](integrations/microsandbox.md),
   [Kubernetes agent-sandbox](integrations/agent-sandbox.md).
-- MCP gateways: [agentgateway](integrations/agentgateway.md), [LiteLLM](integrations/litellm.md),
+- Agent and MCP gateways: [A2A gateway](a2a.md), [agentgateway](integrations/agentgateway.md), [LiteLLM](integrations/litellm.md),
   [Docker MCP Gateway](integrations/docker-mcp-gateway.md), [Wassette](integrations/wassette.md).
 - Kernel sensors: [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md).
 
-Tracekit's own [MCP gateway](mcp-gateway.md), [LLM gateway](gateway.md), [tool executor](executor.md) and
+Tracekit's own [A2A gateway](a2a.md), [MCP gateway](mcp-gateway.md), [LLM gateway](gateway.md), [tool executor](executor.md) and
 [egress observer](egress.md) (experimental) record calls out of the agent's process.
 
 ## OpenTelemetry and remote agents

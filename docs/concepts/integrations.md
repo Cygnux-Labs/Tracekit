@@ -77,7 +77,8 @@ Other agents: the SDK's run handle ([custom agent](../quickstarts/custom.md)).
 ## Coding agents
 
 `tracekit init --dev --v2` wires Claude Code's hooks to a dev signer; add `--agent codex`, `--agent cursor` or
-`--agent gemini` for the others (experimental). In system mode, `sudo tracekit init --v2 --user AGENT` does the same
+`--agent gemini` for the others (experimental). In system mode, `tracekit init --v2 --user AGENT` run as root
+([laptop system mode](../deploy.md#laptop-system-mode)) does the same
 against the system signer. The Claude Code plugin (experimental) runs the same v2 hook; use it or `init`'s hooks, not
 both, or each call is decided twice.
 

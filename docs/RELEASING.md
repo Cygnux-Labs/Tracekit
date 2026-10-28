@@ -13,7 +13,8 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
 
 1. Set the version in `tracekit/__init__.py` (`__version__`), in `sdk/typescript/package.json` (`version` and the
    four `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`), in `sdk/typescript/src/verify/index.ts`
-   (`VERSION`, which the verifier reports), in `docs/deploy-container.md`'s build example, in `server.json` and
+   (`VERSION`, which the verifier reports), in `docs/deploy-container.md`'s build example and `docs/deploy.md`'s
+   clone example (the tag and the directory), in `server.json` and
    `plugin/.claude-plugin/plugin.json` (`version`), in both Helm charts (`appVersion` in `deploy/helm/*/Chart.yaml`
    and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("This is
    <version>"), and add a dated entry to `CHANGELOG.md`. In `sdk/typescript/package-lock.json` set the root package's

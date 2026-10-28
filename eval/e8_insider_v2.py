@@ -14,8 +14,8 @@ its own user under its systemd unit, through the Claude Code hook system mode wi
 With harness binding (`--harness NAME=PATH` at init: signer.yaml requires the agent's runs to come from that program),
 honest activity runs as a child of the first registered harness, E8v2.6 runs outside it, and E8v2.6 is in the gate;
 without it, E8v2.6 is reported only, and --require-harness exits 1. Linux, as root, from a root-owned checkout, after
-`sudo tracekit init --v2 --user AGENT --policy eval/e8_v2_policy.yaml --harness agent=HARNESS` (the policy adds an ask
-rule for E8v2.5; HARNESS a root-owned copy of /bin/dash standing in for the agent CLI):
+`sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --policy eval/e8_v2_policy.yaml --harness agent=HARNESS` (the
+policy adds an ask rule for E8v2.5; HARNESS a root-owned copy of /bin/dash standing in for the agent CLI):
     sudo /opt/tracekit/bin/python eval/e8_insider_v2.py --agent agent --mallory mallory --require-harness
 Writes eval/results/e8_insider_v2.json; exit 0 when every case in the gate is caught.
 """
@@ -287,7 +287,8 @@ def main():
         raise SystemExit("run as root: E8 needs separate OS users and the v2 signer in system mode")
     sock = (client.system_config() or {}).get("signer")
     if not sock:
-        raise SystemExit("no v2 system mode: sudo tracekit init --v2 --user AGENT --policy eval/e8_v2_policy.yaml")
+        raise SystemExit("no v2 system mode: from a root-owned checkout, sudo /usr/bin/python3 -m tracekit init --v2 "
+                         "--user AGENT --policy eval/e8_v2_policy.yaml")
     signer("start", sock)
     tag = str(int(time.time()))
     # E8v2.3 restarts the signer, so it runs last

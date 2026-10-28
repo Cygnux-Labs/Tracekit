@@ -68,13 +68,53 @@ tracekit verify run.tkb --trust trust.json
 
 The signer runs as its own OS user from a root-owned install, so the agent's user can't reach its keys, store, policy
 or approvals. Prerequisites: Linux with systemd (macOS: launchd, experimental, `--experimental-macos`), root, a
-root-owned Python, and an agent user that is not root and not in a sudo, wheel, admin, docker or similar group.
+root-owned Python 3.9+ with its `venv` module (Debian, Ubuntu: `sudo apt install python3-venv`), and an agent user
+that is not root and not in a sudo, wheel, admin, docker or similar group.
+
+Init runs from root's Python, so Tracekit must be installed there first. The package is `tracekit-ai`; `tracekit` on
+PyPI is another project. Which way depends on `/usr/bin/python3 --version`. With Python 3.11 or later, install it
+into `/opt/tracekit`, the root-owned venv that init builds anyway. Debian 12, Ubuntu 23.04 and later refuse
+`sudo pip install` (PEP 668: `error: externally-managed-environment`), but pip installs into a venv:
 
 ```bash
-sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
-    --harness claude=/usr/local/bin/claude [--policy /etc/tracekit/policy.yaml]
-sudo tracekit doctor
+sudo /usr/bin/python3 -m venv /opt/tracekit
+sudo /opt/tracekit/bin/python -m pip install -U tracekit-ai
+sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --approver ADMIN \
+    [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
+sudo /opt/tracekit/bin/python -I -m tracekit doctor
 ```
+
+With Python 3.9 or 3.10 (Ubuntu 22.04, Debian 11, macOS's `/usr/bin/python3`), don't run init from that venv: it
+fails and leaves a broken `/opt/tracekit` (`Too many levels of symbolic links`). Run init from the system Python
+instead. These systems don't refuse `sudo pip`, so you can install Tracekit there. But that puts it and the packages
+it needs (cryptography, regex, rfc8785, google-re2 on 3.10, and what they need) into the system Python, for every
+program that uses it. Where your distribution ships one of them, as Ubuntu 22.04 ships python3-cryptography 3.4.8, pip
+adds a newer copy that those programs then load instead. That can break programs written for the distribution's
+version; PEP 668 is there to stop it.
+
+```bash
+sudo /usr/bin/python3 -m pip install -U tracekit-ai      # Debian, Ubuntu: sudo apt install python3-pip first
+sudo /usr/bin/python3 -I -m tracekit init --v2 --user AGENT --approver ADMIN \
+    [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
+sudo /opt/tracekit/bin/python -I -m tracekit doctor
+```
+
+To leave the system Python alone, run init from a root-owned clone of the release instead. `python3 -m` without `-I`
+runs the copy in the current directory, and init builds `/opt/tracekit` from it:
+
+```bash
+# v1.5.0 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.5.0 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.5.0
+cd /usr/local/src/tracekit-1.5.0
+sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
+    [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
+sudo /opt/tracekit/bin/python -I -m tracekit doctor
+```
+
+Each way, init then builds a fresh `/opt/tracekit` with the version it runs. Run every later `tracekit` command
+through `/opt/tracekit/bin/python -I -m tracekit`, the copy the signer runs: init puts no `tracekit` command on root's
+`PATH`. `-I` leaves the current directory out of the import path, so a Tracekit checkout you happen to be in is not
+the code that runs.
 
 What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos-experimental) has the details):
 
@@ -82,27 +122,67 @@ What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos
   and the hardened `tracekit-signer` systemd unit (no capabilities, `ProtectSystem=strict`, a system-call filter);
 - `/etc/tracekit/signer.yaml` (root-owned): AGENT's uid in its own tenant, approvals only from ADMIN's uid
   (self-approval refused), the policy;
-- AGENT's v2 Claude Code hook, and `/etc/tracekit/client.json` naming the system socket, so dev auto-spawn is off and
-  a `TRACEKIT_SIGNER` pointing elsewhere is refused;
-- **harness binding** (`--harness [NAME=]PATH`, repeatable; the binary must be root-owned): the signer accepts a run
-  from AGENT's uid only from below that program's process tree, attested by `tracekit-harness-helper`, a root service
-  that holds only `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH`. Without `--harness` there is no binding;
-- the **transcript tailer**: the `tracekit-tailer` user reads AGENT's Claude Code transcripts (the session's and its
-  subagents') through an ACL and reports them to the signer, which lets that uid make only `model_event`, `state_write`, `tailer_lost`,
-  `tailer_heartbeat` and `status` calls. An edited, truncated or replaced transcript, or a tailer that stops its
-  heartbeats while the run is open (killed), becomes a signed `tailer_lost` gap. When the ACL or the sudo rule
-  can't be set up, init says so and each run records a `tailer_lost` gap instead.
+- AGENT's v2 hook for the coding agent `--agent` names (default: Claude Code; none with `--no-hooks`), and
+  `/etc/tracekit/client.json` naming the system socket, so dev auto-spawn is off and a `TRACEKIT_SIGNER` pointing
+  elsewhere is refused;
+- **harness binding**, only with `--harness [NAME=]PATH` (optional, repeatable; the binary must be root-owned): the
+  signer accepts a run from AGENT's uid only from below that program's process tree, attested by
+  `tracekit-harness-helper`, a root service that holds only `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH`. Without
+  `--harness` there is no binding and no helper. Init and doctor say nothing about it (v2 init doesn't look for the
+  agent's CLI on `PATH`), and any process of AGENT's user can start a run;
+- the **transcript tailer** (with `--agent claude`, the default, even with `--no-hooks`): the `tracekit-tailer` user
+  reads AGENT's Claude Code transcripts (the session's and its subagents') through an ACL and reports them to the
+  signer, which lets that uid make only `model_event`, `state_write`, `tailer_lost`, `tailer_heartbeat` and `status`
+  calls. The Claude Code hook (init's or the plugin's) starts it for each session through a sudo rule
+  (`/etc/sudoers.d/tracekit-tailer`). An edited, truncated or replaced transcript, or a tailer that stops its
+  heartbeats while the run is open (killed), becomes a signed `tailer_lost` gap. When the ACL or the sudo rule can't
+  be set up, init says so and each Claude Code session's run records a `tailer_lost` gap instead.
+
+An agent that runs through the SDK, such as a daemon that calls `tracekit.instrument()`, needs no hook: add
+`--no-hooks`. Another coding agent gets its own hook with `--agent` (`codex`, `cursor`, `gemini`, `opencode`, `goose`,
+`qwen`, `droid`, `antigravity`; [coding agents](coding-agents.md)). The SDK finds the system signer through
+`/etc/tracekit/client.json`. Init still sets up the tailer's user, ACL and sudo rule, but only the Claude Code hook
+starts the tailer, so the SDK's runs record no `tailer_lost` gap. Doctor's `D-HOOKS-PRESENT` check warns `no hooks
+recorded in client.json`; that is expected.
 
 Add witnesses on another host to signer.yaml (`witnesses:`, [witnesses](witnesses.md#v2-c2sp-tlog-witnesses)) and
-restart the unit. Approve from ADMIN's account with `tracekit approvals list` and `tracekit approvals approve <id>`.
-`sudo tracekit uninstall --v2` removes it (`--purge` also deletes the keys and log).
+restart the unit. Approve from ADMIN's account with `/opt/tracekit/bin/python -I -m tracekit approvals list` and
+`/opt/tracekit/bin/python -I -m tracekit approvals approve <id>`.
+`sudo /opt/tracekit/bin/python -I -m tracekit uninstall --v2` removes it (`--purge` also deletes the keys and log).
+On the system-pip route, `sudo /usr/bin/python3 -m pip uninstall tracekit-ai` removes the system copy (pip leaves its
+dependencies); on the clone route, delete the clone.
+
+Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops anything you added by hand, such as
+`witnesses:` or `content:` (without `content:`, new runs keep no content), and doesn't say so. To upgrade:
+
+1. Stop the signer: `sudo systemctl stop tracekit-signer` (with `--harness` also `tracekit-harness-helper`, with
+   `--egress` also `tracekit-egress`). Until init starts it again, AGENT's tool calls are blocked.
+2. Keep a copy of the config: `sudo cp /etc/tracekit/signer.yaml /root/signer.yaml.bak`.
+3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
+   the new release's tag into a new directory.
+4. Add your lines back to `/etc/tracekit/signer.yaml`, then `sudo systemctl restart tracekit-signer`, and
+   `tracekit-harness-helper` / `tracekit-egress` if you use them. A run that starts before this keeps no content.
+
+Export and the trust config read the signer's data dir, which only root and the signer's user can open. So AGENT
+can't export its own runs; only root can. Export as root, and name AGENT's tenant: init puts AGENT's runs in a tenant
+named after the user, and without `--tenant` export looks in `local` (`no run '...' of tenant 'local' in the store`).
+
+```bash
+sudo /opt/tracekit/bin/python -I -m tracekit signer trust --config /etc/tracekit/signer.yaml -o trust.json
+sudo /opt/tracekit/bin/python -I -m tracekit export --v2 --config /etc/tracekit/signer.yaml --tenant AGENT \
+    --run <run id> -o run.tkb
+tracekit verify run.tkb --trust trust.json      # anyone, on any machine: no access to this host needed
+```
+
+Running export as root leaves no root-owned files in the store: it opens the store read-only.
 
 - **Protects against:** the agent's user reading or changing the keys, store, sequence numbers or policy, answering
   its own approvals, or pointing the hook at a decoy signer (A1, A2; `eval/e8_insider_v2.py` checks these as real
   users).
 - **Doesn't protect against:** root on the machine (A4: a witness on another host is the defence), the agent removing
-  the hook from its own `~/.claude/settings.json` or acting outside Claude Code (no record, no gap), or a same-user
-  process that starts the registered harness itself ([what binding does not stop](faq.md#what-does-harness-binding-not-stop)).
+  the hook from its own settings (`~/.claude/settings.json` for Claude Code) or acting outside the hook or the SDK (no
+  record, no gap), or a same-user process that starts the registered harness itself
+  ([what binding does not stop](faq.md#what-does-harness-binding-not-stop)).
 - **Bundles reach:** `isolation: separate-user`, approvals by another user; `Assurance: dev` without a witness,
   `local` with your own, `witnessed` with an independent one.
 
@@ -307,6 +387,10 @@ as it needs nothing the schema lacks:
   model messages, the `ext` slot), or that holds a run exported in parts (past 64 MiB of records), needs a 1.4 verifier; an older one reports it `UNVERIFIABLE (needs tracekit >=
   1.4.0)`. A same-user dev signer from 1.3 is replaced by the first 1.4 client that finds it. The store's schema is
   unchanged.
+- **1.5** speaks signer protocol 20. A 1.5 signer serves clients and gateways from protocol 15 up (1.2 to 1.4
+  included), but a 1.5 client or gateway refuses a 1.4 signer: upgrade the signer first. Bundles are unchanged: a 1.4
+  verifier reads them. A same-user dev signer from 1.4 is replaced by the first 1.5 client that finds it. The store's
+  schema is unchanged.
 
 Helm (`tracekit-central`): migrate each replica's schema before upgrading the release with `signer.content.retain`
 set. Compose: the stack's init script runs only on an empty database, so on an existing stack run

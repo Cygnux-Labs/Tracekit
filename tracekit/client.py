@@ -36,7 +36,7 @@ class SystemConfigError(RuntimeError):
 
 
 def system_config():
-    """The root-owned client config written by `sudo tracekit init` (0.2.1), or None when there is none.
+    """The root-owned client config written by `tracekit init` as root (0.2.1), or None when there is none.
 
     When it exists it is the only source of the signer address, policy path and fail mode: the agent's own
     ~/.tracekit-client/config.json and TRACEKIT_SOCKET are ignored, so the agent cannot point its hooks at a

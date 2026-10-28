@@ -32,7 +32,7 @@ The signer runs as your user, the same user as the agent.
 Dev mode is for trying Tracekit and watching your own agent. It is not protection
 ([limits](limits.md#dev-mode-vs-system-mode)).
 
-## Linux system mode (`sudo tracekit init --v2 --user AGENT`)
+## Linux system mode (`tracekit init --v2 --user AGENT` as root)
 
 The signer runs as its own OS user from a root-owned install. The agent runs as another, unprivileged user.
 

@@ -25,6 +25,7 @@ import collections
 import concurrent.futures
 import contextlib
 import contextvars
+import hashlib
 import http.client
 import json
 import os
@@ -53,6 +54,7 @@ CONNECT_TIMEOUT_S = 2
 KEEP_CALLS = 4096   # decided calls a RunHandle remembers for their `complete`, the oldest forgotten first
 KEEP_RUNS = 65536   # runs a Client keeps an event counter for, the least recently used forgotten first
 RETRIES = 3
+TRANSFER = "a2a:transfer"   # the tool RunHandle.transfer decides
 _EVENT_METHODS = {m for m, s in rpc_schema.REQUESTS.items() if "client_seq" in s["properties"]}
 _LONG_POLLS = {m for m, s in rpc_schema.REQUESTS.items() if "timeout_ms" in s["properties"]}
 
@@ -593,7 +595,7 @@ class RunHandle:
     def __init__(self, client, registered):
         self.client, self.registered = client, registered
         self.run_id, self.run_token = registered["run_id"], registered["run_token"]
-        self.closed = False
+        self.closed, self._agent = False, None   # _agent: this client's identity, which pcm_send speaks as
         self._decided = {}   # tool_call_id -> the decision_id and args_digest its `complete` must name
         self._untrusted = set()   # tool_call_ids whose decision asked for the result itself (send_result)
 
@@ -672,6 +674,57 @@ class RunHandle:
         records a commitment, never the value."""
         return self.call("observe", value=value, source=source, trust=trust, **fields)
 
+    def transfer(self, sender, receiver, payload, modality, projector=None, measured=None, keep=False):
+        """Experimental: record and gate a transfer from `sender` to `receiver` before it happens: text, a tool call,
+        or a model's internal state (`modality` kv-cache, embedding, activations) through `projector` (the adapter).
+        Each is an id with its version ("qwen2.5-7b@<sha>"). `payload` (bytes or text) is hashed here: the signer gets
+        its size and sha256 digest, never the payload. `measured`: more fields the calling code computed itself from
+        what it sends (tracekit.integrations.c2c: the fuser's weights hash and layer map). The arguments name those,
+        size and digest under `measured`, and the caller's word (the ids, the modality) under `claimed`; all of it
+        comes from this process (tier T1), so the signer takes none of it on trust. Decided as tool a2a:transfer, of
+        the class the policy maps it to (a2a: a rule on `route`, "sender->receiver via projector", allows listed
+        triples); an ask waits up to 5 minutes for a person. Fails closed: with the signer unreachable the transfer may
+        not happen, whatever the run's fail modes. Returns the decision with `ok`, whether the transfer may happen now;
+        one that may is recorded as made before this returns. `keep`: its result is the payload (hex), which a signer
+        keeping content (content.retain) encrypts in its vault for `tracekit why transfer`; the records hold only
+        commitments. The record is what this process said and measured, and when: who sent to whom through which
+        adapter as claimed, the size and digest as measured here, none of it checked by the signer (docs/c2c.md), and
+        not what the state meant; a transfer the code doesn't pass through here is not recorded."""
+        data = payload.encode() if isinstance(payload, str) else bytes(payload)
+        more = measured or {}
+        reserved = {"sender", "receiver", "modality", "projector", "size", "digest", "claimed", "measured"}
+        collision = sorted(set(more) & reserved)
+        if collision:
+            raise ValueError("measured keys replace reserved transfer fields: " + ", ".join(collision))
+        args = {"sender": sender, "receiver": receiver, "modality": modality,
+                **({"projector": projector} if projector else {})}
+        args = {**args, "claimed": sorted(args), "size": len(data), "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+                **more, "measured": sorted({"size", "digest", *more})}
+        tcid = "tx-" + uuid.uuid4().hex
+        d = self.decide(tcid, TRANSFER, args)
+        if d.get("unavailable") or d["decision"] == "deny":
+            return {**d, "ok": False}
+        hint = {}
+        if d["decision"] == "ask":
+            hint = {"approval_id_hint": self.call("approval_request", tool_call_id=tcid)["approval_id"]}
+            state = self.call("approval_wait", approval_id=hint["approval_id_hint"], timeout_ms=300000)["state"]
+            if state != "approved":
+                if state == "requested":   # unanswered: withdrawn, so no one approves a transfer that is gone
+                    self.call("approval_abandon", approval_id=hint["approval_id_hint"],
+                              reason="no answer within run.transfer's wait")
+                return {**d, "ok": False, "reason": f"approval {state}"}
+        c = self.approval_consume(tcid, TRANSFER, args, **hint)
+        if c["ok"]:
+            kept = {"payload": data.hex()} if keep else None
+            # lean: up to a quarter frame of payload (its hex in half a frame) is kept; send it in parts, each a
+            # record of its own, once larger caches must be kept
+            if kept and not sendable(kept):
+                warnings.warn(f"tracekit: transfer {tcid} is recorded but not kept: its {len(data)} bytes are more "
+                              f"than one frame carries (about {MAX_LINE // 4}); keep a smaller one", stacklevel=2)
+                kept = None
+            self.complete(tcid, **({"result": kept} if kept else {}))
+        return {**d, "ok": c["ok"], **({"reason": c["reason"]} if c.get("reason") else {})}
+
     def review_finding(self, reviewer, verdict, cites):
         """Sign a finding in this findings run (`client.run(name, analyzes=<run id>)`, as an identity signer.yaml
         `analyzers` lists): `reviewer` the tool and version ("tracekit-analyze/1.4.0"), `verdict` {kind, rule,
@@ -691,6 +744,70 @@ class RunHandle:
         except (SignerUnavailable, RPCError) as e:
             warnings.warn(f"tracekit: {tool} is blocked: approval_consume failed: {e}", stacklevel=2)
             return {"ok": False, "rule_ids": [], "reason": f"approval_consume failed: {e}"[:1024]}
+
+    def pcm_send(self, to, intent, args, claims=(), grants=(), payload=None):
+        """A proof-carrying message (experimental, tracekit.pcm) to agent `to` ("scheme:subject"), signed by the signer
+        as this run's own agent: `intent` a schema ref (pcm.schema_ref) and its `args`, `claims` each with evidence
+        from pcm_evidence, `grants` root first, `payload` {"kind": "text", "text"} or {"kind": "data", "data"}."""
+        if self._agent is None:
+            i = self.client.status()["identity"]
+            self._agent = f"{i['scheme']}:{i['subject']}"
+        body = {"from": {"agent": self._agent, "run": self.run_id, "tenant": self.registered["tenant"]},
+                "to": {"agent": to}, "intent": {"type": intent, "args": args},
+                **({"claims": list(claims)} if claims else {}), **({"grants": list(grants)} if grants else {}),
+                **({"payload": payload} if payload is not None else {})}
+        return self.call("pcm_sign", message=body)["message"]
+
+    def pcm_evidence(self, run_seqs, args=None, wait_s=15.0):
+        """Claim evidence ({checkpoint, records}) of this run's records `run_seqs`, nudging a checkpoint until it covers
+        them (SignerUnavailable past `wait_s`). `args`: {run_seq of a policy.decision: the args it decided}, opened for
+        the receiver (who then sees them); a decision not named keeps its args closed."""
+        args, deadline = args or {}, time.monotonic() + wait_s
+        if set(args) - set(run_seqs):
+            raise ValueError(f"args names run_seq {sorted(set(args) - set(run_seqs))}, not among run_seqs")
+        while (out := self.call("pcm_evidence", run_seqs=list(run_seqs)))["pending"]:
+            if time.monotonic() >= deadline:
+                raise SignerUnavailable(f"run_seq {out['pending']} not in a checkpoint after {wait_s:g}s")
+            self.client.checkpoint_nudge({})
+            time.sleep(0.2)
+        records = []
+        for r in out["records"]:
+            rec = {k: r[k] for k in ("event", "hash", "proof")}
+            if r["run_seq"] in args:
+                if "salt" not in r:
+                    raise ValueError(f"run_seq {r['run_seq']} is a {r['event']['type']}: only a policy.decision's "
+                                     "args open")
+                rec.update(salt=r["salt"], args=args[r["run_seq"]])
+            records.append(rec)
+        return {"checkpoint": out["checkpoint"], "records": records}
+
+    def pcm_grant(self, subject, intent, expires_at, caveats=(), delegable=False, parent=None, timeout_s=300.0):
+        """A grant of `intent` to agent `subject` within `caveats` until `expires_at`; `delegable`: the subject may
+        pass it on, only narrower. With `parent` (a grant to this run's agent): its child, which only narrows. Else a
+        root grant: a `pcm.grant` call a person approves (the policy must ask for it) within `timeout_s`; Refused when
+        it is not asked, rejected or not answered in time."""
+        fields = {"subject": subject, "caveats": list(caveats), "expires_at": expires_at, "delegable": delegable}
+        if parent is not None:
+            if intent != parent["intent"]:
+                raise ValueError(f"a child grant keeps its parent's intent, {parent['intent']}")
+            return self.call("pcm_delegate", parent=parent, **fields)["grant"]
+        args, tcid = {**fields, "intent": intent}, "pcm-grant-" + _new_id()
+        d = self.decide(tcid, "pcm.grant", args)
+        if d["decision"] != "ask":
+            raise Refused(f"pcm.grant was decided {d['decision']}, not asked: a root grant needs a person's approval "
+                          "(the policy's PCM-GRANT ask rule)")
+        state = self.call("approval_request", tool_call_id=tcid)
+        aid, state, deadline = state["approval_id"], state["state"], time.monotonic() + timeout_s
+        while state == "requested" and (left := deadline - time.monotonic()) > 0:
+            state = self.call("approval_wait", approval_id=aid, timeout_ms=int(min(left, 300) * 1000))["state"]
+        if state != "approved":
+            raise Refused(f"pcm.grant approval {aid} is {state}")
+        c = self.approval_consume(tcid, "pcm.grant", args)
+        if not c["ok"]:
+            raise Refused(f"pcm.grant approval {aid}: {c.get('reason') or c['rule_ids']}")
+        grant = self.call("pcm_grant", tool_call_id=tcid, args=args)["grant"]
+        self.complete(tcid, result={"grant": event_hash(grant)})
+        return grant
 
     def close(self, reason=None):
         if not self.closed:

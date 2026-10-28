@@ -30,7 +30,7 @@ export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
-export const VERSION = "1.4.2";
+export const VERSION = "1.5.0";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;

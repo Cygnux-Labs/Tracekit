@@ -13,7 +13,7 @@ key or trust config it verified with before (I8 in the [threat model](threat-mod
 | Signer | `tracekitd`, home `~/.tracekit-signer` | `tracekit signer serve --dev`, started by the first client ([quickstart](quickstart-v2.md)) |
 | Claude Code hook | `tracekit.hook`; the hook evaluates the policy | `tracekit.integrations.claude_code`; the signer evaluates the policy over the raw arguments ([policy](policy-v2.md)) |
 | Policy | `tracekit/policy/default.yaml` | the coding pack, `tracekit/policy2/packs/` |
-| Approvals | `tracekit pending`, `tracekit approve` | `tracekit approvals list`, `tracekit approvals approve <id>`, bound to the exact arguments ([approvals](approvals.md)) |
+| Approvals | `tracekit pending`, `tracekit approve` | `tracekit approvals list`, `tracekit approvals approve <id>` (`tracekit approve apr-…` also answers a v2 id), bound to the exact arguments ([approvals](approvals.md)) |
 | Export | `tracekit export --last -o run.tkb` | `tracekit export --v2 --run <run id> -o run.tkb` |
 | Verify | `tracekit verify run.tkb --key signer.pub` (or `--witness`) | `tracekit verify run.tkb --trust trust.json` ([verdicts](verdicts.md)) |
 | Bundle | v1 `.tkb`: one hash chain over the whole ledger | [format v2](format-v2.md): a per-run chain with inclusion proofs into a checkpointed Merkle tree |

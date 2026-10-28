@@ -1183,7 +1183,7 @@ class TestExt(Case):
         log.add("tool.call", {"tool_use_id": "t1", "name": "Bash", "input": {}}, ext={})
         log.final()
         info = export(log.store, "acme", "run-a", log.note(), os.path.join(self.d, "e.tkb"))
-        self.assertEqual((info["verifier_min_version"], info["raised_by"], info["verifier_version"]),
+        self.assertEqual((info["verifier_min_version"], info["raised_by"], info["verifier_min_version_full"]),
                          ("1.4.0", ["ext: seq 2"], "1.4.0"))
         self.assertEqual(needs([{"type": "ext", "data": {"name": "n"}}]), ("1.4.0", "1.4.0"))
 

@@ -66,14 +66,16 @@ def store_records(data_dir: str, run: Optional[str] = None) -> Dict[str, List[Di
         r.close()
 
 
-def bundle_records(path: str, trust: str):
+def bundle_records(path: str, trust: str, memo=None):
     """(run_id -> records, report, exit code) of a v2 bundle; no records unless it verifies against `trust`. The file
-    is read once, so the records are the ones verified, and they are parsed as the verifier parses them."""
+    is read once, so the records are the ones verified, and they are parsed as the verifier parses them. `memo`:
+    verify.v2's (tracekit view's watcher keeps one: records it checked are not checked for signature and schema
+    again)."""
     from ..bundle_v2 import run_files
     from ..verify import v2
     with open(path, "rb") as f:
         mine = io.BytesIO(f.read())
-    rep, code = v2.verify(mine, trust)
+    rep, code = v2.verify(mine, trust, memo=memo)
     if code:
         return {}, rep, code
     out, files = {}, v2.read_zip(mine)

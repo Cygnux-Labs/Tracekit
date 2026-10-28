@@ -2,6 +2,383 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.5.0 (2026-10-28) — A2A gateway, proof-carrying messages, a new viewer and four more coding agents
+
+Calls between agents can now be gated and recorded: the A2A gateway decides each message one agent sends another,
+`run.transfer` records a hand-off of one model's internal state to another (C2C) before it happens, and a PCM 0.1
+message carries signed proof of who sent it and what it claims (all three experimental). `tracekit view` has a new
+layout with NEEDS YOU, PERMISSIONS and the Event Horizon page, and `tracekit graph` (experimental) builds a graded graph
+of what agents did across runs. goose, Qwen Code, Factory Droid and Antigravity CLI can be gated and recorded (all
+experimental). Every policy pack holds reading a secret's value, a destructive database statement, deleting a
+repository or project, and more kinds of infrastructure removal until a person approves. Bundles are unchanged: every
+bundle verifies with the 1.4.2 verifier too, which lists PCM records as not interpreted. The signer protocol goes from
+19 to 20 for PCM, so upgrade the signer first.
+
+### Upgrade notes
+- **Signer first.** 1.5 speaks signer protocol 20 (PCM's four RPCs): a 1.5 signer serves clients and gateways from
+  protocol 15 on (1.2 to 1.4 included), but a 1.5 client or gateway refuses a 1.4 signer. A same-user dev signer from
+  1.4 is replaced by the first 1.5 client that finds it, with a warning in Python; TypeScript replaces it silently,
+  through the `tracekit` on your PATH, which must be 1.5 too (`pip install -U tracekit-ai`). A signer you run yourself
+  must be upgraded first ([deploy](docs/deploy.md#upgrading)).
+- **Policy packs.** Coding `2026.10-v2-39` (from `2026.10-v2-24`), server `2026.10-server-9` (from `-8`). The dev pack
+  (the dev signer's default policy) and the server and strict packs extend coding, so on a laptop and on a server these
+  now hold calls 1.4.2 allowed (below). Upgrade the signer to get them. The policy corpus (E17) grew to 699 harmful and
+  800 benign calls: the server pack stops all 699 harmful calls and raises 1 false alarm; 1.4.2's stops 583 of them,
+  with 1 false alarm too (on its own corpus, 583 of 583 and 1 in 749). What each new rule doesn't read is in
+  [limits](docs/limits.md#policy) (`TK-D012`'s in [approvals](docs/limits.md#approvals)).
+- **`TK-F009` is split in three.** It now flags a file tool's write to a coding agent's settings; a shell write or
+  delete there is `TK-F015`, and `ANTHROPIC_BASE_URL` in a `Bash`, `Write`, `Edit` or `MultiEdit` call is `TK-F016`.
+  Reading these files, or naming them in text, is no longer flagged (Changed, below). A custom policy, alert or filter
+  on `TK-F009` needs the two new ids too; a sequence or response on their label, `harness_config`, needs no change
+  (#378).
+- **Cursor hooks.** Run `tracekit init --agent cursor` again with the mode you first used (`--dev`, `--dev --v2`, or
+  system mode, and `--project` if you used it), so `failClosed` is set on `preToolUse` only (Fixed, below).
+  `tracekit doctor` warns about any other v2 hook still wrapped to block events other than tool calls (Claude Code's
+  from before 1.3): run init again for those.
+
+### Added
+- **A2A gateway (experimental, #445).** `tracekit a2a-gateway serve --config a2a-gateway.yaml` stands in front of the
+  A2A servers its `upstreams` name. An agent sends to `/a2a/<upstream>`; the gateway relays `message/send`,
+  `message/stream` and `tasks/get` once the signer has decided each as tool `a2a:<upstream>/<method>`, and holds an
+  `ask` for a person. The decision commits to the sender (the caller the gateway authenticated), the receiver, its
+  Agent Card's digest and skills, and the params; the result is recorded at tier T2, and each streamed event is
+  recorded before the agent gets it. The gateway refuses any other method, a push-notification config, a task or
+  context id it didn't give the caller, and params that spell an A2A field another way (another case, snake_case or
+  kebab-case) or hold a key outside ASCII, which a receiver may read as A2A's field while the policy reads only A2A's
+  spelling, and forwards nothing when the signer is unavailable. Policy reads A2A calls as a new class, `a2a` (sender,
+  receiver, route, skills, part kinds, hosts, size); a name with a space, a zero-width or a look-alike character is
+  denied (`TK-A2A-NAME`), and the server and strict packs ask a person for every A2A call (`TK-S011`). No pack ships
+  rules for sender and receiver pairs or skills. It doesn't check PCM parts yet ([A2A gateway](docs/a2a.md),
+  [limits](docs/limits.md#custody-12)).
+- **Transfer records for C2C (experimental, #445).** `run.transfer(sender, receiver, payload, modality,
+  projector=...)` decides tool `a2a:transfer` before one model's internal state (a KV cache) is handed to another, and
+  records the claimed names and the payload's size and SHA-256 measured in the caller's process (T1: the signer checks
+  none of it); `TK-S011` asks for it on the server and strict packs. `tracekit.integrations.c2c.fuse` measures a C2C
+  cache, records the transfer with the hash of the fuser's weights and runs the fuser only if allowed. For a transfer
+  kept with `keep=True` (on a signer with `content: {retain: true}`), `tracekit why transfer --run R (--store DIR |
+  --bundle FILE --trust FILE) --receiver MODULE:ATTR` reads the kept copy from the signer's vault, checks it against
+  its record and runs your receiver with and without it. Python only ([C2C](docs/c2c.md)).
+- **PCM 0.1: proof-carrying messages (experimental, #450).** `run.pcm_send(to, intent, args, claims, grants)` has the
+  signer sign a message to another agent, only as the calling run's own agent, with its log key, adding the id, time and
+  nonce itself. The message carries a typed intent (a schema named by its hash), claims (`tests_passed`,
+  `approved_by`, `reached_host`, `file_written`), each with records from the sender's signed log as evidence
+  (`run.pcm_evidence`), and grants: a person's signed approval of who may ask for what, within which limits, until
+  when (at most 24 h; `run.pcm_grant`). The receiver checks it offline with a trust.json that pins one key per log
+  (`tracekit signer trust` writes one): `tracekit pcm verify MSG --trust trust.json --schema S` exits 0 (accept), 3
+  (accept-unproven: a claim is unproven), 1 (reject) or 2 (bad input: a file it can't read, a schema document that is
+  none, a number past the double range such as `1e400`, or two keys of one log), and after a proven `tests_passed` or
+  `file_written` prints how long before the message its evidence is, since a claim proves a call happened, not that
+  nothing changed since; `pcm.verify` in Python, given a `pcm.Replay`, also refuses a replay. `approved_by` alone
+  proves only that the person approved the call the agent named; with `covers: true` the approval must also cover the
+  request, by having issued the message's root grant or by being of the tool the schema names with the intent's args,
+  and a schema that lists `approved_by` needs such a claim (else accept-unproven, reject with `--strict`).
+  `reached_host` compares hosts in printable ASCII only: a URL with a Unicode host or a space, a URL with no scheme
+  (`api.example.com/x`) and an IPv4 address not written as a dotted quad (`0127.0.0.1`, `127.1`) are unproven, the
+  call's reason saying what to send instead, and a call the host answered with an HTTP error (a 404) fails the claim,
+  as its result is not ok. A root grant needs a person's approval of a `pcm.grant` call, which no shipped pack asks
+  for: add an ask rule. Each message and grant is an `ext` record (`pcm.sent`, `pcm.grant`) in the sender's run.
+  `tracekit pcm demo` runs two agents through a refund request on a real signer in a temp dir. Tracekit is the
+  reference implementation of PCM, whose specification will be published separately; the A2A gateway doesn't check PCM
+  yet, and TypeScript has no PCM verifier ([PCM](docs/pcm.md),
+  [limits](docs/limits.md#pcm-01-proof-carrying-messages-experimental)).
+- **`tracekit graph` (experimental, #454).** `tracekit graph build RUN.tkb ... --trust trust.json` verifies each v2
+  bundle and builds one graph of what the agents did across the runs: files written (and a kernel sensor's file
+  events), hosts reached, approvals, secrets, rules and findings. Each edge is graded SIGNED (a signer record; `wrote`
+  and `reached` need a T2 result), OBSERVED (an egress or kernel sensor, tied to the run, not a call), INFERRED
+  (`tracekit why`'s causal graph, or a Graphify code node joined to a file: `build` reads `graphify-out/graph.json`
+  when it exists, `--graphify ''` for none) or UNVERIFIED (from a bundle that fails verification). It writes
+  `graph.json`, `GRAPH_REPORT.json` and `GRAPH_REPORT.md`; `tracekit graph query` answers `--file`, `--host`,
+  `--agent`, `--approved-by`, `--rule`, `--secret`, `--code`, `--blast NODE` and `--path A B`; `tracekit graph verify`
+  verifies the bundles again and rebuilds the three files byte for byte (under another Tracekit version it reports a
+  mismatch). The graph itself isn't signed: `query` says so on its first line, prints no control characters, and with
+  `verify` refuses a malformed, symlinked or over-512 MiB `graph.json`; `build` writes no file through a symlink. A
+  call is one signer decision, so a person's approval is never credited to another action made under the same tool call
+  id; a run whose id verified runs of other tenants or logs share is keyed `RUN@TENANT@LOG`; a why test is drawn as
+  tested only when the verifier counts it; and `graph.json` holds no digest of a call's arguments. A call's file and
+  host edges need `--content`, which reads the decided arguments from the content vault, each read a signed
+  `content.accessed`. The Claude Code plugin gets a `tracekit-graph` skill ([graph](docs/graph.md),
+  [limits](docs/limits.md#graph-tracekit-graph)).
+- **goose hooks (experimental, #377, by @juliasadler).** `tracekit init --dev --agent goose` (with `--v2` for the v2
+  signer, `--project` for one project) installs a goose plugin in `~/.agents/plugins/tracekit/`: its PreToolUse hook
+  asks Tracekit before each tool call (600 s, and the call is blocked when the hook fails), and the post-tool hooks
+  record the outcome. Code Mode's `execute_javascript`, `execute_typescript` and `execute_bash` are always denied.
+  Tracekit installs only goose's tool hooks, and goose sends them no tool output or error text, so a run holds no
+  output, error text, prompts, session events or model text. Needs goose 1.48.0 or later; on Windows without `sh` on
+  PATH every call is blocked. Tested against goose's hook payloads, not a live goose session
+  ([coding agents](docs/coding-agents.md), [limits](docs/limits.md#signer-and-capture)).
+- **Qwen Code hooks (experimental, #388, by @Rldumdum; #417, by @2409324124; #449).** `tracekit init --dev --agent
+  qwen` (with `--v2`, `--project`) writes the hooks into `~/.qwen/settings.json` (or the project's
+  `.qwen/settings.json`); `tracekit uninstall --agent qwen` and `tracekit doctor` know them. Tool calls are decided
+  before they run and recorded with Qwen's call ids, and prompts and session start and end are recorded. A prompt
+  counts as the person's (and its live constraints are read) only from Qwen's `submitted_prompt`, so `@file` contents,
+  pasted text, tool-result continuations and Stop-hook reasons aren't recorded as the person's words; Qwen before
+  0.21.1 (0.21.12 for `qwen -p`) doesn't send it, so its prompts aren't recorded. Model text isn't recorded. Project
+  hooks run only in a trusted folder; `disableAllHooks`, `--safe-mode` and `--bare` turn off every hook, Tracekit's
+  included, and with `QWEN_HOME` set Qwen doesn't read `~/.qwen/settings.json`. On Windows the hook command is
+  written in the form Qwen runs there; a hook that can't start lets the call through unrecorded
+  ([limits](docs/limits.md#signer-and-capture)).
+- **Factory Droid hooks (experimental, #416, by @kausthubhk).** `tracekit init --dev --agent droid` (with `--v2`,
+  `--project`) writes `~/.factory/hooks.json`, copying the hooks already in Droid's `settings.json` when it creates the
+  file, and refuses to create it while Droid's older `.factory/hooks/hooks.json` exists (save once in Droid's `/hooks`
+  to migrate). Tool calls are decided before they run (`Execute` as `Bash`, `Create` as `Write`, `ApplyPatch` as an
+  `Edit` of every file it names, `FetchUrl` as `WebFetch`), and prompts (recorded as the person's, though it isn't yet
+  confirmed that only a typed prompt fires Droid's `UserPromptSubmit`) and session start and end are recorded. Droid
+  sends no call id, so a result is paired with its call by tool and arguments in order, and it has no failure hook, so
+  a failed call closes as an error at session end. Not yet checked in a live Droid session or on Windows
+  ([limits](docs/limits.md#signer-and-capture)).
+- **Antigravity CLI hooks (experimental, #437, #449).** `tracekit init --dev --agent antigravity` (with `--v2`,
+  `--project`; system mode with `--v2` only) adds a hook named `tracekit` to `~/.gemini/config/hooks.json` (or the
+  project's `.agents/hooks.json`) that decides each tool call before it runs and records its outcome, a call whose
+  `PostToolUse` carries an error as failed (agy sends no output). `BypassSandbox` is read as
+  `dangerouslyDisableSandbox`, so on the v2 signer `TK-A003` holds it (the v1 policy doesn't). Tracekit installs only
+  agy's tool hooks and doesn't read its transcript, so a run holds no output, prompts or model text and closes at the
+  signer's idle timeout. `tracekit doctor` warns (`D-AGY-HOOKS-RUN`) when the hook is disabled or agy signs in with a
+  Gemini API key or ADC. Needs agy 1.3.0 or later. Tested against agy's documented hook payloads, not a live session
+  ([coding agents](docs/coding-agents.md#antigravity-cli), [limits](docs/limits.md#signer-and-capture)).
+- **`tracekit doctor` checks every coding agent's hooks (#415, by @kausthubhk; #435, #449).** `D-HOOKS-EVENT` and
+  `D-HOOKS-TIMEOUT` read the v2 hook commands of Codex, Cursor, Gemini CLI, goose, Qwen Code, Factory Droid and
+  Antigravity CLI as well as Claude Code's (not OpenCode's plugin). For those seven they warn when no Tracekit hook
+  runs on the pre-tool event, when a hook command doesn't name its event, when a pre-tool timeout is shorter than the
+  540 s approval wait, when a hook on another event is wrapped to block if it can't run, and when Cursor's `preToolUse`
+  has no `failClosed` or goose's pre-tool hook no `on_failure: block`, each warning naming the `tracekit init` command
+  that fixes it. Claude Code's hooks get the event and blocking checks too, and warn when a Tracekit hook's matcher
+  leaves tools out or the PreToolUse command isn't wrapped to block the call when the hook can't start (POSIX);
+  `disableAllHooks` in any settings file doctor reads, the one init recorded included, warns (a fail in production),
+  and a PreToolUse timeout under 540 s fails, naming the timeout to set ([doctor](docs/doctor.md)).
+- **`tracekit approvals list --json` and `tracekit approvals show ID --json` (#425, by @Parth-Jadhav-2004).** `list`
+  prints every page as one JSON array (`[]` when there are none), `show` one object with the redacted arguments
+  decoded and no pager. The text output is unchanged.
+- **`tracekit demo --agent goose` and `--agent opencode` (#465, by @FTFaruque).** The scripted demo is sent as those
+  agents' own hook payloads through the command `tracekit init --agent NAME` installs; they send no session or prompt
+  events, so the demo says so and records none.
+
+### Changed
+- **`tracekit view` has a new layout (#452).** Its pages are DESK, RUNS, LIVE, APPROVALS, PERMISSIONS and HORIZON, plus
+  INFLUENCE with why logs, and a run's views, on keys 1 to 7, are OVERVIEW, CALLS (the run's tape), TIMELINE (a row per
+  call with the wait for a person hatched, or a lane per agent), GRAPH, WHY, AGENTS and EVIDENCE (the run's signed
+  records in order, the viewer's verifier report and the export and verify commands). **NEEDS YOU** lists across every
+  run what needs a person: calls waiting, with the approve and reject commands once an approval is requested, runs an
+  incident holds, with the resume command, then runs that failed verification or weren't checked, each with a link to
+  open it, and a viewer that stopped checking; the page answers nothing itself. **PERMISSIONS** lists every decision
+  that wasn't a plain allow and what came of it (blocked, ran flagged, approved, rejected, expired, not answered or
+  still waiting), and who answered when. A call's inspector adds **SAID VS DID**, what the model said beside the signed
+  result (BACKED, AGENT'S WORD or CONTRADICTED), and **WHOSE WORDS**, where the instruction behind a blocked, held or
+  flagged call (or one using untrusted content) came from (the person, another agent, a tool or a page), from the
+  signed provenance and the run's recorded inputs. **HORIZON** (Event Horizon, `#page=horizon`) draws the newest calls
+  on three rings, the project, this machine and the outside world, marks places where a rule about secrets, a harness's
+  settings or Tracekit's own files matched, and replays the calls in order; a why log's calls are graded unverified,
+  never signed. Old links open the same run, and the why log's old TIMELINE (every event) is now WHY LOG EVENTS on
+  CALLS (on every page when only why logs are loaded). The page loads nothing from outside its own viewer
+  ([viewer](docs/viewer.md), [limits](docs/limits.md#investigation-tracekit-why)).
+- **Reading a secret's value waits for a person (`TK-A035` to `TK-A038`, every pack, #372 and #409, by @ritamgh):**
+  `aws secretsmanager get-secret-value` and `batch-get-secret-value`; `aws ssm get-parameter`, `get-parameters`,
+  `get-parameters-by-path` and `get-parameter-history` with `--with-decryption`; `gcloud secrets versions access`; and
+  `az keyvault secret show`, `show-deleted` and `download`; as a command, in a command-running MCP tool (`call_aws`,
+  `run_command`), and as MCP tools named for it (`get_secret_value`, `access_secret_version`, `keyvault_secret_get`,
+  a `get_parameter` with decryption on). Listing or describing secrets isn't held, and neither are `vault kv get`,
+  `op read` or `kubectl get secret`. An MCP call over 64 KiB to a command-running or SSM parameter tool now asks on
+  the coding and dev packs, where it was flagged (`TK-OVERSIZE`), whatever it carries.
+- **Destructive database statements wait for a person (`TK-A039` to `TK-A041`, every pack, #373, by @juliasadler):**
+  `DROP`, `TRUNCATE`, or `DELETE` with no `WHERE` (or `WHERE 1=1`, `WHERE TRUE` or `WHERE 1`) passed to `psql -c`,
+  `mysql -e` or `mariadb -e` (also in a cluster of flags, `psql -1c`; a cluster of more than nine flags ending in `c`
+  or `e` is held unread), `clickhouse-client --query` or `sqlite3`, also through `docker exec`, `docker compose exec`
+  or `kubectl exec`, and also when the same call rolls it back (`BEGIN; DROP TABLE x; ROLLBACK;`), so a test
+  transaction takes one approval; `mongosh --eval` dropping a database or collection or deleting every document;
+  `FLUSHALL` and `FLUSHDB` sent to `redis-cli` or `valkey-cli`, echoed or printed into one through a pipe (also through
+  `command` or `env`, by path or in a group) or fed to it as a herestring or on a line of its own in a heredoc (also
+  through a wrapper or `bash -c`); and the same statements in the `sql`, `query` or `statement` argument of an MCP tool
+  whose name names a database (the server and strict packs deny them outright on the SQL tools they map, `TK-DB001` to
+  `TK-DB003`). `UPDATE`, `ALTER`, a scoped `DELETE`, another always-true `WHERE` (`WHERE 2=2`), and SQL from a file, a
+  pipe, a heredoc or a variable aren't held. An MCP call over 64 KiB to a tool whose name names a database now asks on
+  the coding and dev packs, where it was flagged (`TK-OVERSIZE`) ([limits](docs/limits.md#policy)).
+- **Deleting a repository or project waits for a person (`TK-A042`, every pack, #374, by @juliasadler):** `gh repo
+  delete`, `glab repo delete` and `glab project delete`, `hub delete`, `vercel remove` and `vercel project rm`; a
+  `DELETE` request for a GitHub repository, a GitLab project or a Vercel project through `gh`, `glab` or `hub api`,
+  `curl`, `wget`, HTTPie or `xh`; and the GraphQL `deleteRepository`. A query in a file or a variable, an alias, and
+  other forges (Bitbucket, Gitea) aren't read.
+- **More infrastructure removal waits for a person (`TK-A001`, every pack, #383, by @hossainzarif23):** `cdk destroy`
+  (also through `npx` and other launchers), `terraform`, `tofu` and `terragrunt state rm`, and `pulumi stack rm`. A
+  package script (`npm run`, `yarn cdk destroy`) isn't read.
+- **An agent can't answer its own hold (`TK-D012`, every pack, #432, #451).** The v2 hold line now ends "a person
+  approves it from another terminal with `tracekit approvals approve ID` or rejects it with
+  `tracekit approvals reject ID`" (with `--signer ADDR` when the hook's signer is a named one: on Windows in double
+  quotes, or `<TRACEKIT_SIGNER>` for you to fill in when the name holds a quote, `$`, a backtick, `%` or a line break),
+  and `tracekit approve` and `reject` take a v2 approval id. The agent reads that line too, and the dev signer takes an
+  answer from the agent's own user (recorded as `self_approved`), so the agent's own `tracekit approve`, `reject` or
+  `approvals approve` and `reject` is denied, also through `env`, `sudo`, `sh -c`, `python -m tracekit`, `uvx`,
+  `uv tool run`, `pipx run`, `hatch run`, `conda run` or a path to the binary. `approvals list` and `show` stay
+  allowed. Code that calls the signer itself (`python -c`, a script) isn't read: run system mode, whose signer refuses
+  the agent's own answer. The v1 packs have no such rule.
+- **Writes to a coding agent's settings are flagged more exactly (`TK-F009`, `TK-F015`, `TK-F016`; #370, by
+  @kausthubhk; #378, by @gezerui888; #418, by @aj-codespy; #451).** `TK-F009` flags a file tool's write to a
+  harness's settings, matched in any case; `TK-F015` a shell write to them (a redirect, `tee`, `cp`, `mv`, `sed -i`,
+  `rm`) from any shell tool; and `TK-F016` `ANTHROPIC_BASE_URL` anywhere in a `Bash`, `Write`, `Edit` or `MultiEdit`
+  call. They now also cover OpenCode (`.opencode/`, `opencode.json`), Qwen Code (`.qwen/`, `$QWEN_HOME`), goose
+  (`.agents/plugins/`, `~/.config/goose`), Antigravity CLI (`.agents/hooks.json`) and Factory Droid (`.factory/`).
+  Reading these files, or naming them in a commit message or a file's text, is no longer flagged, and neither is a
+  write by a program the shell rules don't follow (`touch`, an editor, `python -c`; `curl -o` is flagged only as a
+  download).
+- **The Claude Code plugin's install messages pin `tracekit-ai` to the plugin's version** and ask the person to run
+  them (#390).
+- **A dev hook run from a Tracekit working tree** (a checkout or `pip install -e`) that stops importing prints one line
+  naming the branch the tree is on and the one the hooks were installed from, with the `git checkout` or
+  `tracekit init` that fixes it, instead of a traceback (when git is on the hook's PATH); a v2 hook still blocks the
+  call. Run init again to record the branch (#431).
+- **The OTLP receiver, the proxy and `tracekit observe` take a fixed number of connections:** 64, 16, and 64 requests
+  and 64 event streams at once; one more is closed unanswered, a request must arrive within 30 s, and a connection idle
+  for 10 s is closed. The receiver and observe kept a thread for every connection for as long as it stayed open, and 16
+  idle connections made the proxy answer 503 to everyone. A connection cut by its deadline, a timeout or the client no
+  longer logs a traceback ([limits](docs/limits.md#deployment)).
+- **The central viewer checks two runs at once at most (#439).** `/api/run` exported and verified the whole run for
+  each request with no limit; it and `/api/bundle` now check two at once, and a third request is answered 503 with
+  `Retry-After`. The run list kept a run's verdict until someone opened its page; it now checks a run again five
+  minutes after its last check, one run at a time, and shows a VERIFIED older than that as NOT CHECKED until it can (a
+  FAILED stays) ([limits](docs/limits.md#investigation-tracekit-why)).
+
+### Fixed
+- **`TK-D007` reads what a command acts on, not text it writes into a file (#429, #458).** A heredoc or `echo` into a
+  file named in the call (not a variable or a glob) whose text mentions a Tracekit path or command is no longer
+  denied when the rest of the call only lists, prints, makes or changes folders, or copies more text
+  (`echo '…' > notes.md; ls`). Any other later command (`sh`, `xargs`, `eval`, `source`, and also `git add` or
+  `cat`), an alias or a builtin that sets variables (`export`, `read`) in the call, or a relative target after `cd`
+  keeps the call denied. Writing into Tracekit's own files and stopping the signer stay denied.
+- **`TK-D008` denies only real writes to a coding agent's transcripts (#441).** A command that only lists or mentions a
+  transcript folder (`ls ~/.codex/sessions 2>/dev/null; ls ~/.gemini/tmp`) is no longer denied; the rule reads what
+  each command writes or deletes, `find -delete` and `-exec`, the sources `zip -m` deletes, the command `trap` runs and
+  what `at` or `batch` get in a herestring or heredoc, and a writer run through `xargs` (also fed a herestring or
+  heredoc), `parallel`, `docker exec`, `perl -e`, `osascript` or `at` from a pipe, or on a line the parser can't read
+  (a pipe into `sh`, `fish -c`, `C=rm; $C -rf …`) when a writer's name reaches its command. A shell write to
+  `~/.config/opencode` is now a `TK-F015` flag rather than a deny; file tools are still denied there (`TK-D009`)
+  ([limits](docs/limits.md#policy)).
+- **Command substitutions inside `$(( ))` arithmetic are read (#440).** `echo "$(( $(sysctl -n hw.memsize) /
+  1073741824 )) GB"` is no longer held as unreadable (`TK-SHELL-PARSE`), and a command inside one meets the rules.
+- **A hook that can't run, or fails, stops only tool calls (#435; #410, by @Hv-kowshik52).** Cursor's `failClosed` is
+  set on `preToolUse` only; it was on every event, so a hook that couldn't start blocked prompts and session events too
+  (Upgrade notes). On other events a hook that can't run still exits 1 with "tracekit: the hook could not run; event
+  not recorded" (Antigravity CLI's answers `{}` at exit 0). A hook that fails on an event other than a tool call no
+  longer erases Gemini CLI's prompt or result, or blocks it in Codex and Cursor, and the v1 Claude Code hook that
+  crashes under fail-closed no longer erases a prompt or sends the agent back to work at Stop. A failed pre-tool event
+  still blocks the call, and a v1 dev pre-tool hook that can't start now blocks it too when `TRACEKIT_FAIL_CLOSED=1` is
+  set (POSIX; run `tracekit init --dev` again to get it), where it let every call through
+  ([limits](docs/limits.md#signer-and-capture)).
+- **`tracekit init --dev --v2` finds the Claude Code plugin installed from another marketplace (#382, by
+  @kausthubhk).** Init and doctor (`D-HOOKS-PRESENT`) knew the plugin only as `tracekit@tracekit`, so with it
+  installed from another marketplace init added its own hooks too, and every approved call was blocked. Both now
+  recognise it under another key when Claude Code's install record and that marketplace's catalog point at Tracekit's
+  `plugin/` folder, and name the key they found in the `/plugin disable` line; one from a claude.ai-synced marketplace
+  still goes unseen ([limits](docs/limits.md#install)).
+- **Redaction** finds JWTs in one pass over each run of token characters: a JWT whose header after a `-` ran past 512
+  characters was left unredacted, and a long run of `eyJ-` took about 40 times the CPU (#376).
+- **The hold line** drops a reason's one trailing period before its `;` (an ellipsis stays whole), and the rejected
+  line drops it too (#460, by @Oscar-Williams). A deny or hold no longer gives a flag rule's label as a reason
+  (`…said not to push; ask the person; side_effect`): a flagged call runs, and the rule ids still name the flag.
+- **A Claude Code session's live constraints hold in its later runs for 30 days.** Any session's start removed the
+  state of a session idle for an hour, so its constraints ("don't push") stopped being held in its next run. The state
+  is now kept for 30 days after the session's last hook event, and on Linux until the runtime dir is cleared at logout
+  or reboot ([limits](docs/limits.md#intent-reasoning-and-action-checks)).
+- **`tracekit init` and `uninstall` keep what isn't Tracekit's in a coding agent's settings.** Uninstall and a re-init
+  dropped a whole Claude Code hook group when any command in it named `tracekit.hook`, a person's own hook included;
+  only Tracekit's entries go now. Settings files keep non-ASCII text as UTF-8 rather than `\u` escapes (text UTF-8
+  can't encode, such as a lone surrogate, is still escaped), and an init that changes nothing no longer backs a file up
+  or rewrites it. `tracekit init --v2`, in dev and remote mode, records the Claude Code settings file it wrote, as v1
+  `init --dev` does, so `uninstall` and `doctor` find its hooks from a shell without the same `CLAUDE_CONFIG_DIR` (run
+  init again to record it) ([limits](docs/limits.md#install)).
+- **A why log event without its hashes, or without other fields `analyse()` doesn't need** (`ts`, `seq`, `agent`), kept
+  its run and every run sorted after it off the why server's live feed (`tracekit why serve`, `tracekit view --why`),
+  and one there at start stopped the feed for good. Such events now reach the tape, and an error skips only its own
+  run.
+
+### Security
+- **The Claude Code hook records text the harness adds to a prompt apart from what the person typed** (versions before
+  1.5.0). Text the harness wraps into a prompt (paste blocks, skill bodies, messages from other sessions, agents,
+  teammates, plugins, observers or channels, task and system notifications, scheduled tasks, uploads, command output)
+  was recorded as the person's words; it is now recorded separately as untrusted input under its own source, so
+  `from: untrusted` rules, signed decisions and `tracekit why` keep its provenance (the Gemini CLI hook does the same
+  for its referenced files block). A turn whose payload's `source` says no person typed it is recorded whole as
+  untrusted; Claude Code 2.1.286 doesn't send `source` yet, so a prompt a plugin submits, a notice from another session
+  and a poll event, which reach the hook unwrapped, still count as typed. Constraints stated in that text ("don't touch
+  X", "read-only") are recorded but no longer become live constraints, and Claude Code shows a notice naming them;
+  those typed after a wrapper's name mid-line (a tag named in a sentence) stay live up to the next wrapper that starts
+  a line. A paste Claude Code sends inline (its default) and a wrapper the hook doesn't recognise still count as typed,
+  and text typed after a recognised wrapper (other than a closed paste block) counts as added. Text past the hook's cap
+  (50,134,272 characters) isn't recorded, and the run's untrusted index is marked partial, so `from: untrusted` rules
+  apply to every call they match until the run ends. A transcript line holding only recognised wrapper text isn't
+  checked by `TK-X208` (1.4.2 flagged one the agent wrote) ([limits](docs/limits.md#signer-and-capture),
+  [checks](docs/limits.md#intent-reasoning-and-action-checks)).
+- **Commands bash runs while evaluating an arithmetic array subscript** (versions before 1.5.0) weren't read by the
+  shell parser. It now reads a command substitution in a same-line literal used in arithmetic (`$(( ))`, `(( ))`,
+  `let`, `declare -i`, `[[ … -eq … ]]`), and asks (`TK-SHELL-PARSE`) when an index's text is built from expansions
+  at run time. Arithmetic on text that only exists at run time isn't readable by any static policy
+  ([limits](docs/limits.md#policy)).
+- **`terraform apply -destroy` after an argument with a newline in it** (`-var` with a two-line value; versions before
+  1.5.0, a documented limit) wasn't held by `TK-A001`; it is now, for `terraform` and `tofu` (#369, by @ritamgh).
+- **Commands run through `uvx`, `uv tool run`, `pipx run`, `hatch run` and `conda run`** (versions before 1.5.0) were
+  read only by the rules on the raw line; the shell parser now reads the command they start, so the argv rules apply
+  (`hatch run git push --force` is read as `git push --force`). A runner's own option before `run`
+  (`hatch -e test run …`) still hides it (#432, #451).
+- **Coding-agent transcripts (`TK-D008`, versions before 1.5.0):** the rule named OpenCode's configuration folder, not
+  its data folder, so a shell command deleting OpenCode's sessions (`~/.local/share/opencode`) wasn't denied, and
+  deleting the whole `~/.claude`, `~/.codex` or `~/.gemini` folder was only flagged. Both are denied now, and file tools
+  are denied OpenCode's session data too (`TK-D009`) (#441).
+- **HTTP servers take a request body by one strict `Content-Length`** (versions before 1.5.0). The LLM gateway, the MCP
+  gateway, the executor, the signer's HTTP listener (and the issuer's), the OTLP receiver and the Anthropic proxy read
+  a body by its `Content-Length` only, so a proxy in front of them that framed it otherwise could pass on a different
+  request. They, and the A2A gateway, now answer 400 and close the connection for `Transfer-Encoding`
+  ("Transfer-Encoding isn't supported", asking for Content-Length), more than one `Content-Length`, a value that isn't
+  ASCII digits, and a header line Python's parser drops (`Transfer-Encoding : chunked`), folds into the one before or
+  cuts at a bare CR; the gateways do so on every method. A route that answers without reading a body it was sent (MCP
+  `GET` and `DELETE /mcp`, A2A `GET`, the executor's `GET /v1/actions`) closes the connection, the proxy's health route
+  reads the body, and the servers that answer once (ingest, both witnesses, Slack approvals, the viewer, egress) refuse
+  the same framing. Ingest, the witnesses, Slack approvals, the viewer and the OTLP receiver no longer act on a body
+  shorter than its `Content-Length` (#456).
+- **Commands that `trap`, `at` and `batch` run later** (versions before 1.5.0) weren't read by the shell parser. The
+  command `trap` runs and what `at` or `batch` get in a herestring or heredoc are now read as commands, so every rule
+  applies (`trap 'sudo id' EXIT` is denied by `TK-D001`, where it was allowed); a name there built from a variable
+  (`trap "$f" EXIT`) isn't held. What `at` gets from a pipe and `osascript`'s `do shell script` are read only by
+  `TK-D008` ([limits](docs/limits.md#policy)).
+- **A URL host with invisible characters in it** (versions before 1.5.0) was read as written, so
+  `http://127.0.0.1<soft hyphen>/` was a name, not the loopback address it reaches (the server pack only flagged it),
+  and `db.inter<soft hyphen>nal` escaped `TK-N003`. A host now loses every default-ignorable code point (soft hyphen,
+  zero-width spaces and joiners, variation selectors, tag characters, also percent-encoded) before it is read, as
+  browsers' and Node's URL parsers drop them; a host of nothing else is no host, so it reads as internal.
+- **Gemini CLI's file and fetch tools were decided by one path or URL** (versions before 1.5.0). `read_many_files`'
+  `include` (its newer name for `paths`) and a directory tool's `dir_path` weren't decided, a path key one release
+  ignores could stand in for the one another reads, and `web_fetch` was decided by the first URL its prompt names, or
+  by a `url` key Gemini CLI ignores. Every path a file tool may read, under any release's name for it, and every URL
+  the prompt names is now decided, for Qwen Code too.
+- **The viewer could show a run as VERIFIED that it no longer checked** (versions before 1.5.0, #439). The live tape
+  read a run's records from the store again after its check passed, so an edit made in between was shown under
+  "Integrity VERIFIED"; the tape and the central viewer's run page now show the records the check verified. One line
+  the store's reader can't parse, or a checkpoint note gone or older than one the viewer saw, stopped every re-check
+  while the page still said VERIFIED; it now says VERIFICATION STOPPED until the store can be checked again, and every
+  VERIFIED mark reads VERIFIED · CHECKS STOPPED meanwhile. A record edited into a shape export doesn't expect fails its
+  run, where it read NOT CHECKED ([limits](docs/limits.md#viewer)).
+- **Invisible characters in evidence text are shown escaped** (versions before 1.5.0, #439). The viewer escaped a short
+  list of format characters, so tag characters, variation selectors (bytes hidden after a visible character), the soft
+  hyphen, line separators, Hangul fillers and C0 controls reached the page raw, and a held call's arguments could hide
+  text from the person answering it. Every control, format, separator and default-ignorable character but tab, newline
+  and carriage return is now shown as `\uXXXX` on the viewer and the central approvals and runs pages (one presentation
+  selector after a pictographic character stays), and an agent approver now gets default-ignorable characters escaped
+  too, as it got control and format characters.
+- **The viewer's why API answered an OIDC session** (versions before 1.5.0). Its why routes were gated on the session's
+  scope, so an operator-admin session read the why logs and ran replays, which write `tests.jsonl`. They now answer the
+  viewer's token only (its bearer header, or the cookie it was exchanged for), as [viewer](docs/viewer.md) says: every
+  OIDC role gets 403, and 401 on the replay POSTs.
+- **Signer container image: OpenSSL (CVE-2026-84782).** The image upgrades `libssl3` and `openssl` (to
+  3.0.22-1~deb12u2 or later), and its build fails on an older `libssl3`, so a package mirror without the fix can't
+  ship the vulnerable one (images before 1.5.0) (#430, #447).
+
+### Release
+- CI runs each released verifier from 1.2.0 to 1.4.2 on bundles of the signer under test (A2A calls and C2C transfers
+  included), and under CI a release tag missing from a clone that has the others fails that check instead of skipping
+  it (#362, #447).
+- OpenCode's plugin is tested for its failure exits and system installation (#414, by @hossainzarif23).
+
+### Docs
+- **E21 blind pool (#401, by @amandeavor).** `eval/e21_blind/amandeavor.jsonl`: 90 calls (45 harmful, 45 benign) on CI
+  secrets and workflows, cloud IAM, audit logging and branch protection, secret stores and exfiltration, written
+  without reading the rules.
+
 ## 1.4.2 (2026-10-24) — OpenCode, Hermes Agent, and merges wait for a person
 
 A patch for 1.4. OpenCode and Hermes Agent can now be gated and recorded (both experimental). Every policy pack holds a

@@ -1,4 +1,5 @@
-"""HTTP(S) server for the network services (signer, issuer, gateway, viewer, Slack bridge, metrics, witness, ingest).
+"""HTTP(S) server for the network services (signer, issuer, gateway, viewer, Slack bridge, metrics, witness, ingest)
+and the loopback ones (OTLP receiver, proxy, `tracekit observe`).
 
 The TLS handshake runs in the connection's own thread under a timeout, never in accept() on the serving thread, so a
 client that connects and says nothing holds one handler slot until it times out instead of stalling every client.
@@ -10,8 +11,11 @@ connection, starts it again before reading the next one (restart_deadline), so a
 event stream also leaves the request limits for limits of its own (to_stream), so open pages never use up the
 requests their address may make."""
 import socket
+import ssl
+import sys
 import threading
 import time
+from email import errors
 from http.server import ThreadingHTTPServer
 
 TIMEOUT_S = 10.0
@@ -44,8 +48,72 @@ def drain(sock):
         pass
 
 
+# the defects of a header line; the parser also records defects of the body a multipart/* type says follows (no
+# boundary), which no header line has
+HEADER_DEFECTS = (errors.InvalidHeaderDefect, errors.MissingHeaderBodySeparatorDefect,
+                  errors.FirstHeaderLineIsContinuationDefect, errors.MisplacedEnvelopeHeaderDefect)
+
+
+def body_length(headers, digits=12):
+    """(n, None): the request's body is the n bytes its one Content-Length says (n None: it declares none). (None, why):
+    its framing is refused, with the connection closed. Every server here reads a body by Content-Length only; a proxy
+    in front that frames it otherwise (by Transfer-Encoding, by another Content-Length, by a header line Python's parser
+    dropped together with every one after it, folded into the one before it, or split at a bare CR: Lines)
+    would forward the bytes past it as another request. A value is ASCII digits only: int() also takes `+1`, `1_0`
+    and other scripts' digits, and raises past 4,300 of them."""
+    if any(isinstance(d, HEADER_DEFECTS) for d in headers.defects) or any(
+            "\r" in v or "\n" in v for v in headers.values()):
+        return None, "a malformed header line"
+    if "transfer-encoding" in headers:
+        return None, "Transfer-Encoding isn't supported: send the body with Content-Length"
+    n = headers.get_all("content-length") or []
+    if len(n) > 1:
+        return None, "more than one Content-Length"
+    if n and not (n[0].isascii() and n[0].isdigit() and len(n[0]) <= digits):
+        return None, f"Content-Length: at most {digits} ASCII digits"
+    return (int(n[0]) if n else None), None
+
+
+class Lines:
+    """A mixin, before BaseHTTPRequestHandler, whose headers carry, as a defect body_length refuses, a CR that doesn't
+    end its line: Python's parser takes it as a line end (`X-A: b\rContent-Length: 2` is two headers, `X-A: b\r\r\n`
+    ends them), where a proxy in front may not, and the parsed headers keep no trace of it."""
+
+    def parse_request(self):
+        rfile, lines = self.rfile, [self.raw_requestline]
+
+        class Kept:   # each line the header parser reads, as it came
+            def readline(_, limit=-1):
+                lines.append(rfile.readline(limit))
+                return lines[-1]
+        self.rfile = Kept()
+        try:
+            ok = super().parse_request()
+        finally:
+            self.rfile = rfile
+        if ok and any(b"\r" in line.removesuffix(b"\n").removesuffix(b"\r") for line in lines):
+            self.headers.defects.append(errors.InvalidHeaderDefect("a CR that doesn't end its line"))
+        return ok
+
+
+def read_body(handler, n):
+    """The n bytes of the body `handler` (a BaseHTTPRequestHandler) reads, or None when fewer arrive (the deadline cut
+    the connection, the client stopped sending): a part of a request is never acted on, and the connection closes."""
+    try:
+        body = handler.rfile.read(n)
+    except OSError:   # the read timeout, or the peer went away
+        body = b""
+    if len(body) < n:
+        handler.close_connection = True
+        return None
+    return body
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    # socketserver's listen backlog of 5: on Linux a burst past it has its handshakes dropped, so a client waits a
+    # second or more for a retransmit, or connects while the server doesn't see the connection for that long
+    request_queue_size = 256
 
     def __init__(self, addr, handler, ssl_context=None, timeout=TIMEOUT_S, max_threads=MAX_THREADS,
                  deadline=DEADLINE_S, max_per_ip=MAX_PER_IP, max_streams=MAX_STREAMS,
@@ -107,6 +175,12 @@ class Server(ThreadingHTTPServer):
             else:
                 self._slots.release()
                 self._ip_release(client_address[0])
+
+    def handle_error(self, request, client_address):
+        """A connection cut by its deadline, a timeout or the client, or a TLS record that doesn't open, is routine: no
+        traceback for it."""
+        if not isinstance(sys.exc_info()[1], (ConnectionError, socket.timeout, ssl.SSLError)):
+            super().handle_error(request, client_address)
 
     def to_stream(self, ip):
         """From the handler's thread, before it answers with an event stream: the connection leaves the request limits

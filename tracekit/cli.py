@@ -37,20 +37,21 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
               "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
-              "ext-mcp": "ext_mcp",
+              "a2a-gateway": "a2a_gateway", "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
-              "sensor": "sensor", "ingest": "ingest"}  # subcommands with their own parsers
+              "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
-                 "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
+                 "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
+                 "reviewer": "the reference reviewer",
                  "openshell-middleware": "the OpenShell middleware",
                  "ext-mcp": "agentgateway's ext_mcp processor",
                  "issuer": "the record-key issuer", "witness": "the witness", "public-witness": "the public witness",
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
-                 "sensor": "the kernel sensor import"}
+                 "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -193,6 +194,9 @@ def main(argv=None):
     p = sub.add_parser("mcp-gateway", help="MCP gateway for the v2 signer: `mcp-gateway serve --config mcp-gateway.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("a2a-gateway", help="A2A gateway for the v2 signer (experimental): `a2a-gateway serve --config "
+                                           "a2a-gateway.yaml`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("srt-decider", help="decide every request srt-proxy (Anthropic's sandbox-runtime) asks about: "
                                            "`srt-decider --allow-domain HOST -- srt-proxy ...`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -221,8 +225,13 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("view", help="the viewer: the v2 signer's runs, each verified; --why DIR, --ledger, --bundle (read-only web UI)")
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("graph", help="what agents did across verified bundles: `graph build|query|verify`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("pcm", help="PCM 0.1, proof-carrying messages between agents: `pcm verify MSG --trust T --schema S`, "
+                       "`pcm demo`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
 
     sub.add_parser("pending", help="list tool calls waiting for approval")
@@ -309,7 +318,7 @@ def main(argv=None):
                    help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
     p.add_argument("--why", action="store_true",
                    help="`tracekit why` on the signer: a 3-agent desk, a held email, its cause found and cited")
-    p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini"],
+    p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini", "opencode", "goose"],
                    help="send the scripted run as this coding agent's own hook payloads (default: claude)")
 
     a = ap.parse_args(argv)
@@ -370,6 +379,8 @@ def _init_remote_v2(a, url):
     try:
         on = hooks and install.install_hooks(hooks, module=install.V2_HOOK, signer=env,
                                              thinking=not a.no_thinking_summaries)
+        if hooks and not a.project:
+            install.record_hooks_settings(hooks)
     except install.SettingsError as e:
         print(f"tracekit: {e}", file=sys.stderr)
         return 1
@@ -498,6 +509,8 @@ def _run(a):
                 try:
                     on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
                                                          thinking=not a.no_thinking_summaries)
+                    if hooks and not a.project:
+                        install.record_hooks_settings(hooks)
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1

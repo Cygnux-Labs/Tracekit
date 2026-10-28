@@ -7,8 +7,8 @@ copy of the bundle is shown failing verification.
 
 Default: a SCRIPTED agent (fixed hook payloads, clearly labelled) so the demo needs no API key.
 --real: runs `claude -p` in the temp project with Tracekit hooks installed.
---agent codex|cursor|gemini: the same scripted run, sent as that harness's own hook payloads through the
-command `tracekit init --agent <name>` installs (tool names, event names and replies in its format).
+--agent codex|cursor|gemini|opencode|goose: the same scripted run, sent as that harness's own hook payloads through
+the command `tracekit init --agent <name>` installs (tool names, event names and replies in its format).
 """
 import json
 import os
@@ -47,7 +47,8 @@ def _project(d):
     return p
 
 
-AGENTS = ("claude", "codex", "cursor", "gemini")
+AGENTS = ("claude", "codex", "cursor", "gemini", "opencode", "goose")
+NO_SESSION_EVENTS = ("opencode", "goose")   # their hooks get tool events only (docs/coding-agents.md)
 
 
 def _native(agent, base, event, name=None, ti=None, tid=None, result=None, ok=True):
@@ -64,17 +65,30 @@ def _native(agent, base, event, name=None, ti=None, tid=None, result=None, ok=Tr
     sid, cwd = base["session_id"], base["cwd"]
     if name == "Bash":
         native = {"codex": ("shell", {"command": ["bash", "-lc", ti["command"]]}), "cursor": ("Shell", {"command": ti["command"]}),
-                  "gemini": ("run_shell_command", {"command": ti["command"]})}[agent]
+                  "gemini": ("run_shell_command", {"command": ti["command"]}), "opencode": ("bash", {"command": ti["command"]}),
+                  "goose": ("shell", {"command": ti["command"]})}[agent]
     elif name == "Read":
         native = {"codex": ("shell", {"command": ["bash", "-lc", "cat " + ti["file_path"]]}), "cursor": ("Read", {"path": ti["file_path"]}),
-                  "gemini": ("read_file", {"absolute_path": ti["file_path"]})}[agent]
+                  "gemini": ("read_file", {"absolute_path": ti["file_path"]}), "opencode": ("read", {"filePath": ti["file_path"]}),
+                  "goose": ("shell", {"command": "cat " + ti["file_path"]})}[agent]
     elif name == "Edit":
         patch = f"*** Begin Patch\n*** Update File: {ti['file_path']}\n-    return {ti['old_string']}\n+    return {ti['new_string']}\n*** End Patch"
         native = {"codex": ("apply_patch", {"patch": patch}), "cursor": ("Edit", {"path": ti["file_path"], "old_string": ti["old_string"],
                                                                                   "new_string": ti["new_string"]}),
-                  "gemini": ("replace", {"file_path": ti["file_path"], "old_string": ti["old_string"], "new_string": ti["new_string"]})}[agent]
+                  "gemini": ("replace", {"file_path": ti["file_path"], "old_string": ti["old_string"], "new_string": ti["new_string"]}),
+                  "opencode": ("edit", {"filePath": ti["file_path"], "oldString": ti["old_string"], "newString": ti["new_string"]}),
+                  "goose": ("edit", {"path": ti["file_path"], "before": ti["old_string"], "after": ti["new_string"]})}[agent]
     else:
         native = (name, ti)
+    if agent == "opencode":   # as its plugin sends it: the event in the payload and on the hook's command line
+        ev = "tool.execute.before" if event == "PreToolUse" else "tool.execute.after"
+        p = {"hook_event_name": ev, "session_id": sid, "tool_use_id": tid, "tool_name": native[0], "tool_input": native[1], "cwd": cwd}
+        if ev == "tool.execute.after":
+            p["tool_response"] = result
+        return p, argv + [ev]
+    if agent == "goose":   # no tool result or error text in a post-tool event
+        return {"event": event, "session_id": sid, "working_dir": cwd, "tool_name": native[0], "tool_input": native[1],
+                "tool_call_id": tid}, argv
     if agent == "codex":
         ev = {"PostToolUseFailure": "PostToolUse"}.get(event, event)
         p = {"session_id": sid, "cwd": cwd, "hook_event_name": ev, "model": "scripted"}
@@ -150,8 +164,12 @@ def scripted(env, proj, agent="claude"):
         _send(env, *_native(agent, base, "PostToolUse" if ok else "PostToolUseFailure", name, ti, tid, result, ok))
         return True
 
-    _send(env, *_native(agent, base, "SessionStart"))
-    _send(env, *_native(agent, base, "UserPromptSubmit"))
+    sessions = agent not in NO_SESSION_EVENTS
+    if sessions:
+        _send(env, *_native(agent, base, "SessionStart"))
+        _send(env, *_native(agent, base, "UserPromptSubmit"))
+    else:
+        print(f"  note     {agent} sends no session or prompt events, so none are recorded")
     print(f"  prompt   {PROMPT}")
     tool("Read", {"file_path": os.path.join(proj, "README.md")}, {"content": README})
     tool("Bash", {"command": "python -m pytest -q test_calc.py"}, {"stdout": "1 failed", "exit_code": 1}, ok=False)
@@ -166,7 +184,8 @@ def scripted(env, proj, agent="claude"):
               + ("Tracekit blocked that (TK-D006), so nothing was sent." if blocked else "that upload ran."))
     note(report)
     time.sleep(pace)
-    _send(env, *_native(agent, base, "SessionEnd"))
+    if sessions:
+        _send(env, *_native(agent, base, "SessionEnd"))
     print(f"  agent    {report}")
 
 

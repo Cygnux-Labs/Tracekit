@@ -1,6 +1,8 @@
-"""The log key (04-design §3): the per-log Ed25519 key that signs checkpoint notes only. It lives in keys/log.key, or in
-AWS KMS with `log_key: {aws_kms: {key_id, region}}` in signer.yaml (boto3, the `aws` extra). A key has `public` (32 raw
-bytes) and `sign(msg)`; a KMS key raises KeyUnavailable rather than return a signature its public key does not verify.
+"""The log key (04-design §3): the per-log Ed25519 key that signs checkpoint notes, and the experimental proof-carrying
+messages and grants (tracekit.pcm, under their own signing purposes), which receivers check against its pinned vkey.
+It lives in keys/log.key, or in AWS KMS with `log_key: {aws_kms: {key_id, region}}` in signer.yaml (boto3, the `aws`
+extra). A key has `public` (32 raw bytes) and `sign(msg)`; a KMS key raises KeyUnavailable rather than return a
+signature its public key does not verify.
 
 Key hygiene of the signer process: harden() at start (no core dumps, not dumpable) and mlock() of each key file's
 buffer; HYGIENE records what held, for `tracekit doctor` (<data_dir>/hygiene.json)."""

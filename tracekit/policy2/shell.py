@@ -1,13 +1,14 @@
 """Structural shell parser for policy matching (design §4.4; no bashlex).
 
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
-strings, substitutions, heredocs into a shell and interpreter one-liners:
-`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename, the part after any
-`\\` in lower case and without a `.exe` (the agent's file system may ignore case: macOS runs git for `Git`; Windows
-runs git.exe for git); `via` says how the command was
-reached (empty at top level); commands with the same `pipeline` are stages of one pipeline, in order. `opaque`: what
-the command runs cannot be read from the line (a glob, brace or expansion in its name, a shell or interpreter reading
-its script from a pipe, a file or inherited stdin, `source` of a stream).
+strings, substitutions, heredocs into a shell, at or batch, trap's action and interpreter one-liners:
+`{"argv": [...], "word": str, "via": [...], "pipeline": n, "glob": bool, "opaque": bool, "stdin": [...]}`. argv[0] is
+a basename, the part after any `\\` in lower case and without a `.exe` (the agent's file system may ignore case: macOS
+runs git for `Git`; Windows runs git.exe for git); `word` is that first word as written (a path, or the text of a name
+an expansion builds); `via` says how the command was reached (empty at top level); commands with the same `pipeline`
+are stages of one pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or
+expansion in its name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of
+a stream). `stdin`: the herestring and heredoc text the command reads (the names `xargs rm <<< x` deletes).
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
@@ -16,8 +17,9 @@ command line; the words that name something besides the commands' argv: redirect
 and the program an interpreter reads from a heredoc or herestring; the targets of the redirections that write a
 file (`>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&` to a name rather than a descriptor); and the code: the command and the
 normalised lines without the text a command only writes into a file (the words of an echo or printf, the heredoc or
-herestring a cat or tee copies, with its output redirected to a file a literal names; a word with an expansion, or a
-body with a command substitution, is kept; out of the command, only the top level's is cut).
+herestring a cat or tee copies, with its output redirected to a file a literal names; the text is cut only if every
+later command in the same call is inert; a word with an expansion, or a body with a command substitution, is kept;
+out of the command, only the top level's is cut).
 """
 import re
 
@@ -34,6 +36,20 @@ MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings, t
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "rbash", "mksh", "ksh93", "yash", "posh", "lksh", "oksh"}
 # shells whose language the parser doesn't read: the commands they get on their line or from stdin are opaque
 FOREIGN_SHELLS = {"fish", "csh", "tcsh", "pwsh", "powershell", "nu", "xonsh", "elvish"}
+# the options of uv run and uv tool run (uvx) that take a value, as uv 0.13 lists them, and their hidden aliases
+# (--constraint, --trusted-host, ...): neither takes the other's, so the union reads both
+UV_OPTS = ("--from", "-w", "--with", "--with-editable", "--with-requirements", "-c", "--constraints", "--constraint",
+           "-b", "--build-constraints", "--build-constraint", "--overrides", "--override", "--env-file",
+           "--python-platform", "--torch-backend", "--index", "--default-index", "-i", "--index-url",
+           "--extra-index-url", "-f", "--find-links", "--index-strategy", "--keyring-provider", "-P",
+           "--upgrade-package", "--upgrade-group", "--resolution", "--prerelease", "--prerelease-package",
+           "--fork-strategy", "--exclude-newer", "--exclude-newer-package", "--no-sources-package",
+           "--reinstall-package", "--link-mode", "-C", "--config-setting", "--config-settings",
+           "--config-settings-package", "--no-build-isolation-package", "--no-build-package", "--no-binary-package",
+           "--cache-dir", "--refresh-package", "-p", "--python", "--python-preference", "--python-fetch", "--color",
+           "--allow-insecure-host", "--trusted-host", "--directory", "--project", "--config-file",
+           "--preview-features", "--preview-feature", "--package", "--extra", "--no-extra", "--group", "--no-group",
+           "--only-group", "--no-editable-package")
 # wrapper -> (options that take a value, positional arguments before the command)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"), 0), "nohup": ((), 0),
             "time": (("-f", "-o", "--format", "--output"), 0),
@@ -60,15 +76,7 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
             "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
             "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
-            "uvx": (("--from", "-w", "--with", "--with-editable", "--with-requirements", "-c", "--constraints", "-b",
-                     "--build-constraints", "--overrides", "--env-file", "--python-platform", "--torch-backend",
-                     "--index", "--default-index", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
-                     "--index-strategy", "--keyring-provider", "-P", "--upgrade-package", "--upgrade-group",
-                     "--resolution", "--prerelease", "--prerelease-package", "--fork-strategy", "--exclude-newer",
-                     "--exclude-newer-package", "--no-sources-package", "--reinstall-package", "--link-mode", "-C",
-                     "--config-setting", "--config-settings-package", "--no-build-isolation-package",
-                     "--no-build-package", "--no-binary-package", "--cache-dir", "--refresh-package", "-p",
-                     "--python", "--color", "--allow-insecure-host", "--directory", "--project", "--config-file"), 0),
+            "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
             "proxychains": (("-f",), 0), "proxychains4": (("-f",), 0), "firejail": ((), 0),
             "sandbox-exec": (("-f", "-n", "-p", "-D"), 0), "ssh-agent": (("-a", "-E", "-t", "-O", "-P"), 0),
@@ -83,9 +91,8 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
 # "--": the command follows a `--`, after the tools to run it with)
 # lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
 # anchored on a command's name (TK-D001, TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
-RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirements", "--python", "-p", "--package",
-                             "--extra", "--group", "--only-group", "--env-file", "--directory", "--project", "--index",
-                             "--default-index", "--index-url", "--extra-index-url"), 0),
+RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
+           "conda": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0),
            "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
            "pdm": (("run",), ("-p", "--project"), 0), "direnv": (("exec",), (), 1),
            "pipx": (("run",), ("--spec", "--python", "--python-args", "--with", "--fetch-python", "-i", "--index-url",
@@ -96,6 +103,8 @@ RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirem
            "npm": (("exec", "x"), ("-p", "--package", "-w", "--workspace"), 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
            "yarn": (("exec", "dlx"), ("-p", "--package"), 0), "bun": (("x",), ("-p", "--package"), 0)}
+# runners whose argparse takes any unambiguous prefix of a long option (`pipx run --sp tracekit-ai tracekit`)
+ARGPARSE = {"pipx", "conda"}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -114,6 +123,9 @@ CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "r"
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c"}
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
+_COMMAND_NAME_ASSIGN = re.compile(r"(?:PATH|BASH_ENV|ENV)(?:\[[^]]*\])?\+?=")
+_VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typeset", "local", "export", "readonly",
+                             "let", "eval", "unset"}
 _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
@@ -141,9 +153,58 @@ def parse(command):
 def analyse(command):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code)."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "pipes": 0, "depth": 0, "work": 0,
-           "exp": 0}
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
+           "command_names_mutable": False,
+           "pipes": 0, "depth": 0, "work": 0, "exp": 0}
+    # A literal can become an arithmetic variable name on the same line. Read
+    # substitutions inside its array index when that line has an arithmetic
+    # evaluation context; bash re-expands that index while evaluating it.
+    arithmetic = re.compile(r"\$\(\(|\(\(|\blet\b|\b(?:declare|local|typeset)\b[^\n]*\s-i\b|\$\{[A-Za-z_][A-Za-z0-9_]*\[")
+    for line in command.splitlines():
+        has_context = any(marker in line for marker in ("$((", "((", "let ", "declare ", "local ", "typeset ", "${"))
+        test_open = line.find("[[")
+        has_test_context = test_open >= 0 and any(line.find(op, test_open + 2) >= 0 for op in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge"))
+        if (has_context and arithmetic.search(line)) or has_test_context:
+            parameterized_index = _has_parameterized_index(line)
+            if parameterized_index and re.search(r"\$\((?!\()|`|\$\{[^{}]*\$\}\s*\(", line):
+                raise ParseError("a parameterized arithmetic subscript on a line with a substitution is not supported")
+            literals = list(_STR.finditer(line))
+            i = 0
+            while i < len(line):
+                m = re.search(r"(?<![\w'\"])[A-Za-z_][A-Za-z0-9_]*\[", line[i:])
+                if not m:
+                    break
+                start = i + m.start()
+                end = line.find("]", i + m.end())
+                if end < 0:
+                    break
+                word = line[start:end + 1]
+                if "$" in word or "`" in word:
+                    literals.append((start, end + 1, word))
+                i = end + 1
+            for literal in literals:
+                text = literal.group(2) if hasattr(literal, "re") else literal[2]
+                if not re.search(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*(?:\$\(|`)", text):
+                    continue
+                pos = 0
+                while True:
+                    match = re.search(r"\$\(|`", text[pos:])
+                    if not match:
+                        break
+                    start = pos + match.start()
+                    parser = _Parser(text, ctx, ["arithmetic subscript"])
+                    parser.i = start
+                    if text.startswith("$(", parser.i):
+                        parser.dollar(False)
+                    else:
+                        parser.backtick()
+                    pos = parser.i
     _Parser(command, ctx, []).script()
+    active = False
+    for step in reversed(ctx["steps"]):
+        if not ctx["command_names_mutable"] and not active:
+            ctx["cut"] += step["marks"]
+        active |= not step["inert"]
     code, at = [], 0
     for a, b in sorted(ctx["cut"]):   # each cut a space, so the text on either side doesn't join
         code += [command[at:a], " "]
@@ -154,8 +215,9 @@ def analyse(command):
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "pipes": 1, "depth": 0, "work": 0,
-           "exp": 0}
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
+           "command_names_mutable": False,
+           "pipes": 1, "depth": 0, "work": 0, "exp": 0}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
     return (ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"],
@@ -192,6 +254,11 @@ def data_words(argv):
     return set()
 
 
+def _redefined(redefined, name):
+    """Whether name may have been redefined."""
+    return name in redefined
+
+
 def _name_unreadable(text):
     """A command name an expansion builds: anything other than a literal name, or a path under a leading $VAR/."""
     return bool(re.search(r"[$`]", re.sub(r"^(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/", "", text)))
@@ -219,12 +286,15 @@ def _unwrap(name, args):
         if name == "command" and a in ("-v", "-V"):
             return []   # a lookup, not a run
         if a.startswith("-"):   # a bare `-` too (env - cmd: an empty environment)
-            i += 2 if a in opts else 1
-        elif _ASSIGN.match(a):
+            i += 2 if a in opts or name in ARGPARSE and a.startswith("--") and any(o.startswith(a) for o in opts) else 1
+        elif _ASSIGN.match(a) or name == "hatch" and a.startswith("+"):   # hatch run's +var=… matrix selection
             i += 1
         else:
             break
-    return args[i + positional:]
+    inner = args[i + positional:]
+    if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
+        inner = [inner[0].split(":", 1)[-1]] + inner[1:]
+    return inner
 
 
 def _shell_mode(args):
@@ -417,9 +487,29 @@ def _ansi_c(text):
     return re.sub(r"\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|[0-7]{1,3}|.)", one, text, flags=re.S)
 
 
+def _has_parameterized_index(text):
+    """Find parameter expansion in a bracketed index with one forward scan."""
+    inside = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "[":
+            inside = True
+        elif c == "]":
+            inside = False
+        elif inside and c == "$":
+            if text.startswith("${", i) or (
+                i + 1 < len(text) and text[i + 1] not in "({" and _NAME.match(text, i + 1)
+            ):
+                return True
+        i += 1
+    return False
+
+
 class _Parser:
     def __init__(self, src, ctx, via):
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
+        self.cwd_changed = False
         self.data = set()   # indexes in self.out of the words the code leaves out
         self.charge(len(src))
 
@@ -526,7 +616,8 @@ class _Parser:
 
     def simple(self, pid, piped=False):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
-        consumed = loop_header = stdin_redirect = to_file = False
+        consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
+        dynamic = False
         while True:
             self.blank()
             c = self.peek()
@@ -549,10 +640,11 @@ class _Parser:
                 target = self.word()
                 if target is None:
                     raise ParseError("redirection without a target")
+                dynamic |= bool(re.search(r"[$`]", target[1]))
                 self.out += [m.group(0), target[0]]
                 if m.group(2) in ("<<", "<<-"):
                     docs.append({"delim": target[0], "strip": m.group(2) == "<<-", "expand": target[0] == target[1],
-                                 "via": self.via, "cmds": [], "data": False})
+                                 "via": self.via, "cmds": [], "data": False, "step": None})
                     self.heredocs.append(docs[-1])
                 elif m.group(2) == "<<<":
                     strings.append(target[0])
@@ -566,9 +658,11 @@ class _Parser:
                     if writes:
                         self.ctx["written"].append(target[0])
                     if m.group(2) in ("&>", "&>>") or m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&"):
+                        stdout_redirect = True
                         # stdout, the last one: into a file a literal names, not a descriptor, a device or a variable
-                        to_file = writes and not target[3] and (
-                            target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
+                        to_file = writes and not target[2] and not target[3] and \
+                            (target[0].startswith("/") or not self.cwd_changed) and \
+                            (target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
@@ -584,8 +678,10 @@ class _Parser:
                 raise ParseError(f"{text} is not supported")
             if not words and _ASSIGN.match(self.s, start, self.i):   # within the word, as bash reads it
                 self.ctx["refs"].append(text)
+                self.ctx["command_names_mutable"] |= bool(_COMMAND_NAME_ASSIGN.match(text))
                 continue
             words.append(text)
+            dynamic |= bool(re.search(r"[$`]", raw))
             idx.append(len(self.out) - 1)
             spans.append(None if expanded else (len(self.out) - 1, start, self.i))
             globs.append(g)
@@ -594,19 +690,26 @@ class _Parser:
         self.progs += [idx[k] for k in _programs(words, cmds)]
         # cat, tee, echo or printf into a file only copies text there: its herestring and echo's or printf's words
         # (and its heredoc, read_heredocs) are data, which the code leaves out.
-        # lean: the code doesn't follow the text into that file, so a later command of the same call that runs or reads
-        # it (`sh x.sh`, `xargs rm < list`) acts on what it names unseen, as a second call would; keep the text when
-        # another command of the call names the file it wrote if that shows up
-        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf")
+        # lean: a later, separate call can still consume a file whose copied text this call cut; that later call is
+        # evaluated as its own policy input.
+        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
+            not _redefined(self.ctx["redefined"], words[0])
+        marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
             self.data.update(i for i, _, _ in marks)
-            if not self.via:   # the top level's text is the command's own
-                self.ctx["cut"] += [(a, b) for _, a, b in marks]
+        inert = bool(words) and words[0] in ("cd", "pushd", "popd", "pwd", "ls", "mkdir", "true", ":") or \
+            bool(words) and words[0] in ("echo", "printf") and "-v" not in words[1:] and not stdout_redirect
+        step = {"inert": (data and not dynamic) or
+                         (inert and not (stdin_redirect or docs or strings or loop_header or dynamic)),
+                "marks": [(a, b) for _, a, b in marks] if not self.via else []}
+        self.ctx["steps"].append(step)
         for d in docs:
-            d["cmds"], d["data"] = cmds, data
+            d["cmds"], d["data"], d["step"] = cmds, data, step
+        for c in cmds:
+            c["stdin"] += strings
         shell = _stdin_shell(cmds)
-        if shell and not docs and not strings:
+        if shell and not docs and not strings and shell["argv"][0] in SHELLS:
             shell["opaque"] = True   # its script comes from a pipe, a file or inherited stdin
         for text in strings if shell else ():
             self.nested(text, shell["via"] + [shell["argv"][0] + " <<<"])
@@ -615,7 +718,27 @@ class _Parser:
             interp["opaque"] = True   # its program comes from a pipe or a file
         for text in strings if interp else ():
             self.program(interp, text, " <<<")
+        if words and words[0] in ("cd", "pushd", "popd"):
+            self.cwd_changed = True
+        self.track_redefinitions(cmds)
         return consumed
+
+    def track_redefinitions(self, cmds):
+        """Record redefinitions and mutations which make command names untrustworthy."""
+        copies = {"cat", "tee", "echo", "printf"}
+        for cmd in cmds:
+            argv = cmd["argv"]
+            self.ctx["command_names_mutable"] |= (argv[0] in ("alias", "unalias", "shopt", "enable", "source", ".", "hash") or
+                                                  argv[0] in _VARIABLE_SETTING_BUILTINS or
+                                                  (argv[0] == "printf" and "-v" in argv[1:]) or
+                                                  "command_not_found_handle" in argv or
+                                                  any(_COMMAND_NAME_ASSIGN.match(a) for a in argv[1:]))
+            if argv[0] == "alias":
+                self.ctx["redefined"].update(a.split("=", 1)[0] for a in argv[1:] if a.split("=", 1)[0] in copies)
+            elif argv[0] == "enable" and "-n" in argv:
+                self.ctx["redefined"].update(a for a in argv[1:] if a in copies)
+            elif argv[0] in ("source", ".") and len(argv) > 1:
+                self.ctx["redefined"].update(copies)
 
     def program(self, cmd, text, label):
         """An interpreter's program from a heredoc or herestring: scanned as its -c code would be, and a ref."""
@@ -633,7 +756,8 @@ class _Parser:
             # xargs -I{} inserting its input into a script or a command name: what runs comes from stdin
             tainted = repl is not None and (repl in argv[0] or (
                 (name in SHELLS or _kind(name)) and any(repl in a for a in args)))
-            cmd = {"argv": [name] + args, "via": via, "pipeline": pid, "glob": glob, "opaque": unreadable[0] or tainted}
+            cmd = {"argv": [name] + args, "word": argv[0], "via": via, "pipeline": pid, "glob": glob,
+                   "opaque": unreadable[0] or tainted, "stdin": []}
             self.ctx["cmds"].append(cmd)
             cmds.append(cmd)
             if name in DASH_C:
@@ -663,6 +787,10 @@ class _Parser:
             elif (name == "npx" or name == "npm" and args[:1] in (["exec"], ["x"])) and \
                     (script := _npm_call(args if name == "npx" else args[1:])) is not None:
                 self.nested(script, via + [name + " -c"])
+            elif name == "uv" and args[:2] in (["tool", "run"], ["tool", "uvx"]):   # uvx's long forms
+                argv, via, unreadable = ["uvx"] + args[2:], via + ["uv tool run"], unreadable[2:]
+                self.charge(len(argv))
+                continue
             elif name in WRAPPERS or name in RUNNERS and args[:1] and args[0] in RUNNERS[name][0]:
                 if name == "runuser" and _dash_c(args) is not None:
                     self.nested(_dash_c(args), via + ["runuser -c"])
@@ -685,6 +813,9 @@ class _Parser:
                 cmd["opaque"] = True
             elif name == "eval":
                 self.nested(" ".join(args), via + ["eval"])
+            elif name == "trap" and len(args) > 1 and not re.fullmatch(r"-[lpP]*", args[0]):
+                # its action runs on a signal or at exit (`trap 'rm -rf "$d"' EXIT`); `-` or a lone condition resets
+                self.nested(args[1] if args[0] == "--" else args[0], via + ["trap"])
             elif name == "ssh":
                 self.nested(_ssh_command(args), via + ["ssh"])
             elif name == "nix-shell":   # --run and --command take a script, as sh -c does
@@ -750,16 +881,19 @@ class _Parser:
                     break
                 lines.append(line)
             body = "\n".join(lines)
+            for c in d["cmds"]:
+                c["stdin"].append(body)
             # a data heredoc's body, unless a command substitution in it runs (what it runs may read a heredoc of its
             # own, which only this text holds)
             if d["data"] and not d["via"] and not (d["expand"] and re.search(r"\$\(|`", body)):
-                self.ctx["cut"].append((start, at))
+                d["step"]["marks"].append((start, at))
             shell, interp = _stdin_shell(d["cmds"]), _stdin_interpreter(d["cmds"])
             if shell:
                 self.nested(body, shell["via"] + [shell["argv"][0] + " <<"])
             elif interp:
                 self.program(interp, body, " <<")
-            if not shell and d["expand"]:
+            # an unquoted heredoc's substitutions run now, in this shell, also before at or batch get the text
+            if (not shell or shell["argv"][0] not in SHELLS) and d["expand"]:
                 _Parser(body, self.ctx, d["via"] + ["<<"]).dquote(None)
 
     def word(self):
@@ -842,6 +976,25 @@ class _Parser:
                              "$(( that is not arithmetic (a subshell inside $( )) is not supported")
         body = s[start:self.i]
         self.charge(len(body))   # each level reads the levels inside it again
+        # Bash expands an arithmetic array index a second time. If parameter
+        # expansion can build a substitution there, the resulting program is
+        # not present for this parser to read.
+        subscript_start = body.find("[")
+        subscript_end = body.find("]", subscript_start + 1) if subscript_start >= 0 else -1
+        if subscript_end >= 0:
+            index = body[subscript_start:subscript_end + 1]
+            plain_parameters = re.sub(r"\$\{[^{}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", "", index)
+            if "$" in plain_parameters or "`" in index or re.search(r"\$\{[^{}]*\$\}\s*\(", index):
+                raise ParseError("an expandable command in an arithmetic subscript is not supported")
+            # A same-line assignment can supply text that bash evaluates again as
+            # an arithmetic subscript. Its command is not available to this parse.
+            line_start = self.s.rfind("\n", 0, start) + 1
+            line_end = self.s.find("\n", self.i)
+            if line_end < 0:
+                line_end = len(self.s)
+            line = self.s[line_start:line_end]
+            if "$" in index and re.search(r"\$\(|`", line):
+                raise ParseError("a parameterized arithmetic subscript on a line with a substitution is not supported")
         parens, level = re.findall(r"[()]", body), 0
         for p in parens:
             level += 1 if p == "(" else -1
@@ -853,6 +1006,7 @@ class _Parser:
                              "or a backtick with a double quote in $(( )) that has $( or a backtick is not supported")
         self.i += 2
         self.leave()
+
 
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
@@ -911,7 +1065,17 @@ class _Parser:
                 k += 1
             if k != j - 1:
                 raise ParseError("$(( that is not arithmetic (a subshell inside $( )) is not supported")
-            if "$(" in s[self.i + 3:j] or "`" in s[self.i + 3:j]:
+            arithmetic_body = s[self.i + 3:j]
+            possible_subscript = re.sub(r"\$\{[^{}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", "", arithmetic_body)
+            builds_substitution = re.search(r"\$\{[^{}]*\$\}\s*\(", arithmetic_body)
+            line_start = s.rfind("\n", 0, self.i) + 1
+            line_end = s.find("\n", self.i)
+            if line_end < 0:
+                line_end = len(s)
+            line_has_substitution = re.search(r"\$\((?!\()|`", s[line_start:line_end])
+            if "$(" in arithmetic_body or "`" in arithmetic_body or (
+                    "[" in arithmetic_body and ("$" in possible_subscript or builds_substitution or
+                                                "$" in arithmetic_body and line_has_substitution)):
                 self.i += 3
                 self.arith()
             else:
@@ -967,7 +1131,9 @@ def _lines(words, progs):
 
 
 def _stdin_shell(cmds):
-    return next((c for c in cmds if c["argv"][0] in SHELLS and _shell_mode(c["argv"][1:])[0] == "stdin"), None)
+    """A shell reading its script from stdin, or at or batch, which read from it the commands they schedule."""
+    return next((c for c in cmds if c["argv"][0] in SHELLS and _shell_mode(c["argv"][1:])[0] == "stdin"
+                 or c["argv"][0] in ("at", "batch")), None)
 
 
 def _stdin_interpreter(cmds):

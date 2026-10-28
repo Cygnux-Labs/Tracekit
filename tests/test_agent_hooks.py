@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import agent_hooks, client  # noqa: E402
-from tracekit.signer.service import load_policy  # noqa: E402
+from tracekit.signer.service import DEFAULT_POLICY, load_policy  # noqa: E402
 from factories import DaemonCase, ledger_records, patch_env  # noqa: E402
 
 PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: {}\n@@\n-A=1\n+A=2\n*** End Patch"
@@ -517,6 +517,56 @@ class QwenTools(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("gemini", "edit", {})[0], "edit")
 
 
+class GeminiQwenTargets(unittest.TestCase):
+    """Every file a Gemini CLI or Qwen Code tool reads is decided by the shipped packs as its single-file form is, under
+    each release's parameter name, and a key the tool ignores never replaces the one it reads."""
+    CRED = "/home/agent/.aws/credentials"
+
+    def same(self, pol, harness, form, single):
+        want = pol.decide(*agent_hooks.tool(harness, *single))
+        self.assertNotEqual(want["verdict"], "allow")
+        got = pol.decide(*agent_hooks.tool(harness, *form))
+        self.assertEqual((got["verdict"], got["rule_ids"]), (want["verdict"], want["rule_ids"]))
+
+    def test_every_file_is_decided_as_its_single_file_form(self):
+        cred = self.CRED
+        for pack in ("dev.yaml", "server.yaml", "strict.yaml"):
+            pol = load_policy(os.path.join(os.path.dirname(DEFAULT_POLICY), pack))
+            for harness in ("gemini", "qwen"):
+                read = ("read_file", {"file_path": cred})
+                grep = ("search_file_content", {"pattern": "k", "path": cred})
+                for form, single in ((("read_many_files", {"include": [cred]}), read),
+                                     (("read_many_files", {"paths": ["README.md"], "include": [cred]}), read),
+                                     (("read_file", {"absolute_path": cred, "file_path": "README.md"}), read),
+                                     (("read_file", {"absolute_path": cred, "file_path": None}), read),
+                                     (("search_file_content", {"pattern": "k", "dir_path": cred}), grep),
+                                     (("search_file_content", {"pattern": "k", "dir_path": cred, "path": "src"}), grep),
+                                     (("glob", {"pattern": "*", "dir_path": cred}), ("glob", {"pattern": "*", "path": cred}))):
+                    with self.subTest(pack=pack, harness=harness, form=form):
+                        self.same(pol, harness, form, single)
+        self.assertEqual(agent_hooks.tool("qwen", "grep_search", {"pattern": "k", "dir_path": cred})[1]["file_path"], cred)
+        self.assertEqual(agent_hooks.tool("gemini", "list_directory", {"dir_path": "/w"}), ("LS", {"dir_path": "/w", "file_path": "/w"}))
+        # a shell command's dir_path is where it runs, not a file it reads
+        self.assertNotIn("file_path", agent_hooks.tool("gemini", "run_shell_command", {"command": "ls", "dir_path": "/w"})[1])
+
+    def test_every_url_is_decided_as_its_single_url_form(self):
+        """Gemini CLI's web_fetch fetches every URL in its prompt (split on JavaScript's whitespace, a scheme in any
+        case); a `url` beside it, which Gemini CLI ignores, is decided too and replaces none of them."""
+        meta = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+        docs = "https://docs.python.org/3/"
+        for pack in ("dev.yaml", "server.yaml", "strict.yaml"):
+            pol = load_policy(os.path.join(os.path.dirname(DEFAULT_POLICY), pack))
+            for harness in ("gemini", "qwen"):
+                single = ("web_fetch", {"prompt": f"fetch {meta}"})
+                for ti in ({"prompt": f"compare {docs} with {meta}"}, {"prompt": f"summarize {meta}", "url": docs},
+                           {"prompt": f"compare {docs}\ufeff{meta}"},
+                           {"prompt": f"compare {docs} with {meta.replace('http', 'HTTP', 1)}"},
+                           {"prompt": f"compare {docs}", "url": meta}):
+                    with self.subTest(pack=pack, harness=harness, ti=ti):
+                        self.same(pol, harness, ("web_fetch", ti), single)
+        self.assertEqual(agent_hooks.tool("gemini", "web_fetch", {"prompt": f"see {docs}"})[1], {"prompt": f"see {docs}", "url": docs})
+
+
 class ReasoningCaptureOn(DaemonCase):
     """reasoning_capture in the policy must not break runs of harnesses whose transcripts Tracekit never parses."""
     policy_yaml = "extends: default\nversion: reasoning-on\nreasoning_capture: true\n"
@@ -948,23 +998,29 @@ class DemoPerAgent(unittest.TestCase):
         import io
         import tempfile
         from tracekit import demo, install as inst
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
-        env = dict(os.environ, PYTHONPATH=ROOT)
-        home = os.path.join(d, "signer")
-        inst.init_dev(home, [], start=True)
-        try:
-            proj = demo._project(d)
-            with contextlib.redirect_stdout(io.StringIO()):
-                demo.scripted(env, proj, "codex")
-            evs = [r["event"] for r in ledger_records(home)]
-            start = next(e for e in evs if e["type"] == "run.start")
-            self.assertEqual((start["run_id"], start["data"]["agent"]["name"]), ("demo-codex-1", "codex"))
-            self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], ["Bash", "Bash", "Bash", "Edit", "Bash", "Bash"])
-            self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
-        finally:
-            inst.stop_dev_daemon(home)
+        # codex and goose read through their shell tool; opencode and goose send no session or prompt events
+        for agent, tools, sessions in [("codex", ["Bash", "Bash", "Bash", "Edit", "Bash", "Bash"], True),
+                                       ("opencode", ["Read", "Bash", "Read", "Edit", "Bash", "Bash"], False),
+                                       ("goose", ["Bash", "Bash", "Bash", "Edit", "Bash", "Bash"], False)]:
+            with self.subTest(agent=agent):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
+                env = dict(os.environ, PYTHONPATH=ROOT)
+                home = os.path.join(d, "signer")
+                inst.init_dev(home, [], start=True)
+                try:
+                    proj = demo._project(d)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        demo.scripted(env, proj, agent)
+                    evs = [r["event"] for r in ledger_records(home)]
+                    start = next(e for e in evs if e["type"] == "run.start")
+                    self.assertEqual((start["run_id"], start["data"]["agent"]["name"]), (f"demo-{agent}-1", agent))
+                    self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], tools)
+                    self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
+                    self.assertEqual(any(e["type"] in ("user.prompt", "run.end") for e in evs), sessions)
+                finally:
+                    inst.stop_dev_daemon(home)
 
 
 if __name__ == "__main__":

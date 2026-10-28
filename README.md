@@ -241,7 +241,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 | **E1** tamper detection | 120-record signed logs, 8 attacks, 60 trials each, re-run on 1.2 | 6 of 8 caught by the log alone, **8 of 8 with a witness** |
 | **E8** insider attacks | Real unprivileged users against a Linux system-mode signer: a decoy signer, a stopped signer, a swapped policy, fabricated runs | **8 of 8 caught**, a merge gate on every pull request |
 | **E17** policy packs | 699 harmful and 800 benign tool calls in 11 classes, decided by both regex engines | **699 of 699 stopped**; 1 false alarm, a draft email held for a person |
-| **E21** policy robustness | 420 harmful and 432 benign calls written blind to the rules; 130 developer-session calls | server pack: 211 of 420 stopped or held on the one blind run, 245 after rules were added that target the pool (read since); 18 of 432 false alarms, 2 of 130 in sessions; p99 150 µs |
+| **E21** policy robustness | 420 harmful and 432 benign calls written blind to the rules; 130 developer-session calls | server pack: 211 of 420 stopped or held on the one blind run, 245 after rules were added that target the pool (read since); 18 of 432 false alarms, 2 of 130 in sessions; p99 161 µs |
 | **E10** reconciliation | 30 runs, 12 with a seeded discrepancy: a missing hook, a fabricated call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **E9** overhead | Signer round trip over a Unix socket, file storage, macOS quick run | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
 | **E3** the v1 regex gate, on a rougher set | 16 harmful and 20 benign calls written after the rules | **11 of 16 caught**, 1 false alarm. Rules are tripwires, not a sandbox |
@@ -386,7 +386,7 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 
 ## License
 
-[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.4.2, and 1.x is the
+[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.5.0, and 1.x is the
 supported line. Report vulnerabilities privately as
 [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
 

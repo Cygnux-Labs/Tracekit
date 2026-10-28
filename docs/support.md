@@ -13,7 +13,7 @@ experimental.
 | Surface | What it covers |
 |---|---|
 | v2 signer, dev mode | `tracekit.instrument()`, `tracekit up/down/last`, `tracekit signer serve --dev`, file storage |
-| v2 signer, system mode on Linux | `sudo tracekit init --v2 --user AGENT`: the signer as its own OS user, file storage, uid and token callers |
+| v2 signer, system mode on Linux | `tracekit init --v2 --user AGENT` as root ([laptop system mode](deploy.md#laptop-system-mode)): the signer as its own OS user, file storage, uid and token callers |
 | Python SDK | `tracekit.sdk` (`RunHandle`) and `tracekit.instrument()` |
 | Framework integrations | OpenAI Agents SDK, LangChain / LangGraph, Claude Agent SDK, MCP client wrapping: each runs the adapter contract against the pinned real library on every push to main and every pull request |
 | Claude Code hooks (v2) | `tracekit init --dev --v2` and system mode's hooks |
@@ -28,14 +28,17 @@ experimental.
 | Surface | Docs |
 |---|---|
 | `tracekit why`: investigation, replay, signed findings | [why](why.md) |
+| `tracekit graph`: graph and report built from v2 bundles | [graph](graph.md) |
 | Detection and containment: sequences and limits, holds, quarantine, suspensions, incidents, the webhook outbox | [incidents](incidents.md), [webhooks](webhooks.md) |
 | Argument provenance (`untrusted`, `from_untrusted`) | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 | Readable reasoning: what the model said, recorded by the transcript tailer, the coding-agent hooks, the framework integrations and the LLM gateway | [reasoning](reasoning.md) |
 | Live constraints: a limit the person's prompt states ("don't touch billing.py") held by the signer for the rest of the run (its grammar is tested against E20's phrase sets) | [policy](policy-v2.md#live-constraints) |
 | Agent approvers, the reference reviewer (`tracekit reviewer`), Slack approvals, passkey (WebAuthn) approvals | [approvals](approvals.md) |
+| PCM 0.1, proof-carrying messages between agents: the four `pcm_*` RPCs, the Python verifier and SDK methods, `tracekit pcm verify` and `tracekit pcm demo` (no TypeScript verifier; the A2A gateway doesn't enforce them yet, a follow-up) | [PCM](pcm.md) |
 | The signer's HTTPS transport and its OIDC, Kubernetes service-account and mTLS identities | [identity](identity.md), [remote clients](remote-ingest.md) |
 | Postgres storage and multi-tenant signers | [deployment](deploy.md) |
 | LLM gateway, tool executor, MCP gateway, egress observer | [gateway](gateway.md), [executor](executor.md), [MCP gateway](mcp-gateway.md), [egress](egress.md) |
+| The A2A gateway (`tracekit a2a-gateway`: `message/send`, `message/stream` and `tasks/get`, tested against an in-process A2A server, not a third-party one) and latent transfers (`run.transfer`, the C2C integration and `tracekit why transfer`, tested against a stand-in for C2C's `RosettaModel`, not C2C itself) | [A2A gateway](a2a.md), [latent transfers](c2c.md) |
 | The egress observer's SOCKS5 listener for E2B's and microsandbox's outbound proxies (tested against E2B's API description and microsandbox's source, not either running) | [E2B](integrations/e2b.md), [microsandbox](integrations/microsandbox.md) |
 | agentgateway: the `ext_mcp` processor (`tracekit ext-mcp`) and the import of its MCP spans (tested against the protocol and span attributes in agentgateway's source, not a running agentgateway) | [agentgateway](integrations/agentgateway.md) |
 | Wassette behind the MCP gateway (its policy rule is tested against a stand-in with Wassette's tool names, not against Wassette in CI) | [Wassette](integrations/wassette.md) |
@@ -52,6 +55,7 @@ experimental.
 | The Claude Code plugin (`plugin/`): the v2 Claude Code hooks through Claude Code's plugin system (its hook script is tested against the dev signer; loading inside a live Claude Code isn't) | [plugin](../plugin/README.md) |
 | The sandbox-runtime decider (`tracekit srt-decider`; tested against a stand-in that speaks srt-proxy's decider protocol, not a released srt-proxy) | [sandbox-runtime](integrations/sandbox-runtime.md) |
 | Codex CLI, Cursor, Gemini CLI and OpenCode 1.x hooks (checked against recorded hook payloads, OpenCode's written in its documented shape, not the live tools) | [coding agents](coding-agents.md) |
+| goose, Qwen Code, Factory Droid and Antigravity CLI hooks (written to each harness's published hook documentation and tested against payloads in that shape, not the live tools) | [coding agents](coding-agents.md) |
 | The Hermes Agent plugin (`integrations/hermes/`; tested against a stand-in for the sequential path of Hermes's agent loop and its plugin hook dispatch as v0.22.5's source defines them, not a running Hermes) | [Hermes Agent](integrations/hermes.md) |
 | CrewAI (tested against a stand-in, not the real library) and Browser Use (its real-library contract runs nightly only) | [CrewAI](integrations/crewai.md), [Browser Use](integrations/browser-use.md) |
 | Pydantic AI (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Pydantic AI](integrations/pydantic-ai.md) |

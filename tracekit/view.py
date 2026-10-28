@@ -49,7 +49,6 @@ import glob
 import hashlib
 import hmac
 import io
-import itertools
 import logging
 import json
 import os
@@ -65,7 +64,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_v2, parsers
+from . import findings_text, findings_v2, parsers
 from .bundle_v2 import export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -73,6 +72,7 @@ from .identity import oidc, webauthn
 from .identity.k8s_sa import _https
 from .netserver import Server
 from .policy2 import compile as policy_compile
+from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
@@ -86,6 +86,7 @@ POLL_S = 1.0
 BACKOFF = 4   # a run being written is verified again no sooner than BACKOFF x its last check's time after that check
 RECHECK_S = 300   # a run that did not grow is verified again this long after its last check, one run a pass
 MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
+ROWCACHE_MAX = 8   # runs whose /api/rows answer the viewer keeps, each until a newer checkpoint
 KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
@@ -285,7 +286,8 @@ ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PAR
                 "TK-CONSTRAINT": "the person's request in this run said not to do this, so a person must approve it",
                 "TK-HOLD": "the run is held by an incident: every call waits for a person",
                 "TK-QUARANTINE": "the run is quarantined by an incident: its calls are refused",
-                "TK-ARGS-INVALID": "arguments the signer could not read, so it refused the call"}
+                "TK-ARGS-INVALID": "arguments the signer could not read, so it refused the call",
+                "TK-A2A-NAME": policy_compile.ENGINE_REASONS["TK-A2A-NAME"]["reason"]}
 # a signed gap's kind in words (the kind itself stays on the row, for its tooltip and DETAIL)
 GAP_WORDS = {
     "signer_unavailable": "the signer was unreachable: calls may be missing",
@@ -328,13 +330,20 @@ SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamp
                "decision_flip", "executed_against_denial", "concurrent_run"}
 
 
+class Reasons(dict):
+    """policy_hash -> {rule id: {reason[, remedy]}}, and `policies`: policy_hash -> that compiled policy."""
+    policies = {}
+
+
 def policy_reasons(paths=()):
-    """policy_hash -> {rule id: {reason[, remedy]}} of the shipped packs and the policy files `paths`: a decision's
-    rule reasons are shown only from the policy whose hash it records."""
-    out = {}
+    """Reasons of the shipped packs and the policy files `paths`: a decision's rule reasons are shown only from the
+    policy whose hash it records, and so is how many rules it read."""
+    out = Reasons()
+    out.policies = {}
     for p in sorted(glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))) + list(paths):
         pol, errors = policy_compile.build(p)
         if not errors:
+            out.policies[policy_compile.policy_hash(pol)] = pol
             out[policy_compile.policy_hash(pol)] = {
                 r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
                 for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
@@ -362,6 +371,7 @@ class Translator(observe.Translator):
     def __init__(self, reasons=None):
         super().__init__()
         self.reasons = reasons or {}
+        self.engines = {}   # policy_hash -> its Engine (None: a policy this viewer doesn't have), built when first read
         # approval_id -> (tool, rule ids, tool call id), and shadow suggestions: the newest MAX_RUNS_KEPT each, like agent_names
         self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
                                          observe._Bounded(observe.MAX_RUNS_KEPT))
@@ -370,8 +380,26 @@ class Translator(observe.Translator):
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
         self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
 
-    def _base(self, e, rec, event):
-        return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent")}
+    def _base(self, e, rec, event):   # tk_tier: T2 a gateway or executor wrote it for its client (said vs did)
+        return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent"),
+                **({"tk_tier": e["tier"]} if e.get("tier") else {})}
+
+    def reads(self, d):
+        """What WHY THIS DECISION shows of a decision's policy, when the viewer has it: the class it maps the tool to,
+        how many rules of each section decide() read for it, and the section of each rule that matched (the engine's
+        own checks, such as TK-UNKNOWN-TOOL, have none). The record names no class: a rule that matched under another
+        one (a class hint the signer also checked, an MCP tool's bare name) sets `other`."""
+        h = d.get("policy_hash")
+        if h not in self.engines:
+            pol = getattr(self.reasons, "policies", {}).get(h)
+            self.engines[h] = pol and Engine(pol)
+        eng, ids = self.engines[h], set(d.get("rule_ids") or ())
+        # the engine never read the arguments (TK-ARGS-INVALID), or ran out of time and denied: no rule was read in full
+        if not (eng and d.get("tool")) or "TK-ARGS-INVALID" in ids or d.get("nondeterministic"):
+            return {}
+        read, secs = eng.reads(d["tool"]), {r["id"]: sec for sec, r, *_ in eng.rules if r["id"] in ids}
+        return {"cls": eng.tool_class(d["tool"]), "read": {k: len(v) for k, v in read.items()}, "secs": secs,
+                **({"other": True} if set(secs) - {i for v in read.values() for i in v} else {})}
 
     def rules(self, d):
         known = self.reasons.get(d.get("policy_hash"), {})
@@ -385,7 +413,9 @@ class Translator(observe.Translator):
         # an approval's later records (one that expired at run.final names no call) are its request's call's
         info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": d.get("tool_use_id")
                 or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
-                or self.requests.get(d.get("approval_id"), ("", [], None))[2]}
+                or self.requests.get(d.get("approval_id"), ("", [], None))[2],
+                # the gateway or tool executor that wrote a call's result (tier T2), not the agent
+                **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
             x["v2"] = {**info, **x.get("v2", {})}
             if e["run_id"] == SIGNER_RUN[1]:
@@ -407,7 +437,8 @@ class Translator(observe.Translator):
                                + (f" · findings about run {d['analyzes']}" if d.get("analyzes") else "")}]
         if t == "input.observed":
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
-                                                       "only its commitment", "INPUT", trust=d.get("trust"))
+                                                       "only its commitment", "INPUT", trust=d.get("trust"),
+                        source=d.get("source"))
         if t == "content.accessed":
             seqs = d.get("seqs") or []
             return note("CONTENT READ", f"{d.get('principal')} read the kept content of {len(seqs)} record"
@@ -456,8 +487,8 @@ class Translator(observe.Translator):
                      policy={"decision": "deny" if dec == "deny" else "allow", "reasons": [x["id"] for x in rules],
                              "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
                      v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
-                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"),
-                         **{k: d[k] for k in ("provenance", "provenance_state") if k in d}})
+                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"), **self.reads(d),
+                         **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d}})
             return [r]
         aid = d.get("approval_id")
         tool, rule_ids, _ = self.requests.get(aid, ("", [], None))
@@ -470,7 +501,9 @@ class Translator(observe.Translator):
                          + ", ".join(f"{x['id']} {x['reason']}".strip() for x in rules)
                          + f" · expires {_hms(d.get('expires_at'))}"
                          + (" · signer executes (t2)" if d.get("executor") == "t2" else ""), "HOLD",
-                         approval="requested", rules=rules, binding_digest=d.get("binding_digest"))
+                         approval="requested", rules=rules, binding_digest=d.get("binding_digest"), approval_id=aid,
+                         expires=d.get("expires_at"), **({"agents": {k: d["agent"].get(k) for k in ("eligible", "reason")}}
+                                                         if isinstance(d.get("agent"), dict) else {}))
         agent = d.get("approver_kind") == "agent"
         model = " (model output" + (f", {d['asserted'].get('model')}" if (d.get("asserted") or {}).get("model") else "")\
             + ")" if agent else ""
@@ -634,6 +667,9 @@ class Translator(observe.Translator):
                 if s["text"] or s["kind"] == "reasoning":
                     blocks.append({"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] ==
                                    "reasoning" else "text", "text": s["text"], "form": s["form"], "after": len(calls)})
+                    said = s["kind"] != "reasoning" and findings_text.read_message(s["text"])
+                    if said and said["claims"]:   # the outcomes it states, as TK-X205's text checks read them
+                        blocks[-1]["claims"] = sorted({said["quote"][c] for c in said["claims"]})
                 calls += s["tools"]
         turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "calls": calls,
                  "message_id": d.get("exchange_id"), "v2": x}]
@@ -644,14 +680,24 @@ CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only
                "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
 
 
+# an approval's later records, as a permission's outcome
+OUTCOMES = {"approval.consumed": "approved · ran", "approval.expired": "expired", "approval.abandoned": "abandoned",
+            "approval.refused": "refused", "approval.binding_mismatch": "refused: arguments changed",
+            "approval.revoked": "revoked"}
+
+
 def review(records, rep, verdict):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
-    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record."""
+    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
+    decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
+    answered, waiting, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
+    when the run's records have left the live view. Counts keep each snapshot small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0,
            "state": "open", "first": {}}
+    perms, calls = {}, {}   # tool_use_id -> its outcome; approval_id -> its tool_use_id
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -662,10 +708,14 @@ def review(records, rep, verdict):
             out["agent"] = (d.get("agent") or {}).get("name") or "agent"
             if d.get("analyzes"):
                 out["analyzes"] = d["analyzes"]
+            if d.get("parent_run"):   # the run that started this one: panel 1 shows it under its parent
+                out["parent"] = d["parent_run"]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
+            if key != "allow":
+                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, "waiting")
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -699,8 +749,19 @@ def review(records, rep, verdict):
             out["state"] = "final"
         elif t == "run.closing" and out["state"] == "open":
             out["state"] = "closing"
+        if t == "approval.request":
+            calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
+        call = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id") or calls.get(d.get("approval_id")))
+        if call in perms and t == "approval":
+            perms[call] = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
+                           "self_approval_refused": "self-approval refused"}.get(d.get("decision"), d.get("decision"))
+        elif call in perms and t in OUTCOMES:
+            perms[call] = OUTCOMES[t]
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
+    # a hold the run ended without an answer to
+    out["permissions"] = collections.Counter("not answered" if o == "waiting" and out["state"] == "final" else o
+                                             for o in perms.values())
     return out
 
 
@@ -780,15 +841,21 @@ class StoreFeed:
         # past it the oldest records leave the live view (base counts them), as observe.Feed's
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report, "checked": when
-        # its last check ended, "took": the CPU time it took}
+        # its last check ended (time.monotonic(): never stepped back, as the wall clock can be), "took": the CPU time it
+        # took}
         self.runs = {}
         self.memo = set()   # verify.v2's memo: a run is checked again at each checkpoint, its new records only in full
         self.due = 0   # when a run put off (BACKOFF, RECHECK_S) is due, so _watch refreshes with no store change
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
+        self.rowcache = collections.OrderedDict()   # (tenant, run_id, its covered records) -> rows: the newest ROWCACHE_MAX
+        self.verifying = threading.BoundedSemaphore(2)   # /api/rows checks at once
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
-        self.stopped = None   # why the watch thread ended, when it did: the page then says verification stopped
+        # why runs are not checked (the watch thread ended, or the store can't be checked): the page then says
+        # verification stopped
+        self.stopped = None
+        self.noted = 0   # the most records a checkpoint note covered: a signed note never goes back
         self.on_run, self.content, self.analyze = on_run, content, analyze
         # (tenant, run_id) -> the newest records of a run to mirror (on_run), off the watch thread: the tape never
         # waits for a graph, and a run that grew twice meanwhile is mirrored once
@@ -824,12 +891,15 @@ class StoreFeed:
                     except FileNotFoundError:
                         stamp.append(None)
                 # lean: a Postgres store is read again every POLL_S; compare its latest note first if that loads it
-                if stamp != seen or self.pg or time.time() >= self.due:
+                if stamp != seen or self.pg or time.monotonic() >= self.due:
                     seen = stamp
                     try:
                         self.refresh()
-                    except Exception as e:   # the store unreadable, or a bug: said, and tried again
+                        self.stopped = None
+                    except Exception as e:   # the store unreadable, its note gone or gone back, or a bug: said, tried again
                         print(f"tracekit view: cannot check {self.store}: {e!r}", file=sys.stderr, flush=True)
+                        self.stopped = f"verification stopped: {self.store} can't be checked ({type(e).__name__}: " \
+                                       f"{e}); no run is checked until it can be"
                 self._stop.wait(POLL_S)
         except BaseException as e:   # whatever ends the watch but close(): the page stops saying LIVE
             self.stopped = f"verification stopped ({type(e).__name__}: {e}): no run is checked until tracekit view " \
@@ -841,7 +911,7 @@ class StoreFeed:
         shown up to the newest checkpoint, not only once it stops, and checked again no sooner than BACKOFF times its
         last check's time after it. A run that did not grow is checked again RECHECK_S after its last check (the run
         checked longest ago, one a pass), so a later edit of its records shows."""
-        now, stale = time.time(), None
+        now, stale = time.monotonic(), None
         due = [now + RECHECK_S]
         self.due = due[0]   # a store that cannot be read is tried again when it changes, not every POLL_S
         r = reader(self.cfg)
@@ -850,6 +920,10 @@ class StoreFeed:
             if note and note[0] > r.tree.size:
                 r.close()
                 r = reader(self.cfg)   # opened after the note: holds every record it covers
+            if (note[0] if note else 0) < self.noted:   # every run would go unchecked (covered 0) or partly checked
+                raise StorageCorrupt(f"its checkpoint note went back from {self.noted} to {note[0] if note else 0} "
+                                     "records: the store was edited or replaced")
+            self.noted = note[0] if note else 0
             for key, run in list(r.runs.items()):
                 covered = bisect.bisect_left(run["seqs"], note[0]) if note else 0   # its records the note covers
                 state = self.runs.get(key, {})
@@ -893,16 +967,17 @@ class StoreFeed:
                              "label": OPERATOR_SIDE, "agent": None}
             with self.lock:
                 self.runs[key] = dict(self.runs.get(key) or {"count": 0, "shown": 0}, count=count,
-                                      failed="NOT CHECKED (error)", checked=time.time())
+                                      failed="NOT CHECKED (error)", checked=time.monotonic())
                 self._append([dict(row, tenant=key[0])], key)
 
     def _verify(self, reader, note, key, count):
         tenant, run_id = key
         t = time.thread_time()   # its own CPU time: not the time it waited for the mirror thread
-        rep, code, text = check(reader, tenant, run_id, note, self.trust, os.path.join(self.tmp, "run.tkb"), self.memo)
+        rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, os.path.join(self.tmp, "run.tkb"),
+                                          self.memo)
         if len(self.memo) > MEMO_MAX:   # lean: forgets every run's records at once; an LRU if big stores re-check often
             self.memo.clear()
-        state = dict(self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}, checked=time.time(),
+        state = dict(self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}, checked=time.monotonic(),
                      took=time.thread_time() - t)
         if not code and count == state["count"] and not state["failed"]:   # checked again, unchanged: nothing new
             with self.lock:
@@ -923,7 +998,7 @@ class StoreFeed:
             state = dict(state, count=count, shown=0, failed=rep.integrity, analyzed=False)
             records = None   # a mirror of it, from when it verified, goes
         else:
-            records = list(itertools.islice(reader.iter_run(tenant, run_id), count))   # what the checkpoint covers
+            records = verified   # what the checkpoint covers, as verified: not read again from the store
             e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
             want = [r for r in records[state["shown"]:] if self.content and (
                 r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")
@@ -961,6 +1036,8 @@ class StoreFeed:
                 for i, x in enumerate(self.records):
                     if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key:
                         self.records[i] = observe.RETRACTED
+                for k in [k for k in self.rowcache if k[:2] == key]:   # and /api/rows' answers
+                    del self.rowcache[k]
             self._append([dict(x, tenant=tenant) for x in new], key)
         if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape
             with self._mlock:
@@ -985,19 +1062,19 @@ class StoreFeed:
                 while True:
                     if self._stop.is_set():
                         return
-                    now = time.time()
+                    now = time.monotonic()
                     ready = next((k for k, v in self._mirror.items() if v is None or due.get(k, 0) <= now), None)
                     if ready:
                         break
                     self._mlock.wait(min(due[k] for k in self._mirror) - now if self._mirror else None)
                 records = self._mirror.pop(ready)
-            t, cpu = time.time(), time.thread_time()
+            t, cpu = time.monotonic(), time.thread_time()
             try:
                 self.on_run(*ready, records, self.tr.reasons)
             except Exception as e:   # the run's own view does not depend on its graph
                 print(f"tracekit view: no graph for run {ready[1]}: {e}", file=sys.stderr, flush=True)
             due = {k: v for k, v in due.items() if v > t}   # only runs still put off
-            due[ready] = time.time() + BACKOFF * (time.thread_time() - cpu)
+            due[ready] = time.monotonic() + BACKOFF * (time.thread_time() - cpu)
 
     def _own(self, e, sev, title, text, tape):
         """A row the viewer makes (a verifier report, a finding of its analysis): no record of the log, so no seq and
@@ -1070,6 +1147,69 @@ class StoreFeed:
             del self.records[:over]
             self.base += over
 
+    def rows(self, scope, tenant, run_id):
+        """GET /api/rows?tenant&run: the JSON body ({"rows": [...]}, UTF-8) of a run's rows as the tape shows them, from
+        the records of its bundle that verified (exported from the store, verified, then translated: the file is read
+        once), so a run whose records left the live view opens in full; None when `scope` may not read its tenant, the
+        watcher has not verified the run (no such run, no checkpoint covers it yet) or it fails. At most max_records
+        records, its first. An answer is kept while the run's own covered records don't change, or until the viewer's
+        own re-check of the run fails it (RECHECK_S), as the run list's verdict is. The watcher's state decides all
+        that with no read of the store; only a check reads it, two at once at most: past that, observe.Busy (503, try
+        again)."""
+        from .why.import_v2 import bundle_records
+        if scope is not observe.ALL and tenant != scope:
+            return None
+        with self.lock:   # a run the watcher failed has no rows, whatever was kept (an edit keeps the count)
+            state = self.runs.get((tenant, run_id)) or {}
+            if not state.get("count") or state.get("failed"):
+                return None
+            body = self.rowcache.get((tenant, run_id, state["count"]))
+        if body is not None:
+            return body
+        if not self.verifying.acquire(blocking=False):
+            raise observe.Busy()
+        try:
+            fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)   # requests run concurrently: a file each
+            os.close(fd)
+            try:
+                r = reader(self.cfg)
+                try:
+                    note = r.checkpoint_latest()
+                    # a checkpoint written while it opened: read again, as refresh() does
+                    if note and note[0] > r.tree.size:
+                        r.close()
+                        r = reader(self.cfg)
+                    run = r.runs.get((tenant, run_id))
+                    count = bisect.bisect_left(run["seqs"], note[0]) if run and note else 0
+                    if not count:
+                        return None
+                    export(r, tenant, run_id, note[1], out)
+                    verified, _, code = bundle_records(out, self.trust, self.memo)   # the watcher's: checked once
+                # the store does not match its own checkpoint, or holds a record of a shape export can't read
+                except (ValueError, KeyError, TypeError, AttributeError, IndexError):
+                    return None
+                finally:
+                    r.close()
+            finally:
+                os.unlink(out)
+        finally:
+            self.verifying.release()
+        if code:
+            return None
+        # lean: the retained arguments are not read again (each read is a signed content.accessed record); the live
+        # view shows them
+        tr = Translator(self.tr.reasons)
+        body = json.dumps({"rows": [dict(x, tenant=tenant) for rec in verified.get(run_id, [])[:self.max_records]
+                                    for x in tr.feed(rec)]}, ensure_ascii=False).encode("utf-8")
+        key = (tenant, run_id, count)   # its own covered records: another run's checkpoint costs it a lookup
+        with self.lock:
+            if (self.runs.get(key[:2]) or {}).get("failed"):   # the watcher failed it while this checked it
+                return None
+            self.rowcache[key] = body   # serialized once: a hit sends these bytes as they are
+            while len(self.rowcache) > ROWCACHE_MAX:
+                self.rowcache.popitem(last=False)
+        return body
+
     def verify(self, tenant=None):
         """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""
         with self.lock:
@@ -1121,18 +1261,24 @@ def write_trust(path, vkeys):
 
 
 def check(reader, tenant, run_id, note, trust, out, memo=None):
-    """(report, exit code, printed report) of verify.v2 on the run's bundle, exported from `reader` with `note` to
-    `out`; `memo`: verify.v2's, kept across checks."""
+    """(report, exit code, printed report, records) of verify.v2 on the run's bundle, exported from `reader` with `note`
+    to `out`; `records`: the run's records as verify.v2 read them ([] unless it verifies), so what is shown is what
+    was checked, never a second read of the store; `memo`: verify.v2's, kept across checks."""
+    from .why.import_v2 import bundle_records
+    records = []
     try:
         export(reader, tenant, run_id, note, out)
-        rep, code = v2.verify(out, trust, memo=memo)
-    except ValueError as e:   # the store does not match its own checkpoint
+        verified, rep, code = bundle_records(out, trust, memo)
+        records = verified.get(run_id, [])
+    # the store does not match its own checkpoint, or holds a record export can't read: either fails the run
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
         rep, code = v2.Report(), v2.EXIT_FAIL
         rep.integrity, rep.assurance = "FAILED", "none"
-        rep.check("export", False, str(e))
+        rep.check("export", False, str(e) if isinstance(e, ValueError) else
+                  f"a record of the run can't be read ({type(e).__name__})")
     text = io.StringIO()
     v2.print_report(rep, code, text)
-    return rep, code, text.getvalue()
+    return rep, code, text.getvalue(), records
 
 
 class Runs:
@@ -1159,13 +1305,16 @@ class Runs:
             checkpoint.parse_vkey(vkey)
             self.logs.append((dsn, write_trust(os.path.join(self.tmp, f"trust-{i}.json"), [vkey])))
         self._lock, self._verdicts = threading.Lock(), collections.OrderedDict()
+        self.verifying = threading.BoundedSemaphore(2)   # /api/run checks at once
+        self.listing = threading.BoundedSemaphore(1)     # run lists' checks: one at a time, never a run page's slot
 
     def _open(self, i):
-        """A reader of log `i` and its latest record note (size, note), or None: the reader holds what the note
-        covers."""
+        """A reader of log `i`, its latest record note (size, note) or None, and the time before the reader took its
+        snapshot, which a verdict checked on it is as of: the reader holds what the note covers."""
+        at = time.monotonic()   # never stepped back, as the wall clock can be
         r = self.pg.PostgresReader(self.logs[i][0])
         try:
-            return r, r.checkpoint_latest()
+            return r, r.checkpoint_latest(), at
         except BaseException:
             r.close()
             raise
@@ -1176,32 +1325,53 @@ class Runs:
             raise ValueError("needs log (a log number), tenant and run")
         return (int(q["log"]), q["tenant"], q["run"]) if scope is observe.ALL or q["tenant"] == scope else None
 
-    def _verdict(self, r, i, note, tenant, run_id, cached=True):
-        """{verdict (VERDICTS), integrity, assurance, label, report} of the run in reader `r` of log `i`, or None when it
-        holds no such run; with `cached` False, checked on `r` whatever the cache holds."""
-        run = r.runs.get((tenant, run_id))
+    def _verdict(self, r, i, note, at, tenant, run_id, cached=True):
+        """({verdict (VERDICTS), integrity, assurance, label, report}, records) of the run in reader `r` of log `i`, or
+        (None, []) when it holds no such run; `records`: the run's records as verify.v2 read them when this call checked
+        it and it verified, else []. With `cached` False, checked on `r` whatever the cache holds (the caller holds a
+        check slot). A kept verdict is checked again RECHECK_S after its check by time.monotonic(), as StoreFeed's are,
+        so an edit of a run's records in place shows in the list. A list checks with the list's own slot (self.listing),
+        so a run page always has one of its two; with that slot taken it shows FAILED as it is and NOT CHECKED for the
+        rest (a run never checked, or a VERIFIED that is past due): an edit since must not read VERIFIED. A verdict is
+        kept as of `at`, when `r` took its snapshot, and never over one of a later snapshot: a list's check of a run
+        edited since it began must not put VERIFIED back over the FAILED its run page found."""
+        run, records = r.runs.get((tenant, run_id)), []
         if run is None:
-            return None
+            return None, records
         if not note or run["seqs"][-1] >= note[0]:
             return {"verdict": "pending", "integrity": "PENDING", "assurance": "none", "label": OPERATOR_SIDE,
-                    "report": "No checkpoint covers the run's last record yet."}
+                    "report": "No checkpoint covers the run's last record yet."}, records
         key = (i, tenant, run_id, len(run["seqs"]))
         with self._lock:
-            v = self._verdicts.get(key) if cached else None
-        if v is None:
-            fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)   # requests run concurrently: a file each
-            os.close(fd)
+            v, kept = self._verdicts.get(key, (None, 0)) if cached else (None, 0)
+        if v is None or time.monotonic() >= kept + RECHECK_S:
+            if cached and not self.listing.acquire(blocking=False):
+                return v if v and v["verdict"] == "failed" else {
+                    "verdict": "pending", "integrity": "NOT CHECKED", "assurance": "none", "label": OPERATOR_SIDE,
+                    "report": f"Not checked in the last {RECHECK_S // 60} minutes: the viewer is checking other "
+                              "runs. Open the run to check it."}, records
             try:
-                rep, code, text = check(r, tenant, run_id, note[1], self.logs[i][1], out)
+                if cached:   # another list may have checked it since
+                    with self._lock:
+                        v, kept = self._verdicts.get(key, (None, 0))
+                if v is None or time.monotonic() >= kept + RECHECK_S:
+                    fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)   # requests run concurrently: a file each
+                    os.close(fd)
+                    try:
+                        rep, code, text, records = check(r, tenant, run_id, note[1], self.logs[i][1], out)
+                    finally:
+                        os.unlink(out)
+                    v = {"verdict": "failed" if code else "verified", "integrity": rep.integrity,
+                         "assurance": rep.assurance.split(";")[0], "label": OPERATOR_SIDE, "report": text}
+                    with self._lock:
+                        if self._verdicts.get(key, (None, 0))[1] <= at:
+                            self._verdicts[key] = v, at
+                        while len(self._verdicts) > VERDICTS_MAX:
+                            self._verdicts.popitem(last=False)
             finally:
-                os.unlink(out)
-            v = {"verdict": "failed" if code else "verified", "integrity": rep.integrity,
-                 "assurance": rep.assurance.split(";")[0], "label": OPERATOR_SIDE, "report": text}
-            with self._lock:
-                self._verdicts[key] = v
-                while len(self._verdicts) > VERDICTS_MAX:
-                    self._verdicts.popitem(last=False)
-        return v
+                if cached:
+                    self.listing.release()
+        return v, records
 
     def search(self, scope, q):
         """GET /api/runs: {runs, next}: at most `limit` (RUNS_PAGE) runs that `scope` may read and query `q` (SEARCH_KEYS)
@@ -1227,10 +1397,10 @@ class Runs:
             rows = self.pg.search_runs(self.logs[i][0], tenant, want, before, **filters)
             before = None
             if rows:
-                r, note = self._open(i)
+                r, note, at = self._open(i)
                 try:
                     for row in rows:
-                        v = self._verdict(r, i, note, row["tenant"], row["run_id"])
+                        v = self._verdict(r, i, note, at, row["tenant"], row["run_id"])[0]
                         if v and q.get("verdict", v["verdict"]) == v["verdict"]:
                             out.append({"log": i, **row, "verdict": {k: v[k] for k in v if k != "report"}})
                 finally:
@@ -1242,7 +1412,8 @@ class Runs:
     def run(self, scope, q):
         """GET /api/run?log&tenant&run&from: the run's verdict with its report and, only when it verified, RECORDS_PAGE
         of its records from the `from`th, and the `from` of the next page or None; None when `scope` may not read the
-        run or there is no such run."""
+        run or there is no such run. Each request reads the log and checks the run, two at once at most: past that,
+        observe.Busy (503, try again)."""
         key = self._key(scope, q)
         start = q.get("from", "0")
         if not start.isdecimal():
@@ -1251,38 +1422,50 @@ class Runs:
             return None
         i, tenant, run_id = key
         start = int(start)
-        r, note = self._open(i)
+        if not self.verifying.acquire(blocking=False):
+            raise observe.Busy()
         try:
-            v = self._verdict(r, i, note, tenant, run_id, cached=False)   # the records served are the ones checked
-            if v is None:
-                return None
-            records = list(itertools.islice(r.iter_run(tenant, run_id), start, start + RECORDS_PAGE)) \
-                if v["verdict"] == "verified" else []
+            r, note, at = self._open(i)
+            try:
+                v, checked = self._verdict(r, i, note, at, tenant, run_id, cached=False)
+                if v is None:
+                    return None
+                records = checked[start:start + RECORDS_PAGE]   # the records the check verified, never a second read
+            finally:
+                r.close()
         finally:
-            r.close()
+            self.verifying.release()
         return {"log": i, "tenant": tenant, "run_id": run_id, "verdict": v, "records": records,
                 "next": start + RECORDS_PAGE if len(records) == RECORDS_PAGE else None}
 
     def bundle(self, scope, q):
         """GET /api/bundle?log&tenant&run: the run's bundle (.tkb bytes); None when `scope` may not read the run, there is
-        no such run or no checkpoint covers its last record yet."""
+        no such run or no checkpoint covers its last record yet. It reads the log and exports the run under /api/run's
+        limit: past two at once, observe.Busy (503, try again)."""
         key = self._key(scope, q)
         if key is None:
             return None
         i, tenant, run_id = key
-        r, note = self._open(i)
-        fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)
-        os.close(fd)
+        if not self.verifying.acquire(blocking=False):
+            raise observe.Busy()
         try:
-            run = r.runs.get((tenant, run_id))
-            if run is None or not note or run["seqs"][-1] >= note[0]:
-                return None
-            export(r, tenant, run_id, note[1], out)
-            with open(out, "rb") as f:
-                return f.read()
+            fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)
+            os.close(fd)
+            try:
+                r, note, _ = self._open(i)
+                try:
+                    run = r.runs.get((tenant, run_id))
+                    if run is None or not note or run["seqs"][-1] >= note[0]:
+                        return None
+                    export(r, tenant, run_id, note[1], out)
+                    with open(out, "rb") as f:
+                        return f.read()
+                finally:
+                    r.close()
+            finally:
+                os.unlink(out)
         finally:
-            r.close()
-            os.unlink(out)
+            self.verifying.release()
 
 
 def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None, why=None):
@@ -1295,14 +1478,9 @@ def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None, 
         raise ValueError("the viewer needs a token")
     hosts = [host] + ([urlsplit(login.redirect_uri).hostname] if login else [])
 
-    class Handler(observe.make_handler(feed, token, hosts, secure=bool(tls), login=login, approvals=desk, runs=runs,
-                                       why=why)):
-        def long_request(self):
-            self.server.stop_deadline()   # an event stream lasts as long as the page is open, a replay its trials
-
-        def stream_slot(self):
-            return self.server.to_stream(self.client_address[0])
-    return Server((host, port), Handler, tls, max_threads=THREADS, max_per_ip=PER_IP, max_streams=STREAMS,
+    handler = observe.bounded(observe.make_handler(feed, token, hosts, secure=bool(tls), login=login, approvals=desk,
+                                                   runs=runs, why=why))
+    return Server((host, port), handler, tls, max_threads=THREADS, max_per_ip=PER_IP, max_streams=STREAMS,
                   max_streams_per_ip=STREAMS_PER_IP)
 
 

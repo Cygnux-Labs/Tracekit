@@ -7,7 +7,7 @@
 
 | Mode | Command | Key | Runs as |
 |---|---|---|---|
-| System (Linux; macOS experimental) | `sudo tracekit init --user <agent-user>` (macOS: add `--experimental-macos`) | `/var/lib/tracekit/keys/signer.key` (0600, dir 0700) | OS user `tracekit` under systemd (macOS: `_tracekit` under launchd) |
+| System (Linux; macOS experimental) | `sudo /usr/bin/python3 -m tracekit init --user <agent-user>` (macOS: add `--experimental-macos`) | `/var/lib/tracekit/keys/signer.key` (0600, dir 0700) | OS user `tracekit` under systemd (macOS: `_tracekit` under launchd) |
 | Dev (any OS) | `tracekit init --dev` | `~/.tracekit-signer/keys/signer.key` | your own user. **Bundles record `signer_isolation: same-user` and the verifier warns** |
 
 The public key is `keys/signer.pub`; it is copied into every bundle. The key id is `ed25519:` + the first 16 hex characters of `sha256(pubkey)`.

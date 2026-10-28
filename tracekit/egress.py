@@ -65,6 +65,7 @@ import urllib.parse
 import uuid
 
 from tracekit import yamlmini
+from tracekit.netserver import Lines, body_length
 from tracekit.proxy import HOP
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
@@ -337,7 +338,7 @@ def _relay(a, b, count):
             count(len(data), 0) if s is a else count(0, len(data))
 
 
-class _Handler(http.server.BaseHTTPRequestHandler):
+class _Handler(Lines, http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     rbufsize = 0   # unbuffered: after the headers, the tunnel's bytes are read from the socket itself
 
@@ -590,15 +591,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         who = self._who()
         if who is None:
             return
-        n = self.headers.get("content-length", "0")
-        if "transfer-encoding" in self.headers or not (n.isascii() and n.isdigit()):
+        size, why = body_length(self.headers)
+        if why:
             return self._refuse(411, "send the request body with a Content-Length")
-        if int(n) > MAX_BODY:
+        size = size or 0
+        if size > MAX_BODY:
             return self._refuse(413, f"request body over {MAX_BODY} bytes: send large uploads over https (CONNECT)")
         addresses, why = obs.resolve(host, port)
         if why:
             return self._refuse(*why)
-        size = int(n)
         path = urllib.parse.urlunsplit(("", "", url.path or "/", url.query, ""))
         head = [f"{self.command} {path} HTTP/1.1", f"Host: {url.netloc.rpartition('@')[2]}", "Connection: close"] + [
             f"{k}: {v}" for k, v in self.headers.items() if k.lower() not in HOP | {"proxy-connection"}] + (

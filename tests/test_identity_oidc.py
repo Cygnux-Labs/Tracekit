@@ -277,10 +277,13 @@ class TestViewerLogin(unittest.TestCase):
                            "roles": {"auditor": ["group:corp/auditors"], "approver": ["person:corp/ann@corp.example"],
                                      "operator-admin": ["group:corp/sre"]}},
                           self.idp.config(self.pki))
-        self.calls = []
+        self.calls, self.why = [], []
         desk = ApprovalDesk(types.SimpleNamespace(call=lambda m, req: self.calls.append(req) or {"approvals": []}))
+        why = types.SimpleNamespace(ingest_tokens=[], workspace=lambda: self.why.append("workspace") or {},
+                                    detail=lambda run: self.why.append(run) or {},
+                                    test=lambda run, body: self.why.append(("test", run)) or {})
         srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, "tok", ["127.0.0.1"], login=login,
-                                                                         approvals=desk))
+                                                                         approvals=desk, why=why))
         self.port, srv.daemon_threads = srv.server_address[1], True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
@@ -348,6 +351,27 @@ class TestViewerLogin(unittest.TestCase):
         _, body = self.get("/api/snapshot", cookie.split(";")[0])
         self.assertEqual([x["tool_name"] for x in json.loads(body)["records"]], ["a1", "b1"])
         self.assertEqual(self.get("/api/approvals", cookie.split(";")[0])[0].status, 403)
+
+    def test_no_session_reads_why_logs_or_runs_a_replay(self):
+        """Why logs belong to no tenant: the token's only. An operator-admin's session reads every tenant's records,
+        and read the why logs and ran replays with them too."""
+        for claims in ({"sub": "u-sre", "groups": ["sre"], "tenant": None}, {"sub": "u-aud", "groups": ["auditors"]},
+                       {"sub": "u-ann", "tenant": "beta"}):
+            with self.subTest(claims["sub"]):
+                cookie = self.sign_in(**claims)[2].split(";")[0]
+                for path in ("/api/why/workspace", "/api/why/runs/r1"):
+                    self.assertEqual(self.get(path, cookie)[0].status, 403, path)
+                c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+                c.request("POST", "/api/why/runs/r1/tests", body="{}", headers={"Cookie": cookie,
+                                                                                  "Content-Type": "application/json"})
+                self.assertEqual(c.getresponse().status, 401)
+                c.close()
+        self.assertEqual(self.why, [])
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request("GET", "/api/why/workspace", headers={"Authorization": "Bearer tok"})
+        self.assertEqual(c.getresponse().status, 200)
+        c.close()
+        self.assertEqual(self.why, ["workspace"])
 
     def test_auditor_session_gets_no_approval_pages(self):
         _, _, cookie = self.sign_in(sub="u-aud", groups=["auditors"])

@@ -172,6 +172,29 @@ class SystemConfigFailsClosed(_ClientHome):
                 self.assertIn(want, err)
 
 
+class CrashFollowsFailMode(_ClientHome):
+    def entry(self, payload, closed):
+        """(exit code, stderr) of the hook for `payload` when it crashes, with TRACEKIT_FAIL_CLOSED=1 if `closed`."""
+        with mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(self.d, "none.json")), \
+                mock.patch.dict(os.environ, {"TRACEKIT_FAIL_CLOSED": "1" if closed else ""}), \
+                mock.patch.object(policy, "load", side_effect=OSError("boom")), \
+                mock.patch("sys.stdin", io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            return hook._entry(), err.getvalue()
+
+    def test_a_crash_under_fail_closed_blocks_only_a_tool_call(self):
+        pre = {"hook_event_name": "PreToolUse", "session_id": "s1", "tool_use_id": "t1", "cwd": self.d,
+               "tool_name": "Bash", "tool_input": {"command": "ls"}}
+        self.assertEqual(self.entry(pre, True)[0], 2)
+        self.assertEqual(self.entry("not json", True)[0], 2)   # no event known: answered as a tool call
+        for event in ("UserPromptSubmit", "Stop", "PostToolUse", "SessionStart"):   # 2 erases a prompt, loops Stop
+            code, err = self.entry({"hook_event_name": event, "session_id": "s1", "tool_use_id": "t1"}, True)
+            self.assertEqual(code, 1, event)
+            self.assertIn("boom", err)
+            self.assertIn("event not recorded", err)
+        self.assertEqual(self.entry(pre, False), (0, "[tracekit] hook error (boom); allowing (fail-open)\n"))
+
+
 class Approvals(unittest.TestCase):
     def signer(self, **cfg):
         d = tempfile.mkdtemp()

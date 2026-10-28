@@ -1,8 +1,10 @@
 """Network services (tracekit/netserver.py: the ingest gateway, the signer's HTTPS transport, the viewer, metrics, the
-Slack bridge): a client that connects and says nothing, or sends a byte at a time, must not stall anyone else, over TLS
-or not.  python3 -m pytest tests/test_netserver.py -q"""
+Slack bridge, the OTLP receiver, the proxy, `tracekit observe`): a client that connects and says nothing, or sends a byte
+at a time, must not stall anyone else, over TLS or not.  python3 -m pytest tests/test_netserver.py -q"""
+import contextlib
 import datetime
 import http.client
+import io
 import os
 import shutil
 import socket
@@ -14,16 +16,18 @@ import time
 import types
 import unittest
 from unittest import mock
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+import requests  # noqa: E402
 from cryptography import x509  # noqa: E402
 from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 from cryptography.x509.oid import NameOID  # noqa: E402
 
-from tracekit import ingest, netserver, slack_approvals, view  # noqa: E402
+from factories import SLOWER  # noqa: E402
+from tracekit import ingest, netserver, observe, otlp, proxy, slack_approvals, view  # noqa: E402
 from tracekit.identity.token import BearerToken  # noqa: E402
 from tracekit.signer import metrics  # noqa: E402
 from tracekit.transport import http as tk_http  # noqa: E402
@@ -47,6 +51,17 @@ def self_signed(d):
 
 
 class RefusedBody(unittest.TestCase):
+    def test_a_message_or_multipart_content_type_is_framed_by_its_content_length(self):
+        """The header parser also parses a body of these types, and records defects of that body (no boundary), which
+        aren't the headers'."""
+        upload = requests.Request("POST", "http://x/v1/files", files={"file": ("a.txt", b"hi")}).prepare()
+        for content_type in ("message/rfc822", upload.headers["Content-Type"], "multipart/form-data",
+                             "multipart/mixed; boundary=b"):
+            with self.subTest(content_type):
+                headers = http.client.parse_headers(io.BytesIO(
+                    f"Content-Type: {content_type}\r\nContent-Length: 2\r\n\r\n".encode()))
+                self.assertEqual(netserver.body_length(headers), (2, None))
+
     def test_a_refused_post_with_an_unread_body_still_gets_its_answer(self):
         """A handler that answers without reading the body (an auth failure) must not reset the connection under the
         client before it reads the answer (Windows resets it always; others when the body is still arriving)."""
@@ -243,6 +258,129 @@ class SilentClient(unittest.TestCase):
         port = srv.server_address[1]
         self.silent(port)
         self.assertEqual(self.request(port, path=slack_approvals.PATH), 401)
+
+    def test_otlp_receiver_caps_connections_and_cuts_idle_and_dripping_ones(self):
+        """`tracekit otel serve` held a thread for every connection for as long as it stayed open."""
+        srv = otlp.serve("127.0.0.1", 0, otlp.Receiver(lambda event, attach: {"ok": True}))
+        srv.conn_timeout, srv.deadline = 2.0, 1.0
+        port = self.start(srv)
+        held = [socket.create_connection(("127.0.0.1", port)) for _ in range(netserver.MAX_THREADS)]
+        self.socks += held
+        over = socket.create_connection(("127.0.0.1", port))
+        self.socks.append(over)
+        over.settimeout(0.9)
+        self.assertEqual(over.recv(1), b"", "a connection past the cap is closed at once")
+        for s in held:
+            s.settimeout(3 * SLOWER)
+            self.assertEqual(s.recv(1), b"", "an idle connection is cut at the deadline")
+            s.close()
+        time.sleep(0.2)   # their slots are back once the server sees them closed
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=3 * SLOWER)
+        c.request("POST", "/v1/traces", b"{}", {"Content-Type": "application/json"})
+        self.assertEqual(c.getresponse().status, 200)
+        c.close()
+        self.drip(port)
+
+    def test_proxy_cuts_idle_and_dripping_connections_but_not_a_slow_answer(self):
+        """The proxy's slots were held for as long as idle connections stayed open: everyone else got 503."""
+        class Upstream(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                time.sleep(1.0)   # past the proxy's deadline
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *a):
+                pass
+        up = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        up.daemon_threads = True
+        self.start(up)
+        srv = proxy.Server(("127.0.0.1", 0), proxy.Handler)
+        srv.conn_timeout, srv.deadline = 2.0, 0.5
+        port = self.start(srv)
+        held = [socket.create_connection(("127.0.0.1", port)) for _ in range(proxy.MAX_CONCURRENT_REQUESTS)]
+        self.socks += held
+        for s in held:
+            s.settimeout(3 * SLOWER)
+            self.assertEqual(s.recv(1), b"", "an idle connection is cut at the deadline")
+            s.close()
+        time.sleep(0.2)
+        with mock.patch.dict(proxy.CFG, upstream=f"http://127.0.0.1:{up.server_address[1]}"):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5 * SLOWER)
+            for _ in range(2):   # answering is not under the deadline; keep-alive still works
+                c.request("GET", "/v1/models")
+                r = c.getresponse()
+                self.assertEqual((r.status, r.read()), (200, b"ok"))
+            c.close()
+        self.drip(port)
+
+    def test_observe_cuts_a_dripping_client_but_not_its_event_stream(self):
+        feed = types.SimpleNamespace(records=[], base=0, lock=threading.Condition(), verify=lambda: (0, [], None))
+        srv = observe.server(feed, "127.0.0.1", 0, None)
+        srv.deadline = 0.3
+        port = self.start(srv)
+        self.drip(port)
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        c.request("GET", "/api/stream?from=0")
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        time.sleep(0.5)   # past the deadline
+        with feed.lock:
+            feed.records.append({"tool_name": "late"})
+            feed.lock.notify_all()
+        self.assertIn(b"late", r.fp.readline())
+        c.close()
+
+    def test_a_cut_connection_logs_no_traceback_but_a_handler_error_does(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                raise ValueError("a bug in the handler")
+
+            def log_message(self, *a):
+                pass
+        port = self.start(netserver.Server(("127.0.0.1", 0), Handler, timeout=2, deadline=0.3))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.drip(port)   # cut mid request line: the server's 400 goes into a closed connection
+            time.sleep(0.3 * SLOWER)
+        self.assertEqual(err.getvalue(), "")
+        with contextlib.redirect_stderr(err):
+            s = socket.create_connection(("127.0.0.1", port))
+            self.socks.append(s)
+            s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            s.settimeout(3)
+            self.assertEqual(s.recv(1), b"")
+            time.sleep(0.3 * SLOWER)
+        self.assertIn("ValueError: a bug in the handler", err.getvalue())
+
+    def test_a_corrupt_tls_record_logs_no_traceback(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        port = self.start(netserver.Server(("127.0.0.1", 0), BaseHTTPRequestHandler, ssl_context=self_signed(d),
+                                           timeout=2, deadline=2))
+        s = socket.create_connection(("127.0.0.1", port))
+        self.socks.append(s)
+        s.settimeout(3)
+        incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+        tls = ssl._create_unverified_context().wrap_bio(incoming, outgoing)
+        while True:   # a real handshake, then a record no key opens, on the raw socket
+            try:
+                tls.do_handshake()
+                break
+            except ssl.SSLWantReadError:
+                s.sendall(outgoing.read())
+                incoming.write(s.recv(65536))
+        s.sendall(outgoing.read())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            s.sendall(b"\x17\x03\x03\x00\x20" + b"\x00" * 32)
+            while s.recv(65536):   # tickets or an alert, then the server closes it
+                pass
+            time.sleep(0.3 * SLOWER)
+        self.assertEqual(err.getvalue(), "")
 
 
 class Drain(unittest.TestCase):

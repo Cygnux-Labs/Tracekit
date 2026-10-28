@@ -204,12 +204,13 @@ status rests on posture. The verifier prints it as a `coverage matrix` line and 
   signer.yaml) is the agent network's way out; put its `egress.yaml` in `custody/egress/`
   ([compose](deploy-compose.md)). As on Kubernetes, clients without a run token need an identity the
   authenticators accept.
-- <a id="linux-system-mode"></a>**Linux system mode**: `sudo tracekit init --v2 --user AGENT --egress` runs the
+- <a id="linux-system-mode"></a>**Linux system mode**: `tracekit init --v2 --user AGENT --egress`, run as root
+  ([laptop system mode](deploy.md#laptop-system-mode)), runs the
   observer as its own user on `127.0.0.1:3128`, sets `HTTPS_PROXY` in Claude Code's settings, and installs a firewall
   unit (`tracekit-egress-firewall`) whose owner-match rule lets the agent's uid reach only loopback: its outside
   traffic goes through the observer, attributed by uid, or nowhere, except what a loopback service sends on for it
   (a local DNS stub's lookups, see [limits](limits.md#egress-observation-12)). A stopped observer leaves the agent's
-  traffic blocked, never unobserved. `sudo tracekit uninstall --v2` removes the rule, the units and the settings. Needs
+  traffic blocked, never unobserved. `sudo /opt/tracekit/bin/python -I -m tracekit uninstall --v2` removes the rule, the units and the settings. Needs
   iptables with the owner match. Laptops without it are `reported`.
 
 ## Limits

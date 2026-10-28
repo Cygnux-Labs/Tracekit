@@ -9,7 +9,7 @@ import re
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
-from tracekit.format.canon import event_hash
+from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
 PATH_KEYS = ("file_path", "notebook_path", "path")
@@ -104,10 +104,22 @@ def _address(host):
     return ipaddress.IPv4Address(nums[-1] + sum(n << 8 * (3 - i) for i, n in enumerate(nums[:-1])))
 
 
+# Unicode's default-ignorable code points (DerivedCoreProperties): a URL parser (UTS #46, as browsers and Node read
+# a host) drops the soft hyphen, zero-width spaces and joiners, variation selectors and tags, and refuses the rest
+# (Hangul fillers, bidi controls), so dropping them all reads a host as the address it reaches, or holds more
+_IGNORABLE = re.compile("[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
+                        "\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8]"
+                        "|[\U0001bca0-\U0001bca3]|[\U0001d173-\U0001d17a]|[\U000e0000-\U000e0fff]")
+
+
 def _canonical_host(host):
-    """Percent-decoded, NFKC (fullwidth letters and digits), ideographic dots as dots, casefolded; an address in its
-    canonical form, an IPv4-mapped or NAT64 IPv6 address as the IPv4 address it reaches."""
-    h = unicodedata.normalize("NFKC", unquote(host)).replace("\u3002", ".").casefold()
+    """Percent-decoded, without default-ignorable code points (_IGNORABLE), NFKC (fullwidth letters and digits),
+    ideographic dots as dots, casefolded; an address in its canonical form, an IPv4-mapped or NAT64 IPv6 address as
+    the IPv4 address it reaches."""
+    h = unicodedata.normalize("NFKC", _IGNORABLE.sub("", unquote(host)))
+    h = _IGNORABLE.sub("", h).replace("\u3002", ".").casefold()
+    if not h.strip("."):   # nothing but invisible code points (and dots): no host to read, as an empty one is none
+        return _BAD
     ip = _address(h)
     if ip is None or ip is _BAD:
         return ip or h
@@ -132,13 +144,21 @@ def _special_address(host):
                or a.is_unspecified for a in ips)
 
 
+def with_scheme(url):
+    """`url`, with http:// in front when it has no scheme: a browser's address bar, and curl, read host[:port]/path as
+    http."""
+    if re.match(r"(?i)[\x00-\x20]*((https?|wss?|ftp|file):|[a-z][a-z0-9+.-]*:(?![0-9])|[/\\]{2})",
+                re.sub(r"[\t\n\r]", "", url)):
+        return url
+    return "http://" + url
+
+
 def url_info(url):
     """{scheme, host, internal} of a URL. `host` is canonical (_canonical_host). `internal`: the host is a loopback,
     private, link-local, shared, reserved or other non-global address (also inside IPv6), looks like an address but is
-    none, or a browser and Python's urllib read different hosts from the URL (http://a\\@b/)."""
-    if not re.match(r"(?i)[\x00-\x20]*((https?|wss?|ftp|file):|[a-z][a-z0-9+.-]*:(?![0-9])|[/\\]{2})",
-                    re.sub(r"[\t\n\r]", "", url)):
-        url = "http://" + url   # host[:port]/path without a scheme: a browser's address bar, and curl, read it as http
+    none, or a browser and Python's urllib read different hosts from the URL (http://a\\@b/), which also sets
+    `ambiguous`."""
+    url = with_scheme(url)
     scheme, wh = _whatwg_host(url)
     try:
         rh = urlsplit(url).hostname
@@ -149,7 +169,8 @@ def url_info(url):
         return {"scheme": scheme}
     host = hosts[0]
     internal = _BAD in hosts or len(set(hosts)) > 1 or _special_address(host.strip("[]"))
-    return {"scheme": scheme, "host": None if host is _BAD else host, "internal": internal}
+    return {"scheme": scheme, "host": None if host is _BAD else host, "internal": internal,
+            **({"ambiguous": True} if len(set(hosts)) > 1 else {})}
 
 
 def url_target(url):
@@ -224,6 +245,51 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
     return "".join(out)
 
 
+A2A_PARTS = ("text", "file", "data")
+A2A_NAME = re.compile(r"[!-~]+")   # printable ASCII without spaces: a name with one spelling for each logical name
+
+
+def a2a_fields(args):
+    """An agent-to-agent call's fields: what the A2A gateway sends (sender, the caller it authenticated; receiver, the
+    upstream it names; skills, the ids of the skills the receiver's Agent Card lists; params, the JSON-RPC params) or
+    run.transfer does (sender, receiver, modality, projector, size, digest, and with tracekit.integrations.c2c the
+    fuser's weights hash), so a sender is the gateway's authenticated caller at tier T2 and the agent's own claim from
+    run.transfer. `route` is sender->receiver, then ` via <projector>` when a transfer names one; `skills` the skill
+    ids, sorted, matched as one JSON list like every list field, so a deny rule on it with `unless:
+    '^\\[(("search"|"summarize"),?)*\\]$'` lets a message reach only a receiver offering no skill but those; `kinds` the
+    message's part kinds, `hosts` the hosts its file parts point at, `size` the message's bytes (canonical JSON) or the
+    transfer's; `weights` the hash the fuser's weights had, which a policy pins where an id (`projector`) is only the
+    caller's word. The names (sender, receiver, projector, modality, weights, each skill and part kind) are matched in
+    lower case, and the class's rules match in any case (Engine); a name that isn't printable ASCII without spaces (a
+    look-alike or fullwidth letter, a zero-width or control character, a space around it) has spellings no rule
+    written for its logical name matches, so `unreadable` names its field and the engine denies the call
+    (TK-A2A-NAME). The signed arguments keep the caller's spelling."""
+    params = args.get("params")
+    message = params.get("message") if isinstance(params, dict) else None
+    parts = [p for p in message["parts"] if isinstance(p, dict)] if isinstance(message, dict) and \
+        isinstance(message.get("parts"), list) else []
+    uris = [p["file"].get("uri") for p in parts if isinstance(p.get("file"), dict)]
+    size = len(canonical(params)) if isinstance(params, dict) else args.get("size")
+    names = {k: _name(args[k]) for k in ("sender", "receiver", "projector", "modality", "weights")
+             if args.get(k) is not None}
+    lists = {"skills": args.get("skills") or None,
+             "kinds": [p.get("kind") or next((k for k in A2A_PARTS if k in p), "unknown") for p in parts] or None}
+    names.update({k: [_name(x) for x in (v if isinstance(v, list) else [v])] for k, v in lists.items() if v})
+    unreadable = [k for k, v in names.items() if v is None or isinstance(v, list) and None in v]
+    names = {k: v for k, v in names.items() if k not in unreadable}
+    sender, receiver, projector = names.get("sender"), names.get("receiver"), names.get("projector")
+    return {**names, "skills": sorted(names["skills"]) if "skills" in names else None,
+            "route": f"{sender}->{receiver}" + (f" via {projector}" if projector else "")
+            if sender and receiver and "projector" not in unreadable else None,
+            "hosts": sorted({url_info(u).get("host") or u for u in uris if isinstance(u, str)}) or None, "size": size,
+            "unreadable": unreadable or None}
+
+
+def _name(v):
+    """`v` in lower case when it is a name (A2A_NAME), else None."""
+    return v.lower() if isinstance(v, str) and A2A_NAME.fullmatch(v) else None
+
+
 def extract(cls, tool, args):
     """{field: value} for `cls`; a missing value is left out."""
     if cls == "shell":
@@ -275,6 +341,8 @@ def extract(cls, tool, args):
         elif tool.startswith("mcp:"):
             server, _, name = tool[4:].partition("/")
         out = {"server": server, "tool": name, "args": args}
+    elif cls == "a2a":
+        out = a2a_fields(args)
     else:
         out = {}
     return {k: v for k, v in out.items() if v is not None}

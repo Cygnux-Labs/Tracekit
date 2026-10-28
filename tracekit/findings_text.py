@@ -307,13 +307,18 @@ def _clip(v):
     return v[:MAX_TEXT] if isinstance(v, str) else ""
 
 
+class _Lexer(shlex.shlex):
+    """shlex with a `#` starting a comment only at the start of a word, as in a shell: `a#b` is one word."""
+    commenters = property(lambda self: "#" if self.state == " " else "", lambda self, _: None)
+
+
 def _simple(cmd):
     """The simple commands of a shell command line, each a list of words."""
     for line in _clip(cmd).split("\n"):
         if not line.strip():
             continue
         try:
-            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex = _Lexer(line, posix=True, punctuation_chars=True)
             lex.whitespace_split = True
             words = list(lex)
         except ValueError:   # unbalanced quotes: words as whitespace leaves them

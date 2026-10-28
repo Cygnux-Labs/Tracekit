@@ -51,8 +51,8 @@ extract it. In the new window, type `cd `, drag the extracted folder containing 
 window, and press Enter. Paste each command separately and press Enter:
 
 ```sh
-uvx --python 3.13 --from tracekit-ai==1.4.2 tracekit --version
-uvx --python 3.13 --from tracekit-ai==1.4.2 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub
+uvx --python 3.13 --from tracekit-ai==1.5.0 tracekit --version
+uvx --python 3.13 --from tracekit-ai==1.5.0 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub
 ```
 
 The first command downloads the verifier and Python if needed, then prints its

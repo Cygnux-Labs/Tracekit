@@ -4,6 +4,7 @@ recursive-include tracekit/schema *.json
 recursive-include tracekit/policy *.yaml
 recursive-include tracekit/policy2 *.yaml
 recursive-include tracekit/ui *.html
+include tracekit/pcm/tools.json
 recursive-include tests *.py *.jsonl *.json *.tkb *.pub *.html
 recursive-include docs *.md *.png *.tkb *.pub *.html
 recursive-include plugin *

@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import crypto, merkle
 from .merkle import tiles
-from .netserver import Server
+from .netserver import Lines, Server, body_length, read_body
 from .core import b64d, b64e, canon, now_ts
 from .locking import lock_file
 from .witness import CP_TYPE, verify_checkpoint
@@ -201,7 +201,7 @@ def add_token(home, name, signer_pub):
 
 
 def make_handler(log):
-    class H(BaseHTTPRequestHandler):
+    class H(Lines, BaseHTTPRequestHandler):
         server_version = "tracekit-witness"
 
         def log_message(self, *a):
@@ -250,14 +250,14 @@ def make_handler(log):
                     client, rec = name, r
             if not client:
                 return self._send(401, {"error": "unauthorized"})
-            try:
-                n = int(self.headers.get("Content-Length", "-1"))
-            except ValueError:
-                n = -1
-            if not 0 < n <= MAX_BODY:
+            n, why = body_length(self.headers)
+            if why or not 0 < (n or 0) <= MAX_BODY:
                 return self._send(413, {"error": "bad body size"})
+            body = read_body(self, n)
+            if body is None:
+                return
             try:
-                cp = json.loads(self.rfile.read(n))
+                cp = json.loads(body)
             except ValueError:
                 return self._send(400, {"error": "invalid JSON"})
             if not (isinstance(cp, dict) and cp.get("type") == CP_TYPE and isinstance(cp.get("head_seq"), int)

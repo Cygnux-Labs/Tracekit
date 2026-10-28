@@ -6,10 +6,10 @@ WIKI = "https://github.com/Cygnux-Labs/Tracekit/wiki"
 NAMES = {
     "quickstart-v2.md": "Quickstart", "policy-v2.md": "Policy", "gateway.md": "LLM-Gateway",
     "otel.md": "OpenTelemetry", "why.md": "Tracekit-Why", "why-architecture.md": "Tracekit-Why-Architecture",
-    "concepts/README.md": "How-Tracekit-Works", "sample/README.md": "Sample-Bundle",
+    "concepts/README.md": "How-Tracekit-Works", "sample/README.md": "Sample-Bundle", "pcm.md": "Proof-Carrying-Messages",
 }
 WORDS = {w.lower(): w for w in [
-    "ADK", "AI", "and", "agentgateway", "agentsh", "CrewAI", "E2B", "EU", "FAQ", "ISO", "LangChain", "LiteLLM",
+    "A2A", "ADK", "AI", "and", "agentgateway", "agentsh", "C2C", "CrewAI", "E2B", "EU", "FAQ", "ISO", "LangChain", "LiteLLM",
     "LlamaIndex", "MCP", "microsandbox", "NIST", "OpenAI", "OpenShell", "OSS", "OWASP", "RMF", "SDK", "v2"]}
 
 

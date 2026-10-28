@@ -14,7 +14,7 @@ Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-
 The plugin only carries the hooks. The signer and the verifier are the `tracekit` Python package:
 
 ```bash
-pip install tracekit-ai==1.4.2
+pip install tracekit-ai==1.5.0
 tracekit init --dev --v2 --no-hooks   # same-user dev signer (starts on the first hook); hooks come from the plugin
 # or, for tamper resistance against the agent's own user (Linux):
 sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks
@@ -65,7 +65,7 @@ switches you over:
 - **v1 dev mode** (`tracekit init --dev --no-hooks`): the next hook starts the v2 dev signer. Your v1 policy no longer
   applies (the v2 coding pack does), `tracekit pending` and `tracekit approve` no longer see held calls (use
   `tracekit approvals`), and once the v2 signer has recorded something, the v1 ledger can't be bridged into it.
-- **v1 system mode** (`sudo tracekit init --no-hooks`): every tool call is blocked until v2 system mode is set up. The
+- **v1 system mode** (`tracekit init --no-hooks` as root): every tool call is blocked until v2 system mode is set up. The
   hook's error says so.
 
 Before the next Claude Code session after the update:

@@ -210,8 +210,10 @@ class ExportWithoutSigner(unittest.TestCase):
             code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(stdout)["tree_size"], 5)
-        # the summary says what verifier the bundle needs, and which records made it need that one
-        self.assertEqual([json.loads(stdout)[k] for k in ("verifier_min_version", "raised_by", "verifier_version")],
+        # the summary says what verifier the bundle needs, which records made it need that one, and what verifier
+        # checks all of it: a minimum, not the version that exported it (the manifest calls it verifier_version)
+        self.assertEqual([json.loads(stdout)[k] for k in ("verifier_min_version", "raised_by",
+                                                         "verifier_min_version_full")],
                          ["1.0.0", [], "1.0.0"])
         # a policy goes in only when cited_policies names it: an agent approval's decision or a run's incident (none)
         with zipfile.ZipFile(out) as z:

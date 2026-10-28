@@ -112,6 +112,32 @@ class CodingAgentHooks(unittest.TestCase):
                 self.assertIn(path, got["D-HOOKS-EVENT"]["detail"])
                 self.assertEqual(got["D-HOOKS-EVENT"]["fix"], f"tracekit init --dev --v2 --agent {harness}")
 
+    def test_no_pre_tool_hook_or_one_the_harness_lets_a_call_past_warns(self):
+        # #448: doctor said ok with no Tracekit hook on the pre-tool event, with Cursor's failClosed off and with
+        # goose's on_failure gone: in each, a call runs that no hook decided
+        from tracekit import agent_hooks
+
+        def drop_pre(hooks):
+            for ev in [ev for ev in hooks if ev in agent_hooks.PRE]:
+                hooks.pop(ev)
+        changes = [(h, "no Tracekit v2 hook on the pre-tool event", drop_pre)
+                   for h in ("codex", "cursor", "gemini", "goose", "qwen", "droid", "antigravity")]
+        changes += [("cursor", "failClosed: true", lambda hooks: hooks["preToolUse"][0].update(failClosed=False)),
+                    ("goose", 'on_failure: "block"', lambda hooks: hooks["PreToolUse"][0]["hooks"][0].pop("on_failure"))]
+        with mock.patch.dict(os.environ, {"HOME": self.d, "USERPROFILE": self.d}), \
+                mock.patch("os.getcwd", return_value=self.d):   # agy's sign-in settings: none here
+            for harness, says, change in changes:
+                with self.subTest(harness=harness, says=says):
+                    path, settings = self.installed(harness)
+                    self.assertEqual(self.check(harness, path, settings)["D-HOOKS-EVENT"]["status"], "ok")
+                    change(settings if harness == "droid" else settings[agent_hooks.AGY_HOOK if harness == "antigravity"
+                                                                        else "hooks"])
+                    got = self.check(harness, path, settings)["D-HOOKS-EVENT"]
+                    self.assertEqual(got["status"], "warn", got)
+                    self.assertIn(says, got["detail"])
+                    self.assertIn(path, got["detail"])
+                    self.assertEqual(got["fix"], f"tracekit init --dev --v2 --agent {harness}")
+
     def test_production_hook_advice_uses_system_init_for_the_harness(self):
         harness = "codex"
         path, settings = self.installed(harness)
@@ -178,6 +204,20 @@ class CodingAgentHooks(unittest.TestCase):
                                 h["timeout"] = value
                     got = self.check(harness, path, settings)["D-HOOKS-TIMEOUT"]
                     self.assertEqual(got["status"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
+
+    def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
+        # agy waits 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states agy's wait
+        from tracekit import agent_hooks
+        for harness, says in (("antigravity", "30 s"), ("codex", "60 s")):
+            with self.subTest(harness=harness):
+                path, settings = self.installed(harness)
+                hooks = settings[agent_hooks.AGY_HOOK] if harness == "antigravity" else settings["hooks"]
+                for ev, h in self.entries({"hooks": hooks}):
+                    if ev in agent_hooks.PRE:
+                        h.pop("timeout")
+                got = self.check(harness, path, settings)["D-HOOKS-TIMEOUT"]
+                self.assertEqual(got["status"], "warn")
+                self.assertIn(f"{harness} pre-tool timeout {says} in {path}", got["detail"])
 
     def test_a_wrong_event_and_an_event_missing_from_a_post_hook_warn(self):
         for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
@@ -265,6 +305,78 @@ class HooksBefore13(unittest.TestCase):
                 self.assertEqual(got["fix"], "tracekit init --dev --v2" + ("" if harness == "claude" else f" --agent {harness}"))
                 init()
                 self.assertEqual(row()["status"], "ok")
+
+
+class ClaudeHooksDecideEveryCall(unittest.TestCase):
+    """D-HOOKS-EVENT passed Claude Code installs that let a call run undecided: a matcher that leaves tools out,
+    disableAllHooks in any settings file, or a PreToolUse command not wrapped to block a call whose hook can't run."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.settings, self.local = os.path.join(self.d, "settings.json"), os.path.join(self.d, "settings.local.json")
+
+    def row(self, hooks=lambda s: None, local=None, profile="dev", plugin=None):
+        """D-HOOKS-EVENT for init's hooks changed by `hooks`, with settings.local.json holding `local`."""
+        if os.path.exists(self.settings):   # a fresh install each time
+            os.unlink(self.settings)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(self.settings, module=install.V2_HOOK)
+        with open(self.settings) as f:
+            s = json.load(f)
+        hooks(s)
+        for path, value in ((self.settings, s), (self.local, local or {})):
+            with open(path, "w") as f:
+                json.dump(value, f)
+        return next(r for r in doctor.v2_checks({"data_dir": self.d}, profile, settings=self.settings, plugin=plugin,
+                                                sandbox_settings=[self.settings, self.local])
+                    if r["id"] == "D-HOOKS-EVENT")
+
+    def test_a_matcher_that_leaves_tools_out_warns(self):
+        def matcher(m):
+            return lambda s: s["hooks"]["PreToolUse"][0].update(matcher=m)
+        got = self.row(matcher("Edit"))
+        self.assertEqual((got["status"], got["fix"]), ("warn", "tracekit init --dev --v2"))
+        self.assertIn('PreToolUse hook ("Edit") leaves tools out', got["detail"])
+        self.assertEqual(self.row(lambda s: s["hooks"]["PostToolUse"][0].update(matcher="Bash"))["status"], "warn")
+        for every in (matcher(""), lambda s: s["hooks"]["PreToolUse"][0].pop("matcher")):   # Claude Code: every tool
+            self.assertEqual(self.row(every)["status"], "ok")
+
+    def test_disable_all_hooks_in_any_settings_file_warns_and_fails_production(self):
+        self.assertEqual(self.row(local={"disableAllHooks": False})["status"], "ok")
+        for where in ("settings", "local"):
+            hooks = (lambda s: s.update(disableAllHooks=True)) if where == "settings" else lambda s: None
+            got = self.row(hooks, local={"disableAllHooks": True} if where == "local" else None)
+            path = self.settings if where == "settings" else self.local
+            self.assertEqual(got["status"], "warn", where)
+            self.assertIn(f"disableAllHooks is set in {path}: Claude Code runs none of its hooks", got["detail"])
+            self.assertEqual(got["fix"], f'remove "disableAllHooks" from {path}')
+        self.assertEqual(self.row(local={"disableAllHooks": True}, profile="production")["status"], "fail")
+        os.unlink(self.settings)   # the plugin's hooks alone are switched off too
+        got = next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=self.settings,
+                                               plugin=(self.local, install.PLUGIN), sandbox_settings=[self.local])
+                   if r["id"] == "D-HOOKS-EVENT")
+        self.assertEqual(got["status"], "warn")
+
+    def test_dev_mode_reads_disable_all_hooks_in_the_file_init_recorded(self):
+        """The dev layers left out the hooks' own file (init's record of another CLAUDE_CONFIG_DIR), so a
+        disableAllHooks there passed."""
+        self.row(lambda s: s.update(disableAllHooks=True))
+        with mock.patch.object(doctor.client, "system_config", return_value=None), \
+                mock.patch.object(doctor, "_dev_settings", return_value=self.settings), \
+                mock.patch.object(install, "user_settings", return_value=os.path.join(self.d, "user.json")), \
+                mock.patch("os.getcwd", return_value=self.d):
+            got = next(r for r in doctor.collect() if r["id"] == "D-HOOKS-EVENT")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn(f"disableAllHooks is set in {self.settings}", got["detail"])
+
+    @unittest.skipIf(os.name == "nt", "the fail-closed wrapper is POSIX shell")
+    def test_a_pre_tool_command_not_wrapped_to_block_warns(self):
+        stop_like = install._hook_command(install.V2_HOOK, args=("PreToolUse",), pre=False)   # can't run: exit 1
+        got = self.row(lambda s: s["hooks"]["PreToolUse"][0]["hooks"][0].update(command=stop_like))
+        self.assertEqual((got["status"], got["fix"]), ("warn", "tracekit init --dev --v2"))
+        self.assertIn("the PreToolUse hook command isn't wrapped to block the call", got["detail"])
+        self.assertEqual(self.row()["status"], "ok")
 
 
 class DroidHooks(unittest.TestCase):
@@ -397,6 +509,13 @@ class DevFresh(unittest.TestCase):
         self.assertIn("assurance stays dev", got["D-WITNESS-CONFIGURED"]["detail"])
         self.assertIn("the dev signer takes no witnesses", got["D-WITNESS-CONFIGURED"]["fix"])
 
+    def test_keys_it_cannot_read_name_the_doctor_command_root_can_run(self):
+        """System-mode init puts no `tracekit` command on root's PATH, so the fix `sudo tracekit doctor` found none."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d})}
+        self.assertIn("sudo /opt/tracekit/bin/python -I -m tracekit doctor", got["D-KEYS-MODE"]["fix"])
+
     def test_without_witnesses_assurance_is_local_only_with_an_anchor(self):
         """A production signer with no witness said assurance stays local; the verifier says dev without an anchor."""
         d = tempfile.mkdtemp()
@@ -410,6 +529,16 @@ class Reinit(unittest.TestCase):
     def test_the_reinit_fix_runs_on_this_platform(self):
         """On macOS init refuses system mode without --experimental-macos, which the fix left out."""
         self.assertEqual(doctor.REINIT.endswith(" --experimental-macos"), sys.platform == "darwin")
+
+    def test_the_reinit_fix_runs_init_where_it_works_on_every_python(self):
+        """The fix named /opt's venv on 3.11+, given when /opt/tracekit was missing or writable by others (D-CODE-TRUST)
+        and on a dev host with no /opt (D-PROCESS-BOUNDARY), and the version from doctor's own Python; with Tracekit
+        only in /opt's venv the system Python's `-I` form found no module. Init from a root-owned clone works on every
+        Python and with or without /opt, as the plugin and CI run it."""
+        self.assertIn("from a root-owned clone of the release (docs/deploy.md#laptop-system-mode), "
+                      "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>", doctor.REINIT)
+        self.assertNotIn("/opt/tracekit", doctor.REINIT)
+        self.assertNotIn(" -I ", doctor.REINIT)   # -I leaves the clone out of the import path
 
 
 class K8s(unittest.TestCase):

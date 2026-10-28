@@ -14,4 +14,4 @@ requires_env:
     url: https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Hermes
     secret: true
 python_dependencies:
-  - "tracekit-ai>=1.4.2,<1.5"
+  - "tracekit-ai>=1.4.2,<1.6"
