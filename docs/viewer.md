@@ -66,7 +66,7 @@ tracekit view --dev                     # the dev signer's runs
 tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM   # after `tracekit why demo --out runs`
 ```
 
-The screenshots below come from the runs the viewer's browser checks record (`scripts/viewer_qa/gen.py base`: a support
+The screenshots on this page come from the runs the viewer's browser checks record (`scripts/viewer_qa/gen.py base`: a support
 agent, a Claude Code-style run and others), an agent whose push waits for a person, the `tracekit why demo` runs, and the
 sample v1 bundle.
 
@@ -148,9 +148,11 @@ so its tables and values wrap instead of being cut; DETAIL gives the room back.
 **Candidate causes** lists every input and channel upstream of the call. **RUN TEST** replays the run without one of
 them (recorded tool results, new tool calls stubbed: nothing real is re-sent) and compares how often the call
 happens: `PRIMARY CAUSE` (red) means it stops happening without it, `NO EFFECT SEEN` means no change larger than the
-test can detect, `INCONCLUSIVE` means too few replays reproduced the call. **FIND THE CAUSE** runs a group test and
-narrows it down. Both run only for a program passed with `--allow-program`; otherwise the panel prints the command.
-The effect is the drop in how often the call happens, with its 95% interval.
+test can detect, `RULED OUT` means the effect's 95% interval stays within ±0.2 (it makes no real difference),
+`INCONCLUSIVE` means too few replays reproduced the call, and `NOT TESTED` means no replay has measured it yet.
+**FIND THE CAUSE** runs a group test and narrows it down. Both run only for a program passed with
+`--allow-program`; otherwise the panel prints the command. The effect is the drop in how often the call happens,
+with its 95% interval.
 
 ### Runs, overview and timeline (Causeway's)
 

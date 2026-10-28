@@ -86,6 +86,8 @@ placed that way.
   machine ([limits](limits.md#investigation-tracekit-why)).
 - A call whose arguments the viewer has only as a commitment is placed by its tool, not at a file or host
   ([limits](limits.md#investigation-tracekit-why)).
+- A word with a slash in a call's arguments is read as a path, so a git ref such as `origin/main` is drawn as a project
+  place.
 - It shows the network effects a kernel sensor saw, not the egress observer's records
   ([limits](limits.md#investigation-tracekit-why)).
 - A why log time it can't read is drawn as the oldest ([limits](limits.md#investigation-tracekit-why)).
