@@ -230,9 +230,9 @@ one form before they are compared, and a port is ignored:
    space, tab, newline or other control character, DEL or any non-ASCII character anywhere in it, the path too, makes
    it one the verifier can't tell. An international name is compared in its `xn--` form, as DNS names it: claim and
    fetch `xn--bcher-kva.example`, not `bücher.example`. A call's detail then ends with `its URL is not printable
-   ASCII: send the URL with the host in xn-- form and the path and query percent-encoded`. A claim's `host` may hold
-   only `a`-`z`, `0`-`9`, `.`, `_`, `:` and `-`: any other character, a capital letter or `%` among them, fails the
-   claim as malformed.
+   ASCII: send it without spaces or control characters, with the host in xn-- form and anything else
+   percent-encoded`. A claim's `host` may hold only `a`-`z`, `0`-`9`, `.`, `_`, `:` and `-`: any other character, a
+   capital letter or `%` among them, fails the claim as malformed.
 2. Before anything else reads the URL, a `[` or `]` in its authority (between `//` and the first `/`, `?` or `#`) is
    taken only as one pair around an IPv6 or IPvFuture address that opens the host after the last `@`, followed by
    nothing or `:` and a port: `http://[::1]:8080/` and `http://u@[::1]/x` have a host; `http://[x]@good.com/`,
@@ -328,6 +328,50 @@ B: REJECT           approved_by: failed (record 1: hash does not match the event
 ```
 
 Opening a decision shows its args to the receiver. The SDK opens only the decisions you name.
+
+### Freshness
+
+A claim says a call happened, not that nothing happened after it. The sender picks the records it sends, so none of
+the run's later ones need be there. A suite passed, the code changed and the suite failed: the record of the pass
+still proves `tests_passed`. A file was written, then overwritten: the first write still proves `file_written`. Both
+are `proven`: PCM 0.1 can't show what came later (its specification, section 14.13). If you act on the current
+state, check:
+
+- **Age.** Take the oldest `ts` among a claim's evidence records (the sender can add records, but not to make the
+  evidence look newer; for `tests_passed` it's no later than the decision, made before the runner ran) and refuse
+  the message when its own `ts` is more than your maximum age after that. The signer sets both times from its clock,
+  so yours doesn't matter. Use seconds or a minute, not hours: `pcm_evidence` has a checkpoint about a second after
+  the call, and a suite can pass, change and fail within a minute.
+- **After the last change you know of.** If you know when what you act on last changed (the commit you'll merge was
+  pushed, you sent the request that asked for the check), refuse evidence older than that, allowing for clock skew.
+- **`tests_passed`.** Name the suite you need, compare `suite` with it, and ask the sender to run it after your
+  request. The claim still doesn't say which code the suite ran on: the agent can change the code after the run, run
+  the suite again in another run, or run it until it passes. If that matters, run the suite yourself on the code you
+  act on.
+- **`file_written`.** Hash the file you receive, once, and use those same bytes: `"sha256:" + sha256(bytes)` must
+  equal the claim's `digest`. If it differs, the file was written again since, or it's another file. This is the one
+  check that rules a later write out.
+- **`approved_by`, `reached_host`.** Only the age check applies. For authority that must lapse, require a grant: the
+  verifier checks its expiry.
+
+```python
+import datetime
+import hashlib
+
+def evidence_age_s(msg, i):
+    """Seconds from the oldest record of claim i's evidence to the message."""
+    t = lambda s: datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%fZ")
+    oldest = min(t(r["event"]["ts"]) for r in msg["claims"][i]["evidence"]["records"])
+    return (t(msg["ts"]) - oldest).total_seconds()
+
+def same_file(claim, data):
+    """Whether `data`, the bytes you received, are what a file_written claim proves was written."""
+    return "sha256:" + hashlib.sha256(data).hexdigest() == claim["args"]["digest"]
+```
+
+As a sender, send the claim right after the call. A later PCM version could carry every record of the run since the
+call, and bind `tests_passed` to the git tree it ran on and `file_written` to the bytes the executor wrote (the PCM
+0.1 specification, Appendix B question 5).
 
 ## Grants
 
@@ -585,7 +629,8 @@ trust.json, rotate it, and treat what you accepted under it since the leak as un
 
 The [A2A gateway](a2a.md) is merged, but it doesn't check PCM parts yet: it forwards them like any other part.
 Enforcing PCM in it (checking PCM parts before it forwards them, dropping rejected ones, and letting policy require
-proven claims per receiver or intent) is a follow-up, and so is a `transfer` payload. Until then the receiver calls
+proven claims per receiver or intent) is a follow-up. `run.transfer` ([latent transfers](c2c.md)) already records a
+transfer; only the `transfer` payload that would carry its evidence is a follow-up. Until then the receiver calls
 `pcm.verify` itself.
 
 ## Limits

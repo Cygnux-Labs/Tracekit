@@ -879,8 +879,8 @@ class PCM01(unittest.TestCase):
         and Python's codec name some hosts apart (sharp s, U+1806, U+3164, U+0378), and urlsplit releases drop leading
         controls and spaces, tabs and newlines differently, even inside a percent-escape. A call's detail says what the
         sender can do."""
-        why = ("its URL is not printable ASCII: send the URL with the host in xn-- form and the path and query "
-               "percent-encoded")
+        why = ("its URL is not printable ASCII: send it without spaces or control characters, with the host in xn-- "
+               "form and anything else percent-encoded")
         for host, url in (("fass.example", "http://fa%C3\t%9F.example/"), ("fass.example", "http://fa\u00df.example/"),
                           ("ab.example", "http://a\u1806b.example/"), ("ab.example", "http://a\u3164b.example/"),
                           ("xn--x-qib.example", "http://x\u0378.example/"),

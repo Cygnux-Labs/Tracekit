@@ -9,7 +9,7 @@ NAMES = {
     "concepts/README.md": "How-Tracekit-Works", "sample/README.md": "Sample-Bundle", "pcm.md": "Proof-Carrying-Messages",
 }
 WORDS = {w.lower(): w for w in [
-    "ADK", "AI", "and", "agentgateway", "agentsh", "CrewAI", "E2B", "EU", "FAQ", "ISO", "LangChain", "LiteLLM",
+    "A2A", "ADK", "AI", "and", "agentgateway", "agentsh", "C2C", "CrewAI", "E2B", "EU", "FAQ", "ISO", "LangChain", "LiteLLM",
     "LlamaIndex", "MCP", "microsandbox", "NIST", "OpenAI", "OpenShell", "OSS", "OWASP", "RMF", "SDK", "v2"]}
 
 
