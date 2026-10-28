@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-39'
+version: '2026.10-v2-40'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -436,6 +436,22 @@ ask:
     reason: deleting a repository or project through a platform's API
     remedy: Wait for a person to approve the held call, or delete a single item (an issue, a comment) rather than the whole repository or project.
     rationale: Deleting a repository or project removes all of its code, issues and history in one step; a person confirms it.
+  - id: TK-A043
+    class: shell
+    # taking a repository's protections apart through GitHub, as TK-A042 reads gh api and curl: gh secret or
+    # variable delete (or remove), with up to four options before each word as TK-A042 reads them; a DELETE, PUT or
+    # PATCH through gh or hub api or curl on a branch's protection or a path under it, a repository's or
+    # organization's rulesets, or their Actions, Dependabot or Codespaces secrets and variables (an environment's too),
+    # as a bare path or after a host (and /api/v3), with up to sixteen option words before the method flag or the path
+    # and sixteen between them; a PATCH whose arguments set a security_and_analysis feature to disabled within 200
+    # characters; and a gh or hub api DELETE with a $ or a backquote in an argument, whose path is built at run time.
+    # A GET of the same paths, gh secret list and gh secret set aren't held. Every gap is bounded.
+    # lean: a gh api DELETE with any variable in its arguments is held, an issue comment's by a variable id too; read
+    # the path when such deletes get in the way
+    pattern: '^(?:gh (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:secret|variable) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:delete|remove)(?: |$)|(?:(?:gh|hub) api|curl) (?:[^ ]+ ){0,16}(?:-X|--method|--request)[ =]?(?:DELETE|PUT|PATCH) (?:[^ ]+ ){0,16}(?:/?|https?://[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/[^/ ?#]+/(?:branches/[^ ?#]+/protection|rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables)|environments/[^/ ?#]+/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables)))(?:[/?#][^ ]*)?(?: |$)|(?:(?:gh|hub) api|curl) (?:[^ ]+ ){0,16}(?:/?|https?://[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/[^/ ?#]+/(?:branches/[^ ?#]+/protection|rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables)|environments/[^/ ?#]+/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables)))(?:[/?#][^ ]*)?(?: |$)(?:[^ ]+ ){0,16}(?:-X|--method|--request)[ =]?(?:DELETE|PUT|PATCH)(?: |$)|(?:(?:gh|hub) api|curl) (?:[^ ]+ ){0,16}(?:-X|--method|--request)[ =]?PATCH (?:[^ ]+ ){0,16}[^ ]*security_and_analysis[\w\W]{0,200}?disabled|(?:(?:gh|hub) api|curl) (?:[^ ]+ ){0,16}[^ ]*security_and_analysis[\w\W]{0,200}?disabled[^ ]*(?: [^ ]+){0,16} (?:-X|--method|--request)[ =]?PATCH(?: |$)|(?:gh|hub) api (?:[^ ]+ ){0,16}(?:-X|--method)[ =]?DELETE (?:[^ ]+ ){0,16}[^ ]*[$\x60]|(?:gh|hub) api (?:[^ ]+ ){0,16}[^ ]*[$\x60][^ ]*(?: [^ ]+){0,16} (?:-X|--method)[ =]?DELETE(?: |$))'
+    reason: removing a repository's secrets, branch protection, rulesets or security features through GitHub
+    remedy: Wait for a person to approve the held call, or leave the change to a person in the repository's settings.
+    rationale: Deleting secrets or branch protection, or turning secret scanning off, removes what guards a repository's code and deploys; a person confirms it.
   - id: TK-A034
     class: shell
     # each command's argv: Codex applies a patch itself when the shell runs apply_patch or applypatch (it puts both on

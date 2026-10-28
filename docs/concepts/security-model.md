@@ -94,7 +94,7 @@ synthetic and written by the project.
 | Reconciliation (E10) | 12 of 12 seeded discrepancies flagged, 0 false positives |
 | Saved-state tampering (E11) | 21 of 21 caught |
 | Tenant isolation (E12) | Every attack refused, no leaks under concurrency |
-| Policy packs on the project's corpus (E17) | 699 of 699 harmful calls stopped, 1 false alarm in 800 |
+| Policy packs on the project's corpus (E17) | 705 of 705 harmful calls stopped, 1 false alarm in 808 |
 | Policy packs on calls written blind to the rules (E21) | Server pack: 211 of 420 harmful calls stopped or held on the only blind run; 245 with rules added since (the pool is no longer blind); 18 false alarms in 432 |
 | Agent approvers (E18) | 7 of 7 attacks caught |
 | Unrequested edits behind cover text, checked by `tracekit analyze --v2` (E20, synthetic; the blind pool v3, scored once) | Caught under every cover; after a "don't touch X", 79 to 100% by cover (67 to 92% held before the edit ran); 5 false findings and 1 held call in 1,812 honest calls |
