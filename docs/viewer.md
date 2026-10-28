@@ -2,6 +2,8 @@
 
 `tracekit view` is Tracekit's one viewer: one command, one page, one server, whatever the runs come from.
 
+Using 1.4.x? Its viewer, as it was then, is on [Viewer 1.4](viewer-1.4.md).
+
 | Command | Shows |
 |---|---|
 | `tracekit view` (`--dev`, `--config signer.yaml`, `--data-dir DIR`) | the v2 signer's runs, each verified ([below](#laptop-viewer)) |
