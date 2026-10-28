@@ -948,23 +948,29 @@ class DemoPerAgent(unittest.TestCase):
         import io
         import tempfile
         from tracekit import demo, install as inst
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
-        env = dict(os.environ, PYTHONPATH=ROOT)
-        home = os.path.join(d, "signer")
-        inst.init_dev(home, [], start=True)
-        try:
-            proj = demo._project(d)
-            with contextlib.redirect_stdout(io.StringIO()):
-                demo.scripted(env, proj, "codex")
-            evs = [r["event"] for r in ledger_records(home)]
-            start = next(e for e in evs if e["type"] == "run.start")
-            self.assertEqual((start["run_id"], start["data"]["agent"]["name"]), ("demo-codex-1", "codex"))
-            self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], ["Bash", "Bash", "Bash", "Edit", "Bash", "Bash"])
-            self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
-        finally:
-            inst.stop_dev_daemon(home)
+        # codex and goose read through their shell tool; opencode and goose send no session or prompt events
+        for agent, tools, sessions in [("codex", ["Bash", "Bash", "Bash", "Edit", "Bash", "Bash"], True),
+                                       ("opencode", ["Read", "Bash", "Read", "Edit", "Bash", "Bash"], False),
+                                       ("goose", ["Bash", "Bash", "Bash", "Edit", "Bash", "Bash"], False)]:
+            with self.subTest(agent=agent):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
+                env = dict(os.environ, PYTHONPATH=ROOT)
+                home = os.path.join(d, "signer")
+                inst.init_dev(home, [], start=True)
+                try:
+                    proj = demo._project(d)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        demo.scripted(env, proj, agent)
+                    evs = [r["event"] for r in ledger_records(home)]
+                    start = next(e for e in evs if e["type"] == "run.start")
+                    self.assertEqual((start["run_id"], start["data"]["agent"]["name"]), (f"demo-{agent}-1", agent))
+                    self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], tools)
+                    self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
+                    self.assertEqual(any(e["type"] in ("user.prompt", "run.end") for e in evs), sessions)
+                finally:
+                    inst.stop_dev_daemon(home)
 
 
 if __name__ == "__main__":

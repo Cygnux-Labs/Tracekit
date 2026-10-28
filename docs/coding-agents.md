@@ -12,7 +12,7 @@ tracekit init --dev --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencod
 tracekit init --dev --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.json (plus plugin.json beside it)
 tracekit init --dev --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
 # --project writes the project-level file instead; tracekit uninstall --agent X removes it
-tracekit demo --agent codex            # the scripted demo, sent as Codex's own hook payloads (also cursor, gemini)
+tracekit demo --agent codex            # the scripted demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
 For Codex, Cursor, Gemini CLI and Qwen Code the installer merges into existing settings: other hooks and settings are kept, a
