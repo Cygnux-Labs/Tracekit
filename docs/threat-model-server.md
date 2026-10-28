@@ -14,7 +14,7 @@ resulting report: [verdicts](verdicts.md).
 | Deployment | How | Who can reach the signer's keys and store |
 |---|---|---|
 | **dev** | `tracekit up`, or auto-spawned by the first client; same OS user as the agent | the agent's user |
-| **laptop system mode** | `sudo tracekit init --v2`: the signer runs as its own OS user from a root-owned install (Linux; macOS experimental) | root and the signer's user |
+| **laptop system mode** | `tracekit init --v2` as root: the signer runs as its own OS user from a root-owned install (Linux; macOS experimental) | root and the signer's user |
 | **signer on another host** | `tracekit signer serve --config signer.yaml` with `http:` (k8s service account, mTLS or token identity) | whoever administers that host and its storage |
 
 In every deployment the agent's process holds no signing key and assigns no sequence number (I1), and only the signer

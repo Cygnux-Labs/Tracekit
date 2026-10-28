@@ -1186,6 +1186,16 @@ def _author(records):
     return (f"{i['scheme']}:{i['subject']}" if i else None), d.get("signer_isolation")
 
 
+def _label(records, target, pinned):
+    """(the author label of findings run `records` about run `target`, why it is self-asserted or None) (module
+    docstring: Signed findings). `pinned`: the trust config's `analyzers`."""
+    (author, isolation), (theirs, their_isolation) = _author(records), _author(target)
+    if author == theirs or "same-user" in (isolation, their_isolation):
+        return "self-asserted", (f"its author {str(author)[:256]} is the analysed run's identity" if author == theirs
+                                 else "the signer runs as the same user as a client (signer_isolation same-user)")
+    return ("independent" if author in pinned else f"unpinned author {str(author)[:256]}"), None
+
+
 def _verdict(v):
     """What is wrong with a signed finding's verdict `v` (VERDICT; its asserted model, families and window), or None."""
     if not isinstance(v, dict) or not isinstance(v.get("rule"), str) or not _RULE.fullmatch(v["rule"]) or any(
@@ -1234,14 +1244,9 @@ def _reviews(rep, runs, pinned):
         problems += [f"seq {e['seq']}: cites run_seq {c['run_seq']} of run {str(analyzes)[:128]}, "
                      + ("which it does not have" if h is None else "whose hash differs")
                      for e, c, h in cited if h != c["hash"]]
-        (author, isolation), (theirs, their_isolation) = _author(rs), _author(target)
-        if author == theirs or "same-user" in (isolation, their_isolation):
-            label = "self-asserted"
-            selfs.append(f"findings run {rid}: " + (
-                f"its author {str(author)[:256]} is the analysed run's identity" if author == theirs else
-                "the signer runs as the same user as a client (signer_isolation same-user)"))
-        else:
-            label = "independent" if author in pinned else f"unpinned author {str(author)[:256]}"
+        label, reason = _label(rs, target, pinned)
+        if reason:
+            selfs.append(f"findings run {rid}: {reason}")
         labels[label] += len(signed)
     if total:
         rep.check("reviews", not problems and not selfs, f"{total} review(s): " + ", ".join(

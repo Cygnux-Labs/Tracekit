@@ -142,6 +142,21 @@ class TestInstrument(unittest.TestCase):
         self.assertIn("unset it for a same-user dev signer", str(cm.exception))
         self.assertIsNone(autowire._STATE["run"])
 
+    def test_no_system_signer_names_a_doctor_command_root_can_run(self):
+        """System-mode init puts no `tracekit` command on root's PATH, so the fix `sudo tracekit doctor` found none."""
+        class Down:
+            def start(self, agent):
+                raise SignerUnavailable("no signer answering")
+
+        env = {k: v for k, v in os.environ.items() if k != "TRACEKIT_SIGNER"}
+        with mock.patch.object(autowire, "_version", return_value="1.0"), \
+                mock.patch.object(autowire, "_process_client", return_value=Down), \
+                mock.patch("tracekit.client.SYSTEM_CONFIG", __file__), mock.patch.dict(os.environ, env, clear=True), \
+                self.assertRaises(SignerUnavailable) as cm:
+            autowire.instrument()
+        self.assertIn("system mode: start the system signer (`sudo /opt/tracekit/bin/python -I -m tracekit doctor` "
+                      "says what is wrong)", str(cm.exception))
+
     def test_a_framework_that_cannot_be_wired_is_skipped_with_a_warning(self):
         def broken(run):
             raise ImportError("cannot import name 'ToolNode'")

@@ -577,7 +577,7 @@ class TestView(Case):
         run = s.register()
         s.hold(run)
         _, trust = bundle(s, run)
-        rep, code, _ = view.check(s.s.log.storage, "default", run["run_id"], s.s.log.storage.checkpoint_latest()[1],
+        rep, code, _, _ = view.check(s.s.log.storage, "default", run["run_id"], s.s.log.storage.checkpoint_latest()[1],
                                   trust, os.path.join(s.dir, "v.tkb"))
         self.assertEqual([c["status"] for c in rep.checks if c["check"] == "incidents"], ["pass"])
         self.assertEqual(rep.integrity, "VERIFIED")

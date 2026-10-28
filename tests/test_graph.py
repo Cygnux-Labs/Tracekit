@@ -5,32 +5,37 @@ The end-to-end runs are real: one in-process signer set up as the dev signer is 
 analyzer), plus an egress observer's grant the dev signer doesn't give, records a Claude Code session through the v2
 hook command `tracekit init --v2` wires (a write, a denied call, an approved call, a fetch, a lost transcript tailer and
 the egress observer's hosts), a tracekit why runtime run (an untrusted input, a model call, secrets the signer
-redacts) and a findings run about it (a signed finding, and a why.finding as `tracekit why test` writes one; its replay
-runs are not run here, which the verifier counts a warning). Each is exported as `tracekit export --v2` does, one copy
-tampered.
+redacts) and a findings run about it (a signed finding, and a why.finding as `tracekit why test` writes one, from replay
+runs whose model calls a gateway recorded; exported with them and, as the verifier does not count it, without). Each
+is exported as `tracekit export --v2` does, one copy tampered.
 
     python3 -m pytest tests/test_graph.py -q
 """
 import contextlib
+import hashlib
 import io
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import uuid
 from unittest import mock
 
-from factories import ROOT, patch_env, rewrite_bundle
+from factories import ROOT, SLOWER, patch_env, rewrite_bundle
 from tracekit import cli, graph, install
+from tracekit.bundle_v2 import export
 from tracekit.demo_server import Witness, _serve, export_final
 from tracekit.deploy import files
 from tracekit.identity.base import CallerIdentity
 from tracekit.integrations import claude_code
 from tracekit.sdk.client import Client, RunHandle
 from tracekit.signer import service
+from tracekit.storage.file import FileReader
+from tracekit.verify.v2 import _CONTROL
 from tracekit.why import import_v2
 from tracekit.why.core import Runtime
 from tracekit.why.graph import EVIDENCE, Graph
@@ -38,6 +43,7 @@ from tracekit.why.signed import EvidenceAlert
 
 HOOK = install._hook_command(install.V2_HOOK)
 OBSERVER = CallerIdentity("mtls", "spiffe://test/egress", True)
+GATEWAY = CallerIdentity("mtls", "spiffe://test/gateway", True)   # an LLM gateway: records the replay runs' model calls
 TS = "2026-10-27T10:00:00.000000Z"
 KINDS = {"run", "agent", "person", "call", "input", "model", "file", "host", "secret", "rule", "finding", "approval",
          "gap", "code"}
@@ -52,7 +58,7 @@ def run(*argv):
 
 def rec(seq, typ, data, run_id="r-obs"):
     return {"event": {"run_id": run_id, "run_seq": seq, "seq": 100 + seq, "ts": "2026-10-27T00:00:00.000000Z",
-                      "type": typ, "data": data}}
+                      "tenant": "default", "log_id": "0" * 32, "type": typ, "data": data}}
 
 
 def net(host, st):
@@ -69,7 +75,7 @@ class CallOutcomes(unittest.TestCase):
                 records.append(result)
             g = Graph(None, "grade")
             graph._add_run(g, records, True, {1: {"file_path": "out.py", "url": "https://example.test/x"}})
-            return {(e["kind"], e["record"]["run_seq"]) for e in g.edges if e["src"] == "call:r-obs:c"}
+            return {(e["kind"], e["record"]["run_seq"]) for e in g.edges if e["src"] == "call:r-obs:d"}
 
         self.assertEqual(kinds(rec(2, "tool.result", {"tool_use_id": "c", "decision_id": "d", "ok": True})),
                          {("reported writing", 2), ("reported reaching", 2)})
@@ -88,24 +94,29 @@ class CallOutcomes(unittest.TestCase):
         g = Graph(None, "grade")
         graph._add_run(g, records, True, {1: {"url": "https://denied.example/x"},
                                           2: {"url": "https://allowed.example/x"}})
-        self.assertEqual({(e["dst"], e["kind"]) for e in g.edges if e["src"] == "call:r-obs:c"},
-                         {("host:denied.example", "asked to reach"), ("host:allowed.example", "reported reaching")})
+        self.assertEqual({(e["src"], e["dst"], e["kind"]) for e in g.edges if e["src"].startswith("call:")},
+                         {("call:r-obs:deny", "host:denied.example", "asked to reach"),
+                          ("call:r-obs:allow", "host:allowed.example", "reported reaching")})
 
         records[3] = rec(3, "tool.result", {"tool_use_id": "c", "decision_id": "allow", "ok": True})
         g = Graph(None, "grade")
         graph._add_run(g, records, True, {1: {"file_path": "/failed"}, 2: {"file_path": "/retried"}})
-        self.assertEqual({(e["dst"], e["kind"]) for e in g.edges if e["src"] == "call:r-obs:c"},
-                         {("file:/failed", "asked to write"), ("file:/retried", "reported writing")})
+        self.assertEqual({(e["src"], e["dst"], e["kind"]) for e in g.edges if e["src"].startswith("call:")},
+                         {("call:r-obs:deny", "file:/failed", "asked to write"),
+                          ("call:r-obs:allow", "file:/retried", "reported writing")})
 
     def test_missing_decision_ids_do_not_join(self):
         records = [rec(0, "run.registered", {"agent": {"name": "a"}}),
-                   rec(1, "policy.decision", {"tool_use_id": "bad", "tool": "Write", "decision": "deny"}),
-                   rec(2, "policy.decision", {"tool_use_id": "ok", "tool": "Write", "decision": "allow"}),
-                   rec(3, "tool.result", {"tool_use_id": "ok", "ok": True})]
+                   rec(1, "policy.decision", {"tool_use_id": "ok", "decision_id": "d", "tool": "Write",
+                                              "decision": "allow"}),
+                   rec(2, "tool.result", {"tool_use_id": "ok", "ok": True})]
         g = Graph(None, "grade")
-        graph._add_run(g, records, True, {1: {"file_path": "/etc/shadow"}, 2: {"file_path": "/tmp/fine"}})
+        graph._add_run(g, records, True, {1: {"file_path": "/tmp/fine"}})
         self.assertEqual({(e["dst"], e["kind"]) for e in g.edges if e["dst"].startswith("file:")},
-                         {("file:/etc/shadow", "asked to write"), ("file:/tmp/fine", "asked to write")})
+                         {("file:/tmp/fine", "asked to write")})
+        # a decision is its call's identity: one without the signer's decision id is no record graph reads
+        with self.assertRaisesRegex(ValueError, "decision_id"):
+            graph._graph_data({"type": "policy.decision", "data": {"tool_use_id": "bad", "decision": "deny"}})
 
     def test_later_result_hides_an_earlier_ask_from_reports_and_queries(self):
         records = [rec(0, "run.registered", {"agent": {"name": "a"}}),
@@ -116,6 +127,7 @@ class CallOutcomes(unittest.TestCase):
                    rec(3, "tool.result", {"tool_use_id": "c", "decision_id": "later", "ok": True})]
         g = Graph(None, "grade")
         graph._add_run(g, records, True, {1: {"file_path": "/repo/.env"}, 2: {"file_path": "/repo/.env"}})
+        graph._supersede(g)
         doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
                "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
         report = graph.highlights(doc)
@@ -134,34 +146,34 @@ class CallOutcomes(unittest.TestCase):
             return rec(seq, "policy.decision", {"tool_use_id": "c", "decision_id": did, "tool": "Write",
                                                   "decision": "allow", "args_commitment": commitment})
 
-        g = Graph(None, "grade")
-        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "a"}}), decision(1, "first", "same"),
-                           decision(2, "second", "same"), rec(3, "tool.result", {"tool_use_id": "c",
-                           "decision_id": "second", "ok": True})], True,
-                       {1: {"file_path": "/repo/x", "content": "first"},
-                        2: {"file_path": "/repo/x", "content": "second"}})
-        doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
-               "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
-        self.assertEqual(set(e["kind"] for r in graph.matching(doc, "file", "/repo/x")["runs"]
-                             for e in r["matched"]), {"asked to write", "reported writing"})
+        def shown(*copies):   # (records, verified, arguments) of each copy of the run read
+            g = Graph(None, "grade")
+            for records, ok, args in copies:
+                graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "a"}}), *records], ok, args)
+            graph._supersede(g)
+            doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
+                   "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
+            return {(e["kind"], e["grade"]) for r in graph.matching(doc, "file", "/repo/x")["runs"]
+                    for e in r["matched"]}
 
-        g = Graph(None, "grade")
-        graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "a"}}), decision(1, "first", "one"),
-                           rec(2, "tool.result", {"tool_use_id": "c", "decision_id": "first", "ok": True}),
-                           decision(3, "later", "one")], True,
-                       {1: {"file_path": "/repo/x", "content": "same"},
-                        3: {"file_path": "/repo/x", "content": "same"}})
-        doc["nodes"], doc["edges"] = list(g.nodes.values()), g.edges
-        self.assertEqual(set(e["kind"] for r in graph.matching(doc, "file", "/repo/x")["runs"]
-                             for e in r["matched"]), {"asked to write", "reported writing"})
+        def ran(seq, did):
+            return rec(seq, "tool.result", {"tool_use_id": "c", "decision_id": did, "ok": True})
 
-        digest = next(e["args_digest"] for e in g.edges if e["kind"] == "asked to write")
-        g.add_edge("call:r-obs:c", "file:/repo/x", "reported writing", "UNVERIFIED",
-                   record={"run_id": "r-obs", "run_seq": 4, "seq": 104, "ts": TS}, claimed="SIGNED",
-                   args_commitment="one", args_digest=digest)
-        doc["edges"] = g.edges
-        self.assertIn("asked to write", {e["kind"] for r in graph.matching(doc, "file", "/repo/x")["runs"]
-                                           for e in r["matched"]})
+        same, both = {"file_path": "/repo/x", "content": "same"}, {("asked to write", "SIGNED"),
+                                                                   ("reported writing", "SIGNED")}
+        self.assertEqual(shown(([decision(1, "first", "same"), decision(2, "second", "same"), ran(3, "second")], True,
+                                {1: {"file_path": "/repo/x", "content": "first"},
+                                 2: {"file_path": "/repo/x", "content": "second"}})), both)
+        self.assertEqual(shown(([decision(1, "first", "one"), decision(2, "later", "two"), ran(3, "later")], True,
+                                {1: same, 2: same})), {("reported writing", "SIGNED")})
+        self.assertEqual(shown(([decision(1, "first", "one"), ran(2, "first"), decision(3, "later", "one")], True,
+                                {1: same, 3: same})), both)
+        # the same arguments run later in an unverified copy of the run: that hides the copy's own ask only
+        self.assertEqual(shown(([decision(1, "first", "one"), ran(2, "first"), decision(3, "later", "one")], True,
+                                {1: same, 3: same}),
+                               ([decision(1, "first", "one"), decision(3, "later", "one"), ran(4, "later")], False,
+                                {1: same, 3: same})),
+                         both | {("reported writing", "UNVERIFIED")})
 
     def test_many_asked_edges_are_indexed_once_per_query(self):
         class CountingEdges(list):
@@ -187,6 +199,59 @@ class CallOutcomes(unittest.TestCase):
             graph.matching(doc, "file", "/repo/1")
         self.assertLessEqual(g.edges.visits, 3 * len(g.edges))
 
+    def test_an_approval_and_a_rule_stay_with_the_decision_they_were_for(self):
+        def at(seq, typ, data, attempt=0):
+            r = rec(seq, typ, data)
+            r["event"]["attempt"] = attempt
+            return r
+
+        def decided(seq, tcid, did, decision="ask", attempt=0):
+            return at(seq, "policy.decision", {"tool_use_id": tcid, "decision_id": did, "tool": "Write",
+                                               "decision": decision, "rule_ids": ["TK-A022"] * (decision == "ask")},
+                      attempt)
+
+        def approved(seq, tcid, did, aid):
+            return [at(seq, "approval.request", {"approval_id": aid, "decision_id": did, "rule_ids": ["TK-A022"],
+                                                 "binding": {"tool_call_id": tcid, "tool": "Write", "attempt": 0}}),
+                    at(seq + 1, "approval", {"tool_use_id": tcid, "approval_id": aid, "decision": "approve",
+                                             "approver": "alice", "self_approved": False})]
+
+        def ran(seq, tcid, did, ok=True, attempt=0):
+            return at(seq, "tool.result", {"tool_use_id": tcid, "decision_id": did, "ok": ok}, attempt)
+
+        held, backdoor, again, flaky = "/etc/docker/daemon.json", "/repo/src/backdoor.py", "/etc/sudoers", "/repo/f.py"
+        records = [rec(0, "run.registered", {"agent": {"name": "coder"}}),
+                   # t1: asked, approved and run; then its id reused for a write no person was asked about
+                   decided(1, "t1", "d1"), *approved(2, "t1", "d1", "apr-1"),
+                   at(4, "approval.consumed", {"approval_id": "apr-1"}), ran(5, "t1", "d1"),
+                   decided(6, "t1", "d2", "allow"), ran(7, "t1", "d2"),
+                   # t2: asked and approved, decided again with the same arguments (LangGraph's resume), run under that
+                   decided(8, "t2", "d3"), *approved(9, "t2", "d3", "apr-2"), decided(11, "t2", "d4"),
+                   at(12, "approval.consumed", {"approval_id": "apr-2"}), ran(13, "t2", "d4"),
+                   # t3: failed, and run as a new attempt: the signer's approval of one attempt covers no other
+                   decided(14, "t3", "d5", "allow"), ran(15, "t3", "d5", ok=False),
+                   decided(16, "t3", "d6", "allow", attempt=1), ran(17, "t3", "d6", attempt=1)]
+        args = {1: {"file_path": held, "content": "{}"}, 6: {"file_path": backdoor, "content": "import os"},
+                8: {"file_path": again, "content": "x"}, 11: {"file_path": again, "content": "x"},
+                14: {"file_path": flaky, "content": "y"}, 16: {"file_path": flaky, "content": "y"}}
+        g = Graph(None, "grade")
+        graph._add_run(g, records, True, args)
+        graph._supersede(g)
+        doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
+               "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
+        sections = {s["id"]: s["items"] for s in graph.highlights(doc)["sections"]}
+        files = {i["node"]: i for i in sections["files"]}
+        sensitive = {i["node"]: i["text"] for i in sections["sensitive"]}
+        # the reused id's write: no rule held it, no person approved it
+        self.assertEqual(files["file:" + backdoor]["without_person"], 1)
+        self.assertNotIn("file:" + backdoor, sensitive)
+        self.assertEqual([a["note"] for a in graph.matching(doc, "file", "backdoor.py")["map"]["answers"]], [""])
+        self.assertTrue(sensitive["file:" + held].endswith("under TK-A022 ask (SIGNED); alice approved it (SIGNED)"))
+        # decided again with the same arguments: one call, approved, its first decision's ask not left over
+        self.assertEqual((files["file:" + again]["without_person"], files["file:" + again]["asked"]), (0, 0))
+        self.assertTrue(sensitive["file:" + again].endswith("under TK-A022 ask (SIGNED); alice approved it (SIGNED)"))
+        self.assertEqual((files["file:" + flaky]["reported"], files["file:" + flaky]["asked"]), (1, 1))
+
 
 class QueryInput(unittest.TestCase):
     def test_rejects_a_non_tracekit_graph(self):
@@ -196,6 +261,65 @@ class QueryInput(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(graph.main(["query", d, "--file", "x"]), 2)
             self.assertIn("not a Tracekit graph", err.getvalue())
+
+    def test_answers_from_a_graph_it_did_not_verify_say_so(self):
+        """graph.json is unsigned: a hand-written one with no sources answers that alice approved, SIGNED."""
+        rec = {"run_id": "r1", "run_seq": 3, "seq": 9, "ts": TS}
+        doc = {"schema_version": 1, "sources": [], "nodes": [
+            {"id": "person:oidc:alice@corp", "kind": "person", "label": "oidc:alice@corp"},
+            {"id": "call:r1:t1", "kind": "call", "label": "Bash", "decision": "ask"},
+            {"id": "run:r1", "kind": "run", "label": "r1", "ts": TS}], "edges": [
+            {"src": "person:oidc:alice@corp", "dst": "call:r1:t1", "kind": "approve", "grade": "SIGNED", "record": rec},
+            {"src": "run:r1", "dst": "call:r1:t1", "kind": "decided ask", "grade": "SIGNED", "record": rec}]}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, graph.GRAPH), "w") as f:
+                json.dump(doc, f)
+            said = f"{os.path.join(d, graph.GRAPH)} is not verified here: check it against its bundles with " \
+                   f"`tracekit graph verify {d} --trust trust.json`"
+            code, text = run("query", d, "--approved-by", "oidc:alice@corp")
+            self.assertEqual(code, 0)
+            self.assertTrue(text.startswith(said), text)
+            self.assertIn("SIGNED     oidc:alice@corp -approve-> Bash", text)
+            with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(graph.main(["query", d, "--approved-by", "oidc:alice@corp", "--json"]), 0)
+            self.assertEqual(json.loads(out.getvalue())["matched"], ["person:oidc:alice@corp"])
+            self.assertTrue(err.getvalue().startswith(said), err.getvalue())
+
+    def test_an_error_naming_nodes_prints_no_control_character(self):
+        doc = {"schema_version": 1, "sources": [], "edges": [], "nodes": [
+            {"id": f"call:r1:t{i}\x1b[1A\x1b[2K", "kind": "call", "label": "Bash"} for i in (1, 2)]}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, graph.GRAPH), "w") as f:
+                json.dump(doc, f)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(graph.main(["query", d, "--blast", "Bash"]), 2)
+            self.assertIn("names several nodes: call:r1:t1[1A[2K, call:r1:t2[1A[2K", err.getvalue())
+            self.assertEqual(_CONTROL.findall(err.getvalue().replace("\n", "")), [])
+
+    def test_a_malformed_graph_is_refused_with_a_message_never_a_traceback(self):
+        """graph.json is unsigned: a hand-written one can hold any JSON where query reads objects, lists and strings."""
+        run_node, file_node = ({"id": "run:r1", "kind": "run", "label": "r1", "ts": TS},
+                               {"id": "file:x", "kind": "file", "label": "x"})
+
+        def edge(**over):
+            return {"src": "run:r1", "dst": "file:x", "kind": "file event (s)", "grade": "OBSERVED",
+                    "record": {"run_id": "r1", "run_seq": 1, "seq": 9, "ts": TS}, **over}
+        for name, nodes, edges in (
+                ("nodes not a list", {"file:x": file_node}, []),
+                ("a node without an id", [{"kind": "file", "label": "x"}], []),
+                ("a label not a string", [dict(file_node, label=["x"])], []),
+                ("edges with non-string ends", [run_node, file_node], [edge(src=["run:r1"])]),
+                ("a record not an object", [run_node, file_node], [edge(record=["r1"])]),
+                ("an edge citing a run with no node", [file_node, {"id": "agent:a", "kind": "agent", "label": "a"}],
+                 [edge(src="agent:a")]),
+                ("an UNVERIFIED edge with no claimed grade", [run_node, file_node], [edge(grade="UNVERIFIED")])):
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, graph.GRAPH), "w") as f:
+                    json.dump({"schema_version": 1, "sources": [], "nodes": nodes, "edges": edges}, f)
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(graph.main(["query", d, "--file", "x"]), 2)
+                self.assertRegex(err.getvalue(), r"^tracekit graph: (not a Tracekit graph|.*graph\.json: "
+                                                 r"(nodes|edges)\[0\] is not a)")
 
 
 class ReviewRegressions(unittest.TestCase):
@@ -270,23 +394,27 @@ class ReviewRegressions(unittest.TestCase):
             self.assertIn("agent:good", {n["id"] for n in doc["nodes"]})
 
     def test_malformed_nested_event_makes_its_source_unreadable(self):
-        bads = [
-            {"event": {"run_id": "bad", "run_seq": 0, "type": "run.registered",
-                       "data": {"agent": "not an object"}}},
-            {"event": {"run_id": "bad", "run_seq": 0, "type": "tool.result",
-                       "data": {"decision_id": ["not", "a", "key"]}}},
-            {"event": {"run_id": "bad", "run_seq": 0, "type": "policy.decision", "data": {
-                "provenance": [{"source": {"run_seq": [1]}}]}}},
-            {"event": {"run_id": "bad", "run_seq": 0, "type": "review", "data": {
-                "cites": [{"run_seq": [1]}]}}},
-        ]
+        bads = [rec(0, typ, data, "bad") for typ, data in (
+            ("run.registered", {"agent": "not an object"}),
+            ("run.registered", {"replay_of": ["not", "a", "key"]}),
+            ("why.finding", {"replay_runs": "not a list"}),
+            ("tool.result", {"decision_id": ["not", "a", "key"]}),
+            ("policy.decision", {"decision_id": "d", "provenance": [{"source": {"run_seq": [1]}}]}),
+            ("review", {"cites": [{"run_seq": [1]}]}))]
         for bad in bads:
             with self.subTest(bad=bad), \
                  mock.patch("tracekit.bundle_v2.run_files", return_value={"bad": ["runs/bad.jsonl"]}), \
                  mock.patch("tracekit.verify.v2.read_zip", return_value={"runs/bad.jsonl": b""}), \
                  mock.patch("tracekit.verify.v2._jsonl", return_value=[bad]):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, " data\\."):
                     graph._runs(b"bad")
+
+    def test_a_run_in_two_files_of_one_bundle_is_unreadable(self):
+        with mock.patch("tracekit.bundle_v2.run_files", return_value={"a": ["runs/a.jsonl"], "b": ["runs/b.jsonl"]}), \
+             mock.patch("tracekit.verify.v2.read_zip", return_value={"runs/a.jsonl": b"", "runs/b.jsonl": b""}), \
+             mock.patch("tracekit.verify.v2._jsonl", return_value=[rec(0, "run.registered", {}, "r")]):
+            with self.assertRaisesRegex(ValueError, "two files hold the run"):
+                graph._runs(b"bundle")
 
     def test_a_source_that_fails_while_building_does_not_partly_enter_the_graph(self):
         with tempfile.TemporaryDirectory() as d:
@@ -298,7 +426,8 @@ class ReviewRegressions(unittest.TestCase):
             good_src = {"name": "good.tkb", "sha256": "good", "verify": {"ok": True, "integrity": "ok", "failures": []}}
             # This bypasses _runs deliberately: staging also protects future graph readers from a missed validator.
             bad_runs = {"bad": [rec(0, "run.registered", {"agent": {"name": "bad"}}, "bad"),
-                                rec(1, "policy.decision", {"tool_use_id": "t", "tool": "Write", "decision": "allow",
+                                rec(1, "policy.decision", {"tool_use_id": "t", "decision_id": "d", "tool": "Write",
+                                                           "decision": "allow",
                                                            "provenance": [{"source": {"run_seq": []}}]}, "bad")]}
             good_runs = {"good": [rec(0, "run.registered", {"agent": {"name": "good"}}, "good")]}
             table = {bad_path: (bad_src, bad_runs), good_path: (good_src, good_runs)}
@@ -348,7 +477,78 @@ class ReviewRegressions(unittest.TestCase):
         split, together = self.split_and_together(runs_a, runs_b)
         for doc in (split, together):
             with self.subTest(sources=len(doc["sources"])):
-                self.assertEqual({n["id"]: n["label"] for n in doc["nodes"]}["call:r:c"], "Write")
+                self.assertEqual({n["id"]: n["label"] for n in doc["nodes"]}["call:r:d"], "Write")
+
+    def test_runs_of_two_tenants_or_logs_with_one_id_stay_apart(self):
+        def run_of(tenant, agent, log="0" * 32, rid="job-42", about=None):
+            recs = [rec(0, "run.registered", {"agent": {"name": agent}, **({"analyzes": about} if about else {})}, rid),
+                    dict(rec(1, "policy.decision", {"tool_use_id": "t1", "decision_id": "d1", "tool": "Write",
+                                                    "decision": "allow"}, rid), hash=tenant + log)]
+            for r in recs:
+                r["event"].update(tenant=tenant, log_id=log)
+            return {rid: recs}
+
+        finding = run_of("acme", "review", rid="fr", about="job-42")
+        verdict = {"kind": "finding", "rule": "TK-X", "severity": "high", "title": "t"}
+        cites = [{"run_seq": 1, "hash": "acme" + "0" * 32}]   # acme's job-42 decision
+        finding["fr"].append(rec(2, "review", {"verdict": verdict, "cites": cites}, "fr"))
+        finding["fr"][-1]["event"].update(tenant="acme", log_id="0" * 32)
+        table = {"acme.tkb": {**run_of("acme", "acme-payroll-bot"), **finding},
+                 "globex.tkb": {**run_of("globex", "globex-agent"), **run_of("globex", "globex-agent", rid="solo")},
+                 "other-log.tkb": run_of("acme", "elsewhere", log="1" * 32)}
+        read = []
+        with tempfile.TemporaryDirectory() as d:
+            trust = os.path.join(d, "trust.json")
+            with open(trust, "w") as f:
+                f.write("{}")
+            src = {n: {"name": n, "sha256": n, "verify": {"ok": True, "integrity": "ok", "failures": []}}
+                   for n in table}
+            with mock.patch.object(graph, "_read", side_effect=lambda p, *a: (src[os.path.basename(p)],
+                                                                               table[os.path.basename(p)])), \
+                 mock.patch.object(graph, "_add_why"):
+                doc = graph.build([os.path.join(d, n) for n in table], trust, lambda rid, recs: read.append(rid) or {})
+        acme, globex, other = (f"job-42@{t}@{log}" for t, log in (("acme", "0" * 32), ("globex", "0" * 32),
+                                                                  ("acme", "1" * 32)))
+        self.assertEqual(sorted(n["id"] for n in doc["nodes"] if n["kind"] == "run"),
+                         sorted(["run:fr", "run:solo", "run:" + acme, "run:" + globex, "run:" + other]))
+        self.assertEqual([r["run"] for r in graph.matching(doc, "agent", "globex-agent")["runs"]], ["solo", globex])
+        self.assertEqual({(e["src"], e["dst"]) for e in doc["edges"] if e["kind"] in ("analyses", "found in")},
+                         {("run:fr", "run:" + acme), ("finding:fr:2", f"call:{acme}:d1")})
+        # the vault finds a run by its id alone: a shared id's runs are not read from it, and the report says so
+        self.assertEqual(sorted(read), ["fr", "solo"])
+        self.assertIn(f"run {globex}: not read from the vault", graph.report(doc))
+
+    def test_a_failed_bundle_claiming_another_tenant_renames_no_verified_run(self):
+        """A forged bundle names a verified run's id under another tenant: the verified run keeps its id and its vault
+        read, and the forgery's edges join it, UNVERIFIED."""
+        def run_of(tenant, agent):
+            recs = [rec(0, "run.registered", {"agent": {"name": agent}}, "job-42"),
+                    rec(1, "policy.decision", {"tool_use_id": "t1", "decision_id": "d1", "tool": "Write",
+                                               "decision": "allow"}, "job-42")]
+            for r in recs:
+                r["event"]["tenant"] = tenant
+            return {"job-42": recs}
+
+        table = {"acme.tkb": (True, run_of("acme", "acme-payroll-bot")),
+                 "forged.tkb": (False, run_of("globex", "globex-agent"))}
+
+        def read_source(path, *a):
+            name = os.path.basename(path)
+            ok, runs = table[name]
+            return {"name": name, "sha256": name, "verify": {"ok": ok, "integrity": "ok" if ok else "FAILED",
+                                                             "failures": [] if ok else ["signature"]}}, runs
+        read = []
+        with tempfile.TemporaryDirectory() as d:
+            trust = os.path.join(d, "trust.json")
+            with open(trust, "w") as f:
+                f.write("{}")
+            with mock.patch.object(graph, "_read", side_effect=read_source), mock.patch.object(graph, "_add_why"):
+                doc = graph.build([os.path.join(d, n) for n in table], trust, lambda rid, recs: read.append(rid) or {})
+        self.assertEqual([n["id"] for n in doc["nodes"] if n["kind"] == "run"], ["run:job-42"])
+        self.assertEqual(read, ["job-42"])
+        self.assertNotIn("not read from the vault", graph.report(doc))
+        self.assertEqual({(e["src"], e["grade"]) for e in doc["edges"] if e["kind"] == "ran"},
+                         {("agent:acme-payroll-bot", "SIGNED"), ("agent:globex-agent", "UNVERIFIED")})
 
     def test_unverified_people_and_agents_do_not_describe_signed_answers(self):
         g = Graph(None, "grade")
@@ -515,6 +715,87 @@ class ReviewRegressions(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "not a regular file"):
                     graph._secure_source(source)
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symlinks")
+    def test_write_never_writes_through_a_symlink_in_or_as_the_output_directory(self):
+        doc = self.doc(Graph(None, "grade"))
+        with tempfile.TemporaryDirectory() as d:
+            victim, out, elsewhere = (os.path.join(d, n) for n in ("victim.txt", "tracekit-graph", "elsewhere"))
+            with open(victim, "w") as f:
+                f.write("the person's file")
+            os.mkdir(out)
+            os.symlink(victim, os.path.join(out, graph.REPORT))   # planted by anyone who can write the folder
+            with self.assertRaisesRegex(OSError, "symlink"):
+                graph.write(doc, out)
+            with open(victim) as f:
+                self.assertEqual(f.read(), "the person's file")
+            os.mkdir(elsewhere)
+            linked = os.path.join(d, "linked")
+            os.symlink(elsewhere, linked)
+            with self.assertRaisesRegex(OSError, "symlink"):
+                graph.write(doc, linked)
+            self.assertEqual(os.listdir(elsewhere), [])
+            os.remove(os.path.join(out, graph.REPORT))
+            graph.write(doc, out)
+            with open(os.path.join(d, "made by open"), "w"):
+                pass
+            self.assertEqual({os.stat(os.path.join(out, n)).st_mode for n in graph.FILES},
+                             {os.stat(os.path.join(d, "made by open")).st_mode})   # the mode the umask leaves
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFOs")
+    def test_build_refuses_a_fifo_as_its_graphify_input_without_blocking(self):
+        with tempfile.TemporaryDirectory() as d:
+            trust, fifo = os.path.join(d, "trust.json"), os.path.join(d, "graph.json")
+            with open(trust, "w") as f:
+                f.write("{}")
+            os.mkfifo(fifo)   # as one planted at the default graphify-out/graph.json
+            got = []
+
+            def build():
+                try:
+                    graph.build([], trust, graphify=fifo)
+                except ValueError as e:
+                    got.append(str(e))
+            t = threading.Thread(target=build, daemon=True)
+            t.start()
+            t.join(5)
+            if t.is_alive():   # blocked opening it: a writer releases it
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+                self.fail("build blocked on a FIFO as its Graphify input")
+        self.assertEqual(got, [f"{fifo}: source is not a regular file; pass --graphify '' to build without it"])
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFOs")
+    def test_query_and_verify_refuse_a_fifo_as_graph_json_without_blocking(self):
+        with tempfile.TemporaryDirectory() as d:
+            fifo = os.path.join(d, graph.GRAPH)
+            os.mkfifo(fifo)   # planted by anyone who can write DIR
+            for argv in (["query", d, "--file", "x"], ["verify", d, "--trust", os.path.join(d, "trust.json")]):
+                got = []
+
+                def main():
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                        got.append((graph.main(argv), err.getvalue()))
+                with self.subTest(argv[0]), mock.patch("tracekit.verify.v2.load_trust"):
+                    t = threading.Thread(target=main, daemon=True)
+                    t.start()
+                    t.join(5)
+                    if t.is_alive():   # blocked opening it: a writer releases it
+                        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+                        t.join(5)
+                        self.fail(f"{argv[0]} blocked on a FIFO as graph.json")
+                    self.assertEqual(got, [(2, f"tracekit graph: {fifo}: source is not a regular file\n")])
+
+    def test_verify_prints_no_control_character_of_a_recorded_source_name(self):
+        """graph.json is anyone's who can write DIR: a source name it lists must not draw verify's success line."""
+        with tempfile.TemporaryDirectory() as d:
+            said = f"{d}: {graph._and(graph.FILES)} are what their sources give"
+            with open(os.path.join(d, graph.GRAPH), "w") as f:
+                json.dump({"schema_version": 1, "nodes": [], "edges": [],
+                           "sources": [{"name": f"x.tkb\r{said}\x1b[K\n", "sha256": "0" * 64}]}, f)
+            with mock.patch("tracekit.verify.v2.load_trust"):
+                code, out = run("verify", d, "--trust", os.path.join(d, "trust.json"))
+        self.assertEqual((code, out), (1, f"x.tkb{said}[K: source is missing; pass it to tracekit graph verify\n"))
+        self.assertEqual(_CONTROL.findall(out[:-1]), [])
+
 
 @unittest.skipUnless(os.name == "posix", "the Claude Code hook runs through a POSIX shell")
 class EndToEnd(unittest.TestCase):
@@ -528,9 +809,11 @@ class EndToEnd(unittest.TestCase):
         cls.witness = Witness()
         cfg = service.dev_content()
         cfg["authorize"]["mtls:spiffe://test/egress"] = ["observe_effect"]
+        cfg["authorize"]["mtls:spiffe://test/gateway"] = ["model_event"]
         cls.service = service.SignerService(os.path.join(cls.dir, "data"), witnesses=[cls.witness],
                                             isolation="same-user", grace_s=0.2, fsck_every_s=0, observe_grace_s=0,
-                                            analyzers=[service._dev_identity()], **cfg)
+                                            analyzers=[service._dev_identity()],
+                                            gateways=["mtls:spiffe://test/gateway"], **cfg)
         cls.sock, cls.srv = _serve(cls.dir, cls.service)
         os.environ["TRACEKIT_SIGNER"] = cls.sock   # the hook's and --content's signer; patch_env restores it
         cls.client = Client(cls.sock)
@@ -538,14 +821,17 @@ class EndToEnd(unittest.TestCase):
         files.write_json(cls.trust, {"logs": [cls.service.vkey], "algs": ["ed25519"],
                                      "witnesses": [{"vkey": cls.witness.vkey, "class": "customer"}]}, 0o644)
         store = os.path.join(cls.dir, "data", "store")
-        cls.hook_tkb, cls.mail_tkb, cls.found_tkb, cls.bad = (os.path.join(cls.dir, n) for n in (
-            "hook.tkb", "mail.tkb", "findings.tkb", "bad.tkb"))
+        cls.hook_tkb, cls.mail_tkb, cls.found_tkb, cls.alone_tkb, cls.bad = (os.path.join(cls.dir, n) for n in (
+            "hook.tkb", "mail.tkb", "findings.tkb", "findings-alone.tkb", "bad.tkb"))
         cls.session = cls.claude_code_session()
         export_final(store, cls.session, cls.witness, cls.hook_tkb)
         cls.mail = cls.why_run()
         export_final(store, cls.mail, cls.witness, cls.mail_tkb)
-        cls.findings = cls.findings_run()
-        export_final(store, cls.findings, cls.witness, cls.found_tkb)
+        cls.findings, replays = cls.findings_run()
+        export_final(store, cls.findings, cls.witness, cls.alone_tkb)   # without its replay runs: not counted
+        reader = FileReader(store)   # as `tracekit export --v2 --run MAIL --with-findings`
+        export(reader, "default", cls.mail, reader.checkpoint_latest()[1], cls.found_tkb,
+               with_runs=[cls.findings, *replays])
         rewrite_bundle(cls.mail_tkb, cls.bad, lambda fs, manifest: fs.update(   # the denied call rewritten as allowed
             {n: fs[n].replace(b'"decision":"deny"', b'"decision":"allow"', 1) for n in fs if n.startswith("runs/")}))
         cls.graphify = os.path.join(cls.dir, "graphify-out", "graph.json")
@@ -637,22 +923,32 @@ class EndToEnd(unittest.TestCase):
     @classmethod
     def findings_run(cls):
         """A findings run about the why run: a signed finding citing the mail's decision, and a why test that found
-        the page causal for the mail."""
+        the page causal for the mail, from four replay runs whose model calls the gateway recorded (the control arms
+        asked for send_email, the ablated ones did not). (the findings run's id, its replay run ids)"""
         recs = import_v2.bundle_records(cls.mail_tkb, cls.trust)[0][cls.mail]
         mail = next(r for r in recs if r["event"]["type"] == "policy.decision"
                     and r["event"]["data"]["tool"] == "send_email")
-        ids = [uuid.uuid4().hex for _ in range(3)]
+        investigation, arms = uuid.uuid4().hex, []
+        for arm, hit in (("control", True), ("control", True), ("ablated", False), ("ablated", False)):
+            with cls.client.run({"name": "tracekit-why", "version": "test"}, replay_of=cls.mail,
+                                investigation=investigation) as rr:
+                for seq, phase in enumerate(("request", "response")):
+                    cls.service.call(GATEWAY, "model_event", {
+                        "request_id": uuid.uuid4().hex, "run_id": rr.run_id, "run_token": rr.run_token, "stream": "g",
+                        "client_seq": seq, "provider": "openai", "model": "m", "phase": phase, "exchange_id": "x",
+                        "caller": service._dev_identity(), **({"tool_uses": [{
+                            "id": "t1", "name": "send_email", "executed_by": "client", "args_source": "parsed",
+                            "args_digest": "sha256:" + "0" * 64}]} if hit and phase == "response" else {})})
+            arms.append({"run_id": rr.run_id, "arm": arm, "hit": hit})
         with cls.client.run({"name": "tracekit-analyze", "version": "test"}, analyzes=cls.mail) as fr:
             fr.review_finding("tracekit-analyze/test", {"kind": "finding", "rule": "TK-X202", "severity": "medium"},
                               [{"run_seq": mail["event"]["run_seq"], "hash": mail["hash"]}])
             fr.call("why_finding", finding={
-                "target": "tool=send_email", "intervention": "input:web:page", "n": 1, "p_with": 1.0,
-                "p_without": 0.0, "effect": 1.0, "interval": [0.2, 1.0], "verdict": "causal",
-                "replay_runs": [{"run_id": ids[0], "arm": "control", "hit": True},
-                                {"run_id": ids[1], "arm": "ablated", "hit": False}],
-                "models": ["m"], "rung": 1, "off_tape": 0, "investigation": ids[2], "looks": 1, "family": 1,
+                "target": "tool=send_email", "intervention": "input:web:page", "n": 2, "p_with": 1.0,
+                "p_without": 0.0, "effect": 1.0, "interval": [0.07, 1.0], "verdict": "causal", "replay_runs": arms,
+                "models": ["m"], "rung": 1, "off_tape": 0, "investigation": investigation, "looks": 1, "family": 1,
                 "min_effect": 0.1, "applied": True, "stopped": "decisive"})
-        return fr.run_id
+        return fr.run_id, [a["run_id"] for a in arms]
 
     @classmethod
     def tearDownClass(cls):
@@ -704,10 +1000,11 @@ class EndToEnd(unittest.TestCase):
         # the egress observer's: the run's, with what explains the host
         self.assertEqual(self.one(src=run, dst="host:docs.example.com", grade="OBSERVED")["explained_by"], "call")
         self.assertEqual(self.one(src=run, dst="host:telemetry.example.net")["explained_by"], "nothing")
-        denied, nodes = f"call:{self.session}:b1", {n["id"]: n for n in self.doc["nodes"]}
+        nodes = {n["id"]: n for n in self.doc["nodes"]}
+        [denied] = [n for n, v in nodes.items() if n.startswith(f"call:{self.session}:") and v["tool_use_id"] == "b1"]
         self.one(src="rule:TK-D007", dst=denied, kind="deny", grade="SIGNED")
         self.one(src=run, dst=denied, kind="decided deny", grade="SIGNED")
-        held = f"call:{self.session}:b2"
+        [held] = [n for n, v in nodes.items() if n.startswith(f"call:{self.session}:") and v["tool_use_id"] == "b2"]
         self.one(src="rule:TK-SHELL-PARSE", dst=held, kind="ask", grade="SIGNED")
         approval = self.one(src=held, kind="held for approval")["dst"]
         self.assertEqual(nodes[approval]["kind"], "approval")
@@ -741,6 +1038,41 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual((tested["why_evidence"], tested["record"]["run_id"]), ("tested", self.findings))
         code = {e["dst"] for e in self.edges(src="file:" + self.billing, kind="contains", grade="INFERRED")}
         self.assertEqual(code, {"code:billing_total", "code:billing"})   # src/pager.py is no file of the graph
+
+    def test_a_why_test_is_drawn_only_as_the_verifier_counts_it(self):
+        """The findings bundle alone verifies, with the warning that its why test is not counted (its replay runs are
+        not in it): no causal edge, and the finding says so. With its replay runs, the edge carries its author."""
+        mail, page = self.call(self.mail, "send_email"), self.page()
+        alone = graph.build([self.mail_tkb, self.alone_tkb], self.trust)
+        self.assertEqual([s["verify"]["ok"] for s in alone["sources"]], [True, True])
+        self.assertFalse(self.edges(alone, kind="causal (tested)"))
+        [test] = [n for n in alone["nodes"] if n["label"].startswith("why test:")]
+        self.assertEqual((test["label"].endswith(": causal (not counted)"), "author" in test), (True, False))
+        counted = graph.build([self.mail_tkb, self.found_tkb], self.trust)
+        [edge] = self.edges(counted, kind="causal (tested)")
+        # the dev signer's user wrote the test about its own run
+        self.assertEqual((edge["src"], edge["dst"], edge["grade"], edge["author"]),
+                         (page, mail, "INFERRED", "self-asserted"))
+        [test] = [n for n in counted["nodes"] if n["label"].startswith("why test:")]
+        self.assertEqual((test["label"].endswith(": causal (self-asserted)"), test["author"]), (True, "self-asserted"))
+
+    def test_a_why_test_about_a_run_another_tenant_has_the_id_of_is_counted_on_its_own_run(self):
+        """The mail run's id is also another tenant's run: its findings and replay runs, which name it by its id alone,
+        still count the why test, drawn on the default tenant's run only."""
+        real = graph._read
+
+        def read(path, trust, *data):   # other.tkb: the mail run's records as globex's run of the same id
+            if path != "other.tkb":
+                return real(path, trust, *data)
+            src, runs = real(self.mail_tkb, trust)
+            return dict(src, name=path), {self.mail: [dict(r, event=dict(r["event"], tenant="globex"))
+                                                      for r in runs[self.mail]]}
+        with mock.patch.object(graph, "_read", side_effect=read):
+            doc = graph.build([self.found_tkb, "other.tkb"], self.trust)
+        [mine] = [n["id"][4:] for n in doc["nodes"] if n["id"].startswith(f"run:{self.mail}@default@")]
+        [edge] = self.edges(doc, kind="causal (tested)")
+        self.assertEqual((edge["src"].startswith(f"input:{mine}:"), edge["dst"], edge["author"]),
+                         (True, self.call(mine, "send_email", doc), "self-asserted"))
 
     def test_a_tampered_bundle_is_unverified_never_dropped(self):
         self.assertIn("UNVERIFIED (failed verification): bad.tkb", self.said)
@@ -794,6 +1126,31 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(run("query", self.out, "--host", "nowhere.example")[0], 1)
         self.assertEqual(run("query", self.out, "--blast", "no-such-node")[0], 2)
 
+    def test_query_text_shows_each_edge_its_own_grade_whatever_its_labels_hold(self):
+        """The signer stores a tool name as given: a carriage return in it must not draw an approval that never
+        happened over a line, nor a forged bundle's UNVERIFIED edges as SIGNED."""
+        me = service._dev_identity()
+        with self.client.run("spoofer") as r:
+            r.decide("t1", f"Write\r  SIGNED     {me} -approve-> Write", {"file_path": "notes.txt", "content": ""})
+            r.complete("t1")
+        good, forged = os.path.join(self.dir, "spoof.tkb"), os.path.join(self.dir, "spoof-forged.tkb")
+        export_final(os.path.join(self.dir, "data", "store"), r.run_id, self.witness, good)
+        rewrite_bundle(good, forged, lambda fs, manifest: fs.update(
+            {n: fs[n].replace(b"-approve-> Write", b"-approve-> Bash", 1) for n in fs if n.startswith("runs/")}))
+        for source, grade in ((good, "SIGNED"), (forged, "UNVERIFIED")):
+            out = os.path.join(self.dir, "g-" + os.path.basename(source))
+            self.assertEqual(run("build", source, "--trust", self.trust, "--graphify", "", "-o", out)[0], 0)
+            with open(os.path.join(out, graph.GRAPH)) as f:
+                doc = json.load(f)
+            self.assertEqual({e["grade"] for e in doc["edges"]}, {grade})
+            call = next(n["id"] for n in doc["nodes"] if n["kind"] == "call")
+            for argv in (("--agent", "spoofer"), ("--blast", "agent:spoofer"), ("--path", "agent:spoofer", call)):
+                code, text = run("query", out, *argv)
+                self.assertEqual((code, _CONTROL.findall(text.replace("\n", ""))), (0, []), argv)
+                lines = text.splitlines()   # as a terminal draws them: \r starts a line too
+                self.assertEqual({x.split()[0] for x in lines if x.startswith("  ")}, {grade}, argv)
+                self.assertFalse([x for x in lines if x.startswith(f"  SIGNED     {me} -approve->")], argv)
+
     def test_the_report_is_data_too_and_the_markdown_is_its_rendering(self):
         with open(os.path.join(self.out, graph.REPORT_JSON)) as f:
             data = json.load(f)
@@ -803,7 +1160,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(list(sec), ["read_first", "files", "sensitive", "hosts", "approvals", "secrets", "findings",
                                      "chains"])
         self.assertEqual({k: data["summary"][k] for k in ("sources", "failed", "runs")}, {"sources": 4, "failed": 1,
-                                                                                          "runs": 3})
+                                                                                          "runs": 7})   # 4 replays
         failed = sec["read_first"][0]
         self.assertEqual((failed["what"], failed["source"]), ("source failed verification", "bad.tkb"))
         self.assertTrue(failed["failures"])
@@ -882,7 +1239,7 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("web:page -argument to \\(email\\), untrusted \\(SIGNED\\)-\\> send\\_email \\(flag\\)", chain)
         self.assertNotIn("asked to write", chain)
         self.assertIn(f"run {self.findings} analyses run {self.mail} \\(SIGNED\\)", sec[titles[7]])
-        self.assertIn("4 sources \\(1 failed verification\\), 3 runs, ", self.report)
+        self.assertIn("4 sources \\(1 failed verification\\), 7 runs, ", self.report)
 
     def test_the_same_sources_give_the_same_files_and_verify_rebuilds_them(self):
         two = os.path.join(self.dir, "g2")
@@ -895,8 +1252,9 @@ class EndToEnd(unittest.TestCase):
         os.makedirs(one_cwd)
         os.makedirs(two_cwd)
         for directory in (one_cwd, two_cwd):
-            for source in self.sources + [self.graphify]:
+            for source in self.sources:
                 os.symlink(source, os.path.join(directory, os.path.basename(source)))
+            shutil.copy(self.graphify, directory)   # a Graphify input is read only from a regular file
         try:
             os.chdir(one_cwd)
             self.assertEqual(run("build", *(os.path.basename(s) for s in self.sources), "--trust", self.trust,
@@ -944,6 +1302,40 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("the trust config is not the one graph.json was built with",
                       graph.verify(self.out, other, graph.vault(), self.sources, self.graphify))
 
+    def test_no_output_holds_a_digest_of_a_calls_arguments(self):
+        """With --content, a call decided twice with the same arguments, the first never run: build points the ask at
+        the later outcome, which hides it, and no output holds the SHA-256 of any call's decided arguments (unsalted,
+        it would test guesses of what the bundle's salted commitment hides)."""
+        args = {"file_path": os.path.join(self.repo, "config", "billing.toml"), "content": "stripe_mode = live\n"}
+        with self.client.run("coder") as r:
+            r.decide("w1", "Write", args)
+            r.decide("w1", "Write", args)   # a retry: the first decision never ran
+            r.complete("w1")
+        retry, out = os.path.join(self.dir, "retry.tkb"), os.path.join(self.dir, "g-retry")
+        export_final(os.path.join(self.dir, "data", "store"), r.run_id, self.witness, retry)
+        sources = [retry, *self.sources]
+        self.assertEqual(run("build", *sources, "--trust", self.trust, "--content", "--graphify", "", "-o", out)[0], 0)
+        digests, vault = set(), graph.vault()
+        for b in sources[:-1]:   # every verified source, whose calls' arguments build read
+            for rid, recs in import_v2.bundle_records(b, self.trust)[0].items():
+                digests |= {hashlib.sha256(json.dumps(a, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                                           .encode()).hexdigest() for a in vault(rid, recs).values()}
+        self.assertIn(hashlib.sha256(json.dumps(args, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                      digests)
+        for name in graph.FILES:
+            with open(os.path.join(out, name)) as f:
+                text = f.read()
+            self.assertEqual([d for d in digests if d in text], [], name)
+        with open(os.path.join(out, graph.GRAPH)) as f:
+            doc = json.load(f)
+        [call] = [n["id"] for n in doc["nodes"] if n["id"].startswith(f"call:{r.run_id}:") and n["tool_use_id"] == "w1"]
+        target = "file:" + args["file_path"]
+        [asked] = self.edges(doc, src=call, dst=target, kind="asked to write")
+        [ran] = self.edges(doc, src=call, dst=target, kind="reported writing")
+        self.assertEqual(asked["superseded_by"], ran["record"])
+        self.assertEqual([e["kind"] for x in graph.matching(doc, "file", "billing.toml")["runs"] for e in x["matched"]],
+                         ["reported writing"])
+
     def test_without_content_the_report_says_what_was_not_read(self):
         doc = graph.build([self.hook_tkb], self.trust)
         self.assertFalse(doc["content"] or self.edges(doc, kind="wrote") or self.edges(doc, kind="reached"))
@@ -964,6 +1356,29 @@ class EndToEnd(unittest.TestCase):
                       "open the record's commitment", first)
         self.assertIn("4 calls in 1 run: their arguments were not read", first)
 
+    def test_a_forged_bundle_is_unreadable_and_queries_of_what_it_shares_still_answer(self):
+        rid = self.session.encode()
+
+        def retyped(fs, manifest):   # every ts a number, in a run of its own the real one's agent ran
+            fs.update({n: fs[n].replace(b'"ts":"', b'"ts":0,"tz":"').replace(rid, b"f" * len(rid))
+                       for n in fs if n.startswith("runs/")})
+
+        def split(fs, manifest):   # the run's later records name another run
+            for n in [n for n in fs if n.startswith("runs/")]:
+                first, *rest = fs[n].split(b"\n")
+                fs[n] = b"\n".join([first] + [x.replace(rid, b"e" * len(rid)) for x in rest])
+
+        for name, edit in (("retyped", retyped), ("split", split)):
+            with self.subTest(name):
+                forged, out = os.path.join(self.dir, name + ".tkb"), os.path.join(self.dir, "g-" + name)
+                rewrite_bundle(self.hook_tkb, forged, edit)
+                self.assertEqual(run("build", self.hook_tkb, forged, "--trust", self.trust, "--graphify", "", "-o",
+                                     out)[0], 0)
+                self.assertEqual(run("query", out, "--agent", "claude-code")[0], 0)
+                self.assertEqual(run("query", out, "--blast", "agent:claude-code")[0], 0)
+                with open(os.path.join(out, graph.GRAPH)) as f:
+                    self.assertIn("unreadable", next(s for s in json.load(f)["sources"] if s["name"] == name + ".tkb"))
+
     def test_a_file_that_is_not_a_graphify_graph_is_refused(self):
         bad = os.path.join(self.dir, "not-graphify.json")
         with open(bad, "w") as f:
@@ -980,7 +1395,8 @@ class Records(unittest.TestCase):
         g = Graph(None, "grade")
         graph._add_run(g, [
             rec(0, "run.registered", {"agent": {"name": "coder"}}),
-            rec(1, "policy.decision", {"tool_use_id": "t1", "tool": "Edit", "decision": "allow", "rule_ids": []}),
+            rec(1, "policy.decision", {"tool_use_id": "t1", "decision_id": "d1", "tool": "Edit", "decision": "allow",
+                                       "rule_ids": []}),
             # the call id the process carried is the agent's claim: the file is the run's, not call t1's
             rec(2, "effect.observed", {"observer": "uid:0", "sensor": "tetragon", "kind": "file",
                                        "path": "/repo/src/billing.py", "tool_call_id": "t1"}),
@@ -989,7 +1405,7 @@ class Records(unittest.TestCase):
                                          "port": 443, "denied": True}),
             rec(4, "capture.gap", {"kind": "hook_missing", "reason": "the hook did not run"}),
             rec(5, "run.child", {"run_id": "r-child"}),
-            rec(6, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A020"],
+            rec(6, "approval.request", {"approval_id": "apr-1", "decision_id": "d1", "rule_ids": ["TK-A020"],
                                         "binding": {"tool_call_id": "t1", "tool": "Edit"}}),
             rec(7, "approval.expired", {"approval_id": "apr-1", "reason": "ttl"}),   # names no call: the request does
         ], True)
@@ -1003,8 +1419,8 @@ class Records(unittest.TestCase):
         self.assertEqual([e["kind"] for e in g.edges if e["dst"] in ("gap:r-obs:4", "run:r-child")],
                          ["recorded", "started"])
         self.assertEqual([(e["src"], e["dst"], e["kind"]) for e in g.edges if "approval:apr-1" in (e["src"], e["dst"])],
-                         [("call:r-obs:t1", "approval:apr-1", "held for approval"),
-                          ("approval:apr-1", "call:r-obs:t1", "expired (ttl)")])
+                         [("call:r-obs:d1", "approval:apr-1", "held for approval"),
+                          ("approval:apr-1", "call:r-obs:d1", "expired (ttl)")])
         res = graph.matching(doc, "file", "billing.py")
         [r] = res["runs"]
         self.assertEqual((r["run"], [e["dst"] for e in r["host"]]),
@@ -1014,20 +1430,22 @@ class Records(unittest.TestCase):
 
     def test_what_a_call_decided_and_did_comes_from_verified_records_only(self):
         g = Graph(None, "grade")
-        deny = {"tool_use_id": "t1", "tool": "Bash", "decision": "deny", "rule_ids": ["TK-D001"]}
+        deny = {"tool_use_id": "t1", "decision_id": "d1", "tool": "Bash", "decision": "deny", "rule_ids": ["TK-D001"]}
         graph._add_run(g, [rec(0, "run.registered", {}), rec(1, "policy.decision", deny)], True)
         graph._add_run(g, [rec(0, "run.registered", {}), rec(1, "policy.decision", dict(deny, decision="allow")),
-                           rec(2, "tool.result", {"tool_use_id": "t1", "ok": True})], False)   # a tampered copy
-        self.assertEqual({k: v for k, v in g.nodes["call:r-obs:t1"].items() if k in ("decision", "ok")},
+                           rec(2, "tool.result", {"tool_use_id": "t1", "decision_id": "d1", "ok": True})],
+                       False)   # a tampered copy
+        self.assertEqual({k: v for k, v in g.nodes["call:r-obs:d1"].items() if k in ("decision", "ok")},
                          {"decision": "deny"})
-        self.assertEqual(sorted((e["kind"], e["grade"]) for e in g.edges if e["dst"] == "call:r-obs:t1"),
+        self.assertEqual(sorted((e["kind"], e["grade"]) for e in g.edges if e["dst"] == "call:r-obs:d1"),
                          [("allow", "UNVERIFIED"), ("decided allow", "UNVERIFIED"), ("decided deny", "SIGNED"),
                           ("deny", "SIGNED")])
 
     def test_graphify_links_a_file_to_the_code_of_its_longest_matching_path(self):
         g = Graph(None, "grade")
         graph._add_run(g, [rec(0, "run.registered", {"agent": {"name": "coder"}}),
-                           rec(1, "policy.decision", {"tool_use_id": "t1", "tool": "Write", "decision": "allow",
+                           rec(1, "policy.decision", {"tool_use_id": "t1", "decision_id": "d1", "tool": "Write",
+                                                      "decision": "allow",
                                                       "args_commitment": "hmac-sha256:" + "0" * 64})],
                        True, {1: {"file_path": "/repo/app/src/billing.py", "content": "x"}})
         d = tempfile.mkdtemp()
@@ -1090,6 +1508,23 @@ class Records(unittest.TestCase):
         start = time.monotonic()
         self.assertEqual(graph._graphify(g, p)["linked"], 5000)
         self.assertLess(time.monotonic() - start, 1.0)
+
+    def test_graphify_join_is_linear_in_path_parts(self):
+        n = 40000   # tried suffix by suffix, joined again for each, this took about 6.5 s
+        g = Graph(None, "grade")
+        path = "/repo/" + "a/" * n + "x.py"
+        graph._node(g, "file:" + path, "file", path)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "graph.json")
+        # a source_file as deep as the path, but no suffix of it: capping the suffixes tried by depth wouldn't help
+        files.write_json(p, {"nodes": [{"id": "x", "source_file": "a/x.py"},
+                                       {"id": "deep", "source_file": "b/" + "a/" * n + "x.py"}]}, 0o644)
+        start = time.monotonic()
+        self.assertEqual(graph._graphify(g, p)["linked"], 1)
+        self.assertLess(time.monotonic() - start, SLOWER)
+        self.assertEqual([(e["dst"], e["record"]["source_file"]) for e in g.edges if e["kind"] == "contains"],
+                         [("code:x", "a/x.py")])
 
 
 if __name__ == "__main__":

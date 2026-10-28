@@ -35,7 +35,14 @@ Another agent: record its calls with the SDK's run handle ([custom agent](quicks
 | Claude Code hooks (`tracekit init --dev --v2`) | Stable | [quickstart](quickstart-v2.md) |
 | The Claude Code plugin | Experimental | [plugin](../plugin/README.md) |
 | Codex CLI, Cursor, Gemini CLI, OpenCode | Experimental | [coding agents](coding-agents.md) |
+| goose (`tracekit init --dev --v2 --agent goose`) | Experimental | [coding agents](coding-agents.md#on-the-v2-signer) |
+| Qwen Code (`tracekit init --dev --v2 --agent qwen`) | Experimental | [coding agents](coding-agents.md) |
+| Factory Droid (`tracekit init --dev --v2 --agent droid`) | Experimental | [coding agents](coding-agents.md) |
+| Antigravity CLI (`tracekit init --dev --v2 --agent antigravity`) | Experimental | [Antigravity CLI](coding-agents.md#antigravity-cli) |
 | Hermes Agent plugin | Experimental | [Hermes Agent](integrations/hermes.md) |
+
+The goose, Qwen Code, Factory Droid and Antigravity CLI hooks are written to each harness's published hook
+documentation and tested against payloads in that shape, not yet in a live session of the tool.
 
 ## Sandboxes, gateways and sensors
 

@@ -3,5 +3,5 @@ name: tracekit-signer
 description: An agent Deployment with the Tracekit signer as a native sidecar (docs/deploy-kubernetes.md)
 type: application
 version: 0.1.0
-appVersion: "v1.4.2"
+appVersion: "v1.5.0"
 kubeVersion: ">=1.29.0-0"   # native sidecars: initContainers with restartPolicy Always

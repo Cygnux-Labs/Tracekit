@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -69,14 +70,40 @@ def no_logs():
     return runs
 
 
-def handler_classes():
-    """'path:Class' of every class in tracekit/ that derives, directly or through another, from BaseHTTPRequestHandler."""
+def source_trees():
+    """{'tracekit/...py': its AST} for every module in tracekit/."""
     trees = {}
     for d, _, files in os.walk(os.path.join(ROOT, "tracekit")):
         for f in files:
             if f.endswith(".py"):
                 with open(os.path.join(d, f), encoding="utf-8") as fh:
                     trees[os.path.relpath(os.path.join(d, f), ROOT).replace(os.sep, "/")] = ast.parse(fh.read())
+    return trees
+
+
+def has_lines(trees, rel, name):
+    """Whether class `name` of module `rel` derives from netserver.Lines ahead of BaseHTTPRequestHandler, whose
+    parse_request doesn't call on (so Lines' never runs): through a base class defined in the same module, or one
+    imported by name from another module of tracekit/."""
+    tree = trees[rel]
+    classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    for base in (getattr(b, "attr", getattr(b, "id", None)) for b in classes[name].bases):
+        if base == "BaseHTTPRequestHandler":
+            return False
+        if base == "Lines" or base in classes and base != name and has_lines(trees, rel, base):
+            return True
+        for imp in ast.walk(tree):
+            if isinstance(imp, ast.ImportFrom) and base in {a.name for a in imp.names}:
+                parts = (rel.split("/")[:-imp.level] if imp.level else []) + (imp.module or "").split(".")
+                other = "/".join(parts) + ".py"
+                if other in trees and has_lines(trees, other, base):
+                    return True
+    return False
+
+
+def handler_classes():
+    """'path:Class' of every class in tracekit/ that derives, directly or through another, from BaseHTTPRequestHandler."""
+    trees = source_trees()
     names, found = {"BaseHTTPRequestHandler"}, set()
     while True:
         before = len(found)
@@ -90,10 +117,49 @@ def handler_classes():
             return found
 
 
+# a whole request sent as another's body; the proxy's health route, so one smuggled through the proxy stays local
+NEXT = b"GET /__tracekit_health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+AUTH = [f"Authorization: Bearer {SECRET}", f"X-Tracekit-Run: run.{SECRET}.mac"]
+
+
+def wire(request, lines, body=b""):
+    """The bytes of `request` ("METHOD path") with header `lines` as given: repeated, or malformed."""
+    method, path = request.split()
+    return (f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n" + "".join(f"{x}\r\n" for x in lines) +
+            "\r\n").encode("latin-1") + body
+
+
+def exchange(port, data, half_close=False):
+    """(the statuses one connection answers `data` with, whether the server then closed it); `half_close`: the client
+    sends nothing more."""
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(data)
+        if half_close:
+            s.shutdown(socket.SHUT_WR)
+        s.settimeout(1)   # an open connection with nothing more to answer
+        out, closed = b"", True
+        try:
+            while chunk := s.recv(65536):
+                out += chunk
+        except socket.timeout:
+            closed = False
+        except ConnectionResetError:
+            pass
+    return [int(x) for x in re.findall(rb"HTTP/1\.[01] (\d{3}) ", out)], closed
+
+
 class Checklist(unittest.TestCase):
     def test_every_http_handler_is_listed(self):
         self.assertEqual(handler_classes(), set(SURFACES),
                          "a new HTTP handler goes into SURFACES, the probes below and docs/security-checklist.md")
+
+    def test_every_http_handler_reads_its_raw_header_lines(self):
+        """netserver.Lines refuses a CR that doesn't end its header line, which Python's parser takes as a line end."""
+        trees = source_trees()
+        self.assertEqual({key for key in SURFACES if not has_lines(trees, *key.split(":"))}, set())
+        order = {"m.py": ast.parse("class A(BaseHTTPRequestHandler, Lines): pass\n"
+                                   "class B(Lines, http.server.BaseHTTPRequestHandler): pass\n")}
+        self.assertEqual([has_lines(order, "m.py", c) for c in "AB"], [False, True])
 
     def test_checklist_lists_every_surface_and_names_tests_that_exist(self):
         with open(DOC, encoding="utf-8") as f:
@@ -141,7 +207,10 @@ class Surfaces(unittest.TestCase):
                                                                          runs=no_logs(), why=why))
         auth = {"Authorization": f"Bearer {SECRET}"}
         operator = _session(srv.RequestHandlerClass.session_key, int(time.time()) + 60)   # the token's session
-        return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 401), ("GET", "/nope", auth, 404),
+        login._keep("admin", {"tenant": observe.ALL, "role": "operator-admin", "person": {}, "csrf": "c",
+                              "at": time.time(), "until": time.time() + 60})   # every tenant's records, no why logs
+        admin = {"Cookie": f"{observe.COOKIE}=admin", "Content-Type": "application/json"}
+        return srv, SECRET, [("GET", "/api/why/workspace", admin, 403), ("POST", "/api/why/runs/x/tests", admin, 401),("GET", f"/nope?token={SECRET}", {}, 401), ("GET", "/nope", auth, 404),
                              ("GET", "/runs", {}, 401), ("GET", f"/api/runs?run={SECRET}", {}, 401),
                              ("GET", f"/api/runs?limit={BIG}", auth, 400), ("GET", f"/api/runs?{SECRET}=1", auth, 400),
                              ("GET", f"/api/run?log=0&tenant=t&run={SECRET}", auth, 400),
@@ -203,6 +272,7 @@ class Surfaces(unittest.TestCase):
         return srv, SECRET, [("POST", f"/nope?token={SECRET}", auth, 404), ("GET", "/a2a/up", auth, 405),
                              ("POST", f"/a2a/{SECRET}", {}, 401),
                              ("POST", "/a2a/up", {**auth, "Content-Length": BIG}, 413),
+                             ("POST", "/a2a/up", {**auth, "Transfer-Encoding": "chunked", "Content-Length": "2"}, 400),
                              ("PUT", "/a2a/up", auth, 501)]
 
     def egress(self):
@@ -219,7 +289,7 @@ class Surfaces(unittest.TestCase):
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 404), ("POST", "/metrics", {}, 501)]
 
     def otlp(self):
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), otlp.make_handler(otlp.Receiver(lambda event, attach: {})))
+        srv = otlp.serve("127.0.0.1", 0, otlp.Receiver(lambda event, attach: {}))
         auth = {"Authorization": f"Bearer {SECRET}"}
         return srv, SECRET, [("POST", f"/nope?token={SECRET}", auth, 404),
                              ("POST", "/v1/traces", {**auth, "Content-Length": BIG}, 413),
@@ -284,6 +354,105 @@ class Surfaces(unittest.TestCase):
 
     def test_every_surface_has_probes(self):
         self.assertEqual(set(self.PROBES), set(SURFACES))
+
+    def kept_alive(self):
+        """Each server that keeps a connection open for another request (the issuer serves the signer's handler),
+        started: [(name, port, requests it reads a body for, requests it answers without needing one)]."""
+        signer = self.signer_http()[0]
+        signer.otlp = lambda identity, body, content_type, encoding: (200, {}, b"{}")
+        return [(name, self.start(srv), reads, answers) for name, srv, reads, answers in (
+            ("gateway", self.gateway()[0], ["POST /v1/chat/completions"], ["GET /v1/chat/completions"]),
+            ("executor", self.executor()[0], ["POST /v1/actions/pay"], ["GET /v1/actions"]),
+            ("mcp gateway", self.mcp_gateway()[0], ["POST /mcp"], ["GET /mcp", "DELETE /mcp"]),
+            ("a2a gateway", self.a2a_gateway()[0], ["POST /a2a/up"], ["GET /a2a/up"]),
+            ("signer", signer, ["POST /v2/rpc", "POST /v1/traces"], ["GET /v2/rpc"]),
+            ("otlp", self.otlp()[0], ["POST /v1/traces"], ["GET /v1/traces"]),
+            ("proxy", self.proxy()[0], ["GET /__tracekit_health"], ["GET /__tracekit_health"]))]
+
+    def test_a_body_no_route_reads_is_never_the_next_request(self):
+        """A route that answers without reading the body a request declares closes the connection after it: the body,
+        a whole request here, is never answered as the next one (a proxy in front would be one answer behind)."""
+        for name, port, _, answers in self.kept_alive():
+            for request in answers:
+                with self.subTest(server=name, request=request):
+                    statuses, _ = exchange(port, wire(request, AUTH + [f"Content-Length: {len(NEXT)}"], NEXT))
+                    self.assertEqual(len(statuses), 1, statuses)
+
+    def test_transfer_encoding_is_refused_on_every_method(self):
+        chunked = b"%x\r\n%s\r\n0\r\n\r\n" % (len(NEXT), NEXT)
+        for name, port, reads, answers in self.kept_alive():
+            for request in reads + answers:
+                with self.subTest(server=name, request=request):
+                    statuses, closed = exchange(port, wire(request, AUTH + ["Transfer-Encoding: chunked"], chunked))
+                    self.assertIn(statuses, ([400], [501]))   # 501: a method the server serves no route for
+                    self.assertTrue(closed)
+
+    def test_more_than_one_content_length_is_refused(self):
+        """A proxy in front that frames the body by the other value would send the rest as another request."""
+        lengths = ["Content-Length: 2", f"Content-Length: {2 + len(NEXT)}"]
+        for name, port, reads, _ in self.kept_alive():
+            for request in reads:
+                with self.subTest(server=name, request=request):
+                    self.assertEqual(exchange(port, wire(request, AUTH + lengths, b"{}" + NEXT)), ([400], True))
+
+    def test_a_malformed_header_line_is_refused(self):
+        """Python's parser drops a line like `Transfer-Encoding : chunked` and every header after it, so the body would
+        be framed by the Content-Length a proxy in front may have read past."""
+        lines = AUTH + ["Content-Length: 2", "Transfer-Encoding : chunked"]
+        for name, port, reads, _ in self.kept_alive():
+            for request in reads:
+                with self.subTest(server=name, request=request):
+                    self.assertEqual(exchange(port, wire(request, lines, b"{}")), ([400], True))
+
+    def test_a_header_hidden_in_a_folded_line_or_after_a_bare_cr_is_refused(self):
+        """Python's parser reads an obs-fold line as part of the header before it, and takes a bare CR as a line end
+        (ending the headers, or starting a header mid-line), with no defect: a proxy in front that reads the line
+        otherwise frames the body otherwise."""
+        for shape in (["X-A: b", " Content-Length: 2"], ["X-A: b\r", "Content-Length: 2"],
+                      ["X-A: b\rContent-Length: 2"]):
+            for name, port, reads, _ in self.kept_alive():
+                for request in reads:
+                    with self.subTest(shape=shape, server=name, request=request):
+                        self.assertEqual(exchange(port, wire(request, AUTH + shape, b"{}")), ([400], True))
+
+    def test_content_length_is_ascii_digits_only(self):
+        """int() takes `+2` and `1_0`; an empty value is no length, not 0."""
+        for request, srv in (("POST /v1/traces", self.otlp()[0]), ("GET /__tracekit_health", self.proxy()[0])):
+            port = self.start(srv)
+            for value in ("+2", "1_0", ""):
+                with self.subTest(request=request, value=value):
+                    self.assertEqual(exchange(port, wire(request, [f"Content-Length: {value}"], b"{}")), ([400], True))
+
+    def test_digits_int_cannot_read_are_refused_not_a_crash(self):
+        """`²` passes str.isdigit(), and int() reads at most 4,300 digits: each is answered, never left unanswered."""
+        run = "Proxy-Authorization: Basic " + base64.b64encode(f"run-1:{SECRET}".encode()).decode()
+        slack, egress_port = self.start(self.slack()[0]), self.start(self.egress()[0])
+        for port, request, lines, status in ((slack, f"POST {slack_approvals.PATH}", [], 400),
+                                             (egress_port, "POST http://x.example/", [run], 411)):
+            for value in ("²", "9" * 5000):
+                with self.subTest(request=request, value=value[:9]):
+                    self.assertEqual(exchange(port, wire(request, lines + [f"Content-Length: {value}"]))[0], [status])
+
+    def test_a_body_cut_short_is_never_acted_on(self):
+        """Fewer bytes than the Content-Length, then nothing more (the client stopped, or the deadline cut it): the part
+        that came is never acted on, and nothing is answered."""
+        forwarded, registered = [], []
+        token = ingest.add_token(self.d, "box")
+        intake = ingest.serve(self.d, "127.0.0.1", 0, forward=lambda req: forwarded.append(req) or {"ok": True})
+        witness, witness_token, _ = self.witness()
+        public = self.public_witness()[0]
+        public.witness.register = lambda ip, req: registered.append(req) or (200, "registered\n")
+        short = "Content-Length: 1000"
+        for name, srv, request in (
+                ("ingest", intake, wire("POST /v1/rpc", [f"Authorization: Bearer {token}", short], b'{"op": "status"}')),
+                ("witness", witness,
+                 wire("POST /v1/checkpoints", [f"Authorization: Bearer {witness_token}", short], b"{}")),
+                ("public witness", public, wire("POST /register", [short], b"{}")),
+                ("slack", self.slack()[0], wire(f"POST {slack_approvals.PATH}", [short], b"payload=%7B%7D")),
+                ("otlp", self.otlp()[0], wire("POST /v1/traces", [short], b"{}"))):
+            with self.subTest(server=name):
+                self.assertEqual(exchange(self.start(srv), request, half_close=True), ([], True))
+        self.assertEqual((forwarded, registered), ([], []))
 
     def test_refusals_carry_no_internals_or_credentials(self):
         root = logging.getLogger()
@@ -428,6 +597,12 @@ class Approvals(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/approvals/apr-1", self.good, body)[0].status, 200)
         self.assertEqual(self.calls, ["approval_decide"])
 
+    def test_a_body_cut_short_decides_nothing(self):
+        lines = [f"{k}: {v}" for k, v in self.good.items()] + ["Content-Length: 1000"]
+        self.assertEqual(exchange(self.port, wire("POST /api/approvals/apr-1", lines, b'{"decision": "approve"}'),
+                                  half_close=True), ([], True))
+        self.assertEqual(self.calls, [])
+
 
 class PlainHttp(unittest.TestCase):
     """The CLIs that serve HTTP refuse plain HTTP beyond loopback (view, the signer's http section and the issuer have
@@ -449,8 +624,7 @@ class PlainHttp(unittest.TestCase):
     def test_loopback_receivers_answer_only_a_loopback_host(self):
         """A web page can point a name it controls at 127.0.0.1; the OTLP receiver and the proxy answer only
         requests addressed to a loopback name."""
-        for srv, method, path in ((ThreadingHTTPServer(("127.0.0.1", 0), otlp.make_handler(
-                otlp.Receiver(lambda event, attach: {}))), "POST", "/nope"),
+        for srv, method, path in ((otlp.serve("127.0.0.1", 0, otlp.Receiver(lambda event, attach: {})), "POST", "/nope"),
                                   (proxy.Server(("127.0.0.1", 0), proxy.Handler), "GET", "/__tracekit_health")):
             srv.daemon_threads = True
             threading.Thread(target=srv.serve_forever, daemon=True).start()

@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler
 
 from . import client
 from .core import now_ts
-from .netserver import Server
+from .netserver import Lines, Server, body_length, read_body
 from .wiki import wiki_url
 
 TOKENS_FILE = "ingest-tokens.json"
@@ -175,7 +175,7 @@ def make_handler(home, forward=None):
     receivers = {}
     receivers_lock = threading.Lock()
 
-    class H(BaseHTTPRequestHandler):
+    class H(Lines, BaseHTTPRequestHandler):
         server_version = "tracekit-ingest"
 
         def log_message(self, *a):
@@ -193,14 +193,13 @@ def make_handler(home, forward=None):
         def _otlp(self, cid):
             from . import otlp
             from .otlp_wire import MAX_BODY as OTLP_MAX
-            try:
-                n = int(self.headers.get("Content-Length", "-1"))
-            except ValueError:
-                n = -1
-            if not 0 <= n <= OTLP_MAX:
+            n, why = body_length(self.headers)
+            if why or n is None or n > OTLP_MAX:
                 self.close_connection = True
                 return self._send(413, {"message": f"body must be 0..{OTLP_MAX} bytes with a Content-Length"})
-            body = self.rfile.read(n)
+            body = read_body(self, n)
+            if body is None:
+                return
             with receivers_lock:
                 rcv = receivers.get(cid)
                 if rcv is None:
@@ -231,14 +230,14 @@ def make_handler(home, forward=None):
                 return self._send(429, {"ok": False, "error": "rate limited", "retryable": True})
             if path == "/v1/traces":
                 return self._otlp(cid)
-            try:
-                n = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                n = -1
-            if not 0 < n <= MAX_BODY:
+            n, why = body_length(self.headers)
+            if why or not 0 < (n or 0) <= MAX_BODY:
                 return self._send(413, {"ok": False, "error": f"body must be 1..{MAX_BODY} bytes"})
+            body = read_body(self, n)
+            if body is None:
+                return
             try:
-                req = json.loads(self.rfile.read(n))
+                req = json.loads(body)
             except ValueError:
                 return self._send(400, {"ok": False, "error": "invalid JSON"})
             safe, err = sanitize(req, cid, self.client_address[0], client.client_config().get("signer_isolation", "same-user"))

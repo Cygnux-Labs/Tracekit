@@ -1,7 +1,8 @@
 """Trace explicitly instrumented custom agents (LangGraph, CrewAI, Pi, or your own code).
 
 ``Tracer`` writes signed ``source=sdk`` events through the signer ``tracekit init`` configured. Set it
-up once with ``tracekit init --dev`` (or ``sudo tracekit init --user <agent-user>`` for Linux system mode). The SDK
+up once with ``tracekit init --dev`` (or, for Linux system mode, from a root-owned clone,
+``sudo /usr/bin/python3 -m tracekit init --user <agent-user>``). The SDK
 does not discover agents or observe calls that are not routed through its methods, and ``tool()``
 must wrap the real call for Tracekit to enforce policy before it runs and record the result.
 

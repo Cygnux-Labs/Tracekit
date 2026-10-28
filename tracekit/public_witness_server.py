@@ -36,7 +36,7 @@ from tracekit import crypto, merkle
 from tracekit.public_witness import ORIGIN, ORIGIN_FORMAT
 from tracekit.deploy import files
 from tracekit.format import checkpoint
-from tracekit.netserver import MAX_PER_IP, MAX_THREADS, Server
+from tracekit.netserver import MAX_PER_IP, MAX_THREADS, Lines, Server, body_length, read_body
 from tracekit.tlog_witness import MAX_BODY
 from tracekit.wiki import wiki_url
 
@@ -214,7 +214,7 @@ def make_handler(witness, proxied=False):
     capped per forwarded client here instead (MAX_PER_IP)."""
     active, active_lock = {}, threading.Lock()
 
-    class H(BaseHTTPRequestHandler):
+    class H(Lines, BaseHTTPRequestHandler):
         server_version = "tracekit-public-witness"
 
         def log_message(self, *a):
@@ -237,11 +237,8 @@ def make_handler(witness, proxied=False):
         def do_POST(self):
             if self.path not in ("/add-checkpoint", "/register"):
                 return self._send(404, "not found\n")
-            try:
-                n = int(self.headers.get("Content-Length", "-1"))
-            except ValueError:
-                n = -1
-            if not 0 < n <= MAX_BODY:
+            n, why = body_length(self.headers)
+            if why or not 0 < (n or 0) <= MAX_BODY:
                 return self._send(413, f"the body is 1 to {MAX_BODY} bytes\n")
             ip = (self.headers.get("X-Forwarded-For", "").rpartition(",")[2].strip() if proxied
                   else "") or self.client_address[0]
@@ -253,7 +250,10 @@ def make_handler(witness, proxied=False):
             if over:
                 return self._send(429, f"over {MAX_PER_IP} requests from your network at a time\n")
             try:
-                body = self.rfile.read(n).decode("utf-8")
+                body = read_body(self, n)
+                if body is None:
+                    return
+                body = body.decode("utf-8")
                 if self.path == "/register":
                     code, text = witness.register(ip, json.loads(body))
                 else:

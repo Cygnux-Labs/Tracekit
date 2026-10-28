@@ -48,9 +48,12 @@ release: that, not this page, is the evidence. <a id="save" hidden></a></p>
 </section>
 <script>
 "use strict";
-// every value is set with textContent, never parsed as markup; bidi and invisible format characters are shown escaped
-const vis = s => String(s).replace(/[؜​-‏‪-‮⁠-⁩﻿]/g,
-  c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+// every value is set with textContent, never parsed as markup; every invisible character (controls, format
+// characters such as bidi overrides and TAG characters, line and paragraph separators, and default-ignorable
+// ones such as variation selectors and Hangul fillers) is shown escaped, but for one U+FE0E or U+FE0F right after an
+// pictographic character (Extended_Pictographic: its text or emoji style; never a digit, # or *)
+const vis = s => String(s).replace(/(?![\t\n\r]|(?<=\p{Extended_Pictographic})[\uFE0E\uFE0F](?![\uFE00-\uFE0F\u{E0100}-\u{E01EF}]))[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu,
+  c => "\\u" + (c.codePointAt(0) > 0xffff ? "{" + c.codePointAt(0).toString(16) + "}" : c.codePointAt(0).toString(16).padStart(4, "0")));
 const $ = id => document.getElementById(id);
 let next = null, current = null;
 

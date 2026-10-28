@@ -629,6 +629,19 @@ class Live(Signed):
         self.assertEqual([d["decision"] for d in (self.decide(run, *c) for c in calls)],
                          ["deny", "ask", "ask", "ask", "ask", "allow", "allow"])
 
+    def test_a_held_call_is_told_the_constraint_not_a_flags_label(self):
+        """A flag beside the hold (TK-F004 on a push, TK-F012 on a URL) lets a call run: its label is no reason the
+        call was held, so the agent and the person read only what the person said."""
+        run = self.run_()
+        self.add(run, "no_push")
+        self.add(run, "no_network")
+        for kind, command, flag in (("no_push", "git push origin main", "TK-F004"),
+                                    ("no_network", "curl https://example.org", "TK-F012")):
+            with self.subTest(kind):
+                held = self.decide(run, "Bash", {"command": command})
+                self.assertIn(flag, held["rule_ids"])
+                self.assertEqual(held["reason"], constraints.held(kind, None))
+
     def test_a_made_up_constraint_only_adds_holds(self):
         """The agent's own identity may add one (the hook runs as it): all it can do is hold its own calls."""
         run = self.run_()

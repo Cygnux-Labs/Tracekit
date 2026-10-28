@@ -243,8 +243,8 @@ class Vault(Fuse):
         with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER": self.path}), contextlib.redirect_stdout(out):
             self.assertEqual(why_cli.main(["transfer", "--run", self.run.run_id, "--store", self.dir,
                                            "--receiver", "test_c2c:receiver"]), 0)
-        self.assertRegex(out.getvalue(), r"transfer \d+ qwen-0.5b@1 -> qwen3-0.6b@1: change 0\.\d+\n  The transfer "
-                                         r"changed the receiver's answer by \d+%")
+        self.assertRegex(out.getvalue(), r"transfer \d+ qwen-0.5b@1 -> qwen3-0.6b@1 \(names claimed by the caller\): "
+                                         r"change 0\.\d+\n  The transfer changed the receiver's answer by \d+%")
 
     def test_a_transfer_not_kept_has_nothing_to_measure(self):
         self.fuse()

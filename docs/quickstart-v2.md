@@ -15,6 +15,22 @@ pip install tracekit-ai
 That is all the dev signer needs (`tracekit-ai[signer]` still works and installs the same). Auditors who only verify
 bundles can take the verifier alone, which runs on the standard library: `pip install --no-deps tracekit-ai`.
 
+Some Pythons refuse `pip install` outside a venv (PEP 668: `error: externally-managed-environment`): Debian 12, Ubuntu
+23.04 and later, and Homebrew's Python. Install it one of these ways instead:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install tracekit-ai   # a venv (Debian, Ubuntu: sudo apt install python3-venv first)
+pipx install tracekit-ai                                     # the CLI only, nothing to import
+uv tool install tracekit-ai                                  # the CLI only, nothing to import
+```
+
+Step 2 imports Tracekit in your agent's process, so an SDK agent needs it in its own environment: run the agent with
+that venv's Python (`. .venv/bin/activate` also puts `tracekit` on your `PATH`), or `pip install tracekit-ai` in the
+venv the agent already has. pipx and `uv tool` give you the `tracekit` command
+(`tracekit last`, `tracekit view`, `tracekit approvals`, and `tracekit init --dev --v2` for Claude Code, whose hooks
+then run from that install), but nothing your agent can import. The command and the SDK can come from two installs:
+both use the same dev signer. Keep them at the same version.
+
 ## 2. One line in your agent
 
 ```python
@@ -62,6 +78,10 @@ next call registers a new process run and logs a warning, instead of being refus
 An `ask` holds the call until a person answers it (`tracekit approvals`, or the viewer's approval pages). Each
 integration waits its own way. Every one checks the answer with the signer before the call runs. A signer error
 refuses the call. An unanswered approval expires after an hour.
+
+A call held in an SDK agent prints nothing while it waits: the agent just seems to stop. Run `tracekit approvals list`
+in another terminal to see the held call, then answer it ([below](#approve-from-another-terminal)). Only the coding-agent
+hooks print a line naming the approval and the command that answers it.
 
 | Integration | How it waits | Timeout | Then |
 |---|---|---|---|
@@ -119,7 +139,7 @@ Per framework, the same three steps with a 10-line example: [LangChain / LangGra
 | You see | What to do |
 |---|---|
 | `tracekit.instrument(): no signer answering at ...; dev auto-spawn is off while TRACEKIT_SIGNER is set` | Start the signer `TRACEKIT_SIGNER` names, or unset it for a same-user dev signer. |
-| `tracekit.instrument(): ...; system mode: start the system signer` | `sudo tracekit doctor` says what is wrong with the system signer. |
+| `tracekit.instrument(): ...; system mode: start the system signer` | `sudo /opt/tracekit/bin/python -I -m tracekit doctor` says what is wrong with the system signer. |
 | `the Tracekit signer X (pid N, protocol [a, b]) ... cannot serve this client` | A dev signer from a newer Tracekit version is running (an older one is replaced on its own): `tracekit up --replace` stops it and starts this one. A signer you run yourself (`TRACEKIT_SIGNER`, system mode) that is older than this client: upgrade the signer first. From the TypeScript SDK, an older `tracekit` on your PATH starts an older signer: `pip install -U tracekit-ai`. |
 | `tracekit last: the newer run ID (agent) is still open` | The agent is still running, or was killed before it closed its run. End it and run `tracekit last` again; meanwhile it shows the run before. |
 | `tracekit last: no runs in the dev signer's store` | Add `import tracekit; tracekit.instrument()` to your agent and run it first. |
@@ -233,22 +253,21 @@ that runs as a different user or on another host (system mode, below), plus witn
 ## System mode (Linux; macOS experimental)
 
 System mode runs the signer as its own OS user, so the agent's user can't reach its keys, its store or its policy.
-As root, from a root-owned Python and checkout:
+Run `tracekit init --v2 --user AGENT [--approver ADMIN] [--policy FILE]` as root from a root-owned Python:
+[laptop system mode](deploy.md#laptop-system-mode) gives the commands for each Python version, and a clone route that
+installs nothing into the system Python.
 
-```bash
-sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT [--approver ADMIN] [--policy /etc/tracekit/policy.yaml]
-```
-
-This installs Tracekit into the root-owned virtualenv `/opt/tracekit` and creates the `tracekit-signer` user with its
+Init installs Tracekit into the root-owned virtualenv `/opt/tracekit` and creates the `tracekit-signer` user with its
 data dir `/var/lib/tracekit-signer` (0700). It writes `/etc/tracekit/signer.yaml` and runs `tracekit signer serve
 --config` under a hardened systemd unit (`tracekit-signer`: no capabilities, `ProtectSystem=strict`, a system-call
-filter). The socket is `/run/tracekit-signer/signer.sock`. The command also wires the v2 Claude Code hook for AGENT.
-The root-owned `/etc/tracekit/client.json` names the socket. Dev auto-spawn is then off, and a `TRACEKIT_SIGNER` that
+filter). The socket is `/run/tracekit-signer/signer.sock`. Init also wires AGENT's v2 hook for the coding agent
+`--agent` names (default: Claude Code). The root-owned `/etc/tracekit/client.json` names the socket. Dev auto-spawn is then off, and a `TRACEKIT_SIGNER` that
 names another signer is refused, so the call is blocked.
 
 It refuses an AGENT that is root or in a sudo, wheel, admin, docker or similar group. The approver defaults to the
-admin running `sudo` and must be another user than AGENT: approve from that account with `tracekit approvals`. A
-`--policy` file must be root-owned. `sudo tracekit uninstall --v2` removes the service, the configs, the venv (unless
+admin running `sudo` and must be another user than AGENT: approve from that account with
+`/opt/tracekit/bin/python -I -m tracekit approvals`. A `--policy` file must be root-owned.
+`sudo /opt/tracekit/bin/python -I -m tracekit uninstall --v2` removes the service, the configs, the venv (unless
 v1 system mode still uses it) and the hooks. It keeps the signer's data dir and user, which `--purge` also deletes.
 
 What system mode protects, and what it doesn't:
@@ -260,11 +279,12 @@ What system mode protects, and what it doesn't:
 - **Not protected:** any process the agent's user runs can read that user's run tokens and write into the agent's own
   runs, or start runs of its own, unless harness binding (`--harness NAME=PATH`, Linux) binds runs to the harness's
   processes ([what binding does not stop](faq.md#what-does-harness-binding-not-stop)). Root on the machine can do anything; witnesses on another host are the defence against that.
-- **Not protected either:** the hook lives in AGENT's own `~/.claude/settings.json`, which AGENT can edit. Removing
-  the hook, or running tools outside Claude Code, leaves no record and no gap; system mode secures what is recorded,
-  not that everything is.
+- **Not protected either:** the hook lives in AGENT's own settings (`~/.claude/settings.json` for Claude Code), which
+  AGENT can edit. Removing the hook, or running tools outside the hook or the SDK, leaves no record and no gap; system
+  mode secures what is recorded, not that everything is.
 
-Check an install with `sudo tracekit doctor` ([docs/doctor.md](doctor.md) lists every check and its fix).
+Check an install with `sudo /opt/tracekit/bin/python -I -m tracekit doctor` ([docs/doctor.md](doctor.md) lists every
+check and its fix).
 
 `eval/e8_insider_v2.py` checks these properties as real separate users (decoy signer, cross-user injection, signer
 down, policy through the environment, self-approval).

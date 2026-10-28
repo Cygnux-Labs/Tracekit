@@ -36,7 +36,7 @@ from http.server import BaseHTTPRequestHandler
 
 from tracekit import yamlmini
 from tracekit.client import no_redirect_opener
-from tracekit.netserver import Server
+from tracekit.netserver import Lines, Server, body_length, read_body
 from tracekit.signer.metrics import _loopback
 from tracekit.signer.rpc_schema import RPCError
 
@@ -231,16 +231,18 @@ class Bridge:
 
 
 def make_handler(bridge):
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(Lines, BaseHTTPRequestHandler):
         def do_POST(self):
             if self.path != PATH:
                 return self.answer(404)
-            n = self.headers.get("Content-Length", "")
-            if not n.isdigit():
+            n, why = body_length(self.headers)
+            if why or n is None:
                 return self.answer(400)
-            if int(n) > MAX_BODY:
+            if n > MAX_BODY:
                 return self.answer(413)
-            body = self.rfile.read(int(n))
+            body = read_body(self, n)
+            if body is None:
+                return
             if not bridge.verify(self.headers.get("X-Slack-Request-Timestamp"), self.headers.get("X-Slack-Signature"),
                                  body):
                 return self.answer(401)

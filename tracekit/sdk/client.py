@@ -687,8 +687,9 @@ class RunHandle:
         not happen, whatever the run's fail modes. Returns the decision with `ok`, whether the transfer may happen now;
         one that may is recorded as made before this returns. `keep`: its result is the payload (hex), which a signer
         keeping content (content.retain) encrypts in its vault for `tracekit why transfer`; the records hold only
-        commitments. It proves who sent which bytes to whom, through which adapter, and when, not what the state
-        meant; a transfer the code doesn't pass through here is not recorded."""
+        commitments. The record is what this process said and measured, and when: who sent to whom through which
+        adapter as claimed, the size and digest as measured here, none of it checked by the signer (docs/c2c.md), and
+        not what the state meant; a transfer the code doesn't pass through here is not recorded."""
         data = payload.encode() if isinstance(payload, str) else bytes(payload)
         more = measured or {}
         reserved = {"sender", "receiver", "modality", "projector", "size", "digest", "claimed", "measured"}

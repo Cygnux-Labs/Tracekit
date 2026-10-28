@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import agent_hooks, client  # noqa: E402
-from tracekit.signer.service import load_policy  # noqa: E402
+from tracekit.signer.service import DEFAULT_POLICY, load_policy  # noqa: E402
 from factories import DaemonCase, ledger_records, patch_env  # noqa: E402
 
 PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: {}\n@@\n-A=1\n+A=2\n*** End Patch"
@@ -515,6 +515,56 @@ class QwenTools(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("qwen", "web_fetch", {"prompt": "see https://x.example/a"})[1]["url"], "https://x.example/a")
         # Gemini CLI has no edit or grep_search tool: its names are not changed
         self.assertEqual(agent_hooks.tool("gemini", "edit", {})[0], "edit")
+
+
+class GeminiQwenTargets(unittest.TestCase):
+    """Every file a Gemini CLI or Qwen Code tool reads is decided by the shipped packs as its single-file form is, under
+    each release's parameter name, and a key the tool ignores never replaces the one it reads."""
+    CRED = "/home/agent/.aws/credentials"
+
+    def same(self, pol, harness, form, single):
+        want = pol.decide(*agent_hooks.tool(harness, *single))
+        self.assertNotEqual(want["verdict"], "allow")
+        got = pol.decide(*agent_hooks.tool(harness, *form))
+        self.assertEqual((got["verdict"], got["rule_ids"]), (want["verdict"], want["rule_ids"]))
+
+    def test_every_file_is_decided_as_its_single_file_form(self):
+        cred = self.CRED
+        for pack in ("dev.yaml", "server.yaml", "strict.yaml"):
+            pol = load_policy(os.path.join(os.path.dirname(DEFAULT_POLICY), pack))
+            for harness in ("gemini", "qwen"):
+                read = ("read_file", {"file_path": cred})
+                grep = ("search_file_content", {"pattern": "k", "path": cred})
+                for form, single in ((("read_many_files", {"include": [cred]}), read),
+                                     (("read_many_files", {"paths": ["README.md"], "include": [cred]}), read),
+                                     (("read_file", {"absolute_path": cred, "file_path": "README.md"}), read),
+                                     (("read_file", {"absolute_path": cred, "file_path": None}), read),
+                                     (("search_file_content", {"pattern": "k", "dir_path": cred}), grep),
+                                     (("search_file_content", {"pattern": "k", "dir_path": cred, "path": "src"}), grep),
+                                     (("glob", {"pattern": "*", "dir_path": cred}), ("glob", {"pattern": "*", "path": cred}))):
+                    with self.subTest(pack=pack, harness=harness, form=form):
+                        self.same(pol, harness, form, single)
+        self.assertEqual(agent_hooks.tool("qwen", "grep_search", {"pattern": "k", "dir_path": cred})[1]["file_path"], cred)
+        self.assertEqual(agent_hooks.tool("gemini", "list_directory", {"dir_path": "/w"}), ("LS", {"dir_path": "/w", "file_path": "/w"}))
+        # a shell command's dir_path is where it runs, not a file it reads
+        self.assertNotIn("file_path", agent_hooks.tool("gemini", "run_shell_command", {"command": "ls", "dir_path": "/w"})[1])
+
+    def test_every_url_is_decided_as_its_single_url_form(self):
+        """Gemini CLI's web_fetch fetches every URL in its prompt (split on JavaScript's whitespace, a scheme in any
+        case); a `url` beside it, which Gemini CLI ignores, is decided too and replaces none of them."""
+        meta = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+        docs = "https://docs.python.org/3/"
+        for pack in ("dev.yaml", "server.yaml", "strict.yaml"):
+            pol = load_policy(os.path.join(os.path.dirname(DEFAULT_POLICY), pack))
+            for harness in ("gemini", "qwen"):
+                single = ("web_fetch", {"prompt": f"fetch {meta}"})
+                for ti in ({"prompt": f"compare {docs} with {meta}"}, {"prompt": f"summarize {meta}", "url": docs},
+                           {"prompt": f"compare {docs}\ufeff{meta}"},
+                           {"prompt": f"compare {docs} with {meta.replace('http', 'HTTP', 1)}"},
+                           {"prompt": f"compare {docs}", "url": meta}):
+                    with self.subTest(pack=pack, harness=harness, ti=ti):
+                        self.same(pol, harness, ("web_fetch", ti), single)
+        self.assertEqual(agent_hooks.tool("gemini", "web_fetch", {"prompt": f"see {docs}"})[1], {"prompt": f"see {docs}", "url": docs})
 
 
 class ReasoningCaptureOn(DaemonCase):

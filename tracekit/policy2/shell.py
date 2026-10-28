@@ -1,13 +1,14 @@
 """Structural shell parser for policy matching (design §4.4; no bashlex).
 
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
-strings, substitutions, heredocs into a shell and interpreter one-liners:
-`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename, the part after any
-`\\` in lower case and without a `.exe` (the agent's file system may ignore case: macOS runs git for `Git`; Windows
-runs git.exe for git); `via` says how the command was
-reached (empty at top level); commands with the same `pipeline` are stages of one pipeline, in order. `opaque`: what
-the command runs cannot be read from the line (a glob, brace or expansion in its name, a shell or interpreter reading
-its script from a pipe, a file or inherited stdin, `source` of a stream).
+strings, substitutions, heredocs into a shell, at or batch, trap's action and interpreter one-liners:
+`{"argv": [...], "word": str, "via": [...], "pipeline": n, "glob": bool, "opaque": bool, "stdin": [...]}`. argv[0] is
+a basename, the part after any `\\` in lower case and without a `.exe` (the agent's file system may ignore case: macOS
+runs git for `Git`; Windows runs git.exe for git); `word` is that first word as written (a path, or the text of a name
+an expansion builds); `via` says how the command was reached (empty at top level); commands with the same `pipeline`
+are stages of one pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or
+expansion in its name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of
+a stream). `stdin`: the herestring and heredoc text the command reads (the names `xargs rm <<< x` deletes).
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
@@ -155,6 +156,49 @@ def analyse(command):
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
            "command_names_mutable": False,
            "pipes": 0, "depth": 0, "work": 0, "exp": 0}
+    # A literal can become an arithmetic variable name on the same line. Read
+    # substitutions inside its array index when that line has an arithmetic
+    # evaluation context; bash re-expands that index while evaluating it.
+    arithmetic = re.compile(r"\$\(\(|\(\(|\blet\b|\b(?:declare|local|typeset)\b[^\n]*\s-i\b|\$\{[A-Za-z_][A-Za-z0-9_]*\[")
+    for line in command.splitlines():
+        has_context = any(marker in line for marker in ("$((", "((", "let ", "declare ", "local ", "typeset ", "${"))
+        test_open = line.find("[[")
+        has_test_context = test_open >= 0 and any(line.find(op, test_open + 2) >= 0 for op in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge"))
+        if (has_context and arithmetic.search(line)) or has_test_context:
+            parameterized_index = _has_parameterized_index(line)
+            if parameterized_index and re.search(r"\$\((?!\()|`|\$\{[^{}]*\$\}\s*\(", line):
+                raise ParseError("a parameterized arithmetic subscript on a line with a substitution is not supported")
+            literals = list(_STR.finditer(line))
+            i = 0
+            while i < len(line):
+                m = re.search(r"(?<![\w'\"])[A-Za-z_][A-Za-z0-9_]*\[", line[i:])
+                if not m:
+                    break
+                start = i + m.start()
+                end = line.find("]", i + m.end())
+                if end < 0:
+                    break
+                word = line[start:end + 1]
+                if "$" in word or "`" in word:
+                    literals.append((start, end + 1, word))
+                i = end + 1
+            for literal in literals:
+                text = literal.group(2) if hasattr(literal, "re") else literal[2]
+                if not re.search(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*(?:\$\(|`)", text):
+                    continue
+                pos = 0
+                while True:
+                    match = re.search(r"\$\(|`", text[pos:])
+                    if not match:
+                        break
+                    start = pos + match.start()
+                    parser = _Parser(text, ctx, ["arithmetic subscript"])
+                    parser.i = start
+                    if text.startswith("$(", parser.i):
+                        parser.dollar(False)
+                    else:
+                        parser.backtick()
+                    pos = parser.i
     _Parser(command, ctx, []).script()
     active = False
     for step in reversed(ctx["steps"]):
@@ -443,6 +487,25 @@ def _ansi_c(text):
     return re.sub(r"\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|[0-7]{1,3}|.)", one, text, flags=re.S)
 
 
+def _has_parameterized_index(text):
+    """Find parameter expansion in a bracketed index with one forward scan."""
+    inside = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "[":
+            inside = True
+        elif c == "]":
+            inside = False
+        elif inside and c == "$":
+            if text.startswith("${", i) or (
+                i + 1 < len(text) and text[i + 1] not in "({" and _NAME.match(text, i + 1)
+            ):
+                return True
+        i += 1
+    return False
+
+
 class _Parser:
     def __init__(self, src, ctx, via):
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
@@ -643,8 +706,10 @@ class _Parser:
         self.ctx["steps"].append(step)
         for d in docs:
             d["cmds"], d["data"], d["step"] = cmds, data, step
+        for c in cmds:
+            c["stdin"] += strings
         shell = _stdin_shell(cmds)
-        if shell and not docs and not strings:
+        if shell and not docs and not strings and shell["argv"][0] in SHELLS:
             shell["opaque"] = True   # its script comes from a pipe, a file or inherited stdin
         for text in strings if shell else ():
             self.nested(text, shell["via"] + [shell["argv"][0] + " <<<"])
@@ -691,7 +756,8 @@ class _Parser:
             # xargs -I{} inserting its input into a script or a command name: what runs comes from stdin
             tainted = repl is not None and (repl in argv[0] or (
                 (name in SHELLS or _kind(name)) and any(repl in a for a in args)))
-            cmd = {"argv": [name] + args, "via": via, "pipeline": pid, "glob": glob, "opaque": unreadable[0] or tainted}
+            cmd = {"argv": [name] + args, "word": argv[0], "via": via, "pipeline": pid, "glob": glob,
+                   "opaque": unreadable[0] or tainted, "stdin": []}
             self.ctx["cmds"].append(cmd)
             cmds.append(cmd)
             if name in DASH_C:
@@ -747,6 +813,9 @@ class _Parser:
                 cmd["opaque"] = True
             elif name == "eval":
                 self.nested(" ".join(args), via + ["eval"])
+            elif name == "trap" and len(args) > 1 and not re.fullmatch(r"-[lpP]*", args[0]):
+                # its action runs on a signal or at exit (`trap 'rm -rf "$d"' EXIT`); `-` or a lone condition resets
+                self.nested(args[1] if args[0] == "--" else args[0], via + ["trap"])
             elif name == "ssh":
                 self.nested(_ssh_command(args), via + ["ssh"])
             elif name == "nix-shell":   # --run and --command take a script, as sh -c does
@@ -812,6 +881,8 @@ class _Parser:
                     break
                 lines.append(line)
             body = "\n".join(lines)
+            for c in d["cmds"]:
+                c["stdin"].append(body)
             # a data heredoc's body, unless a command substitution in it runs (what it runs may read a heredoc of its
             # own, which only this text holds)
             if d["data"] and not d["via"] and not (d["expand"] and re.search(r"\$\(|`", body)):
@@ -821,7 +892,8 @@ class _Parser:
                 self.nested(body, shell["via"] + [shell["argv"][0] + " <<"])
             elif interp:
                 self.program(interp, body, " <<")
-            if not shell and d["expand"]:
+            # an unquoted heredoc's substitutions run now, in this shell, also before at or batch get the text
+            if (not shell or shell["argv"][0] not in SHELLS) and d["expand"]:
                 _Parser(body, self.ctx, d["via"] + ["<<"]).dquote(None)
 
     def word(self):
@@ -904,6 +976,25 @@ class _Parser:
                              "$(( that is not arithmetic (a subshell inside $( )) is not supported")
         body = s[start:self.i]
         self.charge(len(body))   # each level reads the levels inside it again
+        # Bash expands an arithmetic array index a second time. If parameter
+        # expansion can build a substitution there, the resulting program is
+        # not present for this parser to read.
+        subscript_start = body.find("[")
+        subscript_end = body.find("]", subscript_start + 1) if subscript_start >= 0 else -1
+        if subscript_end >= 0:
+            index = body[subscript_start:subscript_end + 1]
+            plain_parameters = re.sub(r"\$\{[^{}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", "", index)
+            if "$" in plain_parameters or "`" in index or re.search(r"\$\{[^{}]*\$\}\s*\(", index):
+                raise ParseError("an expandable command in an arithmetic subscript is not supported")
+            # A same-line assignment can supply text that bash evaluates again as
+            # an arithmetic subscript. Its command is not available to this parse.
+            line_start = self.s.rfind("\n", 0, start) + 1
+            line_end = self.s.find("\n", self.i)
+            if line_end < 0:
+                line_end = len(self.s)
+            line = self.s[line_start:line_end]
+            if "$" in index and re.search(r"\$\(|`", line):
+                raise ParseError("a parameterized arithmetic subscript on a line with a substitution is not supported")
         parens, level = re.findall(r"[()]", body), 0
         for p in parens:
             level += 1 if p == "(" else -1
@@ -915,6 +1006,7 @@ class _Parser:
                              "or a backtick with a double quote in $(( )) that has $( or a backtick is not supported")
         self.i += 2
         self.leave()
+
 
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
@@ -973,7 +1065,17 @@ class _Parser:
                 k += 1
             if k != j - 1:
                 raise ParseError("$(( that is not arithmetic (a subshell inside $( )) is not supported")
-            if "$(" in s[self.i + 3:j] or "`" in s[self.i + 3:j]:
+            arithmetic_body = s[self.i + 3:j]
+            possible_subscript = re.sub(r"\$\{[^{}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", "", arithmetic_body)
+            builds_substitution = re.search(r"\$\{[^{}]*\$\}\s*\(", arithmetic_body)
+            line_start = s.rfind("\n", 0, self.i) + 1
+            line_end = s.find("\n", self.i)
+            if line_end < 0:
+                line_end = len(s)
+            line_has_substitution = re.search(r"\$\((?!\()|`", s[line_start:line_end])
+            if "$(" in arithmetic_body or "`" in arithmetic_body or (
+                    "[" in arithmetic_body and ("$" in possible_subscript or builds_substitution or
+                                                "$" in arithmetic_body and line_has_substitution)):
                 self.i += 3
                 self.arith()
             else:
@@ -1029,7 +1131,9 @@ def _lines(words, progs):
 
 
 def _stdin_shell(cmds):
-    return next((c for c in cmds if c["argv"][0] in SHELLS and _shell_mode(c["argv"][1:])[0] == "stdin"), None)
+    """A shell reading its script from stdin, or at or batch, which read from it the commands they schedule."""
+    return next((c for c in cmds if c["argv"][0] in SHELLS and _shell_mode(c["argv"][1:])[0] == "stdin"
+                 or c["argv"][0] in ("at", "batch")), None)
 
 
 def _stdin_interpreter(cmds):

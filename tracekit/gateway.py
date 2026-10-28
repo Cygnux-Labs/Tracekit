@@ -72,6 +72,7 @@ from tracekit import parsers, yamlmini
 from tracekit.client import remote_url_error
 from tracekit.format.canon import canonical, loads_strict
 from tracekit.identity.base import bearer
+from tracekit.netserver import Lines, body_length, read_body
 from tracekit.proxy import HOP, MAX_SSE_LINE
 from tracekit.sdk.client import Client, SignerUnavailable, VaultBody, fail_open
 from tracekit.signer.quotas import MAX_LINE
@@ -306,7 +307,7 @@ class _SSE:
             self.done = self.done or ev.get("type") in TERMINAL
 
 
-class _Handler(http.server.BaseHTTPRequestHandler):
+class _Handler(Lines, http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     NAME = "tracekit gateway"   # in every error the client gets
 
@@ -318,6 +319,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.server.restart_deadline()
         super().handle_one_request()
 
+    def parse_request(self):
+        """Every method: a body framed otherwise than by one strict Content-Length is refused, and one no route reads
+        (only a POST reads its body) closes the connection after the answer, or it would be read as the next request."""
+        if not super().parse_request():
+            return False
+        self.length, why = body_length(self.headers)
+        if why:
+            self._error(400, why)
+            return False
+        if self.length and self.command != "POST":
+            self.close_connection = True
+        return True
+
     def log_message(self, *a):
         pass
 
@@ -326,6 +340,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
+        if self.close_connection:
+            self.send_header("connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -334,7 +350,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
-        if close:
+        if close or self.close_connection:
             self.send_header("connection", "close")
             self.close_connection = True
         self.end_headers()
@@ -354,18 +370,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         parts = (run or "").rsplit(".", 2)   # a run token is <payload>.<mac>
         if len(parts) != 3 or not all(parts) or len(run) > MAX_RUN_HEADER:
             return self._error(401, "no run: send X-Tracekit-Run: <run_id>.<run token>")
-        if "transfer-encoding" in self.headers:   # the body is read by Content-Length only; a proxy may read it otherwise
-            return self._error(400, "Transfer-Encoding isn't supported: send the body with Content-Length")
-        n = self.headers.get("content-length", "")
-        if not (n.isascii() and n.isdigit() and len(n) <= 12):
+        if self.length is None:   # its framing is checked with the request line (parse_request)
             return self._error(411, "Content-Length required")
-        if int(n) > max_body:
+        if self.length > max_body:
             return self._error(413, f"request body over {max_body} bytes")
         if self.headers.get("content-encoding", "identity").lower() != "identity":
             return self._error(415, "send the request body uncompressed")
-        body = self.rfile.read(int(n))
-        if len(body) < int(n):
-            self.close_connection = True
+        body = read_body(self, self.length)
+        if body is None:
             return None
         self.server.stop_deadline()   # the request is in; the answer may take minutes
         try:

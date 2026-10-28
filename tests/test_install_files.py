@@ -1,4 +1,6 @@
 """Installer writes never follow a planted symlink, create files 0600 from the start, and dev TCP has no port race."""
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -120,6 +122,93 @@ class HookOwnership(unittest.TestCase):
         self.assertIsNone(install._hook_version(group("python3 ~/src/tracekit-dogfood/scripts/hook.py")))
         self.assertEqual(install._hook_version(group("python3 /src/tracekit/hook.py")), "v1")
         self.assertEqual(install._hook_version(group("python3 -m tracekit.hook")), "v1")
+        for mine in ("python3 -m acme.tracekit.hooklog --stop", "python3 -m tracekit.hooks", "/x/acme-tracekit/hook.py",
+                     "python3 -m acme.tracekit.integrations.claude_code"):
+            self.assertIsNone(install._hook_version(group(mine)), mine)
+        for module in ("tracekit.hook", install.V2_HOOK):
+            for python in (None, install.OPT_PYTHON):
+                cmd = install._hook_command(module, args=("PreToolUse",) * (module == install.V2_HOOK), python=python)
+                self.assertEqual(install._hook_version(group(cmd)), "v2" if module == install.V2_HOOK else "v1", cmd)
+
+    def test_a_persons_hook_in_tracekits_group_stays(self):
+        """Uninstall and a v1<->v2 re-init dropped a whole group with a Tracekit hook in it, a person's own hook filed
+        into it too."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "settings.json")
+        mine = {"type": "command", "command": "~/bin/my-audit.sh"}
+        stop = {"hooks": [{"type": "command", "command": "python3 -m acme.tracekit.hooklog --stop"}]}
+        with open(p, "w") as f:
+            json.dump({"hooks": {"Stop": [stop]}}, f)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(p)
+            s = install.read_json(p)
+            s["hooks"]["PreToolUse"][0]["hooks"].append(mine)
+            with open(p, "w") as f:
+                json.dump(s, f)
+            install.install_hooks(p, module=install.V2_HOOK)
+            pre = install.read_json(p)["hooks"]["PreToolUse"]
+            self.assertEqual(pre[0], {"matcher": "*", "hooks": [mine]})
+            self.assertEqual([install._hook_version(g) for g in pre], [None, "v2"])
+            self.assertEqual(len(pre[1]["hooks"]), 1)   # Tracekit's own group holds only its hook
+            install.install_hooks(p, uninstall=True)
+        self.assertEqual(install.read_json(p), {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [mine]}],
+                                                          "Stop": [stop]}})
+
+
+class HarnessFileWrites(unittest.TestCase):
+    def test_non_ascii_stays_utf8_and_an_init_that_changes_nothing_writes_nothing(self):
+        """Init wrote a person's non-ASCII text as \\u escapes, and each coding agent's file but Claude Code's was
+        backed up by every init, even one that changed nothing."""
+        from tracekit import agent_hooks
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        theme = "Café 日本"
+        for harness in ("claude", *agent_hooks.HARNESSES):
+            with self.subTest(harness):
+                home = os.path.join(d, harness)
+                path = os.path.join(home, ".claude", "settings.json") if harness == "claude" else \
+                    agent_hooks.config_path(harness, home=home)
+                os.makedirs(os.path.dirname(path))
+                theirs = harness not in ("goose", "opencode")   # those two files are Tracekit's own plugin
+                if theirs:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump({"theme": theme}, f, ensure_ascii=False)
+                init = (lambda: install.install_hooks(path, module=install.V2_HOOK)) if harness == "claude" else \
+                    (lambda: agent_hooks.install(harness, v2=True, path=path))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    init()
+                    files_then = sorted(os.listdir(os.path.dirname(path)))
+                    init()
+                self.assertEqual(sorted(os.listdir(os.path.dirname(path))), files_then)   # no new backup
+                if theirs:
+                    with open(path, "rb") as f:
+                        self.assertIn(theme.encode("utf-8"), f.read())
+
+    def test_a_lone_surrogate_in_the_file_still_lets_init_and_uninstall_finish(self):
+        """With UTF-8 kept, a lone surrogate (valid JSON as \\ud83d, which UTF-8 can't encode) made init and uninstall
+        raise, so uninstall left the fail-closed hooks in place."""
+        from tracekit import agent_hooks
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("goose", "opencode"))):
+            with self.subTest(harness):
+                home = os.path.join(d, harness)
+                path = os.path.join(home, ".claude", "settings.json") if harness == "claude" else \
+                    agent_hooks.config_path(harness, home=home)
+                os.makedirs(os.path.dirname(path))
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write('{"note": "\\ud83d"}\n')
+                for uninstall in (False, True):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        if harness == "claude":
+                            install.install_hooks(path, uninstall=uninstall, module=install.V2_HOOK)
+                        else:
+                            agent_hooks.install(harness, uninstall=uninstall, v2=True, path=path)
+                    with open(path, encoding="utf-8") as f:
+                        text = f.read()
+                    self.assertEqual(json.loads(text)["note"], "\ud83d")
+                    self.assertEqual("tracekit" in text, not uninstall)
 
 
 @unittest.skipUnless(CAN_SYMLINK, "needs symlinks")
@@ -369,6 +458,32 @@ class ClaudeConfigDir(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}):
             install.init_dev(os.path.join(d, "sig"), [], start=False, hooks_path=settings)
         self.assertEqual(install.read_json(os.path.join(d, "client", "config.json"))["hooks_settings"], settings)
+
+    def test_v2_init_records_where_it_put_the_hooks(self):
+        """init --dev --v2 or --remote --v2 with CLAUDE_CONFIG_DIR set: doctor finds the hooks and uninstall removes
+        every one from a shell without it (they stayed, and blocked every call once tracekit was gone)."""
+        from tracekit import cli, doctor
+        token = tempfile.NamedTemporaryFile(delete=False)
+        token.close()
+        self.addCleanup(os.remove, token.name)
+        for argv in (["init", "--dev", "--v2"],
+                     ["init", "--remote", "https://signer.example", "--v2", "--token-file", token.name]):
+            with self.subTest(argv[1]):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                settings, client_home = os.path.join(d, "conf", "settings.json"), os.path.join(d, "client")
+                install._write_client_dir(client_home, {"socket": "s"})   # an earlier init's client config
+                env = {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "TRACEKIT_CLIENT_HOME": client_home}
+                with mock.patch.dict(os.environ, dict(env, CLAUDE_CONFIG_DIR=os.path.dirname(settings))), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.main(argv), 0)
+                self.assertEqual(install._hook_summary(install.read_json(settings))["versions"], ["v2"])
+                self.assertEqual(install.read_json(os.path.join(client_home, "config.json")),
+                                 {"socket": "s", "hooks_settings": settings})
+                with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(doctor._dev_settings(), settings)
+                    self.assertEqual(install.uninstall(), settings)
+                self.assertEqual(install.read_json(settings).get("hooks"), None)
 
     def test_hooks_are_found_and_removed_with_or_without_claude_config_dir(self):
         for installed_with, removed_with in ((True, False), (False, True)):

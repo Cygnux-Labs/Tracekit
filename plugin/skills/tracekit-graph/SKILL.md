@@ -34,11 +34,16 @@ argument edges. A T2 executor or gateway result is required for `wrote` or `reac
 
 ## 2. Read what can't be trusted first
 
-Read the "Read first" section of `GRAPH_REPORT.md`, or `sources` in graph.json: a source with `verify.ok: false`
-makes every edge from it `UNVERIFIED`. Report failed sources, gaps (`gap` nodes) and runs with `unread_args`
-before anything else. If the answer matters, check the files still match their sources:
+graph.json is not signed: anyone who can write the directory, an agent included, can write it, sources and grades
+too. Before relying on any answer, check the files still match their sources:
 `tracekit graph verify tracekit-graph RUN.tkb ... --trust trust.json` (exit 0: unchanged). Omit `RUN.tkb ...` only
-when the recorded bundle names are available in the current directory.
+when the recorded bundle names are available in the current directory. If it exits non-zero, or you have no bundles or
+trust config to run it with, say the answers are unverified, and why, before giving any. `graph query` does not verify;
+its first line (stderr with `--json`) says so.
+
+Then read the "Read first" section of `GRAPH_REPORT.md`, or `sources` in graph.json: a source with `verify.ok: false`
+makes every edge from it `UNVERIFIED`. Report failed sources, gaps (`gap` nodes) and runs with `unread_args`
+before anything else.
 
 ## 3. Query; don't load the whole file
 
@@ -57,9 +62,11 @@ tracekit graph query tracekit-graph --path agent:codex host:api.stripe.com   # s
 Exit 1 means nothing matched; 2 means a bad node or graph. For a question no mode answers, read graph.json with
 `jq` or a short script:
 
-- nodes: `{id, kind, label, ...}`; ids are `run:RUN`, `agent:NAME`, `person:WHO`, `call:RUN:TOOL_USE_ID`,
+- nodes: `{id, kind, label, ...}`; ids are `run:RUN`, `agent:NAME`, `person:WHO`, `call:RUN:DECISION_ID`,
   `input:RUN:SEQ`, `model:RUN:SEQ`, `file:PATH`, `host:HOST`, `secret:RULE`, `rule:TK-...`, `finding:RUN:SEQ`,
-  `approval:ID`, `gap:RUN:SEQ`, `code:GRAPHIFY_ID`. A call node may carry `decision` and `ok`.
+  `approval:ID`, `gap:RUN:SEQ`, `code:GRAPHIFY_ID`. A call is one signer decision, so one tool call id can have
+  several call nodes (its `tool_use_id`); it may carry `decision` and `ok`. `RUN` is `RUN_ID@TENANT@LOG_ID` where verified
+  runs of other tenants or logs in the graph share the run id.
 - edges: `{src, dst, kind, grade, record: {run_id, run_seq, seq}, ...}`; kinds include `ran`, `decided allow|deny|ask|flag`,
   a rule's `allow|deny|ask|flag`, `wrote`, `reported writing`, `asked to write`, `reached`, `reported reaching`,
   `asked to reach`, `held for approval`,
@@ -76,8 +83,8 @@ Exit 1 means nothing matched; 2 means a bad node or graph. For a question no mod
   Only `wrote` and `reached` come from a Tracekit T2 executor or gateway result; observer edges remain `OBSERVED`.
 - An `asked to write` or `asked to reach` edge did not run (or did not succeed) only when no later edge from the same
   call to the same target has the same arguments and grade and says `wrote`, `reported writing`, `reached`, or
-  `reported reaching`. In graph.json, compare `args_digest` (or `args_commitment` in older graphs), grade, and
-  `record.run_seq`; superseded asked edges remain there, so do not report them as a failed attempt.
+  `reported reaching`. In graph.json, such an asked edge has `superseded_by`, that outcome's record; superseded asked
+  edges remain there, so do not report them as a failed attempt.
 - Say what the graph cannot show: it holds what the records hold, nothing outside them. No edge means no record,
   not proof that nothing happened (check gaps and `unread_args`).
 - Point the person to the record: the run id and record (`run_seq`) of each edge, and the source bundle in `sources`

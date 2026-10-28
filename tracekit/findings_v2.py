@@ -64,7 +64,8 @@ confirming one line (tier `harness`); in a run whose hook recorded no prompt (ho
 `transcript`); in a run with no transcript prompt line (Codex, Gemini CLI, Cursor), the hook's prompt alone (tier
 `harness`). In a run whose hook records no prompts, also the newest user message of a model request the gateway
 recorded and an input observed as trusted, both tier `sdk` (the agent's process wrote them: a gateway request's body
-too); what else claims a person's request is the agent's claim (claimed()). A later
+too); what else claims a person's request is the agent's claim (claimed()). A line's text past a wrapper's name typed
+mid-line is no request, but the constraints the hook made live from it (claude_code.midline_live) are stated. A later
 request lifts a constraint only from text as trusted as the constraint's (RANK). The gateway's record of a model
 message is preferred where an agent's report of it exists too; two reports of one message
 from different event streams make its reasoning not checkable (conflicting_reports), and their text clears nothing.
@@ -85,6 +86,7 @@ import time
 
 from . import __version__, constraints, findings_effects, findings_text, parsers
 from .findings import SEVERITY, WRITE_TOOLS
+from .integrations.claude_code import midline_live, prompt_parts
 from .signer.reconcile import PROVIDER_HOSTS
 from .signer.rpc_schema import FINDING_TITLES as TITLES, RPCError
 from .wiki import wiki_url
@@ -202,7 +204,8 @@ def text_tier(e, body):
 
 
 def _prompt(body):
-    """(the text a person typed, the line's cwd) of a transcript line, or None when it is no human prompt."""
+    """(the text a person typed, the line's cwd, the constraints the hook also made live: midline_live) of a transcript
+    line, or None when it is no human prompt."""
     e = body["entry"]
     msg = e.get("message") if isinstance(e.get("message"), dict) else {}
     if (body["transcript"] != "main" or e.get("type") != "user" or e.get("isMeta") or e.get("isCompactSummary")
@@ -211,7 +214,14 @@ def _prompt(body):
     text = _blocks_text(msg.get("content"))
     if not text or text.lstrip().startswith(COMMAND_OUTPUT):
         return None
-    return text, e.get("cwd") if isinstance(e.get("cwd"), str) else None
+    # lean: a forged wrapper-only transcript line is not TK-X208 (docs/limits.md) until real transcripts establish which
+    # such lines Claude Code writes with no UserPromptSubmit; then pair each with its turn's hook prompt, which is empty
+    # or the raw text Claude Code wrapped after the hook (a plugin's or observer's message).
+    # The hook stores only the typed segment as a request; match that same segment in the Claude Code transcript.
+    typed, wrapped = prompt_parts(text, agent="claude-code")
+    if not typed.strip():
+        return None
+    return typed, e.get("cwd") if isinstance(e.get("cwd"), str) else None, midline_live(text, wrapped)
 
 
 def claimed(e, hooked):
@@ -370,6 +380,7 @@ class _Run:
         # prompts: [(run_seq, text digest, text, cwd)] of the transcript's prompt lines and the hook's prompts, until
         # confirm() pairs them; unconfirmed: the transcript's lines no hook prompt has the text of (TK-X208)
         self.prompts, self.hook_prompts, self.held, self.unconfirmed, self.confirmed = [], [], 0, [], {}
+        self.live = {}   # a prompt line's run_seq -> its midline_live constraints
         # stated: [(position, run_seq, kind, object, "request" or "model")] of each constraint stated; lifts:
         # [(position, run_seq, constraints.mentions(text), "request" or "model")] of each text after
         self.stated, self.lifts, self.lift_names = [], [], 0
@@ -425,10 +436,16 @@ class _Run:
                 return self.cap(pos)
             self.lifts.append((pos, seq, mention, source))
 
-    def _request(self, seq, text, tier):
+    def _request(self, seq, text, tier, live=()):
+        """`live`: constraints the hook made live from text past a wrapper name typed mid-line (midline_live), stated
+        here too; that text is no request, so it mentions and lifts nothing."""
         self.intent.append(seq)
         self.asked.append((seq, findings_text.told(_text(text))[0], findings_text.asks(_text(text))))
+        n = len(self.stated)
         self._read(text, (seq, -1), seq, tier, "asked")
+        typed = {c[2:4] for c in self.stated[n:]}
+        self.stated += [((seq, -1), seq, kind, obj, "request") for kind, obj in dict.fromkeys(live)
+                        if (kind, obj) not in typed]
 
     def _keep(self, into, seq, text, cwd=None):
         self.held += len(_text(text))
@@ -459,7 +476,7 @@ class _Run:
                 self.tier[seq] = self.tier[hook] = "harness"
             if cwd and self.root is None:
                 self.root = (cwd, seq)
-            self._request(seq, text, self.tier[seq])
+            self._request(seq, text, self.tier[seq], self.live.get(seq, ()))
         left = sorted(s for seqs in hooks.values() for s in seqs) if self.prompts else []
         if left:
             hook_text, line_text = {s: t for s, _, t, _ in self.hook_prompts}, {s: t for s, _, t, _ in self.prompts}
@@ -471,7 +488,7 @@ class _Run:
                     continue
                 self.confirmed[seq] = hook = left.pop(k)
                 self.tier[seq] = self.tier[hook] = "harness"
-                self._request(seq, hook_text[hook], "harness")
+                self._request(seq, hook_text[hook], "harness", self.live.get(seq, ()))
         for hook in left:
             self.tier[hook] = "harness"
             self._request(hook, hook_text[hook], "harness")
@@ -565,12 +582,15 @@ class _Run:
             self.cwd[seq] = body["entry"]["cwd"]
         if e["type"] == "input.observed":
             text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)[:MAX_TEXT]
-            if str(d.get("source")).endswith(PROMPT_HOOK):   # a request only once a transcript line agrees
+            if str(d.get("source")).endswith(PROMPT_HOOK):
+                # A hook request only once a transcript line agrees. Other submitted segments are observations.
                 return self._keep(self.hook_prompts, seq, text)
         elif d.get("phase") == "request":
             if _tailer(body):
                 prompt = _prompt(body)
-                return prompt and self._keep(self.prompts, seq, *prompt)
+                if prompt:
+                    self.live[seq] = prompt[2]
+                return prompt and self._keep(self.prompts, seq, *prompt[:2])
             text = _asked(body)
         else:
             if self.conflicting(d.get("exchange_id")) and e["source"] != "gateway":   # may be forged: clears nothing

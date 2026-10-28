@@ -11,7 +11,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler
 
-from tracekit.netserver import Server
+from tracekit.netserver import Lines, Server
 
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 DEFAULT_LISTEN = "127.0.0.1:9464"
@@ -175,7 +175,7 @@ def server(cfg, registry, logs=None, tlog=None):
     if not _loopback(host) and cfg.get("allow_remote") is not True:
         raise ValueError(f"metrics: listen {host!r} is not loopback; set metrics.allow_remote: true to serve it")
 
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(Lines, BaseHTTPRequestHandler):
         def do_GET(self):
             path = self.path.split("?")[0]
             if path == "/metrics":

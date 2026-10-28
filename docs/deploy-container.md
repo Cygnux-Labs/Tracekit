@@ -8,7 +8,7 @@ digest-pinned `python:3.12-slim` base, every dependency at the version `scripts/
 10001 and works with a read-only root filesystem.
 
 ```sh
-docker build -f deploy/docker/Dockerfile --build-arg VERSION=v1.4.2 --build-arg REVISION=$(git rev-parse HEAD) \
+docker build -f deploy/docker/Dockerfile --build-arg VERSION=v1.5.0 --build-arg REVISION=$(git rev-parse HEAD) \
     -t tracekit-signer .
 sh deploy/docker/smoke.sh     # build, run, decide a call over the socket, check uid and writes, run doctor
 ```

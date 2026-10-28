@@ -21,7 +21,10 @@ Last full scan: 2026-10-08 · 22 docs · 9 stale (41%)
 | Sample bundles | `docs/sample/README.md` | active | 2026-10-07 |
 | What's stable | `docs/support.md` | active | 2026-10-13 |
 | Walkthrough (recorded, with screenshots) | `docs/walkthrough.md` | active | 2026-10-13 |
+| Viewer (`tracekit view`) | `docs/viewer.md` | active | 2026-10-28 |
 | Graph across v2 bundles | `docs/graph.md` | active | 2026-10-27 |
+| A2A gateway (experimental) | `docs/a2a.md` | active | 2026-10-28 |
+| C2C transfer records (experimental) | `docs/c2c.md` | active | 2026-10-28 |
 
 ## Stale
 

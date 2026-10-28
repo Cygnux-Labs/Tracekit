@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest import mock
@@ -174,6 +175,214 @@ class CentralViewer(unittest.TestCase):
         status, _, body = self.get("/api/runs?verdict=failed", self.acme)
         self.assertEqual([(r["run_id"], r["verdict"]["label"]) for r in json.loads(body)["runs"]],
                          [(self.ids["a2"], view.OPERATOR_SIDE)])
+
+    @pytest.mark.unverified_bundles
+    def test_the_run_list_checks_a_run_again_once_its_verdict_is_old(self):
+        """The run list kept a run's "verified" for good after its records were edited in place (the same count): it
+        changed only once someone opened that run's page."""
+        self.assertIn("a2", self.listed("?verdict=verified", self.acme))
+        pg.sql(self.admin1, "UPDATE tracekit_records SET record = regexp_replace(record::text, '\"tool\": ?\"Bash\"', "
+               "'\"tool\":\"Bosh\"')::json WHERE run_id = %s", (self.ids["a2"],))
+        self.assertIn("a2", self.listed("?verdict=verified", self.acme))   # the last check's verdict, until it is old
+        with mock.patch.object(view.time, "monotonic", return_value=time.monotonic() + view.RECHECK_S + 1):
+            self.assertEqual(self.listed("?verdict=failed", self.acme), ["a2"])
+
+    def test_a_list_checks_a_run_only_with_a_check_slot_free(self):
+        """A list checked every run whose verdict was old or missing, with no limit: 16 lists at once made 91 checks of
+        6 runs. With the list's check slot taken it checks none: a past-due VERIFIED, and a run never checked, show as
+        NOT CHECKED."""
+        def listed(port):
+            runs = json.loads(self.get("/api/runs", self.admin, port)[2])["runs"]
+            return {self.names[r["run_id"]]: r["verdict"]["integrity"] for r in runs if r["run_id"] in self.names}
+        runs, fresh = view.Runs(self.files), view.Runs(self.files)
+        port, fresh_port = self.serve(runs), self.serve(fresh)
+        kept = listed(port)
+        self.assertEqual(set(kept.values()), {"VERIFIED"})
+        for r in (runs, fresh):
+            r.listing.acquire()
+        with mock.patch.object(view, "check", wraps=view.check) as checked, \
+                mock.patch.object(view.time, "monotonic", return_value=time.monotonic() + view.RECHECK_S + 1):
+            self.assertEqual(listed(port), dict.fromkeys(kept, "NOT CHECKED"))
+            self.assertEqual(listed(fresh_port), dict.fromkeys(kept, "NOT CHECKED"))
+        self.assertEqual(checked.call_count, 0)
+
+    @pytest.mark.unverified_bundles
+    def test_a_list_that_cannot_check_never_shows_a_past_due_verified(self):
+        """With the list's check slot taken, a VERIFIED past RECHECK_S still showed VERIFIED after the run's records
+        were edited in place. It reads NOT CHECKED; a kept FAILED stays FAILED, and one within RECHECK_S shows as is."""
+        runs = view.Runs(self.files)
+        port, t0 = self.serve(runs), time.monotonic()
+
+        def a2(now):
+            with mock.patch.object(view.time, "monotonic", return_value=now):
+                listed = json.loads(self.get("/api/runs", self.admin, port)[2])["runs"]
+            return next(r["verdict"]["integrity"] for r in listed if r["run_id"] == self.ids["a2"])
+        self.assertEqual(a2(t0), "VERIFIED")
+        pg.sql(self.admin1, "UPDATE tracekit_records SET record = regexp_replace(record::text, '\"tool\": ?\"Bash\"', "
+               "'\"tool\":\"Bosh\"')::json WHERE run_id = %s", (self.ids["a2"],))
+        runs.listing.acquire()
+        self.assertEqual(a2(t0), "VERIFIED")   # within RECHECK_S: the kept verdict
+        self.assertEqual(a2(t0 + view.RECHECK_S + 1), "NOT CHECKED")   # past due and not checked again: not VERIFIED
+        runs.listing.release()
+        self.assertEqual(a2(t0 + view.RECHECK_S + 1), "FAILED")
+        runs.listing.acquire()
+        self.assertEqual(a2(t0 + 3 * view.RECHECK_S), "FAILED")
+
+    def test_a_run_page_has_a_check_slot_while_lists_check(self):
+        """Lists took the run pages' two check slots: during two lists that were checking, a run page got 503 on every
+        try (runs.html doesn't try again)."""
+        runs = view.Runs(self.files)
+        port = self.serve(runs)
+        real, gate, entered, hold = view.check, threading.Event(), [], [True]
+
+        def check(r, tenant, run_id, *a, **k):   # a list's check waits at the gate, holding its slot
+            entered.append((run_id, a[1]))   # a run of a log (its trust file): both logs hold the signer's own run
+            if hold[0]:
+                gate.wait(20)
+            return real(r, tenant, run_id, *a, **k)
+        with mock.patch.object(view, "check", side_effect=check):
+            lists = [threading.Thread(target=self.get, args=("/api/runs", self.admin, port)) for _ in range(2)]
+            for t in lists:
+                t.start()
+            self.assertTrue(wait_for(lambda: len(entered) == 2 or sum(t.is_alive() for t in lists) == 1, 10))
+            hold[0] = False
+            self.assertEqual(self.get(f"/api/run?log=0&tenant=acme&run={self.ids['a1']}", self.acme, port)[0], 200)
+            gate.set()
+            for t in lists:
+                t.join(20)
+
+    def test_two_lists_with_a_free_slot_each_check_each_run_once(self):
+        """Two lists checked the same runs twice (14 checks for 7 runs): a run a list checked keeps its verdict for the
+        next list, which checks nothing."""
+        runs = view.Runs(self.files)
+        port = self.serve(runs)
+        real, checked = view.check, []
+
+        def check(r, tenant, run_id, *a, **k):
+            checked.append((run_id, a[1]))   # a run of a log (its trust file): both logs hold the signer's own run
+            return real(r, tenant, run_id, *a, **k)
+        with mock.patch.object(view, "check", side_effect=check):
+            first = self.get("/api/runs", self.admin, port)
+            self.assertEqual(first[0], 200)
+            after = len(checked)
+            self.assertEqual(self.get("/api/runs", self.admin, port)[0], 200)
+        self.assertLessEqual(set(self.ids.values()), {run_id for run_id, _ in checked})
+        self.assertEqual(sorted(checked), sorted(set(checked)))   # one check per run
+        self.assertEqual(len(checked), after)   # the second list checked nothing
+
+    @pytest.mark.unverified_bundles
+    def test_a_clock_stepped_back_never_keeps_a_stale_verified(self):
+        """Verdicts were kept by the wall clock: after it stepped back (an NTP step, a manual change), a run page's
+        FAILED was older than the list's VERIFIED and wasn't kept, and lists showed VERIFIED for the step plus
+        RECHECK_S."""
+        runs = view.Runs(self.files)
+        port = self.serve(runs)
+
+        def listed(query, cookie):
+            status, _, body = self.get("/api/runs" + query, cookie, port)
+            self.assertEqual(status, 200, body)
+            return [self.names.get(r["run_id"], r["run_id"]) for r in json.loads(body)["runs"]]
+        self.assertIn("a2", listed("?verdict=verified", self.acme))
+        pg.sql(self.admin1, "UPDATE tracekit_records SET record = regexp_replace(record::text, '\"tool\": ?\"Bash\"', "
+               "'\"tool\":\"Bosh\"')::json WHERE run_id = %s", (self.ids["a2"],))
+        with mock.patch.object(view.time, "time", return_value=time.time() - 3600):   # the clock steps back an hour
+            status, _, body = self.get(f"/api/run?log=1&tenant=acme&run={self.ids['a2']}", self.acme, port)
+            self.assertEqual((status, json.loads(body)["verdict"]["verdict"]), (200, "failed"))
+            self.assertEqual(listed("?verdict=failed", self.acme), ["a2"])
+
+    @pytest.mark.unverified_bundles
+    def test_a_lists_check_of_an_older_snapshot_never_replaces_a_newer_verdict(self):
+        """A list reads one snapshot from its start: a record edited during a list turned the run's page FAILED, and the
+        list's check of its older snapshot then kept VERIFIED over it, for RECHECK_S."""
+        runs = view.Runs(self.files)
+        port = self.serve(runs)
+        a2, real, page = self.ids["a2"], view.check, []
+
+        def listed(query, cookie):
+            status, _, body = self.get("/api/runs" + query, cookie, port)
+            self.assertEqual(status, 200, body)
+            return [self.names.get(r["run_id"], r["run_id"]) for r in json.loads(body)["runs"]]
+
+        def check(r, tenant, run_id, *a, **k):   # a2's check in the list: the run is edited and its page opened first
+            if run_id == a2 and not page:
+                page.append(0)
+                pg.sql(self.admin1, "UPDATE tracekit_records SET record = regexp_replace(record::text, "
+                       "'\"tool\": ?\"Bash\"', '\"tool\":\"Bosh\"')::json WHERE run_id = %s", (a2,))
+                page[0] = runs.run(observe.ALL, {"log": "1", "tenant": "acme", "run": a2})["verdict"]["verdict"]
+            return real(r, tenant, run_id, *a, **k)
+        with mock.patch.object(view, "check", side_effect=check):
+            self.assertIn("a2", listed("?verdict=verified", self.admin))   # the list's own, older snapshot
+        self.assertEqual(page, ["failed"])
+        self.assertEqual(listed("?verdict=failed", self.acme), ["a2"])   # the page's newer verdict is kept
+
+    def test_a_run_page_checks_two_runs_at_once_at_most(self):
+        """Each /api/run request read the log and exported and verified its run with no limit: 16 at once made 16 full
+        checks."""
+        runs = view.Runs(self.files)
+        port = self.serve(runs)
+        a1 = f"/api/run?log=0&tenant=acme&run={self.ids['a1']}"
+        runs.verifying = threading.BoundedSemaphore(1)
+        runs.verifying.acquire()
+        status, r, _ = self.get(a1, self.acme, port)
+        self.assertEqual((status, r.getheader("Retry-After")), (503, "5"))
+        runs.verifying.release()
+        self.assertEqual(self.get(a1, self.acme, port)[0], 200)
+
+    def test_a_run_page_serves_the_records_its_check_verified(self):
+        """/api/run checked the run, then read its records from the store again: a reader that saw an edit between the
+        two (any but one snapshot) served the edited records beside the VERIFIED verdict."""
+        real_open, real_check = view.Runs._open, view.check
+
+        class Edited:   # the store as read after the check: every Bash call renamed
+            def __init__(self, r):
+                self.r, self.checked = r, False
+
+            def __getattr__(self, k):
+                return getattr(self.r, k)
+
+            def iter_run(self, tenant, run_id):
+                for rec in self.r.iter_run(tenant, run_id):
+                    yield json.loads(json.dumps(rec).replace('"Bash"', '"Bosh"')) if self.checked else rec
+
+        def open_(runs, i):
+            r, note, at = real_open(runs, i)
+            return Edited(r), note, at
+
+        def check(r, *a, **k):
+            out = real_check(r, *a, **k)
+            r.checked = True
+            return out
+        with mock.patch.object(view.Runs, "_open", open_), mock.patch.object(view, "check", check):
+            port = self.serve(view.Runs(self.files))
+            run = json.loads(self.get(f"/api/run?log=0&tenant=acme&run={self.ids['a1']}", self.acme, port)[2])
+        self.assertEqual(run["verdict"]["verdict"], "verified")
+        tools = {rec["event"]["data"].get("tool") for rec in run["records"]} - {None}
+        self.assertIn("Bash", tools)
+        self.assertNotIn("Bosh", tools)
+
+    def test_a_bundle_download_takes_the_same_limit(self):
+        """Each /api/bundle request read the log and exported its whole run, with no limit."""
+        runs = view.Runs(self.files)
+        port = self.serve(runs)
+        a1 = f"/api/bundle?log=0&tenant=acme&run={self.ids['a1']}"
+        runs.verifying = threading.BoundedSemaphore(1)
+        runs.verifying.acquire()
+        status, r, _ = self.get(a1, self.acme, port)
+        self.assertEqual((status, r.getheader("Retry-After")), (503, "5"))
+        runs.verifying.release()
+        self.assertEqual(self.get(a1, self.acme, port)[0], 200)
+
+    def test_a_bundle_whose_temp_file_fails_gives_its_slot_back(self):
+        """The bundle's temp file was made after the check slot was taken and before the try that gives it back: two
+        failures (a full disk, no file descriptors) left /api/run and /api/bundle answering 503 until a restart."""
+        runs = view.Runs(self.files)
+        port = self.serve(runs)
+        a1 = f"log=0&tenant=acme&run={self.ids['a1']}"
+        with mock.patch.object(view.tempfile, "mkstemp", side_effect=OSError(28, "No space left on device")):
+            for _ in range(2):
+                self.assertEqual(self.get(f"/api/bundle?{a1}", self.acme, port)[0], 502)
+        self.assertEqual((self.get(f"/api/bundle?{a1}", self.acme, port)[0], self.get(f"/api/run?{a1}", self.acme, port)[0]),
+                         (200, 200))
 
     def test_downloaded_bundle_verifies_offline(self):
         status, r, data = self.get(f"/api/bundle?log=0&tenant=acme&run={self.ids['a1']}", self.acme)

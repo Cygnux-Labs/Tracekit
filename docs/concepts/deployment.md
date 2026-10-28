@@ -29,7 +29,7 @@ flowchart LR
 | Mode | Who can reach the keys and log | Recorded isolation | Platforms |
 |---|---|---|---|
 | Laptop dev (`tracekit up`, or started by `tracekit.instrument()`) | The agent's own user | `same-user` | macOS, Linux, Windows |
-| Laptop system mode (`sudo tracekit init --v2 --user AGENT`) | Root and the signer's OS user | `separate-user` | Linux; macOS experimental |
+| Laptop system mode (`tracekit init --v2 --user AGENT` as root) | Root and the signer's OS user | `separate-user` | Linux; macOS experimental |
 | Container or Kubernetes sidecar | The signer's uid and the node's administrator | `separate-user` | Linux |
 | Docker Compose stack | The Docker host's administrators | `separate-user` (the agent shares the signer's socket) | Linux containers |
 | Central signer over HTTPS | The signer host's administrators | `remote` | Linux containers |
@@ -43,7 +43,7 @@ stays `dev`. Each `HOME` gets its own dev signer and store, even where two share
 
 ### Linux system mode
 
-`sudo tracekit init --v2 --user AGENT` installs the signer under its own OS user, in a root-owned environment with a
+`tracekit init --v2 --user AGENT`, run as root ([laptop system mode](../deploy.md#laptop-system-mode)), installs the signer under its own OS user, in a root-owned environment with a
 hardened service unit (no capabilities, a read-only system, a system-call filter), and writes a root-owned client config
 so an agent can't point its hooks at a decoy signer. The agent's user must not be root or in admin, sudo or docker
 groups. Optional extras:

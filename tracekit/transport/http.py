@@ -41,7 +41,7 @@ from tracekit.identity.k8s_sa import K8sSaAuthenticator
 from tracekit.identity.mtls import MtlsAuthenticator
 from tracekit.identity.oidc import OidcAuthenticator
 from tracekit.identity.token import BearerToken, TokenStore
-from tracekit.netserver import Server
+from tracekit.netserver import Lines, Server, body_length, read_body
 from tracekit.otlp_wire import MAX_BODY as OTLP_MAX_BODY
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
 from tracekit.signer.rpc_schema import RPCError
@@ -126,7 +126,7 @@ def resolve(cfg, base):
         cfg["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in cfg["client_ca"].items()}
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(Lines, BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"   # keep-alive
 
     def setup(self):
@@ -141,28 +141,21 @@ class _Handler(BaseHTTPRequestHandler):
         otlp = self.path == OTLP_PATH and self.server.otlp
         if self.path != PATH and not otlp:
             return self._reply(404, RPCError("invalid_request", f"POST {PATH}").wire(), close=True)
-        if "Transfer-Encoding" in self.headers:   # the body is read by Content-Length only
-            return self._reply(400, RPCError("invalid_request", "Transfer-Encoding isn't supported: send the body "
-                                                                "with Content-Length").wire(), close=True)
-        n, limit = self.headers.get("Content-Length", ""), OTLP_MAX_BODY if otlp else MAX_LINE
-        if not n:
+        n, why = body_length(self.headers, digits=8)
+        limit = OTLP_MAX_BODY if otlp else MAX_LINE
+        if why:
+            return self._reply(400, RPCError("invalid_request", why).wire(), close=True)
+        if n is None:
             return self._reply(411, RPCError("invalid_request", "Content-Length required").wire(), close=True)
-        if not (n.isascii() and n.isdigit() and len(n) <= 8):
-            return self._reply(400, RPCError("invalid_request", "Content-Length: at most 8 ASCII digits").wire(),
-                               close=True)
-        if int(n) > limit:
+        if n > limit:
             return self._reply(413, RPCError("quota_exceeded", f"body longer than {limit} bytes").wire(), close=True)
         if otlp:
             try:   # who asks, before reading what they send
                 identity = self.server.authenticate(self, {"method": "otlp_import"})
             except RPCError as e:
                 return self._reply({"unauthenticated": 401, "quota_exceeded": 429}.get(e.code, 403), e.wire(), close=True)
-        try:
-            body = self.rfile.read(int(n))
-        except OSError:   # the read timeout, or the peer went away
-            body = b""
-        if len(body) < int(n):
-            self.close_connection = True
+        body = read_body(self, n)
+        if body is None:
             return
         self.server.stop_deadline()   # the request is in; answering it may wait (approval_wait)
         if otlp:

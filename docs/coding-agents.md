@@ -3,16 +3,27 @@
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
 
 ```bash
-tracekit init --dev --agent codex      # ~/.codex/hooks.json
-tracekit init --dev --agent cursor     # ~/.cursor/hooks.json
-tracekit init --dev --agent gemini     # ~/.gemini/settings.json
-tracekit init --dev --agent qwen       # ~/.qwen/settings.json
-tracekit init --dev --agent droid      # ~/.factory/hooks.json
-tracekit init --dev --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
-tracekit init --dev --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.json (plus plugin.json beside it)
-tracekit init --dev --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
-# --project writes the project-level file instead; tracekit uninstall --agent X removes it
-tracekit demo --agent codex            # the scripted demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
+tracekit init --dev --v2 --agent codex      # ~/.codex/hooks.json
+tracekit init --dev --v2 --agent cursor     # ~/.cursor/hooks.json
+tracekit init --dev --v2 --agent gemini     # ~/.gemini/settings.json
+tracekit init --dev --v2 --agent qwen       # ~/.qwen/settings.json
+tracekit init --dev --v2 --agent droid      # ~/.factory/hooks.json
+tracekit init --dev --v2 --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
+tracekit init --dev --v2 --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.json (plus plugin.json beside it)
+tracekit init --dev --v2 --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
+# --project writes the project-level file instead; tracekit uninstall --agent X removes Tracekit's hooks and keeps your other settings
+sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent codex   # system mode: the signer as its own user
+```
+
+These hooks record to the v2 signer ([below](#on-the-v2-signer)), and a v2 hook replaces a v1 one. System mode's init
+runs as root from a root-owned Python and puts no `tracekit` command on root's `PATH`. The system-mode line is for Python
+3.11 or later, after [laptop system mode](deploy.md#laptop-system-mode)'s install; that page also gives the commands for
+3.9 and 3.10. The v1 hooks, for the older laptop path (the `tracekitd` signer), are the same dev commands without
+`--v2` and write the same files:
+
+```bash
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, goose, antigravity
+tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
 For Codex, Cursor, Gemini CLI and Qwen Code the installer merges into existing settings: other hooks and settings are kept, a
@@ -23,9 +34,9 @@ plugin and refuses to overwrite a file it did not install (in `plugin/`, which e
 read `plugins/`). For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
 to install into a plugin whose `plugin.json` is not Tracekit's. A goose rule carries no matcher (goose silently skips
 a rule whose matcher is a bare `*`, which is an invalid regex); the PreToolUse action carries `timeout: 600` and
-`on_failure: block`, the post-tool actions `timeout: 30`. Every hook calls `python -I -m tracekit.agent_hooks <agent>` (OpenCode's plugin adds the event),
+`on_failure: block`, the post-tool actions `timeout: 30`. For Antigravity CLI it adds a hook named `tracekit` to agy's `hooks.json` ([below](#antigravity-cli)). Every v1 hook calls `python -I -m tracekit.agent_hooks <agent>` (OpenCode's plugin and Antigravity CLI's commands add the event),
 which translates the harness's payload into the Claude Code hook shape and runs the same pipeline as the Claude Code
-hook.
+hook ([v2 hooks](#on-the-v2-signer)).
 
 | | Codex CLI | Cursor | Gemini CLI | OpenCode | goose | Qwen Code | Factory Droid |
 |---|---|---|---|---|---|---|---|
@@ -33,7 +44,7 @@ hook.
 | Run id | `session_id` | `conversation_id` | `session_id` | `sessionID` | `session_id` | `session_id` | `session_id` |
 | Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) | exit 2 + a reason on stderr, stdout empty (a stray stdout line reads as no decision to goose) | exit 2 + a reason on stderr (Qwen Code ignores stdout at exit 2 and sends stderr to the model); nothing on stdout | exit 2 + a reason on stderr and `hookSpecificOutput.permissionDecision: "deny"` |
 | Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` | `tool_call_id`, from the harness | `tool_use_id`, from the harness | none in documented stdin: paired by tool and arguments, first in first out |
-| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `web_fetch`, `google_web_search` | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools | `shell` → `Bash`; `write` → `Write` (path: `path`); `edit` → `Edit` (path: `path`); `tree` → `LS` (path: `path`); `read_image` → `Read` (path: `source`, not `path`); `<extension>__<tool>` → `mcp__<extension>__<tool>`; other names pass through unchanged, which the policy treats as unknown tools | `run_shell_command` and `monitor` → `Bash`; `read_file` → `Read` (path: `file_path`, `absolute_path` before 0.13); `write_file` → `Write`; `edit` (and Gemini's `replace`) → `Edit`; `notebook_edit` → `NotebookEdit` (path: `notebook_path`); `grep_search` → `Grep`; `glob`, `list_directory`, `web_fetch`, `web_search`, `todo_write`; `agent` → `Task`; any other tool, MCP tools included, under its own name | `Execute` → `Bash`; `Create` → `Write`; `ApplyPatch` → `Edit` (`input`: complete patch; `paths`: all file headers); `FetchUrl` → `WebFetch`; other names, including `mcp__server__tool`, pass through |
+| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` and `read_many_files` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `list_directory`, `web_fetch`, `google_web_search`; every path a file tool reads is decided, under each release's name for it (`file_path`, `absolute_path`, `dir_path`, `path`, and `read_many_files`' `paths` and `include`); `web_fetch` is decided on every URL its prompt names (`urls`) and on a `url` beside it | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental; OpenCode 1.x before 1.4 only: later releases and OpenCode 2 have none) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools | `shell` → `Bash`; `write` → `Write` (path: `path`); `edit` → `Edit` (path: `path`); `tree` → `LS` (path: `path`); `read_image` → `Read` (path: `source`, not `path`); `<extension>__<tool>` → `mcp__<extension>__<tool>`; other names pass through unchanged, which the policy treats as unknown tools | `run_shell_command` and `monitor` → `Bash`; `read_file` → `Read` (path: `file_path`, `absolute_path` before 0.13); `write_file` → `Write`; `edit` (and Gemini's `replace`) → `Edit`; `notebook_edit` → `NotebookEdit` (path: `notebook_path`); `grep_search` → `Grep`; `glob`, `list_directory`, `web_fetch`, `web_search`, `todo_write`; `agent` → `Task`; any other tool, MCP tools included, under its own name; file paths as for Gemini CLI; `web_fetch` is decided on its `url` and also on every URL its prompt names (Qwen Code fetches only the `url`) | `Execute` → `Bash`; `Create` → `Write`; `ApplyPatch` → `Edit` (`input`: complete patch; `paths`: all file headers); `FetchUrl` → `WebFetch`; other names, including `mcp__server__tool`, pass through |
 
 What is the same as Claude Code: the policy gate runs before the tool (deny blocks; ask holds the call until someone
 approves it from another terminal), events are signed by the same signer, and the harness's transcript is hashed at
@@ -49,7 +60,8 @@ either way, for `PreToolUse`, so a person has time to approve a held call), and
 runs a project's hooks only in a trusted folder. On Windows it runs hooks under `cmd.exe`, so the interpreter path
 stays quoted when it contains spaces, as for Droid.
 
-A call on several files (a patch's `paths`) is decided on each file: a rule that matches any of them applies.
+A call on several files (a patch's `paths`, the files of a Gemini CLI or Qwen Code `read_many_files`) or URLs (a
+`web_fetch`'s `urls`) is decided on each: a rule that matches any of them applies.
 
 Droid's [hooks reference](https://docs.factory.com/harness/hooks) documents Claude Code's event names and stdin fields.
 Its standalone `hooks.json` is keyed directly by event name, with no `hooks` wrapper (that wrapper is for declarations
@@ -63,19 +75,15 @@ from Gemini CLI's. An allowed call with no `PostToolUse` (declined in Droid's pe
 patch in `input`; that field and format come from the tool listing, not a captured hook payload. The minimum Droid version is unknown, and it is unknown whether `Task`-started sub-droids fire hooks. Native Windows and live authenticated Droid sessions are untested; its transcript format is
 not read for model text or reasoning.
 
-An unparseable payload or an unknown harness name is reported on stderr and the call is allowed, unless
-`TRACEKIT_FAIL_CLOSED=1` or the policy says `fail_mode: closed`. Two exceptions block the call whatever the fail mode:
-an OpenCode call its hook can't decide (the plugin passes the model's arguments before OpenCode checks them), and, in
-every hook, a payload nested too deep to read.
+With a v1 hook, an unparseable payload or an unknown harness name is reported on stderr and the call is allowed, unless
+`TRACEKIT_FAIL_CLOSED=1` or the policy says `fail_mode: closed`. Three exceptions block the call whatever the fail mode:
+an OpenCode call its hook can't decide (the plugin passes the model's arguments before OpenCode checks them), an
+Antigravity CLI pre-tool call its hook can't decide (its command names the event), and, in every hook, a payload
+nested too deep to read.
 
 ## On the v2 signer
 
-```bash
-tracekit init --dev --v2 --agent codex                   # or cursor, gemini, opencode, goose, qwen, droid, antigravity; replaces a v1 hook
-sudo tracekit init --v2 --user AGENT --agent codex       # system mode: the signer as its own user
-```
-
-The hooks run `python -I -m tracekit.integrations.harness_hooks <agent> <event>`: the same mapping as above, then the
+The v2 hooks (the commands at the top of this page) run `python -I -m tracekit.integrations.harness_hooks <agent> <event>`: the same mapping as above, then the
 v2 Claude Code hook's core (the signer decides; approvals; the run's fail mode, closed by default and always closed in
 system mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error.
 On any other event (a prompt, a tool result, a session event) a hook that fails exits 1, not 2, which
@@ -116,18 +124,35 @@ transcript's start: the hook notes how far the transcript was written while that
 ([limits](limits.md#signer-and-capture)).
 
 At each prompt (`UserPromptSubmit`; Cursor's `beforeSubmitPrompt`, Gemini CLI's `BeforeAgent`) the hook also records
-the prompt as the harness handed it over (`input.observed`, source `<agent>:UserPromptSubmit`: `claude-code`, `codex`,
-`cursor` or `gemini-cli`; its text in the content vault). `tracekit analyze --v2` takes a prompt line of the transcript as the person's only when the hook
-recorded the same text: a line the agent appended to its own transcript is flagged (TK-X208) and clears nothing. A
+what the person typed (`input.observed`, trusted, source `<agent>:UserPromptSubmit`: `claude-code`, `codex`, `cursor`,
+`gemini-cli`, `qwen-code` or `droid`; its text in the content vault). Text the harness added to the prompt is recorded apart, as untrusted
+input under its own source, so a value in it keeps its provenance: in Claude Code a paste block, a skill's body, a
+message from another session, agent, teammate, plugin, observer or channel, a task or system notification, a scheduled
+task, uploads and command output (`claude-code:paste`, `claude-code:task-notification`, ...); in Gemini CLI its referenced files block
+(`gemini-cli:referenced-file`). A whole Claude Code turn its payload says no person typed (a `source` other than `user`
+or `sdk`: a plugin's prompt, a notice, a wake-up or a poll event) is recorded that way too (`claude-code:poll_event`,
+...), and none of its constraints are live. `tracekit analyze --v2` takes a prompt line of the transcript as the person's only when
+the hook recorded the same typed text: a line the agent appended to its own transcript is flagged (TK-X208) and clears nothing. A
 paste or an image Claude Code writes as a placeholder (`[Pasted text #1 +40 lines]`) pairs with the hook's prompt that
 holds the rest of the line, whose full text is read; a hook prompt with no line (one the tailer missed) is read on its
 own. Hooks before this release record no prompt, and TK-X208 says `no_hook`.
 
-The hook also sends what the prompt says not to do ("don't touch billing.py", "read-only", "don't push", "no network")
-to the signer as [live constraints](policy-v2.md#live-constraints): a later call that breaks one waits for your
-approval, and the agent reads why on stderr: `[tracekit] waiting for approval apr-…
-(TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the person (TK-CONSTRAINT)`. Answer it from another terminal as any
-held call: `tracekit approvals list`, then `tracekit approvals approve <id>` (or `reject`). `tracekit view --dev` lists
+The hook also sends what the typed text says not to do ("don't touch billing.py", "read-only", "don't push", "no
+network") to the signer as [live constraints](policy-v2.md#live-constraints) (one stated only in text you pasted or the
+harness added is recorded but not made live, and Claude Code shows a notice naming it; one typed after a wrapper's name
+in a sentence is live, though the text from that name on is recorded as untrusted): a later call that breaks one waits
+for your approval, and the agent reads why on stderr:
+
+```text
+[tracekit] waiting for approval apr-… (TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the person; a person approves it from another terminal with `tracekit approvals approve apr-…` or rejects it with `tracekit approvals reject apr-…`
+```
+
+Answer it from another terminal with the command the line names (`tracekit approvals list` shows every held call); the
+agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one (system mode,
+`tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode, run it from
+the approver's account as `/opt/tracekit/bin/python -I -m tracekit approvals …` (init puts no `tracekit` command on the
+PATH). On your default signer,
+`tracekit approve apr-…` and `tracekit reject apr-…` work too. `tracekit view --dev` lists
 the run's constraints at the top of its review. The grammar reads instructions, not descriptions: "add a read-only mode
 to client.py", "don't change the public API of client.py, just fix the timeout bug in it", "don't push to main" and
 "we don't use the network in unit tests" hold nothing. If a run already has the most file constraints the signer
@@ -145,11 +170,14 @@ an allowed call whose post-tool payload was lost is completed as an error at the
 (below).
 
 Hooks installed before 1.2 have no event argument and keep working as before: an unparseable payload passes,
-unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code, Codex, Cursor, Gemini CLI, goose, Qwen Code and Factory Droid when a command
-doesn't name its configured event, and `D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s approval
+unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code, Codex, Cursor, Gemini CLI, goose, Qwen Code,
+Factory Droid and Antigravity CLI when a command doesn't name its configured event or, on any event but the pre-tool
+one, blocks that event when the hook can't run (a command init wrote before 1.3, or a Cursor hook written up to 1.4.2), and
+`D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s approval
 wait (milliseconds for Gemini CLI and Qwen Code). Re-run init for the active mode to repair the other coding agents' hooks
-(`tracekit init --dev --v2 --agent NAME` in dev, or `sudo tracekit init --v2 --user AGENT --agent NAME` in system
-mode). `tracekit doctor` also checks Droid's hook presence and timeout. OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
+(`tracekit init --dev --v2 --agent NAME` in dev, or `sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT
+--agent NAME` in system mode; with Python 3.9 or 3.10, [laptop system mode](deploy.md#laptop-system-mode)'s command). `tracekit doctor` also checks Droid's and Antigravity CLI's hook presence and timeout, and warns when agy would
+load its hooks and run none (`D-AGY-HOOKS-RUN`, [below](#antigravity-cli)). OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
 
 For the other coding agents (Antigravity CLI too, not OpenCode, whose plugin doctor doesn't read), `D-HOOKS-EVENT` also warns when a call can run that no hook
 decided: no Tracekit v2 hook is on the pre-tool event, Cursor's `preToolUse` hook has no `failClosed: true`, or goose's
@@ -181,11 +209,12 @@ The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can'
 
 Antigravity CLI (`agy`) support is experimental: tested through agy's documented hook payloads
 ([hooks reference](https://antigravity.google/docs/hooks)) and Tracekit's installer, not yet in a live agy session
-([limits](limits.md#signer-and-capture)).
+([limits](limits.md#signer-and-capture)). It needs agy 1.3.0 or later (1.2.1 to 1.2.3 ran no hooks on some machines,
+[#1008](https://github.com/google-antigravity/antigravity-cli/issues/1008)).
 
 ```bash
 tracekit init --dev --v2 --agent antigravity               # ~/.gemini/config/hooks.json; --project: .agents/hooks.json
-sudo tracekit init --v2 --user AGENT --agent antigravity   # system mode
+sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent antigravity   # system mode (Python 3.11+)
 tracekit uninstall --agent antigravity                     # removes Tracekit's hook only
 ```
 
@@ -193,7 +222,12 @@ agy's `hooks.json` maps each hook's name to its events. Init adds one named `tra
 (timeout 600 s, so a person has time to approve a held call) and a `PostToolUse` hook (30 s), both with matcher `*`.
 Other named hooks in the file are kept, and a backup is written first. Init rewrites Tracekit's hook whole, so an
 `"enabled": false` left on it is removed. The v1 hook (`tracekit init --dev --agent antigravity`) works in dev mode
-only: v1 system mode installs Claude Code's hooks only, so it refuses `--agent antigravity`.
+only: v1 system mode installs Claude Code's hooks only, so it refuses `--agent antigravity`. agy runs a hook in the
+folder that holds its `hooks.json`; the hook reads the workspace from the payload's `workspacePaths`. The global
+`hooks.json` also runs in the Antigravity IDE app
+([#1329](https://github.com/google-antigravity/antigravity-cli/issues/1329)), whose calls are then decided and recorded
+too, as agent `antigravity`. While a call waits for a person, agy waits too and may show nothing: list the held call
+with `tracekit approvals list`.
 
 agy's payload doesn't name its event, so each hook command names it, the v1 one too. agy reads a hook's answer only
 from JSON on stdout at exit 0, so Tracekit's hook always exits 0: `{"decision": "allow"}` leaves the call to agy's own
@@ -227,7 +261,8 @@ tool hooks and doesn't read its transcript, so no prompts, live constraints or m
 closes at the signer's idle timeout.
 
 **Doctor.** `tracekit doctor` finds agy's hooks in the user's and the working directory's `hooks.json` and checks them
-as the other agents' (`D-HOOKS-PRESENT`, `D-HOOKS-EVENT`, `D-HOOKS-TIMEOUT` in seconds). It also warns
+as the other agents' (`D-HOOKS-PRESENT`, `D-HOOKS-EVENT`, `D-HOOKS-TIMEOUT` in seconds; a hook with no timeout
+counts as agy's default, 30 s). It also warns
 `D-AGY-HOOKS-RUN` when agy would load the hooks and never run them: Tracekit's hook is `"enabled": false` (in the file
 init wrote, the user's `hooks.json` or the workspace's), or agy signs in with a Gemini API key (`"modelProvider":
 "gemini"` in `~/.gemini/antigravity-cli/settings.json`) or with Application Default Credentials (`"enableAdc": true`

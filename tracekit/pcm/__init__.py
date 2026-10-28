@@ -267,7 +267,9 @@ class Replay:
 
     def __init__(self, window_s=300.0, per_sender=4096, now=None):
         self.window_s, self.per_sender = window_s, per_sender
-        self.started = time.time() if now is None else now
+        # in whole microseconds, as a ts is rounded: else a message signed in the receiver's first microsecond (on
+        # Windows before Python 3.13, its first 15.6 ms clock tick) can read as sent before it started
+        self.started = int((time.time() if now is None else now) * 1e6) / 1e6
         self.seen, self.floor = {}, {}
 
     def check(self, msg, now=None, record=True):

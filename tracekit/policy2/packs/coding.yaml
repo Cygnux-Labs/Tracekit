@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-38'
+version: '2026.10-v2-39'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -104,9 +104,10 @@ deny:
     # folders isn't held: one in Claude Code's, Codex's or Gemini CLI's transcript folder, OpenCode's sessions (its
     # data folder's opencode*.db, and storage/ before it), or a delete of a home folder holding them (~/.claude,
     # ~/.local/share; a home is ~, $HOME or an absolute /home/<u>, /Users/<u> or /root, so a project's .claude, or a
-    # repo's build/home/u/.claude, isn't one). MAY_WRITE: any word on a line whose writer gets its files at run time
-    # (xargs rm, rm "$f") or in code it runs (docker exec c sh -c, perl -e). Anchored and lazy, so the fallback
-    # engine stays linear
+    # repo's build/home/u/.claude, isn't one). MAY_WRITE: any word, herestring or heredoc on a line whose writer gets
+    # its files at run time (xargs rm, rm "$f") or in code it runs (docker exec c sh -c, perl -e, osascript, at from a
+    # pipe), or whose commands the parser can't read (| sh, fish -c) with a writer's name or > in it. Anchored and
+    # lazy, so the fallback engine stays linear
     pattern: '^(?:WRITE_TARGET|DELETE_TARGET|MAY_WRITE):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\]opencode[/\\](?:storage(?:[/\\]|$)|opencode[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\]opencode)?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\]opencode)?)[/\\]*\*?$'
     reason: modifying the agent harness's transcripts
     remedy: Leave the harness's transcripts as they are (reading them is fine); a person removes them once the run's evidence is exported.
@@ -263,7 +264,7 @@ ask:
     class: shell
     field: target
     # history -c (alone or in a cluster, after other options), turning the history file off, vacuuming the journal
-    pattern: '^history\s(?:[^\n]*?\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*?--vacuum-[^\s=]+(?:=|\s|$)'
+    pattern: '^history\s(?:[^\n]*?\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl(?:[ \t\f\r]|\s*?\n)[^\n]*?--vacuum-[^\s=]+(?:=|\s|$)'
     reason: clearing shell history or system logs
     remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
     rationale: Clearing the history, turning it off or vacuuming the journal can hide earlier activity; a person confirms it.
@@ -305,11 +306,15 @@ ask:
     field: argv
     # a destructive statement through a database client, as TK-DB001..003 read it for SQL tools: psql -c/--command,
     # mysql/mariadb -e/--execute, mongosh/mongo --eval, clickhouse-client --query/-q, sqlite3 with a bare SQL
-    # argument, and redis-cli/valkey-cli. The flag may be a short-option cluster (psql -tAc, mysql -Nse) or carry
-    # its value attached (-e"..."); up to sixteen whitespace-separated words (options, a connection URL) may come
-    # before the flag, and a docker/kubectl exec wrapper (up to eight words) before the client. After the flag, up
-    # to eight statements may come before the destructive one, where a statement ends at `;` or at `\G`/`\g`: an escaped
-    # newline inside a statement does not end it, and a backslash escape counts as one character, so a quoted
+    # argument, and redis-cli/valkey-cli. The flag may be a short-option cluster of up to nine letters (and psql's 0
+    # and 1) ending in c or e (psql -tAc, psql -1c, mysql -Nse) or carry its value attached (-e"..."): letters after
+    # the c or e are its value (psql -cvDROP runs vDROP). A longer cluster of the client's flags that take no value,
+    # ending in c or e, is held as it is, unread (no one needs one); a value attached to an option that takes one
+    # (psql -dmydatabase, mysql -pdevelopment) is no cluster. Up to sixteen whitespace-separated words (options, a
+    # connection URL) may come before the flag, and a docker, docker compose or kubectl exec wrapper (up to eight
+    # words) before the client.
+    # After the flag, up to eight statements may come before the destructive one, where a statement ends at `;` or at
+    # `\G`/`\g`: an escaped newline inside a statement does not end it, and a backslash escape counts as one character, so a quoted
     # literal or a multi-line statement cannot hide the destructive one. Only whitespace (or its escaped form) and
     # comments (`--` to the end of a line, `/* */`) may come between the last statement's end and the keyword. A
     # DELETE counts only without a WHERE or with an always-true one, as TK-DB003 reads it, and may be followed by
@@ -323,25 +328,35 @@ ask:
     # mongo call or a redis read does not match, and neither does a second -c/-e/--command/--execute
     # carrying the transaction (the words before the flag can't be another statement flag).
     # redis-cli's FLUSHALL/FLUSHDB must be the last word (or followed by ASYNC/SYNC), so a host or option value
-    # named flushall doesn't match.
-    pattern: '^((docker(\s+container)?|kubectl)\s+exec(\s+[^\s]+){0,8}?\s+)?((psql|mysql|mariadb)(\s+[^\s]+){0,16}?\s+(--command|--execute|-[A-Za-z]*[ce][A-Za-z]*)(=|\s+)?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r)*(?:(?:--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)(?:\s|\\n|\\t|\\r)*)*([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:\s|\\n)+([^\s;]+((?:\s|\\n)+([Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*)?((?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)+[^;]*)?|[^;]*(?:\s|\\n)*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z])))|(mongosh|mongo)(\s+[^\s]+){0,16}?\s+--eval(=|\s+)?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r)*(db\s*\.\s*dropDatabase\s*\(|db\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*drop\s*\(|db\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*(deleteMany|deleteOne|remove)\s*\(\s*(\{\s*\})?\s*\))|(redis-cli|valkey-cli)(\s+[^\s]+){0,16}?\s+([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])(\s+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?\s*$|sqlite3(\s+[^\s]+){0,16}?\s((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r)*(?:(?:--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)(?:\s|\\n|\\t|\\r)*)*([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:\s|\\n)+([^\s;]+((?:\s|\\n)+([Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*)?((?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)+[^;]*)?|[^;]*(?:\s|\\n)*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z])))|clickhouse-client(\s+[^\s]+){0,16}?\s+(--query|-q)(=|\s+)?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r)*(?:(?:--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)(?:\s|\\n|\\t|\\r)*)*([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:\s|\\n)+([^\s;]+((?:\s|\\n)+([Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*)?((?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)+[^;]*)?|[^;]*(?:\s|\\n)*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z]))))'
+    # named flushall doesn't match. The fallback engine backs a greedy run of whitespace or escaped newlines off
+    # quadratically when a class follows it, so those runs are lazy and no two repeats read the same text: 64 KiB of
+    # whitespace after a flag decides in milliseconds.
+    pattern: '^((docker(\s+container|\s+compose)?|docker-compose|kubectl)\s+exec(\s+[^\s]+){0,8}?\s+)?((psql|mysql|mariadb)(\s+[^\s]+){0,16}?\s+(--command|--execute|-[A-Za-z01]{0,8}[ce])=?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r|--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)*?([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:(?:\s|\\n)+?(?:[^\s;\\][^\s;]*|\\(?:[^\s;n][^\s;]*)?)(?:\s(?:\s|\\n)*?(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s(?:\s|\\n)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s|\\n)+?\\n|(?:\s|\\n)\s*\\n(?:\\n)*\s(?:\s|\\n)*?(?:(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)|(?:\s|\\n)+?\\n\\n[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*|(?:\s|\\n)[^;]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z])))|(mongosh|mongo)(\s+[^\s]+){0,16}?\s+--eval=?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r)*?(db\s*\.\s*dropDatabase\s*\(|db\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*drop\s*\(|db\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*(deleteMany|deleteOne|remove)\s*\(\s*(\{\s*\}\s*)?\))|(redis-cli|valkey-cli)(\s+[^\s]+){0,16}?\s+([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])(\s+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?\s*$|sqlite3(\s+[^\s]+){0,16}?\s((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r|--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)*?([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:(?:\s|\\n)+?(?:[^\s;\\][^\s;]*|\\(?:[^\s;n][^\s;]*)?)(?:\s(?:\s|\\n)*?(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s(?:\s|\\n)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s|\\n)+?\\n|(?:\s|\\n)\s*\\n(?:\\n)*\s(?:\s|\\n)*?(?:(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)|(?:\s|\\n)+?\\n\\n[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*|(?:\s|\\n)[^;]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z])))|psql(\s+[^\s]+){0,16}?\s+-[abegi-nq-uw-zA-EG-KMNOQSV-Z01]{9}[abegi-nq-uw-zA-EG-KMNOQSV-Z01]*[ce]|(mysql|mariadb)(\s+[^\s]+){0,16}?\s+-[a-dfgi-oq-tv-zA-CE-OQRT-Z]{9}[a-dfgi-oq-tv-zA-CE-OQRT-Z]*[ce]|clickhouse-client(\s+[^\s]+){0,16}?\s+(--query|-q)=?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r|--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)*?([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:(?:\s|\\n)+?(?:[^\s;\\][^\s;]*|\\(?:[^\s;n][^\s;]*)?)(?:\s(?:\s|\\n)*?(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s(?:\s|\\n)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s|\\n)+?\\n|(?:\s|\\n)\s*\\n(?:\\n)*\s(?:\s|\\n)*?(?:(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)|(?:\s|\\n)+?\\n\\n[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*|(?:\s|\\n)[^;]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z]))))'
     reason: dropping, truncating or deleting without a WHERE through a database client
     remedy: Wait for a person to approve the held call, or run the change as a reviewed migration.
     rationale: A DROP, TRUNCATE or unscoped DELETE through psql, mysql, mongosh, or a cache flush through redis-cli, wipes production data in one step; a person confirms it.
   - id: TK-A040
     class: shell
     field: line
-    # a cache flush piped into redis-cli or valkey-cli (`echo FLUSHDB | redis-cli`): argv reads each pipeline stage
-    # on its own, so the flush word and the client never share one, and the whole line does. The stage before the
-    # pipe must itself be the flush: echo (with up to four flags) or printf, printing exactly FLUSHALL or FLUSHDB
-    # (or with ASYNC/SYNC, or a trailing newline), optionally through tee stages that pass stdin through. A flush
-    # word that merely appears in the piped text (a grep hit, a sentence, a file piped in with cat) is not held:
-    # the rule is anchored on the client invocation, not on the keyword. A flush after the pipe, a pipe into another
-    # program, printf with a separate format string, or redis-cli through a wrapper isn't read.
-    pattern: '(^|[|;&]\s*)(echo(\s+-[a-zA-Z]+){0,4}\s+|printf\s+)\W{0,1}([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])(\s+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?((\\r)?\\n)?\W{0,1}\s*(?:\|\s*tee\b[^|]*){0,4}\|\s*(redis-cli|valkey-cli)\b'
-    reason: flushing a cache with a command piped into redis-cli
+    # a cache flush fed into redis-cli or valkey-cli: piped (`echo FLUSHDB | redis-cli`), as a herestring
+    # (`redis-cli <<< FLUSHALL`) or in a heredoc. argv reads each pipeline stage on its own, so the flush word and the
+    # client never share one, and the whole line does. The stage before the pipe must itself be the flush: echo (with
+    # up to four flags) or printf, printing exactly FLUSHALL or FLUSHDB (or with ASYNC/SYNC, or a trailing newline),
+    # also in a subshell or a { } group, optionally through tee stages that pass stdin through. A herestring must be
+    # exactly the flush; a heredoc holds it as a line of its own in its first nine (where the heredoc ends isn't read),
+    # its delimiter quoted any way, also as `bash -c` re-quotes it (<<'"'"'EOF'"'"'). The client fed one may follow
+    # any word (a wrapper: `timeout 5 redis-cli <<< FLUSHALL`, `bash -c 'redis-cli <<EOF …'`, whose line holds the
+    # heredoc). Only options (up to eight, each with at most one value) may come between the client and its
+    # herestring or heredoc, so a command that takes stdin as a value (`redis-cli -x SET k <<< FLUSHALL`) isn't held.
+    # Up to two of command, builtin and env, and a directory, may come before echo, printf and the piped-into client.
+    # A flush word that merely appears in the piped text (a grep hit, a sentence, a file piped in with cat) is not held: the rule is
+    # anchored on the client invocation, not on the keyword. A flush after the pipe, a pipe into another program,
+    # printf with a separate format string, env with options or assignments, or a pipe into redis-cli through another
+    # wrapper isn't read. The directory before a name is bounded, so the fallback engine stays linear
+    pattern: '(^|[|;&({]\s*)((command|builtin|env)\s+){0,2}([^\s|;&(){}]{0,256}/)?((echo(\s+-[a-zA-Z]+){0,4}\s+|printf\s+)\W{0,1}([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])(\s+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?((\\r)?\\n)?\W{0,1}(\s*[;)}]){0,4}\s*(?:\|\s*tee\b[^|]*){0,4}\|\s*((command|env)\s+){0,2}([^\s|;&(){}]{0,256}/)?(redis-cli|valkey-cli)\b)|(^|[\s|;&({''"])([^\s|;&(){}''"]{0,256}/)?(redis-cli|valkey-cli)(\s+-[^\s|;&()<>]*(\s+[^-\s|;&()<>][^\s|;&()<>]*)?){0,8}\s*(<<<\s*(\$?[''"])?([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])(\s+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?((\\r)?\\n)?[''"]?[ \t]*($|[\n|;&)}])|<<-?[ \t]*[''"\\]{0,8}[A-Za-z_][^\n]{0,256}\n([^\n]*\n){0,8}?[ \t]*([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])([ \t]+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?[ \t]*(\n|$))'
+    reason: flushing a cache with a command fed into redis-cli
     remedy: Wait for a person to approve the held call, or flush only the keys the change needs.
-    rationale: FLUSHALL and FLUSHDB piped into redis-cli empty the whole cache or database; a person confirms it.
+    rationale: FLUSHALL and FLUSHDB piped or fed into redis-cli empty the whole cache or database; a person confirms it.
   - id: TK-A041
     class: mcp
     tool: .*([^a-zA-Z]|^)(sql|postgres|postgresql|mysql|maria|sqlite|clickhouse|mongo|database|duckdb|snowflake|bigquery|redshift|psql|pg|oracle|mssql|sqlserver|db)([^a-zA-Z]|$).*
@@ -350,12 +365,13 @@ ask:
     # mcp:postgres/query and kin, are TK-DB001..003's already, and a search tool's query text is not a call). The
     # statement is read as TK-A039 reads a client's: up to eight statements may come first, where a statement ends
     # at `;` only (an escape counts as one character, so a quoted or escaped keyword cannot hide the
-    # destructive one), and a comment may come before the keyword. A DELETE counts only without a WHERE
+    # destructive one), and a comment may come before the keyword; a comment ends with its argument's text (another
+    # argument isn't run), so many open ones read linearly. A DELETE counts only without a WHERE
     # or with an always-true one. DROP
     # needs the object word after it (TABLE, DATABASE, SCHEMA, and kin), so `drop down menu` or `drop support for
     # node 16` doesn't match. There is no ROLLBACK exemption: a destructive statement in one argument isn't undone
-    # by a transaction in another. A list-valued argument isn't read.
-    pattern: '"(sql|query|statement)":"\s*((?:[^;\"\\]|\\.)*;){0,8}(?:\s|\\n|\\t|\\r)*(?:(?:--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)(?:\s|\\n|\\t|\\r)*)*([Dd][Rr][Oo][Pp](?:\s|\\n)+(?:[Tt][Ee][Mm][Pp][Oo][Rr][Aa][Rr][Yy](?:\s|\\n)+|[Tt][Ee][Mm][Pp](?:\s|\\n)+)?([Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Rr][Oo][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd](?:\s|\\n)+[Vv][Ii][Ee][Ww]|[Ff][Oo][Rr][Ee][Ii][Gg][Nn](?:\s|\\n)+[Tt][Aa][Bb][Ll][Ee]|[Dd][Oo][Mm][Aa][Ii][Nn]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Pp][Uu][Bb][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]|[Ss][Uu][Bb][Ss][Cc][Rr][Ii][Pp][Tt][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Aa][Ss][Tt]|[Cc][Oo][Ll][Ll][Aa][Tt][Ii][Oo][Nn]|[Oo][Ww][Nn][Ee][Dd](?:\s|\\n)+[Bb][Yy])|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|")|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:\s|\\n)([^\s;"]+((?:\s|\\n)+([Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*)?((?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)+[^;"]*)?|[^;"]*(?:\s|\\n)*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:(?:\s|\\n)*)(;|"))'
+    # by a transaction in another. A list-valued argument isn't read. Its whitespace runs are lazy, as TK-A039's are.
+    pattern: '"(sql|query|statement)":"((?:[^;\"\\]|\\.)*;){0,8}(?:\s|\\n|\\t|\\r|--[^\\\n"]*(?:\n|\\n)|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?([Dd][Rr][Oo][Pp](?:(?:\s|\\n)+?[Tt][Ee][Mm][Pp](?:[Oo][Rr][Aa][Rr][Yy])?)?(?:\s|\\n)+?([Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Rr][Oo][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd](?:\s|\\n)+[Vv][Ii][Ee][Ww]|[Ff][Oo][Rr][Ee][Ii][Gg][Nn](?:\s|\\n)+[Tt][Aa][Bb][Ll][Ee]|[Dd][Oo][Mm][Aa][Ii][Nn]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Pp][Uu][Bb][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]|[Ss][Uu][Bb][Ss][Cc][Rr][Ii][Pp][Tt][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Aa][Ss][Tt]|[Cc][Oo][Ll][Ll][Aa][Tt][Ii][Oo][Nn]|[Oo][Ww][Nn][Ee][Dd](?:\s|\\n)+[Bb][Yy])|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|")|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:\s|\\n)(?:\s*[^\s;"]+(?:\s(?:\s|\\n)*?(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;"]*|(?:\s|\\n)*?)|(?:\s(?:\s|\\n)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;"]*|(?:\s(?:\s|\\n)*?)?)|[^;"]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1)(?:\s|\\n)*?)(;|"))'
     reason: a destructive SQL statement through an MCP database tool
     remedy: Wait for a person to approve the held call, or run the change as a reviewed migration.
     rationale: An MCP tool whose sql, query or statement argument drops, truncates or deletes without a WHERE destroys data the same way a SQL tool call does; a person confirms it.

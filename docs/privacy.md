@@ -25,7 +25,7 @@ Point Tracekit at it:
 
 - **dev mode:** set `TRACEKIT_POLICY=/path/to/policy.yaml` in the environment the agent (and so its hooks) runs in.
 - **system mode:** `TRACEKIT_POLICY` is ignored. Put a root-owned copy outside the agent's reach, set `"policy"` to its
-  path in `/etc/tracekit/client.json`, then run `sudo tracekit migrate --system` to pin it and restart `tracekitd`.
+  path in `/etc/tracekit/client.json`, then run `sudo /opt/tracekit/bin/python -I -m tracekit migrate --system` to pin it and restart `tracekitd`.
 
 Both settings are off by default, recorded in each run's `run.start`, and the verifier flags runs that used them.
 

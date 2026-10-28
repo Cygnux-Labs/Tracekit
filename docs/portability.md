@@ -29,7 +29,7 @@ is why it needs `--experimental-macos`), Windows, and the Claude Code plugin loa
 ## macOS system mode
 
 ```bash
-sudo tracekit init --experimental-macos --user "$USER"
+sudo /usr/bin/python3 -m tracekit init --experimental-macos --user "$USER"
 ```
 
 It creates a hidden `_tracekit` account (a free id in 200-399, shell `/usr/bin/false`), generates the signing key as

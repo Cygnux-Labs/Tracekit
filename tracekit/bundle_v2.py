@@ -309,4 +309,4 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
         raise
     return {"bundle": out_path, "records": sum(map(len, runs.values())), "tree_size": size,
             **({"runs": len(runs), "registry_leaves": run_set[1] - run_set[0]} if run_set else {}),
-            "verifier_min_version": need, "raised_by": raised_by(events, need, layout), "verifier_version": full}
+            "verifier_min_version": need, "raised_by": raised_by(events, need, layout), "verifier_min_version_full": full}

@@ -71,7 +71,8 @@ before they run, use its v2 integration instead ([Vercel AI SDK](integrations/ve
 - **Rejections are partial successes.** An event the signer refuses is reported in the OTLP `partialSuccess`
   (`rejectedSpans`, `errorMessage`); the rest of the batch still lands.
 - **Bounded input.** Bodies up to 4 MB (16 MB after decompression), 10,000 spans per request, attribute nesting capped
-  at 16 levels. Malformed bodies get `400`, unknown content types `415`.
+  at 16 levels. Malformed bodies get `400`, unknown content types `415`. At most 64 connections at once; each request
+  must arrive within 30 s, and a connection idle for 10 s is closed ([limits](limits.md#deployment)).
 
 ## Exporting traces
 

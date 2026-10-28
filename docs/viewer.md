@@ -30,8 +30,9 @@ The header holds the pages, the command box, and on a run's page that run's view
 A run's page shows the run's agents (the run that started it and every run started from there, each with its calls,
 held, blocked and flagged counts) and tool mix on the left, one of its views in the middle and the inspector (DETAIL,
 WHY, NODE) on the right, under a header with the run's verdict, counts and the **EXPORT** and **VERIFY** commands. Its
-views, keys `1` to `7`: **OVERVIEW**, **CALLS** (the run's tape), **TIMELINE** (one lane per agent), **GRAPH**,
-**WHY**, **AGENTS** and **EVIDENCE** (the run's review and the viewer's verifier report). OVERVIEW, GRAPH, WHY and
+views, keys `1` to `7`: **OVERVIEW**, **CALLS** (the run's tape), **TIMELINE** (by call on one time axis, or one lane per agent), **GRAPH**,
+**WHY**, **AGENTS** and **EVIDENCE** (the run's signed records in order, the viewer's checks and their result, and
+the export and verify commands; [below](#a-runs-timeline-evidence-and-the-inspector)). OVERVIEW, GRAPH, WHY and
 AGENTS need the run's why log, which the viewer builds for each verified run.
 
 **NEEDS YOU**, under the stats strip, lists across every run what needs a person, first the calls waiting (oldest
@@ -66,7 +67,8 @@ failure report (a run that verified at an earlier checkpoint and fails at a late
 its earlier report and findings, taken back); `ERROR` means the viewer could not check the run (its NOT CHECKED row
 says why; it tries again five minutes later or when the run grows); `PENDING` means no checkpoint covers the run's
 records yet. A viewer that stops checking runs altogether says `STOPPED`, not `LIVE`, with the reason, until it
-restarts. A run still being written is shown up to the newest
+restarts, and every mark of a run that verified (the run chip, its verdict, EVIDENCE's stamp, HORIZON's chain) reads
+`VERIFIED · CHECKS STOPPED`, no longer green. A run still being written is shown up to the newest
 checkpoint and grows with each one; a long run is checked again no sooner than four times its last check's time. A run
 that stopped growing is checked again five minutes after its last check, one run at a time, so a later edit of its
 records turns it `FAILED`. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live view and the tape
@@ -139,8 +141,9 @@ The effect is the drop in how often the call happens, with its 95% interval.
 
 ### Runs, overview and timeline (Causeway's)
 
-With why logs the header also has Causeway's views of a run; each takes panel 9, and the picker next to its title
-chooses the run.
+With why logs a run's page also has Causeway's views of a run, and the picker next to the view's title chooses the why
+run. A why run has that page even with no signed run selected: a why run on RUNS, a lineage step, **SHOW WHAT IT
+REACHED**, **WHY DID THIS HAPPEN?** and a why alert each open it.
 
 ![RUNS: every why run with its task, agents, model and tool calls, alerts, tests and whether its log is intact](viewer/runs-list.png)
 
@@ -156,8 +159,9 @@ not proof; a *confirmed cause* changed how often the action happens in replays; 
 
 ![TIMELINE: every event of the run with its time, agent, type, what happened and how long it took; filters by agent, type, flagged and text](viewer/timeline.png)
 
-**TIMELINE**: every event, filtered by agent, type (inputs, model calls, tool calls, messages), **flagged only** and
-text. Click a row for its NODE.
+**TIMELINE** (the tape's **WHY LOG EVENTS** button: on a run's page, and on every page when no v2 runs are loaded):
+every event, filtered by agent, type (inputs, model calls, tool calls, messages), **flagged only** and text. Click a
+row for its NODE.
 
 ### WHY DID IT HAPPEN?
 
@@ -194,7 +198,8 @@ run's calls around a black hole: the rings are the project (relative paths, or i
 it records one), this machine and the outside world; a shield marks a restricted place (a rule about secrets, harness
 configuration or Tracekit's own files matched), a jet data that left the machine. **REPLAY** plays the calls in order,
 an agent's chip follows its route, ORBIT and TOP change the view, and a click on a place lists who went there and how
-we know (signed, observed by a sensor, or unverified). Calls whose arguments the viewer has only as commitments are
+we know (signed, observed by a sensor, or unverified: its run did not verify, or a why log wrote it, which nothing
+signs). Calls whose arguments the viewer has only as commitments are
 placed by their tool, and the page says how many. With reduced motion it draws still frames.
 
 ### GRAPH: click a node
@@ -229,7 +234,7 @@ left to right in run order; each node carries its signed decision: **DENIED** (r
 reason, who approved, and the record it cites. A run's arguments are only a salted commitment, so WHY can list the
 path but not replay it. With ACTUAL SIZE a flowchart wider than its panel scrolls sideways (`scroll →` in the
 panel's title), and a clicked node is scrolled into view. A held call's node says how its approval ended
-(**APPROVED**, **REJECTED**, **EXPIRED**). The why views follow the run selected in panel 1; a run that failed
+(**APPROVED**, **REJECTED**, **EXPIRED**). The why views follow the run whose page is open; a run that failed
 verification has no graph, and GRAPH says why.
 
 ### AGENTS
@@ -268,7 +273,7 @@ tracekit view: bundle docs/sample/demo-run-tampered.tkb FAILED verification (exi
 `tracekit view [--dev | --config signer.yaml | --data-dir DIR]` reads one signer's store, read-only, and verifies each
 run with the code `tracekit verify` runs. The page is the observer's terminal, for runs:
 
-- **Runs** (panel 1): each run with its agent's registered name, the verifier's verdict (`VERIFIED`, `FAILED`, or
+- **Runs** (on DESK, and the RUNS page): each run with its agent's registered name, the verifier's verdict (`VERIFIED`, `FAILED`, or
   `PENDING` until a checkpoint covers the run's last record; every verdict is operator-side, see below), start time,
   duration, and its calls, blocked, held and gaps. Clicking a run scopes the tape, timeline, tool mix and header to it;
   **All runs** restores the full view. A run that fails shows only its verifier report.
@@ -313,7 +318,7 @@ instead; `?token=` on an `/api/` path is refused (401), so the token never sits 
 | `/api/snapshot` | `{next, dropped, max, records, source?}`: the tape rows the page renders (each run's verifier report, then its records once it verifies), `next` the index to stream from, `dropped` how many rows left the live view and `max` how many it holds; `source` is `bundle` when the viewer shows a v1 bundle |
 | `/api/verify` | `{records, ok, problems, head, stopped}`: how many records are shown from runs that verified, each run that failed or could not be checked with why (the header's chain badge), and `stopped`, why the viewer stopped checking runs if it did (the page then says STOPPED, not LIVE) |
 | `/api/stream?from=N` | `text/event-stream`: one `data:` line per record from index `N` on, as they are recorded |
-| `/api/rows?tenant=T&run=R` | `{rows}`: one run's rows from its bundle as verified (exported from the store, verified, then translated), for a run whose records left the live view (the page asks for it when you select such a run); checked again only once the run's own records grow, refused (404) once the viewer's own re-check fails the run, and answered 503 with `Retry-After` while two other runs are being checked; an OIDC session reads its tenant's runs only |
+| `/api/rows?tenant=T&run=R` | `{rows}`: one run's rows from its bundle as verified (exported from the store, verified, then translated), for a run whose records left the live view (the page asks for it when you select such a run); checked again only once the run's own records grow, refused (404) once the viewer's own re-check fails the run, and answered 503 with `Retry-After` while two other runs are being checked (only a check reads the store; a run the viewer hasn't verified yet is 404); an OIDC session reads its tenant's runs only |
 | `/api/why/workspace`, `/api/why/runs/<id>` | the why logs, with `--why` ([below](#why)) |
 
 The run pages and their API (`/runs`, `/api/runs`, `/api/run`, `/api/bundle`) are the central viewer's, served only
@@ -342,11 +347,11 @@ that citation joins the two.
   observed path through agents, model calls and messages, from each of the 20 nearest untrusted inputs), **candidate causes** with their
   status (primary cause, contributing, confirmed, joint, inconclusive, no effect seen, ruled out, not tested), effect,
   95% interval and with → without rates, and **FIND THE CAUSE** / **RUN TEST**.
-- **Views** (header buttons; the run list and tape stay): **RUNS**, **OVERVIEW**, **TIMELINE** and **WHY DID IT HAPPEN?**
-  (as below), **GRAPH**, the run's data flow (observed edges; tested causes
+- **Views** (a run's page, keys `1` to `7`; the tape's **WHY LOG EVENTS**; the **INFLUENCE** page): **OVERVIEW**,
+  **WHY** and the why log's **TIMELINE** (as below), **GRAPH**, the run's data flow (observed edges; tested causes
   in red; inferred links and ruled-out tests hidden until ticked; click a node for what it came from and led to),
   **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: sources ×
-  tools, with tested effects). **DESK** returns to the panels.
+  tools, with tested effects). **DESK** shows every panel at once.
 - **Alerts**: the why alerts (a sensitive call using a value only untrusted content supplied, a call downstream of
   untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`.
 
@@ -400,8 +405,8 @@ search, a run's page or a bundle download, even with B's run id. Its only write 
 | Path | Answers |
 |---|---|
 | `/api/runs?run&agent&tenant&since&until&verdict&gaps&denies&approvals&limit&after` | `{runs, next}`: at most `limit` (50) runs, each with its log, tenant, agent, first and last event time, record count, gaps, denies, approvals and verdict; `next` is the `after` of the next page. `since`/`until` are RFC 3339 UTC times; `verdict` is `verified`, `failed` or `pending`; `gaps=1`, `denies=1` and `approvals=1` keep runs that have one; `tenant` narrows an operator-admin's list. One search query per log per page, plus a reader of each log with matching runs (it reads that log's index). |
-| `/api/run?log&tenant&run&from` | the run's verdict with verify.v2's full report and, only when it verified, 500 of its records from the `from`th, with `next` |
-| `/api/bundle?log&tenant&run` | the run's `.tkb` bundle |
+| `/api/run?log&tenant&run&from` | the run's verdict with verify.v2's full report and, only when it verified, 500 of its records from the `from`th, with `next`; each request checks the run again, two at once at most: past that it is answered 503 with `Retry-After` |
+| `/api/bundle?log&tenant&run` | the run's `.tkb` bundle; it shares `/api/run`'s limit, two at once |
 
 A run's verdict is what `tracekit verify` gives the bundle the viewer exports from the store; a run whose last record no
 checkpoint covers yet is `pending`, and a run that fails shows its failure report and none of its records. Every verdict

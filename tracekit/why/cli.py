@@ -362,7 +362,8 @@ def cmd_transfer(a):
     except _signed_errors() as e:
         return _signed_error("transfer", e)
     _p(json.dumps(r, indent=2) if a.json else
-       f"  transfer {r['seq']} {r['sender']} -> {r['receiver']}: change {r['change']:.3f}\n  {r['sentence']}")
+       f"  transfer {r['seq']} {r['sender']} -> {r['receiver']} (names claimed by the caller): "
+       f"change {r['change']:.3f}\n  {r['sentence']}")
     return 0
 
 

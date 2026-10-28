@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import time
 import unittest
 import unittest.mock
 
@@ -30,6 +31,13 @@ class TestDemo(unittest.TestCase):
                      "signer: forbidden: the signer signs only as the calling run's own agent (uid:990101, run "):
             self.assertIn(line, text)
         self.assertFalse(os.path.exists(re.search(r"in-process signer in (\S+)\)", text).group(1)))
+
+    def test_on_a_coarse_clock(self):
+        """Python before 3.13 reads Windows' clock in 15.6 ms ticks: B's Replay starts in the tick A's messages are
+        signed in, and their ts round down to the microsecond here."""
+        tick = lambda real=time.time: real() // 0.015625 * 0.015625 + 3e-7   # noqa: E731
+        with unittest.mock.patch("time.time", tick), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(pcm_cli.main(["demo"]), 0)
 
 
 class TestVerify(Case):

@@ -432,7 +432,9 @@ class TestTailerHeartbeat(Completeness):
         lost = self.gaps(self.events(run["run_id"]), "tailer_lost")
         self.assertEqual(len(lost), 1)
         self.assertIn("no tailer_heartbeat", lost[0]["data"]["reason"])
-        self.assertIn("run `sudo tracekit doctor` to check the tailer", lost[0]["data"]["reason"])
+        # system mode puts no `tracekit` on root's PATH
+        self.assertIn("run `sudo /opt/tracekit/bin/python -I -m tracekit doctor` to check the tailer",
+                      lost[0]["data"]["reason"])
         self.assertEqual(self.gaps(self.events(quiet["run_id"]), "tailer_lost"), [])   # never had a tailer
 
     def tailer(self, run):

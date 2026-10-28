@@ -379,6 +379,8 @@ def _init_remote_v2(a, url):
     try:
         on = hooks and install.install_hooks(hooks, module=install.V2_HOOK, signer=env,
                                              thinking=not a.no_thinking_summaries)
+        if hooks and not a.project:
+            install.record_hooks_settings(hooks)
     except install.SettingsError as e:
         print(f"tracekit: {e}", file=sys.stderr)
         return 1
@@ -507,6 +509,8 @@ def _run(a):
                 try:
                     on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
                                                          thinking=not a.no_thinking_summaries)
+                    if hooks and not a.project:
+                        install.record_hooks_settings(hooks)
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1

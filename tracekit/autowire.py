@@ -400,7 +400,8 @@ def instrument(agent=None):
         except SignerUnavailable as e:
             fix = ("dev auto-spawn is off while TRACEKIT_SIGNER is set: start the signer it names, or unset it for a "
                    "same-user dev signer" if os.environ.get("TRACEKIT_SIGNER") else
-                   "system mode: start the system signer (`sudo tracekit doctor` says what is wrong)"
+                   "system mode: start the system signer (`sudo /opt/tracekit/bin/python -I -m tracekit doctor` says "
+                   "what is wrong)"
                    if os.path.exists(SYSTEM_CONFIG) else "`tracekit doctor` says what is wrong")
             raise SignerUnavailable(f"tracekit.instrument(): {e}; {fix}") from None
         atexit.register(_close, run)

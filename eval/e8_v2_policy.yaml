@@ -1,5 +1,6 @@
 # E8 v2 (eval/e8_insider_v2.py): the coding pack plus one ask rule, so the eval has an approval for the agent to
-# try to answer itself. Install with: sudo tracekit init --v2 --user agent --policy eval/e8_v2_policy.yaml
+# try to answer itself. Install from a root-owned checkout with: sudo /usr/bin/python3 -m tracekit init --v2 --user agent
+# --policy eval/e8_v2_policy.yaml
 extends: ../tracekit/policy2/packs/coding.yaml
 description: E8 v2 (coding pack and an ask rule)
 

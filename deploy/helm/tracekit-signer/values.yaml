@@ -2,7 +2,7 @@
 
 signer:
   # The signer image (deploy/docker/Dockerfile). Pin it by digest: the image is the signer's code trust.
-  image: ghcr.io/cygnux-labs/tracekit-signer:v1.4.2
+  image: ghcr.io/cygnux-labs/tracekit-signer:v1.5.0
   uid: 10001               # the image's user; owns the signer's data
   tenant: default          # the tenant of the agent's runs (signer.yaml `tenants`, keyed by the agent's uid)
   durability: ack-on-fsync

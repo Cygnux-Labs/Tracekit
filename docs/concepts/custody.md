@@ -78,7 +78,7 @@ It also takes SOCKS5 on the same port, which is how [E2B](../integrations/e2b.md
 reports the hosts each run reached, and the signer records them. A host no recorded call explains
 becomes `reconcile.unexplained_effect`. A policy's `explains` entries list hosts a tool's own dependencies reach (a
 package index for an install command, for example). If the observer stops reporting for 90 seconds, the signer writes
-`observer_lost`. On Linux system mode, `sudo tracekit init --v2 --user AGENT --egress` adds a firewall rule so the
+`observer_lost`. On Linux system mode, `tracekit init --v2 --user AGENT --egress`, run as root, adds a firewall rule so the
 agent's user can only reach the network through the observer. Setup: [egress](../egress.md).
 
 ## Choosing what to deploy

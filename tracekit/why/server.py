@@ -103,7 +103,7 @@ class Feed:
 
 def _agent(ev: Dict[str, Any]) -> Dict[str, Any]:
     """The viewer's agent fields of a why event: the run's own events are its main agent, each why agent a subagent."""
-    return {} if ev["agent"] == "run" else {"agent_id": ev["agent"], "agent_type": ev["agent"]}
+    return {} if ev.get("agent", "run") == "run" else {"agent_id": ev["agent"], "agent_type": ev["agent"]}
 
 
 def _brief(v: Any, n: int = 300) -> str:
@@ -113,42 +113,45 @@ def _brief(v: Any, n: int = 300) -> str:
 
 def tape(run, start: int = 0) -> List[Dict[str, Any]]:
     """The viewer's records (observe.Translator's shape) of `run`'s events from the `start`th: what its tape, agents
-    and detail show of a why log. Every record carries `why` (run id, graph node id), so the page opens it in WHY."""
+    and detail show of a why log. Every record carries `why` (run id, graph node id), so the page opens it in WHY.
+    load_run checks no field and analyse() needs few, so every field but `id` and `type` is read as maybe missing."""
     out = []
     for ev in run.events[start:]:
         t = ev["type"]
         try:
-            ts = {"ts": ts_seconds(ev["ts"])}
+            ts = {"ts": ts_seconds(ev.get("ts"))}
         except ValueError:   # load_run does not check a log's ts: shown as now, and HORIZON sorts it oldest
             ts = {"ts": time.time(), "ts_unread": True}
-        r = {**ts, "session_id": run.run_id, "seq": ev["seq"], "hash": ev["hash"],
-             "prev": ev["prev_hash"], "why": {"run": run.run_id, "node": "ev:" + ev["id"]}, **_agent(ev)}
+        # analyse() takes an event without hash or prev_hash (the chain check lists it): shown without them
+        r = {**ts, "session_id": run.run_id, "seq": ev.get("seq"), "hash": ev.get("hash"),
+             "prev": ev.get("prev_hash"), "why": {"run": run.run_id, "node": "ev:" + ev["id"]}, **_agent(ev)}
         if t == "run.start":
             out.append({**r, "event": "SessionStart", "source": f"why log · {ev.get('program') or 'no program'}"})
         elif t == "agent.start":
             out.append({**r, "event": "SubagentStart", "parent_id": ev.get("parent")})
         elif t == "input":
-            r.update(event="log", text=f"{'TASK' if ev.get('kind') == 'task' else 'INPUT'} {ev['source']} "
-                                       f"({ev['trust']}) · {_brief(run.value(ev['ref']))}")
+            r.update(event="log", text=f"{'TASK' if ev.get('kind') == 'task' else 'INPUT'} {ev.get('source', '?')} "
+                                       f"({ev.get('trust', '?')}) · {_brief(run.value(ev.get('ref')))}")
             if ev.get("kind") == "task":
-                out.append({**r, "event": "UserPromptSubmit", "prompt": _brief(run.value(ev["ref"]), 2000)})
+                out.append({**r, "event": "UserPromptSubmit", "prompt": _brief(run.value(ev.get("ref")), 2000)})
             out.append(r)
         elif t == "decision":
-            out.append({**r, "event": "tk_model", "model": ev["model"], "usage": ev.get("usage"),
-                        "text": f"{ev.get('purpose') or 'model call'} · {_brief(run.value(ev['output']), 200)}"})
+            out.append({**r, "event": "tk_model", "model": ev.get("model"), "usage": ev.get("usage"),
+                        "text": f"{ev.get('purpose') or 'model call'} · {_brief(run.value(ev.get('output')), 200)}"})
         elif t == "action":
             uid = ev["id"]
             blocked = ev.get("status") == "blocked"
-            out.append({**r, "event": "PreToolUse", "tool_name": ev["tool"], "tool_use_id": uid,
-                        "tool_input": run.value(ev["args_ref"]) or {},
+            out.append({**r, "event": "PreToolUse", "tool_name": ev.get("tool"), "tool_use_id": uid,
+                        "tool_input": run.value(ev.get("args_ref")) or {},
                         "policy": {"decision": "deny" if blocked else "allow",
                                    "reasons": list((ev.get("policy") or {}).get("rule_ids") or [])}})
             if not blocked:
-                out.append({**r, "event": "PostToolUse", "tool_name": ev["tool"], "tool_use_id": uid,
-                            "tool_response": run.value(ev["result_ref"]), "failed": ev.get("status") == "error",
+                out.append({**r, "event": "PostToolUse", "tool_name": ev.get("tool"), "tool_use_id": uid,
+                            "tool_response": run.value(ev.get("result_ref")), "failed": ev.get("status") == "error",
                             "duration_ms": ev.get("duration_ms")})
         elif t == "message":
-            out.append({**r, "event": "log", "text": f"MESSAGE → {ev['to']} · {_brief(run.value(ev['ref']))}"})
+            out.append({**r, "event": "log",
+                        "text": f"MESSAGE → {ev.get('to', '?')} · {_brief(run.value(ev.get('ref')))}"})
         elif t == "run.end":
             out.append({**r, "event": "SessionEnd", "reason": _brief(ev.get("outcome"), 200)})
     return out
@@ -231,7 +234,10 @@ class Store:
         for p in paths:
             st = _stat(p)
             if st is not None and self._stat.get(p) != st:
-                self._changed(p, announce)
+                try:   # one run's error skips that run (retried when its log changes), never the runs after it
+                    self._changed(p, announce)
+                except Exception as e:
+                    print(f"tracekit why: {p}: {type(e).__name__}: {e}", file=sys.stderr)
         gone = set(self._stat) - set(paths)
         with self.lock:   # ingest reads _heads under it
             for d in (self._stat, self._seen, self._sent, self._cache, self._heads):
@@ -245,16 +251,17 @@ class Store:
             return
 
         def loop() -> None:
-            self.scan(announce=False)
-            while not self._stop.is_set():
+            announce = False   # until a scan completes: a run it didn't reach is still indexed silently
+            while True:
+                try:   # one bad log must not end the watcher: _changed() records its stat first, so it isn't retried
+                    self.scan(announce)
+                    announce = True
+                except Exception as e:
+                    print(f"tracekit why: watcher: {e}", file=sys.stderr)
                 self._wake.wait(interval)
                 self._wake.clear()
                 if self._stop.is_set():
                     return
-                try:
-                    self.scan()
-                except Exception as e:
-                    print(f"tracekit why: watcher: {e}", file=sys.stderr)
 
         self._watcher = threading.Thread(target=loop, daemon=True)
         self._watcher.start()

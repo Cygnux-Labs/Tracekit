@@ -243,15 +243,15 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
             self.assertEqual(self.pre()[0], 2)
         self.assertEqual(self.pre(tcid="t2"), (0, ""))
 
-    def test_session_start_prunes_state_older_than_the_idle_timeout(self):
+    def test_session_start_prunes_call_state_after_the_idle_timeout_and_session_state_after_its_keep(self):
         self.assertEqual(self.pre(), (0, ""))   # t1 never gets its PostToolUse
-        old = time.time() - service.IDLE_S - 1
-        stale = [claude_code._state("s0"), claude_code._state("s0")[:-len(".json")] + ".lock",
-                 claude_code._state("s1", "t1")]
-        for f in stale[:2]:
-            open(f, "w").close()
-        for f in stale:
-            os.utime(f, (old, old))
+        idle, kept = time.time() - service.IDLE_S - 1, time.time() - claude_code.SESSION_KEEP_S - 1
+        aged = {claude_code._state("s0"): kept, claude_code._state("s0")[:-len(".json")] + ".lock": idle,
+                claude_code._state("s1", "t1"): idle, claude_code._state("s2"): idle,
+                claude_code._state("s3")[:-len(".json")] + ".lock": idle}
+        for f, t in aged.items():
+            open(f, "a").close()
+            os.utime(f, (t, t))
         self.assertEqual(self.d.hook("SessionStart", None, None, None)[0], 0)
-        self.assertEqual([os.path.exists(f) for f in stale], [False, False, False])
+        self.assertEqual([os.path.exists(f) for f in aged], [False, False, False, True, False])
         self.assertTrue(os.path.exists(claude_code._state("s1")))

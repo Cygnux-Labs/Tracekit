@@ -21,8 +21,11 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars), Edit (paths: every file the
                                                           patch adds, updates, deletes or moves to), mcp__s__t
     Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t
-    Gemini  run_shell_command, read_file, write_file, replace, glob, search_file_content, web_fetch, google_web_search
-            -> Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch
+    Gemini  run_shell_command, read_file, read_many_files, write_file, replace, glob, search_file_content,
+            list_directory, web_fetch, google_web_search
+            -> Bash, Read, Read, Write, Edit, Glob, Grep, LS, WebFetch, WebSearch (every path a file tool reads, under
+            any release's name for it, in file_path or paths: file_path, absolute_path, dir_path, path, and
+            read_many_files' paths and include)
     goose   shell, write, edit, tree, read_image, <extension>__<tool>
             -> Bash, Write, Edit, LS, Read (WebFetch for an http(s) source), mcp__<extension>__<tool> (goose's
             payload names its event `event` and its
@@ -52,6 +55,7 @@ import urllib.parse
 from . import __version__, hook as H
 from .core import canon
 from .locking import lock_file, unlock_file
+from .policy2.classes import PATH_KEYS, first
 
 HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid", "antigravity")
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
@@ -66,6 +70,13 @@ GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_fil
 # (monitor runs its `command` in a shell, as run_shell_command does; notebook_edit writes `notebook_path`)
 QWEN_TOOLS = {**GEMINI_TOOLS, "edit": "Edit", "grep_search": "Grep", "web_search": "WebSearch", "todo_write": "TodoWrite",
               "agent": "Task", "monitor": "Bash", "notebook_edit": "NotebookEdit"}
+# each release's name for the path a Gemini CLI or Qwen Code file tool reads: Gemini CLI renamed read_file's
+# absolute_path to file_path, the directory tools' path to dir_path and read_many_files' paths to include; Qwen Code
+# kept the old names
+GEMINI_PATH_ARGS = ("file_path", "absolute_path", "notebook_path", "dir_path", "path")
+# a URL in Gemini CLI's web_fetch prompt: its scheme in any case (WHATWG URL parsing), up to a character JavaScript's
+# \s matches (the prompt is split on them)
+WEB_FETCH_URL = re.compile(r"https?://[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+", re.I)
 # a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
@@ -156,14 +167,30 @@ def tool(harness, name, ti):
                 ti["file_path"] = ti[k]
         return CURSOR_TOOLS.get(name, name), ti
     if harness in ("gemini", "qwen"):
-        for k in ("absolute_path", "notebook_path"):   # Gemini's read_file (Qwen's before 0.13), Qwen's notebook_edit
-            if k in ti and "file_path" not in ti:
-                ti["file_path"] = ti[k]
-        if name == "web_fetch" and "url" not in ti and isinstance(ti.get("prompt"), str):
-            m = re.search(r"https?://\S+", ti["prompt"])
-            if m:
-                ti["url"] = m.group(0)
-        return (QWEN_TOOLS if harness == "qwen" else GEMINI_TOOLS).get(name, name), ti
+        mapped = (QWEN_TOOLS if harness == "qwen" else GEMINI_TOOLS).get(name, name)
+        if mapped != "Bash":   # a shell command's dir_path is where it runs, not a file it reads
+            lists = [ti.get(k) for k in (("paths", "include") if name == "read_many_files" else ("paths",))]
+            files = list(dict.fromkeys(f for f in [ti.get(k) for k in GEMINI_PATH_ARGS] + [
+                f for v in lists if isinstance(v, list) for f in v] if isinstance(f, str)))
+            for k in ("absolute_path", "notebook_path", "dir_path"):
+                if k in ti and "file_path" not in ti:
+                    ti["file_path"] = ti[k]
+            # every path the tool may read is decided (the policy reads the first path key and `paths`), so a key one
+            # release ignores never replaces the one another reads
+            decided = [first(ti, *PATH_KEYS), *(ti["paths"] if isinstance(ti.get("paths"), list) else ())]
+            if any(f not in decided for f in files):
+                ti["paths"] = files
+        if name == "web_fetch":   # Gemini CLI fetches every URL its prompt names, Qwen Code its `url`: each is decided
+            # lean: a URL Qwen Code's prompt only names is decided as if fetched; read the prompt for Gemini CLI alone
+            # if that stops a fetch a person needs
+            prompt = ti.get("prompt")
+            urls = list(dict.fromkeys([u for u in [ti.get("url")] if isinstance(u, str)]
+                                      + (WEB_FETCH_URL.findall(prompt) if isinstance(prompt, str) else [])))
+            if urls:
+                ti.setdefault("url", urls[0])
+                if urls != [ti["url"]]:
+                    ti["urls"] = urls
+        return mapped, ti
     if harness == "opencode":
         # the path the tool itself reads decides, never another path key the model sent beside it (OpenCode drops
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
@@ -655,14 +682,15 @@ def _install_opencode(path, uninstall=False, v2=False, python=None):
             if raw is not None and OPENCODE_MARKER not in text:
                 raise SettingsError(f"{path} is not Tracekit's plugin; Tracekit did not change it.")
             old = _version(text)
-            if raw is not None:
+            plugin = None if uninstall else _opencode_plugin(python, v2).encode("utf-8")
+            if raw not in (None, plugin):
                 files.backup(d, name, raw)
             if uninstall:
                 if raw is not None:
                     target = name if isinstance(d, int) else path
                     os.unlink(target, **({"dir_fd": d} if isinstance(d, int) else {}))
-            else:
-                files.write(d, name, _opencode_plugin(python, v2).encode("utf-8"), 0o600)
+            elif raw != plugin:
+                files.write(d, name, plugin, 0o600)
         finally:
             files.close(d)
     except (files.UnsafePath, OSError) as e:
@@ -683,7 +711,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
     """Install one owned goose plugin without overwriting a plugin that is not Tracekit's. goose runs a rule with no
     matcher for every tool (a bare "*" matcher is an invalid regex goose silently skips), its timeout is in seconds,
     and only a PreToolUse action carries on_failure: block."""
-    from .install import SettingsError, _atomic_write_json, _backup, _hook_command
+    from .install import SettingsError, _atomic_write_json, _backup_changed, _hook_command
     path = os.path.abspath(path)
     plugin_dir = os.path.dirname(os.path.dirname(path))   # <plugin>/hooks/hooks.json
     manifest = os.path.join(plugin_dir, "plugin.json")
@@ -697,7 +725,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
             raise SettingsError(f"{manifest} is not valid JSON ({e}); Tracekit did not change it.") from e
         if not isinstance(owned, dict) or owned.get("name") != "tracekit":
             raise SettingsError(f"{manifest} is not Tracekit's plugin; Tracekit did not change it.")
-    s, txt = {}, ""
+    s, txt = {}, None
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
@@ -707,7 +735,6 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
             raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
         if not isinstance(s, dict):
             raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
-        _backup(path, txt.encode("utf-8"))
     hooks = s.get("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
@@ -740,6 +767,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
         s["hooks"] = hooks
     else:
         s.pop("hooks", None)
+    changed = _backup_changed(path, txt, s)
     if uninstall and not s:
         # the only content was Tracekit's hooks: remove the plugin's files, not other content (a file with other
         # keys falls through to the write below, and its manifest stays)
@@ -755,7 +783,8 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if not os.path.exists(manifest):
             _atomic_write_json(manifest, GOOSE_PLUGIN)
-    _atomic_write_json(path, s)
+    if changed:
+        _atomic_write_json(path, s)
     old = " and ".join(sorted(removed if uninstall else removed - {new}))
     if old:
         print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")
@@ -765,7 +794,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
 def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
     """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
-    from .install import SettingsError, _atomic_write_json, _backup, _hook_command
+    from .install import SettingsError, _atomic_write_json, _backup_changed, _hook_command
     path = path or config_path(harness, project)
     if harness == "opencode":
         return _install_opencode(path, uninstall, v2, python)
@@ -779,7 +808,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             raise SettingsError(f"{legacy} is Droid's legacy hooks file: save once in Droid's /hooks so Droid moves it "
                                 f"to {path}, then run init again. Tracekit did not change it.")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    s = {}
+    s, txt = {}, None
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
@@ -789,7 +818,6 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
         if not isinstance(s, dict):
             raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
-        _backup(path, txt.encode("utf-8"))
     if harness == "droid" and not uninstall and not os.path.exists(path):
         settings = os.path.join(os.path.dirname(path), "settings.json")
         if os.path.exists(settings):
@@ -880,9 +908,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             s.pop(key)
     if not hooks and harness != "droid":
         s.pop(key, None)
+    changed = _backup_changed(path, txt, s)
     if uninstall and harness == "droid" and not s:
         os.unlink(path)
-    else:
+    elif changed:
         _atomic_write_json(path, s)
     if uninstall and harness == "codex":   # init's reasoning summaries line goes with its hooks
         try:

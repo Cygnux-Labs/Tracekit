@@ -13,7 +13,7 @@ experimental.
 | Surface | What it covers |
 |---|---|
 | v2 signer, dev mode | `tracekit.instrument()`, `tracekit up/down/last`, `tracekit signer serve --dev`, file storage |
-| v2 signer, system mode on Linux | `sudo tracekit init --v2 --user AGENT`: the signer as its own OS user, file storage, uid and token callers |
+| v2 signer, system mode on Linux | `tracekit init --v2 --user AGENT` as root ([laptop system mode](deploy.md#laptop-system-mode)): the signer as its own OS user, file storage, uid and token callers |
 | Python SDK | `tracekit.sdk` (`RunHandle`) and `tracekit.instrument()` |
 | Framework integrations | OpenAI Agents SDK, LangChain / LangGraph, Claude Agent SDK, MCP client wrapping: each runs the adapter contract against the pinned real library on every push to main and every pull request |
 | Claude Code hooks (v2) | `tracekit init --dev --v2` and system mode's hooks |
@@ -55,6 +55,7 @@ experimental.
 | The Claude Code plugin (`plugin/`): the v2 Claude Code hooks through Claude Code's plugin system (its hook script is tested against the dev signer; loading inside a live Claude Code isn't) | [plugin](../plugin/README.md) |
 | The sandbox-runtime decider (`tracekit srt-decider`; tested against a stand-in that speaks srt-proxy's decider protocol, not a released srt-proxy) | [sandbox-runtime](integrations/sandbox-runtime.md) |
 | Codex CLI, Cursor, Gemini CLI and OpenCode 1.x hooks (checked against recorded hook payloads, OpenCode's written in its documented shape, not the live tools) | [coding agents](coding-agents.md) |
+| goose, Qwen Code, Factory Droid and Antigravity CLI hooks (written to each harness's published hook documentation and tested against payloads in that shape, not the live tools) | [coding agents](coding-agents.md) |
 | The Hermes Agent plugin (`integrations/hermes/`; tested against a stand-in for the sequential path of Hermes's agent loop and its plugin hook dispatch as v0.22.5's source defines them, not a running Hermes) | [Hermes Agent](integrations/hermes.md) |
 | CrewAI (tested against a stand-in, not the real library) and Browser Use (its real-library contract runs nightly only) | [CrewAI](integrations/crewai.md), [Browser Use](integrations/browser-use.md) |
 | Pydantic AI (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Pydantic AI](integrations/pydantic-ai.md) |

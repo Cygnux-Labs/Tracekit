@@ -5,7 +5,7 @@ adopting, running or auditing Tracekit: read them in order the first time, then 
 Each page starts with what the part is for, explains how it works, says where it stops, and links to the reference
 pages and code with the full detail.
 
-Everything here describes Tracekit 1.4.2. Parts marked experimental work and are tested, but may change between
+Everything here describes Tracekit 1.5.0. Parts marked experimental work and are tested, but may change between
 releases and get less hardening than the stable core ([what's stable](../support.md)).
 
 | | Page | What it explains |

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Claude Code hook entry point for the Tracekit plugin: the v2 hook (tracekit.integrations.claude_code), as
 # `tracekit init --v2` wires it, with the hook event hooks.json names as its argument. Needs the `tracekit` package:
-#   pip install tracekit-ai==1.4.2 && tracekit init --dev --v2 --no-hooks     (or a v2 system-mode signer)
+#   pip install tracekit-ai==1.5.0 && tracekit init --dev --v2 --no-hooks     (or a v2 system-mode signer)
 # Every install command it prints names the version in .claude-plugin/plugin.json (tests/test_hook_invocation.py
 # checks), since that package decides which calls run; the agent is asked to show it to the person, not run it.
 # Python runs isolated (-I), so the project directory and PYTHON* variables never decide which tracekit runs.
@@ -56,7 +56,7 @@ except Exception as e:
     why = "cannot import its hook (%s: %s)" % (type(e).__name__, e)
 if why:
     import tracekit
-    print("tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: pip install tracekit-ai==1.4.2 && "
+    print("tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: pip install tracekit-ai==1.5.0 && "
           "tracekit init --dev --v2 --no-hooks" % (getattr(tracekit, "__version__", "?"), sys.executable, why,
                                      "call was blocked" if pre else "event was NOT recorded"), file=sys.stderr)
     raise SystemExit(2 if pre else 1)
@@ -65,7 +65,7 @@ for py in "${TRACEKIT_PYTHON:-}" python3 python; do
   [ -n "$py" ] || continue
   if command -v "$py" >/dev/null 2>&1 && "$py" -I -c "$PATHS; import tracekit" >/dev/null 2>&1; then
     "$py" -I -c "$RUN" "$@"
-    finish $? "$py could not run the tracekit hook" "Ask the person to reinstall: pip install tracekit-ai==1.4.2"
+    finish $? "$py could not run the tracekit hook" "Ask the person to reinstall: pip install tracekit-ai==1.5.0"
   fi
 done
 case $(uname -s 2>/dev/null) in
@@ -75,9 +75,9 @@ case $(uname -s 2>/dev/null) in
 esac
 if [ -n "${TRACEKIT_PYTHON:-}${TRACEKIT_SIGNER:-}" ] || [ -d "$data" ]; then
   finish 3 "no Python here (TRACEKIT_PYTHON, python3, python) has the tracekit package, though Tracekit is set up" \
-    "Ask the person to install it (pip install tracekit-ai==1.4.2), set TRACEKIT_PYTHON to the Python that has it, or turn the plugin off: \
+    "Ask the person to install it (pip install tracekit-ai==1.5.0), set TRACEKIT_PYTHON to the Python that has it, or turn the plugin off: \
 /plugin disable tracekit@tracekit"
 fi
 echo "tracekit plugin: the tracekit package is not installed for python3, so this $EV event was NOT recorded. Ask the person to set it up: \
-pip install tracekit-ai==1.4.2 && tracekit init --dev --v2 --no-hooks" >&2
+pip install tracekit-ai==1.5.0 && tracekit init --dev --v2 --no-hooks" >&2
 exit 1

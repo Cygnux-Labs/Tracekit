@@ -701,8 +701,11 @@ def replay(signer, lines, decide_after=(), final=True):
     send, sent, calls, forged = tailer._Sender(run, lambda: signer.call("status", {})), {}, {}, 0
     for name, e in lines:
         if name == "prompt":   # the hook at UserPromptSubmit, as tracekit.integrations.claude_code sends it
+            typed, wrapped = claude_code.prompt_parts(e["prompt"])
             claude_code.prompted(run, e["prompt"])
-            run.call("observe", source="claude-code:UserPromptSubmit", trust="trusted", value=e["prompt"])
+            run.call("observe", source="claude-code:UserPromptSubmit", trust="trusted", value=typed)
+            for source, value, _ in wrapped:
+                run.call("observe", source=f"claude-code:{source}", trust="untrusted", value=value)
             continue
         if name == "inject":
             run.call("model_event", stream="agent", client_seq=forged, **e)

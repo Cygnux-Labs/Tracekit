@@ -19,17 +19,25 @@ output directory (default: `tracekit-graph`):
 - `GRAPH_REPORT.json`, the report data;
 - `GRAPH_REPORT.md`, the report for reading.
 
+Each file is written as a new file and renamed into place. `build` never writes through a symlink: it refuses an
+output directory that is a symlink, or a symlink in place of one of its files, because anyone who can write the folder
+(such as an agent in its own repo) could point one at a file elsewhere. Remove the symlink or pick another `-o`.
+Parent directories may be symlinks.
+
 ## Build
 
 `tracekit graph build SOURCES... --trust trust.json [--content] [--graphify FILE] [-o DIR]` reads v2 `.tkb`
 bundles and verifies each one against the trust configuration. A readable bundle that fails verification stays in the
-graph: its edges are `UNVERIFIED`, rather than being dropped.
+graph: its edges are `UNVERIFIED`, rather than being dropped. A bundle the graph can't read is listed in `sources`
+with `unreadable` and adds no runs: one whose records lack a field the graph reads or give it the wrong type, or whose
+run file holds another run's records, or holds a run another of its files holds.
 
 `--content` reads decided call arguments from the signer's content vault (`$TRACEKIT_SIGNER`, or the dev signer).
 The bundle holds a commitment to those arguments, not the arguments themselves. Without `--content`, the graph cannot
 make file and host edges from call arguments; it can still include signed provenance edges and observer edges. The
 build output and report state how many call arguments were not read. Each vault read opens the record's commitment and
-is recorded by the signer as `content.accessed`.
+is recorded by the signer as `content.accessed`. The vault finds a run by its id in the builder's own tenant, so a run
+whose id verified runs of other tenants or logs in the graph share is not read; the report says so.
 
 A `wrote` or `reached` edge needs a successful T2 executor or gateway result for that decision. A successful result
 from another tier produces `reported writing` or `reported reaching`. With decided arguments but no successful result,
@@ -50,31 +58,45 @@ also carry these fields:
 | run | `run:RUN_ID` | `ts`; `unread_args` when arguments were not read |
 | agent | `agent:NAME` | |
 | person | `person:APPROVER` | |
-| call | `call:RUN_ID:TOOL_USE_ID` | `decision` and `ok`, from verified records only |
+| call | `call:RUN_ID:DECISION_ID` | `tool_use_id`; `decision` and `ok`, from verified records only |
 | input | `input:RUN_ID:RUN_SEQ` | `trust` |
 | model | `model:RUN_ID:RUN_SEQ` | |
 | file | `file:PATH` | |
 | host | `host:HOST` | |
 | secret | `secret:RULE` | |
 | rule | `rule:RULE_ID` | |
-| finding | `finding:RUN_ID:RUN_SEQ` | `reviewer` or `effect` |
+| finding | `finding:RUN_ID:RUN_SEQ` | `reviewer`, or a why test's `effect` and, when the verifier counts it, `author` |
 | approval | `approval:APPROVAL_ID` | |
 | gap | `gap:RUN_ID:RUN_SEQ` | |
 | code | `code:GRAPHIFY_ID` | `source_file`, and sometimes `source_location` |
 
 The first record that names a node supplies its label and fields. Verified sources are considered first.
 
+A call is one signer decision (its `decision_id`), not a tool call id: an agent may reuse a tool call id for another
+action. A result joins the decision it names, and an approval joins the decision its `approval.request` binds, as the
+verifier joins them. A decision made again under the same tool call id and attempt with the same decided arguments
+(read with `--content`) is the same call as the first: LangGraph decides again when it resumes after an approval, and
+the signer's one approval of a call attempt covers both. Without `--content` each decision is a call of its own.
+
+A run id is unique only within one tenant of one signer log. When verified runs of other tenants or logs in the graph
+have the same id, each of those runs is `RUN_ID@TENANT@LOG_ID` instead of `RUN_ID`, in node ids, labels and edge
+records, and wherever a record of its tenant and log names it (a findings run's `analyzes`, a replay run's
+`replay_of`, a why test's replay runs), so a why test about it is counted with its own tenant's runs. A bundle that
+fails verification renames no run: its tenant and log are claims, so its run of a verified run's id joins that run,
+`UNVERIFIED`, as a tampered copy does.
+
 ### Edges and grades
 
 Every edge has `src`, `dst`, `kind`, `grade`, and `record`. A record from a bundle is
-`{"run_id", "run_seq", "seq", "ts"}`. A Graphify join instead records `{"graphify", "source_file"}`. An
-`UNVERIFIED` edge also has `claimed`, the grade it would have had from a verified source.
+`{"run_id", "run_seq", "seq", "ts"}`, its `run_id` the run's name in the graph (above). A Graphify join instead records
+`{"graphify", "source_file"}`. An `UNVERIFIED` edge also has `claimed`, the grade it would have had from a verified
+source.
 
 | Grade | Source | Edges |
 |---|---|---|
 | `SIGNED` | A signer record | `ran`, `started`, `analyses`, decisions, rule decisions, provenance, approvals, redactions, gaps, findings, and call file or host edges |
 | `OBSERVED` | An egress or kernel observer | A run `reached :PORT` or was `blocked from reaching :PORT`; a run had a `file event (SENSOR)` |
-| `INFERRED` | `tracekit why` or Graphify | Why context and influence edges (`why_evidence` keeps why's grade), signed why-test causal or suppressive edges, and Graphify `contains` |
+| `INFERRED` | `tracekit why` or Graphify | Why context and influence edges (`why_evidence` keeps why's grade), signed why-test causal or suppressive edges the verifier counts (`author`), and Graphify `contains` |
 | `UNVERIFIED` | A readable source that failed verification | The same edge kinds, with `claimed` |
 
 The signed edge kinds include:
@@ -94,9 +116,19 @@ Observed edges are always edges of a run, not a call. A process's call id is an 
 join it to an observer result. Egress edges have `observer` and, for network effects, `explained_by`; sensor file
 edges have `observer`.
 
-An `asked to write` or `asked to reach` edge remains in `graph.json`. Queries and reports hide it only when a later
-outcome from the same call to the same target has the same `args_digest` (or an older graph's `args_commitment`) and
-the same grade. It is not, by itself, a failed attempt.
+An `asked to write` or `asked to reach` edge remains in `graph.json`. Queries and reports hide it only when its
+`superseded_by` names the record of a later outcome from the same call to the same target, at the same grade: build
+found that call's decided arguments the same (a decision made again, above, or a later export of the run). A new
+attempt is a call of its own, so its outcome hides no earlier attempt's ask. It is not, by itself, a failed attempt.
+`graph.json` holds no digest of the arguments: an unsalted one would let anyone test guesses of what the bundle's
+salted commitment hides.
+
+A signed why test (`why.finding`) is drawn as `causal (tested)` or `suppressive (tested)` only when the verifier counts
+it: build runs the verifier's findings check over the analysed run with its findings and replay runs from the verified
+sources, as over the run's `--with-findings` export. A finding whose replay runs are missing, or don't give its
+verdict, leaves every why test about that run uncounted. A counted test's finding and edges carry `author`, the
+verifier's label for who wrote it (`self-asserted`, `independent`, `unpinned author ID`, or `author not checked`
+without the analysed run), and its label ends with it; an uncounted one's label ends `(not counted)`.
 
 ## Query
 
@@ -123,7 +155,15 @@ Node filters return `{matched, code, runs, map}`. `--blast` returns `{from, reac
 `who`, `run`, `call`, `thing`, and `after`.
 
 A node filter with no match, or a path that is not found, exits 1. A bad graph or an unknown or ambiguous node exits
-2. A blast with no downstream node is still a successful query.
+2. A blast with no downstream node is still a successful query. `query` and `verify` read `graph.json` as verify
+reads a source (a regular file of at most 512 MiB, not a symlink, a FIFO, or a device), and refuse one whose nodes and
+edges are not of the shape build writes (`nodes[3] is not a node ...`).
+
+`graph.json` is not signed, and `query` answers from it as it finds it, so anyone who can write `DIR` can write the
+answers. The first line of the text output (stderr with `--json`) says so and gives the command that checks it:
+`tracekit graph verify DIR --trust trust.json` ([Rebuild and verify](#rebuild-and-verify)). The text output drops
+control and bidirectional format characters from labels, as `tracekit verify` does, so an agent-chosen name such as
+a tool's can't redraw a line or its grade on the terminal.
 
 ## Report
 
@@ -136,7 +176,9 @@ or read `graph.json` for the rest.
 ## Join with Graphify
 
 When `graphify-out/graph.json` exists, it is the default Graphify input. Pass `--graphify FILE` to use another file,
-or `--graphify ''` to disable the join. The join reads Graphify JSON only; it does not need Graphify installed.
+or `--graphify ''` to disable the join. The join reads Graphify JSON only; it does not need Graphify installed. Build
+reads the input as verify reads a source: it must be a regular file of at most 512 MiB, not a symlink, a FIFO, or a
+device.
 
 Each graph file node can link to Graphify code nodes in the same source file with `contains`. The longest whole
 Graphify `source_file` suffix that matches the Tracekit path wins. A shared basename or shorter tail does not link.
@@ -165,8 +207,9 @@ tracekit-graph: graph.json, GRAPH_REPORT.json and GRAPH_REPORT.md are what their
 ```
 
 Verification exits 0 for that result. It exits 1 and prints each problem when a source is missing or differs, or when
-a source digest, Graphify input, trust configuration, or output file differs. An invalid graph, invalid trust
-configuration, or unavailable signer is an error and exits 2.
+a source digest, Graphify input, trust configuration, or output file differs. The problems drop control and
+bidirectional format characters from the source names `graph.json` lists, so a planted name can't draw the success
+line. An invalid graph, invalid trust configuration, or unavailable signer is an error and exits 2.
 
 ## `graph.json`
 

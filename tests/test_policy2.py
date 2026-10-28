@@ -27,6 +27,7 @@ from tracekit.policy2 import classes, compile as pc, engine, shell  # noqa: E402
 from tracekit.policy2.engine import MAX_SUBJECT, Engine  # noqa: E402
 
 HAVE_RE2 = importlib.util.find_spec("re2") is not None
+BACKENDS = ("re2", "regex") if HAVE_RE2 else ("regex",)
 
 
 class Compile(unittest.TestCase):
@@ -383,6 +384,23 @@ class Engines(unittest.TestCase):
             e.decide("Bash", {"command": "grep x " + "a " * 2000})
         self.assertEqual(words.call_count, 1)
 
+    def test_an_http_call_on_several_urls_is_decided_on_each(self):
+        """A `urls` list (every URL a Gemini CLI web_fetch prompt names) is read by each URL field rule as its
+        single-URL form is; more of them than MAX_SUBJECT holds are never read: TK-OVERSIZE in the rule's section."""
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
+        meta, docs = "http://169.254.169.254/latest/", "https://docs.python.org/3/"
+        want = e.decide("WebFetch", {"url": meta})
+        self.assertEqual(want["verdict"], "deny")
+        for args in ({"url": docs, "urls": [docs, meta]}, {"url": docs, "urls": [meta]}, {"url": None, "urls": [docs, meta]}):
+            with self.subTest(args=args):
+                self.assertEqual({k: e.decide("WebFetch", args)[k] for k in ("verdict", "rule_ids")},
+                                 {k: want[k] for k in ("verdict", "rule_ids")})
+        many = [f"https://h{i}.example/" for i in range(MAX_SUBJECT // 16)]
+        d = Engine({"tools": {"WebFetch": "http"}, "deny": [{"id": "N", "class": "http", "field": "internal",
+                                                            "pattern": "^true$"}]}, "regex").decide(
+            "WebFetch", {"url": docs, "urls": many})
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
+
     def test_a_bare_word_is_an_address_only_when_it_reads_as_one(self):
         """Every word starting with a digit read as an address: head -n 50, cat 1.txt and ls 2fa/ were egress."""
         e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "server.yaml"))[0])
@@ -511,7 +529,8 @@ class Prefilter(unittest.TestCase):
 class Speed(unittest.TestCase):
     """The fallback engine (`regex`) on 64 KiB built to make a pattern back off or rescan."""
     BUDGET_S = 0.15   # the slowest shipped pattern: ~20 ms on an M-series Mac, ~60 ms on CI runners; a rescan, 0.3 s+
-    FILLERS = (" -", " -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@")
+    FILLERS = (" -", " -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@", " ", "\t", "\\n",
+               '{"sql":"/*"},', '{"sql":"-- "},')
     # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
     # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
     # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-C010 kubectl delete,
@@ -519,9 +538,11 @@ class Speed(unittest.TestCase):
     # backing off over the rest of the command) or in an SQL statement
     # (TK-DB003 DELETE FROM, then an always-true WHERE): a backtracking engine rescans that text from each occurrence of
     # their first word, so 64 KiB repeating it in one command or statement spends the fallback's 1 s and denies
-    # (nondeterministic). RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade:
-    # structural pipeline and argv rules
-    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
+    # (nondeterministic). TK-A040 reads up to eight options after each redis-cli on a line, so 64 KiB repeating
+    # `a/redis-cli -` reads eight tokens from each: linear, ~70 ms on a laptop and up to 0.2 s on CI's runners. RE2,
+    # the default engine, is linear; they are held to the generic fillers here. Upgrade: structural pipeline and argv
+    # rules
+    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032", "TK-A040"}
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4
@@ -591,7 +612,7 @@ class Speed(unittest.TestCase):
         for rid, key, pattern in pack_patterns():
             rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
             for s in self.fillers(rid, pattern):
-                took = min(self.search(rx, s) for _ in range(2)) if self.search(rx, s) > self.BUDGET_S else 0
+                took = min(self.search(rx, s) for _ in range(3)) if self.search(rx, s) > self.BUDGET_S else 0
                 if took > self.BUDGET_S:
                     slow.append(f"{rid} {key} {took * 1e3:.0f} ms on {s[:24]!r}")
         self.assertEqual(slow, [])
@@ -619,6 +640,44 @@ class Speed(unittest.TestCase):
                 self.assertNotIn("TK-A039", d["rule_ids"], d)
                 self.assertNotIn("TK-A041", d["rule_ids"], d)
                 self.assertLess(took, self.BUDGET_S, d)
+
+    def test_long_whitespace_in_a_database_statement_decides_the_same_on_both_engines(self):
+        """TK-A039/TK-A041 (1.5.0 review, F1): 64 KiB of spaces, tabs or escaped newlines after `psql -c`, `mysql -e`,
+        `clickhouse-client -q` or `mongosh --eval`, after `DELETE FROM x`, or in an MCP tool's sql or query argument
+        spent the fallback engine's 1 s and denied as nondeterministic where RE2 allowed or flagged: two repeats read
+        the same run, and the fallback backs a greedy run of whitespace off quadratically. Each decides as RE2 does,
+        in milliseconds."""
+        pol = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
+        engines = [Engine(pol, b) for b in (("re2", "regex") if HAVE_RE2 else ("regex",))]
+        n, bs = MAX_SUBJECT - 64, chr(92)
+        calls = [("Bash", {"command": pre + (unit * n)[:n] + end})
+                 for pre, end in (('psql -c "', '"'), ('mysql -e "', '"'), ("clickhouse-client -q '", "'"),
+                                  ("mongosh --eval '", "'"), ("mongosh --eval 'db.x.deleteMany(", "'"),
+                                  ('psql -c "DELETE FROM ', '"'), ('psql -c "DELETE FROM x ', '"'))
+                 for unit in (" ", "\t", bs + "n", bs + "n ")]
+        calls += [("mcp__db__run", {key: pre + (unit * n)[:n]}) for key in ("sql", "query")
+                  for pre in ("", "DROP ", "DELETE FROM x a") for unit in (" ", "\t", "\n")]
+        # a long short-option cluster after the client (review of 1.5.0's fix), and a comment opened in each of many
+        # SQL strings, which read on past the string's closing quote
+        calls += [("Bash", {"command": "mysql -e" + "x" * n}), ("Bash", {"command": "psql -" + "c" * n}),
+                  ("Bash", {"command": "mysql -" + "x" * n}), ("Bash", {"command": "psql -" + "x" * n + "c"}),
+                  ("Bash", {"command": "psql " + "-xxxxxxxxxx " * (n // 12)}),
+                  ("Bash", {"command": "psql -" + "1" * n + "c"}), ("Bash", {"command": "mysql -" + "c" * n}),
+                  ("Bash", {"command": "mariadb -" + "N" * n + "x"}),
+                  ("Bash", {"command": "psql -c 'SELECT 1' -c" + "x" * (n - 24)})]
+        calls += [("mcp__db__run", {"rows": [{key: text}] * (n // 16)}) for key in ("sql", "query")
+                  for text in ("/*", "-- ", "/* x")]
+        for tool, args in calls:
+            with self.subTest(tool=tool, start=str(args)[:40]):
+                out = []
+                for e in engines:
+                    start = time.perf_counter()
+                    d = e.decide(tool, args)
+                    out.append((d["verdict"], d["rule_ids"], d.get("nondeterministic")))
+                    if e.engine.startswith("regex"):
+                        self.assertLess(time.perf_counter() - start, 0.5 * SLOWER, d)
+                self.assertIsNone(out[-1][2], out)
+                self.assertEqual(len(set(map(repr, out))), 1, out)
 
     def test_an_indented_select_in_a_sqlite3_argument_decides_fast_on_the_fallback_engine(self):
         """TK-A039's sqlite3 branch took the space before the SQL with `\\s+`, so ~60 KiB of SELECT indented 32 spaces
@@ -855,6 +914,48 @@ class Shell(unittest.TestCase):
             with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
                 shell.parse(cmd)
 
+    def test_arithmetic_subscript_expansions_are_read_or_held(self):
+        for cmd in ("echo $(( a[${x:-$}(sudo id)] ))", "echo $(( a[${x:-`sudo id`}] ))",
+                    "echo $(( a[\\`sudo id\\`] ))"):
+            with self.subTest(cmd=cmd):
+                with self.assertRaises(shell.ParseError):
+                    shell.parse(cmd)
+        for cmd in ("v='a[$(sudo id)]'; echo $((v))", 'v="a[$(sudo id)]"; echo $((v))',
+                    "v=a[$(sudo id)]; echo $((v))", "let 'v=a[$(sudo id)]'",
+                    "v=a[`sudo id`]; echo $((v))",
+                    "(( v=a[$(sudo id)] ))", "declare -i v='a[$(sudo id)]'",
+                    "[[ x -eq a[$(sudo id)] ]]"):
+            with self.subTest(cmd=cmd):
+                try:
+                    parsed = shell.parse(cmd)
+                except shell.ParseError:
+                    continue
+                self.assertIn(["sudo", "id"], [command["argv"] for command in parsed])
+        for cmd in ("echo $(( i + 1 ))", "echo $(( a[1] ))", "echo $(( ${#arr[@]} - 1 ))",
+                    "echo $(( ${arr[0]} * 2 ))", "echo $(( $n / 2 ))", "echo $(( a[i] ))",
+                    "echo $(( a[$i] ))", "echo $(( $(nproc) * 2 ))"):
+            for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+                pol = pc.build(os.path.join(PACKS, pack))[0]
+                for policy_engine in (Engine(pol, backend) for backend in BACKENDS):
+                    with self.subTest(pack=pack, cmd=cmd):
+                        self.assertNotIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
+
+        for cmd in ("x='$(id)'; echo $(( a[$x] ))", 'x="$(id)"; echo $(( a[${x}] ))',
+                    "x='$(id)'; echo $(( a[${x:-0}] ))", 'x="$(id)"; let "n=a[$x]"',
+                    'x="$(id)"; declare -i n="a[${x}]"', 'x="$(id)"; [[ a[$x] -eq 1 ]]'):
+            with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
+                shell.parse(cmd)
+        for cmd in ('let "n=a[${x:-$}(id)]"', 'declare -i n="a[${x:-$}(id)]"',
+                    'local -i n="a[${x:-$}(id)]"', 'typeset -i n="a[${x:-$}(id)]"'):
+            with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
+                shell.parse(cmd)
+            for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+                pol = pc.build(os.path.join(PACKS, pack))[0]
+                for policy_engine in (Engine(pol, backend) for backend in BACKENDS):
+                    with self.subTest(pack=pack, cmd=cmd):
+                        self.assertIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
+        self.assertIn(["date"], [command["argv"] for command in shell.parse("v=a[`date`]; echo $((v))")])
+
     def test_arithmetic_expansion_without_a_substitution_is_skipped_as_before(self):
         """With no `$(` or backtick in it, `$(( ))` is skipped unread as before the substitutions in it were read:
         its quotes, backslashes, parentheses and newlines are not held."""
@@ -892,6 +993,51 @@ class Shell(unittest.TestCase):
                 with self.assertRaises(shell.ParseError):
                     shell.parse(cmd)
                 self.assertLess(best(cmd), 2 * SLOWER)
+
+    def test_arithmetic_context_prescan_is_linear(self):
+        timings = [[], [], []]
+        makers = (lambda n: "-eq " + "[[x]] " * (n // 6),
+                  lambda n: "$( ( " + "a[ " * (n // 3),
+                  lambda n: '"' + '"' * n)
+        for maker, samples in zip(makers, timings):
+            for size in (MAX_SUBJECT // 4, MAX_SUBJECT // 2, MAX_SUBJECT):
+                cmd = maker(size)
+                runs = []
+                for _ in range(3):
+                    start = time.perf_counter()
+                    try:
+                        shell.parse(cmd)
+                    except shell.ParseError:
+                        pass
+                    runs.append(time.perf_counter() - start)
+                samples.append(min(runs))
+            # linear: 4 times the text takes about 4 times as long (quadratic would be 16)
+            self.assertLess(samples[2], 8 * samples[0] + 0.005 * SLOWER)
+            self.assertLess(samples[2], 0.5 * SLOWER)
+
+    def test_arithmetic_context_with_unclosed_subscripts_is_linear(self):
+        def best(cmd):
+            times = []
+            for _ in range(3):
+                start = time.perf_counter()
+                try:
+                    shell.parse(cmd)
+                except shell.ParseError:
+                    pass
+                times.append(time.perf_counter() - start)
+            return min(times)
+
+        n = MAX_SUBJECT // 4
+        for build in (
+            lambda k: "echo $(( 1 )) " + "a[" * (k // 2),
+            lambda k: "echo $(( 1 )) " + "name[" * (k // 5),
+            lambda k: "echo $(( 1 )) a[" + "x" * k,
+            lambda k: "echo $(( 1 )) a[" + "x" * (k - 1) + "]",
+        ):
+            with self.subTest(cmd=build(1)[:20]):
+                small, big = best(build(n // 4)), best(build(n))
+                self.assertLess(big, 8 * small + 0.005 * SLOWER)
+                self.assertLess(big, 2 * SLOWER)
 
     def test_nested_reparsed_consumers_are_bounded(self):
         cmd = 'eval "$(id)" "$(id)"'
@@ -1114,6 +1260,24 @@ class Classes(unittest.TestCase):
                     "https://user@example.com:8443/a?b#c", "//example.com/x", "https://\uff11\uff12\uff17.example.com/"):
             with self.subTest(url=url):
                 self.assertFalse(classes.url_info(url)["internal"])
+
+    def test_invisible_characters_in_a_host_are_dropped_as_a_url_parser_drops_them(self):
+        """A browser's or Node's URL parser drops a soft hyphen, a zero-width space or joiner, a word joiner, a
+        byte-order mark or a tag character in a host (also percent-encoded); the signer kept them, so
+        http://127.0.0<soft hyphen>.1/ was no address and only flagged. They are dropped before the host is read."""
+        for ch in ("­", "​", "‍", "⁠", "﻿", "%C2%AD", "%E2%80%8B", "\U000e0041", "᠎"):
+            for url in ("http://127.0.0" + ch + ".1/", "http://127.0.0.1" + ch + "/", "http://169.254.169.254" + ch + "/"):
+                with self.subTest(url=url):
+                    self.assertTrue(classes.url_info(url)["internal"])
+                    self.assertIn(classes.url_target(url), ("http://127.0.0.1/", "http://169.254.169.254/"))
+        self.assertEqual(classes.url_info("https://exam­ple.com/"), {"scheme": "https", "host": "example.com",
+                                                                          "internal": False})
+        self.assertEqual(classes.url_info("http://local​host:8080/")["host"], "localhost")
+        # a host of nothing but invisible code points names no host: it is no address, as an empty one would be
+        for url in ("http://ㅤ/", "http://%C2%AD:80/", "http://​./", "http://ﾠ/x", "http://­​/"):
+            with self.subTest(url=url):
+                self.assertEqual(classes.url_info(url)["internal"], True)
+                self.assertIsNone(classes.url_info(url)["host"])
 
     def test_reading_a_long_url_is_linear(self):
         """A URL near the 1 MB frame limit took seconds per reading, and a decide reads it once per target rule too:

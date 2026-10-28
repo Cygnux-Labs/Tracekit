@@ -146,7 +146,8 @@ It is not deployed yet: until it is, the signer and `init` refuse it (below).
 witnesses: [public]          # or, with your own witnesses: [public, {url: ..., vkey: ..., class: customer}]
 ```
 
-or `sudo tracekit init --v2 --user AGENT --public-witness` (v2 system mode). `public` expands to the witness's URL and
+or `tracekit init --v2 --user AGENT --public-witness` run as root (v2
+[system mode](deploy.md#laptop-system-mode)). `public` expands to the witness's URL and
 cosignature vkey from `tracekit/public_witness.py`, with class `public`; until those are set (the witness is not
 deployed yet) the signer and `init` refuse it and say so. Off by default.
 

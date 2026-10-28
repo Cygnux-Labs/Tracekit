@@ -310,9 +310,10 @@ def build_events(p, pol, reasoning=True):
     return evs, deny
 
 
-def main(harness_reasoning=True):
-    """harness_reasoning=False: the harness is not Claude Code, so its transcript format is unknown: hash it, never parse it."""
-    raw = sys.stdin.read()
+def main(harness_reasoning=True, raw=None):
+    """harness_reasoning=False: the harness is not Claude Code, so its transcript format is unknown: hash it, never parse it.
+    raw: the payload (else read from stdin)."""
+    raw = sys.stdin.read() if raw is None else raw
     try:
         p = json.loads(raw) if raw.strip() else {}
     except ValueError:
@@ -388,12 +389,20 @@ def fail_closed():
 
 
 def _entry():
+    raw = None
     try:
-        return main()
+        raw = sys.stdin.read()
+        return main(raw=raw)
     except Exception as e:  # a crash in Tracekit must follow the configured fail mode
+        try:
+            pre = json.loads(raw).get("hook_event_name") == "PreToolUse"
+        except Exception:
+            pre = True   # unreadable: answered as a tool call
         closed = isinstance(e, RecursionError) or fail_closed()   # a payload nested too deep to read can't be decided
-        print(f"[tracekit] hook error ({e}); " + ("blocking" if closed else "allowing (fail-open)"), file=sys.stderr)
-        return 2 if closed else 0
+        print(f"[tracekit] hook error ({e}); " + ("allowing (fail-open)" if not closed else "blocking" if pre
+                                                  else "event not recorded"), file=sys.stderr)
+        # only a tool call is blocked: 2 would erase a prompt, or send the agent back to work at Stop
+        return 0 if not closed else 2 if pre else 1
 
 
 if __name__ == "__main__":

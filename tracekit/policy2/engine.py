@@ -23,7 +23,8 @@ _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 28
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
 # too much
 _BARE_TARGET = re.compile(r"http://[1-9][0-9]*(\.[0-9]+){3}/")
-REGEX_TIMEOUT_S = 1.0       # fallback engine only: the time all matches of one decision share; a match that runs out
+_SCHEDULED = {"trap", "at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's `via` for code run later
+REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one decision share; a match that runs out
                             # of it denies, marked nondeterministic
 
 
@@ -163,7 +164,9 @@ class Engine:
                     # its own target and code
                     raw = command if isinstance(command, str) else canonical(command)
                     parsed = [], [], [raw], [], [raw]
-                if any(c["opaque"] for c in parsed[0]):
+                # what trap, at or batch run later and the parser can't read (trap "$f" EXIT) isn't held, as before
+                # their code was read; with a writer's name in it, it counts for TK-D008 (_effects)
+                if any(c["opaque"] and not _SCHEDULED.intersection(c["via"]) for c in parsed[0]):
                     unreadable.append("TK-SHELL-PARSE")
         # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
@@ -214,10 +217,18 @@ class Engine:
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
         each line the parser normalised, a shell `code` those without the text a command only writes into a file
         (shell.analyse); an fs `path` with `..` also matches its lexically normalised form, and each entry of a
-        `paths` list (every file of a Codex patch) is a path too. `target` (every class) is what the call
+        `paths` list (every file of a Codex patch) is a path too, and an http field is read for each URL of a `urls`
+        list too (every URL a Gemini CLI web_fetch prompt names). `target` (every class) is what the call
         acts on rather than what it carries (Engine._targets); shell `effects` the files it writes or deletes
         (_effects); sql `code` is one subject per dialect reading. With
         `split`, a list value is one subject per element (nested lists flattened)."""
+        if cls == "http" and field is not None and isinstance(args.get("urls"), list):   # a call on several URLs
+            urls = canonical(args["urls"])
+            if len(_text(urls).encode()) > MAX_SUBJECT:   # unread, as a long subject is: TK-OVERSIZE in its rule's section
+                return [urls]
+            one = {k: v for k, v in args.items() if k != "urls"}
+            return list(dict.fromkeys(s for a in [one] + [{**one, "url": u} for u in args["urls"]] for s in
+                                      Engine._subjects(cls, field, a, classes.extract(cls, "", a), parsed, split)))
         if field == "target":
             return Engine._targets(cls, args, fields, parsed)
         if cls == "shell" and field == "effects":
@@ -434,30 +445,88 @@ def _effects(parsed):
     """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
     path casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
     sed -i and perl -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i), awk's
-    print > "file", and one of those that git, docker, podman, kubectl or parallel runs from its words (git rm). When a
-    command writes files the line names only at run time or inside code it runs (_opaque), every word on the line is
-    one it may write, as MAY_WRITE:word (only TK-D008 reads those)."""
+    print > "file", zip -m's sources, and one of those that git, docker, podman, kubectl or parallel runs from its words
+    (git rm). When a command writes files the line names only at run time or inside code it runs (_opaque), or the
+    parser can't read what one runs (its `opaque`: `| sh`, `fish -c`, a name an expansion builds) and a writer's name
+    reaches it (_reaches_unread), every word on the line and each herestring and heredoc text is one it may write, as
+    MAY_WRITE:word (only TK-D008 reads those); for one the parser can't read, each normalised line too (a name an
+    expansion builds may hold the path)."""
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
-    if any(_opaque(c["argv"]) for c in parsed[0] if c["argv"]):
+    unread = any(c["opaque"] for c in parsed[0])
+    if any(_opaque(c) for c in parsed[0]) or unread and _reaches_unread(parsed):
         # lean: a read on the same line as such a writer counts as a write (as TK-D008 read the whole line before
         # #421); follow the names into the writer if that holds real reads
-        tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:]]
+        tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:] + c["stdin"]]
+        tags += ["MAY_WRITE:" + line for line in parsed[1] if unread]
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
 
 
+_WRITER = re.compile(r"\b(?:rm|unlink|truncate|shred|mv|tee|dd|ln|perl)\b")
 _WRITE_WORD = re.compile(r"\b(?:rm|unlink|truncate|shred|mv|tee|dd|ln|sed|perl|find)\b|>")
+_APPLESCRIPT_WRITE = re.compile(r"(?i)do ?shell ?script|\bdelete\b")   # JXA's doShellScript too
 
 
-def _opaque(argv):
+_SETS_VARIABLES = shell._VARIABLE_SETTING_BUILTINS | {"set"}
+
+
+def _reaches_unread(parsed):
+    """Whether a writer's name reaches a command the parser can't read: in its words or its name as written
+    (`rm${IFS}-rf${IFS}…`), and in an echo's or printf's words earlier in its pipeline (`echo 'rm …' | sh`), also as
+    `>`, sed or find; in another earlier stage's words or any herestring or heredoc text there, as a writer's name only
+    (`jq 'select(.n > 1)' x | $PAGER` and a `>` in `$PY - <<EOF` aren't); and, when its name is an expansion
+    (`$C -rf x`), in the values the line gives variables (`C=rm`, `read C <<< rm`, `printf -v C rm`, `set -- rm`).
+    A redirection elsewhere on the line (`$PAGER x 2>/dev/null`) and another pipeline's command don't."""
+    commands = parsed[0]
+    last = {c["pipeline"]: i for i, c in enumerate(commands) if c["opaque"]}
+    for c in (c for i, c in enumerate(commands) if i <= last.get(c["pipeline"], -1)):
+        words = _WRITE_WORD if c["opaque"] or c["argv"][0] in ("echo", "printf") else _WRITER
+        if any(words.search(w.lower()) for w in [c["word"]] * c["opaque"] + c["argv"][1:]) or \
+                any(_WRITER.search(s.lower()) for s in c["stdin"]):
+            return True
+    if not any(c["opaque"] and re.search(r"[$`]", c["word"]) for c in commands):
+        return False
+    values = [r for r in parsed[2] if shell._ASSIGN.match(r)] + [
+        w for c in commands if c["argv"][0] in _SETS_VARIABLES or c["argv"][0] == "printf" and "-v" in c["argv"]
+        for w in c["argv"][1:] + c["stdin"]]
+    return any(_WRITER.search(v.lower()) for v in values)
+
+
+def _opaque(command):
     """Whether a command writes files _command_effects can't name: a writer whose operand is a variable or a
-    substitution (rm "$f"), or xargs, parallel, a container's exec or ssh, or an interpreter running code with a write
-    in it (xargs rm, parallel 'rm {}', docker exec c sh -c 'rm …', perl -e 'open F, ">", …')."""
+    substitution (rm "$f"), or zip -m reading its names from stdin (-@); xargs, parallel, a container's exec or ssh,
+    or an interpreter running code with a write in it (xargs rm, parallel 'rm {}', docker exec c sh -c 'rm …',
+    perl -e 'open F, ">", …'); at or batch scheduling commands from a pipe or a file (the parser reads a herestring
+    or heredoc), or osascript's do shell script or a Finder delete."""
+    argv = command["argv"]
     exe = argv[0].rsplit("/", 1)[-1].lower()
     if exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
         return any("$" in a or "`" in a for a in argv[1:])
+    if exe == "zip" and _zip_moves(argv[1:]):
+        return any("$" in a or "`" in a or re.fullmatch(r"-[^-]*@[^-]*", a) for a in argv[1:])
     if exe in ("xargs", "parallel", "docker", "podman", "kubectl", "ssh") or \
             re.fullmatch(r"perl|python[\d.]*|node(?:js)?|ruby|php|bun|deno|lua", exe):
         return any(_WRITE_WORD.search(a) for a in argv[1:])
+    if exe in ("at", "batch"):   # at -l, -r, -d, -c and -V list, remove, show or print: they schedule nothing
+        return not command["stdin"] and not any(a in ("-l", "-r", "-d", "-c", "-V") for a in argv[1:])
+    if exe == "osascript":
+        return any(_APPLESCRIPT_WRITE.search(a) for a in argv[1:] + command["stdin"])
+    return False
+
+
+_ZIP_VALUED = ("-b", "-n", "-t", "-tt", "-P", "-Z", "-s", "-O", "--out", "-lf", "-ds", "-sp", "-x", "-i")
+
+
+def _zip_moves(args):
+    """Whether zip's options say -m (--move): it deletes the files it adds. An m in an option's value (-b/tmp/m,
+    -s100m, -n.mp3, -Pmmm, a pattern after -x) isn't one."""
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in _ZIP_VALUED:
+            skip = True
+        elif a == "--move" or re.fullmatch(r"-[^-bnPtZsOxi]*m[^-]*", a):   # an m before any option taking a value
+            return True
     return False
 
 
@@ -567,6 +636,18 @@ def _command_effects(commands):
                      None)
             if j is not None:
                 out.extend(_command_effects([{"argv": [argv[j].lower()] + argv[j + 1:]}]))
+        elif exe == "zip" and _zip_moves(args):   # -m deletes the files it adds: the operands after the archive
+            operands, skip = [], False
+            for arg in args:
+                if skip:
+                    skip = False
+                elif arg in _ZIP_VALUED:
+                    # lean: -x and -i take every word to the next option; a pattern after the first reads as a source,
+                    # which only holds more; read the list if one is held wrongly
+                    skip = True
+                elif not arg.startswith("-"):
+                    operands.append(arg)
+            out.extend("DELETE_TARGET:" + path for path in operands[1:])
         elif exe in ("awk", "gawk", "mawk", "nawk"):   # print or printf > "file" in its program
             out.extend("WRITE_TARGET:" + path for path in re.findall(r'>>?\s*"([^"\n]+)"', shell._awk_program(args) or ""))
     return out

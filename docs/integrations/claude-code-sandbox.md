@@ -56,7 +56,7 @@ The coding pack's `TK-A003` (an `ask` rule) adds what that prompt doesn't: it ho
 the decision:
 
 ```text
-[tracekit] waiting for approval apr-… (TK-A003)
+[tracekit] waiting for approval apr-… (TK-A003): running a command outside Claude Code's sandbox. Wait for a person to approve the held call, …; a person approves it from another terminal with `tracekit approvals approve apr-…` or rejects it with `tracekit approvals reject apr-…`
 tracekit approvals approve apr-…            # from another terminal
 ```
 

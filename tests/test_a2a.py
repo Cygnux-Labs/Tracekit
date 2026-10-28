@@ -65,7 +65,7 @@ def spellings(name):
             "zero-width": name[:2] + "​" + name[2:], "control": name + "\x00"}
 
 
-STREAM = [{"kind": "task", "id": "task-1", "status": {"state": "submitted"}},
+STREAM = [{"kind": "task", "id": "task-1", "contextId": "ctx-1", "status": {"state": "submitted"}},
           {"kind": "status-update", "taskId": "task-1", "status": {"state": "working"}, "final": False},
           {"kind": "artifact-update", "taskId": "task-1", "artifact": {"parts": [{"kind": "text", "text": "AUTH"}]}},
           {"kind": "status-update", "taskId": "task-1", "status": {"state": "completed"}, "final": True}]
@@ -73,9 +73,9 @@ STREAM = [{"kind": "task", "id": "task-1", "status": {"state": "submitted"}},
 
 class A2aServer(http.server.BaseHTTPRequestHandler):
     """Serves the Agent Card (PAYER_CARD at /payer-card); answers message/send and tasks/get with a completed task
-    whose artifact echoes the authorization header it got (a server that echoes its credential), and message/stream
-    with the events of server.stream ("pause": a second without a byte), then closes; `big`: 4,000 more bytes in
-    each artifact."""
+    (task-1, in context ctx-1) whose artifact echoes the authorization header it got (a server that echoes its
+    credential), and message/stream with the events of server.stream ("pause": a second without a byte), then closes;
+    `big`: 4,000 more bytes in each artifact."""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *a):
@@ -99,7 +99,7 @@ class A2aServer(http.server.BaseHTTPRequestHandler):
         echo = f"done as {self.headers.get('authorization')}" + "x" * 4000 * self.server.big
         if req["method"] != "message/stream":
             return self._send({"jsonrpc": "2.0", "id": req["id"], "result": {
-                "kind": "task", "id": "task-1", "status": {"state": "completed"},
+                "kind": "task", "id": "task-1", "contextId": "ctx-1", "status": {"state": "completed"},
                 "artifacts": [{"parts": [{"kind": "text", "text": echo}]}]}})
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
@@ -189,6 +189,15 @@ class Gateway(unittest.TestCase):
             return [json.loads(line[6:]) for line in body.split(b"\n") if line.startswith(b"data: ")]
         return json.loads(body)
 
+    def as_other(self):
+        """As token:other: the gateway authenticates every request as that caller."""
+        authenticated = a2a_gateway._Handler._authenticated
+
+        def other_caller(handler, max_body):
+            got = authenticated(handler, max_body)
+            return ((got[0][0], got[0][1], "token:other"), got[1], got[2]) if got else None
+        return mock.patch.object(a2a_gateway._Handler, "_authenticated", other_caller)
+
     def events(self, run=None):
         self.close()
         return [r["event"] for r in records(self.dir) if r["event"]["run_id"] == (run or self.run)["run_id"]]
@@ -242,22 +251,21 @@ class Gateway(unittest.TestCase):
     def test_task_ids_belong_to_the_caller_that_created_them(self):
         self.send("researcher")
         other_run = self.register(CallerIdentity("token", "other", True))
-        authenticated = a2a_gateway._Handler._authenticated
-        def other_caller(handler, max_body):
-            got = authenticated(handler, max_body)
-            return ((got[0][0], got[0][1], "token:other"), got[1], got[2]) if got else None
-        for method, params in (("tasks/get", {"id": "task-1"}),
-                               ("message/send", {"message": dict(TEXT, taskId="task-1")}),
-                               ("message/send", {"message": dict(TEXT, contextId="task-1")}),
-                               ("message/send", {"message": dict(TEXT, referenceTaskIds=["task-1"])}),
-                               ("message/stream", {"message": dict(TEXT, taskId="task-1")}),
-                               ("message/stream", {"message": dict(TEXT, contextId="task-1")}),
-                               ("message/stream", {"message": dict(TEXT, referenceTaskIds=["task-1"])})):
-            with self.subTest(method=method):
-                with mock.patch.object(a2a_gateway._Handler, "_authenticated", other_caller):
+        refs = {-32001: [{"taskId": "task-1"}, {"contextId": "task-1"}, {"referenceTaskIds": ["task-1"]}],
+                # other spellings a receiver may read too (a2a-python's snake_case, any case in Go's encoding/json)
+                -32602: [{"task_id": "task-1"}, {"context_id": "task-1"}, {"reference_task_ids": ["task-1"]},
+                         {"TaskID": "task-1"}]}
+        cases = [("tasks/get", {"id": "task-1"}, -32001), ("tasks/get", {"ID": "task-1"}, -32602),
+                 ("message/send", {"Message": dict(TEXT, taskId="task-1")}, -32602)] + \
+                [(method, {"message": dict(TEXT, **ref)}, code) for method in ("message/send", "message/stream")
+                 for code in refs for ref in refs[code]]
+        for method, params, code in cases:
+            with self.subTest(method=method, params=params):
+                with self.as_other():
                     _, _, body = self.post("researcher", method, params, run=other_run)
-                self.assertEqual(json.loads(body)["error"]["code"], -32001)
+                self.assertEqual(json.loads(body)["error"]["code"], code)
         self.assertEqual(len(self.a2a.seen), 1)
+        self.assertFalse(self.srv.a2a["tasks"].owns("token:other", "task-1"))
         self.assertEqual([e for e in self.events(other_run) if e["type"] == "policy.decision"], [])
 
     def test_malformed_task_references_are_refused_before_a_decision_or_send(self):
@@ -281,14 +289,52 @@ class Gateway(unittest.TestCase):
         self.assertEqual(self.a2a.seen, [])
         self.assertEqual([e for e in self.events() if e["type"] == "policy.decision"], [])
 
-    def test_message_send_refuses_a_push_notification_url_before_a_decision(self):
-        _, _, body = self.post("researcher", "message/send", {"message": TEXT,
-                                                                  "configuration": {"pushNotificationConfig": {
-                                                                      "url": "https://callback.example/result"}}})
-        out = json.loads(body)
-        self.assertEqual(out["error"]["code"], -32602)
+    def test_a_message_with_a_push_notification_config_is_refused_before_a_decision(self):
+        push = {"url": "http://169.254.169.254/latest/meta-data/"}
+        for method in ("message/send", "message/stream"):
+            for config in ({"pushNotificationConfig": push}, {"push_notification_config": push},
+                           {"PushNotificationConfig": {}},
+                           {"pushNotificationConfig": None, "push_notification_config": push}):
+                with self.subTest(method=method, config=config):
+                    _, _, body = self.post("researcher", method, {"message": TEXT, "configuration": config})
+                    self.assertEqual(json.loads(body)["error"]["code"], -32602)
         self.assertEqual(self.a2a.seen, [])
         self.assertEqual([e for e in self.events() if e["type"] == "policy.decision"], [])
+
+    def test_a_rule_on_part_kinds_or_hosts_is_not_hidden_by_another_spelling(self):
+        uri = FILE["parts"][0]["file"]["uri"]
+        for message in ({"Message": FILE}, {"message": dict(TEXT, Parts=FILE["parts"])},
+                        {"message": dict(FILE, parts=[{"Kind": "file", "File": {"URI": uri}}])},
+                        {"message": dict(FILE, parts=[{"kind": "file", "file": {"URI": uri}}])},
+                        {"message": dict(FILE, parts=[{"kind": "file", "file": {"uri": uri}, "mime_type": "x"}])},
+                        {"message": dict(FILE, parts=[{"kind": "file", "file": {"uri": uri, "mime-type": "x"}}])},
+                        {"message": dict(FILE, parts=[{"kınd": "file", "file": {"uri": uri}}])}):
+            with self.subTest(message=message):
+                _, _, body = self.post("researcher", params=message)
+                self.assertEqual(json.loads(body)["error"]["code"], -32602)
+        self.assertEqual(self.a2a.seen, [])
+        # metadata and a data part's data are free-form: any keys pass
+        free = dict(TEXT, metadata={"Kind": "file", "task_id": "x"},
+                    parts=[{"kind": "data", "data": {"Message": {"URI": uri}}}])
+        self.assertIn("result", self.send("researcher", free))
+        self.assertEqual([e["data"]["decision"] for e in self.events() if e["type"] == "policy.decision"], ["allow"])
+
+    def test_a_conversation_goes_on_in_the_context_the_receiver_named(self):
+        other_run = self.register(CallerIdentity("token", "other", True))
+        reply = {"kind": "message", "role": "agent", "messageId": "r1", "contextId": "ctx-2",
+                 "parts": [{"kind": "text", "text": "which quarter?"}]}
+        for method, follow_up in (("message/send", {"taskId": "task-1", "contextId": "ctx-1"}),
+                                  ("message/stream", {"taskId": "task-1", "contextId": "ctx-1"}),
+                                  ("message/stream", {"contextId": "ctx-2"})):
+            with self.subTest(method=method, follow_up=follow_up):
+                self.srv.a2a["tasks"] = a2a_gateway._Tasks()
+                self.a2a.stream = [reply] if follow_up["contextId"] == "ctx-2" else STREAM
+                self.send("researcher", method=method)   # task-1 in context ctx-1, or a reply in context ctx-2
+                self.assertIn("result", self.send("researcher", dict(TEXT, **follow_up)))
+                with self.as_other():   # the context is the caller's, as its tasks are
+                    _, _, body = self.post("researcher", params={"message": dict(TEXT, contextId=follow_up[
+                        "contextId"])}, run=other_run)
+                self.assertEqual(json.loads(body)["error"]["code"], -32001)
 
     def test_a_pair_the_policy_does_not_list_never_reaches_the_receiver(self):
         for method in ("message/send", "message/stream", "tasks/get"):

@@ -32,8 +32,11 @@ OK, WARN, FAIL = "ok", "warn", "fail"
 NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", "fuse", "fuseblk", "9p", "macfuse",
               "osxfuse"}
 MAX_SKEW_S = 300
-REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>" + (
-    " --experimental-macos" if sys.platform == "darwin" else "")   # init refuses macOS system mode without it
+# system mode's init from a root-owned clone of the release, as the plugin and CI run it: it works on every Python,
+# whether or not /opt/tracekit exists or can be trusted (docs/deploy.md also gives the routes through /opt's venv)
+REINIT = ("from a root-owned clone of the release (docs/deploy.md#laptop-system-mode), sudo /usr/bin/python3 -m tracekit "
+          "init --v2 --user <agent-user>" + (" --experimental-macos" if sys.platform == "darwin" else ""))
+ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
 FAIL_CLOSED = "call blocked (fail-closed)"   # the pre-tool wrapper's words (install._blocking); before 1.3 every event's
 # wrapper had them, so a hook that couldn't run blocked a prompt or a tool result too (D-HOOKS-EVENT warns)
 
@@ -396,9 +399,10 @@ def helper_result(unit, fix):
 
 
 def _hooks(settings):
-    """{tool event: [v2 hook entries]} of a Claude Code settings file."""
+    """{tool event: [v2 hook entries, each with its group's "matcher"]} of a Claude Code settings file."""
     hooks = (_json(settings) or {}).get("hooks") or {}
-    return {ev: [h for g in hooks.get(ev) or () if isinstance(g, dict) and install._hook_version(g) == "v2"
+    return {ev: [{**h, "matcher": g.get("matcher")} for g in hooks.get(ev) or ()
+                 if isinstance(g, dict) and install._hook_version(g) == "v2"
                  for h in g.get("hooks") or () if isinstance(h, dict)] for ev in install.TOOL_EVENTS}
 
 
@@ -498,7 +502,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         names = None
         fresh = not prod and e.errno == errno.ENOENT   # a dev signer that never started has no keys yet
         add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}",
-            "start the dev signer: tracekit up" if fresh else "run doctor as root (sudo tracekit doctor)", bad=WARN)
+            "start the dev signer: tracekit up" if fresh else ROOT_DOCTOR, bad=WARN)
 
     try:
         content = service.content_config(cfg.get("content"))   # as the signer validates it
@@ -559,7 +563,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         hits = agent_access(agent, targets)
         if hits is None:
             add("D-AGENT-PROBE", False, f"not probed: doctor runs as neither root nor {agent.pw_name}",
-                "run doctor as root (sudo tracekit doctor)", bad=WARN)
+                ROOT_DOCTOR, bad=WARN)
         else:
             add("D-AGENT-PROBE", not hits, f"{agent.pw_name} can " + ", ".join(f"{m} {p}" for p, m in hits) if hits
                 else f"{agent.pw_name} can neither read the keys and store nor write the signer's files",
@@ -612,14 +616,34 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", not missing, f"no v2 hook for {', '.join(missing)} in {settings}" if missing else
                 f"v2 hooks in {settings}", hook_fix, bad=sev)
         if hooks is not None:
+            layers = sandbox_settings or dict.fromkeys((os.path.join(agent.pw_dir, ".claude", "settings.json") if agent
+                                                        else install.user_settings(), settings))
             cmds = [(ev, h.get("command") or "") for ev, hs in hooks.items() for h in hs]
             unnamed = sorted({ev for ev, c in cmds if not re.search(rf"\b{ev}\b", c)})
             blocking = sorted({ev for ev, c in cmds if ev != "PreToolUse" and FAIL_CLOSED in c})
-            add("D-HOOKS-EVENT", not unnamed and not blocking, f"the {', '.join(unnamed)} hook command(s) do not name "
+            # what Claude Code skips: every hook (disableAllHooks, a true value in JavaScript), the tools a matcher
+            # other than "*", "" or none leaves out, and on POSIX a PreToolUse hook that can't start and isn't wrapped
+            # to block the call
+            off = [p for p in dict.fromkeys([*layers, settings])   # the hooks' own file too (init's record of it)
+                   if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \
+                if any(hooks.values()) or plugin else []
+            narrowed = {ev: hs[0]["matcher"] for ev, hs in hooks.items()
+                        if hs and all(h["matcher"] not in (None, "", "*") for h in hs)}
+            unwrapped = os.name != "nt" and hooks["PreToolUse"] and not any(
+                FAIL_CLOSED in (h.get("command") or "") for h in hooks["PreToolUse"])
+            add("D-HOOKS-EVENT", not (off or narrowed or unnamed or blocking or unwrapped),
+                f"disableAllHooks is set in {', '.join(off)}: Claude Code runs none of its hooks, so every call runs "
+                "undecided and unrecorded" if off else f"the matcher of the "
+                f"{', '.join(f'{ev} hook ({json.dumps(m)[:64]})' for ev, m in narrowed.items())} leaves tools out: "
+                "Claude Code runs their calls undecided or unrecorded (\"*\" matches every tool)" if narrowed else
+                f"the {', '.join(unnamed)} hook command(s) do not name "
                 "their event (installed before 1.2): a PreToolUse payload the hook cannot read lets the call through "
                 "unrecorded" if unnamed else f"the {', '.join(blocking)} hook command(s) block the event when the hook "
                 "can't run (installed before 1.3, which did so for each prompt and Stop too)" if blocking else
-                "each hook command names its event", hook_fix, bad=WARN)
+                "the PreToolUse hook command isn't wrapped to block the call when the hook can't run: one that can't "
+                "start exits 1, and Claude Code runs the call undecided and unrecorded" if unwrapped else
+                "each hook command names its event", f'remove "disableAllHooks" from {", ".join(off)}' if off
+                else hook_fix, bad=sev if off else WARN)
             if prod and opt and cmds:
                 python = os.path.join(opt, "bin", "python")
                 stray = [c for ev, c in cmds if c not in (install._hook_command(install.V2_HOOK, args=a, python=python,
@@ -633,9 +657,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                     f"{APPROVAL_WAIT_S} s", f"set the PreToolUse hook timeout to {install.HOOK_TIMEOUT['PreToolUse']}")
             if any(hooks.values()) or plugin:   # without Claude Code's hooks none of its reasoning is recorded
                 vault = isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True
-                user = os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings()
                 value, where = None, None   # Claude Code's precedence: the last file that sets it wins
-                for p in sandbox_settings or dict.fromkeys((user, settings)):
+                for p in layers:
                     v = _setting(p, install.THINKING)
                     if v is not None:
                         value, where = v, p

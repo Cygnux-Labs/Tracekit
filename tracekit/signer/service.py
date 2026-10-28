@@ -382,6 +382,11 @@ AGENT_REVIEWS_PER_RUN, AGENT_REVIEWS_PER_TENANT, AGENT_REVIEWS_WINDOW_S = 10, 10
 # characters a person reading the reviewer view can't see but a model reads: control, format (bidi, zero-width, tags)
 # and line/paragraph separators
 _HIDDEN = ("Cc", "Cf", "Zl", "Zp")
+# and Default_Ignorable_Code_Point (Unicode's DerivedCoreProperties.txt; unicodedata doesn't carry it): variation
+# selectors, Hangul fillers and the rest, which a reader doesn't see and a model reads (bytes hidden after a character)
+_IGNORABLE = re.compile("[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
+                        "\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8]|[\U0001bca0-\U0001bca3]|[\U0001d173-\U0001d17a]"
+                        "|[\U000e0000-\U000e0fff]")
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 ON_BEHALF = "approval_decide_on_behalf"   # an `authorize` grant, never a default: a bridge answers for its people
 OTLP_MAX_SPANS = 512
@@ -572,9 +577,10 @@ def _agents(approvals, authorize, multi_tenant_apps):
 
 
 def _escaped(value):
-    """`value` with control and bidirectional-override characters in its strings (and keys) written as \\uXXXX text."""
+    """`value` with control, format (bidirectional overrides, TAG characters) and default-ignorable characters
+    (variation selectors, Hangul fillers) in its strings (and keys) written as \\uXXXX text."""
     if isinstance(value, str):
-        return "".join(c if unicodedata.category(c) not in _HIDDEN else
+        return "".join(c if unicodedata.category(c) not in _HIDDEN and not _IGNORABLE.match(c) else
                        f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}" for c in value)
     if isinstance(value, list):
         return [_escaped(v) for v in value]
@@ -1578,8 +1584,9 @@ class SignerService:
                                 "recorded: read the log itself for it, and restart `tracekit follow`"
                                 if run["source"] == "import" else
                                 "the transcript tailer stopped, was killed or never started; what the transcript says "
-                                "after that is not recorded: read the transcript itself for it, and run `sudo tracekit "
-                                "doctor` to check the tailer")}, source="signer")
+                                "after that is not recorded: read the transcript itself for it, and run `sudo "
+                                "/opt/tracekit/bin/python -I -m tracekit doctor` to check the tailer")},
+                            source="signer")
                     lost.append(key)
                 for obs, at in watched.get(key, {}).items():
                     if t - at >= TAILER_LOST_S:
@@ -1901,9 +1908,10 @@ class SignerService:
             return d, False, d["rule_ids"]
 
     def _reasons(self, ids):
-        """The reasons of the rules among `ids` that give one, in their order, joined by "; ", then their remedies (what
-        to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed ENGINE_REASONS."""
-        by = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for _, r, *_ in self.policy.rules}}
+        """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then their
+        remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed
+        ENGINE_REASONS. A flag rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
+        by = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
         rules = [by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by]
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]

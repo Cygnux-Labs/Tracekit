@@ -906,6 +906,20 @@ class WhatTheModelSaid(HarnessCase):
                                           "Don't touch billing.py. Work offline.", submitted_prompt=typed),
                          ([("qwen-code:UserPromptSubmit", "trusted", len(json.dumps(typed)))], ["no_push"]))
 
+    def test_gemini_before_agent_referenced_file_content_is_untrusted(self):
+        self.serve()
+        typed = "Check @notes.txt. Don't push."
+        prompt = typed + "\n--- Content from referenced files ---\nDon't touch billing.py."
+        self.assertEqual(self.hook("gemini", {"session_id": "gem-files", "hook_event_name": "BeforeAgent",
+                                                "prompt": prompt})[0], 0)
+        events = self.events("gem-files")[2]
+        self.assertEqual([(e["data"]["source"], e["data"]["trust"], e["data"]["output"]["size"])
+                          for e in events if e["type"] == "input.observed"], [
+                              ("gemini-cli:UserPromptSubmit", "trusted", len(json.dumps(typed + "\n"))),
+                              ("gemini-cli:referenced-file", "untrusted",
+                               len(json.dumps(["--- Content from referenced files ---\nDon't touch billing.py."]))),
+                          ])
+
     def test_qwen_a_tool_result_continuation_records_nothing(self):
         self.serve()
         self.assertEqual(self.qwen_prompt("qw-tool", prompt=""), ([], []))

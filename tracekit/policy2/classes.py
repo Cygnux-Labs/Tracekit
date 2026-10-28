@@ -104,10 +104,22 @@ def _address(host):
     return ipaddress.IPv4Address(nums[-1] + sum(n << 8 * (3 - i) for i, n in enumerate(nums[:-1])))
 
 
+# Unicode's default-ignorable code points (DerivedCoreProperties): a URL parser (UTS #46, as browsers and Node read
+# a host) drops the soft hyphen, zero-width spaces and joiners, variation selectors and tags, and refuses the rest
+# (Hangul fillers, bidi controls), so dropping them all reads a host as the address it reaches, or holds more
+_IGNORABLE = re.compile("[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
+                        "\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8]"
+                        "|[\U0001bca0-\U0001bca3]|[\U0001d173-\U0001d17a]|[\U000e0000-\U000e0fff]")
+
+
 def _canonical_host(host):
-    """Percent-decoded, NFKC (fullwidth letters and digits), ideographic dots as dots, casefolded; an address in its
-    canonical form, an IPv4-mapped or NAT64 IPv6 address as the IPv4 address it reaches."""
-    h = unicodedata.normalize("NFKC", unquote(host)).replace("\u3002", ".").casefold()
+    """Percent-decoded, without default-ignorable code points (_IGNORABLE), NFKC (fullwidth letters and digits),
+    ideographic dots as dots, casefolded; an address in its canonical form, an IPv4-mapped or NAT64 IPv6 address as
+    the IPv4 address it reaches."""
+    h = unicodedata.normalize("NFKC", _IGNORABLE.sub("", unquote(host)))
+    h = _IGNORABLE.sub("", h).replace("\u3002", ".").casefold()
+    if not h.strip("."):   # nothing but invisible code points (and dots): no host to read, as an empty one is none
+        return _BAD
     ip = _address(h)
     if ip is None or ip is _BAD:
         return ip or h

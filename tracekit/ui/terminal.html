@@ -1007,6 +1007,10 @@
       color: var(--yellow)
     }
 
+    .vchip.stopped {
+      color: var(--muted)
+    }
+
     .fchip {
       background: transparent;
       border: 1px solid var(--line2);
@@ -2885,11 +2889,16 @@
     const BOOT = /*__TRACE_DATA__*/null;
     const RAW = /*__RAW_DATA__*/null;
     const $ = id => document.getElementById(id);
-    // bidi and invisible format characters are shown as \uXXXX, so a name cannot render as something else
+    // every invisible character (controls, format characters such as bidi overrides and TAG characters, line and
+    // paragraph separators, and default-ignorable ones such as variation selectors and Hangul fillers; not tab, newline
+    // or carriage return) is shown as \uXXXX, or \u{XXXXX} past U+FFFF, so a name or an argument can't hide text or
+    // render as something else. One U+FE0E or U+FE0F right after a pictographic character (its text or emoji style:
+    // the VS16 of a warning sign, U+26A0 U+FE0F; not a digit, # or *, which are Emoji too) stays as it is; any other
+    // selector, and every one of a run, is shown
     // lean: a filter clicked on such a name compares the shown text and matches nothing; decode data-* if that matters
-    const esc = s => String(s ?? "").replace(/[&<>"'\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0")));
+    const esc = s => String(s ?? "").replace(/[&<>"']|(?![\t\n\r]|(?<=\p{Extended_Pictographic})[\uFE0E\uFE0F](?![\uFE00-\uFE0F\u{E0100}-\u{E01EF}]))[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || "\\u" + (c.codePointAt(0) > 0xffff ? "{" + c.codePointAt(0).toString(16) + "}" : c.codePointAt(0).toString(16).padStart(4, "0"))));
     // the same for text set as textContent, which needs no markup escaped
-    const vis = s => String(s ?? "").replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+    const vis = s => String(s ?? "").replace(/(?![\t\n\r]|(?<=\p{Extended_Pictographic})[\uFE0E\uFE0F](?![\uFE00-\uFE0F\u{E0100}-\u{E01EF}]))[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu, c => "\\u" + (c.codePointAt(0) > 0xffff ? "{" + c.codePointAt(0).toString(16) + "}" : c.codePointAt(0).toString(16).padStart(4, "0")));
     const FIELD = Object.assign(Object.create(null), { Bash: "command", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", Read: "file_path", NotebookEdit: "notebook_path", WebFetch: "url", WebSearch: "query", Glob: "pattern", Grep: "pattern", Agent: "description", Task: "description" });
     const FILE_TOOLS = Object.assign(Object.create(null), { Read: "R", Write: "W", Edit: "W", MultiEdit: "W", NotebookEdit: "W" });   // looked up by a tool's name: no prototype
     const SEVERE = new Set(["denied", "out_of_scope_write", "secrets_access"]);
@@ -3170,16 +3179,19 @@
     function nowTs() { return mode === "live" ? Date.now() / 1000 : (S.lastTs || Date.now() / 1000); }
 
     function render() {
-      if (PAGE === "run" && V2 && !scope) PAGE = "runs";   // a run's page with no run: the list to pick one from
+      // a run's page with no run: the list to pick one from, unless it shows a why log's view (a why link, a why run
+      // of RUNS: WRUN, or the first why run)
+      if (PAGE === "run" && V2 && !scope && !(WHY && NEEDWHY.has(centre()))) PAGE = "runs";
       VIEW = centre();
       for (const p of [...PAGES, "run"]) document.body.classList.toggle("pg-" + p, PAGE === p);
       for (const v of RVIEWS) document.body.classList.toggle("rv-" + v, PAGE === "run" && RV === v);
       document.body.classList.toggle("callslog", CALLSLOG);
-      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunHead(); renderRunsPage(); renderApprovalsPage(); renderHorizon();
+      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunsPage(); renderApprovalsPage(); renderHorizon();
       renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderWaterfall(); renderReason(); renderFiles();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
       document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
       renderWhyView();
+      renderRunHead();   // after the why view, which picks WRUN when none is
       $("wtabnode").hidden = !WNODE;
       document.querySelectorAll(".p>h2 [data-wtab]").forEach(b => b.classList.toggle("on", b.dataset.wtab === WTAB));
       if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
@@ -3224,7 +3236,7 @@
       const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
       const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, [exp, ver] = runCmds(r);
       put("runhead", crumb + `<h1>${esc(r.agent || "run")}</h1><div class="meta">${esc([r.id, r.tenant && r.tenant !== "default" ? "tenant " + r.tenant : "", t0 ? `started ${fmtD(t0)} ${fmtT(t0)} ${TZ}` : "", t1 ? fmtDur(t1 - t0) : "", r.state, r.records != null ? plural(r.records, "record") : ""].filter(Boolean).join(" · "))}</div>`
-        + `<div class="cnt"><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span><span class="tag">${esc(plural(calls, "call"))}</span>${d.deny ? `<span class="tag deny">${esc(d.deny)} blocked</span>` : ""}${d.ask ? `<span class="tag held">${esc(d.ask)} held</span>` : ""}${d.flag ? `<span class="tag flag">${esc(d.flag)} flagged</span>` : ""}${gaps ? `<span class="tag deny">${esc(plural(gaps, "gap"))}</span>` : ""}</div>`
+        + `<div class="cnt">` + vchip(r.verdict) + `<span class="tag">${esc(plural(calls, "call"))}</span>${d.deny ? `<span class="tag deny">${esc(d.deny)} blocked</span>` : ""}${d.ask ? `<span class="tag held">${esc(d.ask)} held</span>` : ""}${d.flag ? `<span class="tag flag">${esc(d.flag)} flagged</span>` : ""}${gaps ? `<span class="tag deny">${esc(plural(gaps, "gap"))}</span>` : ""}</div>`
         + (r.decisions ? `<div class="acts"><span>EXPORT <code class="shell">${esc(exp)}</code>` + cp(exp) + `</span><span>VERIFY <code class="shell">${esc(ver)}</code>` + cp(ver) + `</span></div>` : ""));
     }
     // RUNS: every run with its counts and verdict, newest first, each opening its page; then the why logs' runs
@@ -3235,7 +3247,7 @@
         + list.map(r => {
           const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
           return `<tr class="row" data-openrun="${esc(r.id)}" tabindex="0"><td title="${esc(r.id)}">${esc(r.id.slice(0, 8))}${r.tenant && r.tenant !== "default" ? `<br><span class="dim">tenant ${esc(r.tenant)}</span>` : ""}</td><td class="s-flag">${esc(r.agent || "run")}</td><td class="dim">${esc(t0 ? fmtD(t0) + " " + fmtT(t0) : "")}</td><td class="dim">${esc(t1 ? fmtDur(t1 - t0) : "")}</td><td>${esc(r.state || "")}</td>`
-            + `<td>${esc(Object.values(d).reduce((x, y) => x + y, 0))}</td><td class="${d.deny ? "s-deny" : "dim"}">${esc(d.deny || 0)}</td><td class="${d.ask ? "s-flag" : "dim"}">${esc(d.ask || 0)}</td><td class="${d.flag ? "s-flag" : "dim"}">${esc(d.flag || 0)}</td><td class="${gaps ? "s-err" : "dim"}">${esc(gaps)}</td><td><span class="vchip ${esc(r.verdict)}" title="${esc(r.label || "")}">${esc(String(r.verdict).toUpperCase())}</span></td></tr>`;
+            + `<td>${esc(Object.values(d).reduce((x, y) => x + y, 0))}</td><td class="${d.deny ? "s-deny" : "dim"}">${esc(d.deny || 0)}</td><td class="${d.ask ? "s-flag" : "dim"}">${esc(d.ask || 0)}</td><td class="${d.flag ? "s-flag" : "dim"}">${esc(d.flag || 0)}</td><td class="${gaps ? "s-err" : "dim"}">${esc(gaps)}</td><td>` + vchip(r.verdict, r.label) + `</td></tr>`;
         }).join("") + `</tbody></table>` + (list.length ? "" : `<div class="empty">No runs yet.</div>`)
         + (DROPPED ? `<p class="dim" style="padding:0 8px">${esc(`The live view keeps the newest ${MAXREC} records; ${DROPPED} older ones left it. Every run stays in this list with its verdict.`)}</p>` : "")
         + (document.querySelector('.nav a[href="/runs"]') ? `<p style="padding:0 8px">Every log of this deployment, searchable: the <a href="/runs">runs page</a>.</p>` : ""));
@@ -3273,7 +3285,7 @@
         else if (/^\s+\S/.test(l) && checks.length) checks[checks.length - 1].problems.push(l.trim());
       }
       const fail = checks.find(c => c.status === "fail"), ok = r.verdict === "verified";
-      const stamp = ok ? ["ok", "VERIFIED"] : r.verdict === "failed" ? ["bad", "FAILED" + (fail ? " · " + fail.check.toUpperCase() : "")]
+      const stamp = ok ? (STOPPED ? ["wait", "VERIFIED · CHECKS STOPPED"] : ["ok", "VERIFIED"]) : r.verdict === "failed" ? ["bad", "FAILED" + (fail ? " · " + fail.check.toUpperCase() : "")]
         : r.verdict === "pending" ? ["wait", "PENDING"] : ["bad", "NOT CHECKED"];
       return { ok, checks, stamp, total: Math.max(r.records || 0, all.length), rows: rows.map(x => {
         const a = (x.event === "PreToolUse" || x.event === "PostToolUse") && S.actions.get(tuid(x));   // a call: its tool and target
@@ -3319,7 +3331,8 @@
       for (const r of ALL) {
         const fx = r.v2?.effect, d = r.v2?.decision ?? (r.policy?.decision === "deny" ? "deny" : "allow"), rules = r.v2?.rules || [];
         if (r.analysis || r.signer || !(r.event === "PreToolUse" || fx?.kind === "connect" || fx?.kind === "file")) continue;
-        const a = ans.get(r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id)), ok = V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true;
+        // a why log's row (r.why) is the agent's own unsigned record: never signed, whatever the chain check says
+        const a = ans.get(r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id)), ok = !r.why && (V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true);
         const p = fx ? (fx.kind === "connect" ? ["outside", String(fx.target).replace(/:\d+$/, "")] : hzPath(String(fx.target), r.cwd))
           : hzPlace(r.tool_name, r.tool_input, r.cwd) || [category({ tool: r.tool_name, flags: [] }) === "net" ? "outside" : "machine", r.tool_name, true];
         raw.push({ t: r.ts_signed ?? r.ts, unread: !!r.ts_unread, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules),
@@ -3351,8 +3364,10 @@
     const HZKEY = `<div class="sec">HOW TO READ IT</div><div><span class="hzs">●</span> read, ran or reached</div><div><span class="hzs a-write">■</span> wrote, or a person approved it</div>`
       + `<div><span class="hzs a-blocked">✕</span> blocked by policy</div><div><span class="hzs a-held">◯</span> held for a person</div><div><span class="hzs">◆</span> flagged</div>`
       + `<div><span class="hzshield"></span> shield: a restricted place (a rule about secrets, harness configuration or Tracekit's own files); a flare where an agent was stopped</div>`
-      + `<div><span class="hzjet"></span> jet: data left the machine</div><div><span class="tag">SIGNED</span> the signer's record says so · <span class="tag flag">OBSERVED</span> a sensor outside the agent saw it · <span class="tag unv">UNVERIFIED</span> its run did not verify</div>`
+      + `<div><span class="hzjet"></span> jet: data left the machine</div><div><span class="tag">SIGNED</span> the signer's record says so · <span class="tag flag">OBSERVED</span> a sensor outside the agent saw it · <span class="tag unv">UNVERIFIED</span> its run did not verify, or a why log wrote it (unsigned)</div>`
       + `<div class="dim">The rings are the project (the run's working directory; a run that records none: its relative paths), this machine and the outside world, around the event horizon every run starts from. Click a place to see who went there and how we know; click an agent to follow its route.</div>`;
+    // the HUD's CHAIN: how many drawn moves no verified signed record backs
+    const hzChain = ev => { const unv = ev.filter(e => e.gr === "unverified").length; return [!ev.length ? "–" : unv ? `${unv} UNVERIFIED` : STOPPED ? "✓ VERIFIED · CHECKS STOPPED" : "✓ VERIFIED", unv || STOPPED ? "warn" : "ok"]; };
     function renderHorizon() {
       if (PAGE !== "horizon") return;
       const D = HZ.d = hzData(), N = D.ev.length, pal = css("--hz-agents").split(/\s+/);
@@ -3377,11 +3392,11 @@
         + (D.bare ? `<p class="hznote">${esc(`${D.bare} of ${N} calls have their arguments only as a commitment here, so each is placed by its tool (on this machine, or outside for a network tool), not at a file or host.`)}</p>` : ""));
       // the HUD's words go in as text
       const out = ev.filter(e => P(e.at).kind === "outside"), rest = ev.filter(e => P(e.at).rest), ran = rest.filter(e => e.act !== "blocked" && e.act !== "held").length;
-      const unv = ev.filter(e => e.gr === "unverified").length, s = hzSecs(D.ev, cur);
+      const s = hzSecs(D.ev, cur);
       $("hzclock").textContent = "T+ " + [s / 3600, s % 3600 / 60, s % 60].map(v => String(Math.floor(v)).padStart(2, "0")).join(":");
       $("hzmove").textContent = `${String(HZ.t).padStart(2, "0")} / ${N}`;
       [[new Set(out.map(e => e.at)).size, out.length ? "warn" : ""], [`${rest.length} · ${ran} RAN`, rest.length ? "warn" : ""], [ev.filter(e => e.act === "blocked").length, ""],
-       [ev.filter(e => e.act === "held").length, ""], [!ev.length ? "–" : unv ? `${unv} UNVERIFIED` : "✓ VERIFIED", unv ? "warn" : "ok"]]
+       [ev.filter(e => e.act === "held").length, ""], hzChain(ev)]
         .forEach(([v, c], k) => { $("hzt" + k).textContent = vis(v); $("hzt" + k).className = c; });
       document.querySelectorAll("[data-hzv]").forEach(b => b.classList.toggle("on", b.dataset.hzv === HZ.view));
       // beside the stage: the counts, then the followed agent's route, the picked place's visitors or how to read it
@@ -3665,9 +3680,11 @@
       const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
       const failed = V2 && !run ? [...RUNS.values()].filter(r => r.verdict === "failed").length : 0;
       if (run) {
-        c.className = "chain" + (run.verdict === "verified" ? " ok" : run.verdict === "pending" ? "" : " bad");
-        c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" : run.verdict === "failed" ? "RUN ✗ FAILED" : run.verdict === "error" ? "RUN ✗ NOT CHECKED" : "RUN … PENDING";
-        c.title = (run.integrity || "") + " · " + (run.label || "");
+        // a run that verified while checks have stopped since: its last check passed, no later edit would show
+        const stale = run.verdict === "verified" && !!STOPPED;
+        c.className = "chain" + (stale || run.verdict === "pending" ? "" : run.verdict === "verified" ? " ok" : " bad");
+        c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" + (stale ? " · CHECKS STOPPED" : "") : run.verdict === "failed" ? "RUN ✗ FAILED" : run.verdict === "error" ? "RUN ✗ NOT CHECKED" : "RUN … PENDING";
+        c.title = (run.integrity || "") + " · " + (run.label || "") + (stale ? " · " + STOPPED : "");
       } else {
         c.className = "chain" + (chainState.ok === true && chainState.n ? " ok" : chainState.ok === false ? " bad" : "");
         // why logs alone have no signed records: nothing to check, which is not a passed check
@@ -3720,16 +3737,18 @@
     }
     // high alerts: the ticker's and the ALERTS panel's count are one number
     const highCount = () => S.alerts.filter(a => a.sev === "high").length + whyAlerts().filter(a => a.severity === "high").length;
+    // the count of verified runs: muted, and saying so, while the viewer checks nothing (STOPPED)
+    const verifiedCount = k => `<span class="${esc(STOPPED ? "dim" : "s-ok")}" title="${esc(STOPPED)}">${esc(k + " verified" + (STOPPED ? " · checks stopped" : ""))}</span>`;
     function renderRuns() {
       const all = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
       // a run's page: its family, the run that started it all and every run started from there (its agents)
       const fam = PAGE === "run" && scope && family(scope), list = fam ? all.filter(r => fam.has(r.id)) : all;
       const n = v => list.filter(r => r.verdict === v).length;
-      let html = fam ? "" : `<div class="run${scope ? "" : " sel"}" data-run="" tabindex="0"><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
+      let html = fam ? "" : `<div class="run${scope ? "" : " sel"}" data-run="" tabindex="0"><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span>` + verifiedCount(n("verified")) + `${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
       for (const [r, depth] of treeOrder(list, r => r.id, r => r.parent)) {
         const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
-        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}" tabindex="0" style="${esc(indent(depth))}"><span class="nm">${depth ? `<span class="dim">└ </span>` : ""}${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
+        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}" tabindex="0" style="${esc(indent(depth))}"><span class="nm">${depth ? `<span class="dim">└ </span>` : ""}${esc(r.agent || "run")}</span>` + vchip(r.verdict, (r.integrity || "") + " · " + r.label) + `
           <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(fmtD(t0))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
           ${r.decisions ? `<span class="meta"><span>${esc(calls)} calls</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${d.flag ? "s-flag" : ""}">${esc(d.flag || 0)} flagged</span><span class="${gaps ? "s-err" : ""}">${esc(gaps)} gaps</span></span>` : ""}</div>`;
       }
@@ -3799,13 +3818,14 @@
       const src = srcOf(row.rec), tag = src === "ANALYSIS" || (src === "WHY" && V2) ? src : "", code = row.rec?.v2?.kind;
       return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}" tabindex="0"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
     }
-    // the tape's kind chips; on a run's page with why logs, a way to the why log's own events (agents, types, search)
+    // the tape's kind chips (v2 runs); with why logs, a way to the why log's own events (agents, types, search): on a
+    // run's page, and on every page when no v2 runs are on the tape (tracekit view --why DIR, the why report)
     function kindChips() {
-      return [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" ")
-        + (PAGE === "run" && WHY ? ` <button class="fchip" data-rv="timeline" type="button">WHY LOG EVENTS</button>` : "");
+      return (V2 ? [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" ") : "")
+        + (WHY && (PAGE === "run" || !V2) ? ` <button class="fchip" data-rv="timeline" type="button">WHY LOG EVENTS</button>` : "");
     }
     function renderTape() {
-      if (V2) put("fchips", kindChips());
+      put("fchips", kindChips());
       // only what changes the rows re-renders them (the live tick re-renders every second)
       const key = [S, S.tape.length, S.recs.length, F.agent, F.tool, F.file, F.flag, F.find, F.kind, tapeMax, selected, DROPPED];
       if (key.every((x, i) => x === tapeKey[i])) return;
@@ -4161,10 +4181,16 @@
     const short = h => h ? String(h).slice(0, String(h).indexOf(":") + 13) + "…" : "";
     // said before call `pre`, which the record `asked` (its message x, its run_seq) asked for: in an earlier record of that message, or in that record before the call (k: how many of its calls came first)
     const saidBefore = (r, asked, pre) => r.x === asked.x && r.rec.session_id === pre.session_id && (r.seq < asked.seq || r.seq === asked.seq && !(r.k > (r.calls || []).indexOf(pre.tool_use_id)));
+    // a verdict as a chip; a verified run while the viewer checks nothing (STOPPED) reads CHECKS STOPPED, muted: its
+    // last check passed, and an edit of its records since would not show. `title`: what the chip's title says too
+    function vchip(v, title) {
+      const s = v === "verified" && !!STOPPED;
+      return `<span class="vchip ${esc(s ? "stopped" : v)}" title="${esc([title, s && STOPPED].filter(Boolean).join(" · "))}">${esc(s ? "VERIFIED · CHECKS STOPPED" : String(v).toUpperCase())}</span>`;
+    }
     // a run's verdict; its integrity is said once (VERIFIED, not "VERIFIED Integrity VERIFIED")
     function verdictLine(id) {
       const v = RUNS.get(id);
-      return v ? `<dt>VERDICT</dt><dd><span class="vchip ${esc(v.verdict)}">${esc(String(v.verdict).toUpperCase())}</span> ${esc((v.integrity && v.integrity.toLowerCase() !== String(v.verdict) ? "Integrity " + v.integrity + " · " : "") + (v.assurance ? "Assurance " + v.assurance : ""))}<div class="dim">${esc(v.label)}</div></dd>` : "";
+      return v ? `<dt>VERDICT</dt><dd>` + vchip(v.verdict) + ` ${esc((v.integrity && v.integrity.toLowerCase() !== String(v.verdict) ? "Integrity " + v.integrity + " · " : "") + (v.assurance ? "Assurance " + v.assurance : ""))}<div class="dim">${esc(v.label)}</div></dd>` : "";
     }
     function rulesHtml(rules) {
       return (rules || []).map(x => `<div><span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(not in a policy this viewer has)")}</div>` + (x.remedy ? `<div style="color:var(--muted)">what to do: ${esc(x.remedy)}</div>` : "")).join("") || "none matched";
@@ -4338,7 +4364,7 @@
       if (r.verdict !== "verified") return "Pending: no checkpoint covers this run's last record yet.";
       const acts = S.actList, held = acts.filter(a => a.v2?.decision === "ask"), by = new Map();
       for (const a of held) { const w = (ANSWER[lastAnswer(a)] || (ended(a) ? "not answered" : "waiting")).toLowerCase(); by.set(w, (by.get(w) || 0) + 1); }
-      let out = "Verified. " + plural(acts.length, "call") + (acts.length ? `: ${acts.filter(a => a.post).length} ran, ${acts.filter(a => a.denied).length} blocked, ${held.length} held` + (held.length ? " (" + [...by].map(([w, n]) => n + " " + w).join(", ") + ")" : "") : "") + ".";
+      let out = "Verified" + (STOPPED ? " · checks stopped" : "") + ". " + plural(acts.length, "call") + (acts.length ? `: ${acts.filter(a => a.post).length} ran, ${acts.filter(a => a.denied).length} blocked, ${held.length} held` + (held.length ? " (" + [...by].map(([w, n]) => n + " " + w).join(", ") + ")" : "") : "") + ".";
       const fs = S.recs.filter(x => x.v2?.finding?.kind === "finding"), hi = fs.filter(x => x.severity === "high").length;
       if (r.findings || fs.length) out += fs.length ? " " + plural(fs.length, "finding") + (hi ? `, ${hi} high` : "") + "." : r.findings?.not_checkable?.length ? " No findings in what could be checked." : " No findings.";
       return out;
@@ -4361,7 +4387,7 @@
     function reviewHtml(r, cmds = true) {
       const d = r.decisions || {}, f = r.first || {};
       const line = (seq, k, text, cls, tip) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}" title="${esc(tip || "")}">${esc(text)}</dd>`;
-      let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span>${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
+      let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd>` + vchip(r.verdict) + `${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
       if (r.analyzes) left += `<dt>FINDINGS ABOUT</dt><dd class="go" data-run="${esc(r.analyzes)}">${esc("run " + r.analyzes + ": its signed findings are the rows of this run")}</dd>`;
       // live constraints: what the person's request said not to do; a call that breaks one waits for a person
       if (r.constraints?.length) left += line(r.constraints[0].seq, "CONSTRAINTS", r.constraints.map(c => c.kind).join(" · ") + ` · held ${plural(r.constraint_holds, "call")} for approval`, "s-flag");

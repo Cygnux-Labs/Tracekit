@@ -18,7 +18,7 @@ CLI (`claude`), registered with `tracekit init --harness agent=HARNESS`. Without
 cases report as not configured and only the 0.2.1 gate applies.
 
 Linux, as root, after `sudo install -D -m755 /bin/dash HARNESS` and
-`sudo tracekit init --user AGENT --harness agent=HARNESS` (signer running):
+`sudo /usr/bin/python3 -m tracekit init --user AGENT --harness agent=HARNESS` from a root-owned checkout (signer running):
     sudo python3 eval/e8_insider.py --agent agent --mallory mallory
 Writes eval/results/e8_insider.json; exit 0 when every case in the applicable gate is caught. --require-harness
 exits 1 when harness binding is off, so the 0.2.1 gate alone cannot pass.
