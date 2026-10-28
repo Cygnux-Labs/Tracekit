@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from differential_golden import cases, go_args, python_command, invoke
+from differential_golden import cases, go_args, python_command, invoke, compare
 
 
 class Discovery(unittest.TestCase):
@@ -33,7 +33,7 @@ class Discovery(unittest.TestCase):
             fixture = self.make_corpus(Path(tmp))
             rows = list(cases(fixture))
             self.assertEqual(4, len(rows))
-            self.assertEqual(fixture / "v2" / "trust.json", Path(rows[1][2][-1]))
+            self.assertEqual((fixture / "v2" / "trust.json").resolve(), Path(rows[1][2][-1]).resolve())
             self.assertEqual(["-bundle", rows[1][2][0], "-trust", rows[1][2][-1], "-json"],
                              go_args(rows[1][2]))
             self.assertEqual(["-bundle", rows[0][2][0], "-key", rows[0][2][2], "-json"],
@@ -114,6 +114,20 @@ class Discovery(unittest.TestCase):
         self.assertEqual(invoke(command, Path.cwd(), os.environ.copy()),
                          {"exit_code": 0, "integrity": "VERIFIED", "assurance": "ok",
                           "warning_checks": ["coverage"], "failed_checks": ["chain"]})
+
+    def test_known_and_unknown_check_differences_and_verdicts(self):
+        base = {"exit_code": 0, "integrity": "VERIFIED", "assurance": "ok",
+                "warning_checks": [], "failed_checks": []}
+        other = {**base, "warning_checks": ["keys", "reviews"]}
+        match, known, unexpected = compare(base, other, "v2")
+        self.assertTrue(match)
+        self.assertEqual(known["warning_checks"], ["keys", "reviews"])
+        self.assertFalse(any(unexpected.values()))
+        self.assertFalse(compare(base, other, "v1")[0])
+        self.assertFalse(compare(base, {**other, "failed_checks": ["chain"]}, "v2")[0])
+        self.assertFalse(compare({**base, "warning_checks": ["chain"]},
+                                 {**base, "failed_checks": ["chain"]}, "v2")[0])
+        self.assertFalse(compare(base, {**other, "exit_code": 1}, "v2")[0])
 
     def test_non_json_invocation_is_reported_as_error(self):
         import os

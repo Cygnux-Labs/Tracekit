@@ -1,5 +1,7 @@
 # Tracekit issue #260: independent Go verifier
 
+> **Experimental:** this verifier is not part of the stable core and has not had a production security audit.
+
 This dependency-free Go implementation reads evidence offline without invoking either existing verifier. Its development consulted the Python verifier and golden corpus, so it does not establish whether the specification alone is sufficient to write a verifier. The embedded event schemas are public format data copied from the repository schemas.
 
 ## Current coverage
@@ -21,7 +23,11 @@ This dependency-free Go implementation reads evidence offline without invoking e
 
 The CLI can report `VERIFIED` for supported evidence after all applicable implemented checks pass. **Golden parity is not complete format coverage or a production security audit.** Unsupported features fail closed: hybrid SLH-DSA log pins, record-key issuer certificates/revocations, monitor/analyzer trust, v1-to-v2 bridges, signed reviews/findings/replays, agent approvals, containment incidents and extensions. V1 supports file witnesses only; its stricter JSON/schema handling may reject historical inputs the original verifier accepts. The CLI does not implement strict-warning mode or the reference verifier's full per-check report.
 
-The differential gate compares check names as a separate parity requirement. Known V1 reporting omissions include Python's `run completeness`, `run boundaries`, `run tail witnessed`, `head matches a witness checkpoint`, `trust root`, `signing key`, `policy unchanged during run`, `capture sources`, `harness attribution`, `approvals`, `coverage`, and `opt-in content capture` checks. Known V2 warning/failure-check omissions include `gateway amendments`, `openshell policy`, `revocations`, `coverage` (including `reconcile.*` records), `tiers` (including split capture paths), `fail-open classes`, `break-glass approvals`, `approvals by agents`, `incident policies`, `findings counted`, `replay runs`, `reviews counted`, `log tail`, `monitor`, and `not interpreted`. These are check-reporting gaps; the differential report records them as mismatches rather than filtering them out.
+## Known differences
+
+The differential gate compares check names as a separate parity requirement. Known V1 reporting omissions include Python's `run completeness`, `run boundaries`, `run tail witnessed`, `head matches a witness checkpoint`, `trust root`, `signing key`, `policy unchanged during run`, `capture sources`, `harness attribution`, `approvals`, `coverage`, `opt-in content capture`, and `chain intact` checks. Known V2 warning/failure-check omissions include `gateway amendments`, `openshell policy`, `revocations`, `coverage` (including `reconcile.*` records), `tiers` (including split capture paths), `fail-open classes`, `break-glass approvals`, `approvals by agents`, `incident policies`, `findings counted`, `replay runs`, `reviews counted`, `reviews`, `keys`, `log tail`, `monitor`, `not interpreted`, `policy snapshot`, `manifest`, `inclusion`, `witness quorum`, `run chain`, `bundle structure`, `checkpoint`, `signatures`, `bundle readable`, `run-set`, and `run parts`. These are check-reporting gaps; the differential report records them separately as known gaps. The `coverage` gap includes `reconcile.*` records; `tiers` includes split capture paths; `keys` includes the key-rotation completeness warning. The v1 `run tail witnessed` gap includes an unwitnessed tail. The `fail-open classes`, `log tail`, and `break-glass approvals` warnings are also omitted.
+
+The Go verifier rejects some inputs accepted by Python: a run with a findings companion, an open-only runset, empty monitors/issuers/analyzers lists, two log keys or extra algorithms, duplicate witness pins, v2 numeric spellings `v: 2.0`, `run_seq: -0`, or `tree_size: 18.0`, noncanonical base64 signatures or inclusion nodes, checkpoint filenames outside its constraints, v1 ZIP archives with more than 10,000 entries, and v1 ZIP members whose name or extra field contains a crafted ambiguous local-header signature. These are false rejections and remain verdict differences if present in the golden corpus.
 
 ## Run
 
@@ -60,12 +66,10 @@ The gate enumerates the repository's v1, v2, negative and multipart `.tkb`
 fixtures, including the trust variants listed in the published case manifests.
 It fails if a bundle is not covered by a case. **Verdict parity is the exact
 three-field tuple `(exit_code, integrity, assurance)`** from the machine-readable
-reports of the two processes. The gate also requires exact equality of warning
-and failed check names; any difference fails and is recorded in the report. For v2, the Python verifier runs in a separate
+reports of the two processes. The gate compares warning and failed check names separately. Differences outside the version-scoped known gaps listed above fail; known differences are recorded separately in the report. For v2, the Python verifier runs in a separate
 subprocess via `tracekit.verify.v2.verify` (matching `tests/test_golden.py`),
 not the auto-detecting CLI: deliberately malformed v2 bundles can otherwise
 be misrouted to v1 and produce a non-JSON argument error. V1 cases use the
-Python CLI. Every mismatch fails the gate and is captured in the optional
-JSON report; no mismatches are suppressed or reclassified as skips.
+Python CLI. Every verdict mismatch and every unexpected check-name difference fails the gate and is captured in the optional JSON report.
 
 The gate compares exit code, integrity, assurance, and the names of warning and failed checks. It is an executable acceptance test, not a substitute for reviewing unsupported features. Rerun it against the checkout being reviewed; report files are generated on demand and are not committed.

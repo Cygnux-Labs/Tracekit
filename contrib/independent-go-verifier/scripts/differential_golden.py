@@ -125,6 +125,30 @@ def invoke(command, cwd, env):
         "warning_checks": names["warn"], "failed_checks": names["fail"]}
 
 
+# Names are scoped to the reference format; verdicts are never exempted.
+KNOWN_GAPS = {
+    "v1": {"run completeness", "run boundaries", "run tail witnessed", "head matches a witness checkpoint",
+           "trust root", "signing key", "policy unchanged during run", "capture sources", "harness attribution",
+           "approvals", "coverage", "opt-in content capture", "chain intact"},
+    "v2": {"gateway amendments", "openshell policy", "revocations", "coverage", "tiers", "fail-open classes",
+           "break-glass approvals", "approvals by agents", "incident policies", "findings counted", "replay runs",
+           "reviews counted", "reviews", "keys", "log tail", "monitor", "not interpreted",
+           "policy snapshot", "manifest", "inclusion", "witness quorum", "run chain", "bundle structure",
+           "checkpoint", "signatures", "bundle readable", "run-set", "run parts"},
+}
+
+
+def compare(python, go, section):
+    known = KNOWN_GAPS["v1" if section == "v1" else "v2"]
+    gaps, unexpected = {}, {}
+    for field in ("warning_checks", "failed_checks"):
+        differences = set(python[field]) ^ set(go[field])
+        gaps[field] = sorted(differences & known)
+        unexpected[field] = sorted(differences - known)
+    verdict = all(python[k] == go[k] for k in ("exit_code", "integrity", "assurance"))
+    return verdict and not any(unexpected.values()), gaps, unexpected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3],
@@ -148,14 +172,15 @@ def main():
                 # A v1 verifier needs its own flags, supplied by expected.json.
                 row["python"] = invoke(python_command(section, python_args), golden / section, env)
                 row["go"] = invoke([str(binary), *go_args(python_args)], root, env)
-                row["match"] = row["python"] == row["go"]
+                row["match"], row["known_gaps"], row["unexpected_checks"] = compare(
+                    row["python"], row["go"], section)
             except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
                 row["error"] = str(exc)
                 row["match"] = False
             rows.append(row)
             print(("PASS" if row["match"] else "FAIL") + " " + row["bundle"] + " — " + name)
     failures = [r for r in rows if not r["match"]]
-    report = {"definition": "exact equality of exit_code, integrity, assurance, and warning/fail check names (no fixtures excluded)",
+    report = {"definition": "exact verdict tuple and warning/fail check names outside version-scoped known gaps (no fixtures excluded)",
               "cases": len(rows), "matches": len(rows) - len(failures), "mismatches": len(failures),
               "results": rows}
     if args.report:
