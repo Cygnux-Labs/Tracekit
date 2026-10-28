@@ -89,7 +89,9 @@ import sys
 from tracekit.verify import v2
 report, code = v2.verify(sys.argv[1], sys.argv[2])
 print(json.dumps({"exit_code": code, "integrity": report.integrity,
-                  "assurance": report.assurance}))
+                  "assurance": report.assurance,
+                  "checks": [{"check": c["check"], "status": c["status"]}
+                             for c in getattr(report, "checks", [])]}))
 sys.exit(code)
 """
 
@@ -116,7 +118,11 @@ def invoke(command, cwd, env):
         raise ValueError(f"missing verdict fields from {command[0]}: {result}")
     if proc.returncode != result["exit_code"]:
         raise ValueError(f"exit mismatch between process and JSON from {command[0]}")
-    return {key: result[key] for key in ("exit_code", "integrity", "assurance")}
+    checks = result.get("checks", [])
+    names = {status: sorted({c["check"] for c in checks if c.get("status") == status})
+             for status in ("warn", "fail")}
+    return {key: result[key] for key in ("exit_code", "integrity", "assurance")} | {
+        "warning_checks": names["warn"], "failed_checks": names["fail"]}
 
 
 def main():
@@ -149,7 +155,7 @@ def main():
             rows.append(row)
             print(("PASS" if row["match"] else "FAIL") + " " + row["bundle"] + " — " + name)
     failures = [r for r in rows if not r["match"]]
-    report = {"definition": "exact equality of exit_code, integrity and assurance (no fixtures excluded)",
+    report = {"definition": "exact equality of exit_code, integrity, assurance, and warning/fail check names (no fixtures excluded)",
               "cases": len(rows), "matches": len(rows) - len(failures), "mismatches": len(failures),
               "results": rows}
     if args.report:

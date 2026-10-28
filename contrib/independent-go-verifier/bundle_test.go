@@ -150,6 +150,19 @@ func TestInspectBundleCore(t *testing.T) {
 	if ErrUnverifiable == nil {
 		t.Fatal("must never report full VERIFIED")
 	}
+	t.Run("manifest version uses strict parser", func(t *testing.T) {
+		bad := copyFiles(files)
+		fixtureManifest(bad)
+		manifest, err := parseFileObject(bad, "manifest.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest["verifier_min_version"] = "9999999999"
+		bad["manifest.json"], _ = json.Marshal(manifest)
+		if _, err := InspectBundle(fixtureZip(bad), trust); err == nil {
+			t.Fatal("accepted out-of-range verifier_min_version")
+		}
+	})
 	t.Run("modified payload with updated manifest", func(t *testing.T) {
 		bad := copyFiles(files)
 		for name := range bad {
@@ -179,6 +192,17 @@ func TestInspectBundleCore(t *testing.T) {
 	t.Run("trailing ZIP data", func(t *testing.T) {
 		if _, err := ReadBundle(append(append([]byte{}, archive...), 0)); err == nil {
 			t.Fatal("accepted appended ZIP junk")
+		}
+	})
+	t.Run("Unix symlink entry", func(t *testing.T) {
+		archive := fixtureZip(map[string][]byte{"file": []byte("target")})
+		central := bytes.Index(archive, []byte{0x50, 0x4b, 0x01, 0x02})
+		if central < 0 {
+			t.Fatal("fixture has no central directory")
+		}
+		binary.LittleEndian.PutUint32(archive[central+38:], uint32(0o120777)<<16)
+		if _, err := ReadBundle(archive); err == nil {
+			t.Fatal("accepted ZIP member marked as a Unix symlink")
 		}
 	})
 	t.Run("missing ZIP entry", func(t *testing.T) {

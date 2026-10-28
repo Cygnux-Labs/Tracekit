@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -79,7 +78,7 @@ func ReadBundle(input []byte) (map[string][]byte, error) {
 		if _, ok := content[f.Name]; ok {
 			return nil, errors.New("duplicate ZIP entry")
 		}
-		if len(f.Extra) != 0 || len(f.Comment) != 0 || f.Flags != 0 || (f.Method != zip.Store && f.Method != zip.Deflate) || f.Mode()&os.ModeSymlink != 0 {
+		if len(f.Extra) != 0 || len(f.Comment) != 0 || f.Flags != 0 || (f.Method != zip.Store && f.Method != zip.Deflate) || f.ExternalAttrs>>16&0o170000 == 0o120000 {
 			return nil, errors.New("unsupported ZIP entry properties")
 		}
 		if f.UncompressedSize64 > 64<<20 || f.CompressedSize64 > 64<<20 {
@@ -174,7 +173,7 @@ func checkManifest(files map[string][]byte) error {
 	if err != nil {
 		return err
 	}
-	if !regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,2}$`).MatchString(version) {
+	if _, err := parseVersion(version); err != nil {
 		return errors.New("invalid verifier_min_version")
 	}
 	declared, err := object(manifest["files"])

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -20,7 +21,31 @@ type report struct {
 	Detail    string                       `json:"detail,omitempty"`
 }
 
+const (
+	bundleReadLimit  = 512 << 20
+	trustReadLimit   = 1 << 20
+	keyReadLimit     = 1 << 20
+	witnessReadLimit = 512 << 20
+)
+
 func main() { os.Exit(run()) }
+
+func readLimited(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("file exceeds %d-byte limit", limit)
+	}
+	return data, nil
+}
+
 func run() int {
 	bundle := flag.String("bundle", "", "v2 .tkb archive")
 	trust := flag.String("trust", "", "auditor-pinned trust.json")
@@ -54,7 +79,7 @@ func run() int {
 	if *bundle == "" {
 		return fail("UNVERIFIABLE", "usage: tkverify -bundle file.tkb [-trust trust.json | -key signer.pub]")
 	}
-	data, err := os.ReadFile(*bundle)
+	data, err := readLimited(*bundle, bundleReadLimit)
 	if err != nil {
 		return fail("UNUSABLE BUNDLE", err.Error())
 	}
@@ -66,7 +91,7 @@ func run() int {
 		if *key != "" || *witness != "" {
 			return fail("UNVERIFIABLE", "v1 key/witness options cannot be used with v2 trust")
 		}
-		config, err := os.ReadFile(*trust)
+		config, err := readLimited(*trust, trustReadLimit)
 		if err != nil {
 			return fail("UNUSABLE BUNDLE", "trust: "+err.Error())
 		}
@@ -77,7 +102,7 @@ func run() int {
 			if strings.HasPrefix(*key, "ed25519:") {
 				pin = []byte(*key)
 			} else {
-				pin, err = os.ReadFile(*key)
+				pin, err = readLimited(*key, keyReadLimit)
 				if err != nil {
 					return fail("UNUSABLE BUNDLE", "key: "+err.Error())
 				}
@@ -87,7 +112,7 @@ func run() int {
 			if !strings.HasPrefix(*witness, "file:") {
 				return fail("UNVERIFIABLE", "only file witnesses are supported")
 			}
-			copy, err = os.ReadFile(strings.TrimPrefix(*witness, "file:"))
+			copy, err = readLimited(strings.TrimPrefix(*witness, "file:"), witnessReadLimit)
 			if err != nil {
 				return fail("UNUSABLE BUNDLE", "witness: "+err.Error())
 			}

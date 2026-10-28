@@ -10,15 +10,18 @@ This dependency-free Go implementation reads evidence offline without invoking e
 - RFC 6962 / RFC 9162 record Merkle leaf, node and inclusion proof verification.
 - C2SP signed checkpoint notes, log vkeys, witness cosignatures, duplicate signature-key rejection and witness quorum.
 - Rigid ZIP layout and limits, manifest file hashes, record-key epochs and retirement positions, per-run hash chains, multi-part run concatenation and first/last/key-record inclusion proofs.
+- CLI input caps: bundles and v1 witness files are limited to 512 MiB; trust and v1 public-key files are limited to 1 MiB.
 - Cryptographic registry run-set checks: derived-origin signed checkpoints, RFC 9162 consistency proofs, per-leaf inclusion proofs, fixed-width leaf contents, record signatures, run-final uniqueness and selected-run limits. These are *necessary* checks, not sufficient to establish the complete run-set semantics.
 
 - Event schema validation for both generations: embedded public schemas, conditional payload checks, local references, required and additional properties, enums, constants, patterns and size/numeric bounds.
 - V1 chain and elided-record signatures, checkpoints, file witnesses, independent key pins, policy snapshots/rule citations, completeness warnings and signer-isolation assurance.
 - V2 policy snapshot digests and live constraints; unsupported security-sensitive semantics fail closed.
-- Offline Rekor v2 anchors: RFC 3161 CMS signed attributes and data imprint, pinned TSA certificate validity, P-256 publishing signatures, hashedrekord binding, shard validity, inclusion proofs and signed Rekor checkpoints. TSA trust is the leaf certificate in the auditor-pinned trusted root; certificates carried by the token do not establish trust.
+- Offline Rekor v2 anchors: RFC 3161 CMS signed attributes and data imprint, pinned TSA certificate validity, P-256 publishing signatures, hashedrekord binding, shard validity, inclusion proofs and signed Rekor checkpoints. The Rekor entry is checked against the exact verified checkpoint note selected by the bundle and the matching log signature line in that note. TSA trust comes from the auditor-pinned trusted root; certificates carried by the token do not establish trust.
 - Integrity/exit/assurance reporting, including witness classes/timestamps, self-approval, open runs, registry assurance caps and key-retirement completeness.
 
 The CLI can report `VERIFIED` for supported evidence after all applicable implemented checks pass. **Golden parity is not complete format coverage or a production security audit.** Unsupported features fail closed: hybrid SLH-DSA log pins, record-key issuer certificates/revocations, monitor/analyzer trust, v1-to-v2 bridges, signed reviews/findings/replays, agent approvals, containment incidents and extensions. V1 supports file witnesses only; its stricter JSON/schema handling may reject historical inputs the original verifier accepts. The CLI does not implement strict-warning mode or the reference verifier's full per-check report.
+
+The differential gate compares check names as a separate parity requirement. Known V1 reporting omissions include Python's `run completeness`, `run boundaries`, `run tail witnessed`, `head matches a witness checkpoint`, `trust root`, `signing key`, `policy unchanged during run`, `capture sources`, `harness attribution`, `approvals`, `coverage`, and `opt-in content capture` checks. Known V2 warning/failure-check omissions include `gateway amendments`, `openshell policy`, `revocations`, `coverage` (including `reconcile.*` records), `tiers` (including split capture paths), `fail-open classes`, `break-glass approvals`, `approvals by agents`, `incident policies`, `findings counted`, `replay runs`, `reviews counted`, `log tail`, `monitor`, and `not interpreted`. These are check-reporting gaps; the differential report records them as mismatches rather than filtering them out.
 
 ## Run
 
@@ -57,11 +60,12 @@ The gate enumerates the repository's v1, v2, negative and multipart `.tkb`
 fixtures, including the trust variants listed in the published case manifests.
 It fails if a bundle is not covered by a case. **Verdict parity is the exact
 three-field tuple `(exit_code, integrity, assurance)`** from the machine-readable
-reports of the two processes. For v2, the Python verifier runs in a separate
+reports of the two processes. The gate also requires exact equality of warning
+and failed check names; any difference fails and is recorded in the report. For v2, the Python verifier runs in a separate
 subprocess via `tracekit.verify.v2.verify` (matching `tests/test_golden.py`),
 not the auto-detecting CLI: deliberately malformed v2 bundles can otherwise
 be misrouted to v1 and produce a non-JSON argument error. V1 cases use the
 Python CLI. Every mismatch fails the gate and is captured in the optional
 JSON report; no mismatches are suppressed or reclassified as skips.
 
-The gate is an executable acceptance test, not a substitute for reviewing unsupported features. The recorded result in `scripts/golden-parity.json` covers every current case; rerun it against the checkout being reviewed. Intermediate `parity-phase*.json` reports preserve the progression from the partial implementation.
+The gate compares exit code, integrity, assurance, and the names of warning and failed checks. It is an executable acceptance test, not a substitute for reviewing unsupported features. Rerun it against the checkout being reviewed; report files are generated on demand and are not committed.

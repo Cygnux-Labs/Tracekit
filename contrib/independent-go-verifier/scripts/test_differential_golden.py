@@ -103,7 +103,17 @@ class Discovery(unittest.TestCase):
             got = invoke(command, root, env)
             self.assertEqual(got, {"exit_code": 2,
                                    "integrity": "UNUSABLE BUNDLE",
-                                   "assurance": "not evaluated"})
+                                   "assurance": "not evaluated",
+                                   "warning_checks": [], "failed_checks": []})
+
+    def test_invoke_compares_warning_and_failure_check_names(self):
+        import os
+        import sys
+        command = [sys.executable, "-c",
+                   "import json; print(json.dumps({'exit_code': 0, 'integrity': 'VERIFIED', 'assurance': 'ok', 'checks': [{'check': 'coverage', 'status': 'warn'}, {'check': 'chain', 'status': 'fail'}, {'check': 'other', 'status': 'pass'}]}))"]
+        self.assertEqual(invoke(command, Path.cwd(), os.environ.copy()),
+                         {"exit_code": 0, "integrity": "VERIFIED", "assurance": "ok",
+                          "warning_checks": ["coverage"], "failed_checks": ["chain"]})
 
     def test_non_json_invocation_is_reported_as_error(self):
         import os

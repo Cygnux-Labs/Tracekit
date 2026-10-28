@@ -425,7 +425,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 	}
 	boundaries := len(selected) == 0
 	for run := range selected {
-		if strings.HasPrefix(run, "findings:") || strings.HasPrefix(run, "review:") {
+		if v1CompanionRun(run) {
 			continue
 		}
 		end, ok := ends[run]
@@ -526,6 +526,10 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 		rep.Integrity += " BUT UNANCHORED (internally consistent only; no trusted key or witness was checked)"
 	}
 	return rep
+}
+
+func v1CompanionRun(run string) bool {
+	return strings.HasPrefix(run, "findings:") || strings.HasPrefix(run, "anchors:") || strings.HasPrefix(run, "review:")
 }
 
 func checkV1Policies(files map[string][]byte, events []map[string]any, selected map[string]bool) error {
