@@ -1041,7 +1041,8 @@ class Horizon(unittest.TestCase):
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
             const ctx = new Proxy({{}}, {{ get: (o, k) => k in o ? o[k] : () => ({{ addColorStop() {{}}, width: 10 }}) }});
-            const cv = {{ clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => {{ frames++; return ctx; }} }};
+            const cv = {{ clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => {{ frames++; return ctx; }},
+                         parentNode: {{ querySelectorAll: () => [] }} }};
             const $ = id => id === "hzcv" ? cv : null, window = {{}}, document = {{ createElement: () => ({{ width: 0, height: 0, getContext: () => ctx }}) }};
             const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
             const matchMedia = () => ({{ matches: true }}), requestAnimationFrame = () => {{}};
@@ -1064,7 +1065,8 @@ class Horizon(unittest.TestCase):
         out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], """
             const ctx = new Proxy({}, { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {}, width: 10 }) });
             let frames = 0, reduce = true, PAGE = "horizon";
-            const queued = [], cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => { frames++; return ctx; } };
+            const queued = [], cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => { frames++; return ctx; },
+                                    parentNode: { querySelectorAll: () => [] } };
             const $ = id => id === "hzcv" ? cv : null, window = {}, document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
             const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
             const matchMedia = () => ({ matches: reduce }), requestAnimationFrame = f => queued.push(f);
@@ -1081,6 +1083,37 @@ class Horizon(unittest.TestCase):
             PAGE = "runs"; queued.shift()(32); seen.push([frames, queued.length]);         // off the page the loop stops
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out, [[2, 0, 0, True], [2, 1], [3, 1], [3, 0]])
+
+    def test_a_callout_is_never_drawn_over_the_hud(self):
+        """"release-agent · flagged" at api.github.com was drawn over CHAIN ✓ VERIFIED: the callouts' room left out the
+        HUD's readouts, which sit over the stage."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], """
+            const texts = [], ctx = new Proxy({ fillText: (t, x, y) => texts.push([t, x, y]), measureText: t => ({ width: t.length * 6 }) },
+                                              { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }) });
+            const hud = { offsetLeft: 580, offsetTop: 16, offsetWidth: 202, offsetHeight: 190 }, PAGE = "horizon";
+            const cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [hud] } };
+            const $ = id => id === "hzcv" ? cv : null, window = {}, document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
+            const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
+            const matchMedia = () => ({ matches: true }), requestAnimationFrame = () => {};
+            HZ.d = { ev: [{ t: 1, seq: 1, ag: "release-agent", at: "api.github.com", act: "flag", gr: "signed", run: "r1", w: "" }], dirs: [],
+                     agents: [["release-agent", 0]], cwd: "", places: { "api.github.com": { kind: "outside", label: "api.github.com", r: .85, th: hzRad(60), rest: null } } };
+            Object.assign(HZ, { t: 1, col: { "release-agent": "#d98bff" } });
+            hzDraw();
+            const [l, t, r, b] = [hud.offsetLeft, hud.offsetTop, hud.offsetLeft + hud.offsetWidth, hud.offsetTop + hud.offsetHeight];
+            const callout = texts.filter(([s]) => /api\\.github\\.com|release-agent/.test(s));
+            process.stdout.write(JSON.stringify([callout.map(([s]) => s), callout.filter(([, x, y]) => x >= l && x <= r && y >= t && y <= b + 10)]));"""))
+        self.assertEqual(out, [["api.github.com", "release-agent · flagged"], []])
+
+    def test_the_stage_is_as_tall_as_the_panel_never_the_side_card(self):
+        """Following an agent listed its 500 moves beside the stage, and the stage (flex-basis auto) grew with them: a
+        canvas 27,000px tall whose every frame blurred all of it, 40 s a frame, and Chrome's Page Unresponsive. The ≤900px
+        stack keeps the card under a 440px stage, at its own height."""
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        self.assertIn(".hzmain {\n      flex: 1 0 0;\n      min-height: 480px;", css)
+        self.assertIn(".hzside {\n      border-left: 1px solid var(--line2);\n      overflow: auto;", css)
+        self.assertIn(".hzmain {\n        flex-basis: auto;\n        grid-template-columns: minmax(0, 1fr);\n"
+                      "        grid-template-rows: 440px auto", css)
 
 
 PAGE_TEXT = " ".join(PAGE.split())
