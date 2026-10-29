@@ -2050,6 +2050,15 @@ class FinalQA(unittest.TestCase):
         self.assertRegex(phone, r"\.apprp tr\.row td \{\s*border: 0;\s*overflow-wrap: anywhere")
         self.assertRegex(phone, r"\.apprp tr\.row td:nth-child\(n\+3\) \{\s*grid-column: 1/-1")
 
+    def test_a_phones_wrapped_panel_title_keeps_its_height_over_the_rows(self):
+        """At 390px the tape's filter buttons (All, Decisions, ... WHY LOG EVENTS) wrapped to a second line in a title
+        band the panel had shrunk to 28px: they lay over the first row (45px over, measured in Chromium, on a run's
+        CALLS; 8px on DESK)."""
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        phone = css[css.index("@media (max-width:700px)"):]
+        self.assertRegex(phone, r"\.p>h2,\s*\.legend \{\s*flex-wrap: wrap;\s*white-space: normal\s*\}\s*/\*[^*]*\*/\s*"
+                                r"\.p>h2 \{\s*flex-shrink: 0")
+
     def test_permissions_rows_are_cards_on_a_phone_and_the_panel_grows(self):
         """At 390px PERMISSIONS' nine columns ran off past the arguments: the rest of each row could not be read."""
         css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]

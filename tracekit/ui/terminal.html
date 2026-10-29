@@ -2633,6 +2633,12 @@
         white-space: normal
       }
 
+      /* a title that wraps keeps its height: a panel short of room (the tape's, under its filter buttons) shrinks its rows,
+         never the title band over them */
+      .p>h2 {
+        flex-shrink: 0
+      }
+
       header.top,
       .pages {
         flex-wrap: wrap;
