@@ -199,6 +199,19 @@ class Scenarios(rc.Harness):
         self.assertEqual([(e["data"]["kind"], e["data"]["tool_use_id"]) for e in self.read() if e["type"] == "capture.gap"],
                          [("executed_against_policy", "tc-1")])
 
+    def test_an_approval_whose_blocked_call_ran_anyway_lets_no_retry_run(self):
+        """The blocked call ran without consuming its approval (executed_against_policy), so the approval already let
+        one call run: the agent's retry of it asks a person again, and naming it in a consume runs nothing."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        first = next(e["data"] for e in self.read() if e["type"] == "policy.decision")
+        self.complete({"tool_call_id": "tc-1", "tool": "pay", "args": PAY}, {"decision_id": first["decision_id"]})
+        _, _, again = self.retry(tcid="tc-2")
+        self.assertNotEqual(again["approval_id"], aid)
+        self.assertEqual(again["state"], "requested")
+        self.refused_with("TK-APPROVAL-UNBOUND", self.consume(tcid="tc-2", hint=aid))
+        self.assertNotIn("approval.consumed", self.types())
+
     def test_a_retry_with_other_args_needs_its_own_approval(self):
         """An approval covers its tool and arguments: the agent can't carry it over to a changed call."""
         aid = self.ask(PAY)

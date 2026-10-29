@@ -204,8 +204,9 @@ later call of the same run, tool and arguments (the agent's retry, under a new t
 before anyone answered) whose decision asks for no rule the approval did not, under the same policy, uses the earlier
 call's approval once a person approved it, instead of a new one (_reusable): approval_request returns it (`requested`
 while an agent's approval is within its veto delay, as approval_wait reads it), and the consume writes its
-approval.consumed under the retry's tool_call_id. Still once, and never a rejected, revoked or expired one. The retry is
-then the call that ran under it (pipeline.ran): the blocked call, if it ran anyway, ran against the policy.
+approval.consumed under the retry's tool_call_id. Still once, and never a rejected, revoked or expired one, nor one
+whose blocked call ran anyway. The retry is then the call that ran under it (pipeline.ran): the blocked call, if it ran
+anyway, ran against the policy.
 Who answers (design §5): with a config (`approvals`), only an approver of the run's tenant or a break-glass identity
 (any tenant, a reason required, recorded `break_glass`), never the requester or the run's owner unless
 `self_approval: allow`. Without one (the dev signer), any identity of the run's tenant, a self-approval labelled
@@ -3108,18 +3109,18 @@ class SignerService:
         """(on the writer) The approval of run `key` that `call`, decided `ask` for the args digest `digest`, consumes in
         place of one of its own: the agent's retry of a call a person (or an agent approver) approved after its first
         attempt was blocked. It is `approved` (never consumed, rejected, revoked or expired), within its expiry and
-        consume window, and was asked for the same tool and arguments (its commitment opens with `digest`) under the
-        same policy, for every rule the call's decision names. `prefer` (the caller's hint) when it is one; else the
-        oldest; None when none is."""
+        consume window, its own call has no result (one that ran anyway, against the policy, used it up), and was asked
+        for the same tool and arguments (its commitment opens with `digest`) under the same policy, for every rule the
+        call's decision names. `prefer` (the caller's hint) when it is one; else the oldest; None when none is."""
         if not (call and call["decision"] == "ask" and digest and self._same(call, digest)):
             return None
-        now = _iso(time.time())
+        now, ran = _iso(time.time()), self.log.runs[key]["results"]
         # lean: scans the signer's live approvals, as the sweep does; index approved ones by run if a run holds many
         found = [aid for aid, a in self.log.approvals.items()
                  if a["run_key"] == key and a["state"] == "approved" and a["tool"] == call["tool"]
                  and a.get("via") == call.get("via")   # a gateway's call by the same gateway, an agent's by the agent
                  and a["policy_hash"] == self.policy.policy_hash and set(call["rule_ids"]) <= set(a["rule_ids"])
-                 and a["expires_at"] > now and a.get("consume_by", "~") > now
+                 and a["expires_at"] > now and a.get("consume_by", "~") > now and a["tool_call_id"] not in ran
                  and self._opens(a["commitment"], a["label"], digest)]
         return prefer if prefer in found else found[0] if found else None
 
