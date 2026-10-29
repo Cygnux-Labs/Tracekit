@@ -472,23 +472,26 @@ def _exit(harness, code, is_pre):
 
 
 def _reply(harness, stdout, allowed, msg, is_pre):
+    # a block message in at most 500 characters: a held call's names its rule ids and the approve and reject
+    # commands before its reasons, so a longer one loses the end of its reasons, marked
+    msg = msg if len(msg) <= 500 else msg[:499] + "…"
     if harness == "cursor":
         if is_pre:
             stdout.write(json.dumps({"permission": "allow"} if allowed else
-                                    {"permission": "deny", "user_message": msg[:500], "agent_message": msg[:500]}))
+                                    {"permission": "deny", "user_message": msg, "agent_message": msg}))
         else:
             stdout.write("{}")
     elif harness == "gemini":
         # stdout must be JSON only; a deny only for a tool call
-        stdout.write(json.dumps({} if allowed or not is_pre else {"decision": "deny", "reason": msg[:500]}))
+        stdout.write(json.dumps({} if allowed or not is_pre else {"decision": "deny", "reason": msg}))
     elif harness == "antigravity":
         # agy reads stdout as its hook result message: only documented fields (another fails the hook), on every event.
         # `allow` leaves the call to agy's own permissions, as the other hooks' exit 0 does
         stdout.write(json.dumps({} if not is_pre else {"decision": "allow"} if allowed else
-                                {"decision": "deny", "reason": msg[:500] or "Blocked by Tracekit"}))
+                                {"decision": "deny", "reason": msg or "Blocked by Tracekit"}))
     elif harness in ("codex", "droid") and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                                        "permissionDecisionReason": msg[:500] or "Blocked by tracekit"}}))
+                                                        "permissionDecisionReason": msg or "Blocked by tracekit"}}))
     stdout.flush()
 
 

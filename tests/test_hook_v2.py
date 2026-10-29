@@ -1,6 +1,7 @@
 """The v2 Claude Code hook (tracekit/integrations/claude_code.py) against the real dev signer, auto-spawned in a temp
 runtime dir, invoked through the command `tracekit init --v2` wires."""
 import contextlib
+import glob
 import hmac
 import io
 import json
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -1051,6 +1053,37 @@ class HeldCalls(unittest.TestCase):
             f"`tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by uid:{os.getuid()}); "
             "ask them before trying again; uploading to cloud storage. "), err)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
+
+    def test_cursor_gets_the_longest_hold_cut_after_its_rule_and_commands(self):
+        """Cursor shows 500 characters of a block message (as Gemini CLI, Antigravity CLI, Codex and Droid get it): the
+        longest hold a shipped pack makes, TK-A043's, was cut mid-sentence and unmarked. The cut keeps the rule id and
+        the approve and reject commands, drops from the end of the reasons and ends with "…"; after a reject, the
+        retry's says so within the 500."""
+        packs = map(service.load_policy, glob.glob(os.path.join(ROOT, "tracekit", "policy2", "packs", "*.yaml")))
+        self.assertEqual(max((len(service.SignerService._reasons(types.SimpleNamespace(policy=e), [r["id"]])), r["id"])
+                             for e in packs for sec, r, *_ in e.rules if sec == "ask")[1], "TK-A043")
+        cursor = install._hook_command("tracekit.integrations.harness_hooks", "entry", ("cursor", "preToolUse"))
+
+        def pre(tid):
+            p = subprocess.run(cursor, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
+                               input=json.dumps({"hook_event_name": "preToolUse", "conversation_id": "c1",
+                                                 "tool_name": "Shell", "tool_use_id": tid,
+                                                 "tool_input": {"command": "stripe refunds create --charge ch_1"}}))
+            reply, err = json.loads(p.stdout), p.stderr.strip()
+            self.assertEqual((reply["permission"], reply["user_message"]), ("deny", reply["agent_message"]))
+            return reply["agent_message"], err, err.split()[4]
+
+        msg, err, aid = pre("m1")
+        self.assertGreater(len(err), 500)
+        self.assertEqual((len(msg), msg), (500, err[:499] + "…"))
+        self.assertTrue(msg.startswith(f"[tracekit] held for approval {aid} (TK-A043): "), msg)
+        self.assertIn(f"`tracekit approvals approve {aid}`", msg)
+        self.assertIn(f"`tracekit approvals reject {aid}`). Why: moving money", msg)
+        self.approvals("reject", aid)
+        msg, _, again = pre("m2")
+        self.assertIn(f"`tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by "
+                      f"uid:{os.getuid()}); ask them before trying again; moving money", msg)
+        self.assertTrue(msg.endswith("…"), msg)
 
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
