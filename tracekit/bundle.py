@@ -58,7 +58,8 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     ledger_path = os.path.join(signer_home, "ledger", "ledger.jsonl")
     recs = [r for _, r, _ in read_records(ledger_path) if r]
     if not recs:
-        raise SystemExit("ledger is empty")
+        raise SystemExit(f"no v1 records in {ledger_path}: a v2 signer's runs export with tracekit export --v2 --run "
+                         "RUN_ID (tracekit last exports and verifies the newest)")
     runs = select(recs, run, last, since)
     if not runs:
         raise SystemExit("no run matches the selection")

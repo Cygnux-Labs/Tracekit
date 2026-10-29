@@ -451,6 +451,7 @@ def record_hooks_settings(path):
     finally:
         files.close(fd)
     cfg.pop("no_hooks", None)
+    cfg.pop("hooks_settings", None)
     _write_client_dir(d, {**cfg, **({"hooks_settings": os.path.abspath(path)} if path else {"no_hooks": True})})
 
 
@@ -1348,8 +1349,9 @@ def v1_results(checks=None):
     return out + helper
 
 
-def _require_system(experimental_macos):
-    """Refuse a platform or user system mode cannot run on; True on macOS."""
+def _require_system(experimental_macos, other=", or use tracekit init --dev for a same-user signer"):
+    """Refuse a platform or user system mode cannot run on; True on macOS. other: what else a user who isn't root can
+    do."""
     darwin = sys.platform == "darwin"
     if not (sys.platform.startswith("linux") or darwin):
         raise SystemExit("v0.2 system mode runs on Linux and (experimentally) macOS: tracekitd must identify callers "
@@ -1361,8 +1363,7 @@ def _require_system(experimental_macos):
                          "or use `tracekit init --dev`.")
     if os.geteuid() != 0:
         raise SystemExit("system mode needs root: run it as root from a root-owned Python "
-                         f"({wiki_url('docs/deploy.md', 'laptop-system-mode')}), or use tracekit init --dev "
-                         "for a same-user signer")
+                         f"({wiki_url('docs/deploy.md', 'laptop-system-mode')}){other}")
     return darwin
 
 
@@ -1669,7 +1670,8 @@ def uninstall_system_v2(purge=False):
     """`tracekit uninstall --v2` as root: remove the service, signer.yaml, the system config's v2 keys (the file, and
     the venv, unless v1 system mode still uses them) and the agent's hooks. purge: also the signer's data dir (its keys
     and log) and its user, and the tailer's user. Returns what was kept."""
-    darwin = _require_system(True)
+    darwin = _require_system(True, ". Removing a dev setup (init --dev) needs no root: tracekit uninstall takes its "
+                                   "hooks out and tracekit down stops its signer")
     sc = client.system_config() or {}
     h = sc.get("hooks") or {}
     try:

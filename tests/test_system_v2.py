@@ -717,6 +717,18 @@ class CliUninstall(unittest.TestCase):
             self.assertEqual(cli.main(["uninstall", "--purge"]), 2)
         self.assertIn("--purge goes with --v2", err.getvalue())
 
+    def test_uninstall_v2_without_root_says_how_to_remove_a_dev_setup(self):
+        """Not as root, `uninstall --v2` said to "use tracekit init --dev": advice to install, to someone removing one."""
+        for platform in ("linux", "darwin"):
+            with self.subTest(platform=platform), mock.patch.object(install.sys, "platform", platform), \
+                    mock.patch.object(install.os, "geteuid", return_value=1001, create=True), \
+                    self.assertRaises(SystemExit) as cm:
+                install.uninstall_system_v2()
+            self.assertTrue(str(cm.exception).endswith(
+                ". Removing a dev setup (init --dev) needs no root: tracekit uninstall takes its hooks out and tracekit "
+                "down stops its signer"), str(cm.exception))
+            self.assertNotIn("init --dev for", str(cm.exception))
+
 
 class CliManaged(unittest.TestCase):
     def test_v2_system_mode_takes_managed(self):

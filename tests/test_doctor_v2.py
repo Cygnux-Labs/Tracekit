@@ -685,6 +685,27 @@ class NoHooksChosen(unittest.TestCase):
             self.assertEqual((rows["D-HOOKS-PRESENT"]["status"], rows["D-HOOKS-PRESENT"]["fix"]),
                              ("warn", "tracekit init --dev --v2"))
 
+    def test_no_hooks_after_a_hooked_init_takes_the_hooks_out(self):
+        """`init --dev --v2 --no-hooks` after an init with hooks said "v2 hooks: not installed" while they stayed in
+        settings.json and ran, and client.json recorded both the hooks file and no_hooks. System mode's takes them
+        out; dev mode's now does too."""
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(home)
+        settings = os.path.join(home, ".claude", "settings.json")
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}), \
+                mock.patch.object(client, "system_config", return_value=None), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["init", "--dev", "--v2"]), 0)
+            self.assertTrue(install._v2_hooks_in(settings))
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks"]), 0)
+            self.assertEqual(out.getvalue(), f"Tracekit v2 hooks removed from {settings}\nv2 hooks: not installed\n")
+            self.assertFalse(install._v2_hooks_in(settings))
+            self.assertEqual(client.client_config(), {"no_hooks": True})
+
     def test_system_mode_reads_the_choice_from_client_json(self):
         """System mode said "no hooks recorded in client.json", fix: reinstall, after `init --v2 --no-hooks`."""
         sc = {"signer": "/run/s.sock", "hooks": {"user": "nobody-e16", "settings": None, "agent": "claude",

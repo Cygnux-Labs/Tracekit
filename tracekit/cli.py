@@ -548,6 +548,10 @@ def _run(a):
                     on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
                                                          thinking=not a.no_thinking_summaries)
                     if not a.project:   # None: --no-hooks, which doctor then reports as chosen
+                        # --no-hooks takes an earlier init's hooks out, as system mode's does
+                        for p in [] if hooks else install.user_settings_all():
+                            if install._v2_hooks_in(p):
+                                install.install_hooks(p, uninstall=True)
                         install.record_hooks_settings(hooks)
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
@@ -684,7 +688,7 @@ def _run(a):
         return 0 if r.get("ok") else 1
     if a.cmd == "approvals":
         return _approvals(a)
-    if a.cmd == "export" and a.v2:
+    if a.cmd == "export" and (a.v2 or a.data_dir or a.config or a.run_set or a.tenant):   # each names a v2 store
         return _export_v2(a)
     if a.cmd == "last":
         return _last(a)

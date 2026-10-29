@@ -237,6 +237,30 @@ class ExportWithoutSigner(unittest.TestCase):
                                           "with --config or --dev\n"))
         self.assertEqual(run_cli("export", "--v2", "--run", "run-1", "--data-dir", self.dir, "--dev", "-o", out)[0], 2)
 
+    def test_export_says_where_a_v2_run_is(self):
+        """`export --data-dir DIR --run R` without --v2 read a v1 ledger instead and said only "ledger is empty", as a
+        plain `export` did on a v2-only setup; a data dir that doesn't exist got a raw [Errno 2]."""
+        store = FileStorage(os.path.join(self.dir, "store"))
+        store.append_batch(Chain().batch(3))
+        store.close()
+        out = os.path.join(self.dir, "x.tkb")
+        with mock.patch("tracekit.sdk.client.Client", side_effect=AssertionError("asked a signer")):   # the v2 export
+            code, _, err = run_cli("export", "--run", "run-1", "--tenant", "acme", "--data-dir", self.dir, "-o", out)
+        self.assertEqual((code, err), (1, "tracekit export: no checkpoint covers run 'run-1' yet, and a data dir names no "
+                                          "signer to ask for one: export again after its signer's next checkpoint, or "
+                                          "with --config or --dev\n"))
+        v1 = os.path.join(self.dir, "v1")
+        with self.assertRaises(SystemExit) as got:
+            run_cli("export", "--home", v1, "-o", out)
+        self.assertEqual(str(got.exception), f"no v1 records in {os.path.join(v1, 'ledger', 'ledger.jsonl')}: a v2 "
+                         "signer's runs export with tracekit export --v2 --run RUN_ID (tracekit last exports and verifies "
+                         "the newest)")
+        nope = os.path.join(self.dir, "nope")
+        self.assertEqual(run_cli("export", "--v2", "--run", "run-1", "--data-dir", nope, "-o", out)[::2],
+                         (1, f"tracekit export: no signer data dir at {nope}\n"))
+        self.assertEqual(run_cli("signer", "trust", "--data-dir", nope, "-o", out)[::2],
+                         (2, f"tracekit signer: no signer data dir at {nope}\n"))
+
 
 if __name__ == "__main__":
     unittest.main()
