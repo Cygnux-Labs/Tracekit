@@ -1543,6 +1543,195 @@ class Horizon(unittest.TestCase):
                       "        grid-template-rows: 440px auto", css)
 
 
+class HorizonZoom(unittest.TestCase):
+    """HORIZON zooms like a code map: a camera over the fit view, places nested by folder, labels by the zoom, and a
+    stage drawn only when something changed."""
+
+    DATA = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
+            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzData"]
+    # HZ comes with HZMAX: its line ends in a comment, so page_js takes the next line, HZ's, with it
+    DRAW = ["HZACT", "HZSYM", "HZWORST", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW, "hzZoom", "hzAim", "hzFlyTo",
+            "hzFocus"]
+    # a worktree tree (each agent-N holds only src), a project folder of 60 files and a restricted one, a lone file,
+    # a secret, a command and a host
+    PATHS = ([f"/home/u/T/.claude/worktrees/agent-{k}/src/{m}.py" for k in range(12) for m in "ab"]
+             + [f"/home/u/T/src/f{k}.py" for k in range(60)] + ["/home/u/T/src/.env", "/home/u/T/README.md", "/home/u/.ssh/id_rsa",
+                                                               "/tmp/x.log"])
+    # a stage in Node: a canvas whose texts, squares, strokes and curves are counted, blur filters and bitmaps made
+    # counted, motion on or off (reduced), and draw(w): a still frame at width w, its labels and how many cover another
+    STAGE = """
+            let motion = false, made = 0, blurs = 0, strokes = 0, curves = 0; const rafs = [], texts = [], squares = [];
+            const ctx = new Proxy({ fillText(t, x, y) { texts.push([String(t), x, y, this.font, this.textAlign]); },
+                                    fillRect(x, y, w, h) { if (w === 16 && h === 16) squares.push([x, y]); },
+                                    stroke() { strokes++; }, quadraticCurveTo() { curves++; }, measureText: t => ({ width: String(t).length * 6 }) },
+                                  { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }),
+                                    set: (o, k, v) => { if (k === "filter" && /^blur/.test(v)) blurs++; o[k] = v; return true; } });
+            const PAGE = "horizon", window = {}, document = { createElement: () => { made++; return { width: 0, height: 0, getContext: () => ctx }; } };
+            const cv = { clientWidth: 1200, clientHeight: 600, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [] } };
+            const matchMedia = () => ({ matches: !motion }), requestAnimationFrame = f => rafs.push(f);
+            let $ = id => id === "hzcv" ? cv : null, css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
+            const performance = { now: () => 0 };
+            const draw = w => { cv.clientWidth = w; texts.length = squares.length = 0; HZ.raf = 0; hzDraw();
+              const box = ([t, x, y, f, al]) => { const l = al === "right" ? x - t.length * 6 : al === "center" ? x - t.length * 3 : x; return [l, y - 9, l + t.length * 6, y + 3]; };
+              const co = texts.filter(t => /10\\.5px|9\\.5px/.test(t[3])), over = [];
+              co.forEach((a, i) => co.slice(i + 1).forEach(b => { const p = box(a), q = box(b); if (p[0] < q[2] && q[0] < p[2] && p[1] < q[3] && q[1] < p[3]) over.push([a[0], b[0]]); }));
+              return { k: HZ.cam.k, labels: texts.filter(t => /10\\.5px/.test(t[3])).map(t => t[0]), over: over.length,
+                       open: HZ.hits.filter(h => h.open).map(h => HZ.d.folds[h.k].label) }; };
+    """
+
+    def records(self):
+        recs = [hz_call(n + 1, "Read", {"file_path": p}, cwd="") for n, p in enumerate(self.PATHS)]
+        recs += [hz_call(200, "Read", {"file_path": "/home/u/T/src/.env"}, decision="deny", rules=[("TK-F005", "secrets_access")], cwd=""),
+                 hz_call(201, "Edit", {"file_path": "/home/u/T/src/f1.py"}, cwd=""), hz_call(202, "Bash", {"command": "git log"}, cwd=""),
+                 hz_call(203, "WebFetch", {"url": "https://x.example/a"}, cwd="")]
+        return recs
+
+    def run_stage(self, script, names=(), recs=None):
+        needs_node(self)
+        return json.loads(page_js(self.DATA + self.DRAW + list(names), self.STAGE + f"""
+            const ALL = {json.dumps(self.records() if recs is None else recs)}, RUNS = new Map([["r1", {{ id: "r1", agent: "coder", verdict: "verified" }}]]);
+            const V2 = true, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null;
+            HZ.d = hzData(); HZ.t = HZ.d.ev.length; HZ.col = dict([["coder", "#d98bff"]]);
+            const fold = l => Object.keys(HZ.d.folds).find(k => HZ.d.folds[k].label === l);
+        """ + script))
+
+    def test_the_camera_maps_screen_and_map_both_ways_and_never_loses_the_map(self):
+        needs_node(self)
+        out = json.loads(page_js(["HZKMAX", "hzScr", "hzWorld", "hzClamp", "hzZoom", "hzAim"], """
+            const c = { k: 3.5, x: -420, y: -130 }, p = [123.4, 456.7], s = [300, 200];
+            const z = hzZoom({ k: 1, x: 0, y: 0 }, s, 4, 800, 600);
+            process.stdout.write(JSON.stringify({
+              inverse: hzWorld(c, hzScr(c, p)).map(v => +v.toFixed(9)),
+              stays: hzScr(z, hzWorld({ k: 1, x: 0, y: 0 }, s)).map(v => +v.toFixed(9)),
+              k: [z.k, hzZoom(z, s, 1e6, 800, 600).k, hzZoom(z, s, 1e-3, 800, 600)],
+              inside: [hzClamp({ k: 2, x: 500, y: -5000 }, 800, 600), hzAim([800, 600], 2, 800, 600), hzAim([400, 300], 99, 800, 600).k] }));"""))
+        self.assertEqual(out["inverse"], [123.4, 456.7])                   # screen to map and back
+        self.assertEqual(out["stays"], [300, 200])                         # zoomed about the pointer: its point stays under it
+        self.assertEqual(out["k"], [4, 64, {"k": 1, "x": 0, "y": 0}])      # at most 64x; zoomed out, FIT exactly
+        self.assertEqual(out["inside"], [{"k": 2, "x": 0, "y": -600}, {"k": 2, "x": -800, "y": -600}, 64])   # within the frame
+
+    def test_places_nest_by_folder_inside_their_folders_circles(self):
+        needs_node(self)
+        out = json.loads(page_js(["dict", "hzRad", "HZBAND", "hzPack", "hzNest"], f"""
+            const places = dict({json.dumps([[p, {"kind": "machine", "label": p.replace("/home/u", "~"),
+                                                  "rest": "TK-F005 · secrets" if p.endswith((".env", "id_rsa")) else None}] for p in self.PATHS])});
+            places["tool:git log"] = {{ kind: "machine", label: "git log", tool: "command", rest: null }};
+            places["x.example"] = {{ kind: "outside", label: "x.example", rest: null }};
+            const {{ folds, top }} = hzNest(places), xy = q => [q.r * Math.cos(q.th), q.r * Math.sin(q.th)], inside = [], apart = [];
+            for (const f of Object.values(folds)) {{
+              const [u, v] = xy(f), kids = f.kids.map(k => [xy(places[k] || folds[k]), folds[k]?.rho || 0]);
+              for (const [[a, b], r] of kids) inside.push(Math.hypot(a - u, b - v) + r <= f.rho * 1.000001);
+              kids.forEach(([[a, b], r], i) => kids.slice(i + 1).forEach(([[c, d], s]) => apart.push(Math.hypot(a - c, b - d) >= r + s - 1e-9)));
+            }}
+            process.stdout.write(JSON.stringify({{
+              folds: Object.fromEntries(Object.values(folds).map(f => [f.label, [f.leaves.length, f.rests, f.kids.map(k => places[k]?.name ?? folds[k].name).sort()]])),
+              top: top.map(k => (folds[k] || places[k]).label).sort(), inside: inside.every(Boolean), apart: apart.every(Boolean),
+              laid: Object.values(places).every(q => q.r > 0 && Number.isFinite(q.th)) }}));"""))
+        wt = "~/T/.claude/worktrees/"
+        # a folder of one is its one: .claude holds only worktrees, and each agent-N only src
+        self.assertEqual(out["folds"], {
+            wt: [24, 0, sorted(f"agent-{k}/src" for k in range(12))], "~/T/src/": [61, 1, sorted([".env"] + [f"f{k}.py" for k in range(60)])],
+            **{f"{wt}agent-{k}/src/": [2, 0, ["a.py", "b.py"]] for k in range(12)}})
+        # the ring opens into ~ and ~/T, past which its biggest folder (src) would take it over 30 slots
+        self.assertEqual(out["top"], sorted(["/tmp/x.log", "git log", "x.example", "~/.ssh/id_rsa", wt, "~/T/README.md", "~/T/src/"]))
+        self.assertEqual((out["inside"], out["apart"], out["laid"]), (True, True, True))
+
+    def test_packed_circles_stay_inside_in_proportion_and_never_overlap(self):
+        needs_node(self)
+        out = json.loads(page_js(["hzPack"], """
+            let seed = 3; const R = () => (seed = seed * 16807 % 2147483647) / 2147483647, res = [];
+            for (const n of [2, 3, 7, 30, 80]) {
+              const rs = Array.from({ length: n }, () => Math.sqrt(1 + Math.floor(R() * 40))).sort((a, b) => b - a), at = hzPack(rs, 10);
+              res.push([at.length === n, at.every(([u, v, r]) => Math.hypot(u, v) + r <= 10 + 1e-9),
+                        at.every(([u, v, r], i) => at.slice(i + 1).every(([a, b, s]) => Math.hypot(u - a, v - b) >= r + s - 1e-9)),
+                        at.every(([, , r], i) => Math.abs(r / at[0][2] - rs[i] / rs[0]) < 1e-9)]);
+            }
+            process.stdout.write(JSON.stringify(res));"""))
+        self.assertEqual(out, [[True, True, True, True]] * 5)
+
+    def test_a_folder_opens_into_its_files_as_you_zoom_in_and_no_label_ever_covers_another(self):
+        """At FIT a folder is one circle with one callout; flown to, it opens and its own places get labels by their
+        names in it; zoomed into the worktrees, each agent's folder opens into its files. No label covers another."""
+        out = self.run_stage("""
+            const seen = [draw(1200)];
+            for (const l of ["~/T/src/", "~/T/.claude/worktrees/", "~/T/.claude/worktrees/agent-3/src/"]) { hzFocus(fold(l)); seen.push(draw(1200)); }
+            HZ.cam = hzZoom(HZ.cam, [600, 300], .5, 1200, 600); seen.push(draw(1200));   // halfway back out
+            process.stdout.write(JSON.stringify(seen));""")
+        fit, src, wt, agent, back = out
+        self.assertEqual([o["over"] for o in out], [0] * 5)
+        self.assertEqual(fit["k"], 1)
+        self.assertNotIn("~/T/src/", fit["open"])
+        self.assertIn("~/T/src/ · 61 places", fit["labels"])
+        self.assertIn("~/T/src/", src["open"])
+        self.assertTrue(any(re.fullmatch(r"f\d+\.py|\.env", lb) for lb in src["labels"]), src["labels"])
+        self.assertIn("~/T/.claude/worktrees/", wt["open"])
+        self.assertTrue(any(re.fullmatch(r"agent-\d+/src/ · 2 places", lb) for lb in wt["labels"]), wt["labels"])
+        self.assertIn("~/T/.claude/worktrees/agent-3/src/", agent["open"])
+        self.assertTrue({"a.py", "b.py"} & set(agent["labels"]), agent["labels"])
+        self.assertGreater(src["k"], 1)
+        self.assertLess(back["k"], agent["k"])
+
+    def test_the_place_under_the_pointer_is_the_nearest_place_else_the_smallest_open_folder_round_it(self):
+        needs_node(self)
+        out = json.loads(page_js(["hzHit"], """
+            const hits = [{ k: "p", x: 100, y: 100, r: 18 }, { k: "q", x: 120, y: 100, r: 18 }, { k: "shut", x: 300, y: 300, r: 40 },
+                          { k: "big", x: 500, y: 500, r: 200, ry: 120, open: true }, { k: "in", x: 520, y: 520, r: 50, ry: 30, open: true }];
+            process.stdout.write(JSON.stringify([[104, 100], [117, 101], [330, 310], [530, 525], [600, 560], [500, 640], [900, 900]].map(([x, y]) => hzHit(hits, x, y))));"""))
+        self.assertEqual(out, ["p", "q", "shut", "in", "big", None, None])
+
+    def test_an_idle_stage_asks_for_no_frame_and_the_black_hole_is_painted_once(self):
+        """Every animation frame redrew the whole stage, blurring the disk each time, while nothing moved: 100% of a
+        core on an idle page. A change draws a frame, and frames follow only while something moves."""
+        out = self.run_stage("""
+            motion = true; const seen = [];
+            HZ.raf = 0; hzDraw(); rafs.shift()(16); seen.push([rafs.length, blurs, made]);    // a change: one frame, then none
+            for (const t of [32, 48]) { hzDraw(); rafs.shift()(t); } seen.push([rafs.length, blurs, made]);   // the hole: painted once
+            HZ.comet = { ag: "coder", to: HZ.d.ev[1].at, from: HZ.d.ev[0].at, t0: 0 };      // a replayed move: frames while it flies
+            hzDraw(); rafs.shift()(100); seen.push(rafs.length);
+            while (rafs.length) rafs.shift()(5000); seen.push([rafs.length, HZ.comet]);
+            cv.clientWidth = 900; hzDraw(); rafs.shift()(6000); seen.push([blurs, made]);    // another size: painted again, same bitmaps
+            HZ.view = "top"; hzDraw(); let n = 0; while (rafs.length && n < 99) { rafs.shift()(7000); n++; }  // the tilt eases, then stops
+            seen.push([n > 3 && n < 60, HZ.i]);
+            process.stdout.write(JSON.stringify(seen));""")
+        self.assertEqual(out[:5], [[0, 2, 2], [0, 2, 2], 1, [0, None], [4, 2]])
+        self.assertEqual(out[5], [True, 1])
+
+    def test_routes_are_one_path_each_however_many_moves(self):
+        """Each move was its own stroke: following an agent of 500 moves stroked 500 paths a frame, sixty frames a
+        second. An agent's route is one path of curves now."""
+        def frame(n, follow):
+            return self.run_stage(f"""
+                HZ.follow = {json.dumps(follow)}; const s0 = strokes, c0 = curves; draw(1200);
+                process.stdout.write(JSON.stringify([strokes - s0, curves - c0]));""",
+                recs=[hz_call(k + 1, "Read", {"file_path": f"/home/u/T/src/f{k % 7}.py"}, cwd="") for k in range(n)])
+        for follow in (None, "coder"):
+            (s50, c50), (s500, c500) = frame(50, follow), frame(500, follow)
+            self.assertEqual(s500, s50, follow)          # as many strokes for 500 moves as for 50
+            self.assertEqual(c500 - c50, 450, follow)    # every move still drawn
+
+    def test_render_draws_the_stage_only_when_what_it_shows_changed_and_lists_who_did_what_in_a_picked_folder(self):
+        out = self.run_stage("""
+            let draws = 0; const html = {}, el = {};
+            hzDraw = () => { draws++; };
+            const $$ = id => el[id] ??= { clientWidth: 1200, clientHeight: 600, textContent: "", className: "", disabled: false };
+            const STOPPED = "", put = (id, h) => { html[id] = h; };
+            document.querySelectorAll = () => [];
+            css = n => n === "--hz-agents" ? "#ffa630 #d98bff" : "#3cc8f0";
+            $ = $$;
+            const seen = [];
+            renderHorizon(); renderHorizon(); seen.push(draws);        // a second render, nothing changed: no frame
+            HZ.pick = fold("~/T/src/"); renderHorizon(); seen.push(draws);
+            seen.push(html.hzside.replace(/<[^>]+>/g, " ").replace(/\\s+/g, " "), (html.hzside.match(/data-oseq=/g) || []).length);
+            process.stdout.write(JSON.stringify(seen));""", ["esc", "plural", "hzSecs", "hzChain", "HZKEY", "renderHorizon"])
+        once, picked, card, opens = out
+        self.assertEqual((once, picked), (1, 2))
+        self.assertIn("RESTRICTED · ON THIS MACHINE · A FOLDER OF 61 PLACES ~/T/src/", card)
+        self.assertIn("SHIELD · 1 restricted in it · TK-F005 · secrets_access", card)
+        self.assertIn("coder blocked 1 · wrote 1 · read 61", card)   # who went there and what each did, counted
+        self.assertEqual(opens, 63)                                   # each move there, linked to its record
+
+
 PAGE_TEXT = " ".join(PAGE.split())
 APPROVALS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "approvals.html"))
 RUNS_PAGE = observe.read_text(os.path.join(os.path.dirname(observe.UI), "runs.html"))
