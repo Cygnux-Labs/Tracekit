@@ -3531,19 +3531,105 @@
       const [p = "", v = "", v2 = ""] = c.trim().split(/\s+/).filter(w => !/^\w+=/.test(w)), prog = p.split("/").pop(), sub = w => /^[a-z][\w-]*$/.test(w);
       return HZVERB.test(prog) && sub(v) ? prog + " " + v + (HZNOUN.test(prog) && sub(v2) ? " " + v2 : "") : prog;
     }
+    // a shell command's simple commands, each its words with the quotes taken off: split at ; & | ( ) and new lines, and
+    // each command substitution ($(...), `...`) one of its own, the word $SUB where it stood
+    // lean: a heredoc's body reads as commands, a nested substitution from the innermost out; the signer's parser
+    // (tracekit/policy2/shell.py) reads the shell exactly
+    function hzSh(c) {
+      const subs = [], out = [];
+      for (let m; (m = /\$\(([^()]*)\)|`([^`]*)`/.exec(c));) { subs.push(m[1] ?? m[2]); c = c.slice(0, m.index) + "$SUB" + c.slice(m.index + m[0].length); }
+      for (const t of [c, ...subs]) {
+        let cmd = [], w = null, q = null;
+        const end = () => { if (w != null) cmd.push(w); w = null; }, next = () => { end(); if (cmd.length) out.push(cmd); cmd = []; };
+        for (let i = 0; i < t.length; i++) {
+          const ch = t[i];
+          if (q) { if (ch === q) q = null; else w += ch === "\\" && q === '"' && i + 1 < t.length ? t[++i] : ch; }
+          else if (ch === "'" || ch === '"') { q = ch; w ??= ""; }
+          else if (ch === "\\" && i + 1 < t.length) w = (w ?? "") + t[++i];
+          else if (/[;&|()\n]/.test(ch)) next();
+          else if (/[\s<>]/.test(ch)) end();
+          else w = (w ?? "") + ch;
+        }
+        next();
+      }
+      return out;
+    }
+    // shell keywords and builtins, no program: HZPRE runs the command after it (if, then, do, while, !, time, exec ...);
+    // HZNOP takes words that are no command (cd, export, test, [, true ...; for, select and case a name and words)
+    const HZPRE = /^(if|then|else|elif|do|while|until|!|time|exec|command|builtin|\{|coproc)$/;
+    const HZNOP = /^(fi|done|esac|\}|for|select|case|in|cd|pushd|popd|export|set|unset|local|declare|typeset|readonly|source|\.|eval|true|false|:|shift|return|exit|break|continue|trap|wait|read|alias|unalias|test|\[\[?|let|ulimit|umask|hash|type|shopt)$/;
+    // the words of a simple command (w, its program first) that are data, not something it acts on, as the signer's
+    // shell.data_words reads them: a git commit, tag or stash message and a grep-family pattern (-e's too); and here also
+    // jq's filter and --arg values, a sed or awk script (and awk's -v and -F values), and what echo or printf prints.
+    // Indexes into w
+    function hzDataWords(w) {
+      const prog = (w[0] || "").split("/").pop(), out = new Set(), opt = a => a.startsWith("-") && a !== "-";
+      // the first operand from i on, past options (one taking a value, val, skips it too); -1: none
+      const operand = (i, val) => { for (; i < w.length; i++) { if (w[i] === "--") return i + 1 < w.length ? i + 1 : -1; if (!opt(w[i])) return i; if (val.test(w[i])) i++; } return -1; };
+      const mark = i => { if (i > 0 && i < w.length) out.add(i); };
+      if (/^(echo|printf)$/.test(prog)) w.forEach((_, i) => mark(i));
+      else if (prog === "git") {
+        let i = 1;
+        while (i < w.length && opt(w[i])) i += /^(-C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)$/.test(w[i]) ? 2 : 1;
+        if (/^(commit|tag|merge|stash|notes)$/.test(w[i] || "")) for (let j = i + 1; j < w.length; j++) {
+          if (/^(-m|--message)$/.test(w[j]) || /^-[A-Za-z]*m$/.test(w[j])) mark(++j);
+          else if (w[j].startsWith("--message=") || /^-[A-Za-z]*m./.test(w[j]) && !w[j].startsWith("--")) mark(j);
+        }
+      } else if (/^(e?grep|fgrep|rg|ag|ack)$/.test(prog)) {
+        let given = false;
+        for (let i = 1; i < w.length; i++) {
+          if (/^(-e|--regexp)$/.test(w[i]) || /^-[A-Za-z]*e$/.test(w[i])) { mark(++i); given = true; }
+          else if (w[i].startsWith("--regexp=")) { mark(i); given = true; }
+          else if (/^(-f|--file)$/.test(w[i]) || w[i].startsWith("--file=")) given = true;   // its patterns in a file: a place
+        }
+        if (!given) mark(operand(1, /^(-[ABCmdDgtTjMG]|--(glob|type|max-count|context|after-context|before-context|ignore))$/));
+      } else if (prog === "jq") {
+        let given = false;
+        for (let i = 1; i < w.length; i++) {
+          if (/^--(arg|argjson)$/.test(w[i])) { mark(i + 2); i += 2; }   // a name and its value
+          else if (/^--(slurpfile|rawfile)$/.test(w[i])) i += 2;
+          else if (/^(--indent|-L)$/.test(w[i])) i++;
+          else if (/^(-f|--from-file)$/.test(w[i])) given = true;   // its filter in a file: what follows are files
+          else if (!given && !opt(w[i])) { mark(i); given = true; }
+        }
+      } else if (prog === "sed") {
+        let given = false;
+        for (let i = 1; i < w.length; i++) {
+          if (w[i] === "--expression" || /^-[A-Za-z]*e$/.test(w[i])) { mark(++i); given = true; }
+          else if (w[i].startsWith("--expression=")) { mark(i); given = true; }
+          else if (/^(-f|--file)$/.test(w[i]) || w[i].startsWith("--file=")) given = true;
+        }
+        if (!given) mark(operand(1, /^(-l|--line-length)$/));
+      } else if (/^[gnm]?awk$/.test(prog)) {
+        let given = false;
+        for (let i = 1; i < w.length; i++) {
+          if (/^(-e|--source)$/.test(w[i])) { mark(++i); given = true; }
+          else if (/^(-v|-F|--assign|--field-separator)$/.test(w[i])) mark(++i);
+          else if (/^(-f|--file)$/.test(w[i])) { i++; given = true; }
+          else if (!given && !opt(w[i])) { mark(i); given = true; }
+        }
+      }
+      return out;
+    }
     // where a call went: [ring, label] of the first host or path among its arguments, its subject first; else null. A
-    // Bash move reads its command alone, past a leading cd: a path there is one no ref or branch looks like (~, /, ./,
-    // ../, a dotfile, a word/word.ext), so `git checkout -b feature/x` goes nowhere, and is named by its program and verb
+    // Bash move reads its command alone, past a leading cd and the words that are data (hzDataWords): a path there is one
+    // no ref or branch looks like (~, /, ./, ../, a dotfile, a word/word.ext), so `git checkout -b feature/x` goes
+    // nowhere; it is named by its first program (not a shell keyword or builtin) and its verb
     function hzPlace(tool, input, cwd) {
       const sh = tool === "Bash" && typeof input?.command === "string" ? input.command.replace(/^\s*cd\s+\S+\s*(?:&&|;)\s*/, "") : null;
-      for (const w of (sh ?? [subject(tool, input), ...Object.values(input || {})].filter(v => typeof v === "string").join(" ")).split(/[\s"'`;|&<>()=,]+/)) {
+      // each simple command and where its program is: past VAR=value words and the keywords that run what follows
+      const cmds = sh == null ? [] : hzSh(sh).map(c => { let p = 0; while (p < c.length && (HZPRE.test(c[p]) || /^\w+=/.test(c[p]))) p++; return [c, p]; });
+      const said = sh == null ? [subject(tool, input), ...Object.values(input || {})].filter(v => typeof v === "string")
+        : cmds.flatMap(([c, p]) => { const data = hzDataWords(c.slice(p)); return c.filter((_, i) => !data.has(i - p)); });
+      for (const w of said.join(" ").split(/[\s"'`;|&<>()=,]+/)) {
         const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/]*@)?([^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
         if (host) return ["outside", host.toLowerCase()];
         // lean: elsewhere a word with a slash is a path, so a ref like origin/main is a project place; the signer's parser knows better
         if (w.startsWith("/dev/")) continue;   // 2>/dev/null and the like: no place
         if (/^(~|\.{0,2}\/)|^\.\w/.test(w) || /^[\w.-]+\/[\w.-]/.test(w) && (sh == null || /\/[\w.-]*\.[a-z]\w*$/i.test(w))) return hzPath(w, cwd);
       }
-      return sh?.trim() ? ["machine", hzCmd(sh) || tool, "command"] : null;
+      const [c, p] = cmds.find(([c, p]) => p < c.length && !HZNOP.test(c[p])) || [];
+      return sh?.trim() ? ["machine", (c && hzCmd(c.slice(p).join(" "))) || tool, "command"] : null;
     }
     // a long path as a callout names it, its last two parts; hover and the side card give it whole
     const hzShort = l => l.length > 28 && l.includes("/") ? "…/" + l.split("/").filter(Boolean).slice(-2).join("/") : l;

