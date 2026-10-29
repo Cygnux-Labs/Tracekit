@@ -1318,6 +1318,56 @@ class View(unittest.TestCase):
             self.assertTrue(wait_for(lambda: self.failed(feed, w), 15), feed.verify())
 
     @pytest.mark.unverified_bundles
+    def test_an_edit_put_back_only_while_its_run_is_checked_fails_the_run(self):
+        """The reader hashed records.jsonl as it read it, and a check read the run's records again by path: the honest
+        bytes put back only while the check read them verified the run, the edit put back after it matched the hashes
+        every later hashing compared with, and the run stayed VERIFIED in that viewer for good (a fresh viewer, and
+        1.5.0's at its next re-check, showed FAILED). A record a check reads that is not what the reader hashed is an
+        edit: the store is read anew and the run checked again."""
+        x = self.finished_run()
+        self.service.close()
+        path = os.path.join(self.d, "store", "records.jsonl")
+        with open(path, "rb") as f:
+            honest = f.read()
+        self.edit_decision(x, mtime=True)   # the store holds the edit when the viewer reads it
+        with open(path, "rb") as f:
+            edited = f.read()
+        st, real, flips = os.stat(path), view.check, []
+
+        def put(data):
+            with open(path, "r+b") as f:
+                f.write(data)
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+        def check(r, t, rid, *a, **k):
+            if rid != x or flips:
+                return real(r, t, rid, *a, **k)
+            flips.append(rid)
+            put(honest)   # only while the run's first check reads it
+            try:
+                return real(r, t, rid, *a, **k)
+            finally:
+                put(edited)
+        with mock.patch.object(view, "check", side_effect=check):
+            feed = store_feed(self, {"data_dir": self.d})
+            self.assertTrue(wait_for(lambda: self.failed(feed, x), 15), feed.verify())
+        self.assertEqual(flips, [x])
+
+    @pytest.mark.unverified_bundles
+    def test_a_run_that_fails_when_its_rows_are_read_reads_failed_in_the_run_list(self):
+        """/api/rows checks a run from the store as it is: a FAILED there answered 404 while the run list kept the
+        run VERIFIED. The run reads re-checking at once and the watcher checks it again."""
+        x = self.finished_run()
+        self.service.close()
+        feed = store_feed(self, {"data_dir": self.d})
+        self.report(feed, x)
+        self.edit_decision(x, mtime=True)   # nothing the watcher sees before it hashes the store again (EDIT_S)
+        self.assertIsNone(feed.rows(observe.ALL, "default", x))
+        with feed.lock:   # re-checking (pending), or already checked again
+            self.assertNotEqual(feed.latest[("default", x)]["review"]["verdict"], "verified")
+        self.assertTrue(wait_for(lambda: self.failed(feed, x), 15), feed.verify())
+
+    @pytest.mark.unverified_bundles
     def test_an_edit_before_the_last_piece_read_is_caught_when_the_store_is_hashed_again(self):
         """An edit before the piece the last update began in, as records are appended, shows within EDIT_S, when every
         piece is hashed again, and only the runs with records in an edited piece are checked again."""

@@ -46,8 +46,8 @@ from tracekit.locking import lock_file
 from tracekit.merkle import leaf_hash
 from tracekit.merkle.tiles import MemoryTileStore, Tree
 
-from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageCorrupt, StorageUnavailable,
-                   check_records, check_trees, registry_tree)
+from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageChanged, StorageCorrupt,
+                   StorageUnavailable, check_records, check_trees, registry_tree)
 
 SYNC_INTERVAL = 0.005  # ack-on-write: the longest a written record waits for the background sync
 _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
@@ -149,6 +149,26 @@ class _Lines:
             for i in indices:
                 f.seek(self.offsets[i])
                 yield f.read(self.offsets[i + 1] - self.offsets[i])
+
+
+class _Hashed(_Lines):
+    """A reader's records.jsonl: `digests` holds 8 bytes of BLAKE2b, keyed per reader, of each line it indexed, and a
+    line read again that no longer holds those bytes raises StorageChanged, so what is checked is what was read and
+    hashed, never bytes put back only while it is read again."""
+
+    def __init__(self, path):
+        super().__init__(path, b"")
+        self.key, self.digests = os.urandom(16), bytearray()
+
+    def digest(self, line):
+        return hashlib.blake2b(line, digest_size=8, key=self.key).digest()
+
+    def read(self, indices):
+        for i, line in zip(indices, super().read(indices)):
+            if line[-1:] != b"\n" or self.digest(line[:-1]) != self.digests[8 * i:8 * i + 8]:
+                raise StorageChanged(f"{self.path} line {i + 1} no longer holds what this reader read",
+                                     (self.offsets[i], self.offsets[i + 1]))
+            yield line
 
 
 class _Log(_Lines):
@@ -683,7 +703,8 @@ class FileReader(_Records):
     inclusion proofs), checkpoint_latest(), anchors(), and the registry: registry_iter, registry_merkle and
     checkpoint_at.
     Records, registry leaves, notes and anchors are those written when it was opened or last updated (update()); open
-    or update it after reading the record note an export uses."""
+    or update it after reading the record note an export uses. A record read again that no longer holds the bytes
+    update() indexed raises StorageChanged."""
 
     def __init__(self, root, against=None):
         """`against`: a reader of the same store opened before. The pieces of what it read that hold other bytes here,
@@ -696,7 +717,7 @@ class FileReader(_Records):
         self._check(root, st, stat.S_ISDIR)
         # lean: rebuilds the trees in memory from every leaf, O(records) per open; read the tiles once views stay open
         self.tree = Tree(MemoryTileStore())
-        self.log = _Lines(os.path.join(root, "records.jsonl"), b"")
+        self.log = _Hashed(os.path.join(root, "records.jsonl"))
         # what update() read: the file (device, inode), the last line, the file's size and modification time then; the
         # SHA-256 of each whole PIECE of the lines read (sums) and the hash of the rest (_piece); and `tail`, where the
         # piece holding the end read before the last update() starts
@@ -737,6 +758,7 @@ class FileReader(_Records):
                     except (ValueError, KeyError, TypeError) as e:
                         raise StorageCorrupt(f"records.jsonl line {len(log.offsets) - 1}: {e}; run fsck") from None
                     log.offsets.append(log.offsets[-1] + len(line) + 1)
+                    log.digests += log.digest(line)
                     self._last = line + b"\n"
                 self._hash(memoryview(data)[:end])
                 rest = data[end:]

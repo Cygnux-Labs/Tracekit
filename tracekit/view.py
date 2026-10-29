@@ -79,7 +79,7 @@ from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
 from .signer.service import data_dir_at, dev_data_dir, load_config, lookup, read_vkeys, reader
-from .storage.base import StorageCorrupt, StorageUnavailable
+from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
 from .verify import v2
 from .why.server import Store
@@ -1014,7 +1014,8 @@ class StoreFeed:
         to the newest checkpoint, not only once it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a
         core, each in turn. A refresh starts no check past REFRESH_S, so the newest records are read again while the
         runs of a large store are checked. An edit of records already read shows in a file store's bytes (_open, every
-        EDIT_S); a run of a Postgres store, and one that failed or could not be checked, is checked again RECHECK_S
+        EDIT_S), and a record a check reads that is not the one the reader hashed (StorageChanged) as an edit at once:
+        what is checked is what was hashed. A run of a Postgres store, and one that failed or could not be checked, is checked again RECHECK_S
         after its last check (the run checked longest ago, one a pass)."""
         now, stale = time.monotonic(), None
         due = [now + RECHECK_S]
@@ -1069,6 +1070,11 @@ class StoreFeed:
                                                                     "label": OPERATOR_SIDE}}], key)
             if stale:
                 self._check(r, note[1], stale[0], stale[2])
+        except StorageChanged as x:   # a record a check read again is not what the reader hashed: an edit, read anew
+            print(f"tracekit view: {x}: its runs are checked again", file=sys.stderr, flush=True)
+            self._again(touched(r, [x.at]))
+            self.before, self.reader = r, None
+            due.append(now)
         finally:
             r.close()
         self.due = min(due)
@@ -1110,8 +1116,8 @@ class StoreFeed:
     def _again(self, keys):
         """Runs `keys` (None: every run) are checked again, from a reader opened anew, after the runs waiting already:
         until then a run that verified reads re-checking (a pending review), never its old verdict."""
-        self.detected += 1
-        with self.lock:
+        with self.lock:   # rows() too, off the watch thread
+            self.detected += 1
             for key, state in self.runs.items():
                 if keys is not None and key not in keys or state.get("again"):
                     continue
@@ -1131,6 +1137,8 @@ class StoreFeed:
         is: one run never stops the others being checked."""
         try:
             self._verify(reader, note, key, count)
+        except StorageChanged:   # not the run's error: refresh() reads the store anew
+            raise
         except Exception as x:
             why = f"{type(x).__name__}: {x}"[:1024]
             print(f"tracekit view: run {key[1]} not checked: {why}", file=sys.stderr, flush=True)
@@ -1339,11 +1347,12 @@ class StoreFeed:
         """GET /api/rows?tenant&run: the JSON body ({"rows": [...]}, UTF-8) of a run's rows as the tape shows them, from
         the records of its bundle that verified (exported from the store, verified, then translated: the file is read
         once), so a run whose records left the live view opens in full; None when `scope` may not read its tenant, the
-        watcher has not verified the run (no such run, no checkpoint covers it yet) or it fails. At most max_records
-        records, its first. An answer is kept while the run's own covered records don't change, or until the viewer's
-        own re-check of the run fails it (RECHECK_S), as the run list's verdict is. The watcher's state decides all
-        that with no read of the store; only a check reads it, two at once at most: past that, observe.Busy (503, try
-        again)."""
+        watcher has not verified the run (no such run, no checkpoint covers it yet) or it fails (the run then reads
+        re-checking until the watcher checks it again, at once: the run list never keeps its VERIFIED). At most
+        max_records records, its first. An answer is kept while the run's own covered records don't change, or until
+        the viewer's own re-check of the run fails it (RECHECK_S), as the run list's verdict is. The watcher's state
+        decides all that with no read of the store; only a check reads it, two at once at most: past that,
+        observe.Busy (503, try again)."""
         from .why.import_v2 import bundle_records
         if scope is not observe.ALL and tenant != scope:
             return None
@@ -1382,7 +1391,9 @@ class StoreFeed:
                 os.unlink(out)
         finally:
             self.verifying.release()
-        if code:
+        if code:   # the store fails it now: the watcher checks it again at once, re-checking until then
+            self._again({(tenant, run_id)})
+            self.due = 0
             return None
         # lean: the retained arguments are not read again (each read is a signed content.accessed record); the live
         # view shows them

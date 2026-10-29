@@ -100,7 +100,13 @@ last piece, at once when the file is written to without growing (its time not se
 minute; each run with a record in a piece that changed (every run for a key record's, or a file replaced or cut back)
 then reads `PENDING` (re-checking) until it is checked again, in the order the runs started waiting, and the edited
 run turns `FAILED`. The store it then reads anew is compared, piece by piece, with what it read before, so an edit made
-meanwhile anywhere in it is caught as well. A run of a Postgres store, and a run that failed or could not be checked, is checked again five
+meanwhile anywhere in it is caught as well. A check verifies exactly the bytes the viewer read and hashed: it keeps 8
+bytes of a keyed hash of each record it read (4 MB for 500,000 records), and a record that reads otherwise when a check
+reads it again (the honest bytes put back only while the check reads them) is an edit too, caught at that check: the
+store is read anew at once and the run checked again. So an edit that stays in the store is caught within the minute
+however it is timed; bytes that are the honest ones each time the viewer reads them are not, by this viewer or any
+reader. A run that fails when `/api/rows` reads its records from the store reads `PENDING` (re-checking) at once,
+until the viewer checks it again. A run of a Postgres store, and a run that failed or could not be checked, is checked again five
 minutes after its last check, one run at a time. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live
 view and the tape says how many; each run's latest verdict stays in the run list, for up to 10,000 runs (a failed
 run's goes last). Once rows have left it, a run older than every record the live view holds shows only its verdict
