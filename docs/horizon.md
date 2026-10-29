@@ -28,9 +28,12 @@ Every run's calls sit around a black hole, the event horizon every run starts fr
 
 A call's place is the first host or path among its arguments (the signer's copy), its subject first. A call that names
 neither is placed by its tool: on this machine, or outside for a network tool. A Bash call reads its command alone,
-past a leading `cd`, where a path is one that can't be a branch or ref (`~/`, `/`, `./`, `../`, a dotfile, or a
-`dir/file.ext`); a command with neither a host nor such a path is named by its program and verb (`git checkout -b
-feature/x` is **git checkout**), on this machine, and its rows show the command.
+past a leading `cd`, as the shell splits it, leaving out the words that are data (a commit message, a grep pattern,
+jq's filter, a sed or awk script, what `echo` or `printf` prints). Its place is a host first, then a file it writes (a
+redirection's target, `tee`'s files: the move **wrote** there), then a path that can't be a branch or ref (`~/`, `/`,
+`./`, `../`, a dotfile, or a `dir/file.ext`). A command with none of them is named by its first program past shell
+keywords and builtins, and its verb (`git checkout -b feature/x` is **git checkout**), on this machine, and its rows
+show the command.
 
 Each mark is a call, or a file or network effect a kernel sensor saw: `●` read, ran or reached; `■` wrote, or a person
 approved it; `✕` blocked by policy; `◯` held for a person; `◆` flagged. A **shield** marks a restricted place: a `TK-F`
@@ -56,10 +59,20 @@ Each move carries one grade:
 
 The grades are the viewer's check, operator-side: the run's bundle, checked with `tracekit verify`, is the evidence.
 
+## Zoom
+
+The wheel or a pinch zooms toward the pointer, up to 64 times the fitted map; drag to pan, and double-click to fly in.
+**+**, **−** and **FIT** under ORBIT/TOP do the same, as do the keys `+`, `-` and `0` or Esc for FIT (with Cmd, Ctrl or
+Alt held they stay the browser's own zoom). On a touch screen, two fingers pinch and pan. Places nest by their folders,
+circles in circles: a folder opens into its files once its smallest one has room on screen, and a name shows once it
+has room. Clicking a place or folder flies to it, lights the routes through it and lists who did what there. The map is
+drawn only when something on it changes or moves.
+
 ## Replay, follow, orbit
 
-**REPLAY** plays the moves in order, one a second, and **PAUSE** stops. The line beside it has a point per move, with
-its BLOCK, HOLD, APPROVED and FLAG milestones named; click any point to show the map as of that move.
+**REPLAY** plays the moves in order, one a second, and **PAUSE** stops; with **CAM** on, the camera flies to each move.
+The line beside it has a point per move, with its BLOCK, HOLD, APPROVED and FLAG milestones named; click any point to
+show the map as of that move.
 **FOLLOW AN AGENT**: click an agent to draw only its route, numbered, and list it beside the map; click it again for
 every agent. **ORBIT** (the default) tilts the map; **TOP** shows it from above. With reduced motion (your system's
 setting) the map draws still frames, one for each change.
@@ -67,7 +80,8 @@ setting) the map draws still frames, one for each change.
 ## Click a place
 
 Click a place to see who went there and how we know: each move there with its agent, what it did, the tool and
-the rules that matched, its run and seq, its grade, and **OPEN**, which opens the record on its run's page. The heading
+the rules that matched, its run and seq, its grade, and **OPEN**, which opens the record on its run's page. A long
+command shows its first 3 lines and **SHOW ALL** for the rest. The heading
 names the ring, and says **RESTRICTED** with the rule that made it so, **A TOOL, NO FILE OR HOST RECORDED** for a
 place named after a tool, or **A COMMAND, NO FILE OR HOST IN IT** for one named after a command's program. Click the
 place again for the key.
