@@ -274,7 +274,7 @@ class LongRuns(Tmp):
         # where each source was read: its run, agent and time (a why log of its own: no signed record to open)
         self.assertEqual({(s["seen"][0]["run"], s["seen"][0]["agent"], s["seen"][0]["seq"]) for s in g["sources"]},
                          {(runs[0][0].run_id, "a", None), (runs[1][0].run_id, "a", None)})
-        self.assertTrue(all(s["seen"][0]["ts"] for s in g["sources"]))
+        self.assertTrue(all(s["seen"][0]["ts"] and s["seen"][0]["pos"] is not None for s in g["sources"]))
         self.assertEqual(sorted((x["kind"], x["trust"], x["runs"], x["reach"]) for x in g["groups"]), [
             ("UserPromptSubmit", "trusted", 2, {"Bash": 1, "Read": 1}),
             ("session-message", "untrusted", 2, {"Bash": 1, "Read": 1}),

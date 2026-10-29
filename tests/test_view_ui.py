@@ -1560,7 +1560,7 @@ class PlainPages(unittest.TestCase):
 
     def influence(self, sources, edges, groups, opened=(), more=()):
         return json.loads(page_js(["dict", "esc", "plural", "pct", "fmtT", "fmtD", "INFL", "KIND", "ENDS", "stopped", "chip", "chips",
-                                   "influenceView"], f"""
+                                   "idLen", "influenceView"], f"""
             const WHY = {{ runs: [{{}}, {{}}], influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
                           edges: {json.dumps(edges)}, groups: {json.dumps(groups)} }} }}, got = {{}}, $ = id => got[id] ??= {{}};
             const RUNS = new Map([["r1", {{}}]]), TZ = "UTC";
@@ -1626,6 +1626,20 @@ class PlainPages(unittest.TestCase):
         self.assertIn('<button type="button" class="cp" data-orun="r1" data-oseq="6">OPEN</button>', opened)
         self.assertEqual(opened.count("its content is not in the log"), 0)
         self.assertIn('data-ingrp="session-message|untrusted" tabindex="0"><td>▾ ', opened)
+
+    def test_influence_names_each_run_by_as_much_of_its_id_as_tells_it_apart(self):
+        """In the why demo's logs every row read "researcher · run demo-see": eight runs alike, and no position."""
+        needs_node(self)
+        sources = [{"id": f"s{i}", "labels": ["vendor:notes.md"], "trust": "untrusted", "runs": 1, "cited_by": 1, "kind": "vendor:notes.md",
+                    "preview": "x", "confirmed_tools": [], "seen": [{"run": f"demo-seed{i}", "agent": "researcher", "ts": "", "pos": 4 + i}]}
+                   for i in range(3)]
+        groups = [{"kind": "vendor:notes.md", "trust": "untrusted", "runs": 3, "reach": {}}]
+        page = self.influence(sources, [], groups, opened=["vendor:notes.md|untrusted"])[0]
+        self.assertEqual(re.findall(r"researcher · run [^<]*", page),
+                         ["researcher · run demo-seed0 · event 4", "researcher · run demo-seed1 · event 5",
+                          "researcher · run demo-seed2 · event 6"])
+        self.assertEqual(json.loads(page_js(["idLen"], """process.stdout.write(JSON.stringify([idLen(["2f8e2312330292d8", "2f8e9999"]),
+            idLen(["a"]), idLen([])]));""")), [8, 8, 8])
 
     def test_influence_shows_a_few_tools_beyond_the_marked_ones_and_the_rest_on_request(self):
         """Every kind reached nearly every tool, so a row of 16 chips said nothing."""

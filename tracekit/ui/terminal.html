@@ -5458,6 +5458,13 @@
         + (rest.length > INFLCHIPS ? ` <button type="button" class="cp" data-inmore="${esc(key)}">${esc(all ? "fewer" : `+${rest.length - INFLCHIPS} more`)}</button>` : "")
         || `<span class="dim">no tool</span>`;
     }
+    // how many characters of each run id tell the ids apart: 8 at least ("demo-seed0" and "demo-seed1" need all 10)
+    function idLen(ids) {
+      const u = [...new Set(ids)], most = Math.max(8, ...u.map(x => x.length));
+      let n = 8;
+      while (n < most && new Set(u.map(x => x.slice(0, n))).size < u.length) n++;
+      return n;
+    }
     function influenceView(el) {
       const I = WHY.influence, S2 = I.sources, T = I.outcomes, bySrc = new Map();
       for (const e of I.edges) bySrc.set(e.source, [...bySrc.get(e.source) || [], e]);
@@ -5475,14 +5482,15 @@
           t.ruled_out &&= !!e.ruled_out || e.max_effect == null && !e.confirmed;
           if (e.max_effect != null) t.effect = Math.max(t.effect ?? -Infinity, e.max_effect);
         }
-        return { ...g, key, mine, reach: Object.values(tools), cited: mine.reduce((n, s) => n + s.cited_by, 0), confirmed: Object.values(tools).some(t => t.confirmed) };
+        return { ...g, key, mine, reach: Object.values(tools), cited: mine.reduce((n, s) => n + s.cited_by, 0), confirmed: Object.values(tools).some(t => t.confirmed),
+                 idn: idLen(mine.slice(0, INFLMAX).flatMap(x => (x.seen || []).map(o => String(o.run)))) };
       }).sort((a, b) => b.confirmed - a.confirmed || (b.trust === "untrusted") - (a.trust === "untrusted") || b.mine.length - a.mine.length);
       // where a source was read: its run (agent, short id), the time, and OPEN for its record on the run's page (a why
       // log's own run: its overview)
-      const where = o => `<div>${esc(`${o.agent || "agent"} · run ${String(o.run).slice(0, 8)}` + (o.seq != null ? ` · record ${o.seq}` : ""))}`
+      const where = (o, n) => `<div>${esc(`${o.agent || "agent"} · run ${String(o.run).slice(0, n)}` + (o.seq != null ? ` · record ${o.seq}` : o.pos != null ? ` · event ${o.pos}` : ""))}`
         + `<br><span class="dim">${esc(Date.parse(o.ts) ? `read ${fmtD(Date.parse(o.ts) / 1000)} ${fmtT(Date.parse(o.ts) / 1000)} ${TZ}` : "")}</span> `
         + (o.seq != null && RUNS.has(o.run) ? `<button type="button" class="cp" data-orun="${esc(o.run)}" data-oseq="${esc(o.seq)}">OPEN</button>` : `<button type="button" class="cp" data-wgo="${esc(o.run)}">OPEN</button>`) + `</div>`;
-      const src = x => `<tr class="insrc"><td>` + (x.seen || []).map(where).join("") + (x.runs > (x.seen || []).length ? `<div class="dim">${esc(`and ${x.runs - x.seen.length} more`)}</div>` : "")
+      const src = (x, n) => `<tr class="insrc"><td>` + (x.seen || []).map(o => where(o, n)).join("") + (x.runs > (x.seen || []).length ? `<div class="dim">${esc(`and ${x.runs - x.seen.length} more`)}</div>` : "")
         + (x.preview ? `<div class="dim">${esc(String(x.preview).slice(0, 110))}</div>` : "") + `</td><td class="${x.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(x.trust)}</td><td></td><td>${esc(plural(x.runs, "run"))}</td><td>${esc(x.cited_by + " decisions")}</td>`
         + `<td class="reach">` + chips((bySrc.get(x.id) || []).map(link), x.id) + `</td></tr>`;
       el.innerHTML = `<p class="dim" style="padding:0 8px">Across all ${esc(WHY.runs.length)} runs: which content agent decisions used (cited), what it reached, and which of those links a replay confirmed. A citation index where some citations are proven to matter.</p>`
@@ -5493,7 +5501,7 @@
           + groups.map(g => `<tr class="row ingrp" data-ingrp="${esc(g.key)}" tabindex="0"><td>${esc(INFL.has(g.key) ? "▾ " : "▸ ")}<b>${esc(KIND[g.kind] || g.kind)}</b>${KIND[g.kind] ? ` <span class="dim">(${esc(g.kind)})</span>` : ""}</td>`
             + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(g.mine.length)}</td><td>${esc(plural(g.runs, "run"))}</td><td>${esc(g.cited + " decisions")}</td><td class="reach">` + chips(g.reach, g.key) + `</td></tr>`
             + (INFL.has(g.key) ? (g.mine.some(x => !x.preview) ? `<tr class="insrc"><td colspan="6" class="dim">${esc("Content not in the log: a signed run's record holds only its hash, so each source is named by where it was read.")}</td></tr>` : "")
-              + g.mine.slice(0, INFLMAX).map(src).join("") + (g.mine.length > INFLMAX ? `<tr class="insrc"><td colspan="6" class="dim">${esc(`the first ${INFLMAX} of ${g.mine.length}`)}</td></tr>` : "") : "")).join("")
+              + g.mine.slice(0, INFLMAX).map(x => src(x, g.idn)).join("") + (g.mine.length > INFLMAX ? `<tr class="insrc"><td colspan="6" class="dim">${esc(`the first ${INFLMAX} of ${g.mine.length}`)}</td></tr>` : "") : "")).join("")
           + `</tbody></table>`);
       $("wvsum").textContent = [plural(groups.length, "kind"), plural(S2.length, "source"), plural(T.length, "tool")].join(" · ");
     }

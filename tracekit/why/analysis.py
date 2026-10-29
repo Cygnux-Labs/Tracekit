@@ -458,8 +458,8 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     measured effect e; `ended`: how many of the calls it reached ended blocked, held or flagged (_ended). `groups`: the
     sources of each kind and trust (a harness's "<agent>:<kind>" source by its kind), in how many runs, the tools they
     reached in how many runs and the distinct calls of each that ended so, so hundreds of sources read at a glance. A
-    source's `seen`: where it was read (its run's signed run id and agent, the time, the record's seq), the first
-    SEEN_KEPT."""
+    source's `seen`: where it was read (its run's signed run id and agent, the time, the record's seq, its event's
+    position in the why log), the first SEEN_KEPT."""
     sources: Dict[str, Dict[str, Any]] = {}
     groups: Dict[Tuple[str, Any], Dict[str, Any]] = {}
     outcomes: Dict[str, Dict[str, Any]] = {}
@@ -479,7 +479,7 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
             cite = ev.get("tracekit") or {}
             if len(s.setdefault("seen", [])) < SEEN_KEPT:
                 s["seen"].append({"run": cite.get("run_id") or run.run_id, "agent": ev.get("agent"), "ts": ev.get("ts"),
-                                  "seq": cite.get("seq")})
+                                  "seq": cite.get("seq"), "pos": ev.get("seq")})
             if ev["source"] not in s["labels"]:
                 s["labels"].append(ev["source"])
             s["runs"] += 1
