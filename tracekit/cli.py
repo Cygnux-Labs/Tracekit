@@ -476,6 +476,9 @@ def _run(a):
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
+            if settings and a.agent == "codex":
+                from .agent_hooks import codex_trust_line
+                print(codex_trust_line(a.user))
             return 0
         if a.dev and a.v2 and a.agent != "claude":
             from . import agent_hooks
@@ -490,6 +493,8 @@ def _run(a):
             print(f"v2 {a.agent} hooks:", path or "not installed")
             if summary:
                 print(agent_hooks.reasoning_line(*summary))
+            if path and a.agent == "codex":
+                print(agent_hooks.codex_trust_line())
             return 0
         if a.dev and a.agent != "claude":
             from . import agent_hooks
@@ -502,6 +507,8 @@ def _run(a):
                 return 1
             print(f"dev signer running (same-user): {cfg['socket']}")
             print(f"{a.agent} hooks:", path or "not installed")
+            if path and a.agent == "codex":
+                print(agent_hooks.codex_trust_line())
             return 0
         if a.dev:
             home = a.home or os.path.expanduser("~/.tracekit-signer")

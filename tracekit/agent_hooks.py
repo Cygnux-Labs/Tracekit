@@ -598,6 +598,15 @@ def reasoning_line(path, value, changed):
             "the model's reasoning; set it to \"auto\" to check it")
 
 
+def codex_trust_line(user=None):
+    """What init says last for Codex: it runs a hook only once a person trusted it in /hooks, and skips it until then,
+    saying nothing (learn.chatgpt.com/docs/hooks); doctor's D-CODEX-HOOK-TRUST checks."""
+    return ("next, trust these hooks in Codex: Codex skips a hook nobody trusted, without saying so, so until then no "
+            f"Codex call is recorded or decided. {f'As {user}, run' if user else 'Run'} codex in a terminal, type /hooks "
+            "and trust Tracekit's hooks; Codex asks again whenever they change (as after tracekit init). `tracekit "
+            "doctor` says whether they are trusted")
+
+
 def _version(cmd):
     """"v2" for the v2 hook's command, "v1" for the v1 hook's, else None."""
     cmd = cmd if isinstance(cmd, str) else ""

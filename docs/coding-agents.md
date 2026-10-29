@@ -29,6 +29,15 @@ tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, ope
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
+**Codex runs these hooks only once you trust them.** Codex skips a hook that isn't managed until a person has reviewed
+and trusted it, and says nothing when it does: until then no Codex call is recorded or decided. After init, run `codex`
+in a terminal, type `/hooks`, and trust Tracekit's hooks; Codex asks again whenever they change, as after another
+init. Codex keeps that trust in your `~/.codex/config.toml` as `[hooks.state."<hooks.json path>:<event>:<group>:<handler>"]`
+with a `trusted_hash` ([Codex hooks](https://learn.chatgpt.com/docs/hooks)). Init ends by saying so, and `tracekit
+doctor` checks that each of Tracekit's Codex hooks is trusted and not turned off (`D-CODEX-HOOK-TRUST`); it can't
+recompute Codex's hash, and with Python 3.9 or 3.10 it can't read the file, so it says it can't confirm
+([limits](limits.md#signer-and-capture)).
+
 For Codex, Cursor, Gemini CLI and Qwen Code the installer merges into existing settings: other hooks and settings are kept, a
 backup is written first, and running it twice changes nothing. For Droid it writes a standalone `.factory/hooks.json`; if
 the legacy `.factory/hooks/hooks.json` exists, init refuses to proceed until you save once in Droid's `/hooks` UI to migrate

@@ -262,6 +262,51 @@ def _agy_runs(add, path, home, fix):
         bad=WARN)
 
 
+def _codex_trust(add, path, hooks, home, bad):
+    """D-CODEX-HOOK-TRUST: whether Codex runs Tracekit's hooks in `path` (a Codex hooks.json, read as `hooks`). Codex
+    runs a hook that isn't managed only once a person trusted it in its /hooks browser, and records that in the user's
+    config.toml as [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash (and enabled = false for a
+    hook turned off there); one nobody trusted it skips, saying nothing (learn.chatgpt.com/docs/hooks; codex-rs/hooks
+    hook_key and engine/discovery.rs).
+    lean: checks that trust is recorded for each of Tracekit's hooks, not that the recorded hash is the hook's current
+    one (Codex hashes its own TOML form of the hook), and reads ~/.codex, not $CODEX_HOME; Codex asks again in /hooks
+    when a hook changed"""
+    from . import agent_hooks
+    keys = {f"{os.path.abspath(path)}:{re.sub(r'(?<!^)(?=[A-Z])', '_', ev).lower()}:{g}:{h}": ev
+            for ev, groups in hooks.items() for g, group in enumerate(groups) if isinstance(group, dict)
+            for h, hook in enumerate(group.get("hooks") or ())
+            if isinstance(hook, dict) and agent_hooks._version(hook.get("command")) == "v2"}
+    if not keys:   # D-HOOKS-EVENT says there are none
+        return
+    store, state, why = os.path.join(home, ".codex", "config.toml"), {}, None
+    try:
+        import tomllib   # Python 3.11 and newer
+        state = tomllib.loads(install.agent_file(store).decode("utf-8")).get("hooks", {}).get("state", {})
+        if not isinstance(state, dict):
+            raise ValueError("hooks.state is not a table")
+    except FileNotFoundError:   # no config.toml: Codex recorded no trust
+        pass
+    except ImportError:
+        why = "Python 3.11 or newer reads Codex's config.toml, this is " + sys.version.split()[0]
+    except (OSError, ValueError, AttributeError) as e:   # unreadable, not TOML, or not of tables
+        why = f"{store}: {e}"
+    entry = {k: state.get(k) if isinstance(state.get(k), dict) else {} for k in keys}
+    untrusted = sorted({keys[k] for k, s in entry.items() if not s.get("trusted_hash")})
+    off = sorted({keys[k] for k, s in entry.items() if s.get("enabled") is False})
+    step = (f"run codex in a terminal, type /hooks and trust Tracekit's hooks (from {path}); Codex asks again "
+            "whenever they change, as after tracekit init")
+    if why:
+        add("D-CODEX-HOOK-TRUST", False, f"can't confirm that Codex trusts Tracekit's hooks in {path} ({why}): Codex "
+            "skips a hook nobody trusted, without saying so", step, bad=WARN)
+        return
+    add("D-CODEX-HOOK-TRUST", not (untrusted or off),
+        f"Codex skips Tracekit's {', '.join(untrusted)} hook(s) in {path}: nobody trusted them in Codex's /hooks "
+        f"({store} records no trust), so no Codex call is decided or recorded, and Codex doesn't say so" if untrusted
+        else f"Tracekit's {', '.join(off)} hook(s) in {path} are turned off in Codex's /hooks ({store}): Codex runs "
+        "none of them" if off else f"Codex trusts each of Tracekit's hooks in {path} ({store})",
+        step if untrusted else "run codex in a terminal, type /hooks and turn Tracekit's hooks back on", bad=bad)
+
+
 def _hook_run(scale=1, unit="s"):
     """What D-HOOKS-TIMEOUT holds a pre-tool hook's timeout to (claude_code._pre): the hook answers within
     APPROVAL_WAIT_S, and a held call's hook waits for its answer only with TRACEKIT_APPROVAL_WAIT set, keeping two
@@ -290,7 +335,9 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         except (OSError, ValueError, AttributeError, TypeError) as e:
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
-        unnamed = sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
+        if harness == "codex":
+            _codex_trust(add, path, hooks, home or os.path.expanduser("~"), FAIL if prod else WARN)
+        unnamed =sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
         blocking = sorted({ev for ev, h in cmds if ev not in agent_hooks.PRE
                            and (FAIL_CLOSED in h["command"] or h.get("failClosed") is True)})   # Cursor's failClosed
         pre = [h for ev, h in cmds if ev in agent_hooks.PRE]
