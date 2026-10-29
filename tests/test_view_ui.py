@@ -1509,6 +1509,8 @@ class Horizon(unittest.TestCase):
         phone = css[css.index("/* HORIZON: the map first"):]
         self.assertIn(".hzmain {\n        display: contents\n      }", phone)
         self.assertIn(".hzstage {\n        order: -1;\n        height: 440px;", phone)
+        # the zoom controls on a line of their own under ORBIT/TOP: beside them, at 390px they ran into the mission clock
+        self.assertIn('data-hzv="top">TOP</button></span><br><span class="hzvt"><button type="button" data-hzz="in"', PAGE)
 
     def test_a_stage_the_browser_cannot_back_says_so_and_none_is_sized_past_what_it_can(self):
         """A tab left open across a viewer restart showed HORIZON's stage as a white box with a broken-image icon: what

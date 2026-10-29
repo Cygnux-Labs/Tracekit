@@ -2952,7 +2952,7 @@
               <canvas id="hzcv" role="img" aria-label="Where the agents went: the project, this machine and the outside world; the panel beside it lists each move"></canvas>
               <div class="hzhud tl">MISSION CLOCK<b id="hzclock"></b>MOVE<b id="hzmove"></b>ZOOM<b id="hzzoom">1.0×</b></div>
               <div class="hzhud tr"><span class="hzvt"><button type="button" data-hzv="orbit">ORBIT</button><button
-                    type="button" data-hzv="top">TOP</button></span> <span class="hzvt"><button type="button" data-hzz="in"
+                    type="button" data-hzv="top">TOP</button></span><br><span class="hzvt"><button type="button" data-hzz="in"
                     aria-label="Zoom in">+</button><button type="button" data-hzz="out" aria-label="Zoom out">−</button><button
                     type="button" data-hzz="fit" title="The whole map (0 or Esc)">FIT</button><button type="button" data-hzz="cam"
                     aria-pressed="false" title="In a replay, the camera flies to each move">CAM</button></span>
@@ -4093,7 +4093,10 @@
       if (k) { HZ.follow = null; hzFocus(k); }
       renderHorizon();
     });
-    hzcv.addEventListener("dblclick", e => { const g = HZ.geo; if (g) hzFlyTo(hzAim(hzWorld(HZ.cam, hzAt(e)), (HZ.fly?.b || HZ.cam).k * 2.5, g.cw, g.ch)); });
+    hzcv.addEventListener("dblclick", e => {   // on a place or folder its click has flown there already
+      const g = HZ.geo, at = hzAt(e);
+      if (g && !hzHit(HZ.hits, ...at)) hzFlyTo(hzAim(hzWorld(HZ.cam, at), (HZ.fly?.b || HZ.cam).k * 2.5, g.cw, g.ch));
+    });
     const hzTouch = e => { const [a, b] = e.touches, r = hzcv.getBoundingClientRect(); return [[(a.clientX + b.clientX) / 2 - r.left, (a.clientY + b.clientY) / 2 - r.top], Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)]; };
     hzcv.addEventListener("touchstart", e => { HZ.pinch = e.touches.length === 2 ? hzTouch(e) : null; }, { passive: true });
     hzcv.addEventListener("touchmove", e => {
