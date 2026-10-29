@@ -403,8 +403,9 @@ def _pre(client, p, sid, tid):
                 print(json.dumps({"systemMessage": held, "hookSpecificOutput": {
                     "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": held}}))
             return 2
-        if c is None:
-            print(f"Held by tracekit policy ({'; '.join(d['rule_ids'])}{why}) and not approved: {state}",
+        if c is None:   # the outcome first (a rejected one's who), the reasons after: a cut keeps it
+            outcome = (state == "rejected" and waited.get("reason")) or state
+            print(f"[tracekit] not approved: {outcome} ({'; '.join(d['rule_ids'])})" + (f". Why{why}" if why else ""),
                   file=sys.stderr)
             return 2
     else:

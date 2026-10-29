@@ -3500,14 +3500,17 @@ class SignerService:
                 self._cond.wait(min(end - time.monotonic(), TICK_S))
 
         # read on the writer, so only a committed state is answered; gone: its run went final, which expired it. An
-        # agent's approval within its veto delay reads requested, and its reason says it is approved and for how long
+        # agent's approval within its veto delay reads requested, and its reason says it is approved and for how long;
+        # a rejected one's says who rejected or revoked it
         def state(tx):
             a, now = self.log.approvals.get(aid, {"state": "expired"}), time.time()
             veto = a["state"] == "approved" and _waiting(a, now) and math.ceil(epoch(a["not_before"]) - now)
+            no = a["state"] == "rejected" and (f"revoked by {a['revoked']}" if a.get("revoked") else
+                                               f"rejected by {(a.get('answered') or {}).get('by', '?')}")
             return {"state": "requested" if _waiting(a, now) else a["state"],
                     **({"escalated": True} if a.get("escalated") else {}),
                     **({"reason": f"approved by an agent approver; people may still revoke it, so wait {veto} s"}
-                       if veto else {})}
+                       if veto else {"reason": no} if no else {})}
         return {"approval_id": aid, **self.log.write(state)}
 
     def _approval_consume(self, identity, req):

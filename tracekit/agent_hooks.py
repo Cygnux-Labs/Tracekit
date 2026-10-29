@@ -472,8 +472,11 @@ def _exit(harness, code, is_pre):
 
 
 def _reply(harness, stdout, allowed, msg, is_pre):
-    # a block message in at most 500 characters: a held call's names its rule ids and the approve and reject
-    # commands before its reasons, so a longer one loses the end of its reasons, marked
+    # a block message in at most 500 characters. Its last line is the hook's outcome (after a waiting line): it goes
+    # first. A held call's names its rule ids and the approve and reject commands before its reasons, so a longer one
+    # loses the end of its reasons, marked
+    *before, last = msg.split("\n")
+    msg = "\n".join([last, *before])
     msg = msg if len(msg) <= 500 else msg[:499] + "…"
     if harness == "cursor":
         if is_pre:

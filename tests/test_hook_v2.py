@@ -1059,19 +1059,21 @@ class HeldCalls(unittest.TestCase):
         """Cursor shows 500 characters of a block message (as Gemini CLI, Antigravity CLI, Codex and Droid get it): the
         longest hold a shipped pack makes, TK-A043's, was cut mid-sentence and unmarked. The cut keeps the rule id and
         the approve and reject commands, drops from the end of the reasons and ends with "…"; after a reject, the
-        retry's says so within the 500. With TRACEKIT_APPROVAL_WAIT the waiting line comes first, and put the reasons
-        before the commands, which the cut then dropped: it names them first too."""
+        retry's says so within the 500. With TRACEKIT_APPROVAL_WAIT the waiting line came first, and put the reasons
+        before the commands, which the cut then dropped: it names them first too, and the wait's outcome (held, or
+        rejected and by whom, which was dropped) now comes first in the reply."""
         packs = map(service.load_policy, glob.glob(os.path.join(ROOT, "tracekit", "policy2", "packs", "*.yaml")))
         self.assertEqual(max((len(service.SignerService._reasons(types.SimpleNamespace(policy=e), [r["id"]])), r["id"])
                              for e in packs for sec, r, *_ in e.rules if sec == "ask")[1], "TK-A043")
         cursor = install._hook_command("tracekit.integrations.harness_hooks", "entry", ("cursor", "preToolUse"))
 
+        def payload(tid):
+            return json.dumps({"hook_event_name": "preToolUse", "conversation_id": "c1", "tool_name": "Shell",
+                               "tool_use_id": tid, "tool_input": {"command": "stripe refunds create --charge ch_1"}})
+
         def pre(tid, wait=""):
             p = subprocess.run(cursor, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
-                               input=json.dumps({"hook_event_name": "preToolUse", "conversation_id": "c1",
-                                                 "tool_name": "Shell", "tool_use_id": tid,
-                                                 "tool_input": {"command": "stripe refunds create --charge ch_1"}}),
-                               env=dict(os.environ, **{claude_code.WAIT_ENV: wait}))
+                               input=payload(tid), env=dict(os.environ, **{claude_code.WAIT_ENV: wait}))
             reply, err = json.loads(p.stdout), p.stderr.strip()
             self.assertEqual((reply["permission"], reply["user_message"]), ("deny", reply["agent_message"]))
             return reply["agent_message"], err, err.split()[4]
@@ -1087,12 +1089,30 @@ class HeldCalls(unittest.TestCase):
         self.assertIn(f"`tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by "
                       f"uid:{os.getuid()}); ask them before trying again; moving money", msg)
         self.assertTrue(msg.endswith("…"), msg)
-        msg, _, waited = pre("m3", wait="1")
-        self.assertTrue(msg.startswith(f"[tracekit] waiting for approval {waited} (TK-A043): a person approves it "
+        msg, err, waited = pre("m3", wait="1")   # nobody answers within the wait
+        self.assertTrue(err.startswith(f"[tracekit] waiting for approval {waited} (TK-A043): a person approves it "
                                        f"from another terminal with `tracekit approvals approve {waited}` or rejects "
                                        f"it with `tracekit approvals reject {waited}`. Why: a person rejected this "
-                                       f"exact call ({aid}, "), msg)
-        self.assertTrue(msg.endswith("…"), msg)
+                                       f"exact call ({aid}, "), err)
+        with self.subTest("unanswered: the held line first"):
+            self.assertTrue(msg.startswith(f"[tracekit] held for approval {waited} (TK-A043): to let it run, approve "
+                                           f"it with `tracekit approvals approve {waited}`"), msg)
+            self.assertIn(f"`tracekit approvals reject {waited}`). Why: a person rejected", msg)
+            self.assertTrue(msg.endswith("…"), msg)
+        p = subprocess.Popen(cursor, shell=True, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=dict(os.environ, **{claude_code.WAIT_ENV: "30"}))
+        p.stdin.write(payload("m4"))
+        p.stdin.close()
+        self.approvals("reject", p.stderr.readline().split()[4])   # the person rejects it during the wait
+        out = p.stdout.read()
+        p.wait(60)
+        p.stdout.close()
+        p.stderr.close()
+        msg = json.loads(out)["agent_message"]
+        with self.subTest("rejected during the wait: the outcome first"):
+            self.assertTrue(msg.startswith(f"[tracekit] not approved: rejected by uid:{os.getuid()} (TK-A043). Why: "
+                                           f"a person rejected this exact call ({aid}, "), msg)
+            self.assertTrue(msg.endswith("…"), msg)
 
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
@@ -1473,13 +1493,14 @@ class HoldLine(unittest.TestCase):
         held line's do."""
         waiting, not_approved = self.hold_lines("force push. Push without --force.")
         self.assertTrue(waiting.endswith("reject apr-1`. Why: force push. Push without --force"), waiting)
-        self.assertIn("(TK-A003: force push. Push without --force) and not approved:", not_approved)
+        self.assertEqual(not_approved, "[tracekit] not approved: rejected (TK-A003). Why: force push. Push without "
+                                       "--force")
 
     def test_hold_line_keeps_an_ellipsis_whole(self):
         """A person's own rule may end its reason with `...`: dropping one period would print `..`."""
         waiting, not_approved = self.hold_lines("Hold for review...")
         self.assertTrue(waiting.endswith("reject apr-1`. Why: Hold for review..."), waiting)
-        self.assertIn("(TK-A003: Hold for review...) and not approved:", not_approved)
+        self.assertEqual(not_approved, "[tracekit] not approved: rejected (TK-A003). Why: Hold for review...")
 
     def test_on_windows_a_named_signer_is_in_double_quotes(self):
         """cmd.exe reads no single quotes, so `--signer 'x'` fails there; cmd.exe and PowerShell both read double
