@@ -97,6 +97,7 @@ PACE = 1   # after a run's first check, a pause of PACE x its CPU time: the firs
 MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
 ROWCACHE_MAX = 8   # runs whose /api/rows answer the viewer keeps, each until a newer checkpoint
 KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
+BUNDLES_MAX = 64 << 20   # bytes of the runs not final the viewer keeps to check them from as they grow, the last checked
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
 STREAMS, STREAMS_PER_IP = 256, 64   # a team may share one address
@@ -942,8 +943,8 @@ class StoreFeed:
         self.idle = 0   # no run that grew is checked again before then (BACKOFF)
         # a file store's reader, kept across refreshes (_open); when its bytes are next hashed again (EDIT_S); and
         # (tenant, run_id) -> bundle_v2.bundle's `kept` of the run's last bundle that verified, so a run that grew is
-        # read from there
-        self.reader, self.edit_due, self.bundles = None, 0, {}
+        # read from there: the runs checked last, BUNDLES_MAX bytes of them
+        self.reader, self.edit_due, self.bundles = None, 0, collections.OrderedDict()
         self.detected = 0   # store changes found (_again): a run waiting for a re-check holds the one it waits since
         self.before = None   # a file store's reader the next one is compared with (_open)
         self.pace = 0   # no run's first check starts before then (PACE)
@@ -1169,8 +1170,15 @@ class StoreFeed:
         tenant, run_id = key
         t = time.thread_time()   # its own CPU time: not the time it waited for the mirror thread
         # a file store's reader holds the records read before as they were: read from there (bundles)
+        with self.lock:   # _again drops a run's off this thread too (rows())
+            kept = self.bundles.pop(key, {})
         rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, None, self.memo,
-                                          **({} if self.pg else {"kept": self.bundles.setdefault(key, {})}))
+                                          **({} if self.pg else {"kept": kept}))
+        if kept:   # the runs checked last keep theirs, BUNDLES_MAX bytes in all: one past them is read whole next time
+            with self.lock:
+                self.bundles[key] = kept
+                while sum(len(b["data"]) for b in self.bundles.values()) > BUNDLES_MAX:
+                    self.bundles.popitem(last=False)
         if len(self.memo) > MEMO_MAX:   # lean: forgets every run's records at once; an LRU if big stores re-check often
             self.memo.clear()
         state = dict(self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}, checked=time.monotonic(),
@@ -1246,10 +1254,11 @@ class StoreFeed:
             self._append([dict(x, tenant=tenant) for x in new], key)
         if self.on_run and key[1] != SIGNER_RUN[1] and not hidden:   # after the tape has the records
             with self._mlock:   # a file store's run as the bytes that verified: an import waiting holds no records
-                self._mirror[key] = (self.bundles.get(key) or {}).get("data") or records
+                self._mirror[key] = kept.get("data") or records
                 self._mlock.notify()
         if not code and rv["state"] == "final":   # it grows no more
-            self.bundles.pop(key, None)
+            with self.lock:
+                self.bundles.pop(key, None)
         if not code and analyze:   # after its rows too: the analysis reads the run's content, which takes a while
             found = self._findings(e, records)
             row = {**self.tr._base(e, {}, "tk_run"), "analysis": True,

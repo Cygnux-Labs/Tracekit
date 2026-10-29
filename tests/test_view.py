@@ -2439,6 +2439,27 @@ class LiveRuns(unittest.TestCase):
         self.refresh(feed, r1=1, r2=1)
         self.assertEqual(self.checks[4:], ["r2"])
 
+    def test_the_bytes_kept_to_check_growing_runs_from_are_the_last_checked_runs_up_to_a_cap(self):
+        """Every verified run not yet final kept its whole bytes for as long as the viewer ran, to check it from as it
+        grew: the signer's own run is never final, and 174 MB of a 682 MB store stayed in memory. The runs checked last
+        keep theirs, BUNDLES_MAX bytes in all; a run whose bytes went is read whole from the store at its next check."""
+        self.recs = {r: [v2rec(10 * i, "policy.decision", {"tool": "Bash", "decision": "allow"}, r)]
+                     for i, r in enumerate("abc")}   # c the newest: checked first
+        feed, fake, given = self.feed(lambda run_id: VERIFIED), view.check, []
+
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+            given.append((run_id, dict(kept)))
+            got = fake(reader, tenant, run_id, note, trust, out, memo)
+            kept.update(data=b"x" * 40)   # what it verified
+            return got
+        with mock.patch.object(view, "check", side_effect=check), mock.patch.object(view, "BUNDLES_MAX", 100, create=True):
+            self.refresh(feed)
+            self.assertEqual([k[1] for k in feed.bundles], ["b", "a"])   # c's went: 120 bytes in all
+            self.now[0] += view.BACKOFF * 2
+            self.refresh(feed, c=1)
+        self.assertEqual(given[3], ("c", {}))   # read whole
+        self.assertEqual([k[1] for k in feed.bundles], ["a", "c"])
+
     def test_the_newest_runs_are_checked_first_and_a_refresh_leaves_the_rest_to_the_next(self):
         """On start the viewer checked every run of the store, oldest first, in one pass (minutes for a big store): the
         run being written showed last, and its new records waited for the whole pass. The newest run is checked first,

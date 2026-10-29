@@ -92,7 +92,8 @@ written shows once its own check is done (about 20 s for a 50,000-record run), a
 core, each run's first check followed by a pause as long as it took (about 12 minutes for a 430,000-record store; until
 then NEEDS YOU says how many runs it is still checking). A run still being written is shown up to the newest checkpoint and grows with
 each one: only the records it added are read and checked one by one (the checks of the run as a whole run again over
-all of them), and checking what runs added takes at most 1/41 of a core, each run in turn. The viewer reads a file
+all of them; the viewer keeps the bytes of the runs it checked last for that, 64 MiB in all, and reads a run past
+them whole again), and checking what runs added takes at most 1/41 of a core, each run in turn. The viewer reads a file
 store once, then only what is appended to it, and hashes the bytes it read again in pieces of 1 MiB: at each change
 of the store the piece its last read began in (the newest records), and every piece every minute and whenever the file
 is written to without growing. An edit of records it showed is caught at the store's next change when it is in that
