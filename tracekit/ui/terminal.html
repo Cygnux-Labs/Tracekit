@@ -3945,6 +3945,7 @@
       return c;
     }
     function renderTicker() {
+      if (PAGE !== "desk") return;   // DESK's only: elsewhere it is hidden, and rebuilding it each second costs CPU
       const agents = [...S.agents.values()], running = agents.filter(a => a.status === "running").length;
       // a recording that has ended (a bundle, every session over) is measured to its last record, not the wall clock
       const done = SOURCE === "bundle" || (S.sessions.size > 0 && [...S.sessions.values()].every(s => s.end != null));
@@ -4097,6 +4098,7 @@
       $("tapesum").textContent = (anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`) + (older ? ` · newest ${shown.length} shown` : "") + (DROPPED ? ` · ${DROPPED} older rows left the live view` : "");
     }
     function renderAlerts() {
+      if (PAGE !== "desk") return;   // DESK's only, as the ticker
       const why = whyAlerts(), src = al => srcOf(al.ref?.pre || al.ref?.rec);
       const list = alertGroups(S.alerts.filter(al => !al.agent || agentMatch(al.agent))).slice(0, 200);
       const row = (al, n, cls = "") => `<div class="al${esc(cls)}" data-al="${esc(al.i)}" tabindex="0"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`;
@@ -4431,6 +4433,7 @@
         + (r.kind === "think" && r.form ? " · " + r.form.toUpperCase() : "");
     }
     function renderFiles() {
+      if (PAGE !== "desk") return;   // DESK's only, as the ticker
       const list = [...S.files.values()].filter(f => !F.file || f.path.toLowerCase().includes(F.file.toLowerCase())).sort((a, b) => (b.w - a.w) || (b.r - a.r));
       $("files").innerHTML = list.map(f => `<tr class="row" data-file="${esc(f.path)}"><td title="${esc(f.path)}">${esc(f.path.length > 48 ? "…" + f.path.slice(-47) : f.path)}</td><td class="dim">${esc(f.r || "")}</td><td style="color:var(--amber)">${esc(f.w || "")}</td><td style="color:var(--red)">${esc(f.blk || "")}</td><td class="c-agent">${esc(f.last ? label(f.last) : "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">${V2 ? "v2 records hold no paths in clear: a call's arguments are a salted commitment." : "No files touched yet."}</td></tr>`;
       $("filesum").textContent = `${S.files.size} files · ${[...S.files.values()].filter(f => f.w).length} written`;

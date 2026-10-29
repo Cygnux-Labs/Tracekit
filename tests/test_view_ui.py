@@ -581,7 +581,7 @@ class Span(unittest.TestCase):
             const RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), html = {{}}, put = (id, h) => {{ html[id] = h; }};
             const S = {{ agents: new Map(), sessions: new Map(), actList: [], firstTs: 1793183000, lastTs: 1793183017, gaps: 0 }};
             const document = {{ URL: "http://127.0.0.1/" }}, nowTs = () => 1793183017, highCount = () => 0, chainState = {{ n: 9 }};
-            let V2 = true, scope = null, SOURCE = "", lastCounts = {{}};
+            let V2 = true, scope = null, SOURCE = "", lastCounts = {{}}, PAGE = "desk";
             const span = () => /<b>SPAN<\\/b><i class="">([^<]*)</.exec(html.ticker)[1];
             const seen = []; renderTicker(); seen.push(span()); scope = "r2"; renderTicker(); seen.push(span());
             process.stdout.write(JSON.stringify(seen));"""))
@@ -602,6 +602,22 @@ class Span(unittest.TestCase):
             renderTicker(); process.stdout.write(JSON.stringify([tile("HELD"), tile("APPROVED")]));"""))
         self.assertEqual(out, ["4", "1"])
 
+
+
+class OffDesk(unittest.TestCase):
+    def test_the_desk_only_panels_are_not_rebuilt_on_other_pages(self):
+        """The ticker, ALERTS and FILES were rebuilt at every render (each second and each record) on every page, though
+        only DESK shows them: RUNS took 4.8% of a core while a run was being written. Off DESK they are left alone."""
+        needs_node(self)
+        out = json.loads(page_js(["renderTicker", "renderAlerts", "renderFiles"], """
+            const touched = [], S = new Proxy({}, { get: (t, k) => touched.push(k) && undefined });
+            const $ = id => touched.push(id) && {}, put = id => touched.push(id);
+            let PAGE;
+            for (PAGE of ["runs", "run", "approvals", "permissions", "horizon", "influence"]) {
+              renderTicker(); renderAlerts(); renderFiles();
+            }
+            process.stdout.write(JSON.stringify(touched));"""))
+        self.assertEqual(out, [])
 
 
 class AlertGroups(unittest.TestCase):
