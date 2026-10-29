@@ -60,8 +60,8 @@ export function verdict(rep: Report, code: number): Verdict {
     if (quorum)
       return { word: "FAILED", means: `Too few of the witnesses your trust file pins cosigned this bundle's checkpoint `
         + `(${clean(quorum.detail)}). Nothing else failed.`,
-      notMeans: "It doesn't mean the contents were changed: a witness name or key in your trust file other than the "
-        + "one the witness cosigns with reads the same." };
+      notMeans: "It doesn't mean the contents were changed: a witness name or key in your trust file that differs from "
+        + "the one the witness signs with gives this same result." };
     return { word: "FAILED", means: "This bundle doesn't match what was signed: something in it was changed, removed or "
       + `added after signing. Failed: ${rep.failures.join(", ")}.`,
     notMeans: "It doesn't say who changed it or why: the failed lines below show what doesn't match." };
