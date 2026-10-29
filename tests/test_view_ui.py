@@ -1558,19 +1558,57 @@ class PlainPages(unittest.TestCase):
         self.assertLess(html_.index('data-gfit=""'), html_.index('<div id="gscroll"><svg id="gsvg"'))
         self.assertEqual((scroll_room, fit_height), ("504px", None))   # ACTUAL SIZE: the room below the bars scrolls
 
+    def influence(self, sources, edges, groups, opened=()):
+        return json.loads(page_js(["dict", "esc", "plural", "pct", "INFL", "KIND", "influenceView"], f"""
+            const WHY = {{ runs: [{{}}, {{}}], influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
+                          edges: {json.dumps(edges)}, groups: {json.dumps(groups)} }} }}, got = {{}}, $ = id => got[id] ??= {{}};
+            for (const k of {json.dumps(list(opened))}) INFL.add(k);
+            const el = {{ clientWidth: 900 }}; influenceView(el); process.stdout.write(JSON.stringify([el.innerHTML, got.wvsum.textContent]));"""))
+
     def test_influence_with_no_sources_says_nothing_yet_and_draws_no_empty_chart(self):
         needs_node(self)
-        page = lambda sources: json.loads(page_js(["dict", "esc", "plural", "pct", "influenceView"], f"""
-            const WHY = {{ runs: [{{}}, {{}}], influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
-                          edges: [{{ source: "s1", tool: "Bash", reach_runs: 1 }}] }} }}, got = {{}}, $ = id => got[id] ??= {{}};
-            const el = {{ clientWidth: 900 }}; influenceView(el); process.stdout.write(JSON.stringify(el.innerHTML));"""))
-        empty = page([])
+        empty = self.influence([], [], [])[0]
         self.assertIn('<div class="empty">Nothing yet: no model call in these runs cites content the agents read', empty)
         self.assertNotIn("<svg", empty)
         self.assertNotIn("SOURCES", empty)
-        full = page([{"id": "s1", "labels": ["task"], "trust": "trusted", "runs": 1, "cited_by": 2, "confirmed_tools": []}])
+        full = self.influence([{"id": "s1", "labels": ["task"], "trust": "trusted", "runs": 1, "cited_by": 2, "kind": "x",
+                                "confirmed_tools": []}], [{"source": "s1", "tool": "Bash", "reach_runs": 1}],
+                              [{"kind": "x", "trust": "trusted", "runs": 1, "reach": {"Bash": 1}}])[0]
         self.assertIn(">1 run<", full)   # not "1 runs"
         self.assertIn("SOURCES", full)
+
+    def test_influence_reads_at_a_glance_each_kind_of_content_beside_the_tools_it_reached(self):
+        """"633 sources · 16 tools": a column of sources one by one, "claude-code:session-message" row after row, two
+        curves off the bottom of the screen and nothing on the right. A supervisor could not read it."""
+        needs_node(self)
+        src = lambda i, kind, trust, cited, **kw: {"id": f"s{i}", "labels": [f"claude-code:{kind}"], "trust": trust, "runs": 1,  # noqa: E731
+                                                   "cited_by": cited, "kind": kind, "preview": "", "confirmed_tools": [], **kw}
+        sources = [src(1, "session-message", "untrusted", 4, max_effect=0.62, confirmed_tools=["Bash"]),
+                   src(2, "session-message", "untrusted", 3), src(3, "UserPromptSubmit", "trusted", 9),
+                   src(4, "task-notification", "untrusted", 1)]
+        edges = [{"source": "s1", "tool": "Bash", "reach_runs": 1, "confirmed": True, "max_effect": 0.62},
+                 {"source": "s2", "tool": "Bash", "reach_runs": 1}, {"source": "s2", "tool": "Edit", "reach_runs": 1},
+                 {"source": "s3", "tool": "Edit", "reach_runs": 1}, {"source": "s4", "tool": "Read", "reach_runs": 1,
+                                                                     "ruled_out": True, "max_effect": 0.01}]
+        groups = [{"kind": "UserPromptSubmit", "trust": "trusted", "runs": 3, "reach": {"Edit": 2}},
+                  {"kind": "session-message", "trust": "untrusted", "runs": 2, "reach": {"Bash": 2, "Edit": 1}},
+                  {"kind": "task-notification", "trust": "untrusted", "runs": 1, "reach": {"Read": 1}}]
+        page, summary = self.influence(sources, edges, groups)
+        rows = [html.unescape(text(r)) for r in re.findall(r'<tr class="row ingrp"[^>]*>(.*?)</tr>', page)]
+        # a confirmed cause first, then untrusted content, then the rest; each kind in words, the tools beside it
+        self.assertEqual(rows, [
+            "▸ messages from another session (session-message) untrusted 2 2 runs 7 decisions Bash +0.62 Edit 1",
+            "▸ background tasks' notices (task-notification) untrusted 1 1 run 1 decisions Read 1",
+            "▸ the person's prompts (UserPromptSubmit) trusted 1 3 runs 9 decisions Edit 2"])
+        self.assertIn('<span class="tag deny" title="a replay confirmed it: effect +0.62">Bash +0.62</span>', page)
+        self.assertIn('<span class="tag ruled" title="a replay tested it and ruled it out">Read 1</span>', page)
+        self.assertNotIn("<svg", page)
+        self.assertNotIn('class="insrc"', page)   # one row per kind until it is opened
+        self.assertEqual(summary, "3 kinds · 4 sources · 1 tool")
+        opened = self.influence(sources, edges, groups, opened=["session-message|untrusted"])[0]
+        self.assertEqual([text(r)[:42] for r in re.findall(r'<tr class="insrc">(.*?)</tr>', opened)],
+                         ["claude-code:session-message its content is", "claude-code:session-message its content is"])
+        self.assertIn('data-ingrp="session-message|untrusted" tabindex="0"><td>▾ ', opened)
 
     def test_an_approval_expires_in_local_time_and_each_held_call_names_its_agent_and_run(self):
         needs_node(self)

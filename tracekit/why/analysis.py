@@ -442,8 +442,10 @@ def investigation(run: Run) -> Dict[str, Any]:
 def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     """Cross-run, citation-like graph over (run, its graph without inferred edges) pairs. Sources are content (by
     hash); outcomes are tools. An edge says: in k runs this content was upstream of this tool (cited), and tests
-    measured effect e."""
+    measured effect e. `groups`: the sources of each kind and trust (a harness's "<agent>:<kind>" source by its kind),
+    in how many runs, and the tools they reached in how many runs, so hundreds of sources read at a glance."""
     sources: Dict[str, Dict[str, Any]] = {}
+    groups: Dict[Tuple[str, Any], Dict[str, Any]] = {}
     outcomes: Dict[str, Dict[str, Any]] = {}
     edges: Dict[str, Dict[str, Any]] = {}
     for run, g in runs:
@@ -451,8 +453,13 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
             if n["type"] != "input" or n.get("kind") == "task":
                 continue
             ev = n["event"]
+            kind = ev["source"].removeprefix(f"{ev.get('agent')}:")
             s = sources.setdefault(ev["ref"], {"id": ev["ref"], "labels": [], "trust": ev.get("trust"), "runs": 0,
-                                               "cited_by": 0, "preview": _short(run.value(ev["ref"]), 140)})
+                                               "cited_by": 0, "kind": kind,   # a signed run's: only committed
+                                               "preview": "" if _committed(v := run.value(ev["ref"])) else _short(v, 140)})
+            grp = groups.setdefault((s["kind"], s["trust"]), {"kind": s["kind"], "trust": s["trust"], "runs": set(),
+                                                              "reach": {}})
+            grp["runs"].add(run.run_id)
             if ev["source"] not in s["labels"]:
                 s["labels"].append(ev["source"])
             s["runs"] += 1
@@ -460,6 +467,7 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
             reached = g.descendants([nid])
             tools = {g.nodes[x]["event"]["tool"] for x in reached if g.nodes[x]["type"] == "action"}
             for tool in tools:
+                grp["reach"].setdefault(tool, set()).add(run.run_id)
                 outcomes.setdefault(tool, {"id": tool, "runs": 0})
                 e = edges.setdefault(ev["ref"] + "|" + tool, {"source": ev["ref"], "tool": tool, "reach_runs": 0,
                                                               "tests": []})
@@ -489,7 +497,9 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
         s["confirmed_tools"] = sorted({e["tool"] for e in es if e["confirmed"]})
     src = sorted(sources.values(), key=lambda s: (-(s["max_effect"] or 0), -s["cited_by"]))
     return {"sources": src, "outcomes": sorted(outcomes.values(), key=lambda o: -o["runs"]),
-            "edges": list(edges.values())}
+            "edges": list(edges.values()),
+            "groups": [{**g, "runs": len(g["runs"]), "reach": {t: len(r) for t, r in g["reach"].items()}}
+                       for g in groups.values()]}
 
 
 def broken_summary(path: str, err: Exception) -> Dict[str, Any]:

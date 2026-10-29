@@ -1998,7 +1998,7 @@ class Pages(unittest.TestCase):
                     'data-i="${esc(row.i)}" tabindex="0"', 'data-al="${esc(al.i)}" tabindex="0"'):
             self.assertIn(row, page)
         self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],'
-                      '[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex]")) e.target.click();', page)
+                      '[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex],[data-ingrp][tabindex]")) e.target.click();', page)
 
 
 VERIFIED = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")

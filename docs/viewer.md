@@ -278,10 +278,11 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 ![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/1.5/influence.png)
 
-Across every why run, as a citation index: each source (left; a red ring is untrusted) to the tools it reached
-(right), thicker for more runs, red with its effect where a replay confirmed it, dotted where one ruled it out. The
-**sources** table gives each one's content, trust, runs, the decisions that cited it, its strongest tested effect and
-the tools it is a confirmed cause of.
+Across every why run, as a citation index: one row per kind of content and its trust (the person's prompts, messages
+from another session, sub-agents' messages, background tasks' notices, ...; untrusted red), with how many sources of
+that kind, in how many runs, the decisions that cited them, and beside them the tools they reached, each with the
+number of runs (red with its effect where a replay confirmed it a cause, struck through where one ruled it out). Click
+a row for its sources one by one (the 200 cited most), each with its own links.
 
 ### A v1 bundle
 
@@ -498,8 +499,8 @@ that citation joins the two.
 - **Views** (a run's page, keys `1` to `7`; the tape's **WHY LOG EVENTS**; the **INFLUENCE** page): **OVERVIEW**,
   **WHY** and the why log's **TIMELINE** (as below), **GRAPH**, the run's data flow (observed edges; tested causes
   in red; inferred links and ruled-out tests hidden until ticked; click a node for what it came from and led to),
-  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: sources ×
-  tools, with tested effects). **DESK** shows every panel at once.
+  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: each kind of
+  content and the tools it reached, with tested effects). **DESK** shows every panel at once.
 - **Alerts**: the why alerts (a sensitive call using a value only untrusted content supplied, a call downstream of
   untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`.
 

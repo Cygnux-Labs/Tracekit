@@ -252,6 +252,27 @@ class LongRuns(Tmp):
         (edge,) = influence_graph([(run, build_graph(run, infer=False))])["edges"]
         self.assertTrue(edge["confirmed"])
 
+    def test_influence_groups_its_sources_by_kind_and_trust_with_their_runs_and_the_tools_they_reached(self):
+        """INFLUENCE listed 633 sources one by one ("claude-code:session-message" row after row): which kind of
+        content reached which tools could not be read."""
+        runs = []
+        for k, (msgs, tool) in enumerate(((2, "Bash"), (1, "Read"))):
+            rt = Runtime({"m": lambda ctx, **kw: "x"}, {"Bash": lambda **a: 1, "Read": lambda **a: 1}, signer=False)
+            a = rt.agent("a")
+            seen = [a.observe(f"message {k}.{i}", source="a:session-message") for i in range(msgs)]
+            seen.append(a.observe(f"prompt {k}", source="a:UserPromptSubmit", trust="trusted"))
+            seen.append(a.observe(f"page {k}", source="web:page"))
+            a.act(tool, {}, decision=a.decide(seen, model="m"))
+            run = rt.finish()
+            runs.append((run, build_graph(run, infer=False)))
+        g = influence_graph(runs)
+        self.assertEqual(sorted((x["kind"], x["trust"], x["runs"], x["reach"]) for x in g["groups"]), [
+            ("UserPromptSubmit", "trusted", 2, {"Bash": 1, "Read": 1}),
+            ("session-message", "untrusted", 2, {"Bash": 1, "Read": 1}),
+            ("web:page", "untrusted", 2, {"Bash": 1, "Read": 1})])   # a source no agent's prefix names keeps its name
+        self.assertEqual(sorted(s["kind"] for s in g["sources"]),
+                         ["UserPromptSubmit"] * 2 + ["session-message"] * 3 + ["web:page"] * 2)
+
 
 class StoreRequests(Tmp):
     def test_bad_replay_requests_are_400s(self):
