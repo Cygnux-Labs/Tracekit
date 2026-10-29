@@ -206,7 +206,8 @@ call's approval once a person approved it, instead of a new one (_reusable): app
 while an agent's approval is within its veto delay, as approval_wait reads it), and the consume writes its
 approval.consumed under the retry's tool_call_id. Still once, and never a rejected, revoked or expired one, nor one
 whose blocked call ran anyway. The retry is then the call that ran under it (pipeline.ran): the blocked call, if it ran
-anyway, ran against the policy.
+anyway, ran against the policy. A retry of a call someone said no to (rejected, or its agent approval revoked) asks
+for a new approval, and its decide's reason says first who said no (_said_no), so the agent asks before trying again.
 Who answers (design §5): with a config (`approvals`), only an approver of the run's tenant or a break-glass identity
 (any tenant, a reason required, recorded `break_glass`), never the requester or the run's owner unless
 `self_approval: allow`. Without one (the dev signer), any identity of the run's tenant, a self-approval labelled
@@ -2784,8 +2785,10 @@ class SignerService:
             out = {"decision": "allow" if d["decision"] == "flag" else d["decision"], "decision_id": d["decision_id"],
                    "rule_ids": d["rule_ids"], "run_seq": seq, "expires_at": expires_at,
                    **({"reason": "; ".join(big["reasons"])[:1024]} if big else {})}
+            said_no = d["decision"] == "ask" and self._said_no(key, tool, holder[0], digest)
             if d["decision"] in ("deny", "ask") and not big and (why := "; ".join(x for x in (
-                    held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"])) if x)[:1024]):
+                    said_no, held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"]))
+                    if x)[:1024]):
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
@@ -3123,6 +3126,26 @@ class SignerService:
                  and a["expires_at"] > now and a.get("consume_by", "~") > now and a["tool_call_id"] not in ran
                  and self._opens(a["commitment"], a["label"], digest)]
         return prefer if prefer in found else found[0] if found else None
+
+    def _said_no(self, key, tool, via, digest):
+        """(on the writer) What an `ask` for `tool` with args digest `digest` in run `key` tells the agent and the
+        person about the latest approval of the same call (as _reusable matches it) that was rejected or revoked, so
+        the agent asks before trying again; None when there is none. A new approval is still asked for: a person may
+        change their mind."""
+        # lean: scans the signer's live approvals, as _reusable does
+        no = [(aid, a) for aid, a in self.log.approvals.items()
+              if digest and a["run_key"] == key and a["state"] == "rejected" and a["tool"] == tool
+              and a.get("via") == via and a["policy_hash"] == self.policy.policy_hash
+              and self._opens(a["commitment"], a["label"], digest)]
+        if not no:
+            return None
+        aid, a = no[-1]
+        revoked, answered = a.get("revoked"), a.get("answered") or {}
+        by = revoked or answered.get("by", "?")
+        who = "the signer" if by == "signer" else "an agent approver" if not revoked and answered.get("kind") == "agent" \
+            else "a person"
+        return (f"{who} {'revoked the approval of' if revoked else 'rejected'} this exact call ({aid}, by {by}); "
+                f"ask {'them' if who == 'a person' else 'a person'} before trying again")
 
     def _approval_request(self, identity, req):
         identity, gw = self._as_caller(identity, "approval_request", req)

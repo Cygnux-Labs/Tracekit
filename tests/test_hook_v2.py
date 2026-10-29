@@ -1036,6 +1036,22 @@ class HeldCalls(unittest.TestCase):
         rep, code = v2.verify(out, trust)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
 
+    def test_a_retry_of_a_rejected_call_says_who_rejected_it(self):
+        """The person rejects a held call and the agent tries it again: the block said only to approve a new approval,
+        so the agent kept retrying. It says a person rejected it, first in its reasons, and still how to approve it."""
+        aid = self.held(self.UPLOAD, "t1")
+        self.assertEqual(self.approvals("reject", aid), f"rejected: {aid} (self-approved: dev mode only)")
+        code, out, err = self.pre(self.UPLOAD, "t2")
+        again = err.split()[4]
+        self.assertEqual(code, 2)
+        self.assertNotEqual(again, aid)
+        self.assertTrue(err.startswith(
+            f"[tracekit] held for approval {again} (TK-A032): to let it run, approve it with `tracekit approvals approve "
+            f"{again}`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: "
+            f"`tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by uid:{os.getuid()}); "
+            "ask them before trying again; uploading to cloud storage. "), err)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
+
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
         held."""

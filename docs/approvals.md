@@ -77,12 +77,16 @@ it, the agent sends the same call again, under a new tool call id, and that call
      since asks again;
    - is `approved`, by a person or an agent approver under [who may answer](#who-may-answer), and not yet consumed. A
      `requested`, `rejected`, revoked, `expired` or abandoned approval is never used, nor one past its `expires_at`
-     (or an agent approval past its `consume_by`). An agent's approval reads `requested` until its veto delay has
+     (or an agent approval past its `consume_by`), nor one whose blocked call ran anyway (its result is recorded: the
+     approval let one call run already). An agent's approval reads `requested` until its veto delay has
      passed, as `approval_wait` reads it: the retry is held until then, and the hook says it is approved and how many
      seconds to wait before trying again.
 
    Otherwise it asks as before, with a new approval. The signer decides this; nothing the agent sends can name an
-   approval into use.
+   approval into use. If someone said no to the same call earlier in the run (a person or an agent approver rejected
+   it, or its agent approval was revoked), the decision's reason says so first, with the approval and who said no
+   (`a person rejected this exact call (apr-…, by uid:501); ask them before trying again`), so the agent asks before
+   it tries again; the new approval lets a person change their mind.
 3. Its `approval_consume` consumes that approval, once: the signer signs `approval.consumed` with the approval's id
    under the retry's `tool_call_id`, and the approval's `approval.request` and `approval` records name the blocked
    attempt's. A T2 approval is consumed with the `approval_id_hint` that `approval_request` returned, and the consume

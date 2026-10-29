@@ -129,7 +129,9 @@ you, and the deny reason, which the model reads):
 
 Run the command from another terminal, then tell the agent to make the same call again, with exactly the same
 arguments: the signer lets that call run under your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
-The same call a third time, or one with other arguments, is held again, with a new approval. In Claude Code a Bash
+The same call a third time, or one with other arguments, is held again, with a new approval. A call you rejected is
+held again if the agent tries it again, and the block says so first among its reasons (`Why: a person rejected this
+exact call (apr-…, by uid:501); ask them before trying again; …`), so the agent asks you. In Claude Code a Bash
 call's arguments include its free-text `description`: a retry that rewords it is another call, held with a new
 approval. The agent can't approve its own call: the policy denies the command when the agent runs it (`TK-D012`), and in
 system mode the signer refuses its user.

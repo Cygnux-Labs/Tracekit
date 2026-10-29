@@ -258,6 +258,41 @@ class TestAgentApprovals(Case):
         self.assertNotEqual(own["approval_id"], revoked)
         self.assertEqual(own["state"], "requested")
 
+    def test_a_retry_after_a_no_is_told_who_said_it(self):
+        """The retry of a call someone said no to was held with a new approval and no word of the no, so the agent
+        kept retrying: the decision's reason now says it first (which approval, by whom), so the agent asks before
+        trying again. It still gets a new approval: a person may change their mind. Across a restart too."""
+        def no(args, end):
+            aid, _ = self.ask(args, f"tc-{args['amount']}")
+            end(aid)
+            return aid
+
+        def told(args):
+            return self.decide(args, f"tc-{args['amount']}-again")["reason"]
+
+        cases = [(dict(OK, amount=1), lambda aid: self.answer(ALICE, aid, "reject"),
+                  "a person rejected this exact call ({}, by uid:990001); ask them before trying again"),
+                 (dict(OK, amount=2), lambda aid: self.answer(AGENT, aid, "reject"),
+                  "an agent approver rejected this exact call ({}, by token:reviewer); ask a person before trying "
+                  "again"),
+                 (dict(OK, amount=3), lambda aid: (self.answer(AGENT, aid), self.s.call(ALICE, "approval_revoke", {
+                     "request_id": rid(), "approval_id": aid})),
+                  "a person revoked the approval of this exact call ({}, by uid:990001); ask them before trying again"),
+                 (dict(OK, amount=4), lambda aid: (self.answer(AGENT, aid), self.s.call(OPS, "approval_agents", {
+                     "request_id": rid(), "enabled": False})),
+                  "the signer revoked the approval of this exact call ({}, by signer); ask a person before trying "
+                  "again")]
+        said = [(args, text.format(no(args, end))) for args, end, text in cases]
+        self.assertEqual(told(dict(OK, amount=5)), "money moves")   # nobody said no to this one
+        for restarted in (False, True):
+            for args, text in said:
+                with self.subTest(text, restarted=restarted):
+                    self.assertEqual(told(args), f"{text}; money moves")
+            self.restart()
+        self.decide(dict(OK, amount=1), "tc-again")
+        self.assertEqual(self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-again"})["state"],
+                         "requested")   # a new approval: a person may still say yes
+
     def test_an_agent_calls_nothing_else(self):
         aid, _ = self.ask()
         for method, req in (("register_run", {"request_id": rid(), "agent": {"name": "x"}}),

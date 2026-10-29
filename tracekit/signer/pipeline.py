@@ -91,7 +91,8 @@ def approval(tenant, run_id, data, ts):
     record's agent eligibility; `via`: the gateway whose call it is; `escalated`: only people answer it now
     (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
     when the record has them); an agent's approval adds `kind` agent and the times it may be consumed between
-    (`not_before`, `consume_by`); one a later call of the same arguments consumed adds `used_by` (ran)."""
+    (`not_before`, `consume_by`), and a revoke `revoked` (by whom); one a later call of the same arguments consumed adds
+    `used_by` (ran)."""
     b = data["binding"]
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
@@ -169,6 +170,8 @@ def agent_state(set_, log, run, e):
     elif typ == "approval.escalated":
         set_(a, "escalated", True)
         set_(a, "escalation", {k: d[k] for k in ("by", "reason") if k in d})
+    elif typ == "approval.revoked":   # by whom, for the held message of a retry (SignerService._said_no)
+        set_(a, "revoked", d["by"])
     if typ == "approval":   # who answered, for the bridges; and as whom, for a root grant (SignerService._pcm_grant)
         set_(a, "answered", {"by": d["approver"], "kind": d.get("approver_kind", "person")})
         set_(a, "answer", {k: d[k] for k in ("self_approved", "person") if k in d})
