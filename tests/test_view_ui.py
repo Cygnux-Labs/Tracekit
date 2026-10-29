@@ -1802,6 +1802,30 @@ class HorizonZoom(unittest.TestCase):
         self.assertTrue(all(plate[1] - 1 <= y <= plate[3] + 1 for _, _, y in out["words"]), (plate, out["words"]))   # on its plate
         self.assertFalse(plate[0] < hud[2] and plate[2] > hud[0] and plate[1] < hud[3] and plate[3] > hud[1], plate)   # off the readouts
 
+    def test_an_open_folders_name_never_sits_on_a_shield_or_a_mark(self):
+        """sdk/ was drawn on the ~/.aws/credentials shield and read as restricted: a folder's name avoided only labels."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW,
+                                  "hzAim", "HZBAND", "hzPack", "hzNest"], self.STAGE + """
+            const places = dict([["src/a.py", { kind: "project", label: "src/a.py", rest: null }], ["src/b.py", { kind: "project", label: "src/b.py", rest: null }],
+                                 ["~/.aws/credentials", { kind: "machine", label: "~/.aws/credentials", rest: "TK-F005 · secrets_access" }],
+                                 ...["README.md", "Makefile", "setup.py", "NOTES.md", "a.txt", "b.txt", "c.txt"].map(l => [l, { kind: "project", label: l, rest: null }])]);   // src/: a quarter of its ring or less, so a folder
+            const { folds, top } = hzNest(places), ev = [{ t: 1, seq: 1, ag: "coder", at: "~/.aws/credentials", act: "blocked", gr: "signed", run: "r1", w: "" }];
+            HZ.d = { ev, places, folds, top, agents: [["coder", 0]], cwd: "" }; HZ.t = 1; HZ.col = dict([["coder", "#d98bff"]]);
+            const f = Object.values(folds)[0], name = () => texts.find(t => t[0] === "src/");
+            draw(1200);
+            const g = HZ.geo, fp = [g.cx + f.r * g.R4 * Math.cos(f.th), g.cy + f.r * g.R4 * Math.sin(f.th) * g.i];
+            HZ.cam = hzAim(fp, 2.5, g.cw, g.ch); draw(1200);
+            const first = name(), [wx, wy] = [(first[1] - HZ.cam.x) / HZ.cam.k, (first[2] - 3 - HZ.cam.y) / HZ.cam.k];
+            const u = (wx - g.cx) / g.R4, v = (wy - g.cy) / (g.R4 * g.i);   // the shield moved under where the name was
+            Object.assign(places["~/.aws/credentials"], { r: Math.hypot(u, v), th: Math.atan2(v, u) });
+            draw(1200);
+            const at = [places["~/.aws/credentials"].r, places["~/.aws/credentials"].th], s = [g.cx + at[0] * g.R4 * Math.cos(at[1]), g.cy + at[0] * g.R4 * Math.sin(at[1]) * g.i].map((v, k) => v * HZ.cam.k + [HZ.cam.x, HZ.cam.y][k]);
+            const now = name();
+            process.stdout.write(JSON.stringify({ first: !!first, now: now ? Math.hypot(now[1] - s[0], now[2] - 3 - s[1]) : null }));"""))
+        self.assertTrue(out["first"])                                   # open, its name under its circle
+        self.assertTrue(out["now"] is None or out["now"] > 36, out)    # not on the shield (24px, and its ring)
+
     def test_a_comet_whose_place_left_the_stage_asks_for_no_more_frames(self):
         """A replayed move's comet whose place had left the newest moves (500 newer calls arrived) was never cleared: an
         idle stage asked for every animation frame, 100% of a core."""

@@ -3934,7 +3934,7 @@
       const placed = [...cv.parentNode.querySelectorAll(".hzhud")].map(h => [h.offsetLeft, h.offsetTop, h.offsetLeft + h.offsetWidth, h.offsetTop + h.offsetHeight]), hud = [...placed];
       const box = (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
       x.font = font(600, 9); x.textAlign = "left"; x.letterSpacing = "2.5px";
-      const dots = nodes.concat(opened).map(k => [...pt(k), D.folds?.[k] ? D.folds[k].rho * R4 * K + 9 : 9]).filter(p => on(p, 0)), hits = a => 99 * placed.filter(b => box(a, b)).length
+      const dots = nodes.concat(opened).map(k => [...pt(k), D.folds?.[k] ? D.folds[k].rho * R4 * K + 9 : D.places[k].rest ? 30 : 9]).filter(p => on(p, 0)), hits = a => 99 * placed.filter(b => box(a, b)).length
         + dots.filter(([mx, my, mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - mr && my < a[3] + mr).length;
       for (const [r, l, cl] of [[.47, D.cwd ? "PROJECT · " + D.cwd : "PROJECT", A(amber, .8)], [.66, "THIS MACHINE", A(ink, .5)], [1, "OUTSIDE WORLD", A(ink, .4)]]) {
         const w = x.measureText(l).width, at = deg => { const [lx, ly] = P(r, hzRad(deg)); return [lx - 2, ly - 14, lx + 9 + w, ly + 2]; };
@@ -3944,17 +3944,16 @@
         x.fillStyle = cl; x.fillRect(b[0], b[3] - 4, 4, 4); x.fillText(l, b[0] + 9, b[3] - 7);
         placed.push(b);
       }
-      x.letterSpacing = "1px"; x.font = font(600, 10); x.textAlign = "center"; HZ.hits = [];
+      HZ.hits = [];
+      const names = [];   // the open folders' names: placed once the places' marks and shields are known
       for (const k of opened) {
         const f = D.folds[k], [px, py] = pt(k), rs = f.rho * R4 * K;
         if (px + rs < 0 || px - rs > cw || py + rs * i < 0 || py - rs * i > ch) continue;
         HZ.hits.push({ k, x: px, y: py, r: rs, ry: rs * i, open: true });
         x.fillStyle = A(ink, .03); x.strokeStyle = A(f.rest ? red : gold, HZ.pick === k ? .75 : .3); x.lineWidth = HZ.pick === k ? 1.6 : 1;
         x.beginPath(); x.ellipse(px, py, rs, rs * i, 0, 0, 6.2832); x.fill(); x.stroke();
-        const l = hzShort(f.name) + "/", w = x.measureText(l).width, ny = Math.min(py + rs * i + 14, ch - 34), b = [px - w / 2 - 4, ny - 10, px + w / 2 + 4, ny + 4];
-        if (!placed.some(p => box(b, p))) { placed.push(b); x.fillStyle = A(space, .78); x.fillRect(b[0], b[1], b[2] - b[0], b[3] - b[1]); x.fillStyle = A(amber, .85); x.fillText(l, px, ny); }
+        names.push([f, px, Math.min(py + rs * i + 14, ch - 34)]);
       }
-      x.letterSpacing = "0px";
       // what happened, up to the move shown: jets where data left the machine (one per agent and host), the routes,
       // then the places
       const ev = D.ev.slice(0, HZ.t), mine = e => !HZ.follow || e.ag === HZ.follow, seen = dict(), jet = dict(), jets = [];
@@ -4045,6 +4044,15 @@
         const gap = f ? sr * i + 6 : q.rest ? sr + 6 : 8;
         blocks.push({ k, q, px, py, worst, rows, w, h: 13 * rows.length, rank, gap, n: es.length, label, from: [[px, gap], ...f ? [[px - sr - 4, 4], [px + sr + 4, 4]] : []] });
       }
+      // each open folder's name under its circle, where it covers no other name, readout, mark or shield
+      const marked = a => marks.some(([mx, my, mr, my_ = mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - my_ && my < a[3] + my_);
+      x.letterSpacing = "1px"; x.font = font(600, 10); x.textAlign = "center";
+      for (const [f, px, ny] of names) {
+        const l = hzShort(f.name) + "/", w = x.measureText(l).width, b = [px - w / 2 - 4, ny - 10, px + w / 2 + 4, ny + 4];
+        if (placed.some(p => box(b, p)) || marked(b)) continue;
+        placed.push(b); x.fillStyle = A(space, .78); x.fillRect(b[0], b[1], b[2] - b[0], b[3] - b[1]); x.fillStyle = A(amber, .85); x.fillText(l, px, ny);
+      }
+      x.letterSpacing = "0px";
       // a box crosses a line (Liang-Barsky): the jets, which a callout steps off when it can
       const cross = (a, [x1, y1, x2, y2]) => {
         let t0 = 0, t1 = 1;
@@ -4056,7 +4064,7 @@
         return true;
       };
       const hit = a => placed.some(b => a[0] < b[2] + 4 && a[2] > b[0] - 4 && a[1] < b[3] + 3 && a[3] > b[1] - 3)
-        || marks.some(([mx, my, mr, my_ = mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - my_ && my < a[3] + my_)
+        || marked(a)
         || a[0] < 6 || a[2] > cw - 6 || a[1] < 24 || a[3] > ch - 30 || (a[0] < hx + Rs * K * 2 && a[2] > hx - Rs * K * 2 && a[1] < hy + Rs * K * 1.4 && a[3] > hy - Rs * K * 1.6)
         || jets.some(s => cross(a, s));
       // the picked place first, then restricted places and stops (blocked, held), then the busiest: each where it covers
