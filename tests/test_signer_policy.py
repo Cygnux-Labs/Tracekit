@@ -274,6 +274,122 @@ class CodingPack(unittest.TestCase):
                         if cmd in deletes:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_moving_money_through_stripe_paypal_or_square_asks_in_every_pack(self):
+        """Stripe holds money calls for a person only for agent-tagged keys: a coding agent with a developer's own key
+        refunded, paid out or charged and every pack only flagged the network command. Local test tooling, reads and
+        a GET aren't held. Fake ids only."""
+        moves = ["stripe refunds create --charge=ch_3FAKE", "stripe refunds create --payment-intent pi_FAKE --amount 500",
+                 "stripe payouts create --amount=1100 --currency=usd",
+                 "stripe transfers create --amount=400 --currency=usd --destination=acct_FAKE",
+                 "stripe topups create --amount=2000 --currency=usd", "stripe charges create --amount=1099 --currency=usd",
+                 "stripe charges capture ch_FAKE", "stripe payment_intents create --amount=2000 --currency=usd",
+                 "stripe payment_intents confirm pi_FAKE --payment-method=pm_card_visa",
+                 "stripe payment_intents capture pi_FAKE", "stripe invoices pay in_FAKE",
+                 "stripe treasury outbound_payments create --financial-account fa_FAKE --amount 100 --currency usd",
+                 # options before the resource, a wrapper, a path, a variable or another command first
+                 "stripe --live refunds create --charge ch_FAKE", "stripe --api-key sk_test_FAKE payouts create --amount 5",
+                 "stripe -p prod --live transfers create --amount 1 --currency usd --destination acct_FAKE",
+                 "STRIPE_API_KEY=sk_test_FAKE /usr/local/bin/stripe refunds create --charge ch_FAKE",
+                 "npx stripe refunds create --charge ch_FAKE", "cd app && stripe refunds create --charge ch_FAKE",
+                 "bash -c 'stripe payouts create --amount 5 --currency usd'",
+                 # stripe post, with the path first or after its data
+                 "stripe post /v1/refunds -d charge=ch_FAKE", "stripe post /v1/payment_intents/pi_FAKE/confirm",
+                 "stripe post v1/transfers -d amount=1 -d currency=usd -d destination=acct_FAKE",
+                 "stripe post -d amount=5 -d currency=usd /v1/payouts", "stripe post /v1/invoices/in_FAKE/pay",
+                 "stripe post /v1/charges/ch_FAKE/refund", "stripe post /v1/transfers/tr_FAKE/reversals",
+                 "stripe post /v2/money_management/outbound_payments -d amount=1",
+                 "stripe --live post /v1/refunds -d charge=ch_FAKE -i idem-1",
+                 # a POST: data, -X/--request, curl's clusters and attached values; Stripe's docs give no -X
+                 "curl https://api.stripe.com/v1/refunds -u sk_test_FAKE: -d charge=ch_FAKE",
+                 "curl -X POST https://api.stripe.com/v1/refunds -u sk_test_FAKE: -d charge=ch_FAKE",
+                 "curl https://api.stripe.com/v1/payouts -u \"$STRIPE_SECRET_KEY:\" -d amount=1100 -d currency=usd",
+                 "curl -s -XPOST https://api.stripe.com/v1/payment_intents/pi_FAKE/capture -u sk_test_FAKE:",
+                 "curl --request POST --url https://api.stripe.com/v1/invoices/in_FAKE/pay",
+                 "curl --data-urlencode amount=5 https://api.stripe.com/v1/transfers",
+                 "curl https://api.stripe.com/v1/charges -F amount=5", "curl -sd charge=ch_FAKE https://api.stripe.com/v1/refunds",
+                 "curl -dcharge=ch_FAKE https://api.stripe.com/v1/refunds", "curl -X post https://api.stripe.com/v1/refunds/",
+                 "curl -X POST 'https://api.stripe.com/v1/refunds?expand[]=charge'", "curl api.stripe.com/v1/refunds -d x=1",
+                 # -G is a GET only when it comes first and nothing sets the method; a ` -G` inside a value is a value
+                 "curl -G -X POST https://api.stripe.com/v1/refunds -d charge=ch_FAKE",
+                 "curl https://api.stripe.com/v1/refunds -d 'metadata[note]=a -G b' -d charge=ch_FAKE",
+                 "curl -s -G https://api.stripe.com/v1/refunds -d charge=ch_FAKE",
+                 # PayPal and Square
+                 "curl -v -X POST https://api-m.paypal.com/v1/payments/payouts -H 'Content-Type: application/json' "
+                 "-H 'Authorization: Bearer FAKE' -d @payout.json",
+                 "curl -X POST https://api-m.paypal.com/v2/checkout/orders/5O190127TN364715T/capture",
+                 "curl -X POST https://api.paypal.com/v2/payments/captures/2GG279541U471931P/refund",
+                 "curl -X POST https://api-m.paypal.com/v2/payments/authorizations/0VF52814937998046/capture",
+                 "curl https://connect.squareup.com/v2/payments -X POST -H 'Square-Version: 2025-01-23' -d '{\"a\":1}'",
+                 "curl https://connect.squareup.com/v2/refunds -X POST -d @refund.json",
+                 "curl -X POST https://connect.squareup.com/v2/payments/pay_FAKE/complete",
+                 # wget, HTTPie and xh
+                 "wget --method=POST https://api.stripe.com/v1/refunds --body-data=charge=ch_FAKE",
+                 "wget --post-data=charge=ch_FAKE https://api.stripe.com/v1/refunds",
+                 "http -f POST https://api.stripe.com/v1/refunds charge=ch_FAKE -a sk_test_FAKE:",
+                 "http -f https://api.stripe.com/v1/refunds charge=ch_FAKE", "http post api.stripe.com/v1/refunds charge=ch_FAKE",
+                 "xh POST https://api-m.paypal.com/v1/payments/payouts sender_batch_header:=@h.json",
+                 "https --form api.stripe.com/v1/refunds expand==charge charge=ch_FAKE"]
+        routine = ["stripe listen --forward-to localhost:4242/webhook", "stripe trigger payment_intent.succeeded",
+                   "stripe trigger refund.created", "stripe logs tail", "stripe login", "stripe refunds list --limit 3",
+                   "stripe refunds retrieve re_FAKE", "stripe payouts list", "stripe payment_intents retrieve pi_FAKE",
+                   "stripe payment_intents cancel pi_FAKE", "stripe refunds update re_FAKE -d metadata[x]=y",
+                   "stripe refunds cancel re_FAKE", "stripe invoices create --customer cus_FAKE",
+                   "stripe customers create --email a@example.com", "stripe get /v1/refunds", "stripe get /v1/payouts/po_FAKE",
+                   "stripe post /v1/customers -d email=a@example.com", "stripe post /v1/payment_intents/pi_FAKE -d metadata[x]=y",
+                   "stripe post /v1/payment_intents/pi_FAKE/cancel", "stripe post /v1/payouts/po_FAKE/cancel",
+                   "stripe refunds --help",
+                   # GETs, Stripe's documented list form (`curl -G … -d limit=3`) too
+                   "curl https://api.stripe.com/v1/refunds -u sk_test_FAKE:",
+                   "curl -G https://api.stripe.com/v1/refunds -u sk_test_FAKE: -d limit=3",
+                   "curl --get https://api.stripe.com/v1/charges -u sk_test_FAKE: -d limit=3 --retry 2",
+                   "curl 'https://api.stripe.com/v1/refunds?limit=3' -u sk_test_FAKE:",
+                   "curl -X GET https://api-m.paypal.com/v1/payments/payouts",
+                   "curl https://api-m.paypal.com/v2/checkout/orders/5O190127TN364715T/capture",
+                   "wget -qO- https://api.stripe.com/v1/refunds", "http https://api.stripe.com/v1/refunds -a sk_test_FAKE:",
+                   "http GET https://api.stripe.com/v1/refunds limit==3",
+                   # other endpoints, and the sandboxes of PayPal and Square
+                   "curl -X POST https://api.stripe.com/v1/customers -d email=a@example.com",
+                   "curl -X POST https://api.stripe.com/v1/refunds/re_FAKE -d metadata[x]=y",
+                   "curl -X POST https://api-m.sandbox.paypal.com/v1/payments/payouts -d @p.json",
+                   "curl -X POST https://connect.squareupsandbox.com/v2/payments -d @p.json",
+                   "curl -X POST https://api-m.paypal.com/v1/oauth2/token -d grant_type=client_credentials",
+                   # words about it
+                   "echo stripe refunds create --charge ch_FAKE", "git commit -m 'stripe refunds create --charge ch_FAKE'",
+                   "grep -rn 'api.stripe.com/v1/refunds' src", "rg 'stripe payouts create'"]
+        for pack, engine, e in self.every_pack():
+            for cmd in moves + routine:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual("TK-A043" in d["rule_ids"], cmd in moves, d)
+                    if cmd in moves:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_an_mcp_tool_that_moves_money_asks_in_every_pack(self):
+        """Stripe's MCP tools that move money (send_money, transfer_money, convert_currency, its agent toolkit's
+        create_refund) and its stripe_api_write when it names a refund or a money endpoint; reads and other writes
+        aren't held."""
+        named = [(t, {"amount": 1000, "currency": "usd"}) for t in (
+            "mcp__stripe__send_money", "mcp:stripe/send_money", "mcp__stripe__transfer_money", "mcp__stripe__convert_currency",
+            "mcp__plugin_stripe_stripe__send_money")] + [("mcp__stripe__create_refund", {"charge": "ch_FAKE"})]
+        writes = [{"method": "POST", "path": "/v1/refunds", "params": {"charge": "ch_FAKE"}},
+                  {"method": "POST", "path": "v1/payouts", "params": {"amount": 5, "currency": "usd"}},
+                  {"path": "/v1/payment_intents/pi_FAKE/capture"}, {"url": "https://api.stripe.com/v1/invoices/in_FAKE/pay"},
+                  {"method": "refunds.create", "params": {"payment_intent": "pi_FAKE"}}, {"operation": "PostRefunds"}]
+        not_held = [("mcp__stripe__stripe_api_write", {"method": "POST", "path": "/v1/customers", "params": {"email": "a@x"}}),
+                    ("mcp__stripe__stripe_api_write", {"method": "POST", "path": "/v1/payment_intents/pi_FAKE/cancel"}),
+                    ("mcp__stripe__stripe_api_write", {"method": "POST", "path": "/v1/payouts/po_FAKE/cancel"}),
+                    ("mcp__stripe__stripe_api_read", {"path": "/v1/refunds"}), ("mcp__stripe__get_balance_summary", {}),
+                    ("mcp__stripe__setup_recipient", {"name": "Ada"}), ("mcp__stripe__list_refunds", {}),
+                    ("mcp__stripe__search_stripe_documentation", {"question": "how do refunds work"})]
+        for pack, engine, e in self.every_pack():
+            for tool, args in named + [("mcp__stripe__stripe_api_write", a) for a in writes] + not_held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    want = {"TK-A044"} if (tool, args) in named else set() if (tool, args) in not_held else {"TK-A045"}
+                    self.assertEqual({r for r in d["rule_ids"] if r in ("TK-A044", "TK-A045")}, want, d)
+                    if want:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
@@ -1871,6 +1987,33 @@ class PackReading(unittest.TestCase):
         for args in ({"cmd": "pulumi up -m 'tear down'"}, {"cmd": "terraform plan -destroy"}, {"note": "terraform destroy"}):
             self.assertEqual(self.server.decide("ops_cmd", args, "app")["verdict"], "allow", args)
 
+    def test_a_refund_with_no_amount_and_an_mcp_refund_by_another_verb_ask(self):
+        """A full refund through a deployment's own payment tool (issue_refund, which examples/v2/demos/agent_approvers.py
+        maps to payment) carries no amount, so TK-M001 allowed it; over MCP, issue_refund was only flagged. With an
+        amount TK-M001 alone holds it, so a reviewer agent's bounds on TK-M001 still decide it."""
+        for tool, args, cls, want in (
+                ("issue_refund", {"order": "A-1001"}, "payment", ["TK-M005"]),
+                ("process_payment", {"invoice": "in_FAKE"}, "payment", ["TK-M005"]),
+                ("transfer_money", {"note": "rent"}, "payment", ["TK-M005"]),
+                # an amount TK-M001 doesn't read (null, empty, nested) leaves the call to TK-M005
+                ("issue_refund", {"amount": None, "order": "A-1001"}, "payment", ["TK-M005"]),
+                ("issue_refund", {"amount": "", "order": "A-1001"}, "payment", ["TK-M005"]),
+                ("issue_refund", {"refund": {"amount": 4000}}, "payment", ["TK-M005"]),
+                # one TK-M001 reads but the unless can't be sure of is held by both: never by neither
+                ("issue_refund", {"amount": "40.00", "order": "A-1001"}, "payment", ["TK-M001", "TK-M005"]),
+                ("issue_refund", {"order": "A-1001", "amount": 4000, "currency": "usd"}, "payment", ["TK-M001"]),
+                ("issue_refund", {"order": "A-1001", "amount_cents": 4000}, "payment", ["TK-M001"]),
+                ("mcp:billing/issue_refund", {"order": "A-1001"}, None, ["TK-M002", "TK-F006"]),
+                ("mcp__billing__make_payment", {"amount": 5}, None, ["TK-M002", "TK-F006"])):
+            with self.subTest(tool=tool, args=args):
+                d = self.server.decide(tool, args, cls)
+                self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", want), d)
+        for tool, args, cls in (("get_balance", {}, None), ("list_transactions", {"since": "2026-10-01"}, None),
+                                ("get_refund", {"id": "re_FAKE"}, "payment"), ("issue_receipt", {"order": "A-1"}, "payment")):
+            with self.subTest(tool=tool):
+                self.assertEqual(self.server.decide(tool, args, cls)["verdict"], "allow")
+        self.assertEqual(self.server.decide("mcp:billing/get_refund", {"id": "re_FAKE"})["verdict"], "flag")
+
     def test_a_large_write_is_flagged_on_the_laptop_pack(self):
         d = self.dev.decide("Write", {"file_path": "/repo/data.py", "content": "x = 1\n" * 12000})
         self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-OVERSIZE"]))
@@ -2084,6 +2227,15 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual(d["reason"], "force push. Push without --force, --mirror or a + refspec (rebase "
                                       "onto the remote branch, or push a new branch); a person rewrites shared history "
                                       "themselves.")
+
+    def test_a_hold_on_moving_money_says_what_to_check(self):
+        self.open(svc.load_policy(os.path.join(PACKS, "coding.yaml")))
+        d = self.decide("Bash", {"command": "stripe refunds create --charge=ch_3FAKE"})
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-A043"]))
+        self.assertEqual(d["reason"], "moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check "
+                                      "the amount, currency and payee in the command before approving it; a refund with "
+                                      "no amount refunds in full, and a confirm, capture or pay moves the amount set "
+                                      "earlier.")
 
     def test_every_decide_gets_a_fresh_decision_id_consumed_once(self):
         args = {"command": "ls"}

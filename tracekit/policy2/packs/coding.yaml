@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-40'
+version: '2026.10-v2-41'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -436,6 +436,53 @@ ask:
     reason: deleting a repository or project through a platform's API
     remedy: Have a person approve the held call, or delete a single item (an issue, a comment) rather than the whole repository or project.
     rationale: Deleting a repository or project removes all of its code, issues and history in one step; a person confirms it.
+  - id: TK-A043
+    class: shell
+    # moving money through Stripe, PayPal or Square from the shell, each command's argv: the Stripe CLI's refunds,
+    # payouts, transfers and topups create, charges create or capture, payment_intents create, confirm or capture,
+    # invoices pay and treasury outbound_payments or outbound_transfers create, with up to eight options (with a value)
+    # before the resource and again before its operation; `stripe post` to one of those endpoints (also a charge's
+    # refund or capture and a transfer's reversals, and the v2 money_management outbound payments and transfers); and a
+    # POST to one of them on api.stripe.com, or to a PayPal payout, order or authorization capture or capture refund on
+    # api.paypal.com or api-m.paypal.com, or to a Square payment, refund or payment completion on connect.squareup.com,
+    # through curl, wget, HTTPie or xh. A POST is -X/--request/--method POST, a bare POST word before the URL (HTTPie's
+    # method), a body option (curl's -d, -F, --data*, --form*, --json; wget's --post-data, --post-file) or, after the
+    # URL, an HTTPie item (k=v, k:=v, k@file; not a k==v query), within sixteen words of the URL, so the fallback engine
+    # stays linear. Stripe's mode isn't read (a sandbox call is held too: the key, not --live, can make it live); PayPal's
+    # and Square's sandbox hosts aren't these. Amount-less calls (a full refund, a confirm, capture or invoice pay) are
+    # held as any other. Not held: listing, retrieving or cancelling, stripe listen, trigger, logs tail and login, a GET
+    # (Stripe's docs list with `curl -G … -d limit=3`: the unless, which a -X/--request word anywhere voids).
+    # lean: a URL is read as typed (lowercase host, no port), and a word is read as an option or item wherever it sits,
+    # so a body value holding a money URL, or HTTPie's, xh's and wget's -d (download, debug) next to one, is held too;
+    # read the argv structurally when one gets in the way
+    pattern: '^(?:stripe (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:(?:refunds|payouts|transfers|topups) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}create|charges (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:create|capture)|payment_intents (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:create|confirm|capture)|invoices (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}pay|treasury (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}outbound_(?:payments|transfers) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}create)(?: |$)|stripe (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}post (?:[\w\W]*? )?/?(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))/?(?:[?#][^ ]*)?(?: |$)|(?:curl|wget|https?|xhs?) (?:[\w\W]*? )?(?:(?:(?:(?:-[A-Za-z]*X ?|--(?:request|method)[ =])[Pp][Oo][Ss][Tt]|-[A-Za-z]*[dF]|--(?:data|form|json|post-data|post-file))[^ ]*|[Pp][Oo][Ss][Tt]) (?:[^ ]+ ){0,16}?(?:https?://)?(?:api\.stripe\.com/(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: |$)|(?:https?://)?(?:api\.stripe\.com/(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]+ ){0,16}?(?:(?:(?:-[A-Za-z]*X ?|--(?:request|method)[ =])[Pp][Oo][Ss][Tt]|-[A-Za-z]*[dF]|--(?:data|form|json|post-data|post-file))[^ ]*|[^ =:@-][^ =:@]*(?:=[^=]|=$|:=|@))))'
+    # curl -G (first) sends its data as a query string: a GET, unless a -X or --request word (a cluster with X too)
+    # sets the method
+    unless: '^curl (?:-G|--get)(?: (?:[^- ][^ ]*|-[^-X ][^X ]*|--(?:[^r ][^ ]*|r(?:[^e ][^ ]*)?|re(?:[^q ][^ ]*)?)?|-)?)*$'
+    reason: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund)
+    remedy: Check the amount, currency and payee in the command before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier.
+    rationale: A coding agent with a developer's own key moves real money in one call, and Stripe holds only agent-tagged keys' calls for approval; a person confirms each one.
+  - id: TK-A044
+    class: mcp
+    # Stripe's MCP tools that move money (docs.stripe.com/mcp: send_money, transfer_money and convert_currency on a
+    # Treasury balance) and its agent toolkit's create_refund, from any server, as `mcp__<server>__<tool>` or
+    # `mcp:<server>/<tool>`
+    tool: 'mcp(:[^/]+/|__.*__)(send_money|transfer_money|convert_currency|create_refund)'
+    pattern: '^'
+    reason: moving money through an MCP tool (sending, transferring or converting money, or a refund)
+    remedy: Check the amount, currency and recipient in the call's arguments before approving it; a refund with no amount refunds in full.
+    rationale: The MCP twin of TK-A043 for tools whose name says they move money; a person confirms each call.
+  - id: TK-A045
+    class: mcp
+    # Stripe's generic write tool, stripe_api_write, when its arguments name a refund (the money-moving write Stripe
+    # lists for it) or one of TK-A043's Stripe endpoints as a path
+    # lean: Stripe doesn't document the tool's argument names, so the whole call is read and a refund named anywhere in
+    # it is held (a product described as "no refunds" too); match the method and path once Stripe documents them
+    tool: 'mcp(:[^/]+/|__.*__)stripe_api_write'
+    pattern: '[Rr][Ee][Ff][Uu][Nn][Dd]|"(?:https://api\.stripe\.com)?/?(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#"]+/(?:capture|refunds?)|payment_intents/[^/ ?#"]+/(?:confirm|capture)|invoices/[^/ ?#"]+/pay|transfers/[^/ ?#"]+/reversals)|v2/money_management/outbound_(?:payments|transfers))/?(?:[?#][^"]*)?"'
+    reason: moving money through Stripe's MCP write tool (a refund, charge, payout or transfer)
+    remedy: Check the amount, currency and payee in the call's arguments before approving it; a refund with no amount refunds in full.
+    rationale: Stripe asks a person to confirm some of these writes only when the agent acts as that person; a person confirms each one here, whatever the key.
   - id: TK-A034
     class: shell
     # each command's argv: Codex applies a patch itself when the shell runs apply_patch or applypatch (it puts both on

@@ -145,6 +145,38 @@ so why none waits by default:
 | Factory Droid | not documented | to Droid (the model) |
 | Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |
 
+### Calls that move money
+
+Stripe holds an agent's refunds, payouts and outbound payments for a person only when the agent uses an agent-tagged
+API key ([approval rules](https://docs.stripe.com/account/approvals)); a coding agent with your own key gets no hold.
+The v2 coding pack holds these calls for a person whatever the key:
+
+- the Stripe CLI's money commands: `stripe refunds create`, `payouts create`, `transfers create`, `topups create`,
+  `charges create` or `capture`, `payment_intents create`, `confirm` or `capture`, `invoices pay`, `treasury
+  outbound_payments create` or `outbound_transfers create`, and `stripe post` to those endpoints (`TK-A043`);
+- a POST to those endpoints on `api.stripe.com`, to PayPal's payouts, captures and refunds on `api-m.paypal.com` or
+  `api.paypal.com`, or to Square's payments and refunds on `connect.squareup.com`, through `curl`, `wget`, HTTPie or
+  `xh` (`TK-A043`);
+- Stripe's MCP money tools, `send_money`, `transfer_money`, `convert_currency` and `create_refund` (`TK-A044`), and its
+  `stripe_api_write` tool when the call names a refund or one of those endpoints (`TK-A045`).
+
+The hold says what to check:
+
+```text
+[tracekit] held for approval apr-… (TK-A043): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
+```
+
+Read the command before you approve it: the approval covers that exact command, so its amount and payee can't change
+afterwards. A call with no amount moves what was set earlier: a refund with no amount refunds the whole charge, and a
+confirm, capture or invoice pay takes the amount the payment intent or invoice was created with, so look that up
+first. A Stripe test-mode call is held too: the command doesn't show whether the key is live. Not held: `stripe
+listen`, `stripe trigger`, `stripe logs tail`, `stripe login`, listing, retrieving and cancelling, a GET (Stripe's
+documented `curl -G … -d limit=3` list form too), and PayPal's and Square's sandbox hosts.
+
+Turn on Stripe's approval rules with an agent-tagged key as well: Stripe enforces them on its side, outside anything
+the agent runs, and Tracekit adds a signed record of who approved which exact call, for PayPal and Square too. What
+these rules don't see (a script that calls a payment SDK, another provider): [limits](limits.md#policy).
+
 ### What was asked and said
 
 For Claude Code, the transcript tailer records every line the model writes (thinking, text, tool use) and every prompt

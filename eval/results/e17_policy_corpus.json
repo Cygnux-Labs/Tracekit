@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:6af5f8007e602deab283ca6af2d568b2afdda6aa3ff0a124b2be66838a56c493",
+  "policy_hash": "sha256:47bfc218cc5c8764710458cbaa0f46a4fe2f6199c6bfa714d07dc62006f17d9e",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -425,7 +425,7 @@
     "deny/payment:8": "ask TK-M001 TK-M002",
     "deny/payment:9": "ask TK-M001 TK-M002",
     "deny/payment:10": "ask TK-M001 TK-M002",
-    "deny/payment:11": "ask TK-M002 TK-F006",
+    "deny/payment:11": "ask TK-A044 TK-M002 TK-F006",
     "deny/payment:12": "ask TK-M002 TK-F006",
     "deny/payment:13": "ask TK-M002 TK-F006",
     "deny/payment:14": "ask TK-M002 TK-F006",
@@ -433,7 +433,7 @@
     "deny/payment:16": "ask TK-M002 TK-F006",
     "deny/payment:17": "ask TK-M002 TK-F006",
     "deny/payment:18": "ask TK-M002 TK-F006",
-    "deny/payment:19": "ask TK-M002 TK-F006",
+    "deny/payment:19": "ask TK-A044 TK-M002 TK-F006",
     "deny/payment:20": "ask TK-M001 TK-M002",
     "deny/payment:21": "ask TK-M001 TK-M002",
     "deny/payment:22": "ask TK-M001 TK-M002",
