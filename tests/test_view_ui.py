@@ -964,20 +964,24 @@ class Waterfall(unittest.TestCase):
         self.assertIn("5 earlier calls are not drawn: the newest 600 are.", capped)
         self.assertIn("No call matches the filters.", none)
 
-    def test_a_render_of_the_lanes_reads_each_call_once_and_each_colour_once(self):
+    def test_a_render_of_the_lanes_reads_each_call_once_and_each_colour_once_and_only_when_they_changed(self):
         """Each lane read every call of the live view, and each call asked the page's style for its colour: DESK spent
-        1.8 s in 30 s drawing its lanes (agents x calls), and the page took 23% of a core while a run was written."""
+        1.8 s in 30 s drawing its lanes (agents x calls), and the page took 23% of a core while a run was written. And
+        every render drew every call again, each second and each record: unchanged lanes are not drawn again, and
+        records arriving are drawn at most once a second."""
         needs_node(self)
         out = json.loads(page_js(["CAT_COLOR", "fmtT", "tickStep", "tickText", "label", "renderLanes"], """
-            const V2 = true, R = null, rpos = 0, mode = "live", selected = null, drawn = [], asked = [];
+            const V2 = true, R = null, rpos = 0, mode = "live", drawn = [], asked = [];
+            let selected = null;
             const ctx = { setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, strokeRect() {},
                           fillRect: (x, y, w, h) => drawn.push(y), fillText() {}, measureText: t => ({ width: t.length * 6.6 }) };
             const cv = { width: 0, height: 0, style: {}, getContext: () => ctx }, wrap = { clientWidth: 1600, clientHeight: 400, scrollTop: 0 };
             const $ = id => ({ lanes: cv, lanewrap: wrap })[id], window = {}, css = n => (asked.push(n), n);
             let matched = 0;
             const agentMatch = () => true, actMatch = () => ++matched, category = () => "read", callState = () => ["", ""], nowTs = () => 100;
-            let laneHits = [], walked = 0;
-            const S = { agents: new Map(), actList: [], firstTs: 0, lastTs: 100 };
+            let laneHits = [], laneKey = [], laneAt = 0, walked = 0, clock = 0;
+            const S = { agents: new Map(), actList: [], recs: [], firstTs: 0, lastTs: 100 }, F = {};
+            const performance = { now: () => clock };
             S.actList[Symbol.iterator] = function* () { for (let i = 0; i < this.length; i++) { walked++; yield this[i]; } };
             for (let i = 0; i < 20; i++) {
               const a = { session: "r" + i, sub: false, first: 0, last: 100, name: "coder", actions: 10, status: "done" };
@@ -985,10 +989,19 @@ class Waterfall(unittest.TestCase):
               for (let k = 0; k < 10; k++) S.actList.push({ agent: a, start: k * 9, end: k * 9 + 1, flags: [], denied: false });
             }
             renderLanes();
-            process.stdout.write(JSON.stringify({ walked, matched, colour: asked.filter(n => n === CAT_COLOR.read).length,
-                                                  hits: laneHits.length }));"""))
+            const colour = asked.filter(n => n === CAT_COLOR.read).length;
+            const once = { walked, matched, colour, hits: laneHits.length };
+            // drawn again: nothing changed (the live tick) no; a record a moment later not yet; a second later yes; a
+            // new selection at once
+            const draws = [];
+            for (const step of [() => {}, () => { S.recs.push({}); clock += 300; }, () => { clock += 800; },
+                                () => { selected = S.actList[0]; }]) {
+              step(); drawn.length = 0; renderLanes(); draws.push(drawn.length > 0);
+            }
+            process.stdout.write(JSON.stringify({ ...once, draws }));"""))
         # two passes over the calls (the time scale, then the lanes), not one a lane (4,200)
-        self.assertEqual(out, {"walked": 400, "matched": 200, "colour": 1, "hits": 200})
+        self.assertEqual(out, {"walked": 400, "matched": 200, "colour": 1, "hits": 200,
+                               "draws": [False, False, True, True]})
 
     def test_every_run_has_a_lane_busy_ones_first_and_the_panel_scrolls_to_the_rest(self):
         """DESK's 140px timeline drew 8 of 12 lanes: runs with calls fell off its bottom, unreachable, while empty runs
@@ -1003,8 +1016,8 @@ class Waterfall(unittest.TestCase):
             const cv = { width: 0, height: 0, style: {}, getContext: () => ctx }, wrap = { clientWidth: 1600, clientHeight: 110, scrollTop: 0 };
             const $ = id => ({ lanes: cv, lanewrap: wrap })[id], window = {}, css = n => n;
             const agentMatch = () => true, actMatch = () => true, category = () => "read", callState = () => ["", ""], nowTs = () => 100;
-            let laneHits = [];
-            const S = { agents: new Map(), actList: [], firstTs: 0, lastTs: 100 };
+            let laneHits = [], laneKey = [], laneAt = 0;
+            const S = { agents: new Map(), actList: [], recs: [], firstTs: 0, lastTs: 100 }, F = {};
             // 4 runs with no calls whose ids sort first, then 8 with calls
             for (let i = 0; i < 12; i++) {
               const busy = i >= 4, id = (busy ? "b" : "0") + i.toString(16) + "c0ffee".repeat(5), a = { session: id, sub: false, first: 0, last: 100,

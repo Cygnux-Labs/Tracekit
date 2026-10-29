@@ -4304,9 +4304,20 @@
     // a time axis: its step, at most `most` ticks (down to a millisecond in a v2 run), and a tick's words
     const tickStep = (span, most = 10) => [...(V2 ? [.001, .002, .005, .01, .02, .05, .1, .2, .5] : []), 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].find(s => span / s <= most) || 3600;
     const tickText = (t, step) => step < 1 ? fmtT(t) + "." + String(Math.round(t * 1000) % 1000).padStart(3, "0") : fmtT(t);
-    let laneHits = [];
+    let laneHits = [], laneKey = [], laneAt = 0;
     function renderLanes() {
       const cv = $("lanes"), wrap = $("lanewrap"), dpr = window.devicePixelRatio || 1, top = 16;
+      // v2 lanes have no "now" line: drawn again only when what they show changed (S takes every record in scope), and
+      // records arriving are drawn at most once a second (the live tick draws the last of them); a filter, the
+      // selection, a replay step, the panel's size or scroll and the theme are drawn at once
+      const view = [R, rpos, selected, F.agent, F.tool, F.file, F.flag, F.find, F.kind, wrap.clientWidth,
+        wrap.clientHeight, wrap.scrollTop, dpr, css("--panel"), mode, V2], key = [S, S.recs.length, ...view];
+      if (V2 || mode !== "live") {
+        if (key.every((x, i) => x === laneKey[i])) return;
+        const recsOnly = key[0] === laneKey[0] && view.every((x, i) => x === laneKey[i + 2]);
+        if (recsOnly && performance.now() - laneAt < 1000) return;
+      }
+      laneKey = key; laneAt = performance.now();
       // the runs with calls first, then those with none; more lanes than room: the panel scrolls, every run reachable
       const busy = new Set([...S.agents.values()].filter(a => a.actions).map(a => a.session));
       const agents = [...S.agents.values()].filter(agentMatch).sort((x, y) => busy.has(y.session) - busy.has(x.session) || x.session.localeCompare(y.session) || (x.sub - y.sub) || (x.first - y.first));
