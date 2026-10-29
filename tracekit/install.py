@@ -1090,10 +1090,14 @@ def install_managed(proxy_url=None, managed_only=False, path=None, python=None, 
     readable by every user (Claude Code starts without a managed file it can't read). managed_only additionally sets
     allowManagedHooksOnly (user/project hooks stop running); without it, or with uninstall (which takes the hooks out),
     allowManagedHooksOnly goes only if init set it. kw: install_hooks' (v2: module, signer, thinking). Returns the
-    file's THINKING setting."""
-    return install_hooks(path or MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"], uninstall,
-                         proxy_url=proxy_url, extra={"allowManagedHooksOnly": managed_only}, mode=0o644,
-                         python=python, **kw)
+    file's THINKING setting. The folder it makes for the file is 0755 whatever root's umask (027 left it 0750: no other
+    user could read the hooks); an admin's own folder stays as it is, and doctor checks it (D-HOOKS-MANAGED)."""
+    path = path or MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    if not uninstall and not kw.get("dry_run") and not os.path.isdir(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(path))
+        os.chmod(os.path.dirname(path), 0o755)
+    return install_hooks(path, uninstall, proxy_url=proxy_url, extra={"allowManagedHooksOnly": managed_only},
+                         mode=0o644, python=python, **kw)
 
 
 def _write_system_client_config(cfg):
@@ -1595,6 +1599,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                   f"Code on this machine, not only {target_user}'s."
                   + (" allowManagedHooksOnly is on: every user's own hooks (user, project, local, plugin) stop running."
                      if managed_only else "")
+                  + (" Thinking summaries are on in every user's Claude Code too (--no-thinking-summaries leaves them "
+                     "alone)." if thinking and on is True else "")
                   + f" A server-managed or MDM Claude Code policy would replace this file: in {target_user}'s Claude "
                   f"Code, /status must list `Enterprise managed settings (file)` "
                   f"({wiki_url('docs/deploy.md', 'laptop-system-mode')})")

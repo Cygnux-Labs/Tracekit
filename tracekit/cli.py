@@ -688,7 +688,7 @@ def _run(a):
         return 0 if r.get("ok") else 1
     if a.cmd == "approvals":
         return _approvals(a)
-    if a.cmd == "export" and (a.v2 or a.data_dir or a.config or a.run_set or a.tenant):   # each names a v2 store
+    if a.cmd == "export" and (a.v2 or a.dev or a.data_dir or a.config or a.run_set or a.tenant):   # each names a v2 store
         return _export_v2(a)
     if a.cmd == "last":
         return _last(a)

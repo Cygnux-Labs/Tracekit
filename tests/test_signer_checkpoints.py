@@ -342,6 +342,9 @@ class ExportWithoutSigner(unittest.TestCase):
         self.assertEqual(str(got.exception), f"no v1 records in {os.path.join(v1, 'ledger', 'ledger.jsonl')}: a v2 "
                          "signer's runs export with tracekit export --v2 --run RUN_ID (tracekit last exports and verifies "
                          "the newest)")
+        with mock.patch("tracekit.cli._export_v2", return_value=0) as v2:   # --dev names the dev signer's v2 store too
+            self.assertEqual(run_cli("export", "--dev", "--run", "run-1", "-o", out)[0], 0)
+        v2.assert_called_once()
         nope = os.path.join(self.dir, "nope")
         self.assertEqual(run_cli("export", "--v2", "--run", "run-1", "--data-dir", nope, "-o", out)[::2],
                          (1, f"tracekit export: no signer data dir at {nope}\n"))

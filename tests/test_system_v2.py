@@ -405,6 +405,7 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertIn("admin-managed hooks: agent can't edit or turn them off, and they run in every user's Claude Code",
                       out)
         self.assertIn("allowManagedHooksOnly is on: every user's own hooks (user, project, local, plugin) stop", out)
+        self.assertIn("Thinking summaries are on in every user's Claude Code too", out)   # the notice said hooks only
         self.uninstall_real(sc)
         self.assertEqual(self.read(self.managed), admin)
         self.assertEqual(stat.S_IMODE(os.stat(self.managed).st_mode), 0o644)
@@ -653,6 +654,18 @@ class HookEnv(unittest.TestCase):
                 install.install_managed(None, True, path, uninstall=True)
             with open(path) as f:
                 self.assertEqual(json.load(f), admin)
+
+    def test_a_managed_settings_folder_it_makes_is_readable_by_every_user_whatever_the_umask(self):
+        # under a hardened root umask (027) the folder was 0750: the agent's Claude Code could not read the hooks
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "claude-code", "managed-settings.json")
+        old = os.umask(0o027)
+        try:
+            install.install_managed(None, False, path, module=install.V2_HOOK)
+        finally:
+            os.umask(old)
+        self.assertEqual((os.stat(os.path.dirname(path)).st_mode & 0o777, os.stat(path).st_mode & 0o777), (0o755, 0o644))
 
 
 class SystemSigner(unittest.TestCase):
