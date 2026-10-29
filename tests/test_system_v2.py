@@ -406,9 +406,18 @@ class InstallAndUninstall(unittest.TestCase):
                       out)
         self.assertIn("allowManagedHooksOnly is on: every user's own hooks (user, project, local, plugin) stop", out)
         self.assertIn("Thinking summaries are on in every user's Claude Code too", out)   # the notice said hooks only
+        self.assertNotIn("Warning:", out)
         self.uninstall_real(sc)
         self.assertEqual(self.read(self.managed), admin)
         self.assertEqual(stat.S_IMODE(os.stat(self.managed).st_mode), 0o644)
+
+    def test_init_warns_when_an_admins_managed_folder_is_closed_to_other_users(self):
+        # an existing folder is left as it is (an admin's own): at 0750 the agent's Claude Code can't read the hooks
+        self.managed_setup({})
+        os.chmod(os.path.dirname(self.managed), 0o750)
+        out = self.init_real({}, managed=True)[3]
+        self.assertIn(f"Warning: {os.path.dirname(self.managed)} isn't open to every user, so agent's Claude Code can't "
+                      f"read the hooks: chmod 755 {os.path.dirname(self.managed)}", out)
 
     def test_init_moves_the_hooks_into_and_out_of_the_admin_settings(self):
         """Re-running init with --managed (or without it) left the hooks in the other file too: Claude Code ran both,

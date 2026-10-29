@@ -76,7 +76,8 @@ it, the agent sends the same call again, under a new tool call id, and that call
    - was asked under the same policy, for every rule the retry's decision names: a live constraint or a hold added
      since asks again;
    - is not older than a no: when the latest answer to the same call was a reject or a revoke (of another of its
-     approvals), an earlier yes isn't used;
+     approvals), an earlier yes isn't used by a retry (a call decided again under its own id and attempt, as an SDK may
+     do, still uses its own approval once);
    - is `approved`, by a person or an agent approver under [who may answer](#who-may-answer), and not yet consumed. A
      `requested`, `rejected`, revoked, `expired` or abandoned approval is never used, nor one past its `expires_at`
      (or an agent approval past its `consume_by`), nor one whose blocked call ran anyway (its result is recorded: the

@@ -1601,6 +1601,9 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                      if managed_only else "")
                   + (" Thinking summaries are on in every user's Claude Code too (--no-thinking-summaries leaves them "
                      "alone)." if thinking and on is True else "")
+                  + (f" Warning: {os.path.dirname(settings)} isn't open to every user, so {target_user}'s Claude Code "
+                     f"can't read the hooks: chmod 755 {os.path.dirname(settings)}"
+                     if os.stat(os.path.dirname(settings)).st_mode & 0o005 != 0o005 else "")
                   + f" A server-managed or MDM Claude Code policy would replace this file: in {target_user}'s Claude "
                   f"Code, /status must list `Enterprise managed settings (file)` "
                   f"({wiki_url('docs/deploy.md', 'laptop-system-mode')})")
