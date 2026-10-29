@@ -3931,7 +3931,7 @@
       visit(D.top || Object.keys(D.places));
       // taken, so no callout covers them: the HUD's readouts, which sit over the stage, and the rings' names, upper left;
       // then the open folders' names
-      const placed = [...cv.parentNode.querySelectorAll(".hzhud")].map(h => [h.offsetLeft, h.offsetTop, h.offsetLeft + h.offsetWidth, h.offsetTop + h.offsetHeight]);
+      const placed = [...cv.parentNode.querySelectorAll(".hzhud")].map(h => [h.offsetLeft, h.offsetTop, h.offsetLeft + h.offsetWidth, h.offsetTop + h.offsetHeight]), hud = [...placed];
       const box = (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
       x.font = font(600, 9); x.textAlign = "left"; x.letterSpacing = "2.5px";
       const dots = nodes.concat(opened).map(k => [...pt(k), D.folds?.[k] ? D.folds[k].rho * R4 * K + 9 : 9]).filter(p => on(p, 0)), hits = a => 99 * placed.filter(b => box(a, b)).length
@@ -4076,10 +4076,14 @@
           }
           if (best) break;
         }
-        if (!best) {   // no free room: left out, but for the picked place; hover names it, a click lists it
+        if (!best) {   // no free room: left out, but for the picked place, on the stage and off the readouts if it can be
           if (HZ.pick !== b.k) continue;
-          const ey = b.py + pref * (b.gap + 10), x0 = Math.max(6, Math.min(cw - 6 - b.w, side0 > 0 ? b.px + 11 : b.px - 11 - b.w));
-          best = { box: [x0, ey - 10, x0 + b.w, ey + b.h + 3], ey, dy: pref, sd: side0, ax: b.px, gap: b.gap };
+          const at = (dy, sd) => {   // its rows run from ey the way dy points, as they are drawn
+            const ey = b.py + dy * (b.gap + 10), x0 = Math.max(6, Math.min(cw - 6 - b.w, sd > 0 ? b.px + 11 : b.px - 11 - b.w));
+            return { box: [x0, dy < 0 ? ey - b.h - 10 : ey - 10, x0 + b.w, dy < 0 ? ey + 3 : ey + b.h + 3], ey, dy, sd, ax: b.px, gap: b.gap };
+          };
+          const all = [at(pref, side0), at(pref, -side0), at(-pref, side0), at(-pref, -side0)];
+          best = all.find(c => c.box[1] >= 4 && c.box[3] <= ch - 4 && !hud.some(h => box(c.box, h))) || all.find(c => !hud.some(h => box(c.box, h))) || all[0];
         }
         placed.push(best.box);
         const { ey, dy, sd, ax, gap } = best, tx = sd > 0 ? best.box[0] : best.box[2];

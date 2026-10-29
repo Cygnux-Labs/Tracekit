@@ -1775,6 +1775,33 @@ class HorizonZoom(unittest.TestCase):
             process.stdout.write(JSON.stringify([again, n - again, Object.keys(hzD.places).includes("~/T/new.py")]));""")
         self.assertEqual(out, [0, 1, True])
 
+    def test_a_picked_place_with_no_room_keeps_its_callout_on_its_plate_and_off_the_readouts(self):
+        """Tapping .env on a phone: with no free room the callout's box was laid out downward while its rows were drawn
+        upward, so its dark plate covered the map and its words sat bare over RESTRICTED, HOLDS and CHAIN."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], self.STAGE + """
+            const plates = [];
+            const fill = ctx.fillRect;
+            ctx.fillRect = function (x, y, w, h) { if (/0\\.78\\)$/.test(this.fillStyle)) plates.push([x, y, x + w, y + h]); };
+            const hud = { offsetLeft: 230, offsetTop: 10, offsetWidth: 150, offsetHeight: 120 };
+            cv.parentNode.querySelectorAll = () => [hud];
+            const cw = 390, ch = 600, R4 = Math.min(ch * .45, cw * .46), at = (sx, sy) => { const u = (sx - cw / 2) / R4, v = (sy - ch / 2) / (R4 * .6); return { r: Math.hypot(u, v), th: Math.atan2(v, u) }; };
+            const places = dict(), ev = [];
+            for (let sx = 8; sx < cw; sx += 16) for (let sy = 8; sy < ch; sy += 16) places["g" + sx + "_" + sy] = { kind: "machine", label: "g", rest: null, ...at(sx, sy) };
+            places.env = { kind: "project", label: ".env", rest: "TK-F005 · secrets_access", ...at(300, 150) };
+            for (const [n, ag, act] of [[1, "a1", "read"], [2, "a2", "blocked"], [3, "a3", "held"], [4, "a4", "read"]]) ev.push({ t: n, seq: n, ag, at: "env", act, gr: "signed", run: "r1", w: "" });
+            HZ.d = { ev, dirs: [], agents: [["a1", 0], ["a2", 0], ["a3", 0], ["a4", 0]], cwd: "", places };
+            Object.assign(HZ, { t: ev.length, col: dict(["a1", "a2", "a3", "a4"].map(a => [a, "#d98bff"])), pick: "env" });
+            draw(cw);
+            const words = texts.filter(t => /10\\.5px|9\\.5px/.test(t[3])).map(([t, x, y]) => [t, x, y]);
+            process.stdout.write(JSON.stringify({ words, plates }));"""))
+        hud = [230, 10, 380, 130]
+        plate = next(p for p in out["plates"] if any(p[0] - 1 <= x <= p[2] + 1 and p[1] <= y <= p[3] for t, x, y in out["words"] if t == ".env"))
+        self.assertEqual(out["words"][0][0], ".env")
+        self.assertEqual(len(out["words"]), 6)   # its name, RESTRICTED, three of its agents and +1 more
+        self.assertTrue(all(plate[1] - 1 <= y <= plate[3] + 1 for _, _, y in out["words"]), (plate, out["words"]))   # on its plate
+        self.assertFalse(plate[0] < hud[2] and plate[2] > hud[0] and plate[1] < hud[3] and plate[3] > hud[1], plate)   # off the readouts
+
     def test_a_comet_whose_place_left_the_stage_asks_for_no_more_frames(self):
         """A replayed move's comet whose place had left the newest moves (500 newer calls arrived) was never cleared: an
         idle stage asked for every animation frame, 100% of a core."""
