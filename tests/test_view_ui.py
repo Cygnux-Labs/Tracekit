@@ -597,7 +597,7 @@ class Span(unittest.TestCase):
                         actList: [held("requested", "approve"), held("approve", "expired"), held("reject"), held()] };
             S.actList.push({ v2: ask, flags: [], approvals: [{ v2: { approval: "consumed" } }], retryOf: S.actList[0] });   // its retry
             const document = { URL: "http://127.0.0.1/" }, nowTs = () => 1, highCount = () => 0, chainState = { n: 9 };
-            let V2 = true, scope = null, SOURCE = "", lastCounts = {};
+            let V2 = true, scope = null, SOURCE = "", lastCounts = {}, PAGE = "desk";
             const tile = k => new RegExp(`<b>${k}</b><i class="[^"]*">([^<]*)<`).exec(html.ticker)[1];
             renderTicker(); process.stdout.write(JSON.stringify([tile("HELD"), tile("APPROVED")]));"""))
         self.assertEqual(out, ["4", "1"])
