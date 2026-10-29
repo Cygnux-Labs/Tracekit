@@ -26,6 +26,8 @@ export const asText = (rep: Report, code: number) => formatReport(rep) + `\nExit
   + (code === EXIT_OK && rep.warnings.length ? ` (3 with --strict: ${rep.warnings.length} warning(s))` : "") + ".\n";
 
 const failed = (rep: Report, name: string) => rep.checks.find((c) => c.check === name && c.status === "fail");
+/** Only the witness quorum failed: too few of the witnesses the trust file pins cosigned; the records verified. */
+const quorumOnly = (rep: Report) => rep.failures.length === 1 && failed(rep, "witness quorum");
 const anchored = (rep: Report) => !rep.checks.some((c) => c.check === "trust config" && c.status === "warn");
 const v1 = (rep: Report) => rep.checks.some((c) => c.check === "bundle readable"
   && c.problems.some((p) => p.startsWith("a format v1 bundle")));
@@ -54,6 +56,12 @@ export function verdict(rep: Report, code: number): Verdict {
       return { word: "FAILED", means: "This bundle is not signed by the signer your trust file names, or its checkpoint "
         + "was changed.", notMeans: "It doesn't say who made the bundle. If the trust file is the right one, don't rely "
         + "on the bundle." };
+    const quorum = quorumOnly(rep);
+    if (quorum)
+      return { word: "FAILED", means: `Too few of the witnesses your trust file pins cosigned this bundle's checkpoint `
+        + `(${clean(quorum.detail)}). Nothing else failed.`,
+      notMeans: "It doesn't mean the contents were changed: a witness name or key in your trust file other than the "
+        + "one the witness cosigns with reads the same." };
     return { word: "FAILED", means: "This bundle doesn't match what was signed: something in it was changed, removed or "
       + `added after signing. Failed: ${rep.failures.join(", ")}.`,
     notMeans: "It doesn't say who changed it or why: the failed lines below show what doesn't match." };
@@ -108,6 +116,10 @@ export function nextSteps(rep: Report, code: number, names: Names): Step[] {
     if (failed(rep, "checkpoint") && anchored(rep))
       steps.push({ text: `Make sure the trust file is ${TRUST_FILE.replace("the sender's", "the sender's own")}. With `
         + "the right one, this bundle isn't theirs: don't rely on it." });
+    else if (quorumOnly(rep))
+      steps.push({ text: "Check the witness names and keys in your trust file: each must be the name and key the "
+        + "witness cosigns with. If they are, ask the sender for a copy exported after the witnesses you require "
+        + "cosigned." });
     else
       steps.push({ text: "Don't rely on this bundle's contents. Ask the sender for the original and compare its SHA-256 "
         + "with theirs:", command: `shasum -a 256 ${b}` });

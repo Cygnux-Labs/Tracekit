@@ -4,6 +4,7 @@ with a gap, with an approval, one never completed, a run-set; and mutated copies
 both, which must agree on integrity, assurance, exit code and every check's name and status. Skipped without Node >= 20 or a TypeScript build
 (`make test-ts` builds it; the TypeScript suite runs this file too)."""
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -23,7 +24,7 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
 from factories import damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
-from tracekit import crypto, gateway  # noqa: E402
+from tracekit import cli, crypto, gateway  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
@@ -634,25 +635,38 @@ class Agreement(unittest.TestCase):
                 self.assertIn("1 pinned cosignature(s), 1 required", [c["detail"] for c in rep.checks])
 
     def test_a_damaged_bundle_and_an_unusable_trust_file_read_the_same_in_both(self):
-        """An entry that no longer matches its CRC-32, and a trust file pinning a key that is no vkey: both verifiers
-        print the same lines, in plain words (the bundle file is damaged; the trust file's own problem), with no
-        exception's name, and keep exit 2."""
-        bad = os.path.join(self.d, f"damaged-{uuid.uuid4().hex}.tkb")
+        """An entry that no longer matches its CRC-32, a file cut short or with no manifest, a trust file pinning a key
+        that is no vkey, and one that isn't there: both verifiers, and both CLIs, print the same lines, in plain words
+        (the bundle file is damaged; the trust file's own problem), with no exception's name, and keep exit 2."""
+        bad, cut = (os.path.join(self.d, f"{n}-{uuid.uuid4().hex}.tkb") for n in ("damaged", "cut"))
         damage_crc(self.bundles["closed"], bad)
-        trust = os.path.join(self.d, f"trust-{uuid.uuid4().hex}.json")
+        with open(self.bundles["closed"], "rb") as f, open(cut, "wb") as w:
+            w.write(f.read()[:-100])
+        trust, missing = (os.path.join(self.d, f"{n}-{uuid.uuid4().hex}.json") for n in ("trust", "missing"))
         with open(trust, "w") as f:
             json.dump({"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}, f)
+        negative = os.path.join(TESTS, "golden", "negative")
         for bundle, t, integrity, said in (
                 (bad, self.trusts["witnessed"], "UNUSABLE BUNDLE", "cannot read bundle: the bundle file is damaged: "
                                                                    "Bad CRC-32 for file 'runs/"),
+                (cut, self.trusts["witnessed"], "UNUSABLE BUNDLE", "cannot read bundle: the bundle file is damaged: "
+                                                                   "not a zip file"),
+                (os.path.join(negative, "zip-no-manifest.tkb"), os.path.join(negative, "trust.json"), "UNUSABLE BUNDLE",
+                 "cannot read bundle: the bundle file is damaged: no manifest.json"),
                 (self.bundles["closed"], trust, "UNVERIFIABLE (the trust file can't be used)",
-                 "pinned key 'x+00000000+AA==' is not a vkey: ")):
-            with self.subTest(integrity):
+                 "pinned key 'x+00000000+AA==' is not a vkey: "),
+                (self.bundles["closed"], missing, "UNVERIFIABLE (the trust file can't be used)",
+                 f"{missing}: No such file or directory")):
+            with self.subTest(os.path.basename(bundle), trust=os.path.basename(t)):
                 code, rep = self.agree(bundle, t)
                 self.assertEqual((code, rep.integrity), (2, integrity))
                 self.assertEqual(ts_verify(bundle, t)["checks"], rep.checks)
                 self.assertTrue(rep.checks[0]["detail"].startswith(said), rep.checks)
-                self.assertNotRegex(ts_cli(bundle, t)[1], r"Error\b|BadZipFile")
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    py = cli.main(["verify", bundle, "--trust", t])
+                self.assertEqual(ts_cli(bundle, t), (py, out.getvalue()))
+                self.assertNotRegex(out.getvalue(), r"Error\b|BadZipFile")
 
     def test_a_bundle_for_a_newer_verifier_says_how_to_verify_it(self):
         bundle, trust = self.mutate(edit=lambda files, m: m.update(verifier_min_version="9.0")), self.trusts["witnessed"]

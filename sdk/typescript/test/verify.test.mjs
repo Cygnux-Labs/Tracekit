@@ -459,6 +459,51 @@ test("a failed line's meaning says what the failure means, never that the check 
   assert.doesNotMatch(said, /no record was edited/);
 });
 
+test("a witness quorum failure says too few pinned witnesses cosigned, not that the bundle was changed", async () => {
+  const trust = (p, o) => bytes(JSON.stringify({ ...JSON.parse(readFileSync(join(ROOT, p), "utf8")), ...o }));
+  const names = { bundle: "closed.tkb", trust: "trust.json" };
+  const { report, code } = await verify(file("tests/golden/v2/closed.tkb"),
+    trust("tests/golden/v2/trust.json", { witnesses_required: 2 }), names);
+  assert.deepEqual([code, report.failures], [1, ["witness quorum"]]);
+  const v = verdict(report, code), steps = nextSteps(report, code, names);
+  assert.deepEqual([v.word, v.means], ["FAILED", "Too few of the witnesses your trust file pins cosigned this bundle's "
+    + "checkpoint (1 pinned cosignature(s), 2 required). Nothing else failed."]);
+  assert.match(v.notMeans, /^It doesn't mean the contents were changed: a witness name or key in your trust file/);
+  assert.match(steps[0].text, /^Check the witness names and keys in your trust file/);
+  assert.doesNotMatch(JSON.stringify([v, steps]), /changed, removed or added|Don't rely on this bundle's contents/);
+  // a changed record as well: the bundle doesn't match what was signed
+  const both = await verify(file("tests/golden/negative/record-edited.tkb"),
+    trust("tests/golden/negative/trust.json", { witnesses_required: 2 }));
+  assert.deepEqual(both.report.failures.sort(), ["signatures", "witness quorum"]);
+  assert.match(verdict(both.report, both.code).means, /^This bundle doesn't match what was signed/);
+});
+
+test("a damaged bundle says so, and the CLI reports a file it can't read as the reference verifier does", async () => {
+  const trust = file("tests/golden/v2/trust.json"), closed = file("tests/golden/v2/closed.tkb");
+  const uninflatable = zip([{ name: "manifest.json", data: "{}", method: 8 }]);
+  uninflatable[30 + "manifest.json".length] = 0xff;   // a reserved deflate block type
+  for (const [bundle, said] of [[Uint8Array.of(1, 2, 3), "not a zip file, or bytes after its end record"],
+    [closed.subarray(0, closed.length >> 1), "not a zip file, or bytes after its end record"],
+    [zip([{ name: "a", data: "x" }]), "no manifest.json"]]) {
+    const { report, code } = await verify(bundle, trust);
+    assert.deepEqual([code, report.integrity, report.checks[0].detail],
+      [2, "UNUSABLE BUNDLE", `cannot read bundle: the bundle file is damaged: ${said}`]);
+  }
+  assert.match((await verify(uninflatable, trust)).report.checks[0].detail,
+    /^cannot read bundle: the bundle file is damaged: manifest\.json does not inflate(: .+)?$/);
+  const missing = join(mkdtempSync(join(tmpdir(), "tk-verify-")), "missing.json");
+  const cli = (...args) => spawnSync(process.execPath, [join(ROOT, "sdk/typescript/bin/tracekit.mjs"), "verify", ...args],
+    { encoding: "utf8" });
+  for (const [args, out] of [
+    [[join(ROOT, "tests/golden/v2/closed.tkb"), "--trust", missing], `[FAIL] trust config — ${missing}: No such file or `
+      + "directory\n\nIntegrity: UNVERIFIABLE (the trust file can't be used).\nAssurance: none.\n"],
+    [[missing, "--trust", join(ROOT, "tests/golden/v2/trust.json")], `[FAIL] bundle readable — cannot read bundle: `
+      + `${missing}: No such file or directory\n\nIntegrity: UNUSABLE BUNDLE.\nAssurance: none.\n`]]) {
+    const r = cli(...args);
+    assert.deepEqual([r.status, r.stdout, r.stderr], [2, out, ""]);
+  }
+});
+
 test("the CLI sends what it doesn't support to the reference verifier by its PyPI name, tracekit-ai", async () => {
   const { main } = await import("../dist/verify/cli.js");
   const said = [], error = console.error;

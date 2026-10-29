@@ -34,6 +34,8 @@ export const VERSION = "1.5.1";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
+/** The integrity of a trust config that can't be used: nothing in the bundle was checked. */
+export const TRUST_UNUSABLE = "UNVERIFIABLE (the trust file can't be used)";
 const FORMAT = "tracekit.bundle.v2";
 const MAX_LINE = 1 << 20;
 const MIN_RECORD = 256;   // no signed record's line is shorter: its hash, signature, ids and timestamp alone are longer
@@ -251,7 +253,7 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
   } else try {
     t = await loadTrust(trust, names.trust);
   } catch (e) {
-    rep.integrity = "UNVERIFIABLE (the trust file can't be used)";
+    rep.integrity = TRUST_UNUSABLE;
     rep.check("trust config", false, e instanceof StrictJSONError ? `not valid JSON (${e.message})`
       : e instanceof ValueError || e instanceof NoteError ? e.message : errorText(e));
     return { report: rep, code: EXIT_BAD };
@@ -260,7 +262,7 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
   try {
     files = await readZip(bundle);
     const m = files.get("manifest.json");
-    if (!m) throw new KeyError(repr("manifest.json"));
+    if (!m) throw new BadZipFile("no manifest.json");
     files.delete("manifest.json");
     manifest = strictParseBytes(m, floats);
     v1 = isObj(manifest) && manifest.format === "tracekit.bundle.v1";
