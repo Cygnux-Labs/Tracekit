@@ -1,5 +1,5 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid and Antigravity CLI, on the Claude
-Code pipeline.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid, Antigravity CLI and Crush, on the
+Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -9,6 +9,7 @@ Code pipeline.
     tracekit init --dev --agent qwen         # ~/.qwen/settings.json
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
     tracekit init --dev --agent antigravity  # ~/.gemini/config/hooks.json (project: .agents/hooks.json)
+    tracekit init --dev --agent crush        # ~/.config/crush/crush.json (project: crush.json)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -37,6 +38,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
             WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
+    Crush   bash, view, write, edit, multiedit, ls, grep, glob, fetch, download, mcp_<server>_<tool>
+            -> Bash, Read, Write, Edit, Edit, LS, Grep, Glob, WebFetch, WebFetch, unchanged (Crush's own names are
+            lower case; `path` becomes `file_path` for the file tools, and its payload is Claude Code's shape)
 
 What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
@@ -57,9 +61,9 @@ from .core import canon
 from .locking import lock_file, unlock_file
 from .policy2.classes import PATH_KEYS, first
 
-HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid", "antigravity")
+HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid", "antigravity", "crush")
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
-               "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity"}
+               "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush"}
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
@@ -101,6 +105,11 @@ AGY_ARGS = {"run_command": {"command": "CommandLine", "dangerouslyDisableSandbox
             "grep_search": {"file_path": "SearchPath", "pattern": "Query"}, "read_url_content": {"url": "Url"}}
 AGY_HOOK = "tracekit"   # the name Tracekit's hook has in agy's hooks.json, which maps each hook's name to its events
 AGY_EVENTS = ("PreToolUse", "PostToolUse")
+# Crush's built-in tools (internal/agent/tools/*.go): its payload and event names are Claude Code's, its tool names are
+# lower case, and its file tools already send `file_path`; ls, grep and glob send `path`.
+CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit", "multiedit": "Edit", "ls": "LS",
+               "grep": "Grep", "glob": "Glob", "fetch": "WebFetch", "download": "WebFetch"}
+CRUSH_PATH_ARG = ("path",)   # ls, grep and glob: the directory they read
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -226,6 +235,12 @@ def tool(harness, name, ti):
             return "Bash", ti
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
         return AGY_TOOLS.get(name, name), ti
+    if harness == "crush":
+        if "file_path" not in ti:
+            for k in CRUSH_PATH_ARG:
+                if k in ti:
+                    ti["file_path"] = ti[k]
+        return CRUSH_TOOLS.get(name, name), ti
     return name, ti
 
 
@@ -274,11 +289,12 @@ def normalise(harness, p):
     ev = p.get("hook_event_name") or ""
     out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
-    if harness in ("codex", "qwen", "droid"):   # Claude Code's payloads; Qwen Code adds PostToolUseFailure
+    if harness in ("codex", "qwen", "droid", "crush"):   # Claude Code's payloads; Qwen Code and Crush add
+        # PostToolUseFailure (Crush's payload is Claude Code's own: same field and event names)
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
              "SessionStart": "SessionStart", "SessionEnd": "SessionEnd"}
-        if harness == "qwen":
+        if harness in ("qwen", "crush"):
             m["PostToolUseFailure"] = "PostToolUseFailure"
         if ev not in m:
             return None
@@ -507,7 +523,12 @@ def config_path(harness, project=None, home=None):
                            os.path.join(base, ".gemini", "config", "hooks.json"),
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
                         os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
-                                     os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js")}[harness]
+                                     os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js"),
+            # Crush reads ./crush.json in a project and $XDG_CONFIG_HOME/crush/crush.json (Windows:
+            # %USERPROFILE%\.config\crush\crush.json) otherwise; the legacy JSON is still read beside its crushrc
+            "crush": os.path.join(base, "crush.json") if project else
+                     os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
+                                  os.path.join(base, ".config"), "crush", "crush.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -791,6 +812,67 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
     return path
 
 
+CRUSH_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure", "SessionStart", "SessionEnd")
+
+
+def _install_crush(path, uninstall=False, v2=False, python=None):
+    """Install Tracekit's hooks in Crush's JSON config. Each event is a flat list of
+    {name, command, timeout} entries (no nested `hooks` array), and no matcher: it matches every tool, and Crush
+    rejects a matcher on an event that carries no tool name. A person's hooks are kept."""
+    from .install import SettingsError, _atomic_write_json, _backup_changed, _hook_command
+    path = os.path.abspath(path)
+    if uninstall and not os.path.exists(path):
+        return path
+    if not uninstall:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    s, txt = {}, None
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                txt = f.read()
+            s = json.loads(txt) if txt.strip() else {}
+        except (OSError, ValueError) as e:
+            raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
+        if not isinstance(s, dict):
+            raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
+    hooks = s.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
+    new, removed = "v2" if v2 else "v1", set()
+
+    def ours(cmds):
+        vs = {_version(c) for c in cmds} - {None}
+        removed.update(vs)
+        return bool(vs)
+
+    def cmd(ev):
+        return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
+                             ("crush", ev) if v2 else ("crush",), python, ev == "PreToolUse")
+    for ev in CRUSH_EVENTS:
+        lst = hooks.get(ev)
+        if lst is not None and not isinstance(lst, list):
+            raise SettingsError(f"hooks.{ev} in {path} must be a list; Tracekit did not change it.")
+        kept = [h for h in (lst or []) if not (isinstance(h, dict) and ours([h.get("command")]))]
+        if not uninstall:
+            # seconds; 600 leaves a person time to approve a held call (Crush's default is 30)
+            kept.append({"name": "tracekit", "command": cmd(ev), "timeout": 600 if ev == "PreToolUse" else 30})
+        if kept:
+            hooks[ev] = kept
+        else:
+            hooks.pop(ev, None)
+    if hooks:
+        s["hooks"] = hooks
+    else:
+        s.pop("hooks", None)
+    changed = _backup_changed(path, txt, s)
+    if changed:
+        _atomic_write_json(path, s)
+    old = " and ".join(sorted(removed if uninstall else removed - {new}))
+    if old:
+        print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")
+    return path
+
+
 def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
     """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
@@ -800,6 +882,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         return _install_opencode(path, uninstall, v2, python)
     if harness == "goose":
         return _install_goose(path, uninstall, v2, python)
+    if harness == "crush":
+        return _install_crush(path, uninstall, v2, python)
     if harness == "droid" and uninstall and not os.path.exists(path):
         return path
     if harness == "droid" and not uninstall and not os.path.exists(path):
