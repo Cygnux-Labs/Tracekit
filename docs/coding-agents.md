@@ -30,15 +30,16 @@ tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's o
 ```
 
 **Codex runs these hooks only once you trust them.** Codex skips a hook that isn't managed until a person has reviewed
-and trusted it, and says nothing when it does: until then no Codex call is recorded or decided. After init, run `codex`
-in a terminal, type `/hooks`, and trust Tracekit's hooks; Codex asks again whenever they change, as after another
-init. Codex keeps that trust in your `~/.codex/config.toml` (`$CODEX_HOME/config.toml` when it is set; then init
-writes the hooks there too, and you run Codex with the same `CODEX_HOME`) as
-`[hooks.state."<hooks.json path>:<event>:<group>:<handler>"]` with a `trusted_hash`
+and trusted it as it is, so until then no Codex call is recorded or decided. Interactive `codex` asks at startup when a
+hook is new or changed; `codex exec`, or choosing to continue without trusting, skips it without a word. After init,
+run `codex` in a terminal and trust Tracekit's hooks (at its startup prompt, or type `/hooks`); Codex asks again
+whenever they change, as after another init. Codex keeps that trust in your `~/.codex/config.toml`
+(`$CODEX_HOME/config.toml` when it is set; then init writes the hooks there too, and you run Codex with the same
+`CODEX_HOME`) as `[hooks.state."<hooks.json path>:<event>:<group>:<handler>"]` with a `trusted_hash`
 ([Codex hooks](https://learn.chatgpt.com/docs/hooks)). Init ends by saying so, v1 and v2, and `tracekit doctor` checks
-that each of Tracekit's Codex hooks, v1 or v2, is trusted and not turned off (`D-CODEX-HOOK-TRUST`); it can't
-recompute Codex's hash, and with Python 3.9 or 3.10 it can't read the file, so it says it can't confirm
-([limits](limits.md#signer-and-capture)).
+that each of Tracekit's Codex hooks, v1 or v2, is trusted as it is now and not turned off (`D-CODEX-HOOK-TRUST`): it
+recomputes Codex's hash of each hook. For a hook with a setting Tracekit doesn't write, and with Python 3.9 or 3.10,
+which can't read the file, it says it can't confirm ([limits](limits.md#signer-and-capture)).
 
 For Codex, Cursor, Gemini CLI and Qwen Code the installer merges into existing settings: other hooks and settings are kept, a
 backup is written first, and running it twice changes nothing. For Droid it writes a standalone `.factory/hooks.json`; if

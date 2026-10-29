@@ -838,9 +838,12 @@ class CodexReasoningSummary(unittest.TestCase):
 
 class CodexHookTrust(unittest.TestCase):
     """Codex runs a hook that isn't managed only once a person trusted it in its /hooks browser, recorded in the user's
-    config.toml as [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash; one nobody trusted it
-    skips without a word. After init, Codex ran no Tracekit hook and nothing said why."""
-    EVENTS = ("pre_tool_use", "post_tool_use", "user_prompt_submit", "session_start", "session_end")
+    config.toml as [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash, Codex's hash of the hook as
+    it was then; one nobody trusted, or one that changed since, `codex exec` skips without a word. After init, Codex ran
+    no Tracekit hook and nothing said why."""
+    EVENTS = {"pre_tool_use": "PreToolUse", "post_tool_use": "PostToolUse", "user_prompt_submit": "UserPromptSubmit",
+              "session_start": "SessionStart", "session_end": "SessionEnd"}
+    SKIPS = "so no Codex call is decided or recorded (interactive codex asks at startup; `codex exec` doesn't)"
 
     def setUp(self):
         self.home = ac.tmpdir(self)
@@ -863,19 +866,92 @@ class CodexHookTrust(unittest.TestCase):
                 lines = self.init(*argv)
                 self.assertEqual(lines[-1], agent_hooks.codex_trust_line())
                 self.assertIn("type /hooks and trust Tracekit's hooks", lines[-1])
+                self.assertIn("Interactive codex also asks at startup whenever they are new or changed (as after "
+                              "tracekit init); `codex exec` never asks and skips them without a word", lines[-1])
         self.assertNotIn("/hooks", "\n".join(self.init("--v2", "--no-hooks")))   # no hooks, nothing to trust
         self.assertTrue(agent_hooks.codex_trust_line("agent").split(". ")[1].startswith("As agent, run codex"))
 
-    def row(self):
-        with contextlib.redirect_stdout(io.StringIO()):
-            agent_hooks.install("codex", v2=True)
+    def row(self, install=True):
+        if install:
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("codex", v2=True)
         return next(r for r in doctor.v2_checks({"data_dir": self.home}, "dev", harnesses={"codex": self.hooks})
                     if r["id"] == "D-CODEX-HOOK-TRUST")
 
     def trust(self, *events, **extra):
+        """Record trust as Codex does when a person trusts each event's hook as it is now (Codex's hash, which
+        test_doctor_hashes_each_hook_as_codex_does pins)."""
+        with open(self.hooks) as f:
+            hooks = json.load(f)["hooks"]
+
+        def digest(ev):
+            group = hooks[self.EVENTS[ev]][0]
+            return doctor._codex_hash(self.EVENTS[ev], group, group["hooks"][0])
         with open(self.toml, "w") as f:
-            f.write("".join(f"[hooks.state.'{self.hooks}:{ev}:0:0']\ntrusted_hash = \"sha256:{'0' * 64}\"\n"
+            f.write("".join(f"[hooks.state.'{self.hooks}:{ev}:0:0']\ntrusted_hash = \"{digest(ev)}\"\n"
                             + "".join(f"{k} = {v}\n" for k, v in extra.get(ev, {}).items()) for ev in events))
+
+    def test_doctor_hashes_each_hook_as_codex_does(self):
+        """Codex's own hashes: two from codex-rs's tests (core/tests/suite/hooks.rs), the rest from Codex 0.163's
+        hooks/list for hooks shaped as init writes them. A hook with a setting init doesn't write gets none."""
+        rs = "python3 -I -S ${PLUGIN_ROOT}/hooks/pre_tool_use_hook.py"
+        tk = "/usr/bin/python3 -I -m tracekit.integrations.harness_hooks codex "
+
+        def hook(cmd, **kw):
+            return {"type": "command", "command": cmd, **kw}
+        for ev, group, want in (
+                ("PreToolUse", {"matcher": "^Bash$", "hooks": [hook(rs)]},
+                 "c9ee1aca1b5d8c72b99df6571c87d61350b09f7f4594ae30e7250a2027e9d76b"),
+                ("PostToolUse", {"matcher": "^Bash$", "hooks": [hook(rs)]},
+                 "9eef43ad6f26b1f9b94f318a50445f8bb62c363da08152a2966b73d308bf42ba"),
+                ("PreToolUse", {"matcher": "*", "hooks": [hook(tk + "PreToolUse", timeout=600)]},
+                 "a65d609b0de3a20bf2708de1291e218b96599f0e3562a43fe7064c6d11be4eec"),
+                ("PostToolUse", {"matcher": "*", "hooks": [hook(tk + "PostToolUse", timeout=30)]},
+                 "ab07e5543a4ce5e575f18183b98b18600f6e28d0f90dcfd221e6365f20a04e75"),
+                ("UserPromptSubmit", {"matcher": "ignored", "hooks": [hook(tk + "UserPromptSubmit")]},   # no matcher
+                 "4ad10b12d5a7862c3e186c7bb81292974ae992561bfbc05ed2466e8c497f6316"),                   # here; 600 s
+                ("SessionStart", {"hooks": [hook(tk + "SessionStart", timeout=30)]},
+                 "f21927868a86dcef2bad57e2a78957ba96fad66b5b3e0d24520f4ba627536ad6"),
+                ("SessionEnd", {"hooks": [hook(tk + "SessionEnd", timeout=30)]},   # 3 s at most
+                 "edd7e25f39641c69f095dea107df5d30774161bd1e324858516932aeed09f7aa"),
+                ("Stop", {"hooks": [hook("tracekit.agent_hooks codex Stop", timeout=0)]},   # 1 s at least
+                 "ad6a49ed42d21af7433d8075af182dcabba46a59b7826e9d45228e35e2c032f4")):
+            with self.subTest(ev=ev, want=want):
+                self.assertEqual(doctor._codex_hash(ev, group, group["hooks"][0]), "sha256:" + want)
+        for odd in ({"statusMessage": "s"}, {"async": True}, {"timeout": 1.5}, {"type": "prompt"}):
+            self.assertIsNone(doctor._codex_hash("PreToolUse", {}, hook(tk, **odd)), odd)
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_doctor_says_when_the_hooks_changed_since_they_were_trusted(self):
+        """Trust recorded for an earlier version of the hooks, as after an init from another install (their command
+        names its Python): Codex marks them modified and skips them, and doctor said they were trusted."""
+        self.row()
+        self.trust(*self.EVENTS)
+        self.assertEqual(self.row()["status"], "ok")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codex", None, False, True, "/opt/other/bin/python3")
+        got = self.row(install=False)
+        self.assertEqual((got["status"], got["detail"]), (
+            "warn", "Codex skips Tracekit's PostToolUse, PreToolUse, SessionEnd, SessionStart, UserPromptSubmit hook(s) "
+                    f"in {self.hooks}: they changed since a person trusted them (the trust {self.toml} records is for an "
+                    f"earlier version of them, as after tracekit init), {self.SKIPS}"))
+        self.assertIn("type /hooks and trust Tracekit's hooks", got["fix"])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_doctor_doesnt_claim_trust_it_cant_check(self):
+        """A hook with a setting init doesn't write: doctor can't rebuild its hash, so it can't say the trust is for it."""
+        self.row()
+        self.trust(*self.EVENTS)
+        with open(self.hooks) as f:
+            cfg = json.load(f)
+        cfg["hooks"]["SessionEnd"][0]["hooks"][0]["statusMessage"] = "saving"
+        with open(self.hooks, "w") as f:
+            json.dump(cfg, f)
+        got = self.row(install=False)
+        self.assertEqual((got["status"], got["detail"]), (
+            "warn", f"Codex's trust is recorded for Tracekit's hooks in {self.hooks} ({self.toml}); doctor can't confirm "
+                    "it's for these exact hooks: the SessionEnd hook(s) have settings Tracekit doesn't write, whose "
+                    "hash doctor doesn't rebuild"))
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_doctor_says_whether_codex_trusts_the_hooks(self):
@@ -884,14 +960,14 @@ class CodexHookTrust(unittest.TestCase):
                                                                 f"Tracekit's hooks (from {self.hooks}); Codex asks again "
                                                                 "whenever they change, as after tracekit init"))
         self.assertEqual(got["detail"], "Codex skips Tracekit's PostToolUse, PreToolUse, SessionEnd, SessionStart, "
-                                        f"UserPromptSubmit hook(s) in {self.hooks}: nobody trusted them in Codex's "
-                                        f"/hooks ({self.toml} records no trust), so no Codex call is decided or "
-                                        "recorded, and Codex doesn't say so")
-        self.trust(*self.EVENTS[1:])
+                                        f"UserPromptSubmit hook(s) in {self.hooks}: nobody trusted them in Codex "
+                                        f"({self.toml} records no trust), {self.SKIPS}")
+        self.trust(*list(self.EVENTS)[1:])
         self.assertIn("Codex skips Tracekit's PreToolUse hook(s)", self.row()["detail"])
         self.trust(*self.EVENTS)
         self.assertEqual(self.row(), {"id": "D-CODEX-HOOK-TRUST", "status": "ok", "fix": "",
-                                      "detail": f"Codex trusts each of Tracekit's hooks in {self.hooks} ({self.toml})"})
+                                      "detail": f"Codex trusts each of Tracekit's hooks in {self.hooks} as they are now "
+                                                f"({self.toml})"})
         self.trust(*self.EVENTS, pre_tool_use={"enabled": "false"})
         got = self.row()
         self.assertEqual((got["status"], got["detail"]), (
@@ -910,7 +986,8 @@ class CodexHookTrust(unittest.TestCase):
         os.makedirs(cx)
         with mock.patch.dict(os.environ, {"CODEX_HOME": cx}):
             line = self.init("--v2")[-1]
-            self.hooks, self.toml = os.path.join(cx, "hooks.json"), os.path.join(cx, "config.toml")
+            real = os.path.realpath(cx)   # as Codex reads it
+            self.hooks, self.toml = os.path.join(real, "hooks.json"), os.path.join(real, "config.toml")
             self.assertTrue(os.path.exists(self.hooks))
             self.assertFalse(os.path.exists(os.path.join(self.home, ".codex", "hooks.json")))
             self.assertIn(f"Run codex with CODEX_HOME={cx} in a terminal, type /hooks and trust Tracekit's hooks (Codex "
@@ -918,6 +995,22 @@ class CodexHookTrust(unittest.TestCase):
             self.trust(*self.EVENTS)
             self.assertEqual(self.row()["status"], "ok")
         self.assertEqual(agent_hooks.codex_trust_store("/home/agent"), "/home/agent/.codex/config.toml")   # system mode
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    @unittest.skipIf(os.name == "nt", "a symlink needs a privilege on Windows")
+    def test_a_codex_home_symlink_is_read_by_its_real_path_as_codex_does(self):
+        """Codex resolves $CODEX_HOME to its real path and keys the hooks' trust by it: through a symlink init refused
+        to write, and doctor read the trust as missing for good."""
+        cx = os.path.join(self.home, "cx")
+        os.makedirs(cx)
+        link = os.path.join(self.home, "cxlink")
+        os.symlink(cx, link)
+        with mock.patch.dict(os.environ, {"CODEX_HOME": link}):
+            self.init("--v2")
+            self.hooks, self.toml = os.path.join(os.path.realpath(cx), "hooks.json"), os.path.join(cx, "config.toml")
+            self.assertEqual(agent_hooks.config_path("codex"), self.hooks)
+            self.trust(*self.EVENTS)
+            self.assertEqual(self.row()["status"], "ok")
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_doctor_checks_the_v1_hooks_trust_too(self):
@@ -930,22 +1023,33 @@ class CodexHookTrust(unittest.TestCase):
             cli.main(["doctor", "--json"])
         got = next(r for r in json.loads(out.getvalue()) if r["id"] == "D-CODEX-HOOK-TRUST")
         self.assertEqual(got["status"], "warn")
-        self.assertIn(f"hook(s) in {self.hooks}: nobody trusted them in Codex's /hooks", got["detail"])
+        self.assertIn(f"hook(s) in {self.hooks}: nobody trusted them in Codex (", got["detail"])
         self.trust(*self.EVENTS)
         with mock.patch.object(client, "system_config", return_value=None), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             cli.main(["doctor", "--json"])
         self.assertIn({"id": "D-CODEX-HOOK-TRUST", "status": "ok", "fix": "",
-                       "detail": f"Codex trusts each of Tracekit's hooks in {self.hooks} ({self.toml})"},
+                       "detail": f"Codex trusts each of Tracekit's hooks in {self.hooks} as they are now ({self.toml})"},
                       json.loads(out.getvalue()))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_doctor_from_home_checks_the_v1_hooks_once(self):
+        """From $HOME the user's ~/.codex and the project's .codex are one file: doctor warned about it twice."""
+        self.init()   # v1
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.home)
+        with mock.patch.object(client, "system_config", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            cli.main(["doctor", "--json"])
+        self.assertEqual([r["status"] for r in json.loads(out.getvalue()) if r["id"] == "D-CODEX-HOOK-TRUST"], ["warn"])
 
     def test_doctor_says_when_it_cant_tell(self):
         with mock.patch.dict(sys.modules, {"tomllib": None}):   # Python 3.9 and 3.10
             got = self.row()
         self.assertEqual(got["status"], "warn")
         self.assertRegex(got["detail"], r"^can't confirm that Codex trusts Tracekit's hooks in .+ \(Python 3\.11 or "
-                                        r"newer reads Codex's config\.toml, this is 3\.\d+\.\d+\): Codex skips a hook "
-                                        r"nobody trusted, without saying so$")
+                                        r"newer reads Codex's config\.toml, this is 3\.\d+\.\d+\): Codex runs a hook "
+                                        r"only once a person trusted it, and `codex exec` skips one without a word$")
         self.assertIn("type /hooks and trust Tracekit's hooks", got["fix"])
 
 

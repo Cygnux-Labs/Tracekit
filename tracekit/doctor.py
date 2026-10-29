@@ -9,6 +9,7 @@ Run it as root for system mode: it then probes the files as the agent's user, in
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
 import errno
+import hashlib
 import json
 import os
 import re
@@ -109,7 +110,10 @@ def collect(config=None, issuer_key=None):
                      gemini_settings=_gemini(os.path.expanduser("~"),
                                              os.path.join(os.getcwd(), ".gemini", "settings.json")))
     if "codex" not in harnesses:   # v1 Codex hooks (init --dev --agent codex) run only once trusted, as v2 ones do
-        for path in (agent_hooks.config_path("codex"), agent_hooks.config_path("codex", os.getcwd())):
+        paths = {}   # one file once: from $HOME the user's and the project's are the same
+        for p in (agent_hooks.config_path("codex"), agent_hooks.config_path("codex", os.getcwd())):
+            paths.setdefault(os.path.realpath(p), p)
+        for path in paths.values():
             try:
                 hooks = _harness_hooks("codex", _json(path) or {})
             except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
@@ -272,17 +276,38 @@ def _agy_runs(add, path, home, fix):
         bad=WARN)
 
 
+def _codex_hash(ev, group, hook):
+    """The trusted_hash Codex records for `hook`, in matcher group `group` of event `ev`, once a person trusts it as it
+    is now (codex-rs hooks engine/discovery.rs hook_hash: sha256 of the sorted-key JSON of the hook's normal form, its
+    event, its matcher where the event takes one, and its handler with Codex's default and clamped timeout); None for a
+    handler with a setting Tracekit doesn't write.
+    lean: rebuilds only the handler settings init writes (type, command, timeout), so a hook given async,
+    statusMessage, commandWindows or additionalContextLimit by hand reads as unconfirmed; rebuild those if people do"""
+    t = hook.get("timeout")
+    if set(hook) - {"type", "command", "timeout"} or hook.get("type") != "command" or \
+            not isinstance(hook.get("command"), str) or t is not None and (type(t) is not int or t < 0):
+        return None
+    end = ev in ("SessionEnd", "Interrupt")   # 1 s by default, 3 s at most
+    ident = {"event_name": re.sub(r"(?<!^)(?=[A-Z])", "_", ev).lower(), "hooks": [
+        {"type": "command", "command": hook["command"], "async": False,
+         "timeout": min(max(1 if t is None else t, 1), 3) if end else max(600 if t is None else t, 1)}]}
+    if group.get("matcher") is not None and ev not in ("UserPromptSubmit", "Stop", "Interrupt", "PreModelRequest",
+                                                       "PostModelRequest"):   # events whose matcher Codex drops
+        ident["matcher"] = group["matcher"]
+    return "sha256:" + hashlib.sha256(json.dumps(ident, sort_keys=True, separators=(",", ":"),
+                                                 ensure_ascii=False).encode()).hexdigest()
+
+
 def _codex_trust(add, path, hooks, home, bad):
     """D-CODEX-HOOK-TRUST: whether Codex runs Tracekit's hooks, v2 or v1, in `path` (a Codex hooks.json, read as
-    `hooks`). Codex runs a hook that isn't managed only once a person trusted it in its /hooks browser, and records that
-    in the user's config.toml ($CODEX_HOME's, else ~/.codex's; `home`: the agent user's, whose ~/.codex it is) as
-    [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash (and enabled = false for a hook turned off
-    there); one nobody trusted it skips, saying nothing (learn.chatgpt.com/docs/hooks; codex-rs/hooks hook_key and
-    engine/discovery.rs).
-    lean: checks that trust is recorded for each of Tracekit's hooks, not that the recorded hash is the hook's current
-    one (Codex hashes its own TOML form of the hook); Codex asks again in /hooks when a hook changed"""
+    `hooks`). Codex runs a hook that isn't managed only once a person trusted it as it is now, and records that in the
+    user's config.toml ($CODEX_HOME's, else ~/.codex's; `home`: the agent user's, whose ~/.codex it is) as
+    [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash (_codex_hash; enabled = false for a hook
+    turned off). Interactive codex asks at startup for a hook that is new or changed; `codex exec` skips it without a
+    word (learn.chatgpt.com/docs/hooks; codex-rs/hooks hook_key and engine/discovery.rs)."""
     from . import agent_hooks
-    keys = {f"{os.path.abspath(path)}:{re.sub(r'(?<!^)(?=[A-Z])', '_', ev).lower()}:{g}:{h}": ev
+    keys = {f"{os.path.abspath(path)}:{re.sub(r'(?<!^)(?=[A-Z])', '_', ev).lower()}:{g}:{h}":
+            (ev, _codex_hash(ev, group, hook))
             for ev, groups in hooks.items() for g, group in enumerate(groups if isinstance(groups, list) else ())
             if isinstance(group, dict) for h, hook in enumerate(group.get("hooks") if isinstance(group.get("hooks"), list)
                                                                  else ())
@@ -302,20 +327,32 @@ def _codex_trust(add, path, hooks, home, bad):
     except (OSError, ValueError, AttributeError) as e:   # unreadable, not TOML, or not of tables
         why = f"{store}: {e}"
     entry = {k: state.get(k) if isinstance(state.get(k), dict) else {} for k in keys}
-    untrusted = sorted({keys[k] for k, s in entry.items() if not s.get("trusted_hash")})
-    off = sorted({keys[k] for k, s in entry.items() if s.get("enabled") is False})
+    untrusted = sorted({keys[k][0] for k, s in entry.items() if not s.get("trusted_hash")})
+    changed = sorted({keys[k][0] for k, s in entry.items() if s.get("trusted_hash") and keys[k][1]
+                      and s["trusted_hash"] != keys[k][1]})
+    unsure = sorted({keys[k][0] for k, s in entry.items() if s.get("trusted_hash") and not keys[k][1]})
+    off = sorted({keys[k][0] for k, s in entry.items() if s.get("enabled") is False})
     step = (f"run codex in a terminal, type /hooks and trust Tracekit's hooks (from {path}); Codex asks again "
             "whenever they change, as after tracekit init")
+    silent = "so no Codex call is decided or recorded (interactive codex asks at startup; `codex exec` doesn't)"
     if why:
         add("D-CODEX-HOOK-TRUST", False, f"can't confirm that Codex trusts Tracekit's hooks in {path} ({why}): Codex "
-            "skips a hook nobody trusted, without saying so", step, bad=WARN)
+            "runs a hook only once a person trusted it, and `codex exec` skips one without a word", step, bad=WARN)
         return
-    add("D-CODEX-HOOK-TRUST", not (untrusted or off),
-        f"Codex skips Tracekit's {', '.join(untrusted)} hook(s) in {path}: nobody trusted them in Codex's /hooks "
-        f"({store} records no trust), so no Codex call is decided or recorded, and Codex doesn't say so" if untrusted
+    if unsure and not (untrusted or changed or off):
+        add("D-CODEX-HOOK-TRUST", False, f"Codex's trust is recorded for Tracekit's hooks in {path} ({store}); doctor "
+            f"can't confirm it's for these exact hooks: the {', '.join(unsure)} hook(s) have settings Tracekit doesn't "
+            "write, whose hash doctor doesn't rebuild", step, bad=WARN)
+        return
+    add("D-CODEX-HOOK-TRUST", not (untrusted or changed or off),
+        f"Codex skips Tracekit's {', '.join(untrusted)} hook(s) in {path}: nobody trusted them in Codex ({store} "
+        f"records no trust), {silent}" if untrusted else
+        f"Codex skips Tracekit's {', '.join(changed)} hook(s) in {path}: they changed since a person trusted them "
+        f"(the trust {store} records is for an earlier version of them, as after tracekit init), {silent}" if changed
         else f"Tracekit's {', '.join(off)} hook(s) in {path} are turned off in Codex's /hooks ({store}): Codex runs "
-        "none of them" if off else f"Codex trusts each of Tracekit's hooks in {path} ({store})",
-        step if untrusted else "run codex in a terminal, type /hooks and turn Tracekit's hooks back on", bad=bad)
+        "none of them" if off else f"Codex trusts each of Tracekit's hooks in {path} as they are now ({store})",
+        step if untrusted or changed else "run codex in a terminal, type /hooks and turn Tracekit's hooks back on",
+        bad=bad)
 
 
 def _hook_run(scale=1, unit="s"):
