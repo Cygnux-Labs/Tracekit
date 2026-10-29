@@ -340,7 +340,7 @@ func loadTrust(raw []byte) (VKey, []VKey, int, error) {
 		return VKey{}, nil, 0, notVKey(str, err)
 	}
 	var witnesses []VKey
-	var classes []string
+	var classes, vkeys []string
 	if value, ok := trust["witnesses"]; ok {
 		arr, err := array(value)
 		if err != nil {
@@ -374,14 +374,15 @@ func loadTrust(raw []byte) (VKey, []VKey, int, error) {
 			}
 			witnesses = append(witnesses, vkey)
 			classes = append(classes, class)
+			vkeys = append(vkeys, name)
 		}
 		if err := checkWitnesses(witnesses); err != nil {
 			return VKey{}, nil, 0, err
 		}
-		seen := make(map[string]string)
+		seen := make(map[string]string) // by the vkey as written, as the reference keys a witness's class
 		for i, k := range witnesses {
-			if c, ok := seen[string(k.Pub)]; !ok {
-				seen[string(k.Pub)] = classes[i]
+			if c, ok := seen[vkeys[i]]; !ok {
+				seen[vkeys[i]] = classes[i]
 			} else if c != classes[i] {
 				return VKey{}, nil, 0, fmt.Errorf("witness %s with two classes (%s, %s); a witness has one class: list it once, with the class you give it", k.Name, c, classes[i])
 			}

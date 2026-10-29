@@ -36,9 +36,10 @@ protocol stays 20.
 - **PCM's `Replay.check` takes `key=`** (experimental API, released the day before): the raw 32-byte Ed25519 public key
   that verified the message. `pcm.verify(replay=...)` passes it for you; a direct caller gets a `TypeError` until it
   passes one.
-- **Trust files.** A trust.json is now refused as a configuration error (exit 2) when it pins one Ed25519 log key under
-  two or more log names, one witness key under two or more names, two keys under one witness name (such as a witness's
-  old and new key during a rotation: keep only its current key), or one witness with two classes; and a signer.yaml
+- **Trust files.** A trust.json is now refused as a configuration error (exit 2) when it pins one witness key under two
+  or more names, two keys under one witness name (such as a witness's old and new key during a rotation: keep only its
+  current key), or one witness with two classes, and by PCM's verifier also when it pins one Ed25519 log key under two
+  or more log names; and a signer.yaml
   that lists one witness key twice doesn't load. No trust file Tracekit writes has any of these. The same witness entry
   listed twice is still accepted and counts once.
 - **`tracekit report`** is the new weekly summary. The old proof-pack report moved to `contrib/proofpack` in 1.0 as
@@ -70,8 +71,9 @@ protocol stays 20.
   full refund) is held, over MCP too. What they don't see, such as SDK calls inside a script or other providers, is in
   [coding agents](docs/coding-agents.md#calls-that-move-money) and [limits](docs/limits.md#policy).
 - **A download piped into an interpreter given code is held (`TK-A046`)**: `curl … | python -c '…'` or
-  `wget -qO- … | node script.js`, where what the code does with the download can't be read from the command. A bare
-  pipe into a shell or interpreter stays denied (`TK-D002`).
+  `wget -qO- … | node script.js`, where what the code does with the download can't be read from the command. 1.5.0
+  denied these, harmless JSON parsing with `python3 -c` included; a person now reads the code. A bare pipe into a shell
+  or interpreter, or one told to run stdin (`sh -`, `bash /dev/stdin`), stays denied (`TK-D002`).
 - **HORIZON zooms and pans.** The wheel or a pinch zooms toward the pointer (up to 64x), a drag pans and a double-click
   flies in; **+**, **−** and **FIT** sit under ORBIT/TOP, with the keys `+`, `-`, `0` and Esc. Places nest by their
   folders, and a folder opens into its files once they have room. Clicking a place flies to it and lists who did what
@@ -127,7 +129,10 @@ protocol stays 20.
   - `tracekit doctor` no longer fails on warnings alone, and after `init --no-hooks` (dev or system mode) it says
     the hooks were declined instead of telling you to install them; its fix for managed hooks keeps `--managed-only`,
     and its fixes say `chown 0:0` (macOS has no root group);
-  - `uninstall --v2` without root says a dev setup needs none: `tracekit uninstall` and `tracekit down`.
+  - `uninstall --v2` without root says a dev setup needs none: `tracekit uninstall` and `tracekit down`;
+  - `tracekit status` says a dev signer that hasn't started yet starts at an agent's first call or with `tracekit up`
+    (it printed a raw `[Errno 2]`), and `export --dev` reads the dev signer's v2 store as its help says;
+  - the `--managed` notice says the thinking summaries init turns on apply to every user too.
 - **The viewer:**
   - every run has a lane on DESK's timeline (busy ones first; the panel scrolls), and DESK's APPROVED counts held calls
     whose last answer is an approval, as APPROVALS does;
@@ -175,8 +180,10 @@ protocol stays 20.
 - **`TK-D002` and `TK-D007` fired on text a command only writes or searches for**: an `echo` or heredoc into a file, a
   `grep` or `rg` pattern, a `sed -n` script or a commit message naming a download pipe or Tracekit's files. They now
   read the parsed command: what it runs and the files it acts on, and `tracekit … --help` and `--version` pass. Text
-  written into a place that runs it later (cron, a login script) is still read as code. Over 9,924 decisions (E17, E21
-  and the developer sessions, four packs, both regex engines), none is weaker than in 1.5.0
+  written into a place that runs it later (cron, a login script, a heredoc run in the same call) is still read as
+  code, as are a `sed` script that writes, reads or runs something and a git alias's shell command. Over 9,924
+  decisions (E17, E21 and the developer sessions, four packs, both regex engines), none is weaker than in 1.5.0; a
+  752-case sweep of attack shapes found only the interpreter-given-code holds of `TK-A046` above
   ([limits](docs/limits.md#policy)).
 - **Codex skipped Tracekit's hooks without a word.** Codex runs a hook only after its user trusts it in `/hooks`, and
   asks again whenever the hook changes, as after `tracekit init`; until then nothing was recorded or decided.
@@ -188,6 +195,8 @@ protocol stays 20.
 - **A v1 run with U+2028, U+2029 or U+0085 in a string couldn't be exported**, and the verifier read such a record as
   broken. v1 files are now split into lines as before except at those three characters, which a record's JSON keeps
   unescaped; no other bundle reads differently.
+- **`init --v2 --managed` under a hardened root umask** (027) made the managed-settings folder 0750, so the agent's
+  Claude Code started without Tracekit's hooks, while init said they were in place. The folder it makes is 0755.
 - **`init --dev --v2 --no-hooks` after an init with hooks** said the hooks weren't installed while they stayed in
   settings.json and ran; it now takes them out, as system mode's `--no-hooks` does.
 - **As root, a message from a forked child was lost when stdout was piped** (`init` and `uninstall` editing another
@@ -214,7 +223,8 @@ protocol stays 20.
   (C2SP tlog-cosignature), and one witness is one key under one name with one class: every verifier (Python,
   TypeScript, Go, PCM) refuses a trust config that pins one witness key under two names, two keys under one name, or
   one witness with two classes. The independent Go verifier now also agrees with Python and TypeScript on a duplicate
-  witness entry (counted once) and on a quorum above the pinned witnesses (exit 1).
+  witness entry (counted once), on a quorum above the pinned witnesses (exit 1), and on a key pinned as a witness
+  vkey and as another type's (another entry, failed at the checkpoint).
 - **One approval, one run.** A held call that ran without using its approval (an `executed_against_policy` gap: the
   harness ran it anyway) left the approval approved, so the agent's retry of the same call ran too. An approval whose
   own call has a result is no longer given to a retry. A call decided again after it used its approval and completed

@@ -148,6 +148,9 @@ func TestWitnessListedTwiceAndQuorum(t *testing.T) {
 	}
 	files, trust := bundleFixture(t)
 	pin := func(class string) any { return map[string]any{"vkey": fixtureVKey(a.Name, 4, a.Pub), "class": class} }
+	// the same key and name as a vkey of another type is another entry, as in the reference: no two classes, and
+	// the checkpoint fails the non-witness vkey (exit 1)
+	asLog := map[string]any{"vkey": fixtureVKey(a.Name, 1, a.Pub), "class": "public"}
 	for _, tc := range []struct {
 		witnesses []any
 		required  int
@@ -157,6 +160,7 @@ func TestWitnessListedTwiceAndQuorum(t *testing.T) {
 		{[]any{pin("customer"), pin("customer")}, 0, 0, ""},
 		{[]any{pin("customer"), pin("operator")}, 0, 2, "trust config: witness witness.example/a with two classes (customer, operator); a witness has one class: list it once, with the class you give it"},
 		{[]any{pin("customer")}, 2, 1, "witness quorum: 0 pinned cosignature(s), 2 required"},
+		{[]any{pin("customer"), asLog}, 0, 1, "pinned key witness.example/a has the wrong signature type"},
 	} {
 		if r := VerifyBundle(fixtureZip(files), trustWith(t, trust, tc.witnesses, tc.required)); r.ExitCode != tc.exit || r.Detail != tc.detail {
 			t.Fatalf("bundle under %v, %d required: %+v", tc.witnesses, tc.required, r)
