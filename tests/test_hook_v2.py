@@ -1048,10 +1048,10 @@ class HeldCalls(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertNotEqual(again, aid)
         self.assertTrue(err.startswith(
-            f"[tracekit] held for approval {again} (TK-A032): to let it run, approve it with `tracekit approvals approve "
-            f"{again}`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: "
-            f"`tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by uid:{os.getuid()}); "
-            "ask them before trying again; uploading to cloud storage. "), err)
+            f"[tracekit] held for approval {again} (TK-A032): to let it run, approve it with `tracekit approvals "
+            f"approve {again}`, then ask the agent to try the same call again, with exactly the same arguments (to "
+            f"refuse it: `tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by "
+            f"uid:{os.getuid()}); ask them before trying again; uploading to cloud storage. "), err)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
 
     def test_cursor_gets_the_longest_hold_cut_after_its_rule_and_commands(self):

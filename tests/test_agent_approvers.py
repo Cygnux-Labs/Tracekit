@@ -264,8 +264,8 @@ class TestAgentApprovals(Case):
         aid, _ = self.ask()
         self.answer(AGENT, aid)
         self.decide(OK, "tc-2")
-        self.assertEqual(self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-2"})["approval_id"],
-                         aid)
+        again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-2"})
+        self.assertEqual(again["approval_id"], aid)
         self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid})
         out = self.s.approval_consume({"request_id": rid(), **self.run, "tool_call_id": "tc-2", "tool": "pay",
                                        "args_source": "parsed", "args": OK, "approval_id_hint": aid})
@@ -304,8 +304,8 @@ class TestAgentApprovals(Case):
                     self.assertEqual(told(args), f"{text}; money moves")
             self.restart()
         self.decide(dict(OK, amount=1), "tc-again")
-        self.assertEqual(self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-again"})["state"],
-                         "requested")   # a new approval: a person may still say yes
+        again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-again"})
+        self.assertEqual(again["state"], "requested")   # a new approval: a person may still say yes
 
     def test_an_agent_calls_nothing_else(self):
         aid, _ = self.ask()

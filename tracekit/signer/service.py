@@ -3142,8 +3142,8 @@ class SignerService:
         aid, a = no[-1]
         revoked, answered = a.get("revoked"), a.get("answered") or {}
         by = revoked or answered.get("by", "?")
-        who = "the signer" if by == "signer" else "an agent approver" if not revoked and answered.get("kind") == "agent" \
-            else "a person"
+        who = ("the signer" if by == "signer" else
+               "an agent approver" if not revoked and answered.get("kind") == "agent" else "a person")
         return (f"{who} {'revoked the approval of' if revoked else 'rejected'} this exact call ({aid}, by {by}); "
                 f"ask {'them' if who == 'a person' else 'a person'} before trying again")
 

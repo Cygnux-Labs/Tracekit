@@ -420,9 +420,9 @@ class TestRealSigner(unittest.TestCase):
         aid = self.pending()
         self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
         self.assertEqual(self.retry("tc-2", 1)["approval_id"], aid)
+        first = self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-1"]["decision_id"]
         self.s.complete({"request_id": "c1", **self.run, "stream": "s", "client_seq": 2, "tool_call_id": "tc-1",
-                         "decision_id": self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-1"]["decision_id"],
-                         "args_digest": event_hash({"tool": "pay", "args": PAY}), "status": "ok"})
+                         "decision_id": first, "args_digest": event_hash({"tool": "pay", "args": PAY}), "status": "ok"})
         out = self.consume(tool_call_id="tc-2", approval_id_hint=aid)
         with self.subTest("ran anyway"):
             self.assertEqual((out["ok"], out["rule_ids"], out["reason"]), (
