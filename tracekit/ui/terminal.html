@@ -3706,13 +3706,14 @@
       if (drawn !== HZ.drawn) { HZ.drawn = drawn; hzDraw(); }
     }
     // the camera: a point of the fit view (the whole map) is drawn at k times it, moved by (x, y). k runs from 1 (FIT) to
-    // HZKMAX, and the view stays inside the fit view's frame, so the map can't be lost
+    // HZKMAX; zoomed in, the fit view's frame may move until its edge reaches the stage's middle (from 2x), so a place at
+    // its edge can be centred and the map is never lost
     const HZKMAX = 64;
     const hzScr = (c, [x, y]) => [x * c.k + c.x, y * c.k + c.y];
     const hzWorld = (c, [x, y]) => [(x - c.x) / c.k, (y - c.y) / c.k];
     function hzClamp(c, w, h) {
-      const k = Math.min(HZKMAX, Math.max(1, c.k));
-      return { k, x: Math.min(0, Math.max(w - w * k, c.x)), y: Math.min(0, Math.max(h - h * k, c.y)) };
+      const k = Math.min(HZKMAX, Math.max(1, c.k)), m = Math.min(1, k - 1) / 2;
+      return { k, x: Math.min(w * m, Math.max(w - w * k - w * m, c.x)), y: Math.min(h * m, Math.max(h - h * k - h * m, c.y)) };
     }
     // zoomed f times about screen point s: the point of the map under s stays under it
     function hzZoom(c, s, f, w, h) {

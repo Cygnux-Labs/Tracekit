@@ -1611,7 +1611,8 @@ class HorizonZoom(unittest.TestCase):
         self.assertEqual(out["inverse"], [123.4, 456.7])                   # screen to map and back
         self.assertEqual(out["stays"], [300, 200])                         # zoomed about the pointer: its point stays under it
         self.assertEqual(out["k"], [4, 64, {"k": 1, "x": 0, "y": 0}])      # at most 64x; zoomed out, FIT exactly
-        self.assertEqual(out["inside"], [{"k": 2, "x": 0, "y": -600}, {"k": 2, "x": -800, "y": -600}, 64])   # within the frame
+        # zoomed in, the frame's edge may reach the stage's middle and no further: a corner can be centred
+        self.assertEqual(out["inside"], [{"k": 2, "x": 400, "y": -900}, {"k": 2, "x": -1200, "y": -900}, 64])
 
     def test_places_nest_by_folder_inside_their_folders_circles(self):
         needs_node(self)
