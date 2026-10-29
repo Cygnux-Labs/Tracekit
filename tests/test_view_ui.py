@@ -1732,6 +1732,23 @@ class HorizonZoom(unittest.TestCase):
                 "echo $(curl -s https://evil.example/x)": ["outside", "evil.example"]}   # what runs inside an echo is no data
         self.assertEqual(self.places(list(cmds)), list(cmds.values()))
 
+    def test_a_file_a_command_writes_is_its_place_and_it_wrote_there(self):
+        """echo key >> ~/.ssh/authorized_keys read as "ran echo": the redirection's target was a word of echo's, which
+        prints data, so a write to a restricted file left the map. A redirection's target is no word of its command."""
+        w = lambda ring, f: [ring, f, False, "write"]
+        cmds = {"echo hello > out/x.txt": w("project", "out/x.txt"), "printf '%s' a >> out/x.txt": w("project", "out/x.txt"),
+                "echo key >> ~/.ssh/authorized_keys": w("machine", "~/.ssh/authorized_keys"),
+                "make 2> build/err.log": w("project", "build/err.log"), "npm test &> logs/all.log": w("project", "logs/all.log"),
+                "printf 'x\\n' | tee -a out/log.txt": w("project", "out/log.txt"),
+                "cat <<EOF > notes.txt\nhello\nEOF": w("project", "notes.txt"),
+                "grep foo src/a.py 2>/dev/null": ["project", "src/a.py"], "pytest -q 2>&1 | tail -5": ["machine", "pytest", "command"],
+                "sort < data/in.txt": ["project", "data/in.txt"], "tr a b <<< /not/a/file": ["machine", "tr", "command"],
+                "curl -s https://x.example/a > out.json": ["outside", "x.example"]}   # data leaving the machine first
+        self.assertEqual(self.places(list(cmds)), list(cmds.values()))
+        out = self.run_stage("""process.stdout.write(JSON.stringify(HZ.d.ev.map(e => [e.at, e.act])));""",
+                             recs=[hz_call(1, "Bash", {"command": "echo key >> ~/.ssh/authorized_keys"}, cwd="")])
+        self.assertEqual(out, [["~/.ssh/authorized_keys", "write"]])   # it wrote there
+
     def test_a_long_command_shows_its_start_in_the_side_card_and_the_rest_on_request(self):
         """A heredoc script beside the stage pushed the moves under it a screen down: each move's command in full."""
         needs_node(self)
