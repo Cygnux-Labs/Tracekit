@@ -2034,7 +2034,8 @@
       padding: 8px 4px 6px;
       border-bottom: 1px solid var(--line2);
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      /* the commands wrap past 60%: a long --config or --data-dir path left the run's name a column of single words */
+      grid-template-columns: minmax(0, 1fr) fit-content(60%);
       gap: 2px 16px
     }
 
