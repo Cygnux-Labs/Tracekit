@@ -93,6 +93,7 @@ MIRROR_BACKOFF = 100   # a run's graph is imported again no sooner than this x i
 RECHECK_S = 300
 EDIT_S = 60   # a file store's records are hashed again this often: an edit of records read before checks all runs again
 REFRESH_S = 5.0   # a refresh starts no check of a run past this long, so the newest records are read again meanwhile
+PACE = 1   # after a run's first check, a pause of PACE x its CPU time: the first pass over a store takes half a core
 MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
 ROWCACHE_MAX = 8   # runs whose /api/rows answer the viewer keeps, each until a newer checkpoint
 KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
@@ -1007,8 +1008,9 @@ class StoreFeed:
 
     def refresh(self):
         """Verify every run with records a checkpoint covers that were not verified yet: what runs added first, then the
-        runs not checked yet, the newest first. A run still being written is shown up to the newest checkpoint, not
-        only once it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a core, each in turn. A refresh starts no check past REFRESH_S, so the newest records are read again while the
+        runs not checked yet, the newest first, each followed by a pause (PACE). A run still being written is shown up
+        to the newest checkpoint, not only once it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a
+        core, each in turn. A refresh starts no check past REFRESH_S, so the newest records are read again while the
         runs of a large store are checked. An edit of records already read shows in a file store's bytes (_open, every
         EDIT_S); a run of a Postgres store, and one that failed or could not be checked, is checked again RECHECK_S
         after its last check (the run checked longest ago, one a pass)."""
@@ -1041,9 +1043,13 @@ class StoreFeed:
                     if grew and self.idle > time.monotonic() or time.monotonic() - now > REFRESH_S:
                         due.append(self.idle if grew else now)
                     else:
+                        spent = time.thread_time()   # the check, its rows and findings: CPU, not waits
                         self._check(r, note[1], key, covered)
+                        spent = time.thread_time() - spent
                         if grew:
-                            self.idle = time.monotonic() + BACKOFF * self.runs[key].get("took", 0)
+                            self.idle = time.monotonic() + BACKOFF * spent
+                        elif not state.get("again") and self._stop.wait(PACE * spent):   # a run's first check: a
+                            return   # pause, so start takes half a core; a re-check waits for nothing
                 elif covered and (self.pg or state.get("failed")):
                     due.append(state["checked"] + RECHECK_S)
                     if state["checked"] + RECHECK_S <= now and (stale is None or state["checked"] < stale[1]):

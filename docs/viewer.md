@@ -88,8 +88,9 @@ says why; it tries again five minutes later or when the run grows); `PENDING` me
 records yet. A viewer that stops checking runs altogether says `STOPPED`, not `LIVE`, with the reason, until it
 restarts, and every mark of a run that verified (the run chip, its verdict, EVIDENCE's stamp, HORIZON's chain) reads
 `VERIFIED · CHECKS STOPPED`, no longer green. On start the viewer checks the newest runs first, so the run being
-written shows once its own check is done (about 20 s for a 50,000-record run), and the rest follow (about seven minutes
-of one core for a 430,000-record store). A run still being written is shown up to the newest checkpoint and grows with
+written shows once its own check is done (about 20 s for a 50,000-record run), and the rest follow at about half a
+core, each run's first check followed by a pause as long as it took (about 12 minutes for a 430,000-record store; until
+then NEEDS YOU says how many runs it is still checking). A run still being written is shown up to the newest checkpoint and grows with
 each one: only the records it added are read and checked one by one (the checks of the run as a whole run again over
 all of them), and checking what runs added takes at most 1/41 of a core, each run in turn. The viewer reads a file
 store once, then only what is appended to it, and hashes the bytes it read again in pieces of 1 MiB: at each change
