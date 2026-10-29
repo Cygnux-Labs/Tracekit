@@ -560,7 +560,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             return [result("D-CONFIG", FAIL, f"signer.yaml does not load: {e}", "fix signer.yaml, or " + REINIT)]
         bad = trusted_file(os.path.abspath(config))
         add("D-CONFIG", not bad, bad or f"{config} is root-owned and loads",
-            "make it and its directories root-owned and not group/world-writable (sudo chown root:root; chmod go-w)")
+            "make it and its directories root-owned and not group/world-writable (sudo chown 0:0; chmod go-w)")
     data = cfg["data_dir"]
     keys = os.path.join(data, "keys")
     policy = cfg.get("policy") or service.DEFAULT_POLICY
@@ -696,13 +696,16 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                              else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
 
     managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
-    hook_fix = (REINIT + " --managed" if managed else REINIT) if prod else "tracekit init --dev --v2"
+    # an init without --managed-only turns off the allowManagedHooksOnly an init with it turned on
+    only = managed and _setting(settings, "_tracekit_allowManagedHooksOnly") is True
+    hook_fix = (REINIT + " --managed" + (" --managed-only" if only else "") if managed else REINIT) if prod else \
+        "tracekit init --dev --v2"
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
         read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
         bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
                                          "it" if read == [] else None)
         add("D-HOOKS-MANAGED", not bad, bad or f"{settings} is root-owned and writable by root only"
-            + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown root:root and sudo chmod 644 "
+            + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown 0:0 and sudo chmod 644 "
             f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
     from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin_settings}"

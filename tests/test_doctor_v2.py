@@ -440,6 +440,17 @@ class ManagedHooks(unittest.TestCase):
         self.assertEqual(bad["status"], "fail")
         self.assertIn(f"agent can't read {self.managed}, so its Claude Code starts without it", bad["detail"])
 
+    def test_the_fix_keeps_managed_only_and_runs_on_macos(self):
+        """Following the fix after init --managed-only turned allowManagedHooksOnly off: init without --managed-only
+        removes the setting an earlier init turned on. And `chown root:root` fails on macOS, which has no root group."""
+        for only, want in ((True, " --managed --managed-only"), (False, " --managed")):
+            with self.subTest(managed_only=only), contextlib.redirect_stdout(io.StringIO()):
+                install.install_managed(None, only, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
+                                        signer="/run/s.sock")
+                fix = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]["fix"]
+                self.assertTrue(fix.endswith(want), fix)
+                self.assertTrue(fix.startswith(f"sudo chown 0:0 and sudo chmod 644 {self.managed}, "), fix)
+
     def test_managed_file_check_claims_only_what_it_checked(self):
         """D-HOOKS-MANAGED said the file was readable by every user, though doctor probes only the agent's user, and
         only as root."""

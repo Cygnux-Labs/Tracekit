@@ -1338,7 +1338,7 @@ def v1_results(checks=None):
         checks = [("signer python", OPT_PYTHON, reinstall), ("venv config", os.path.join(OPT, "pyvenv.cfg"), reinstall),
                   ("runtime", OPT, reinstall), ("unit file", _unit_path(), reinstall),
                    ("policy file", sc.get("policy") or DEFAULT_POLICY,
-                    "make it and every directory above it root-owned and not group/world-writable (sudo chown root:root, "
+                    "make it and every directory above it root-owned and not group/world-writable (sudo chown 0:0, "
                     f"sudo chmod go-w), then sudo {OPT_PYTHON} -I -m tracekit migrate --system")]
     for label, path, fix in checks:
         bad = trusted_file(path)
