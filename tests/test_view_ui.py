@@ -2041,6 +2041,17 @@ class FinalQA(unittest.TestCase):
         self.assertRegex(phone, r"\.apprp tr\.row td \{\s*border: 0;\s*overflow-wrap: anywhere")
         self.assertRegex(phone, r"\.apprp tr\.row td:nth-child\(n\+3\) \{\s*grid-column: 1/-1")
 
+    def test_permissions_rows_are_cards_on_a_phone_and_the_panel_grows(self):
+        """At 390px PERMISSIONS' nine columns ran off past the arguments: the rest of each row could not be read."""
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        tablet = css[css.index("@media (max-width:900px)"):css.index("@media (max-width:700px)")]
+        self.assertRegex(tablet, r"\.pg-permissions \.p\.whyv \{\s*max-height: none")
+        phone = css[css.rindex("@media (max-width:700px)"):]
+        self.assertRegex(phone, r"\.perm thead \{\s*display: none")
+        self.assertRegex(phone, r"\.perm tr \{\s*display: grid;\s*grid-template-columns: minmax\(0, 1fr\) auto")
+        self.assertRegex(phone, r"\.perm td:nth-child\(n\+3\),\s*\.perm td\[colspan\] \{\s*grid-column: 1/-1")
+        self.assertIn('<table class="wt perm"><thead><tr><th>TIME</th>', PAGE)
+
     def test_the_commands_write_the_trust_file_they_verify_against_and_name_the_signer_read(self):
         needs_node(self)
         out = json.loads(page_js(["esc", "shq", "word", "cp", "runCmds", "cmdLines"], """

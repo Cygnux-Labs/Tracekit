@@ -2557,7 +2557,8 @@
         max-height: none
       }
 
-      .pg-influence .p.whyv {
+      .pg-influence .p.whyv,
+      .pg-permissions .p.whyv {
         max-height: none
       }
 
@@ -2740,6 +2741,28 @@
         order: 1;
         white-space: normal;
         overflow-wrap: anywhere
+      }
+
+      /* PERMISSIONS: a decision is a card, its time and agent first, then the call, what it binds, its rule, what came of
+         it and who answered */
+      .perm thead {
+        display: none
+      }
+
+      .perm tr {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        border-bottom: 1px solid var(--line)
+      }
+
+      .perm td {
+        border: 0;
+        overflow-wrap: anywhere
+      }
+
+      .perm td:nth-child(n+3),
+      .perm td[colspan] {
+        grid-column: 1/-1
       }
 
       /* INFLUENCE: a kind of content is a card, its words and trust first, then its counts and the tools it reached */
@@ -4196,7 +4219,7 @@
       put("whyv", `<div class="wbar">` + PTABS.map(([k, l]) => `<button type="button" data-ptab="${esc(k)}" class="${PERM.tab === k ? "on" : ""}">${esc(l)} ${esc(n(k))}</button>`).join("") + `</div>`
         + (!rows.length && run?.permissions && Object.keys(run.permissions).length ? permCounts(run) : "")
         + `<p class="dim" style="padding:0 8px">Every decision that was not a plain allow, and what came of it, ${scope ? "in this run" : "in every run this page has"}. An answer happens on the signer's approval path: copy its command${DESK() ? ", or use the approvals page" : ""}. This page answers nothing.</p>`
-        + `<table class="wt"><thead><tr><th>TIME</th><th>AGENT</th><th>CALL</th><th>ARGUMENTS (SIGNER'S COPY)</th><th>DECISION</th><th>RULE, IN WORDS</th><th>OUTCOME</th><th>WHO · WHEN</th><th></th></tr></thead><tbody>`
+        + `<table class="wt perm"><thead><tr><th>TIME</th><th>AGENT</th><th>CALL</th><th>ARGUMENTS (SIGNER'S COPY)</th><th>DECISION</th><th>RULE, IN WORDS</th><th>OUTCOME</th><th>WHO · WHEN</th><th></th></tr></thead><tbody>`
         + (shown.map(r => {
           const v = r.rec.v2, args = r.rec.tool_input && Object.keys(r.rec.tool_input).length ? j(r.rec.tool_input).replace(/\s+/g, " ") : "";
           const cmds = r.tabs.includes("waiting") && r.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(r.req.v2.approval_id)}`) : [];
