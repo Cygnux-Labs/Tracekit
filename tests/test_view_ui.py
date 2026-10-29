@@ -1606,9 +1606,12 @@ class PlainPages(unittest.TestCase):
         # a confirmed cause first, then untrusted content, then the rest; each kind in words, the tools beside it: the
         # confirmed cause and the calls stopped first, marked as such
         self.assertEqual(rows, [
-            "▸ messages from another session (session-message) untrusted 4 2 runs 17 decisions Bash +0.62 Deploy 1 held Edit 1",
-            "▸ background tasks' notices (task-notification) untrusted 1 1 run 1 decisions Read 1",
-            "▸ the person's prompts (UserPromptSubmit) trusted 1 3 runs 9 decisions Edit 2"])
+            "▸ messages from another session (session-message) untrusted 4 sources 2 runs 17 decisions Bash +0.62 Deploy 1 held Edit 1",
+            "▸ background tasks' notices (task-notification) untrusted 1 source 1 run 1 decisions Read 1",
+            "▸ the person's prompts (UserPromptSubmit) trusted 1 source 3 runs 9 decisions Edit 2"])
+        # the word is a phone card's, shown there only (a phone said "1 sources")
+        self.assertIn('<td>1<span class="ph"> source</span></td>', page)
+        self.assertNotIn('content: " sources"', PAGE)
         self.assertIn('<span class="tag deny" title="reached in 2 runs · a replay confirmed it a cause: effect +0.62">Bash +0.62</span>', page)
         self.assertIn('<span class="tag held" title="reached in 1 run · of the calls it reached, 1 held">Deploy 1 held</span>', page)
         self.assertIn('<span class="tag ruled" title="reached in 1 run · a replay tested it and ruled it out">Read 1</span>', page)

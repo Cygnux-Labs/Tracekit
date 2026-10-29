@@ -2125,6 +2125,11 @@
       white-space: nowrap
     }
 
+    /* the word the column's name says, for a phone's card, which has no column names */
+    .infl .ph {
+      display: none
+    }
+
     .infl tr.insrc td {
       background: var(--panel2)
     }
@@ -2760,8 +2765,8 @@
         grid-column: 1/-1
       }
 
-      .infl tr.ingrp td:nth-child(3)::after {
-        content: " sources"
+      .infl .ph {
+        display: inline
       }
 
       /* APPROVALS: a held call is a card, its time and outcome first, then who, the call and what came of it */
@@ -5499,7 +5504,7 @@
             + `<span><span class="tag deny">Bash +0.62</span> confirmed cause, its tested effect</span><span><span class="tag ruled">Bash 1</span> tested, ruled out</span><span><span class="s-deny">untrusted</span> content, by the harness's word</span><span>click a row for its sources</span></div>`
           + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>CITED BY</th><th>REACHES</th></tr></thead><tbody>`
           + groups.map(g => `<tr class="row ingrp" data-ingrp="${esc(g.key)}" tabindex="0"><td>${esc(INFL.has(g.key) ? "▾ " : "▸ ")}<b>${esc(KIND[g.kind] || g.kind)}</b>${KIND[g.kind] ? ` <span class="dim">(${esc(g.kind)})</span>` : ""}</td>`
-            + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(g.mine.length)}</td><td>${esc(plural(g.runs, "run"))}</td><td>${esc(g.cited + " decisions")}</td><td class="reach">` + chips(g.reach, g.key) + `</td></tr>`
+            + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(g.mine.length)}<span class="ph">${esc(g.mine.length === 1 ? " source" : " sources")}</span></td><td>${esc(plural(g.runs, "run"))}</td><td>${esc(g.cited + " decisions")}</td><td class="reach">` + chips(g.reach, g.key) + `</td></tr>`
             + (INFL.has(g.key) ? (g.mine.some(x => !x.preview) ? `<tr class="insrc"><td colspan="6" class="dim">${esc("Content not in the log: a signed run's record holds only its hash, so each source is named by where it was read.")}</td></tr>` : "")
               + g.mine.slice(0, INFLMAX).map(x => src(x, g.idn)).join("") + (g.mine.length > INFLMAX ? `<tr class="insrc"><td colspan="6" class="dim">${esc(`the first ${INFLMAX} of ${g.mine.length}`)}</td></tr>` : "") : "")).join("")
           + `</tbody></table>`);
