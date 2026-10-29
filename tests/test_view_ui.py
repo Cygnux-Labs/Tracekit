@@ -1763,6 +1763,18 @@ class HorizonZoom(unittest.TestCase):
                              recs=[hz_call(1, "Bash", {"command": "echo key >> ~/.ssh/authorized_keys"}, cwd="")])
         self.assertEqual(out, [["~/.ssh/authorized_keys", "write"]])   # it wrote there
 
+    def test_a_comparison_a_process_substitution_or_a_variable_is_no_file_written(self):
+        """if (( n > 5 )) gave a place 5, [[ $a > $b ]] gave $b, tee >(gzip > out/x.gz) gave gzip, and echo x > $OUT a
+        project place $OUT, each one a file written."""
+        w = lambda ring, f: [ring, f, False, "write"]
+        cmds = {"if (( n > 5 )); then make lint; fi": ["machine", "make lint", "command"],
+                "[[ $a > $b ]] && echo y": ["machine", "echo", "command"],
+                "printf x | tee >(gzip > out/x.gz)": w("project", "out/x.gz"),   # what the substitution writes is a file written
+                "diff <(sort a.txt) <(sort b.txt)": ["machine", "diff", "command"],
+                "echo x > $OUT": ["machine", "echo", "command"], "echo x >> \"${DIR}/a.txt\"": ["machine", "echo", "command"],
+                "echo x > out/y.txt": w("project", "out/y.txt")}
+        self.assertEqual(self.places(list(cmds)), list(cmds.values()))
+
     def test_a_long_command_shows_its_start_in_the_side_card_and_the_rest_on_request(self):
         """A heredoc script beside the stage pushed the moves under it a screen down: each move's command in full."""
         needs_node(self)

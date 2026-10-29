@@ -3542,14 +3542,25 @@
       for (let m; (m = /\$\(([^()]*)\)|`([^`]*)`/.exec(c));) { subs.push(m[1] ?? m[2]); c = c.slice(0, m.index) + "$SUB" + c.slice(m.index + m[0].length); }
       for (const t of [c, ...subs]) {
         let cmd = [], w = null, q = null, to = null;   // to: after a redirection, "w" the next word is written, "x" dropped
-        const end = () => { if (w == null) return; if (to === "w") wrote.push(w); else if (!to) cmd.push(w); w = null; to = null; };
+        let test = false, arith = false;   // inside [[ ]] or (( )): < and > compare, they redirect nothing
+        const end = () => {
+          if (w == null) return;
+          if (w === "[[" || w === "]]") test = w === "[[";
+          if (to === "w") wrote.push(w); else if (!to) cmd.push(w);
+          w = null; to = null;
+        };
         const next = () => { end(); if (cmd.length) out.push(cmd); cmd = []; };
         for (let i = 0; i < t.length; i++) {
           const ch = t[i];
           if (q) { if (ch === q) q = null; else w += ch === "\\" && q === '"' && i + 1 < t.length ? t[++i] : ch; }
           else if (ch === "'" || ch === '"') { q = ch; w ??= ""; }
           else if (ch === "\\" && i + 1 < t.length) w = (w ?? "") + t[++i];
-          else if (/[<>]/.test(ch) || ch === "&" && t[i + 1] === ">") {
+          else if (ch === "(" && t[i + 1] === "(" || arith && ch === ")" && t[i + 1] === ")") {   // (( )): a command (( of its words
+            next(); i++; arith = ch === "(";
+            if (arith) cmd = ["(("];
+          }
+          else if (/[<>]/.test(ch) && t[i + 1] === "(") { next(); i++; }   // <( ) and >( ): a command of its own, no target
+          else if ((/[<>]/.test(ch) || ch === "&" && t[i + 1] === ">") && !test && !arith) {
             if (/^\d+$/.test(w ?? "") && ch !== "&") w = null;   // 2> : the fd it redirects is no word
             end();
             let op = ch;
@@ -3567,7 +3578,7 @@
     // shell keywords and builtins, no program: HZPRE runs the command after it (if, then, do, while, !, time, exec ...);
     // HZNOP takes words that are no command (cd, export, test, [, true ...; for, select and case a name and words)
     const HZPRE = /^(if|then|else|elif|do|while|until|!|time|exec|command|builtin|\{|coproc)$/;
-    const HZNOP = /^(>|fi|done|esac|\}|for|select|case|in|cd|pushd|popd|export|set|unset|local|declare|typeset|readonly|source|\.|eval|true|false|:|shift|return|exit|break|continue|trap|wait|read|alias|unalias|test|\[\[?|let|ulimit|umask|hash|type|shopt)$/;
+    const HZNOP = /^(>|\(\(|fi|done|esac|\}|for|select|case|in|cd|pushd|popd|export|set|unset|local|declare|typeset|readonly|source|\.|eval|true|false|:|shift|return|exit|break|continue|trap|wait|read|alias|unalias|test|\[\[?|let|ulimit|umask|hash|type|shopt)$/;
     // the words of a simple command (w, its program first) that are data, not something it acts on, as the signer's
     // shell.data_words reads them: a git commit, tag or stash message and a grep-family pattern (-e's too); and here also
     // jq's filter and --arg values, a sed or awk script (and awk's -v and -F values), and what echo or printf prints.
@@ -3639,7 +3650,7 @@
       const said = sh == null ? [subject(tool, input), ...Object.values(input || {})].filter(v => typeof v === "string")
         : cmds.flatMap(([c, p]) => { if (c[0] === ">") return []; const data = hzDataWords(c.slice(p)); return c.filter((_, i) => !data.has(i - p)); });
       const wrote = cmds.flatMap(([c, p]) => c[0] === ">" ? [c[1]] : (c[p] || "").split("/").pop() === "tee" ? c.slice(p + 1).filter(a => !a.startsWith("-")) : [])
-        .filter(f => !f.startsWith("/dev/"));
+        .filter(f => !f.startsWith("/dev/") && !f.includes("$"));   // a variable's file is unknown: no place
       let path = null;
       for (const w of said.join(" ").split(/[\s"'`;|&<>()=,]+/)) {
         const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/]*@)?(\[[^\]\/]*\]|[^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
