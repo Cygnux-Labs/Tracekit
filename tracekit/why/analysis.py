@@ -439,11 +439,27 @@ def investigation(run: Run) -> Dict[str, Any]:
 
 # --------------------------------------------------------------------------- workspace / influence graph
 
+SEEN_KEPT = 5   # a source's occurrences listed (run, time, record); `runs` counts them all
+
+
+def _ended(ev: Dict[str, Any]) -> Optional[str]:
+    """How a call ended when it is one to look at: blocked (denied, or stopped by the guard), held (a person's answer it
+    never got, or a no) or flagged; else None."""
+    p = ev.get("policy") or {}
+    if p.get("decision") == "ask":
+        return None if (p.get("approval") or {}).get("decision") == "approve" else "held"
+    return "blocked" if p.get("decision") == "deny" or ev.get("status") == "blocked" else \
+        "flagged" if p.get("decision") == "flag" else None
+
+
 def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     """Cross-run, citation-like graph over (run, its graph without inferred edges) pairs. Sources are content (by
     hash); outcomes are tools. An edge says: in k runs this content was upstream of this tool (cited), and tests
-    measured effect e. `groups`: the sources of each kind and trust (a harness's "<agent>:<kind>" source by its kind),
-    in how many runs, and the tools they reached in how many runs, so hundreds of sources read at a glance."""
+    measured effect e; `ended`: how many of the calls it reached ended blocked, held or flagged (_ended). `groups`: the
+    sources of each kind and trust (a harness's "<agent>:<kind>" source by its kind), in how many runs, the tools they
+    reached in how many runs and the distinct calls of each that ended so, so hundreds of sources read at a glance. A
+    source's `seen`: where it was read (its run's signed run id and agent, the time, the record's seq), the first
+    SEEN_KEPT."""
     sources: Dict[str, Dict[str, Any]] = {}
     groups: Dict[Tuple[str, Any], Dict[str, Any]] = {}
     outcomes: Dict[str, Dict[str, Any]] = {}
@@ -458,27 +474,37 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
                                                "cited_by": 0, "kind": kind,   # a signed run's: only committed
                                                "preview": "" if _committed(v := run.value(ev["ref"])) else _short(v, 140)})
             grp = groups.setdefault((s["kind"], s["trust"]), {"kind": s["kind"], "trust": s["trust"], "runs": set(),
-                                                              "reach": {}})
+                                                              "reach": {}, "ended": {}})
             grp["runs"].add(run.run_id)
+            cite = ev.get("tracekit") or {}
+            if len(s.setdefault("seen", [])) < SEEN_KEPT:
+                s["seen"].append({"run": cite.get("run_id") or run.run_id, "agent": ev.get("agent"), "ts": ev.get("ts"),
+                                  "seq": cite.get("seq")})
             if ev["source"] not in s["labels"]:
                 s["labels"].append(ev["source"])
             s["runs"] += 1
             s["cited_by"] += len([e for e in g.out_edges(nid, ("observed",)) if e["kind"].startswith("context")])
-            reached = g.descendants([nid])
-            tools = {g.nodes[x]["event"]["tool"] for x in reached if g.nodes[x]["type"] == "action"}
-            for tool in tools:
+            reached = [x for x in g.descendants([nid]) if g.nodes[x]["type"] == "action"]
+            for tool in {g.nodes[x]["event"]["tool"] for x in reached}:
                 grp["reach"].setdefault(tool, set()).add(run.run_id)
                 outcomes.setdefault(tool, {"id": tool, "runs": 0})
                 e = edges.setdefault(ev["ref"] + "|" + tool, {"source": ev["ref"], "tool": tool, "reach_runs": 0,
-                                                              "tests": []})
+                                                              "tests": [], "ended": {}})
                 e["reach_runs"] += 1
+            for x in reached:
+                act = g.nodes[x]["event"]
+                how = _ended(act)
+                if how:
+                    e = edges[ev["ref"] + "|" + act["tool"]]
+                    e["ended"][how] = e["ended"].get(how, 0) + 1
+                    grp["ended"].setdefault(act["tool"], {}).setdefault(how, set()).add((run.run_id, x))
             spec = "input:" + glob_escape(ev["source"])
             for t in run.tests:
                 if t.get("scope", "run") == "run" and t["intervention"] == spec:
                     tool = t["target"].split(",")[0].split("=", 1)[-1]
                     outcomes.setdefault(tool, {"id": tool, "runs": 0})
                     e = edges.setdefault(ev["ref"] + "|" + tool, {"source": ev["ref"], "tool": tool,
-                                                                  "reach_runs": 0, "tests": []})
+                                                                  "reach_runs": 0, "tests": [], "ended": {}})
                     e["tests"].append({"run": run.run_id, "target": t["target"], "effect": t["effect"],
                                        "ci": t["ci"], "verdict": t["verdict"], "n": t["n"]})
         for tool in {a["tool"] for a in run.of_type("action")}:
@@ -498,7 +524,8 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     src = sorted(sources.values(), key=lambda s: (-(s["max_effect"] or 0), -s["cited_by"]))
     return {"sources": src, "outcomes": sorted(outcomes.values(), key=lambda o: -o["runs"]),
             "edges": list(edges.values()),
-            "groups": [{**g, "runs": len(g["runs"]), "reach": {t: len(r) for t, r in g["reach"].items()}}
+            "groups": [{**g, "runs": len(g["runs"]), "reach": {t: len(r) for t, r in g["reach"].items()},
+                        "ended": {t: {how: len(c) for how, c in e.items()} for t, e in g["ended"].items()}}
                        for g in groups.values()]}
 
 

@@ -280,9 +280,11 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 Across every why run, as a citation index: one row per kind of content and its trust (the person's prompts, messages
 from another session, sub-agents' messages, background tasks' notices, ...; untrusted red), with how many sources of
-that kind, in how many runs, the decisions that cited them, and beside them the tools they reached, each with the
-number of runs (red with its effect where a replay confirmed it a cause, struck through where one ruled it out). Click
-a row for its sources one by one (the 200 cited most), each with its own links.
+that kind, in how many runs, the decisions that cited them, and beside them the tools they reached: first those whose
+reached calls were blocked, held or a confirmed cause (with its effect), marked as such, then six more (flagged
+first, then the most runs; **+N more** shows the rest; struck through where a replay ruled a link out). Click a row
+for its sources one by one (the 200 that matter most: a confirmed cause, then those whose reached calls were stopped,
+then the most cited), each named by where it was read: its run, record and time, with **OPEN** for that record.
 
 ### A v1 bundle
 

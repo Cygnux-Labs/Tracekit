@@ -1558,11 +1558,14 @@ class PlainPages(unittest.TestCase):
         self.assertLess(html_.index('data-gfit=""'), html_.index('<div id="gscroll"><svg id="gsvg"'))
         self.assertEqual((scroll_room, fit_height), ("504px", None))   # ACTUAL SIZE: the room below the bars scrolls
 
-    def influence(self, sources, edges, groups, opened=()):
-        return json.loads(page_js(["dict", "esc", "plural", "pct", "INFL", "KIND", "influenceView"], f"""
+    def influence(self, sources, edges, groups, opened=(), more=()):
+        return json.loads(page_js(["dict", "esc", "plural", "pct", "fmtT", "fmtD", "INFL", "KIND", "ENDS", "stopped", "chip", "chips",
+                                   "influenceView"], f"""
             const WHY = {{ runs: [{{}}, {{}}], influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
                           edges: {json.dumps(edges)}, groups: {json.dumps(groups)} }} }}, got = {{}}, $ = id => got[id] ??= {{}};
+            const RUNS = new Map([["r1", {{}}]]), TZ = "UTC";
             for (const k of {json.dumps(list(opened))}) INFL.add(k);
+            for (const k of {json.dumps(list(more))}) INFLMORE.add(k);
             const el = {{ clientWidth: 900 }}; influenceView(el); process.stdout.write(JSON.stringify([el.innerHTML, got.wvsum.textContent]));"""))
 
     def test_influence_with_no_sources_says_nothing_yet_and_draws_no_empty_chart(self):
@@ -1581,34 +1584,65 @@ class PlainPages(unittest.TestCase):
         """"633 sources · 16 tools": a column of sources one by one, "claude-code:session-message" row after row, two
         curves off the bottom of the screen and nothing on the right. A supervisor could not read it."""
         needs_node(self)
+        seen = lambda seq: [{"run": "r1", "agent": "claude-code", "ts": "2026-10-29T08:00:%02dZ" % seq, "seq": seq}]  # noqa: E731
         src = lambda i, kind, trust, cited, **kw: {"id": f"s{i}", "labels": [f"claude-code:{kind}"], "trust": trust, "runs": 1,  # noqa: E731
-                                                   "cited_by": cited, "kind": kind, "preview": "", "confirmed_tools": [], **kw}
+                                                   "cited_by": cited, "kind": kind, "preview": "", "confirmed_tools": [],
+                                                   "seen": seen(i), **kw}
         sources = [src(1, "session-message", "untrusted", 4, max_effect=0.62, confirmed_tools=["Bash"]),
                    src(2, "session-message", "untrusted", 3), src(3, "UserPromptSubmit", "trusted", 9),
-                   src(4, "task-notification", "untrusted", 1)]
+                   src(4, "task-notification", "untrusted", 1), src(5, "session-message", "untrusted", 9),
+                   src(6, "session-message", "untrusted", 1)]
         edges = [{"source": "s1", "tool": "Bash", "reach_runs": 1, "confirmed": True, "max_effect": 0.62},
                  {"source": "s2", "tool": "Bash", "reach_runs": 1}, {"source": "s2", "tool": "Edit", "reach_runs": 1},
                  {"source": "s3", "tool": "Edit", "reach_runs": 1}, {"source": "s4", "tool": "Read", "reach_runs": 1,
-                                                                     "ruled_out": True, "max_effect": 0.01}]
+                                                                     "ruled_out": True, "max_effect": 0.01},
+                 {"source": "s6", "tool": "Deploy", "reach_runs": 1, "ended": {"held": 1}}]
         groups = [{"kind": "UserPromptSubmit", "trust": "trusted", "runs": 3, "reach": {"Edit": 2}},
-                  {"kind": "session-message", "trust": "untrusted", "runs": 2, "reach": {"Bash": 2, "Edit": 1}},
+                  {"kind": "session-message", "trust": "untrusted", "runs": 2, "reach": {"Bash": 2, "Edit": 1, "Deploy": 1},
+                   "ended": {"Deploy": {"held": 1}}},
                   {"kind": "task-notification", "trust": "untrusted", "runs": 1, "reach": {"Read": 1}}]
         page, summary = self.influence(sources, edges, groups)
         rows = [html.unescape(text(r)) for r in re.findall(r'<tr class="row ingrp"[^>]*>(.*?)</tr>', page)]
-        # a confirmed cause first, then untrusted content, then the rest; each kind in words, the tools beside it
+        # a confirmed cause first, then untrusted content, then the rest; each kind in words, the tools beside it: the
+        # confirmed cause and the calls stopped first, marked as such
         self.assertEqual(rows, [
-            "▸ messages from another session (session-message) untrusted 2 2 runs 7 decisions Bash +0.62 Edit 1",
+            "▸ messages from another session (session-message) untrusted 4 2 runs 17 decisions Bash +0.62 Deploy 1 held Edit 1",
             "▸ background tasks' notices (task-notification) untrusted 1 1 run 1 decisions Read 1",
             "▸ the person's prompts (UserPromptSubmit) trusted 1 3 runs 9 decisions Edit 2"])
-        self.assertIn('<span class="tag deny" title="a replay confirmed it: effect +0.62">Bash +0.62</span>', page)
-        self.assertIn('<span class="tag ruled" title="a replay tested it and ruled it out">Read 1</span>', page)
+        self.assertIn('<span class="tag deny" title="reached in 2 runs · a replay confirmed it a cause: effect +0.62">Bash +0.62</span>', page)
+        self.assertIn('<span class="tag held" title="reached in 1 run · of the calls it reached, 1 held">Deploy 1 held</span>', page)
+        self.assertIn('<span class="tag ruled" title="reached in 1 run · a replay tested it and ruled it out">Read 1</span>', page)
         self.assertNotIn("<svg", page)
         self.assertNotIn('class="insrc"', page)   # one row per kind until it is opened
-        self.assertEqual(summary, "3 kinds · 4 sources · 1 tool")
+        self.assertEqual(summary, "3 kinds · 6 sources · 1 tool")
+        # opened, its rows were alike ("claude-code:session-message · its content is not in the log…"): each names its
+        # run, its record and when it was read, with OPEN for that record; a cause first, then stops, then the most cited
         opened = self.influence(sources, edges, groups, opened=["session-message|untrusted"])[0]
-        self.assertEqual([text(r)[:42] for r in re.findall(r'<tr class="insrc">(.*?)</tr>', opened)],
-                         ["claude-code:session-message its content is", "claude-code:session-message its content is"])
+        rows = [html.unescape(text(r)) for r in re.findall(r'<tr class="insrc">(.*?)</tr>', opened)]
+        self.assertEqual(rows[0], "Content not in the log: a signed run's record holds only its hash, so each source is named "
+                                  "by where it was read.")
+        self.assertEqual([r.split(" read ")[0] for r in rows[1:]], [f"claude-code · run r1 · record {n}" for n in (1, 6, 5, 2)])
+        self.assertIn(" read 2026-10-29 ", rows[1])
+        self.assertIn('<button type="button" class="cp" data-orun="r1" data-oseq="6">OPEN</button>', opened)
+        self.assertEqual(opened.count("its content is not in the log"), 0)
         self.assertIn('data-ingrp="session-message|untrusted" tabindex="0"><td>▾ ', opened)
+
+    def test_influence_shows_a_few_tools_beyond_the_marked_ones_and_the_rest_on_request(self):
+        """Every kind reached nearly every tool, so a row of 16 chips said nothing."""
+        needs_node(self)
+        reach = {f"T{i:02d}": 20 - i for i in range(12)}
+        ended = {"T11": {"blocked": 2}, "T10": {"flagged": 1}}
+        groups = [{"kind": "k", "trust": "untrusted", "runs": 3, "reach": reach, "ended": ended}]
+        sources = [{"id": "s1", "labels": ["a:k"], "trust": "untrusted", "runs": 1, "cited_by": 1, "kind": "k", "preview": "x",
+                    "confirmed_tools": [], "seen": []}]
+        page = self.influence(sources, [], groups)[0]
+        chips = re.findall(r'<span class="tag[^"]*" title="[^"]*">([^<]*)</span>', page.split("<tbody>")[1])
+        # the call stopped first however rarely reached, then six: the flagged first, then the most reached
+        self.assertEqual(chips, ["T11 2 blocked", "T10 1 flagged", "T00 20", "T01 19", "T02 18", "T03 17", "T04 16"])
+        self.assertIn('<button type="button" class="cp" data-inmore="k|untrusted">+5 more</button>', page)
+        page = self.influence(sources, [], groups, more=["k|untrusted"])[0]
+        self.assertEqual(len(re.findall(r'<span class="tag[^"]*" title=', page.split("<tbody>")[1])), 12)
+        self.assertIn('data-inmore="k|untrusted">fewer</button>', page)
 
     def test_an_approval_expires_in_local_time_and_each_held_call_names_its_agent_and_run(self):
         needs_node(self)

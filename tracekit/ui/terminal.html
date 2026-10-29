@@ -2105,7 +2105,12 @@
       color: var(--cyan)
     }
 
-    /* INFLUENCE: a link a replay tested and ruled out */
+    /* INFLUENCE: the calls a source reached that were blocked; a link a replay tested and ruled out */
+    .tag.blk {
+      border-color: var(--red);
+      color: var(--red)
+    }
+
     .tag.ruled {
       border-style: dashed;
       text-decoration: line-through
@@ -2750,7 +2755,8 @@
         text-align: right
       }
 
-      .infl td:nth-child(6) {
+      .infl td:nth-child(6),
+      .infl td[colspan] {
         grid-column: 1/-1
       }
 
@@ -5424,44 +5430,77 @@
       $("wvsum").textContent = `${plural(d.agents.length, "agent")} · ${plural(d.channels.length, "channel")}`;
     }
     // INFLUENCE: Causeway's citation index across every run, read at a glance: the sources of each kind and trust (the
-    // server's groups), each with the tools it reached beside it (confirmed causes red, links tested and ruled out
-    // struck through), opening to its sources one by one. INFL: the groups opened
-    const INFL = new Set(), INFLMAX = 200;
+    // server's groups), each with the tools it reached beside it, the calls that ended blocked, held or flagged and the
+    // confirmed causes first, opening to its sources one by one, each where it was read. INFL: the groups opened;
+    // INFLMORE: the rows whose every tool is shown
+    const INFL = new Set(), INFLMORE = new Set(), INFLMAX = 200, INFLCHIPS = 6;
     const KIND = { UserPromptSubmit: "the person's prompts", "session-message": "messages from another session", "agent-message": "sub-agents' messages",
                    "task-notification": "background tasks' notices", "system-reminder": "the harness's reminders", "fetched-web-content": "fetched web pages",
                    "person-command": "commands the person ran", "bash-output": "command output", "teammate-message": "teammates' messages" };
+    // how a reached call ended, worst first, and its chip's class
+    const ENDS = [["blocked", "blk"], ["held", "held"], ["flagged", "flag"]];
+    // a tool a row reached: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, held, flagged}}; a
+    // confirmed cause, or a call it reached that was blocked or held, is always shown (flagged ones are common: they
+    // come first among the rest)
+    const stopped = t => t.confirmed || t.ended.blocked || t.ended.held;
+    function chip(t) {
+      const ends = ENDS.filter(([k]) => t.ended[k]), cls = t.confirmed ? " deny" : ends.length ? " " + ends[0][1] : t.tested && t.ruled_out ? " ruled" : "";
+      const words = ends.map(([k]) => `${t.ended[k]} ${k}`).join(" · ");
+      return `<span class="tag${esc(cls)}" title="${esc(`reached in ${plural(t.runs, "run")}` + (words ? ` · of the calls it reached, ${words}` : "") + (t.confirmed ? ` · a replay confirmed it a cause: effect ${sgn(t.effect)}` : t.tested && t.ruled_out ? " · a replay tested it and ruled it out" : ""))}">`
+        + esc(t.tool + " " + (t.confirmed ? sgn(t.effect) + (words ? " · " + words : "") : words || t.runs)) + `</span>`;
+    }
+    // a row's tools: the confirmed causes and the calls stopped (the most blocked, then held), then INFLCHIPS more
+    // (flagged first, then those reached in the most runs), and a button for the rest
+    function chips(list, key) {
+      const order = (a, b) => b.confirmed - a.confirmed || ENDS.reduce((d, [k]) => d || (b.ended[k] || 0) - (a.ended[k] || 0), 0) || b.runs - a.runs || a.tool.localeCompare(b.tool);
+      const top = list.filter(stopped).sort(order), rest = list.filter(t => !stopped(t)).sort(order), all = INFLMORE.has(key);
+      return [...top, ...(all ? rest : rest.slice(0, INFLCHIPS))].map(chip).join(" ")
+        + (rest.length > INFLCHIPS ? ` <button type="button" class="cp" data-inmore="${esc(key)}">${esc(all ? "fewer" : `+${rest.length - INFLCHIPS} more`)}</button>` : "")
+        || `<span class="dim">no tool</span>`;
+    }
     function influenceView(el) {
       const I = WHY.influence, S2 = I.sources, T = I.outcomes, bySrc = new Map();
       for (const e of I.edges) bySrc.set(e.source, [...bySrc.get(e.source) || [], e]);
+      const link = e => ({ tool: e.tool, runs: e.reach_runs, confirmed: !!e.confirmed, tested: e.max_effect != null || !!e.ruled_out, ruled_out: !!e.ruled_out, effect: e.max_effect, ended: e.ended || {} });
       const groups = (I.groups || []).map(g => {
-        const key = g.kind + "|" + g.trust, mine = S2.filter(s => s.kind === g.kind && s.trust === g.trust), tools = dict();
-        for (const t of Object.keys(g.reach)) tools[t] = { tool: t, runs: g.reach[t], confirmed: false, tested: false, ruled_out: true, effect: null };
+        const key = g.kind + "|" + g.trust, tools = dict();
+        // its sources: a confirmed cause first, then those whose reached calls were blocked or held, then the most cited
+        const stops = x => (bySrc.get(x.id) || []).reduce((n, e) => n + ((e.ended || {}).blocked || 0) + ((e.ended || {}).held || 0), 0);
+        const mine = S2.filter(s => s.kind === g.kind && s.trust === g.trust)
+          .sort((a, b) => b.confirmed_tools.length - a.confirmed_tools.length || (stops(b) > 0) - (stops(a) > 0) || b.cited_by - a.cited_by);
+        for (const t of Object.keys(g.reach)) tools[t] = { tool: t, runs: g.reach[t], confirmed: false, tested: false, ruled_out: true, effect: null, ended: (g.ended || {})[t] || {} };
         for (const e of mine.flatMap(x => bySrc.get(x.id) || [])) {
-          const t = tools[e.tool] ||= { tool: e.tool, runs: 0, confirmed: false, tested: false, ruled_out: true, effect: null };
+          const t = tools[e.tool] ||= { tool: e.tool, runs: 0, confirmed: false, tested: false, ruled_out: true, effect: null, ended: {} };
           t.confirmed ||= !!e.confirmed; t.tested ||= e.max_effect != null || !!e.ruled_out || !!e.confirmed;
           t.ruled_out &&= !!e.ruled_out || e.max_effect == null && !e.confirmed;
           if (e.max_effect != null) t.effect = Math.max(t.effect ?? -Infinity, e.max_effect);
         }
-        const reach = Object.values(tools).sort((a, b) => b.confirmed - a.confirmed || b.runs - a.runs || a.tool.localeCompare(b.tool));
-        return { ...g, key, mine, reach, cited: mine.reduce((n, s) => n + s.cited_by, 0), confirmed: reach.some(t => t.confirmed) };
+        return { ...g, key, mine, reach: Object.values(tools), cited: mine.reduce((n, s) => n + s.cited_by, 0), confirmed: Object.values(tools).some(t => t.confirmed) };
       }).sort((a, b) => b.confirmed - a.confirmed || (b.trust === "untrusted") - (a.trust === "untrusted") || b.mine.length - a.mine.length);
-      const chip = t => `<span class="tag${t.confirmed ? " deny" : t.tested && t.ruled_out ? " ruled" : ""}" title="${esc(t.confirmed ? `a replay confirmed it: effect ${sgn(t.effect)}` : t.tested && t.ruled_out ? "a replay tested it and ruled it out" : `reached in ${plural(t.runs, "run")}`)}">${esc(t.tool)} ${esc(t.confirmed ? sgn(t.effect) : t.runs)}</span>`;
-      // one source: its own links, as its group's
-      const src = x => `<tr class="insrc"><td>${esc(x.labels.join(", "))}<br><span class="dim">${esc(String(x.preview || "its content is not in the log: only its hash is signed").slice(0, 110))}</span></td><td class="${x.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(x.trust)}</td><td></td><td>${esc(plural(x.runs, "run"))}</td><td>${esc(x.cited_by + " decisions")}</td>`
-        + `<td class="reach">` + ((bySrc.get(x.id) || []).map(e => chip({ tool: e.tool, runs: e.reach_runs, confirmed: !!e.confirmed, tested: e.max_effect != null || !!e.ruled_out, ruled_out: !!e.ruled_out, effect: e.max_effect })).join(" ") || `<span class="dim">no tool</span>`) + `</td></tr>`;
+      // where a source was read: its run (agent, short id), the time, and OPEN for its record on the run's page (a why
+      // log's own run: its overview)
+      const where = o => `<div>${esc(`${o.agent || "agent"} · run ${String(o.run).slice(0, 8)}` + (o.seq != null ? ` · record ${o.seq}` : ""))}`
+        + `<br><span class="dim">${esc(Date.parse(o.ts) ? `read ${fmtD(Date.parse(o.ts) / 1000)} ${fmtT(Date.parse(o.ts) / 1000)} ${TZ}` : "")}</span> `
+        + (o.seq != null && RUNS.has(o.run) ? `<button type="button" class="cp" data-orun="${esc(o.run)}" data-oseq="${esc(o.seq)}">OPEN</button>` : `<button type="button" class="cp" data-wgo="${esc(o.run)}">OPEN</button>`) + `</div>`;
+      const src = x => `<tr class="insrc"><td>` + (x.seen || []).map(where).join("") + (x.runs > (x.seen || []).length ? `<div class="dim">${esc(`and ${x.runs - x.seen.length} more`)}</div>` : "")
+        + (x.preview ? `<div class="dim">${esc(String(x.preview).slice(0, 110))}</div>` : "") + `</td><td class="${x.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(x.trust)}</td><td></td><td>${esc(plural(x.runs, "run"))}</td><td>${esc(x.cited_by + " decisions")}</td>`
+        + `<td class="reach">` + chips((bySrc.get(x.id) || []).map(link), x.id) + `</td></tr>`;
       el.innerHTML = `<p class="dim" style="padding:0 8px">Across all ${esc(WHY.runs.length)} runs: which content agent decisions used (cited), what it reached, and which of those links a replay confirmed. A citation index where some citations are proven to matter.</p>`
         + (!S2.length ? `<div class="empty">Nothing yet: no model call in these runs cites content the agents read, so there is nothing to draw. Runs that record their model calls show here which content reached which tools.</div>`
-          : `<div class="wbar glegend"><span><span class="tag">Bash 4</span> reached, in 4 runs</span><span><span class="tag deny">Bash +0.62</span> confirmed cause, its tested effect</span><span><span class="tag ruled">Bash 1</span> tested, ruled out</span><span><span class="s-deny">untrusted</span> content, by the harness's word</span><span>click a row for its sources</span></div>`
+          : `<div class="wbar glegend"><span><span class="tag">Read 4</span> reached, in 4 runs</span><span><span class="tag blk">Bash 2 blocked</span> calls it reached that were blocked</span><span><span class="tag held">Bash 1 held</span> held for a person</span><span><span class="tag flag">WebFetch 3 flagged</span> flagged</span>`
+            + `<span><span class="tag deny">Bash +0.62</span> confirmed cause, its tested effect</span><span><span class="tag ruled">Bash 1</span> tested, ruled out</span><span><span class="s-deny">untrusted</span> content, by the harness's word</span><span>click a row for its sources</span></div>`
           + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>CITED BY</th><th>REACHES</th></tr></thead><tbody>`
           + groups.map(g => `<tr class="row ingrp" data-ingrp="${esc(g.key)}" tabindex="0"><td>${esc(INFL.has(g.key) ? "▾ " : "▸ ")}<b>${esc(KIND[g.kind] || g.kind)}</b>${KIND[g.kind] ? ` <span class="dim">(${esc(g.kind)})</span>` : ""}</td>`
-            + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(g.mine.length)}</td><td>${esc(plural(g.runs, "run"))}</td><td>${esc(g.cited + " decisions")}</td><td class="reach">` + (g.reach.map(chip).join(" ") || `<span class="dim">no tool</span>`) + `</td></tr>`
-            + (INFL.has(g.key) ? g.mine.slice(0, INFLMAX).map(src).join("") + (g.mine.length > INFLMAX ? `<tr class="insrc"><td colspan="6" class="dim">${esc(`the ${INFLMAX} cited most of ${g.mine.length}`)}</td></tr>` : "") : "")).join("")
+            + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(g.mine.length)}</td><td>${esc(plural(g.runs, "run"))}</td><td>${esc(g.cited + " decisions")}</td><td class="reach">` + chips(g.reach, g.key) + `</td></tr>`
+            + (INFL.has(g.key) ? (g.mine.some(x => !x.preview) ? `<tr class="insrc"><td colspan="6" class="dim">${esc("Content not in the log: a signed run's record holds only its hash, so each source is named by where it was read.")}</td></tr>` : "")
+              + g.mine.slice(0, INFLMAX).map(src).join("") + (g.mine.length > INFLMAX ? `<tr class="insrc"><td colspan="6" class="dim">${esc(`the first ${INFLMAX} of ${g.mine.length}`)}</td></tr>` : "") : "")).join("")
           + `</tbody></table>`);
       $("wvsum").textContent = [plural(groups.length, "kind"), plural(S2.length, "source"), plural(T.length, "tool")].join(" · ");
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore]"); if (!t) return;
       e.preventDefault();
+      if (t.dataset.inmore) { INFLMORE.has(t.dataset.inmore) ? INFLMORE.delete(t.dataset.inmore) : INFLMORE.add(t.dataset.inmore); wvKey = ""; return schedule(); }
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
       if (t.dataset.rv) { show(t.dataset.rv); wvKey = ""; return schedule(); }

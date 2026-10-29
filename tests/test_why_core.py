@@ -13,7 +13,7 @@ import time
 import unittest
 
 from tracekit.why import System, build_graph, counterfactual, load_run, taint, target_hits, verify
-from tracekit.why.analysis import LINEAGE_CHAINS, influence_graph, investigation, lineage
+from tracekit.why.analysis import LINEAGE_CHAINS, _ended, influence_graph, investigation, lineage
 from tracekit.why.cli import main as cli
 from tracekit.why.core import GENESIS, Ref, Runtime, Tape, ablation_matches, event_hash, referenced_refs
 from tracekit.why.server import IngestError, Store
@@ -265,13 +265,30 @@ class LongRuns(Tmp):
             a.act(tool, {}, decision=a.decide(seen, model="m"))
             run = rt.finish()
             runs.append((run, build_graph(run, infer=False)))
+        [call] = [x for x, n in runs[0][1].nodes.items() if n["type"] == "action"]
+        runs[0][1].nodes[call]["event"]["policy"] = {"decision": "deny"}   # the first run's Bash call was denied
         g = influence_graph(runs)
+        # how the calls each kind reached ended: one Bash call, blocked, whatever the number of sources upstream of it
+        self.assertEqual([x["ended"] for x in g["groups"]], 3 * [{"Bash": {"blocked": 1}}])
+        self.assertEqual(sorted((e["tool"], e["ended"]) for e in g["edges"]), 4 * [("Bash", {"blocked": 1})] + 3 * [("Read", {})])
+        # where each source was read: its run, agent and time (a why log of its own: no signed record to open)
+        self.assertEqual({(s["seen"][0]["run"], s["seen"][0]["agent"], s["seen"][0]["seq"]) for s in g["sources"]},
+                         {(runs[0][0].run_id, "a", None), (runs[1][0].run_id, "a", None)})
+        self.assertTrue(all(s["seen"][0]["ts"] for s in g["sources"]))
         self.assertEqual(sorted((x["kind"], x["trust"], x["runs"], x["reach"]) for x in g["groups"]), [
             ("UserPromptSubmit", "trusted", 2, {"Bash": 1, "Read": 1}),
             ("session-message", "untrusted", 2, {"Bash": 1, "Read": 1}),
             ("web:page", "untrusted", 2, {"Bash": 1, "Read": 1})])   # a source no agent's prefix names keeps its name
         self.assertEqual(sorted(s["kind"] for s in g["sources"]),
                          ["UserPromptSubmit"] * 2 + ["session-message"] * 3 + ["web:page"] * 2)
+
+    def test_a_reached_call_is_marked_by_how_it_ended(self):
+        cases = [({"policy": {"decision": "deny"}}, "blocked"), ({"status": "blocked"}, "blocked"),
+                 ({"status": "blocked", "policy": {"decision": "ask"}}, "held"),
+                 ({"status": "blocked", "policy": {"decision": "ask", "approval": {"decision": "reject"}}}, "held"),
+                 ({"policy": {"decision": "ask", "approval": {"decision": "approve"}}}, None),
+                 ({"policy": {"decision": "flag"}}, "flagged"), ({"status": "ok", "policy": {"decision": "allow"}}, None)]
+        self.assertEqual([_ended(ev) for ev, _ in cases], [want for _, want in cases])
 
 
 class StoreRequests(Tmp):
