@@ -1,6 +1,7 @@
-"""Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid and Antigravity CLI hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid, Antigravity CLI and Crush hooks on the v2
+signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose|qwen|droid|antigravity EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose|qwen|droid|antigravity|crush EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
