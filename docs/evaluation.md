@@ -507,7 +507,10 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   when it is denied or held.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
   data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
-- Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,290 calls).
+- Latency: each call's fastest of five decisions, over E17 and both E21 sets (2,481 calls). Each try is followed by
+  a fixed reference workload (`reference` in the script: JSON, a shell split and regular expressions from the
+  standard library, no Tracekit code), and `p99_ref` is the p99 of each call's fastest decision over the
+  reference's fastest: a busy or throttled machine slows both alike, a slower engine or pack only the decision.
 
 The recorded results, measured after those rule changes on a pool that is no longer blind (the packs as merged for 1.4):
 
@@ -522,16 +525,21 @@ destructive 15 of 36, defence evasion 14 of 30, supply chain 14 of 27; strongest
 of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
-| Latency (µs) | p50 | p99 | max |
-|---|---|---|---|
-| default, RE2 / regex | 80 / 75 | 165 / 195 | 257 / 370 |
-| strict, RE2 / regex | 80 / 75 | 165 / 192 | 263 / 357 |
-| dev, RE2 / regex | 65 / 62 | 140 / 149 | 235 / 225 |
+| Latency (µs) | p50 | p99 | max | p99_ref |
+|---|---|---|---|---|
+| default, RE2 / regex | 89 / 84 | 176 / 207 | 286 / 367 | 3.09 / 3.68 |
+| strict, RE2 / regex | 89 / 84 | 177 / 212 | 513 / 415 | 3.12 / 3.66 |
+| dev, RE2 / regex | 74 / 70 | 154 / 160 | 249 / 249 | 2.76 / 2.88 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.13% default; 10.9%, 10.0%, 4.6%
-strict); p99 stays within 25% of its on the same machine (re-measured once before failing). The targets of 2%
+strict); `p99_ref` stays within 25% of its on the same machine (re-measured once before failing; another machine,
+such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
+to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
+every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5
+times and `p99_ref` at most 14%. 60 literal-free rules added to `dev.yaml` doubled dev's `p99_ref` (RE2 5.53, regex
+5.18: the gate failed) and 15 raised it about 20% (3.38 and 3.44, under the gate's 3.45 and 3.6). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
 (default 4.2%, strict 10.9%) and on strict's sessions (10.0%).
 

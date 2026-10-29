@@ -5,7 +5,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:20d7c19a73c2835ed570ef6411bb74cfa50924430ca9e02e1ae14ce9a4b7e08c",
+      "policy_hash": "sha256:f09d833324f4b2a4399e00089fe2867d64a58bc55f10a952eb182b0f350e14f3",
       "heldout": {
         "recall": 0.5833333333333334,
         "deny_recall": 0.25952380952380955,
@@ -2163,7 +2163,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:5cb11df5833a55750f9d87040c73d0df32a52dba6d4ac04941db63aa9a70c322",
+      "policy_hash": "sha256:4b075c6ed316977bc640c7aa3d75cc5e246eda1e628628eda57cbe5e07253fac",
       "heldout": {
         "recall": 0.6523809523809524,
         "deny_recall": 0.35714285714285715,
@@ -4668,40 +4668,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 80,
-      "p99_us": 165,
-      "max_us": 257,
-      "calls": 2481
+      "p50_us": 89,
+      "p99_us": 176,
+      "max_us": 286,
+      "calls": 2481,
+      "p99_ref": 3.09
     },
     "default/regex": {
-      "p50_us": 75,
-      "p99_us": 195,
-      "max_us": 370,
-      "calls": 2481
+      "p50_us": 84,
+      "p99_us": 207,
+      "max_us": 367,
+      "calls": 2481,
+      "p99_ref": 3.68
     },
     "strict/re2": {
-      "p50_us": 80,
-      "p99_us": 165,
-      "max_us": 263,
-      "calls": 2481
+      "p50_us": 89,
+      "p99_us": 177,
+      "max_us": 513,
+      "calls": 2481,
+      "p99_ref": 3.12
     },
     "strict/regex": {
-      "p50_us": 75,
-      "p99_us": 192,
-      "max_us": 357,
-      "calls": 2481
+      "p50_us": 84,
+      "p99_us": 212,
+      "max_us": 415,
+      "calls": 2481,
+      "p99_ref": 3.66
     },
     "dev/re2": {
-      "p50_us": 65,
-      "p99_us": 140,
-      "max_us": 235,
-      "calls": 2481
+      "p50_us": 74,
+      "p99_us": 154,
+      "max_us": 249,
+      "calls": 2481,
+      "p99_ref": 2.76
     },
     "dev/regex": {
-      "p50_us": 62,
-      "p99_us": 149,
-      "max_us": 225,
-      "calls": 2481
+      "p50_us": 70,
+      "p99_us": 160,
+      "max_us": 249,
+      "calls": 2481,
+      "p99_ref": 2.88
     }
   },
   "engine_mismatches": [],
@@ -4723,13 +4729,13 @@
         "e17": 0.04878048780487805
       }
     },
-    "max_p99_us": {
-      "default/re2": 188,
-      "default/regex": 215,
-      "strict/re2": 170,
-      "strict/regex": 204,
-      "dev/re2": 140,
-      "dev/regex": 150
+    "max_p99_ref": {
+      "default/re2": 3.86,
+      "default/regex": 4.6,
+      "strict/re2": 3.9,
+      "strict/regex": 4.58,
+      "dev/re2": 3.45,
+      "dev/regex": 3.6
     }
   },
   "over_target": [
