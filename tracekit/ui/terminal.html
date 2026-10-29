@@ -3621,6 +3621,8 @@
       }
       return out;
     }
+    // a host's [ring, label]: loopback (localhost, 127.x.x.x, ::1, 0.0.0.0) is this machine, any other the outside world
+    const hzHost = h => [/^(localhost|127(\.\d+){3}|\[?::1\]?|0\.0\.0\.0)$/i.test(h) ? "machine" : "outside", h];
     // where a call went: [ring, label] of the first host or path among its arguments, its subject first; else null. A
     // Bash move reads its command alone, past a leading cd and the words that are data (hzDataWords): a host there comes
     // first, then a file it writes (a redirection's target, tee's files: always places, [ring, label, false, "write"]),
@@ -3640,8 +3642,8 @@
         .filter(f => !f.startsWith("/dev/"));
       let path = null;
       for (const w of said.join(" ").split(/[\s"'`;|&<>()=,]+/)) {
-        const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/]*@)?([^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
-        if (host) return ["outside", host.toLowerCase()];
+        const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/]*@)?(\[[^\]\/]*\]|[^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
+        if (host) return hzHost(host.toLowerCase());
         // lean: elsewhere a word with a slash is a path, so a ref like origin/main is a project place; the signer's parser knows better
         if (w.startsWith("/dev/")) continue;   // 2>/dev/null and the like: no place
         if (/^(~|\.{0,2}\/)|^\.\w/.test(w) || /^[\w.-]+\/[\w.-]/.test(w) && (sh == null || /\/[\w.-]*\.[a-z]\w*$/i.test(w))) {
@@ -3747,7 +3749,7 @@
         // a why log's row (r.why) is the agent's own unsigned record: never signed, whatever the chain check says
         const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), a = ans.get(retry.get(k) || k), ok = !r.why && (V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true);
         let p = hzWhere.get(r);
-        if (!p) hzWhere.set(r, p = fx ? (fx.kind === "connect" ? ["outside", String(fx.target).replace(/:\d+$/, "")] : hzPath(String(fx.target), r.cwd))
+        if (!p) hzWhere.set(r, p = fx ? (fx.kind === "connect" ? hzHost(String(fx.target).replace(/:\d+$/, "")) : hzPath(String(fx.target), r.cwd))
           : hzPlace(r.tool_name, r.tool_input, r.cwd) || [category({ tool: r.tool_name, flags: [] }) === "net" ? "outside" : "machine", r.tool_name, true]);
         raw.push({ t: r.ts_signed ?? r.ts, unread: !!r.ts_unread, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules), hold: d === "ask" && !retry.has(k),
           ag: vis(RUNS.get(r.session_id)?.agent || r.agent || "agent"), gr: !ok ? "unverified" : fx ? "observed" : "signed",
