@@ -1614,7 +1614,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
     _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
                                      hooks={"user": target_user, "settings": settings, "agent": agent,
-                                            **({"env": proxy} if proxy else {})},
+                                            **({"env": proxy} if proxy else {}),
+                                            **({} if hooks else {"no_hooks": True})},   # doctor: the choice it is
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
     if failed:

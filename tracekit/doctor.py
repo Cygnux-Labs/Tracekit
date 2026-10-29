@@ -94,7 +94,7 @@ def collect(config=None, issuer_key=None):
                                gemini_settings=_gemini(agent and agent.pw_dir,
                                                         h.get("settings") if h.get("agent") == "gemini" else None),
                                harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
-                               else None)
+                               else None, no_hooks=h.get("no_hooks") is True)
     if sc:
         return out
     from .signer.service import dev_content, dev_data_dir
@@ -489,7 +489,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox);
     gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini); harnesses: {coding agent: its hook
     config} of the other agents with v2 hooks (agent_hooks), whose hooks and reasoning settings are checked; no_hooks:
-    init was told --no-hooks (install.record_hooks_settings), so no Claude Code hook is the person's choice."""
+    init was told --no-hooks (install.record_hooks_settings; system mode: client.json's hooks.no_hooks), so no Claude
+    Code hook is the person's choice."""
     from . import agent_hooks
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
@@ -658,9 +659,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
     from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin_settings}"
     others = "v2 hooks for " + ", ".join(f"{h} in {p}" for h, p in sorted((harnesses or {}).items()))
+    chosen = ("no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send (tracekit.instrument()) are "
+              f"still recorded; to record Claude Code's calls too, run {hook_fix}")
     if not settings:
-        add("D-HOOKS-PRESENT", bool(plugin or harnesses), from_plugin if plugin else others if harnesses else
-            "no hooks recorded in client.json", REINIT, bad=WARN)
+        add("D-HOOKS-PRESENT", bool(plugin or harnesses or no_hooks), from_plugin if plugin else others if harnesses
+            else chosen if no_hooks else "no hooks recorded in client.json", REINIT, bad=WARN)
     else:
         try:
             hooks = _hooks(settings)
@@ -677,8 +680,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         elif hooks is not None and harnesses and not any(hooks.values()):   # another coding agent's, not Claude's
             add("D-HOOKS-PRESENT", True, others, "")
         elif hooks is not None and no_hooks and not any(hooks.values()):
-            add("D-HOOKS-PRESENT", True, "no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send "
-                f"(tracekit.instrument()) are still recorded; to record Claude Code's calls too, run {hook_fix}", "")
+            add("D-HOOKS-PRESENT", True, chosen, "")
         elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
             own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")

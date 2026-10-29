@@ -674,6 +674,23 @@ class NoHooksChosen(unittest.TestCase):
             self.assertEqual((rows["D-HOOKS-PRESENT"]["status"], rows["D-HOOKS-PRESENT"]["fix"]),
                              ("warn", "tracekit init --dev --v2"))
 
+    def test_system_mode_reads_the_choice_from_client_json(self):
+        """System mode said "no hooks recorded in client.json", fix: reinstall, after `init --v2 --no-hooks`."""
+        sc = {"signer": "/run/s.sock", "hooks": {"user": "nobody-e16", "settings": None, "agent": "claude",
+                                                 "no_hooks": True}}
+        with mock.patch.object(doctor.client, "system_config", return_value=sc), \
+                mock.patch.object(doctor, "v2_checks", return_value=[]) as v2:
+            doctor.collect()
+        self.assertIs(v2.call_args.kwargs["no_hooks"], True)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for chosen, want in ((True, ("ok", "no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send "
+                                           "(tracekit.instrument()) are still recorded; to record Claude Code's calls too, "
+                                           "run " + doctor.REINIT)),
+                             (False, ("warn", "no hooks recorded in client.json"))):
+            got = next(r for r in doctor.v2_checks({"data_dir": d}, no_hooks=chosen) if r["id"] == "D-HOOKS-PRESENT")
+            self.assertEqual((got["status"], got["detail"]), want)
+
 
 class Reinit(unittest.TestCase):
     def test_the_reinit_fix_runs_on_this_platform(self):
