@@ -83,8 +83,9 @@ it, the agent sends the same call again, under a new tool call id, and that call
      seconds to wait before trying again.
 
    Otherwise it asks as before, with a new approval. The signer decides this; nothing the agent sends can name an
-   approval into use. If someone said no to the same call earlier in the run (a person or an agent approver rejected
-   it, or its agent approval was revoked), the decision's reason says so first, with the approval and who said no
+   approval into use. If the latest answer to the same call in the run was a no (a person or an agent approver
+   rejected it, or its agent approval was revoked; a later approval clears it), the decision's reason says so first,
+   with the approval and who said no
    (`a person rejected this exact call (apr-…, by uid:501); ask them before trying again`), so the agent asks before
    it tries again; the new approval lets a person change their mind.
 3. Its `approval_consume` consumes that approval, once: the signer signs `approval.consumed` with the approval's id

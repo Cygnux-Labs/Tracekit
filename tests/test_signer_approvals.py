@@ -438,6 +438,47 @@ class TestRealSigner(unittest.TestCase):
         out = self.consume(tool_call_id="tc-4", args=other, approval_id_hint=later)
         self.assertEqual((out["ok"], out["reason"]), (False, f"approval {later} expired before this call used it"))
 
+    def test_only_a_calls_latest_answer_is_told_as_a_no(self):
+        """A held call's reason named the latest no to the same call even after a person approved it later and it ran:
+        "ask them before trying again" to someone who had said yes. Only a no that is the call's latest answer is
+        told: reject, approve, run, and the next hold says nothing of the reject; then a reject is told again. Across a
+        restart too."""
+        seq = iter(range(1, 100))
+
+        def decide(tcid):
+            return self.s.decide({"request_id": f"d{tcid}", **self.run, "stream": "s", "client_seq": next(seq),
+                                  "tool_call_id": tcid, "tool": "pay", "args_source": "parsed", "args": PAY})
+
+        def ask(tcid):
+            return self.s.approval_request({"request_id": f"a{tcid}", **self.run, "tool_call_id": tcid})["approval_id"]
+
+        def answer(aid, decision):
+            self.s.approval_decide({"request_id": f"h{aid}", "approval_id": aid, "decision": decision})
+
+        def told(tcid):
+            reason = decide(tcid).get("reason", "")
+            return reason[:reason.index(")") + 1] if "rejected this exact call" in reason else None
+        no = self.pending()
+        answer(no, "reject")
+        self.assertEqual(told("tc-2"), f"a person rejected this exact call ({no}, by uid:{ts.ME.subject})")
+        yes = ask("tc-2")
+        answer(yes, "approve")
+        d = decide("tc-3")
+        self.assertEqual(ask("tc-3"), yes)
+        self.assertTrue(self.consume(tool_call_id="tc-3", approval_id_hint=yes)["ok"])
+        self.s.complete({"request_id": "c3", **self.run, "stream": "s", "client_seq": next(seq), "tool_call_id": "tc-3",
+                         "decision_id": d["decision_id"], "args_digest": event_hash({"tool": "pay", "args": PAY}),
+                         "status": "ok"})
+        self.assertIsNone(told("tc-4"))   # the person's latest answer was yes
+        self.restart()
+        self.assertIsNone(told("tc-5"))   # the order of the answers is rebuilt from the records
+        again = ask("tc-5")
+        answer(again, "reject")
+        rejected = f"a person rejected this exact call ({again}, by uid:{ts.ME.subject})"
+        self.assertEqual(told("tc-6"), rejected)
+        self.restart()
+        self.assertEqual(told("tc-7"), rejected)
+
     def test_a_retry_after_a_restart_runs_under_the_approval_and_completes(self):
         aid = self.pending()
         self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})

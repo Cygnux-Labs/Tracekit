@@ -91,8 +91,8 @@ def approval(tenant, run_id, data, ts):
     record's agent eligibility; `via`: the gateway whose call it is; `escalated`: only people answer it now
     (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
     when the record has them); an agent's approval adds `kind` agent and the times it may be consumed between
-    (`not_before`, `consume_by`), and a revoke `revoked` (by whom); one a later call of the same arguments consumed adds
-    `used_by` (ran)."""
+    (`not_before`, `consume_by`), and a revoke `revoked` (by whom); an answer or a revoke sets `answer_seq` (its record's
+    run_seq); one a later call of the same arguments consumed adds `used_by` (ran)."""
     b = data["binding"]
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
@@ -175,6 +175,8 @@ def agent_state(set_, log, run, e):
     if typ == "approval":   # who answered, for the bridges; and as whom, for a root grant (SignerService._pcm_grant)
         set_(a, "answered", {"by": d["approver"], "kind": d.get("approver_kind", "person")})
         set_(a, "answer", {k: d[k] for k in ("self_approved", "person") if k in d})
+    if typ in ("approval", "approval.revoked"):   # when, in its run: a call's latest answer is what counts (_said_no)
+        set_(a, "answer_seq", e["run_seq"])
     if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d["decision"] != "approve":
         # anyone's reject sticks: a person's veto as much as an agent's
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})

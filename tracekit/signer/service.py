@@ -206,8 +206,9 @@ call's approval once a person approved it, instead of a new one (_reusable): app
 while an agent's approval is within its veto delay, as approval_wait reads it), and the consume writes its
 approval.consumed under the retry's tool_call_id. Still once, and never a rejected, revoked or expired one, nor one
 whose blocked call ran anyway. The retry is then the call that ran under it (pipeline.ran): the blocked call, if it ran
-anyway, ran against the policy. A retry of a call someone said no to (rejected, or its agent approval revoked) asks
-for a new approval, and its decide's reason says first who said no (_said_no), so the agent asks before trying again.
+anyway, ran against the policy. A retry of a call whose latest answer was a no (rejected, or its agent approval
+revoked) asks for a new approval, and its decide's reason says first who said no (_said_no), so the agent asks before
+trying again.
 Who answers (design §5): with a config (`approvals`), only an approver of the run's tenant or a break-glass identity
 (any tenant, a reason required, recorded `break_glass`), never the requester or the run's owner unless
 `self_approval: allow`. Without one (the dev signer), any identity of the run's tenant, a self-approval labelled
@@ -3131,17 +3132,17 @@ class SignerService:
 
     def _said_no(self, key, tool, via, digest):
         """(on the writer) What an `ask` for `tool` with args digest `digest` in run `key` tells the agent and the
-        person about the latest approval of the same call (as _reusable matches it) that was rejected or revoked, so
-        the agent asks before trying again; None when there is none. A new approval is still asked for: a person may
-        change their mind."""
+        person when the latest answer to the same call (an approval of it, as _reusable matches it) was a no, rejected
+        or revoked, so the agent asks before trying again; None when there is none, or a later yes (approved, consumed
+        or expired since) cleared it. A new approval is still asked for: a person may change their mind."""
         # lean: scans the signer's live approvals, as _reusable does
-        no = [(aid, a) for aid, a in self.log.approvals.items()
-              if digest and a["run_key"] == key and a["state"] == "rejected" and a["tool"] == tool
-              and a.get("via") == via and a["policy_hash"] == self.policy.policy_hash
-              and self._opens(a["commitment"], a["label"], digest)]
-        if not no:
+        said = [(a.get("answer_seq", -1), aid) for aid, a in self.log.approvals.items()
+                if digest and a["run_key"] == key and a.get("answered") and a["tool"] == tool and a.get("via") == via
+                and a["policy_hash"] == self.policy.policy_hash and self._opens(a["commitment"], a["label"], digest)]
+        aid = max(said)[1] if said else None
+        a = self.log.approvals.get(aid)
+        if a is None or a["state"] != "rejected":
             return None
-        aid, a = no[-1]
         revoked, answered = a.get("revoked"), a.get("answered") or {}
         by = revoked or answered.get("by", "?")
         who = ("the signer" if by == "signer" else
