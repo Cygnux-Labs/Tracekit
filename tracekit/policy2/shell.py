@@ -237,9 +237,16 @@ def analyse_argv(argv):
             [x for x in lines + ctx["kept"] if x])
 
 
+def _sed_prints(script):
+    """Whether a sed script only picks and prints lines: with its /pattern/ addresses left out, nothing but line
+    numbers, ranges, braces and the commands that read, write and run nothing."""
+    return bool(re.fullmatch(r"[\s\d,$~!;{}+pPlqQnNdDhHgGxz=]*", re.sub(r"/(?:[^/\\\n]|\\.)*/[IM]{0,2}", "", script)))
+
+
 def data_words(argv):
-    """Indexes of argv words that are data, not something the command acts on: a git commit or tag message and the
-    pattern a grep-family command searches for (unless -e or -f gives it)."""
+    """Indexes of argv words that are data, not something the command acts on: a git commit or tag message, a log's
+    --grep, the pattern a grep-family command searches for (unless -e, -f or --pre is given) and a `sed -n` script
+    that only picks and prints lines."""
     name, i = argv[0], 1
     if name == "git":   # the subcommand, after git's own options
         while i < len(argv) and argv[i].startswith("-"):
@@ -247,7 +254,8 @@ def data_words(argv):
                                   "--config-env") else 1
         name, i = (argv[i] if i < len(argv) else ""), i + 1
         out = set()
-        for j, a in enumerate(argv[i:], i):
+        for j, a in enumerate(argv[i:] if name in ("log", "rev-list", "shortlog", "whatchanged", "show", "reflog")
+                              else (), i):
             if a == "--grep" and j + 1 < len(argv):
                 out.add(j + 1)
             elif a.startswith("--grep="):
@@ -262,30 +270,34 @@ def data_words(argv):
         if name not in ("grep", "egrep", "fgrep", "rg", "ag", "ack"):
             return out
     if name == "sed" and "-n" in argv[1:]:
-        out, i = set(), 1
+        # a script only once it is the script (after -e or -f the words are files) and only while it just picks and
+        # prints lines: s, w, r, e and the like write, read or run what they name
+        out, i, given = set(), 1, False
         while i < len(argv):
             a = argv[i]
-            if a in ("-e", "--expression"):
-                out.add(i + 1)
+            if a in ("-e", "--expression", "-f", "--file"):
+                if a in ("-e", "--expression") and i + 1 < len(argv) and _sed_prints(argv[i + 1]):
+                    out.add(i + 1)
+                given = True
                 i += 2
                 continue
-            if a in ("-f", "--file"):
-                i += 2
-                continue
-            if a.startswith("--expression=") or (a.startswith("-e") and len(a) > 2):
-                out.add(i)
+            if a.startswith(("--expression=", "--file=")) or (a[:2] in ("-e", "-f") and len(a) > 2):
+                if a.startswith(("--expression=", "-e")) and _sed_prints(a.split("=", 1)[1] if a[1] == "-" else a[2:]):
+                    out.add(i)
+                given = True
             elif a.startswith("-"):
-                i += 1
-                continue
+                pass
             elif a:
-                out.add(i)
+                if not given and _sed_prints(a):
+                    out.add(i)
                 break
             i += 1
         return out
     if name not in ("grep", "egrep", "fgrep", "rg", "ag", "ack"):
         return set()
     args = argv[i:]
-    if any(a.startswith(("--regexp", "--file")) or re.fullmatch(r"-[A-Za-z]*[ef][A-Za-z0-9]*", a) for a in args):
+    if any(a.startswith(("--regexp", "--file", "--pre")) or re.fullmatch(r"-[A-Za-z]*[ef][A-Za-z0-9]*", a)
+           for a in args):
         return set()
     for j, a in enumerate(args, i):
         if a == "--":

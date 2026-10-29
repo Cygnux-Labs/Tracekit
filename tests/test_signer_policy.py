@@ -1204,7 +1204,8 @@ class CodingPack(unittest.TestCase):
         allowed = (
             "tracekit signer --help", "tracekit --version", "tracekit bundle --help",
             "grep -n 'tracekitd' src/main.py", "rg 'tracekit signer --trust-file' src",
-            "sed -n '/tracekitd/p' src/main.py", "echo 'tracekit signer --trust-file x' > note.txt",
+            "sed -n '/tracekitd/p' src/main.py", "sed -n -e '/tracekitd/p' src/main.py", "git log --grep tracekitd",
+            "echo 'tracekit signer --trust-file x' > note.txt",
             "cat > note.txt <<'EOF'\ntracekit signer --trust-file x\nEOF",
             "git commit -m 'tracekit signer --trust-file x'", "git commit -F - <<'EOF'\ntracekit signer --trust-file x\nEOF",
             "cat > main.go <<'EOF'\nfmt.Println(\"/etc/tracekit/client.json\")\nEOF",
@@ -1222,6 +1223,13 @@ class CodingPack(unittest.TestCase):
             "find . -name x -execdir Shred {} + -exec Pkill tracekit \\;",
             "pkill -f tracekitd", "kill $(pgrep tracekitd)", "systemctl stop tracekitd",
             "tracekit signer --trust-file /tmp/trust.json",
+            # a sed -n script is data only while it just prints, and the words after -e or -f are files; rg --pre runs
+            # its program; only a log's --grep is a pattern (a git alias can run its arguments)
+            "sed -n -e p /var/lib/tracekit/keys/log.key", "sed -n -e 's/enforce/off/' -i /etc/tracekit/policy.yaml",
+            "sed -n '1w /etc/tracekit/policy.yaml' notes.txt", "sed -n 'r /var/lib/tracekit/keys/log.key' notes.txt",
+            "sed -n -f fix.sed /etc/tracekit/policy.yaml", "sed -n --expression=p /var/lib/tracekit/keys/log.key",
+            "rg --pre /var/lib/tracekit/x.sh foo .",
+            "git -c alias.z='!f() { eval \"$2\"; }; f' z --grep 'pkill tracekitd'",
         )
         for pack, engine, e in self.every_pack():
             for command in allowed:
