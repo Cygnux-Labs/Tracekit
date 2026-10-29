@@ -3536,11 +3536,18 @@ class SignerService:
             elif run.get("held") and not (a and a.get("incident_id") in run["held"]):   # expired by the holds
                 why = "TK-HOLD", self._why_contained(run)
             elif hint is not None and hint != aid:
-                h = self.log.approvals.get(hint) or {}   # two retries of one call raced for it: this one lost
-                raced = h.get("run_key") == key and h["state"] == "consumed" and digest and \
-                    self._opens(h["commitment"], h["label"], digest)
-                why = "TK-APPROVAL-UNBOUND", f"approval {hint} was already used by another attempt of the same call" \
-                    if raced else "approval_id not bound to this call"
+                # the same call's approval (_reusable gave it to this retry): another retry raced for it and won, or it
+                # ended since; say which
+                h, now = self.log.approvals.get(hint) or {}, _iso(time.time())
+                same = h.get("run_key") == key and digest and self._opens(h["commitment"], h["label"], digest)
+                why = "TK-APPROVAL-UNBOUND", (
+                    "approval_id not bound to this call" if not same else
+                    f"approval {hint} was already used by another attempt of the same call" if h["state"] == "consumed"
+                    else f"approval {hint} was {'revoked' if h.get('revoked') else 'rejected'} before this call used it"
+                    if h["state"] == "rejected" else f"approval {hint} expired before this call used it"
+                    if h["state"] == "expired" or h["expires_at"] <= now or h.get("consume_by", "~") <= now
+                    else f"approval {hint} was used up: the call it was asked for ran anyway"
+                    if h["tool_call_id"] in run["results"] else "approval_id not bound to this call")
             elif digest is None:
                 why = "TK-ARGS-INVALID", "the arguments are not canonical JSON"
             elif a is None:

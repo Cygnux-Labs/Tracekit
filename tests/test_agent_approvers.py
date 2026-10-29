@@ -258,6 +258,20 @@ class TestAgentApprovals(Case):
         self.assertNotEqual(own["approval_id"], revoked)
         self.assertEqual(own["state"], "requested")
 
+    def test_a_retry_whose_agent_approval_a_person_revoked_meanwhile_is_told_so(self):
+        """The retry was given the agent's approval, then a person revoked it before the retry's consume: that read
+        "approval_id not bound to this call". It says the approval was revoked."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        self.decide(OK, "tc-2")
+        self.assertEqual(self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-2"})["approval_id"],
+                         aid)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid})
+        out = self.s.approval_consume({"request_id": rid(), **self.run, "tool_call_id": "tc-2", "tool": "pay",
+                                       "args_source": "parsed", "args": OK, "approval_id_hint": aid})
+        self.assertEqual((out["ok"], out["rule_ids"], out["reason"]),
+                         (False, ["TK-APPROVAL-UNBOUND"], f"approval {aid} was revoked before this call used it"))
+
     def test_a_retry_after_a_no_is_told_who_said_it(self):
         """The retry of a call someone said no to was held with a new approval and no word of the no, so the agent
         kept retrying: the decision's reason now says it first (which approval, by whom), so the agent asks before

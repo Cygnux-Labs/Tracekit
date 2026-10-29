@@ -414,6 +414,30 @@ class TestRealSigner(unittest.TestCase):
         self.assertEqual(self.consume(tool_call_id="tc-5", args=dict(PAY, cents=1), approval_id_hint=aid)["reason"],
                          "approval_id not bound to this call")   # used, but by a call of other arguments
 
+    def test_a_retry_whose_approval_ended_after_it_was_given_it_is_told_what_happened(self):
+        """The retry's approval_request returned the approved approval, which then expired, or whose blocked call ran
+        anyway, before the retry's consume: that read "approval_id not bound to this call". It says what happened."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.assertEqual(self.retry("tc-2", 1)["approval_id"], aid)
+        self.s.complete({"request_id": "c1", **self.run, "stream": "s", "client_seq": 2, "tool_call_id": "tc-1",
+                         "decision_id": self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-1"]["decision_id"],
+                         "args_digest": event_hash({"tool": "pay", "args": PAY}), "status": "ok"})
+        out = self.consume(tool_call_id="tc-2", approval_id_hint=aid)
+        with self.subTest("ran anyway"):
+            self.assertEqual((out["ok"], out["rule_ids"], out["reason"]), (
+                False, ["TK-APPROVAL-UNBOUND"], f"approval {aid} was used up: the call it was asked for ran anyway"))
+        other = dict(PAY, cents=1)
+        for tcid, seq in (("tc-3", 3), ("tc-4", 4)):
+            self.s.decide({"request_id": f"d{tcid}", **self.run, "stream": "s", "client_seq": seq, "tool_call_id": tcid,
+                           "tool": "pay", "args_source": "parsed", "args": other})
+            later = self.s.approval_request({"request_id": f"a{tcid}", **self.run, "tool_call_id": tcid})["approval_id"]
+            if tcid == "tc-3":
+                self.s.approval_decide({"request_id": "h3", "approval_id": later, "decision": "approve"})
+        self.s.log.approvals[later]["expires_at"] = svc._iso(time.time() - 1)
+        out = self.consume(tool_call_id="tc-4", args=other, approval_id_hint=later)
+        self.assertEqual((out["ok"], out["reason"]), (False, f"approval {later} expired before this call used it"))
+
     def test_a_retry_after_a_restart_runs_under_the_approval_and_completes(self):
         aid = self.pending()
         self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
