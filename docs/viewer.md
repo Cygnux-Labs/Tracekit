@@ -87,11 +87,18 @@ its earlier report and findings, taken back); `ERROR` means the viewer could not
 says why; it tries again five minutes later or when the run grows); `PENDING` means no checkpoint covers the run's
 records yet. A viewer that stops checking runs altogether says `STOPPED`, not `LIVE`, with the reason, until it
 restarts, and every mark of a run that verified (the run chip, its verdict, EVIDENCE's stamp, HORIZON's chain) reads
-`VERIFIED · CHECKS STOPPED`, no longer green. A run still being written is shown up to the newest
-checkpoint and grows with each one; a long run is checked again no sooner than four times its last check's time. A run
-that stopped growing is checked again five minutes after its last check, one run at a time, so a later edit of its
-records turns it `FAILED`. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live view and the tape
-says how many; each run's latest verdict stays in the run list, for up to 10,000 runs (a failed run's goes last).
+`VERIFIED · CHECKS STOPPED`, no longer green. On start the viewer checks the newest runs first, so the run being
+written shows once its own check is done (about 20 s for a 50,000-record run), and the rest follow (about seven minutes
+of one core for a 430,000-record store). A run still being written is shown up to the newest checkpoint and grows with
+each one: only the records it added are read and checked one by one (the checks of the run as a whole run again over
+all of them), and checking what runs added takes at most 1/41 of a core, each run in turn. The viewer reads a file
+store once, then only what is appended to it, and hashes the bytes it read again every minute (and at once when the
+file is written to without growing): an edit of records it showed has every run checked again, so that run turns
+`FAILED`. A run of a Postgres store, and a run that failed or could not be checked, is checked again five minutes
+after its last check, one run at a time. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live
+view and the tape says how many; each run's latest verdict stays in the run list, for up to 10,000 runs (a failed
+run's goes last). Once rows have left it, a run older than every record the live view holds shows only its verdict
+there; its records load when you open it.
 Under each run: calls, **blocked** (red: the policy
 denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
 call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded

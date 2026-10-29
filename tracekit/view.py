@@ -65,7 +65,7 @@ from urllib.parse import urlencode, urlsplit
 
 from . import observe
 from . import findings_text, findings_v2, parsers
-from .bundle_v2 import export
+from .bundle_v2 import bundle, export
 from .format import checkpoint
 from .format.records import RecordSigner
 from .identity import oidc, webauthn
@@ -83,8 +83,14 @@ from .verify import v2
 from .why.server import Store
 
 POLL_S = 1.0
-BACKOFF = 4   # a run being written is verified again no sooner than BACKOFF x its last check's time after that check
-RECHECK_S = 300   # a run that did not grow is verified again this long after its last check, one run a pass
+# the checks of runs that grew take at most 1/(1 + BACKOFF) of a core: after one, none for BACKOFF x its CPU time
+BACKOFF = 40
+MIRROR_BACKOFF = 100   # a run's graph is imported again no sooner than this x its last import's CPU time after it
+# a run that did not grow is verified again this long after its last check, one run a pass: in a Postgres store, and
+# a run that failed or could not be checked
+RECHECK_S = 300
+EDIT_S = 60   # a file store's records are hashed again this often: an edit of records read before checks all runs again
+REFRESH_S = 5.0   # a refresh starts no check of a run past this long, so the newest records are read again meanwhile
 MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
 ROWCACHE_MAX = 8   # runs whose /api/rows answer the viewer keeps, each until a newer checkpoint
 KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
@@ -926,10 +932,15 @@ class StoreFeed:
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report, "checked": when
         # its last check ended (time.monotonic(): never stepped back, as the wall clock can be), "took": the CPU time it
-        # took}
+        # took, "again": to be checked again, grown or not (its store was edited)}
         self.runs = {}
-        self.memo = set()   # verify.v2's memo: a run is checked again at each checkpoint, its new records only in full
-        self.due = 0   # when a run put off (BACKOFF, RECHECK_S) is due, so _watch refreshes with no store change
+        self.memo = v2.Memo()   # verify.v2's: a run is checked again at each checkpoint, its new records only in full
+        self.due = 0   # when a run put off (BACKOFF, RECHECK_S, EDIT_S) is due: _watch refreshes with no store change
+        self.idle = 0   # no run that grew is checked again before then (BACKOFF)
+        # a file store's reader, kept across refreshes (_open); when its bytes are next hashed again (EDIT_S); and
+        # (tenant, run_id) -> bundle_v2.bundle's `kept` of the run's last bundle that verified, so a run that grew is
+        # read from there
+        self.reader, self.edit_due, self.bundles = None, 0, {}
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
@@ -992,35 +1003,46 @@ class StoreFeed:
             raise
 
     def refresh(self):
-        """Verify every run with records a checkpoint covers that were not verified yet: a run still being written is
-        shown up to the newest checkpoint, not only once it stops, and checked again no sooner than BACKOFF times its
-        last check's time after it. A run that did not grow is checked again RECHECK_S after its last check (the run
-        checked longest ago, one a pass), so a later edit of its records shows."""
+        """Verify every run with records a checkpoint covers that were not verified yet: what runs added first, then the
+        runs not checked yet, the newest first. A run still being written is shown up to the newest checkpoint, not
+        only once it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a core, each in turn. A refresh
+        starts no check past REFRESH_S, so the newest records are read again while the runs of a large store are
+        checked. An edit of records already read shows in a file store's bytes (_open, every EDIT_S); a run of a
+        Postgres store, and one that failed or could not be checked, is checked again RECHECK_S after its last check
+        (the run checked longest ago, one a pass)."""
         now, stale = time.monotonic(), None
         due = [now + RECHECK_S]
         self.due = due[0]   # a store that cannot be read is tried again when it changes, not every POLL_S
-        r = reader(self.cfg)
+        r = self._open()
+        due += [self.edit_due] * (not self.pg)
         try:
             note = r.checkpoint_latest()
             if note and note[0] > r.tree.size:
                 r.close()
-                r = reader(self.cfg)   # opened after the note: holds every record it covers
+                r = self._open()   # read after the note: holds every record it covers
             if (note[0] if note else 0) < self.noted:   # every run would go unchecked (covered 0) or partly checked
                 raise StorageCorrupt(f"its checkpoint note went back from {self.noted} to {note[0] if note else 0} "
                                      "records: the store was edited or replaced")
             self.noted = note[0] if note else 0
             with self.lock:
                 self.listed = {k for k in r.runs if k[1] != SIGNER_RUN[1]}
-            for key, run in list(r.runs.items()):
+            def order(kv):   # what runs added, the one checked longest ago first; then the runs not checked yet, the
+                state = self.runs.get(kv[0]) or {}   # newest first, the signer's own after the agents'
+                if state.get("count") and not state.get("again"):
+                    return 0, state["checked"]
+                return 1, kv[0][1] == SIGNER_RUN[1], -kv[1]["seqs"][-1]
+            for key, run in sorted(r.runs.items(), key=order):
                 covered = bisect.bisect_left(run["seqs"], note[0]) if note else 0   # its records the note covers
                 state = self.runs.get(key, {})
-                if covered and covered != state.get("count"):
-                    at = state.get("checked", 0) + BACKOFF * state.get("took", 0)
-                    if at > now:
-                        due.append(at)
+                if covered and (covered != state.get("count") or state.get("again")):
+                    grew = bool(state.get("count")) and not state.get("again")   # shown before: what it added
+                    if grew and self.idle > time.monotonic() or time.monotonic() - now > REFRESH_S:
+                        due.append(self.idle if grew else now)
                     else:
                         self._check(r, note[1], key, covered)
-                elif covered:
+                        if grew:
+                            self.idle = time.monotonic() + BACKOFF * self.runs[key].get("took", 0)
+                elif covered and (self.pg or state.get("failed")):
                     due.append(state["checked"] + RECHECK_S)
                     if state["checked"] + RECHECK_S <= now and (stale is None or state["checked"] < stale[1]):
                         stale = key, state["checked"], covered
@@ -1039,6 +1061,31 @@ class StoreFeed:
             r.close()
         self.due = min(due)
 
+    def _open(self):
+        """The store's reader: a new one of a Postgres store; a file store's kept across refreshes, updated with the
+        records appended since (FileReader.update), and read anew, every run then checked again, when the file is no
+        longer the one it read or no longer holds the bytes it read (hashed again every EDIT_S, and at once when the
+        file was written to without growing): an edit of records already read."""
+        if self.pg:
+            return reader(self.cfg)
+        if self.reader is not None:
+            try:
+                if self.reader.update() or time.monotonic() >= self.edit_due:
+                    self.edit_due = time.monotonic() + EDIT_S
+                    if not self.reader.unchanged():
+                        raise StorageCorrupt("records.jsonl no longer holds the records the viewer read")
+                return self.reader
+            except StorageCorrupt as e:
+                print(f"tracekit view: {e}: every run is checked again", file=sys.stderr, flush=True)
+                self.reader = None
+                self.bundles.clear()
+                with self.lock:
+                    for state in self.runs.values():
+                        state["again"] = True
+        self.reader = reader(self.cfg)
+        self.edit_due = time.monotonic() + EDIT_S
+        return self.reader
+
     def _check(self, reader, note, key, count):
         """_verify, where an error gives the run a "not checked" row and is tried again as a run that did not grow
         is: one run never stops the others being checked."""
@@ -1054,23 +1101,24 @@ class StoreFeed:
                              "label": OPERATOR_SIDE, "agent": None}
             with self.lock:
                 self.runs[key] = dict(self.runs.get(key) or {"count": 0, "shown": 0}, count=count,
-                                      failed="NOT CHECKED (error)", checked=time.monotonic())
+                                      failed="NOT CHECKED (error)", checked=time.monotonic(), again=False)
                 self._append([dict(row, tenant=key[0])], key)
 
     def _verify(self, reader, note, key, count):
         tenant, run_id = key
         t = time.thread_time()   # its own CPU time: not the time it waited for the mirror thread
-        rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, os.path.join(self.tmp, "run.tkb"),
-                                          self.memo)
+        # a file store's reader holds the records read before as they were: read from there (bundles)
+        rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, None, self.memo,
+                                          **({} if self.pg else {"kept": self.bundles.setdefault(key, {})}))
         if len(self.memo) > MEMO_MAX:   # lean: forgets every run's records at once; an LRU if big stores re-check often
             self.memo.clear()
         state = dict(self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}, checked=time.monotonic(),
-                     took=time.thread_time() - t)
+                     took=time.thread_time() - t, again=False)
         if not code and count == state["count"] and not state["failed"]:   # checked again, unchanged: nothing new
             with self.lock:
                 self.runs[key] = state
             return
-        e = {"run_id": run_id}
+        e, hidden = {"run_id": run_id}, False
         if code:
             rv = {"verdict": "failed", "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
                   "label": OPERATOR_SIDE, "agent": None}
@@ -1087,7 +1135,14 @@ class StoreFeed:
         else:
             records = verified   # what the checkpoint covers, as verified: not read again from the store
             e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
-            want = [r for r in records[state["shown"]:] if self.content and (
+            # a run first shown once rows have left the live view, older than any record it holds, would push newer
+            # runs' rows out (the newest are checked first): its review only, as for a run whose rows left the view
+            # (its rows are read on demand, /api/rows), and no graph and no content read for it
+            with self.lock:
+                oldest = next((x["tk_seq"] for x in self.records if x is not observe.RETRACTED
+                               and x.get("tk_seq") is not None), None) if self.base else None
+            hidden = not state["shown"] and oldest is not None and records[-1]["event"]["seq"] < oldest
+            want = [r for r in records[state["shown"]:] if self.content and not hidden and (
                 r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")
                 or r["event"]["type"] == "model.exchange" and (r["event"].get("data") or {}).get("content_digest"))]
             from .why.signed import EvidenceAlert
@@ -1097,7 +1152,8 @@ class StoreFeed:
                     self.tr.content.update({(run_id, s): c for s, c in self.content(run_id, want).items()})
                 except EvidenceAlert as x:   # the vault's content does not open its record: none of it shown
                     new = [self._own(e, "high", "CONTENT NOT SHOWN", str(x)[:1024], "ALERT")]
-            new += [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
+            rows = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]   # translated: later rows need it
+            new += [] if hidden else rows
             rv = review(records, rep, "verified")
             summary = (f"tenant {tenant} · the signer's own records" if run_id == SIGNER_RUN[1] else
                        f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
@@ -1126,10 +1182,12 @@ class StoreFeed:
                 for k in [k for k in self.rowcache if k[:2] == key]:   # and /api/rows' answers
                     del self.rowcache[k]
             self._append([dict(x, tenant=tenant) for x in new], key)
-        if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape
-            with self._mlock:
-                self._mirror[key] = records
+        if self.on_run and key[1] != SIGNER_RUN[1] and not hidden:   # after the tape has the records
+            with self._mlock:   # a file store's run as the bytes that verified: an import waiting holds no records
+                self._mirror[key] = (self.bundles.get(key) or {}).get("data") or records
                 self._mlock.notify()
+        if not code and rv["state"] == "final":   # it grows no more
+            self.bundles.pop(key, None)
         if not code and analyze:   # after its rows too: the analysis reads the run's content, which takes a while
             found = self._findings(e, records)
             row = {**self.tr._base(e, {}, "tk_run"), "analysis": True,
@@ -1139,10 +1197,10 @@ class StoreFeed:
 
     def _mirrors(self):
         """The mirror thread: on_run for each run that changed, with its newest records. A run is imported whole each
-        time, so a growing run is mirrored again no sooner than BACKOFF times its last mirror's time after it; a run
-        that failed or left the live view (records None) loses its mirror at once."""
-        # lean: BACKOFF counts the import, not the why server's analysis of it on its own thread (about as long again);
-        # count both if a growing run's graph costs too much CPU
+        time, so a growing run is mirrored again no sooner than MIRROR_BACKOFF times its last mirror's time after it; a
+        run that failed or left the live view (records None) loses its mirror at once."""
+        # lean: MIRROR_BACKOFF counts the import, not the why server's analysis of it on its own thread (about as long
+        # again, so about 2% of a core in all); import only the new records if a live run's graph must keep up
         due = {}   # (tenant, run_id) -> when it may be mirrored again
         while True:
             with self._mlock:
@@ -1157,11 +1215,13 @@ class StoreFeed:
                 records = self._mirror.pop(ready)
             t, cpu = time.monotonic(), time.thread_time()
             try:
+                if isinstance(records, bytes):   # a run file's lines, verified: read as loads_strict did
+                    records = [json.loads(line) for line in records.split(b"\n")[:-1]]
                 self.on_run(*ready, records, self.tr.reasons)
             except Exception as e:   # the run's own view does not depend on its graph
                 print(f"tracekit view: no graph for run {ready[1]}: {e}", file=sys.stderr, flush=True)
             due = {k: v for k, v in due.items() if v > t}   # only runs still put off
-            due[ready] = time.monotonic() + BACKOFF * (time.thread_time() - cpu)
+            due[ready] = time.monotonic() + MIRROR_BACKOFF * (time.thread_time() - cpu)
 
     def _own(self, e, sev, title, text, tape):
         """A row the viewer makes (a verifier report, a finding of its analysis): no record of the log, so no seq and
@@ -1378,15 +1438,22 @@ def write_trust(path, vkeys):
     return path
 
 
-def check(reader, tenant, run_id, note, trust, out, memo=None):
-    """(report, exit code, printed report, records) of verify.v2 on the run's bundle, exported from `reader` with `note`
-    to `out`; `records`: the run's records as verify.v2 read them ([] unless it verifies), so what is shown is what
-    was checked, never a second read of the store; `memo`: verify.v2's, kept across checks."""
+def check(reader, tenant, run_id, note, trust, out=None, memo=None, kept=None):
+    """(report, exit code, printed report, records) of verify.v2 on the run's bundle from `reader` with `note`, exported
+    to `out`, else checked as bundle_v2.bundle builds it (not zipped); `records`: the run's records as verify.v2 read
+    them ([] unless it verifies), so what is shown is what was checked, never a second read of the store; `memo`:
+    verify.v2's, kept across checks; `kept`: a dict that holds bundle's `kept` of the run's last bundle that verified
+    (none once one does not), so a run that grew is read from there, from a reader that still holds those records."""
     from .why.import_v2 import bundle_records
-    records = []
+    records, now = [], {}
     try:
-        export(reader, tenant, run_id, note, out)
-        verified, rep, code = bundle_records(out, trust, memo)
+        if out:
+            export(reader, tenant, run_id, note, out)
+            verified, rep, code = bundle_records(out, trust, memo)
+        else:
+            files, info = bundle(reader, tenant, run_id, note, kept=kept)
+            verified, rep, code = bundle_records(files, trust, memo)
+            now = {} if code else info.get("kept", {})
         records = verified.get(run_id, [])
     # the store does not match its own checkpoint, or holds a record export can't read: either fails the run
     except (ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
@@ -1394,6 +1461,9 @@ def check(reader, tenant, run_id, note, trust, out, memo=None):
         rep.integrity, rep.assurance = "FAILED", "none"
         rep.check("export", False, str(e) if isinstance(e, ValueError) else
                   f"a record of the run can't be read ({type(e).__name__})")
+    if kept is not None:
+        kept.clear()
+        kept.update(now)
     text = io.StringIO()
     v2.print_report(rep, code, text)
     return rep, code, text.getvalue(), records

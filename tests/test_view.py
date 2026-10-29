@@ -607,8 +607,8 @@ class View(unittest.TestCase):
             self.assertIs(feed.rows(observe.ALL, "default", run_id), body)   # asked again: checked once
             other = self.finished_run()   # another run moves the log's checkpoint; this run's own records did not grow
             self.assertIs(feed.rows(observe.ALL, "default", run_id), body)
-        # rows()' own checks (the watcher's check of the other run verifies its bundle too, as run.tkb)
-        self.assertEqual(len([c for c in checked.call_args_list if os.path.basename(c.args[0]) != "run.tkb"]), 1)
+        # rows()' own checks (the watcher's check of the other run verifies its bundle too, unzipped: its files)
+        self.assertEqual(len([c for c in checked.call_args_list if not isinstance(c.args[0], dict)]), 1)
         rows = json.loads(body)["rows"]
         self.assertEqual([r["tool_use_id"] for r in rows if r["event"] == "PreToolUse"], ["c1", "c2", "c3"])
         self.assertEqual({r["tenant"] for r in rows}, {"default"})
@@ -1104,7 +1104,7 @@ class View(unittest.TestCase):
                     "coverage": {"verdict": {"reasoning": {"full": 0, "summary": 0, "withheld": 0, "none": 1},
                                              "checks": {"TK-X201": {"checked": 0, "found": 0, "not_checkable": [
                                                  {"reason": "no_response", "n": 1}]}}}}}
-        def verified(reader, tenant, rid, *a):   # the run's records as the check read them
+        def verified(reader, tenant, rid, *a, **k):   # the run's records as the check read them
             return mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.", recs[rid]
         with mock.patch.object(view, "reader", return_value=fake), mock.patch.object(view, "check",
                                                                                       side_effect=verified):
@@ -1134,7 +1134,7 @@ class View(unittest.TestCase):
             for i in range(1, 5)] + [v2rec(5, "run.final", {}, "r1")]
         fake = mock.Mock(runs={("default", "r1"): {"seqs": list(range(6))}}, tree=mock.Mock(size=6))
         fake.iter_run.side_effect = lambda tenant, rid: iter(recs)
-        def verified(reader, tenant, rid, note, *a):   # what the note covers, as the check read it
+        def verified(reader, tenant, rid, note, *a, **k):   # what the note covers, as the check read it
             return mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.", recs[:int(note[-1])]
 
         def rows():
@@ -1203,6 +1203,47 @@ class View(unittest.TestCase):
         self.assertIn(view.OPERATOR_SIDE, rep["text"])
         self.assertEqual(self.rows(feed, run_id), [rep])   # none of its events
         self.assertEqual(feed.verify()[1], [f"run {run_id} of tenant default: FAILED"])
+
+    def test_a_growing_run_is_read_and_checked_from_where_it_was(self):
+        """tracekit view opened the store again at each change (2.5 s and 1.2 GB for 400k records, each second an agent
+        wrote) and exported and checked a growing run whole at each checkpoint: a core pinned at 100% for as long as
+        it ran. The store is read once, then only what is appended to it, and a run that grew has only the records it
+        added checked one by one (the checks of the run as a whole run again, over all of them)."""
+        run = self.client.run(agent="grow")
+        run.decide("c1", "Bash", {"command": "ls"})
+        storage, key = self.service.log.storage, ("default", run.run_id)
+        covered = lambda: (storage.checkpoint_latest() or (0,))[0] == storage.tree.size  # noqa: E731
+        self.assertTrue(wait_for(covered, 20))
+        opened, real = [], view.reader
+        with mock.patch.object(view, "reader", side_effect=lambda cfg: opened.append(cfg) or real(cfg)):
+            feed = store_feed(self, {"data_dir": self.d})
+            self.assertTrue(wait_for(lambda: (feed.runs.get(key) or {}).get("count") == 2, 15))
+            with mock.patch.object(view.v2, "verify_record", wraps=view.v2.verify_record) as checked:
+                run.decide("c2", "Bash", {"command": "pwd"})
+                self.assertTrue(wait_for(covered, 20))
+                self.assertTrue(wait_for(lambda: feed.runs[key]["count"] == 3, 15))
+        self.assertEqual(len(opened), 1)
+        self.assertEqual([c.args[0]["event"]["run_seq"] for c in checked.call_args_list
+                          if c.args[0]["event"]["run_id"] == run.run_id], [2])
+        self.assertEqual([r["v2"]["run_seq"] for r in self.rows(feed, run.run_id) if "v2" in r], [0, 1, 2])
+
+    @pytest.mark.unverified_bundles
+    def test_an_edit_among_new_records_is_caught_when_the_store_is_hashed_again(self):
+        """The viewer reads only what is appended to a store: an edit of a record it read before, made as records were
+        appended, would never be read again. It hashes the bytes it read again every EDIT_S, and a change has every
+        run checked again."""
+        run_id = self.finished_run()
+        feed = store_feed(self, {"data_dir": self.d})
+        self.report(feed, run_id)
+        path = os.path.join(self.d, "store", "records.jsonl")
+        with open(path, "r+b") as f:
+            data = f.read()
+            f.seek(0)
+            f.write(data.replace(b'"tool":"Bash"', b'"tool":"Bosh"', 1))
+        self.finished_run()   # appended after the edit: the store grew
+        self.assertFalse(wait_for(lambda: feed.verify()[1], 2))   # not hashed again yet
+        feed.edit_due = feed.due = 0   # EDIT_S later
+        self.assertTrue(wait_for(lambda: feed.verify()[1] == [f"run {run_id} of tenant default: FAILED"], 15))
 
     @pytest.mark.unverified_bundles
     def test_an_edit_of_a_run_already_shown_takes_its_records_back_at_its_next_check(self):
@@ -2021,6 +2062,7 @@ class LiveRuns(unittest.TestCase):
         self.fake = mock.Mock(tree=mock.Mock(size=10 ** 6))
         self.fake.iter_run.side_effect = lambda tenant, rid: iter(list(self.recs[rid]))
         self.fake.checkpoint_latest.return_value = (10 ** 6, "note")
+        self.fake.update.return_value, self.fake.unchanged.return_value = False, True   # appended to, never edited
         self.now, self.cfg = [1000.0], {"data_dir": self.d}
         real = view.reader   # another test's feed, still watching its own store, reads that store
         self.clock = types.SimpleNamespace(time=lambda: self.now[0], monotonic=lambda: self.now[0],
@@ -2034,9 +2076,9 @@ class LiveRuns(unittest.TestCase):
         """A StoreFeed the test refreshes itself (no watch thread); `verdicts(run_id)`: each check's answer."""
         self.checks, real = [], view.check
 
-        def check(reader, tenant, run_id, note, trust, out, memo):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
             if reader is not self.fake:
-                return real(reader, tenant, run_id, note, trust, out, memo)
+                return real(reader, tenant, run_id, note, trust, out, memo, kept)
             self.checks.append(run_id)
             self.now[0] += 2   # each check takes 2 s
             rep, code, text = verdicts(run_id)
@@ -2124,14 +2166,14 @@ class LiveRuns(unittest.TestCase):
         verdicts = [VERIFIED, FAILED, VERIFIED]
         feed = self.feed(lambda run_id: verdicts.pop(0))
         self.refresh(feed)
-        self.now[0] += 60
+        self.now[0] += view.BACKOFF * 2   # past the CPU budget of the check before (2 s each)
         self.refresh(feed, r1=1)
         snap, streamed = self.served(feed)
         for rows in (snap["records"], streamed):
             self.assertEqual([(r["event"], r.get("analysis"), (r.get("review") or {}).get("verdict")) for r in rows],
                              [("tk_alert", True, "failed")])
         self.assertEqual(feed.verify()[1], ["run r1 of tenant default: FAILED"])
-        self.now[0] += 60
+        self.now[0] += view.BACKOFF * 2
         self.refresh(feed, r1=1)
         snap, _ = self.served(feed)
         self.assertEqual([r["v2"]["run_seq"] for r in snap["records"] if not r.get("analysis")], [0, 1, 2, 3])
@@ -2166,25 +2208,72 @@ class LiveRuns(unittest.TestCase):
             self.refresh(feed, c=20)
         self.assertEqual(list(feed.kept), [("default", "a")])
 
-    def test_a_growing_run_is_checked_again_no_sooner_than_backoff_times_its_last_check(self):
+    def test_runs_that_grew_are_checked_again_within_a_cpu_budget(self):
         """One watch thread checked every run in full at each checkpoint (5.4 s for 10k records, 27 s for 50k, every
-        10 s): a run being written pinned the CPU and the page fell minutes behind. A run is checked again no sooner
-        than BACKOFF times its last check's time, and a run put off is checked once it is due with no store change."""
+        10 s): a run being written pinned the CPU and the page fell minutes behind. After a check of what a run added,
+        no run that grew is checked again for BACKOFF times that check's CPU time, so those checks take at most
+        1/(1 + BACKOFF) of a core, each run in turn; a new run's first check is not put off, and a run put off is
+        checked once it is due with no store change."""
         feed = self.feed(lambda run_id: VERIFIED)
         self.refresh(feed)
-        self.assertEqual((self.checks, feed.due), (["r1"], 1000 + view.RECHECK_S))
+        self.assertEqual((self.checks, feed.due), (["r1"], 1000 + view.EDIT_S))   # when its bytes are hashed again
         self.refresh(feed, r1=1)
-        self.assertEqual((self.checks, feed.due), (["r1"], 1002 + view.BACKOFF * 2))
-        self.now[0] = feed.due
+        self.assertEqual(self.checks, ["r1", "r1"])   # what it added, 2 s: nothing that grew for BACKOFF x 2 s
+        self.refresh(feed, r1=1, r2=1)
+        self.assertEqual(self.checks, ["r1", "r1", "r2"])   # r2 is new; r1 waits
+        self.assertLessEqual(feed.due, 1004 + view.BACKOFF * 2)
+        self.now[0] = 1004 + view.BACKOFF * 2 - 1
         self.refresh(feed)
-        self.assertEqual(self.checks, ["r1", "r1"])
+        self.assertEqual(self.checks, ["r1", "r1", "r2"])
+        self.now[0] += 1
+        self.refresh(feed)
+        self.assertEqual(self.checks, ["r1", "r1", "r2", "r1"])
         with feed.lock:
-            self.assertEqual(feed.records[-1]["review"]["records"], 3)
+            self.assertEqual(feed.latest[("default", "r1")]["review"]["records"], 4)
+        self.now[0] += view.BACKOFF * 2   # both grew: the one checked longest ago first, so none waits for ever
+        self.refresh(feed, r1=1, r2=1)
+        self.assertEqual(self.checks[4:], ["r2"])
+
+    def test_the_newest_runs_are_checked_first_and_a_refresh_leaves_the_rest_to_the_next(self):
+        """On start the viewer checked every run of the store, oldest first, in one pass (minutes for a big store): the
+        run being written showed last, and its new records waited for the whole pass. The newest run is checked first,
+        and a refresh starts no check past REFRESH_S, so the next reads the store again first."""
+        for i, run in enumerate("abcd"):
+            self.recs[run] = [v2rec(10 + i, "run.registered", {"agent": {"name": run}}, run)]
+        feed = self.feed(lambda run_id: VERIFIED)
+        self.refresh(feed)
+        self.assertEqual(self.checks, ["d", "c", "b"])   # 2 s each: a fourth would start past REFRESH_S
+        self.assertLessEqual(feed.due, self.now[0])   # the rest at once
+        self.recs["d"].append(v2rec(20, "policy.decision", {"tool": "Bash", "decision": "allow"}, "d"))
+        self.refresh(feed)
+        self.assertEqual(self.checks[3:], ["d", "a", "r1"])
+
+    def test_runs_older_than_the_live_view_show_their_verdict_not_rows_that_push_newer_ones_out(self):
+        """Checked newest first, a store's older runs pushed the newest runs' rows out of the live view, and every row
+        of every run went down the event stream on start (433,671 rows, 420 MB, for a 430k-record store). Once rows
+        have left the view, a run older than every record it holds shows only its review (its rows read on demand:
+        /api/rows), with no graph and no content read for it."""
+        self.recs, asked, imported = {}, [], []
+        for i, run in enumerate("abc"):   # c is the newest
+            self.recs[run] = [v2rec(100 * i + k, "policy.decision", {"tool": "Bash", "decision": "allow",
+                                                                     "args_commitment": "c"}, run) for k in range(6)]
+        feed = self.feed(lambda run_id: VERIFIED, content=lambda run_id, recs: asked.append(run_id) or {},
+                         on_run=lambda tenant, run_id, recs, reasons: imported.append(run_id))
+        feed.max_records = 10
+        self.refresh(feed)
+        self.assertEqual(self.checks, ["c", "b", "a"])
+        with feed.lock:   # the newest ten: c's last row and report, b's six rows and report, and a's report alone
+            self.assertEqual([(r["session_id"], r.get("tape")) for r in feed.records],
+                             [("c", None), ("c", "VERIFY")] + [("b", None)] * 6 + [("b", "VERIFY"), ("a", "VERIFY")])
+            self.assertEqual(feed.records[-1]["review"]["verdict"], "verified")
+        self.assertEqual(asked, ["c", "b"])
+        self.assertTrue(wait_for(lambda: sorted(imported) == ["b", "c"], 5))
+        self.assertFalse(wait_for(lambda: "a" in imported, 0.3))
 
     def test_a_growing_runs_graph_is_imported_again_no_sooner_than_backoff_times_its_last_import(self):
         """A run's graph is imported whole each time it grows (4.7 s for 20k records, on a thread holding the CPU the
-        checks need): it is imported again no sooner than BACKOFF times its last import's time, and a run that failed
-        loses its graph at once."""
+        checks need): it is imported again no sooner than MIRROR_BACKOFF times its last import's time, and a run that
+        failed loses its graph at once."""
         imported, key = [], ("default", "r1")
 
         def on_run(tenant, run_id, records, reasons):
@@ -2203,7 +2292,7 @@ class LiveRuns(unittest.TestCase):
         self.assertFalse(wait_for(lambda: len(imported) > 1, 0.3))
         mirror(None)
         self.assertTrue(wait_for(lambda: imported == [[1], None], 5))
-        mirror([3], advance=view.BACKOFF * 2)
+        mirror([3], advance=view.MIRROR_BACKOFF * 2)
         self.assertTrue(wait_for(lambda: imported == [[1], None, [3]], 5))
 
     def test_a_runs_graph_goes_when_its_rows_leave_the_live_view(self):
@@ -2232,30 +2321,35 @@ class LiveRuns(unittest.TestCase):
 
     def test_a_clock_stepped_back_still_checks_a_run_again(self):
         """RECHECK_S and BACKOFF were timed by the wall clock: after it stepped back (an NTP step, a manual change), an
-        edited run stayed VERIFIED for the step plus RECHECK_S."""
+        edited run stayed VERIFIED for the step plus RECHECK_S. The store's bytes are hashed again (EDIT_S) by the
+        monotonic clock."""
         verdicts = [VERIFIED, FAILED]
         feed = self.feed(lambda run_id: verdicts.pop(0))
         self.refresh(feed)
         wall = self.now[0] - 3600
         self.clock.time = lambda: wall   # the wall clock steps back an hour; the monotonic one goes on
-        self.now[0] += view.RECHECK_S
+        self.fake.unchanged.return_value = False   # an edit in place, among appends
+        self.now[0] += view.EDIT_S
         self.refresh(feed)
         self.assertEqual(self.checks, ["r1", "r1"])
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
 
-    def test_a_run_that_did_not_grow_is_checked_again_and_adds_no_rows_while_unchanged(self):
-        """A run was checked only when it grew, so an edit of records already shown stayed VERIFIED until a restart."""
+    def test_a_run_that_did_not_grow_is_checked_again_when_its_store_is_edited_and_adds_no_rows_while_unchanged(self):
+        """A run was checked only when it grew, so an edit of records already shown stayed VERIFIED until a restart. A
+        file store whose bytes changed (hashed again every EDIT_S, at once when written to without growing) has every
+        run checked again; while they are unchanged, none is (checking each run every RECHECK_S checked the whole
+        store every five minutes)."""
         verdicts = [VERIFIED, VERIFIED, FAILED]
         feed = self.feed(lambda run_id: verdicts.pop(0))
         self.refresh(feed)
         rows = len(feed.records)
-        self.refresh(feed)
-        self.assertEqual(self.checks, ["r1"])   # not due yet
         self.now[0] += view.RECHECK_S
         self.refresh(feed)
-        self.assertEqual((self.checks, len(feed.records)), (["r1", "r1"], rows))   # unchanged: nothing new
-        self.now[0] += view.RECHECK_S
+        self.assertEqual(self.checks, ["r1"])   # its bytes unchanged: not checked again
+        self.fake.update.return_value, self.fake.unchanged.return_value = True, False   # rewritten in place
+        self.refresh(feed)
+        self.assertEqual((self.checks, len(feed.records)), (["r1", "r1"], rows))   # the same verdict: nothing new
         self.refresh(feed)
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
@@ -2288,7 +2382,7 @@ class LiveRuns(unittest.TestCase):
         self.now[0] += view.RECHECK_S
         self.refresh(feed)
         self.refresh(feed)
-        self.assertEqual(self.checks[2:], ["r1", "bad"])   # one run a pass, the one checked longest ago first
+        self.assertEqual(self.checks[2:], ["bad"])   # tried again; r1, verified, only when its store's bytes change
         self.assertEqual(feed.latest[("default", "bad")]["review"]["verdict"], "verified")
         self.assertEqual(feed.verify()[1], [])
 
