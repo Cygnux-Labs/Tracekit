@@ -167,7 +167,8 @@ protocol stays 20.
   with records in changed bytes read RE-CHECKING until checked again ([limits](docs/limits.md#viewer)). Ctrl-C gives
   the terminal back in about a second (it took 17 s and more).
 - **HORIZON stays responsive on large live runs (#473)**: the stage no longer grows with the side card, callouts
-  aren't drawn over the readouts, and clicking an agent to follow it no longer freezes the page.
+  aren't drawn over the readouts, and clicking an agent to follow it no longer freezes the page. A call to localhost,
+  127.x, ::1 or 0.0.0.0 is on this machine, not a jet counted in EGRESS.
 - **A tab left open across a viewer restart** kept its old tape, NEEDS YOU and toasts with no word of why; it now says
   the viewer was restarted (open the link it printed, or sign in again) and stops its live parts. A HORIZON stage the
   browser can't back no longer turns white.
