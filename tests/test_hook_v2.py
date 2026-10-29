@@ -705,8 +705,8 @@ class HookV2(unittest.TestCase):
             proc = self.pre('echo "open', tid=tid, wait=False)
             line = proc.stderr.readline()
             aid = line.split()[4]
-            self.assertIn(f"; a person approves it from another terminal with `tracekit approvals{named} approve {aid}` "
-                          f"or rejects it with `tracekit approvals{named} reject {aid}`", line)
+            self.assertIn(f": a person approves it from another terminal with `tracekit approvals{named} approve "
+                          f"{aid}` or rejects it with `tracekit approvals{named} reject {aid}`", line)
             cmd = dict(zip(("approve", "reject"), re.findall(r"`tracekit ([^`]+)`", line)))[decision]
             out = subprocess.run(f"{shlex.quote(sys.executable)} -m tracekit {cmd}", shell=True, capture_output=True,
                                  text=True, timeout=60, env=person)
@@ -732,8 +732,8 @@ class HookV2(unittest.TestCase):
         edit = {"file_path": os.path.join(self.dir, "billing.py"), "old_string": "a", "new_string": "b"}
         proc = self.hook("PreToolUse", tool_name="Edit", tool_input=edit, tool_use_id="t1", wait=False)
         line = proc.stderr.readline()
-        self.assertIn("(TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the "
-                      "person", line)
+        self.assertIn("(TK-CONSTRAINT): a person approves it", line)
+        self.assertIn("Why: the person's request in this run said not to modify billing.py; ask the person", line)
         self.assertEqual(line.count("TK-CONSTRAINT"), 1, line)
         Client().approval_decide({"approval_id": line.split()[4], "decision": "reject"})
         err = proc.stderr.read()
@@ -786,7 +786,8 @@ class HookV2(unittest.TestCase):
         self.assertEqual(self.hook("SessionStart", source="resume")[0], 0)
         self.assertFalse(os.path.exists(claude_code._state("s1", "t1")))
         line = self.held_edit("billing.py", "t2")
-        self.assertIn("(TK-CONSTRAINT): the person's request in this run said not to modify billing.py", line)
+        self.assertIn("(TK-CONSTRAINT): a person approves it", line)
+        self.assertIn("Why: the person's request in this run said not to modify billing.py", line)
 
     def test_a_prompt_too_large_to_record_still_adds_its_constraints(self):
         code, err = self.hook("UserPromptSubmit", prompt="Don't touch billing.py. " + "x" * (1 << 20))
@@ -1058,17 +1059,19 @@ class HeldCalls(unittest.TestCase):
         """Cursor shows 500 characters of a block message (as Gemini CLI, Antigravity CLI, Codex and Droid get it): the
         longest hold a shipped pack makes, TK-A043's, was cut mid-sentence and unmarked. The cut keeps the rule id and
         the approve and reject commands, drops from the end of the reasons and ends with "…"; after a reject, the
-        retry's says so within the 500."""
+        retry's says so within the 500. With TRACEKIT_APPROVAL_WAIT the waiting line comes first, and put the reasons
+        before the commands, which the cut then dropped: it names them first too."""
         packs = map(service.load_policy, glob.glob(os.path.join(ROOT, "tracekit", "policy2", "packs", "*.yaml")))
         self.assertEqual(max((len(service.SignerService._reasons(types.SimpleNamespace(policy=e), [r["id"]])), r["id"])
                              for e in packs for sec, r, *_ in e.rules if sec == "ask")[1], "TK-A043")
         cursor = install._hook_command("tracekit.integrations.harness_hooks", "entry", ("cursor", "preToolUse"))
 
-        def pre(tid):
+        def pre(tid, wait=""):
             p = subprocess.run(cursor, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
                                input=json.dumps({"hook_event_name": "preToolUse", "conversation_id": "c1",
                                                  "tool_name": "Shell", "tool_use_id": tid,
-                                                 "tool_input": {"command": "stripe refunds create --charge ch_1"}}))
+                                                 "tool_input": {"command": "stripe refunds create --charge ch_1"}}),
+                               env=dict(os.environ, **{claude_code.WAIT_ENV: wait}))
             reply, err = json.loads(p.stdout), p.stderr.strip()
             self.assertEqual((reply["permission"], reply["user_message"]), ("deny", reply["agent_message"]))
             return reply["agent_message"], err, err.split()[4]
@@ -1083,6 +1086,12 @@ class HeldCalls(unittest.TestCase):
         msg, _, again = pre("m2")
         self.assertIn(f"`tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by "
                       f"uid:{os.getuid()}); ask them before trying again; moving money", msg)
+        self.assertTrue(msg.endswith("…"), msg)
+        msg, _, waited = pre("m3", wait="1")
+        self.assertTrue(msg.startswith(f"[tracekit] waiting for approval {waited} (TK-A043): a person approves it "
+                                       f"from another terminal with `tracekit approvals approve {waited}` or rejects "
+                                       f"it with `tracekit approvals reject {waited}`. Why: a person rejected this "
+                                       f"exact call ({aid}, "), msg)
         self.assertTrue(msg.endswith("…"), msg)
 
     def test_the_agent_cannot_approve_its_own_held_call(self):
@@ -1459,17 +1468,17 @@ class HoldLine(unittest.TestCase):
                 self.assertEqual(claude_code.approval_wait_s(), s)
 
     def test_hold_line_drops_a_trailing_period_from_the_reason(self):
-        """A rule's reason ends with a period (often from the joined remedy). The hold line joins it to the approval
-        hint with `;`, so a trailing period would print as `.;` (#444)."""
+        """A rule's reason ends with a period (often from the joined remedy). The hold line joined it to the approval
+        hint with `;`, so a trailing period printed as `.;` (#444); the reasons now end the line, without it, as the
+        held line's do."""
         waiting, not_approved = self.hold_lines("force push. Push without --force.")
-        self.assertIn("(TK-A003): force push. Push without --force; a person approves it", waiting)
-        self.assertNotIn(".;", waiting)
+        self.assertTrue(waiting.endswith("reject apr-1`. Why: force push. Push without --force"), waiting)
         self.assertIn("(TK-A003: force push. Push without --force) and not approved:", not_approved)
 
     def test_hold_line_keeps_an_ellipsis_whole(self):
         """A person's own rule may end its reason with `...`: dropping one period would print `..`."""
         waiting, not_approved = self.hold_lines("Hold for review...")
-        self.assertIn("(TK-A003): Hold for review...; a person approves it", waiting)
+        self.assertTrue(waiting.endswith("reject apr-1`. Why: Hold for review..."), waiting)
         self.assertIn("(TK-A003: Hold for review...) and not approved:", not_approved)
 
     def test_on_windows_a_named_signer_is_in_double_quotes(self):

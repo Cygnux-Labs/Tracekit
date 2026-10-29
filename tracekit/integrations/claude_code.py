@@ -371,10 +371,11 @@ def _pre(client, p, sid, tid):
                 f'"{client.signer}"')
             cmd = "tracekit approvals" + (f" --signer {named}" if named else "")
             wait_s = approval_wait_s()
+            # the commands before the reasons, as in the held line: a harness that cuts the message keeps them
             if state == "requested" and wait_s:
-                print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])}){why}; a person approves it "
-                      f"from another terminal with `{cmd} approve {aid}` or rejects it with `{cmd} reject {aid}`",
-                      file=sys.stderr, flush=True)
+                print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])}): a person approves it "
+                      f"from another terminal with `{cmd} approve {aid}` or rejects it with `{cmd} reject {aid}`"
+                      + (f". Why{why}" if why else ""), file=sys.stderr, flush=True)
             # time left for the last wait's answer and the consume
             deadline = min(end - 2 * per_call, time.monotonic() + wait_s)
             while state == "requested" and deadline > time.monotonic():
