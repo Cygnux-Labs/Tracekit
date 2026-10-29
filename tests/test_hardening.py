@@ -6,6 +6,7 @@ import http.server
 import io
 import json
 import os
+import random
 import shutil
 import signal
 import socket
@@ -268,6 +269,16 @@ class LineSeparators(unittest.TestCase):
         with zipfile.ZipFile(out) as z:
             self.assertIn("a\u2028b\u2029c\x85d", z.read("records.jsonl").decode("utf-8"))
         self.assertEqual(bundle.verify(out, [f"file:{d}/w.jsonl"])[1], 0)
+
+    def test_every_other_text_splits_as_splitlines_did(self):
+        """v1 is frozen: a .jsonl without U+0085, U+2028 or U+2029 reads into exactly the lines it did, whatever its
+        other line boundaries (a hand-made bundle may use \\r, \\x0b or \\x1c between records)."""
+        rnd = random.Random(7)
+        alphabet = ["a", "{", "}", '"', " ", "\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\u00e9"]
+        for _ in range(5000):
+            text = "".join(rnd.choice(alphabet) for _ in range(rnd.randrange(12)))
+            self.assertEqual(bundle._lines(text), text.splitlines(), repr(text))
+        self.assertEqual(bundle._lines("a\u2028b\u2029c\x85d\n"), ["a\u2028b\u2029c\x85d"])
 
 
 class Witnesses(unittest.TestCase):

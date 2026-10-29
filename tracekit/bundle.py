@@ -12,6 +12,7 @@ A .tkb is a zip:
 """
 import json
 import os
+import re
 import zipfile
 
 from .core import read_json
@@ -187,9 +188,11 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
 
 
 def _lines(text):
-    """The lines of a .jsonl file, split at "\n" only, as the exporter writes them: a record's JSON keeps U+0085,
-    U+2028 and U+2029 unescaped, and str.splitlines would also split there."""
-    return text.split("\n")[:-1] if text.endswith("\n") else text.split("\n") if text else []
+    """str.splitlines, except at U+0085, U+2028 and U+2029: a record's JSON keeps those three unescaped (the exporter
+    writes it with ensure_ascii=False), so splitting there broke the record. Every other line boundary is splitlines'
+    own, so no other bundle reads differently."""
+    parts = re.split("\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e]", text)
+    return parts[:-1] if parts[-1] == "" else parts
 
 
 def _replay(manifest, blobs):
