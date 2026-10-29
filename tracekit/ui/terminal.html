@@ -3583,15 +3583,14 @@
         for (let f; (f = slots.filter(s => s.items).sort((a, b) => b.n - a.n)[0]) && (f === r0 || f.n * 4 > keys.length && slots.length + f.items.length <= 31);)
           slots.splice(slots.indexOf(f), 1, ...f.items);
         slots.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-        // a slot at (u, v) in the disk's plane: the place there, or a folder of radius rho round it with its parts inside
         // a slot at (u, v) in the disk's plane: the place there, or a folder of radius rho round it, its parts packed
-        // inside (each as wide as the square root of its places); cramp: how many times its smallest part fits across it
+        // inside (each as wide as the square root of its places); cramp: its radius over its smallest part's
         const put = (s, u, v, rho, up) => {
           const at = { r: Math.hypot(u, v), th: Math.atan2(v, u), up, name: up ? s.path.slice(folds[up].path.length + 1) || "./" : s.path };
           if (!s.items) { Object.assign(places[s.k], at); return s.k; }
-          const key = "dir\u0000" + kind + "\u0000" + s.path, kids = [...s.items].sort((a, b) => b.n - a.n), in_ = hzPack(kids.map(c => Math.sqrt(c.n)), rho);
-          const f = folds[key] = { ...at, kind, path: s.path, label: s.path + "/", rho, cramp: rho / Math.min(...in_.map(p => p[2])), kids: [], leaves: [], rest: null, rests: 0 };
-          kids.forEach((c, j) => f.kids.push(put(c, u + in_[j][0], v + in_[j][1], in_[j][2] * .92, key)));
+          const key = "dir\u0000" + kind + "\u0000" + s.path, kids = [...s.items].sort((a, b) => b.n - a.n), inner = hzPack(kids.map(c => Math.sqrt(c.n)), rho);
+          const f = folds[key] = { ...at, kind, path: s.path, label: s.path + "/", rho, cramp: rho / Math.min(...inner.map(p => p[2])), kids: [], leaves: [], rest: null, rests: 0 };
+          kids.forEach((c, j) => f.kids.push(put(c, u + inner[j][0], v + inner[j][1], inner[j][2] * .92, key)));
           return key;
         };
         const w = s => s.items ? Math.sqrt(s.n) + 1 : 1, sum = slots.reduce((a, s) => a + w(s), 0);
@@ -3725,7 +3724,7 @@
       k = Math.min(HZKMAX, Math.max(1, k));
       return hzClamp({ k, x: w / 2 - p[0] * k, y: h / 2 - p[1] * k }, w, h);
     }
-    // the radius on screen at which folder f opens: OPEN px, and room for its smallest part to be 7px across
+    // the radius on screen at which folder f opens: OPEN px, and its smallest part 7px in radius
     const hzOpenAt = (f, open) => Math.max(open, 7 * f.cramp);
     // the camera flies to c, eased over 480 ms (at once when motion is reduced)
     function hzFlyTo(c) {
