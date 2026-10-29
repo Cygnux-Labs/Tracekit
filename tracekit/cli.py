@@ -81,7 +81,7 @@ def main(argv=None):
         return 2
     if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
         import importlib
-        if args[0] in _EXPERIMENTAL:
+        if args[0] in _EXPERIMENTAL and not {"-h", "--help"} & set(args[1:]):   # its help says so itself
             experimental(_EXPERIMENTAL[args[0]])
         return importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main(args[1:])
     ap = argparse.ArgumentParser(prog="tracekit", description="Tamper-evident records of what AI agents did.")

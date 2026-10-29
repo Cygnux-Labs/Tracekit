@@ -5,7 +5,7 @@ Tracekit has a small stable core and a larger set of experimental surfaces. Both
 **Stable** means it is tested end to end on every push to main and every pull request, and hardened first.
 
 **Experimental** means it works and is tested, but it may change between releases and gets less hardening. Each
-experimental command or server prints one line to stderr when it starts. Anything not listed as stable is
+experimental command or server prints one line to stderr when it starts (not for `--help`). Anything not listed as stable is
 experimental.
 
 ## Stable core

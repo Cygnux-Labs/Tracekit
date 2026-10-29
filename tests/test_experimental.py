@@ -48,6 +48,19 @@ class Experimental(unittest.TestCase):
             self.assertEqual(err.count("is experimental: it works and is tested, but may change "
                                        f"({wiki_url('docs/support.md')})"), int(says), cmd)
 
+    def test_help_is_not_said_to_be_experimental_twice(self):
+        """`tracekit pcm --help` printed the experimental banner above a help that says (experimental) itself: the
+        banner is for running the command, and help is not a run."""
+        for argv in (["pcm", "--help"], ["pcm", "verify", "-h"], ["graph", "--help"]):
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as cm:
+                cli.main(argv)
+            self.assertEqual((cm.exception.code, err.getvalue()), (0, ""), argv)
+            self.assertIn("usage: tracekit ", out.getvalue())
+        with mock.patch("tracekit.pcm.cli.main", return_value=0):
+            self.assertEqual(self.run_cli(["pcm", "demo"])[1].count("tracekit pcm is experimental"), 1)
+
     def test_the_signer_names_the_experimental_settings_it_was_given(self):
         from tracekit.signer import service as svc
         for cfg, want in (({"data_dir": "/nonexistent"}, None),
