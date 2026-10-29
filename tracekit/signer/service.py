@@ -2737,7 +2737,9 @@ class SignerService:
             if sums:
                 data["detect"] = {**data.get("detect", {}), **sums}
             names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
-            l2 = digest if digest is None or len(names) == 1 else {n: event_hash({"tool": n, "args": args}) for n in names}
+            seen = reconcile.compared(tool, args) if (run.get("rec") or {}).get("claude_code") else args
+            l2 = {n: event_hash({"tool": n, "args": args}) for n in names} if digest and len(names) > 1 else \
+                digest if seen is args else event_hash({"tool": tool, "args": seen})
 
             def record(did, verdict, rule_ids, again=False):
                 """Write decision `did`, as the run's hold or quarantine leaves it, and make it the call's; `again`: the

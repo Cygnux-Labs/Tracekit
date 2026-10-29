@@ -127,6 +127,17 @@ class TestReconcile(Reconcile):
         self.assertEqual(found, [("reconcile.fabricated", "tc-2")])
         self.assertEqual(final["data"]["coverage"]["layers"], ["L2", "L3"])
 
+    def test_only_a_claude_code_runs_calls_are_compared_without_what_claude_code_drops(self):
+        """reconcile.compared is Claude Code's (test_tailer): another framework's tool of the same name is compared as
+        its adapter reported it, a key Claude Code would drop included."""
+        write = {"file_path": "notes.md", "content": "x", "description": "the notes"}
+        run = self.register()
+        self.model(run, [use("tc-1", "Write", write), use("tc-2", "Write", write)])
+        self.run_call(run, "tc-1", "Write", write)
+        self.run_call(run, "tc-2", "Write", {k: v for k, v in write.items() if k != "description"})
+        [(found, _)] = self.final(run)
+        self.assertEqual(found, [("reconcile.args_mismatch", "tc-2")])
+
     def test_each_kind(self):
         runs = [self.register() for _ in range(5)]
         missing, fabricated, mismatch, unparseable, result = runs
