@@ -42,12 +42,12 @@ ask:
     # (issue_refund), or transfer_money, called with no amount: a full refund, or the amount set earlier, which TK-M001
     # can't read. With an amount TK-M001 holds it alone, so its approval.agent bounds still decide it
     # (examples/v2/demos/agent_approvers.py); over MCP, TK-M002 holds these names. The unless reads the call as
-    # sorted-key JSON: a top-level amount or amount_cents that is a number, after only plain scalar arguments, which
-    # TK-M001 holds; any other amount (null, empty, nested, after an object) is held here too, so the call is never
-    # left to neither rule
+    # sorted-key JSON, as TK-M001 reads its amount (amount, else amount_cents): a top-level amount that is a number, or
+    # with no amount key a top-level amount_cents that is a number, each after only plain scalar arguments; any other
+    # amount (null, empty, nested, after an object) is held here too, so the call is never left to neither rule
     tool: '(issue|process|make|initiate)_(payment|payout|transfer|refund|charge)|transfer_money'
     pattern: '^'
-    unless: '^\{(?:"[^"\\]*":(?:"[^"\\]*"|[-0-9.eE+]+|true|false),)*"(?:amount|amount_cents)":-?[0-9]'
+    unless: '^\{(?:"[^"\\]*":(?:"[^"\\]*"|[-0-9.eE+]+|true|false),)*"amount":-?[0-9]|^\{(?:"(?:[^"\\]{0,5}|[^"\\]{7,}|[^"\\a][^"\\]{5}|a[^"\\m][^"\\]{4}|am[^"\\o][^"\\]{3}|amo[^"\\u][^"\\]{2}|amou[^"\\n][^"\\]|amoun[^"\\t])":(?:"[^"\\]*"|[-0-9.eE+]+|true|false),)*"amount_cents":-?[0-9]'
     reason: moving money with no amount in the call (a full refund, or an amount set earlier)
     remedy: Check which payment the call refunds, pays or sends before approving it; with no amount it moves all of it, or the amount set earlier.
     rationale: TK-M001 holds a payment with an amount; a refund or payment tool called without one moves money too.

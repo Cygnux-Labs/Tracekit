@@ -5,7 +5,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:47bfc218cc5c8764710458cbaa0f46a4fe2f6199c6bfa714d07dc62006f17d9e",
+      "policy_hash": "sha256:20d7c19a73c2835ed570ef6411bb74cfa50924430ca9e02e1ae14ce9a4b7e08c",
       "heldout": {
         "recall": 0.5833333333333334,
         "deny_recall": 0.25952380952380955,
@@ -2163,7 +2163,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:dff3525d7c8a24359db95ef568e277b5e1ab7bf5af55771f269b99d713e987e1",
+      "policy_hash": "sha256:5cb11df5833a55750f9d87040c73d0df32a52dba6d4ac04941db63aa9a70c322",
       "heldout": {
         "recall": 0.6523809523809524,
         "deny_recall": 0.35714285714285715,
@@ -4668,39 +4668,39 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 78,
-      "p99_us": 157,
-      "max_us": 256,
+      "p50_us": 80,
+      "p99_us": 165,
+      "max_us": 257,
       "calls": 2481
     },
     "default/regex": {
-      "p50_us": 72,
-      "p99_us": 184,
-      "max_us": 341,
+      "p50_us": 75,
+      "p99_us": 195,
+      "max_us": 370,
       "calls": 2481
     },
     "strict/re2": {
-      "p50_us": 77,
-      "p99_us": 154,
-      "max_us": 248,
+      "p50_us": 80,
+      "p99_us": 165,
+      "max_us": 263,
       "calls": 2481
     },
     "strict/regex": {
-      "p50_us": 72,
-      "p99_us": 186,
-      "max_us": 351,
+      "p50_us": 75,
+      "p99_us": 192,
+      "max_us": 357,
       "calls": 2481
     },
     "dev/re2": {
-      "p50_us": 63,
-      "p99_us": 135,
-      "max_us": 224,
+      "p50_us": 65,
+      "p99_us": 140,
+      "max_us": 235,
       "calls": 2481
     },
     "dev/regex": {
-      "p50_us": 59,
-      "p99_us": 142,
-      "max_us": 214,
+      "p50_us": 62,
+      "p99_us": 149,
+      "max_us": 225,
       "calls": 2481
     }
   },

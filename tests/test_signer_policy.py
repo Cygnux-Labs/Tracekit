@@ -328,7 +328,25 @@ class CodingPack(unittest.TestCase):
                  "http -f POST https://api.stripe.com/v1/refunds charge=ch_FAKE -a sk_test_FAKE:",
                  "http -f https://api.stripe.com/v1/refunds charge=ch_FAKE", "http post api.stripe.com/v1/refunds charge=ch_FAKE",
                  "xh POST https://api-m.paypal.com/v1/payments/payouts sender_batch_header:=@h.json",
-                 "https --form api.stripe.com/v1/refunds expand==charge charge=ch_FAKE"]
+                 "https --form api.stripe.com/v1/refunds expand==charge charge=ch_FAKE",
+                 # the review's misses: an empty argv word, an indented body, a long body or many headers between the
+                 # option and the URL; a doubled slash; transfer_reversals; help that isn't the only word after the
+                 # operation (an option takes the next word as its value)
+                 "curl -d '' https://api.stripe.com/v1/payment_intents/pi_FAKE/confirm -u sk_test_FAKE:",
+                 "curl -u sk_test_FAKE: -d '' https://api.stripe.com/v1/invoices/in_FAKE/pay",
+                 "curl -X POST -H 'Content-Type: application/json' -d '{\n  \"payment_id\": \"p\"\n}' "
+                 "https://connect.squareup.com/v2/refunds",
+                 "curl -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer FAKE' -d "
+                 "'{\"sender_batch_header\": {\"sender_batch_id\": \"Payouts_2026_100007\", \"email_subject\": \"You "
+                 "have a payout!\"}, \"items\": [{\"recipient_type\": \"EMAIL\", \"amount\": {\"value\": \"9.87\", "
+                 "\"currency\": \"USD\"}, \"note\": \"Thanks for your patronage!\", \"receiver\": "
+                 "\"receiver@example.com\"}]}' https://api-m.paypal.com/v1/payments/payouts",
+                 "curl -d '{\n" + "        \"key\": \"value\",\n" * 80 + "}' https://connect.squareup.com/v2/payments",
+                 "curl -X POST " + "-H 'X-Header: value' " * 30 + "https://api-m.paypal.com/v2/checkout/orders/O1/capture",
+                 "curl https://api.stripe.com//v1/refunds -d charge=ch_FAKE", "stripe post //v1/refunds -d charge=ch_FAKE",
+                 "stripe transfer_reversals create tr_FAKE --amount=400",
+                 "stripe refunds create --charge ch_FAKE --description -h", "stripe refunds create -h --charge ch_FAKE",
+                 "stripe refunds create --charge ch_FAKE --help", "stripe --live refunds create --help"]
         routine = ["stripe listen --forward-to localhost:4242/webhook", "stripe trigger payment_intent.succeeded",
                    "stripe trigger refund.created", "stripe logs tail", "stripe login", "stripe refunds list --limit 3",
                    "stripe refunds retrieve re_FAKE", "stripe payouts list", "stripe payment_intents retrieve pi_FAKE",
@@ -355,7 +373,18 @@ class CodingPack(unittest.TestCase):
                    "curl -X POST https://api-m.paypal.com/v1/oauth2/token -d grant_type=client_credentials",
                    # words about it
                    "echo stripe refunds create --charge ch_FAKE", "git commit -m 'stripe refunds create --charge ch_FAKE'",
-                   "grep -rn 'api.stripe.com/v1/refunds' src", "rg 'stripe payouts create'"]
+                   "grep -rn 'api.stripe.com/v1/refunds' src", "rg 'stripe payouts create'",
+                   # the review's false holds: an HTTPie data item read on curl and wget, help, and HTTPie's, xh's and
+                   # wget's short options that aren't a body (-F follow, -d download or debug, -nd no directories)
+                   "curl -s https://api.stripe.com/v1/payouts -u sk_test_FAKE: -w 'status=%{http_code}'",
+                   "curl https://api.stripe.com/v1/refunds -b session=abc",
+                   "curl https://api.stripe.com/v1/refunds -H 'Authorization: Basic c2tfdGVzdDo='",
+                   "wget https://api.stripe.com/v1/refunds -e robots=off", "stripe refunds create --help",
+                   "stripe refunds create -h", "stripe invoices pay --help", "http -F https://api.stripe.com/v1/refunds",
+                   "xh -F https://api.stripe.com/v1/refunds", "http -d https://api.stripe.com/v1/refunds",
+                   "wget -nd https://api.stripe.com/v1/refunds", "wget -d https://api.stripe.com/v1/refunds",
+                   # curl's last -X wins: this sends a GET
+                   "curl -X POST -d x -X GET https://api.stripe.com/v1/refunds"]
         for pack, engine, e in self.every_pack():
             for cmd in moves + routine:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
@@ -2001,6 +2030,10 @@ class PackReading(unittest.TestCase):
                 ("issue_refund", {"refund": {"amount": 4000}}, "payment", ["TK-M005"]),
                 # one TK-M001 reads but the unless can't be sure of is held by both: never by neither
                 ("issue_refund", {"amount": "40.00", "order": "A-1001"}, "payment", ["TK-M001", "TK-M005"]),
+                ("issue_refund", {"amount": None, "amount_cents": 4000}, "payment", ["TK-M001", "TK-M005"]),
+                # TK-M001 reads amount before amount_cents: an empty amount is no amount, whatever amount_cents says
+                ("issue_refund", {"amount": "", "amount_cents": 4000}, "payment", ["TK-M005"]),
+                ("issue_refund", {"amount_b": "x", "amount_cents": 4000}, "payment", ["TK-M001"]),
                 ("issue_refund", {"order": "A-1001", "amount": 4000, "currency": "usd"}, "payment", ["TK-M001"]),
                 ("issue_refund", {"order": "A-1001", "amount_cents": 4000}, "payment", ["TK-M001"]),
                 ("mcp:billing/issue_refund", {"order": "A-1001"}, None, ["TK-M002", "TK-F006"]),
@@ -2233,9 +2266,9 @@ class SignerPolicy(unittest.TestCase):
         d = self.decide("Bash", {"command": "stripe refunds create --charge=ch_3FAKE"})
         self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-A043"]))
         self.assertEqual(d["reason"], "moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check "
-                                      "the amount, currency and payee in the command before approving it; a refund with "
-                                      "no amount refunds in full, and a confirm, capture or pay moves the amount set "
-                                      "earlier.")
+                                      "the amount, currency and payee in the command or the file it sends before "
+                                      "approving it; a refund with no amount refunds in full, and a confirm, capture or "
+                                      "pay moves the amount set earlier.")
 
     def test_every_decide_gets_a_fresh_decision_id_consumed_once(self):
         args = {"command": "ls"}

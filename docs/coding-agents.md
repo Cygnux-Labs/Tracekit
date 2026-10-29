@@ -152,7 +152,7 @@ API key ([approval rules](https://docs.stripe.com/account/approvals)); a coding 
 The v2 coding pack holds these calls for a person whatever the key:
 
 - the Stripe CLI's money commands: `stripe refunds create`, `payouts create`, `transfers create`, `topups create`,
-  `charges create` or `capture`, `payment_intents create`, `confirm` or `capture`, `invoices pay`, `treasury
+  `transfer_reversals create`, `charges create` or `capture`, `payment_intents create`, `confirm` or `capture`, `invoices pay`, `treasury
   outbound_payments create` or `outbound_transfers create`, and `stripe post` to those endpoints (`TK-A043`);
 - a POST to those endpoints on `api.stripe.com`, to PayPal's payouts, captures and refunds on `api-m.paypal.com` or
   `api.paypal.com`, or to Square's payments and refunds on `connect.squareup.com`, through `curl`, `wget`, HTTPie or
@@ -163,15 +163,16 @@ The v2 coding pack holds these calls for a person whatever the key:
 The hold says what to check:
 
 ```text
-[tracekit] held for approval apr-… (TK-A043): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
+[tracekit] held for approval apr-… (TK-A043): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
 ```
 
-Read the command before you approve it: the approval covers that exact command, so its amount and payee can't change
-afterwards. A call with no amount moves what was set earlier: a refund with no amount refunds the whole charge, and a
+Read the command before you approve it, and the file it sends (`-d @body.json`): the approval covers that exact
+command, so its amount and payee can't change afterwards, but a file's content can. A call with no amount moves what was set earlier: a refund with no amount refunds the whole charge, and a
 confirm, capture or invoice pay takes the amount the payment intent or invoice was created with, so look that up
 first. A Stripe test-mode call is held too: the command doesn't show whether the key is live. Not held: `stripe
-listen`, `stripe trigger`, `stripe logs tail`, `stripe login`, listing, retrieving and cancelling, a GET (Stripe's
-documented `curl -G … -d limit=3` list form too), and PayPal's and Square's sandbox hosts.
+listen`, `stripe trigger`, `stripe logs tail`, `stripe login`, listing, retrieving and cancelling, `stripe refunds
+create --help`, a GET (Stripe's documented `curl -G … -d limit=3` list form too), and PayPal's and Square's sandbox
+hosts.
 
 Turn on Stripe's approval rules with an agent-tagged key as well: Stripe enforces them on its side, outside anything
 the agent runs, and Tracekit adds a signed record of who approved which exact call, for PayPal and Square too. What
