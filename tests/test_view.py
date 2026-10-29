@@ -1283,6 +1283,34 @@ class View(unittest.TestCase):
         self.assertEqual(r.status, 303)
         return c, {"Cookie": r.getheader("Set-Cookie").split(";")[0]}
 
+    def test_ctrl_c_leaves_the_graph_dir_to_a_process_of_its_own(self):
+        """Ctrl-C gave the terminal back 17 s and more later on a large store: on its way out the viewer removed its
+        graph dir (tens of thousands of files) and waited for the why watcher. A process of its own removes the dir
+        once the viewer is gone, and the watcher ends with the process."""
+        registered, stops = [], []
+        srv = mock.Mock(server_address=("127.0.0.1", 1))
+        srv.serve_forever.side_effect = KeyboardInterrupt
+        with mock.patch.object(view.atexit, "register", side_effect=lambda f, *a: registered.append((f, a))), \
+                mock.patch.object(view, "server", return_value=srv), mock.patch.object(view.signal, "signal"), \
+                mock.patch.object(view.StoreFeed, "_watch", lambda feed: None), \
+                mock.patch.object(view.StoreFeed, "_mirrors", lambda feed: None), \
+                mock.patch.object(view.Store, "watch"), \
+                mock.patch.object(view.Store, "stop", side_effect=lambda **k: stops.append(k)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(view.main(["--data-dir", self.d]), 0)
+        for f, a in registered:   # what the viewer would remove on its way out
+            self.addCleanup(shutil.rmtree, a[0], True)
+        [why] = [a[0] for f, a in registered if f is view.remove_later]
+        self.assertTrue(os.path.basename(why).startswith("tk-view-why-"))
+        self.assertNotIn(why, [a[0] for f, a in registered if f is shutil.rmtree])
+        self.assertEqual(stops, [{"wait": 0}])
+        with open(os.path.join(why, "blob"), "w") as f:
+            f.write("x")
+        t = time.monotonic()
+        view.remove_later(why)
+        self.assertLess(time.monotonic() - t, 2)
+        self.assertTrue(wait_for(lambda: not os.path.exists(why), 15))
+
     def test_loopback_viewer_prints_a_token_url_and_needs_it(self):
         with mock.patch.object(view, "server") as server, mock.patch.dict(os.environ), \
                 contextlib.redirect_stdout(io.StringIO()) as out:

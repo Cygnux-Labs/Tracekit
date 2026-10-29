@@ -56,6 +56,7 @@ import secrets
 import shutil
 import signal
 import ssl
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1406,6 +1407,14 @@ def _rename(src, dst):
     os.rename(src, dst)
 
 
+def remove_later(path):
+    """Remove directory `path` from a process of its own, so this one exits at once: the graphs of a large store are
+    tens of thousands of files, and removing them on the way out kept Ctrl-C from giving the terminal back (17 s+)."""
+    subprocess.Popen([sys.executable, "-I", "-c", "import shutil, sys; shutil.rmtree(sys.argv[1], True)", path],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
 def store_name(cfg):
     """The store of config `cfg` in words."""
     return "the Postgres store" if cfg.get("storage") else os.path.join(cfg["data_dir"], "store")
@@ -1735,7 +1744,7 @@ def main(argv=None):
         mirror = None
         if not (v1 or alone or runs or a.why or (why_dir and os.path.isdir(why_dir))):   # no why logs: the store's own
             why_dir = tempfile.mkdtemp(prefix="tk-view-why-")
-            atexit.register(shutil.rmtree, why_dir, True)
+            atexit.register(remove_later, why_dir)
             mirror = functools.partial(mirror_run, why_dir)
         if v1:
             ledger, code = observe.ledger_path(a.ledger, a.bundle, "tracekit view")
@@ -1778,7 +1787,7 @@ def main(argv=None):
     finally:
         srv.server_close()
         if why:
-            why.stop()
+            why.stop(wait=0)   # its watcher may be analysing a run for seconds: it ends with the process
     return 0
 
 
