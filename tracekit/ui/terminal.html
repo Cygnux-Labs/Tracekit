@@ -1848,7 +1848,8 @@
       position: absolute;
       inset: 0;
       width: 100%;
-      height: 100%
+      height: 100%;
+      touch-action: pan-x pan-y
     }
 
     .hzstage.hzlost canvas {
@@ -2949,9 +2950,12 @@
           <div class="hzmain">
             <div class="hzstage">
               <canvas id="hzcv" role="img" aria-label="Where the agents went: the project, this machine and the outside world; the panel beside it lists each move"></canvas>
-              <div class="hzhud tl">MISSION CLOCK<b id="hzclock"></b>MOVE<b id="hzmove"></b></div>
+              <div class="hzhud tl">MISSION CLOCK<b id="hzclock"></b>MOVE<b id="hzmove"></b>ZOOM<b id="hzzoom">1.0×</b></div>
               <div class="hzhud tr"><span class="hzvt"><button type="button" data-hzv="orbit">ORBIT</button><button
-                    type="button" data-hzv="top">TOP</button></span>
+                    type="button" data-hzv="top">TOP</button></span> <span class="hzvt"><button type="button" data-hzz="in"
+                    aria-label="Zoom in">+</button><button type="button" data-hzz="out" aria-label="Zoom out">−</button><button
+                    type="button" data-hzz="fit" title="The whole map (0 or Esc)">FIT</button><button type="button" data-hzz="cam"
+                    aria-pressed="false" title="In a replay, the camera flies to each move">CAM</button></span>
                 <div class="hztel">EGRESS<b id="hzt0"></b><br>RESTRICTED<b id="hzt1"></b><br>FENCES HIT<b
                     id="hzt2"></b><br>HOLDS<b id="hzt3"></b><br>CHAIN<b id="hzt4"></b></div>
               </div>
@@ -3490,7 +3494,7 @@
     // a call's arguments (the signer's copy), else its tool. Each mark is a call, or an effect a sensor saw, graded signed,
     // observed or unverified (its run did not verify)
     const HZMAX = 500;   // lean: the newest 500 calls are drawn; past that a run's own views have every call
-    const HZ = { t: 0, n: 0, play: null, pick: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: Object.create(null), t0: performance.now(), ended: false };
+    const HZ = { t: 0, n: 0, play: null, pick: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: Object.create(null), ended: false, cam: { k: 1, x: 0, y: 0 }, fly: null, track: false, drawn: "", geo: null, hole: null };
     const HZACT = { read: "read", run: "ran", write: "wrote", net: "reached", seen: "was seen at", blocked: "was blocked at", held: "was held at", flag: "was flagged at", approved: "was approved at" };
     const HZSYM = { read: "●", run: "●", net: "●", seen: "●", write: "■", approved: "■", blocked: "✕", held: "◯", flag: "◆" };
     const HZWORST = ["blocked", "held", "flag", "write", "approved", "net", "seen", "run", "read"];
@@ -3531,11 +3535,81 @@
     // every run's calls and sensor effects, the newest HZMAX of all runs together by the signer's time (v2 ts, v1
     // ts_signed; a why log's own ts, whose seq counts within its run, and one it could not read first), each at its place;
     // the places laid out on the rings (project files by their top folder), the agents in the order their runs started each other
+    // each ring's band, in the outer ring's radii: its middle, half its width, the angle its first slot starts at, and
+    // the most a folder's circle may reach from the middle without touching another ring's places
+    const HZBAND = { project: [.31, .08, 0, .14], machine: [.565, .075, 17, .15], outside: [.85, .1, 41, .1] };
+    // circles of radii in proportion to rs (biggest first) packed in a circle of radius rho, about its centre: each at the
+    // first point of a sunflower spiral, from the centre out, where it stays inside and covers none placed before; all
+    // shrink a tenth until they fit. [x, y, r] each
+    function hzPack(rs, rho) {
+      for (let f = rho * Math.sqrt(.6 / rs.reduce((a, r) => a + r * r, 0)); ; f *= .9) {
+        const at = [];
+        for (const r of rs.map(r => r * f)) {
+          let t = 0;
+          for (; t <= 500; t++) {
+            const d = (rho - r) * Math.sqrt(t / 500), u = d * Math.cos(t * 2.39996), v = d * Math.sin(t * 2.39996);
+            if (at.every(([pu, pv, pr]) => (pu - u) ** 2 + (pv - v) ** 2 >= (pr + r) ** 2)) { at.push([u, v, r]); break; }
+          }
+          if (t > 500) break;
+        }
+        if (at.length === rs.length) return at;
+      }
+    }
+    // the places nested by their paths' folders, circles in circles: on its ring each place or folder has a slot (a
+    // folder's as wide as the square root of its places, plus one), and inside a folder its places and folders are
+    // packed (hzPack). A folder of one is its one. A ring opens into its parts, then its biggest folder does while that
+    // holds over a quarter of the ring's places and the ring keeps within 30 slots. Sets each place's r, th, up (its
+    // folder's key, or null) and name (its path within that folder); returns the folders by key and the rings' slots (top)
+    function hzNest(places) {
+      const folds = dict(), top = [], node = () => ({ kids: dict(), leaf: null });
+      for (const [kind, [mid, half, deg, room]] of Object.entries(HZBAND)) {
+        const keys = Object.keys(places).filter(k => places[k].kind === kind).sort(), root = node(), slots = [];
+        for (const k of keys) {
+          if (places[k].tool) { slots.push({ k, n: 1, path: places[k].label }); continue; }   // a tool or a command: no path
+          let n = root;
+          for (const s of places[k].label.split("/").filter((s, j) => s || !j)) n = n.kids[s] ||= node();
+          n.leaf = k;
+        }
+        const item = (n, path) => {
+          const names = Object.keys(n.kids).sort(), at = s => path == null ? s : path + "/" + s;
+          if (!names.length) return { k: n.leaf, n: 1, path };
+          if (names.length === 1 && n.leaf == null) return item(n.kids[names[0]], at(names[0]));
+          const items = names.map(s => item(n.kids[s], at(s)));
+          if (n.leaf != null) items.unshift({ k: n.leaf, n: 1, path });   // a folder that is a place too
+          return { path, items, n: items.reduce((a, s) => a + s.n, 0) };
+        };
+        const r0 = Object.keys(root.kids).length ? item(root, null) : null;
+        if (r0) slots.push(r0);
+        for (let f; (f = slots.filter(s => s.items).sort((a, b) => b.n - a.n)[0]) && (f === r0 || f.n * 4 > keys.length && slots.length + f.items.length <= 31);)
+          slots.splice(slots.indexOf(f), 1, ...f.items);
+        slots.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+        // a slot at (u, v) in the disk's plane: the place there, or a folder of radius rho round it with its parts inside
+        // a slot at (u, v) in the disk's plane: the place there, or a folder of radius rho round it, its parts packed
+        // inside (each as wide as the square root of its places); cramp: how many times its smallest part fits across it
+        const put = (s, u, v, rho, up) => {
+          const at = { r: Math.hypot(u, v), th: Math.atan2(v, u), up, name: up ? s.path.slice(folds[up].path.length + 1) || "./" : s.path };
+          if (!s.items) { Object.assign(places[s.k], at); return s.k; }
+          const key = "dir\u0000" + kind + "\u0000" + s.path, kids = [...s.items].sort((a, b) => b.n - a.n), in_ = hzPack(kids.map(c => Math.sqrt(c.n)), rho);
+          const f = folds[key] = { ...at, kind, path: s.path, label: s.path + "/", rho, cramp: rho / Math.min(...in_.map(p => p[2])), kids: [], leaves: [], rest: null, rests: 0 };
+          kids.forEach((c, j) => f.kids.push(put(c, u + in_[j][0], v + in_[j][1], in_[j][2] * .92, key)));
+          return key;
+        };
+        const w = s => s.items ? Math.sqrt(s.n) + 1 : 1, sum = slots.reduce((a, s) => a + w(s), 0);
+        let a = hzRad(deg);
+        slots.forEach((s, j) => {
+          const span = w(s) / sum * 2 * Math.PI, th = a + span / 2, r = s.items ? mid : mid + half * [0, .7, -.7][j % 3];
+          a += span;
+          top.push(put(s, r * Math.cos(th), r * Math.sin(th), Math.min(room, mid * Math.sin(Math.min(span, Math.PI) / 2) * .9), null));
+        });
+      }
+      for (const k of Object.keys(places)) for (let up = places[k].up; up; up = folds[up].up) { folds[up].leaves.push(k); folds[up].rest ||= places[k].rest; folds[up].rests += !!places[k].rest; }
+      return { folds, top };
+    }
     let hzKey = [], hzD = null;
     function hzData() {
       const key = [ALL.length, ALL[ALL.length - 1], RUNS.size, chainState.ok];
       if (key.every((x, i) => x === hzKey[i])) return hzD;
-      const ans = new Map(), retry = new Map(), raw = [], places = dict(), parent = dict(), cwds = new Set(), groups = dict(), dirs = [];
+      const ans = new Map(), retry = new Map(), raw = [], places = dict(), parent = dict(), cwds = new Set();
       for (const r of ALL) {
         if (r.v2?.approval in ANSWER) ans.set(r.session_id + "|" + r.v2.tool_use_id, r.v2.approval);
         if (r.v2?.approval && r.v2.held) retry.set(r.session_id + "|" + r.v2.tool_use_id, r.session_id + "|" + r.v2.held);   // the held call it retried
@@ -3561,23 +3635,19 @@
         parent[e.ag] ??= up == null ? null : vis(up);
         if (e.cwd) cwds.add(e.cwd);
       }
-      const ring = k => Object.keys(places).filter(x => places[x].kind === k).sort();
-      for (const x of ring("project")) (groups[places[x].label.includes("/") ? places[x].label.split("/")[0] : ""] ||= []).push(x);
-      Object.entries(groups).forEach(([g, xs], s, all) => {
-        const w = 360 / all.length, a0 = s * w - w / 2;
-        if (g) dirs.push({ label: g.toUpperCase() + "/", r: .165, th: hzRad(a0 + w / 2) });
-        xs.forEach((x, j) => Object.assign(places[x], { r: [.24, .39, .31][j % 3], th: hzRad(a0 + w * (j + 1) / (xs.length + 1)) }));
-      });
-      for (const [k, r, o] of [["machine", .565, 17], ["outside", .85, 41]]) ring(k).forEach((x, j, all) => Object.assign(places[x], { r, th: hzRad(o + 360 * j / all.length) }));
+      const { folds, top } = hzNest(places), agents = treeOrder(Object.keys(parent), x => x, x => parent[x]);
       hzKey = key;
-      return hzD = { ev, places, dirs, agents: treeOrder(Object.keys(parent), x => x, x => parent[x]), calls: raw.length, bare: ev.filter(e => e.bare).length,
-                     runs: new Set(ev.map(e => e.run)).size, cwd: cwds.size === 1 ? vis([...cwds][0].split("/").pop()) : "" };
+      // sig: what the stage draws, so a tick that changed none of it draws nothing
+      return hzD = { ev, places, folds, top, agents, calls: raw.length, bare: ev.filter(e => e.bare).length,
+                     runs: new Set(ev.map(e => e.run)).size, cwd: cwds.size === 1 ? vis([...cwds][0].split("/").pop()) : "",
+                     sig: ev.map(e => [e.run, e.seq, e.act, e.gr, e.at].join("\u0001")).join("\u0002") + "\u0003" + agents.flat().join("\u0001") };
     }
     const HZKEY = `<div class="sec">HOW TO READ IT</div><div><span class="hzs">●</span> read, ran or reached</div><div><span class="hzs a-write">■</span> wrote, or a person approved it</div>`
       + `<div><span class="hzs a-blocked">✕</span> blocked by policy</div><div><span class="hzs a-held">◯</span> held for a person</div><div><span class="hzs">◆</span> flagged</div>`
       + `<div><span class="hzshield"></span> shield: a restricted place (a rule about secrets, harness configuration or Tracekit's own files); a flare where an agent was stopped</div>`
       + `<div><span class="hzjet"></span> jet: data left the machine</div><div><span class="tag">SIGNED</span> the signer's record says so · <span class="tag flag">OBSERVED</span> a sensor outside the agent saw it · <span class="tag unv">UNVERIFIED</span> its run did not verify, or a why log wrote it (unsigned)</div>`
-      + `<div class="dim">The rings are the project (the run's working directory; a run that records none: its relative paths), this machine and the outside world, around the event horizon every run starts from. Click a place to see who went there and how we know; click an agent to follow its route.</div>`;
+      + `<div class="dim">The rings are the project (the run's working directory; a run that records none: its relative paths), this machine and the outside world, around the event horizon every run starts from. Click a place to zoom to it and see who went there and how we know; click an agent to follow its route.</div>`
+      + `<div class="dim">Scroll or pinch to zoom toward the pointer, drag to pan, double-click to fly in; + and − zoom, FIT, 0 or Esc shows it all. A folder opens into its files as you zoom in.</div>`;
     // the HUD's CHAIN: how many drawn moves no verified signed record backs
     const hzChain = ev => { const unv = ev.filter(e => e.gr === "unverified").length; return [!ev.length ? "–" : unv ? `${unv} UNVERIFIED` : STOPPED ? "✓ VERIFIED · CHECKS STOPPED" : "✓ VERIFIED", unv || STOPPED ? "warn" : "ok"]; };
     function renderHorizon() {
@@ -3587,7 +3657,7 @@
       HZ.n = N;
       HZ.col = dict(D.agents.map(([a], n) => [a, pal[n % pal.length]]));
       if (!(HZ.follow in HZ.col)) HZ.follow = null;
-      if (!D.places[HZ.pick]) HZ.pick = null;
+      if (!(D.places[HZ.pick] || D.folds?.[HZ.pick])) HZ.pick = null;
       const ev = D.ev.slice(0, HZ.t), cur = D.ev[HZ.t - 1], P = k => D.places[k], last = [-99, -99], MIL = { blocked: "BLOCK", approved: "APPROVED", held: "HOLD", flag: "FLAG" };
       const room = 6000 / ($("hzline").clientWidth || 600);   // a milestone's name needs about 60px of the line
       put("hzline", `<span class="hztrack"><i style="width:${esc(N ? HZ.t / N * 100 : 0)}%"></i></span>` + D.ev.map((e, k) => {
@@ -3611,22 +3681,67 @@
        [ev.filter(e => e.hold).length, ""], hzChain(ev)]
         .forEach(([v, c], k) => { $("hzt" + k).textContent = vis(v); $("hzt" + k).className = c; });
       document.querySelectorAll("[data-hzv]").forEach(b => b.classList.toggle("on", b.dataset.hzv === HZ.view));
+      document.querySelectorAll("[data-hzz=cam]").forEach(b => { b.classList.toggle("on", HZ.track); b.setAttribute("aria-pressed", String(HZ.track)); });
       // beside the stage: the counts, then the followed agent's route, the picked place's visitors or how to read it
       const pill = g => `<span class="tag${g === "unverified" ? " unv" : g === "observed" ? " flag" : ""}">${esc(g.toUpperCase())}</span>`;
       const row = (e, n) => `<div class="hzev"><span class="hzs a-${esc(e.act)}">${esc(n || HZSYM[e.act])}</span><div><i class="hzsw" style="background:${esc(HZ.col[e.ag])}"></i><b>${esc(e.ag)}</b> ${esc(HZACT[e.act])} <b>${esc(P(e.at).label)}</b><div class="dim">${esc(e.w)}</div><div class="dim">${esc(`run ${String(e.run).slice(0, 8)} · seq ${e.seq}`)} `
         + pill(e.gr) + ` <button type="button" class="cp" data-orun="${esc(e.run)}" data-oseq="${esc(e.seq)}">OPEN</button></div></div></div>`;
-      const pick = HZ.pick && P(HZ.pick), here = ev.filter(e => e.at === HZ.pick);
+      // a picked place, or folder (its places together): its shield, who went there and what each did, then each move
+      const fold = D.folds?.[HZ.pick], pick = HZ.pick && (P(HZ.pick) || fold), inPick = new Set(fold ? fold.leaves : [HZ.pick]), here = ev.filter(e => inPick.has(e.at));
+      const did = a => HZWORST.map(x => [x, here.filter(e => e.ag === a && e.act === x).length]).filter(([, n]) => n).map(([x, n]) => `${HZACT[x].replace(/^was | at$/g, "")} ${n}`).join(" · ");
+      const who = [...new Set(here.map(e => e.ag))].map(a => `<div><i class="hzsw" style="background:${esc(HZ.col[a])}"></i><b>${esc(a)}</b> ${esc(did(a))}</div>`).join("");
       const card = HZ.follow ? `<div class="sec">ROUTE · ${esc(HZ.follow)}</div>` + ev.filter(e => e.ag === HZ.follow).map((e, n) => row(e, n + 1)).join("")
-        : pick ? `<div class="sec">${esc((pick.rest ? "RESTRICTED · " : "") + { project: "IN THE PROJECT", machine: "ON THIS MACHINE", outside: "OUTSIDE THE MACHINE" }[pick.kind] + (pick.tool === "command" ? " · A COMMAND, NO FILE OR HOST IN IT" : pick.tool ? " · A TOOL, NO FILE OR HOST RECORDED" : ""))}</div><h3>${esc(pick.label)}</h3>`
-          + (pick.rest ? `<div class="s-flag">${esc(pick.rest)}</div>` : "") + (here.map(e => row(e)).join("") || `<div class="dim">${esc(`No agent has been here${HZ.t < N ? " yet" : ""}.`)}</div>`)
+        : pick ? `<div class="sec">${esc((pick.rest ? "RESTRICTED · " : "") + { project: "IN THE PROJECT", machine: "ON THIS MACHINE", outside: "OUTSIDE THE MACHINE" }[pick.kind] + (fold ? ` · A FOLDER OF ${fold.leaves.length} PLACES` : pick.tool === "command" ? " · A COMMAND, NO FILE OR HOST IN IT" : pick.tool ? " · A TOOL, NO FILE OR HOST RECORDED" : ""))}</div><h3>${esc(pick.label)}</h3>`
+          + (pick.rest ? `<div class="s-flag">${esc("SHIELD · " + (fold ? `${fold.leaves.filter(k => P(k).rest).length} restricted in it · ` : "") + pick.rest)}</div>` : "") + who
+          + (here.map(e => row(e)).join("") || `<div class="dim">${esc(`No agent has been here${HZ.t < N ? " yet" : ""}.`)}</div>`)
         : HZKEY;
       const stats = [[new Set(ev.map(e => e.ag)).size, "AGENTS"], [new Set(ev.map(e => e.at)).size, "PLACES"], [new Set(out.map(e => e.at)).size, "OUTSIDE THE MACHINE", 1],
                      [rest.length, "RESTRICTED TRIES", 1, ran ? ran + " RAN" : "NONE RAN"]];   // how many ran: a line of its own, not a wrapped word
       put("hzside", `<div class="hzstats">` + stats.map(([v, k, c, sub]) => `<div class="${c && v ? "warn" : ""}"><b>${esc(v)}</b>${esc(k)}${sub ? `<span>${esc(sub)}</span>` : ""}</div>`).join("") + `</div><div class="hzcard">` + card + `</div>`);
+      // the stage is drawn again only when what it shows changed (the live view renders every second)
+      const cv = $("hzcv"), drawn = [D.sig, HZ.t, HZ.follow, HZ.pick, HZ.view, HZ.ended, cv.clientWidth, cv.clientHeight].join("\u0001");
+      if (drawn !== HZ.drawn) { HZ.drawn = drawn; hzDraw(); }
+    }
+    // the camera: a point of the fit view (the whole map) is drawn at k times it, moved by (x, y). k runs from 1 (FIT) to
+    // HZKMAX, and the view stays inside the fit view's frame, so the map can't be lost
+    const HZKMAX = 64;
+    const hzScr = (c, [x, y]) => [x * c.k + c.x, y * c.k + c.y];
+    const hzWorld = (c, [x, y]) => [(x - c.x) / c.k, (y - c.y) / c.k];
+    function hzClamp(c, w, h) {
+      const k = Math.min(HZKMAX, Math.max(1, c.k));
+      return { k, x: Math.min(0, Math.max(w - w * k, c.x)), y: Math.min(0, Math.max(h - h * k, c.y)) };
+    }
+    // zoomed f times about screen point s: the point of the map under s stays under it
+    function hzZoom(c, s, f, w, h) {
+      const k = Math.min(HZKMAX, Math.max(1, c.k * f)), p = hzWorld(c, s);
+      return hzClamp({ k, x: s[0] - p[0] * k, y: s[1] - p[1] * k }, w, h);
+    }
+    // point p of the map at the stage's centre, at zoom k
+    function hzAim(p, k, w, h) {
+      k = Math.min(HZKMAX, Math.max(1, k));
+      return hzClamp({ k, x: w / 2 - p[0] * k, y: h / 2 - p[1] * k }, w, h);
+    }
+    // the radius on screen at which folder f opens: OPEN px, and room for its smallest part to be 7px across
+    const hzOpenAt = (f, open) => Math.max(open, 7 * f.cramp);
+    // the camera flies to c, eased over 480 ms (at once when motion is reduced)
+    function hzFlyTo(c) {
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches || HZ.ended) { HZ.cam = c; HZ.fly = null; }
+      else HZ.fly = { a: HZ.cam, b: c, t0: performance.now() };
       hzDraw();
     }
-    // a frame now and, unless motion is reduced or the viewer ended this page's session (a still frame, drawn again on
-    // each change), one every animation frame
+    // the camera on a place or folder: a folder open and about two thirds of the stage across; a place at 2.5x or more,
+    // close enough that the folders round it are open
+    function hzFocus(k) {
+      const g = HZ.geo, D = HZ.d, f = D?.folds?.[k], q = D?.places[k] || f;
+      if (!g || !q) return;
+      let z = f ? Math.min(g.cw, g.ch) / 2.8 / (f.rho * g.R4) : Math.max(HZ.fly?.b.k ?? HZ.cam.k, 2.5);
+      if (f) z = Math.max(z, hzOpenAt(f, g.open) * 1.15 / (f.rho * g.R4));
+      for (let up = q.up; up; up = D.folds[up].up) z = Math.max(z, hzOpenAt(D.folds[up], g.open) * 1.15 / (D.folds[up].rho * g.R4));
+      hzFlyTo(hzAim([g.cx + q.r * g.R4 * Math.cos(q.th), g.cy + q.r * g.R4 * Math.sin(q.th) * g.i], z, g.cw, g.ch));
+    }
+    // a frame for each change: now when motion is reduced or the viewer ended this page's session, else on the next
+    // animation frame; after it, one each animation frame only while something moves (the camera's flight, the tilt to
+    // the view picked, a replayed move's comet). Nothing is drawn while the stage stands still
     function hzDraw() {
       if (HZ.raf) return;
       if (matchMedia("(prefers-reduced-motion: reduce)").matches || HZ.ended) hzFrame(0);
@@ -3636,201 +3751,285 @@
       HZ.raf = 0;
       const cv = $("hzcv"), D = HZ.d, still = matchMedia("(prefers-reduced-motion: reduce)").matches || HZ.ended;
       if (PAGE !== "horizon" || !cv || !D) return;
-      if (!still) HZ.raf = requestAnimationFrame(hzFrame);
       // at most 16M pixels behind the stage whatever its size: a canvas the browser can't back is a white box with a
       // broken-image icon
       const cw = cv.clientWidth, ch = cv.clientHeight, dpr = Math.min(2, window.devicePixelRatio || 1, Math.sqrt(16e6 / (cw * ch || 1)));
       const ow = Math.round(cw * dpr), oh = Math.round(ch * dpr);
       if (!cw || !ch) return;
       if (cv.width !== ow || cv.height !== oh) { cv.width = ow; cv.height = oh; }
-      if (!HZ.off) {   // the disk's streaks and the stars: the same every time
+      if (!HZ.stars) {   // the disk's streaks and the stars: the same every time
         let seed = 7; const R = () => (seed = seed * 16807 % 2147483647) / 2147483647;
-        HZ.off = document.createElement("canvas");
         HZ.streaks = Array.from({ length: 240 }, () => { const r = .085 + .42 * Math.pow(R(), 1.35); return { r, th: R() * 6.2832, len: .25 + R() * 1.2, w: .7 * Math.pow(.1 / r, 1.5), a: (.06 + R() * .18) * Math.max(.25, 1 - (r - .085) / .45), lw: .5 + R() * 1.1 }; });
         HZ.stars = Array.from({ length: 170 }, () => ({ x: R(), y: R(), s: .3 + R() * .9, a: .06 + R() * .3 }));
       }
-      const [hot, gold, ember, rust] = css("--hz-gas").split(/\s+/), ink = css("--hz-ink"), space = css("--hz-space"), amber = css("--hz-amber"), red = css("--hz-red"), cyan = css("--hz-cyan");
-      const A = hzRgba, font = (w, px) => `${w} ${px}px ${css("--mono")}`, AC = act => act === "blocked" ? red : /^(write|approved|held)$/.test(act) ? amber : cyan;
+      const [hot, gold, ember, rust] = css("--hz-gas").split(/\s+/), ink = css("--hz-ink"), space = css("--hz-space"), amber = css("--hz-amber"), red = css("--hz-red"), cyan = css("--hz-cyan"), mono = css("--mono");
+      const A = hzRgba, font = (w, px) => `${w} ${px}px ${mono}`, AC = act => act === "blocked" ? red : /^(write|approved|held)$/.test(act) ? amber : cyan;
       const x = cv.getContext("2d"), lost = x.isContextLost?.() === true;   // the browser took it back (memory, a GPU reset)
       cv.parentNode.classList?.toggle("hzlost", lost);   // said in its place, not drawn half
-      if (lost) return;
+      if (lost) { HZ.drawn = ""; return; }   // tried again on the next render, so it is drawn once given back
       x.setTransform(dpr, 0, 0, dpr, 0, 0);
-      HZ.i += ((HZ.view === "orbit" ? .6 : 1) - HZ.i) * (still ? 1 : .07);
-      const i = HZ.i, T = still ? 0 : (now - HZ.t0) / 1000, tt = Math.min(1, Math.max(0, (1 - i) / .4));
+      const ti = HZ.view === "orbit" ? .6 : 1;
+      HZ.i = still || Math.abs(ti - HZ.i) < .005 ? ti : HZ.i + (ti - HZ.i) * .16;
+      const i = HZ.i, tt = Math.min(1, Math.max(0, (1 - i) / .4));
       const R4 = Math.min(ch * .45, cw * .46) * (1 - tt) + Math.min(cw * .46, ch * .78) * tt, cx = cw / 2, cy = ch * (.5 + .03 * tt), Rs = R4 * .082;
-      const P = (r, th) => [cx + r * R4 * Math.cos(th), cy + r * R4 * Math.sin(th) * i], pt = k => P(D.places[k].r, D.places[k].th);
-      // space: deep black, faint stars, the two lensing arcs of the Cygnux mark; then the rings
+      if (HZ.fly) {   // in flight: the point at the stage's centre glides, the zoom changes by the same factor each frame
+        const { a, b, t0 } = HZ.fly, u = Math.min(1, Math.max(0, (now - t0) / 480)), e = u < .5 ? 4 * u ** 3 : 1 - (2 - 2 * u) ** 3 / 2;
+        const m = [cw / 2, ch / 2], pa = hzWorld(a, m), pb = hzWorld(b, m), k = a.k * (b.k / a.k) ** e;
+        HZ.cam = u < 1 ? { k, x: m[0] - (pa[0] + (pb[0] - pa[0]) * e) * k, y: m[1] - (pa[1] + (pb[1] - pa[1]) * e) * k } : b;
+        if (u === 1) HZ.fly = null;
+      }
+      const c = HZ.cam = hzClamp(HZ.cam, cw, ch), K = c.k, narrow = cw < 600;
+      HZ.geo = { cw, ch, cx, cy, R4, i, open: narrow ? 30 : 40 };
+      const W = (r, th) => [cx + r * R4 * Math.cos(th), cy + r * R4 * Math.sin(th) * i], P = (r, th) => hzScr(c, W(r, th));
+      const node = k => D.places[k] || D.folds?.[k], pt = k => P(node(k).r, node(k).th), [hx, hy] = hzScr(c, [cx, cy]);
+      const on = ([px, py], m = 40) => px > -m && px < cw + m && py > -m && py < ch + m;
+      // space: deep black, faint stars, the two lensing arcs of the Cygnux mark; then the rings and the black hole
       x.globalCompositeOperation = "source-over"; x.fillStyle = space; x.fillRect(0, 0, cw, ch);
       for (const s of HZ.stars) { x.fillStyle = A(ink, s.a); x.fillRect(s.x * cw, s.y * ch, s.s, s.s); }
-      const lg = x.createLinearGradient(0, 0, 0, ch); lg.addColorStop(0, A(amber, 0)); lg.addColorStop(.5, A(amber, .16)); lg.addColorStop(1, A(amber, 0));
+      const lg = x.createLinearGradient(0, hzScr(c, [0, 0])[1], 0, hzScr(c, [0, ch])[1]); lg.addColorStop(0, A(amber, 0)); lg.addColorStop(.5, A(amber, .16)); lg.addColorStop(1, A(amber, 0));
       x.strokeStyle = lg; x.lineWidth = 1.2;
-      for (const sg of [-1, 1]) { x.beginPath(); x.moveTo(cx + sg * R4 * .8, -10); x.quadraticCurveTo(cx + sg * R4 * .12, cy, cx + sg * R4 * .8, ch + 10); x.stroke(); }
-      for (const [r, a, dash] of [[.47, .22, []], [.66, .14, []], [1, .1, [2, 6]]]) { x.setLineDash(dash); x.strokeStyle = A(gold, a); x.lineWidth = 1; x.beginPath(); x.ellipse(cx, cy, r * R4, r * R4 * i, 0, 0, 6.2832); x.stroke(); }
+      for (const sg of [-1, 1]) { x.beginPath(); x.moveTo(...hzScr(c, [cx + sg * R4 * .8, -10])); x.quadraticCurveTo(...hzScr(c, [cx + sg * R4 * .12, cy]), ...hzScr(c, [cx + sg * R4 * .8, ch + 10])); x.stroke(); }
+      for (const [r, a, dash] of [[.47, .22, []], [.66, .14, []], [1, .1, [2, 6]]]) { x.setLineDash(dash); x.strokeStyle = A(gold, a); x.lineWidth = 1; x.beginPath(); x.ellipse(hx, hy, r * R4 * K, r * R4 * i * K, 0, 0, 6.2832); x.stroke(); }
       x.setLineDash([]);
-      // the disk, painted off-screen in its own plane: smooth hot gas, orbiting streaks, the side turning toward us brighter
-      const off = HZ.off; if (off.width !== ow || off.height !== oh) { off.width = ow; off.height = oh; }
-      const o = off.getContext("2d"); o.setTransform(1, 0, 0, 1, 0, 0); o.globalCompositeOperation = "source-over"; o.clearRect(0, 0, ow, oh); o.setTransform(dpr, 0, 0, dpr, 0, 0);
-      o.save(); o.translate(cx, cy); o.scale(1, i);
-      const rIn = R4 * .09, rOut = R4 * .56, body = o.createRadialGradient(0, 0, rIn, 0, 0, rOut);
-      for (const [at, c, a] of [[0, hot, 1], [.05, hot, .95], [.13, gold, .68], [.3, ember, .32], [.56, rust, .2], [1, rust, 0]]) body.addColorStop(at, A(c, a));
-      o.fillStyle = body; o.beginPath(); o.arc(0, 0, rOut, 0, 6.2832); o.arc(0, 0, rIn, 0, 6.2832, true); o.fill();
-      o.globalCompositeOperation = "lighter"; o.lineCap = "round";
-      for (const s of HZ.streaks) { const a0 = s.th + s.w * T; o.strokeStyle = A(hot, s.a.toFixed(3)); o.lineWidth = s.lw; o.beginPath(); o.arc(0, 0, s.r * R4, a0, a0 + s.len); o.stroke(); }
-      if (o.createConicGradient) {
-        o.globalCompositeOperation = "destination-in"; const dop = o.createConicGradient(0, 0, 0);
-        for (const [at, a] of [[0, .4], [.25, .72], [.5, 1], [.75, .72], [1, .4]]) dop.addColorStop(at, A(space, a));
-        o.fillStyle = dop; o.fillRect(-rOut, -rOut, rOut * 2, rOut * 2);
-      }
-      o.restore();
-      const half = far => { x.save(); x.beginPath(); if (far) x.rect(0, 0, cw, cy); else x.rect(0, cy, cw, ch - cy); x.clip(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "lighter"; x.drawImage(off, 0, 0); x.restore(); };
-      // a bloom, the far half of the disk, the shadow, the lensed arc over the top, the horizon and photon ring, the near half
-      x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "lighter"; x.globalAlpha = .55; x.filter = `blur(${Math.round(16 * dpr)}px)`; x.drawImage(off, 0, 0); x.restore();
-      half(true);
-      x.globalCompositeOperation = "source-over";
-      const sh = x.createRadialGradient(cx, cy, Rs * .9, cx, cy, Rs * 1.35); sh.addColorStop(0, A(space, 1)); sh.addColorStop(1, A(space, 0));
-      x.fillStyle = sh; x.beginPath(); x.arc(cx, cy, Rs * 1.35, 0, 6.2832); x.fill();
-      if (i < .95) {
-        const lw = Math.min(1, (1 - i) * 1.7), lgr = x.createLinearGradient(cx - Rs * 2.4, 0, cx + Rs * 2.4, 0);
-        lgr.addColorStop(0, A(hot, 1)); lgr.addColorStop(.5, A(gold, .75)); lgr.addColorStop(1, A(gold, .4));
-        x.save(); x.globalCompositeOperation = "lighter"; x.strokeStyle = lgr; x.filter = "blur(1.2px)";
-        for (let k = 0; k < 16; k++) { x.globalAlpha = lw * .85 * Math.exp(-k / 4.6); x.lineWidth = Rs * .09; x.beginPath(); x.arc(cx, cy, Rs * (1.1 + k * .07), Math.PI, 2 * Math.PI); x.stroke(); }
-        for (let k = 0; k < 9; k++) { x.globalAlpha = lw * .3 * Math.exp(-k / 3.2); x.lineWidth = Rs * .07; x.beginPath(); x.arc(cx, cy, Rs * (1.08 + k * .06), 0, Math.PI); x.stroke(); }
-        x.restore();
-      }
-      x.globalCompositeOperation = "source-over"; x.fillStyle = space; x.beginPath(); x.arc(cx, cy, Rs, 0, 6.2832); x.fill();
-      x.save(); x.globalCompositeOperation = "lighter"; const pr = x.createLinearGradient(cx - Rs, 0, cx + Rs, 0); pr.addColorStop(0, A(hot, .95)); pr.addColorStop(1, A(gold, .5));
-      x.strokeStyle = pr; x.lineWidth = 1.1; x.shadowColor = A(gold, .8); x.shadowBlur = 6; x.beginPath(); x.arc(cx, cy, Rs * 1.02, 0, 6.2832); x.stroke(); x.restore();
-      half(false); x.globalCompositeOperation = "source-over";
+      const hole = hzHole(R4, i, dpr, i !== ti, { hot, gold, ember, rust, space });
+      x.drawImage(hole.cv, hx - hole.h * K, hy - hole.h * K, 2 * hole.h * K, 2 * hole.h * K);
+      // what shows at this zoom: a folder big enough on screen (hzOpenAt) opens into its parts; the rest are drawn whole
+      // (a closed folder, its places as dots)
+      const nodes = [], opened = [], visit = keys => { for (const k of keys) { const f = D.folds?.[k]; if (f && f.rho * R4 * K >= hzOpenAt(f, HZ.geo.open)) { opened.push(k); visit(f.kids); } else nodes.push(k); } };
+      visit(D.top || Object.keys(D.places));
       // taken, so no callout covers them: the HUD's readouts, which sit over the stage, and the rings' names, upper left;
-      // in the top view, the project's folders
+      // then the open folders' names
       const placed = [...cv.parentNode.querySelectorAll(".hzhud")].map(h => [h.offsetLeft, h.offsetTop, h.offsetLeft + h.offsetWidth, h.offsetTop + h.offsetHeight]);
+      const box = (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
       x.font = font(600, 9); x.textAlign = "left"; x.letterSpacing = "2.5px";
-      const dots = Object.keys(D.places).map(pt), hits = a => 99 * placed.filter(b => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]).length
-        + dots.filter(([mx, my]) => mx > a[0] - 9 && mx < a[2] + 9 && my > a[1] - 9 && my < a[3] + 9).length;
-      for (const [r, l, c] of [[.47, D.cwd ? "PROJECT · " + D.cwd : "PROJECT", A(amber, .8)], [.66, "THIS MACHINE", A(ink, .5)], [1, "OUTSIDE WORLD", A(ink, .4)]]) {
+      const dots = nodes.concat(opened).map(k => [...pt(k), D.folds?.[k] ? D.folds[k].rho * R4 * K + 9 : 9]).filter(p => on(p, 0)), hits = a => 99 * placed.filter(b => box(a, b)).length
+        + dots.filter(([mx, my, mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - mr && my < a[3] + mr).length;
+      for (const [r, l, cl] of [[.47, D.cwd ? "PROJECT · " + D.cwd : "PROJECT", A(amber, .8)], [.66, "THIS MACHINE", A(ink, .5)], [1, "OUTSIDE WORLD", A(ink, .4)]]) {
         const w = x.measureText(l).width, at = deg => { const [lx, ly] = P(r, hzRad(deg)); return [lx - 2, ly - 14, lx + 9 + w, ly + 2]; };
         // upper left on its ring, where it covers no other ring's name or readout and the fewest places
         const b = [-40, -48, -32, -56, -24, -64, -16, -72, -8].map(at).reduce((p, q) => hits(q) < hits(p) ? q : p);
-        x.fillStyle = c; x.fillRect(b[0], b[3] - 4, 4, 4); x.fillText(l, b[0] + 9, b[3] - 7);
+        if (!box(b, [0, 0, cw, ch])) continue;
+        x.fillStyle = cl; x.fillRect(b[0], b[3] - 4, 4, 4); x.fillText(l, b[0] + 9, b[3] - 7);
         placed.push(b);
       }
+      x.letterSpacing = "1px"; x.font = font(600, 10); x.textAlign = "center"; HZ.hits = [];
+      for (const k of opened) {
+        const f = D.folds[k], [px, py] = pt(k), rs = f.rho * R4 * K;
+        if (px + rs < 0 || px - rs > cw || py + rs * i < 0 || py - rs * i > ch) continue;
+        HZ.hits.push({ k, x: px, y: py, r: rs, ry: rs * i, open: true });
+        x.fillStyle = A(ink, .03); x.strokeStyle = A(f.rest ? red : gold, HZ.pick === k ? .75 : .3); x.lineWidth = HZ.pick === k ? 1.6 : 1;
+        x.beginPath(); x.ellipse(px, py, rs, rs * i, 0, 0, 6.2832); x.fill(); x.stroke();
+        const l = hzShort(f.name) + "/", w = x.measureText(l).width, ny = Math.min(py + rs * i + 14, ch - 34), b = [px - w / 2 - 4, ny - 10, px + w / 2 + 4, ny + 4];
+        if (!placed.some(p => box(b, p))) { placed.push(b); x.fillStyle = A(space, .78); x.fillRect(b[0], b[1], b[2] - b[0], b[3] - b[1]); x.fillStyle = A(amber, .85); x.fillText(l, px, ny); }
+      }
       x.letterSpacing = "0px";
-      if (i > .6) { x.textAlign = "center"; x.fillStyle = A(ink, (i - .6) / .4 * .5); for (const q of D.dirs) { const [px, py] = P(q.r, q.th); x.fillText(q.label, px, py + 3); } }
-      // what happened, up to the move shown: jets where data left the machine, the routes, then the places
-      const ev = D.ev.slice(0, HZ.t), mine = e => !HZ.follow || e.ag === HZ.follow, seen = dict();
+      // what happened, up to the move shown: jets where data left the machine (one per agent and host), the routes,
+      // then the places
+      const ev = D.ev.slice(0, HZ.t), mine = e => !HZ.follow || e.ag === HZ.follow, seen = dict(), jet = dict(), jets = [];
       for (const e of ev) if (mine(e)) (seen[e.at] ||= []).push(e);
       x.lineWidth = 1.6;
-      for (const e of ev) if (mine(e) && D.places[e.at].kind === "outside") {
+      for (const e of ev) if (mine(e) && D.places[e.at].kind === "outside" && !jet[e.ag + "\u0000" + e.at]) {
+        jet[e.ag + "\u0000" + e.at] = 1;
         const q = D.places[e.at], [ax, ay] = P(.66, q.th), [bx, by] = pt(e.at), g = x.createLinearGradient(ax, ay, bx, by);
         g.addColorStop(0, HZ.col[e.ag]); g.addColorStop(1, A(ink, .9));
-        x.strokeStyle = g; x.setLineDash([5, 5]); x.lineDashOffset = -T * 24; x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.stroke(); x.setLineDash([]);
+        x.strokeStyle = g; x.setLineDash([5, 5]); x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.stroke(); x.setLineDash([]);
         x.fillStyle = HZ.col[e.ag]; x.fillRect(ax - 3, ay - 3, 6, 6);
+        jets.push([ax, ay, bx, by]);
       }
+      // an agent's route, one path of curves place to place; with a place or folder picked, the moves to and from it
+      // bright over the rest, dimmed
+      const by = dict(), pin = HZ.pick ? new Set(D.folds?.[HZ.pick]?.leaves || [HZ.pick]) : null;
+      for (const e of ev) (by[e.ag] ||= []).push(e);
       const route = (ag, alpha, numbered) => {
-        let prev = null; const nums = [];
-        ev.filter(e => e.ag === ag).forEach((e, n) => {
-          const [bx, by] = pt(e.at); prev ||= P(.082 * 1.6, D.places[e.at].th);
-          const mx = (prev[0] + bx) / 2, my = (prev[1] + by) / 2, ox = -(my - cy) * .18, oy = (mx - cx) * .18 * i;
-          x.globalAlpha = alpha; x.strokeStyle = HZ.col[ag]; x.lineWidth = numbered ? 2 : 1.2; x.beginPath(); x.moveTo(prev[0], prev[1]); x.quadraticCurveTo(mx + ox, my + oy, bx, by); x.stroke(); x.globalAlpha = 1;
-          if (numbered) nums.push([(prev[0] + 2 * (mx + ox) + bx) / 4, (prev[1] + 2 * (my + oy) + by) / 4, n + 1]);
-          prev = [bx, by];
-        });
+        const es = by[ag] || [], nums = [];
+        const curves = hot => {
+          let prev = null, was = null;
+          x.beginPath();
+          es.forEach((e, n) => {
+            const [bx, b2] = pt(e.at), [sx, sy] = prev || P(.082 * 1.6, node(e.at).th);
+            const mx = (sx + bx) / 2, my = (sy + b2) / 2, ox = -(my - hy) * .18, oy = (mx - hx) * .18 * i;
+            if (!pin || (pin.has(e.at) || pin.has(was)) === hot) { x.moveTo(sx, sy); x.quadraticCurveTo(mx + ox, my + oy, bx, b2); }
+            if (numbered && !hot) nums.push([(sx + 2 * (mx + ox) + bx) / 4, (sy + 2 * (my + oy) + b2) / 4, n + 1]);
+            prev = [bx, b2]; was = e.at;
+          });
+          x.stroke();
+        };
+        x.strokeStyle = HZ.col[ag]; x.lineWidth = numbered ? 2 : 1.2;
+        x.globalAlpha = pin ? (es.some(e => pin.has(e.at)) ? .18 : .05) : alpha; curves(false);
+        if (pin) { x.globalAlpha = .95; x.lineWidth = 2.2; curves(true); }
+        x.globalAlpha = 1;
         // each move's number, newest first; one that would cover another is left out (the route beside the stage lists every move)
         const shown = [];
         for (const [nx, ny, n] of nums.reverse()) {
-          if (shown.some(([sx, sy]) => Math.abs(sx - nx) < 18 && Math.abs(sy - ny) < 18)) continue;
+          if (!on([nx, ny], 0) || shown.some(([sx, sy]) => Math.abs(sx - nx) < 18 && Math.abs(sy - ny) < 18)) continue;
           shown.push([nx, ny]); x.fillStyle = HZ.col[ag]; x.fillRect(nx - 8, ny - 8, 16, 16); x.fillStyle = space; x.font = font(700, 9); x.textAlign = "center"; x.fillText(String(n), nx, ny + 3);
         }
       };
       if (HZ.follow) route(HZ.follow, 1, true); else for (const [a] of D.agents) route(a, HZ.play ? .4 : .14, false);
-      // places: markers, shields and glows first; then each who-did-what callout where it collides with nothing
-      HZ.hits = [];
-      const marks = [], blocks = [], narrow = cw < 600;
-      for (const [k, q] of Object.entries(D.places)) {
-        const [px, py] = pt(k), es = seen[k] || [], worst = HZWORST.find(a => es.some(e => e.act === a));
-        HZ.hits.push({ k, x: px, y: py });
-        if (Math.sin(q.th) < 0 && Math.hypot(px - cx, py - cy) < Rs * 1.6) continue;   // behind the hole
-        marks.push([px, py, q.rest ? 30 : 9]);
-        if (q.rest) {
-          const sr = 24, sg = x.createRadialGradient(px, py, sr * .35, px, py, sr);
+      // places and closed folders: markers, shields and glows first; then each who-did-what callout where it collides
+      // with nothing
+      const marks = [], blocks = [];
+      for (const k of nodes) {
+        const q = node(k), f = D.folds?.[k], [px, py] = pt(k);
+        if (!on([px, py])) continue;
+        const es = f ? f.leaves.flatMap(l => seen[l] || []) : seen[k] || [], worst = HZWORST.find(a => es.some(e => e.act === a)), rs = f ? Math.max(5, f.rho * R4 * K) : 0;
+        HZ.hits.push({ k, x: px, y: py, r: Math.max(18, rs) });
+        if (Math.sin(q.th) < 0 && Math.hypot(px - hx, py - hy) < Rs * K * 1.6) continue;   // behind the hole
+        // a folder's reach: its circle, and its shield's when a place in it is restricted
+        const sr = f ? rs + (q.rest ? 12 : 2) : 24;
+        marks.push(f ? [px, py, sr, sr * i] : [px, py, q.rest ? sr + 6 : 9]);
+        if (f) {   // a closed folder: its circle, a dot for each of its places; a dashed red shield round it
+          x.fillStyle = A(space, .6); x.strokeStyle = A(ink, HZ.pick === k ? .8 : .34); x.lineWidth = 1;
+          x.beginPath(); x.ellipse(px, py, rs, rs * i, 0, 0, 6.2832); x.fill(); x.stroke();
+          if (rs > 9) { x.fillStyle = A(ink, .5); for (const l of f.leaves) { const [lx, ly] = pt(l); x.fillRect(lx - .75, ly - .75, 1.5, 1.5); } }
+          if (q.rest) for (const [d, a, dash] of [[6, .85, [2, 4]], [11, .35, []]]) { x.strokeStyle = A(red, a); x.setLineDash(dash); x.beginPath(); x.ellipse(px, py, rs + d, (rs + d) * i, 0, 0, 6.2832); x.stroke(); }
+          x.setLineDash([]);
+        }
+        else if (q.rest) {   // the shield of a restricted place, a flare where an agent was stopped
+          const sg = x.createRadialGradient(px, py, sr * .35, px, py, sr);
           sg.addColorStop(0, A(red, 0)); sg.addColorStop(.75, A(red, .1)); sg.addColorStop(1, A(red, .32));
           x.fillStyle = sg; x.beginPath(); x.arc(px, py, sr, 0, 6.2832); x.fill();
-          x.strokeStyle = A(red, .85); x.lineWidth = 1; x.setLineDash([2, 4]); x.lineDashOffset = -T * 6; x.beginPath(); x.arc(px, py, sr, 0, 6.2832); x.stroke(); x.setLineDash([]);
+          x.strokeStyle = A(red, .85); x.lineWidth = 1; x.setLineDash([2, 4]); x.beginPath(); x.arc(px, py, sr, 0, 6.2832); x.stroke(); x.setLineDash([]);
           x.strokeStyle = A(red, .35); x.beginPath(); x.arc(px, py, sr + 5, 0, 6.2832); x.stroke();
-          if (es.some(e => e.act === "blocked" || e.act === "held")) {   // a flare where an agent was stopped
-            const fa = Math.atan2(cy - py, cx - px), fl = .55 + .45 * Math.abs(Math.sin(T * 5)); x.globalCompositeOperation = "lighter";
-            for (let r = -2; r <= 2; r++) { const a = fa + r * .22, l = (7 - Math.abs(r) * 2) * fl; x.strokeStyle = A(red, (.9 - Math.abs(r) * .2) * fl); x.lineWidth = 1.3; x.beginPath(); x.moveTo(px + Math.cos(a) * (sr + 1), py + Math.sin(a) * (sr + 1)); x.lineTo(px + Math.cos(a) * (sr + 1 + l), py + Math.sin(a) * (sr + 1 + l)); x.stroke(); }
+          if (es.some(e => e.act === "blocked" || e.act === "held")) {
+            const fa = Math.atan2(hy - py, hx - px); x.globalCompositeOperation = "lighter";
+            for (let r = -2; r <= 2; r++) { const a = fa + r * .22, l = 7 - Math.abs(r) * 2; x.strokeStyle = A(red, .9 - Math.abs(r) * .2); x.lineWidth = 1.3; x.beginPath(); x.moveTo(px + Math.cos(a) * (sr + 1), py + Math.sin(a) * (sr + 1)); x.lineTo(px + Math.cos(a) * (sr + 1 + l), py + Math.sin(a) * (sr + 1 + l)); x.stroke(); }
             x.globalCompositeOperation = "source-over";
           }
         }
         if (worst) { const gr = 16 + Math.min(es.length, 8) * 4, gl = x.createRadialGradient(px, py, 0, px, py, gr); gl.addColorStop(0, A(AC(worst), .4)); gl.addColorStop(1, A(AC(worst), 0)); x.fillStyle = gl; x.beginPath(); x.arc(px, py, gr, 0, 6.2832); x.fill(); }
         x.textAlign = "center"; x.font = font(700, 12); x.fillStyle = worst ? AC(worst) : A(ink, .28);
-        if (worst) x.fillText(HZSYM[worst], px, py + 4); else x.fillRect(px - 1, py - 1, 2, 2);
-        if (!(worst || HZ.pick === k || i > .7)) continue;
-        const pairs = [...new Map(es.map(e => [e.ag + "|" + e.act, e])).values()], rows = [];
-        if (q.rest) rows.push([red, "RESTRICTED · " + q.rest.split(" · ")[0], true]);
+        if (worst) x.fillText(HZSYM[worst], px, py + 4); else if (!f) x.fillRect(px - 1, py - 1, 2, 2);
+        // labels by the zoom: at FIT only places something happened at (all of them in the top view); zoomed in, any
+        if (!(worst || HZ.pick === k || i > .7 || K >= 1.6)) continue;
+        const pairs = [...new Map(es.map(e => [e.ag + "|" + e.act, e])).values()], rows = [], label = f ? `${hzShort(f.name)}/ · ${f.leaves.length} places` : hzShort(q.name ?? q.label);
+        if (q.rest) rows.push([red, (f ? f.rests + " RESTRICTED IN IT · " : "RESTRICTED · ") + q.rest.split(" · ")[0], true]);
         pairs.slice(0, 3).forEach(e => rows.push([HZ.col[e.ag], e.ag + " · " + HZACT[e.act].replace(/^was | at$/g, "")]));
         if (pairs.length > 3) rows.push([A(ink, .4), "+" + (pairs.length - 3) + " more"]);
-        x.font = font(400, 10.5); let w = x.measureText(hzShort(q.label)).width;
+        x.font = font(400, 10.5); let w = x.measureText(label).width;
         x.font = font(400, 9.5); rows.forEach(([, t, bad]) => { w = Math.max(w, x.measureText(t).width + (bad ? 0 : 10)); });
         const rank = q.rest ? 0 : worst === "blocked" || worst === "held" ? 1 : worst ? 2 : 3;
-        if (narrow && rank > 1 && HZ.pick !== k) continue;   // a phone: callouts for restricted places and stops only
-        blocks.push({ k, q, px, py, worst, rows, w, h: 13 * rows.length, rank, gap: q.rest ? 30 : 8, n: es.length });
+        if (narrow && rank > 1 && HZ.pick !== k && K < 2) continue;   // a phone at FIT: callouts for restricted places and stops only
+        const gap = f ? sr * i + 6 : q.rest ? sr + 6 : 8;
+        blocks.push({ k, q, px, py, worst, rows, w, h: 13 * rows.length, rank, gap, n: es.length, label, from: [[px, gap], ...f ? [[px - sr - 4, 4], [px + sr + 4, 4]] : []] });
       }
+      // a box crosses a line (Liang-Barsky): the jets, which a callout steps off when it can
+      const cross = (a, [x1, y1, x2, y2]) => {
+        let t0 = 0, t1 = 1;
+        for (const [p, d] of [[x1 - x2, x1 - a[0]], [x2 - x1, a[2] - x1], [y1 - y2, y1 - a[1]], [y2 - y1, a[3] - y1]]) {
+          if (!p) { if (d < 0) return false; continue; }
+          const r = d / p;
+          if (p < 0) { if (r > t1) return false; t0 = Math.max(t0, r); } else { if (r < t0) return false; t1 = Math.min(t1, r); }
+        }
+        return true;
+      };
       const hit = a => placed.some(b => a[0] < b[2] + 4 && a[2] > b[0] - 4 && a[1] < b[3] + 3 && a[3] > b[1] - 3)
-        || marks.some(([mx, my, mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - mr && my < a[3] + mr)
-        || a[0] < 6 || a[2] > cw - 6 || a[1] < 70 || a[3] > ch - 30 || (a[0] < cx + Rs * 2 && a[2] > cx - Rs * 2 && a[1] < cy + Rs * 1.4 && a[3] > cy - Rs * 1.6);
+        || marks.some(([mx, my, mr, my_ = mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - my_ && my < a[3] + my_)
+        || a[0] < 6 || a[2] > cw - 6 || a[1] < 24 || a[3] > ch - 30 || (a[0] < hx + Rs * K * 2 && a[2] > hx - Rs * K * 2 && a[1] < hy + Rs * K * 1.4 && a[3] > hy - Rs * K * 1.6)
+        || jets.some(s => cross(a, s));
       // the picked place first, then restricted places and stops (blocked, held), then the busiest: each where it covers
-      // nothing drawn, else left to hover and a click
+      // nothing drawn, else left to hover and a click; each on a dark plate, so a line under it never crosses its words
       blocks.sort((a, b) => (b.k === HZ.pick) - (a.k === HZ.pick) || Math.min(a.rank, 2) - Math.min(b.rank, 2) || b.n - a.n || a.rank - b.rank);
       for (const b of blocks) {
-        const pref = Math.sin(b.q.th) < 0 ? -1 : 1, side0 = b.px < cx ? -1 : 1;
+        const pref = Math.sin(b.q.th) < 0 ? -1 : 1, side0 = b.px < hx ? -1 : 1;
         let best = null;
-        for (const L of [10, 26, 42, 58, 76, 96]) {
-          for (const dy of [pref, -pref]) for (const sd of [side0, -side0]) {
-            const ey = b.py + dy * (b.gap + L), x0 = sd > 0 ? b.px + 11 : b.px - 11 - b.w, box = [x0, dy < 0 ? ey - b.h - 10 : ey - 10, x0 + b.w, dy < 0 ? ey + 3 : ey + b.h + 3];
-            if (!best && !hit(box)) best = { box, ey, dy, sd };
+        // from the mark, else (a folder) from either side of its circle
+        for (const [ax, gap] of b.from) {
+          for (const L of [10, 26, 42, 58, 76, 96]) {
+            for (const dy of [pref, -pref]) for (const sd of [side0, -side0]) {
+              const ey = b.py + dy * (gap + L), x0 = sd > 0 ? ax + 11 : ax - 11 - b.w, bx = [x0, dy < 0 ? ey - b.h - 10 : ey - 10, x0 + b.w, dy < 0 ? ey + 3 : ey + b.h + 3];
+              if (!best && !hit(bx)) best = { box: bx, ey, dy, sd, ax, gap };
+            }
+            if (best) break;
           }
           if (best) break;
         }
         if (!best) {   // no free room: left out, but for the picked place; hover names it, a click lists it
           if (HZ.pick !== b.k) continue;
           const ey = b.py + pref * (b.gap + 10), x0 = Math.max(6, Math.min(cw - 6 - b.w, side0 > 0 ? b.px + 11 : b.px - 11 - b.w));
-          best = { box: [x0, ey - 10, x0 + b.w, ey + b.h + 3], ey, dy: pref, sd: side0 };
+          best = { box: [x0, ey - 10, x0 + b.w, ey + b.h + 3], ey, dy: pref, sd: side0, ax: b.px, gap: b.gap };
         }
         placed.push(best.box);
-        const { ey, dy, sd } = best, tx = sd > 0 ? best.box[0] : best.box[2];
-        x.strokeStyle = A(ink, .35); x.lineWidth = 1; x.beginPath(); x.moveTo(b.px, b.py + dy * b.gap); x.lineTo(b.px, ey); x.lineTo(b.px + sd * 8, ey); x.stroke();
+        const { ey, dy, sd, ax, gap } = best, tx = sd > 0 ? best.box[0] : best.box[2];
+        x.strokeStyle = A(ink, .35); x.lineWidth = 1; x.beginPath(); x.moveTo(ax, b.py + dy * gap); x.lineTo(ax, ey); x.lineTo(ax + sd * 8, ey); x.stroke();
+        x.fillStyle = A(space, .78); x.fillRect(best.box[0] - 3, best.box[1] - 1, best.box[2] - best.box[0] + 6, best.box[3] - best.box[1] + 2);
         x.textAlign = sd > 0 ? "left" : "right"; x.font = font(400, 10.5);
-        x.fillStyle = HZ.pick === b.k ? amber : A(ink, b.worst ? .95 : .42); x.fillText(hzShort(b.q.label), tx, ey + 3);
+        x.fillStyle = HZ.pick === b.k ? amber : A(ink, b.worst ? .95 : .42); x.fillText(b.label, tx, ey + 3);
         x.font = font(400, 9.5);
-        b.rows.forEach(([c, t, bad], n) => {
-          const ry = ey + 3 + dy * 13 * (n + 1); x.fillStyle = c;
+        b.rows.forEach(([cl, t, bad], n) => {
+          const ry = ey + 3 + dy * 13 * (n + 1); x.fillStyle = cl;
           if (bad) return x.fillText(t, tx, ry);
           x.fillRect(sd < 0 ? tx - x.measureText(t).width - 10 : tx, ry - 6, 6, 6); x.fillStyle = A(ink, .62); x.fillText(t, sd < 0 ? tx : tx + 10, ry);
         });
       }
-      // the target reticle on the picked place; the comet of the move just replayed
-      if (HZ.pick) {
-        const [px, py] = pt(HZ.pick), s = 13, c = 5; x.strokeStyle = amber; x.lineWidth = 1.4; x.beginPath();
-        for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { x.moveTo(px + dx * s, py + dy * (s - c)); x.lineTo(px + dx * s, py + dy * s); x.lineTo(px + dx * (s - c), py + dy * s); }
+      // the target reticle on the picked place or folder; the comet of the move just replayed
+      if (node(HZ.pick)) {
+        const [px, py] = pt(HZ.pick), f = D.folds?.[HZ.pick], s = f ? Math.max(13, f.rho * R4 * K + 6) : 13, sy = f ? Math.max(13, f.rho * R4 * K * i + 6) : 13, cc = 5;
+        x.strokeStyle = amber; x.lineWidth = 1.4; x.beginPath();
+        for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { x.moveTo(px + dx * s, py + dy * (sy - cc)); x.lineTo(px + dx * s, py + dy * sy); x.lineTo(px + dx * (s - cc), py + dy * sy); }
         x.stroke();
       }
       const cm = HZ.comet;
       if (cm && !still && D.places[cm.to]) {
         const pr = (now - cm.t0) / 700, [ex, ey] = pt(cm.to), [sx, sy] = D.places[cm.from] ? pt(cm.from) : P(.082 * 1.6, D.places[cm.to].th);
-        const mx = (sx + ex) / 2 - ((sy + ey) / 2 - cy) * .18, my = (sy + ey) / 2 + ((sx + ex) / 2 - cx) * .18 * i, at = u => [(1 - u) ** 2 * sx + 2 * (1 - u) * u * mx + u * u * ex, (1 - u) ** 2 * sy + 2 * (1 - u) * u * my + u * u * ey];
+        const mx = (sx + ex) / 2 - ((sy + ey) / 2 - hy) * .18, my = (sy + ey) / 2 + ((sx + ex) / 2 - hx) * .18 * i, at = u => [(1 - u) ** 2 * sx + 2 * (1 - u) * u * mx + u * u * ex, (1 - u) ** 2 * sy + 2 * (1 - u) * u * my + u * u * ey];
         x.fillStyle = x.strokeStyle = HZ.col[cm.ag];
-        if (pr <= 1) { x.globalCompositeOperation = "lighter"; for (let k = 0; k < 14; k++) { const [hx, hy] = at(Math.max(0, pr - k * .035)), s = 4 - k * .22; x.globalAlpha = (1 - k / 14) * .9; x.fillRect(hx - s / 2, hy - s / 2, s, s); } }
+        if (pr <= 1) { x.globalCompositeOperation = "lighter"; for (let k = 0; k < 14; k++) { const [px, py] = at(Math.max(0, pr - k * .035)), s = 4 - k * .22; x.globalAlpha = (1 - k / 14) * .9; x.fillRect(px - s / 2, py - s / 2, s, s); } }
         else if (pr <= 1.8) { const f = (pr - 1) / .8; x.globalAlpha = 1 - f; x.lineWidth = 1.5; x.beginPath(); x.arc(ex, ey, 6 + 22 * f, 0, 6.2832); x.stroke(); }
         else HZ.comet = null;
         x.globalAlpha = 1; x.globalCompositeOperation = "source-over";
       }
+      const zl = $("hzzoom"); if (zl) zl.textContent = (K < 9.95 ? K.toFixed(1) : Math.round(K)) + "×";
+      if (!still && (HZ.fly || HZ.comet || HZ.i !== ti)) HZ.raf = requestAnimationFrame(hzFrame);
+    }
+    // the black hole, painted into a bitmap centred on it that each frame draws under the camera: the disk (smooth hot
+    // gas, orbiting streaks, the side turning toward us brighter), its bloom, the far half, the shadow, the lensed arc
+    // over the top, the horizon and photon ring, then the near half. Painted again only when the stage's size, its tilt
+    // or the pixel ratio changes; smaller while the tilt moves
+    // lean: at most 1600px a side, so past about 1.5x zoom the disk softens; paint it at the zoom if that bites
+    function hzHole(R4, i, dpr, moving, { hot, gold, ember, rust, space }) {
+      const h = R4 * .6 + 30, s = moving ? dpr / 2 : Math.min(dpr * 2, 1600 / (2 * h)), side = Math.ceil(2 * h * s), key = [R4, i, s, hot, gold, ember, rust, space].join();
+      if (HZ.hole?.key === key) return HZ.hole;
+      const A = hzRgba, Rs = R4 * .082, rIn = R4 * .09, rOut = R4 * .56, mid = h * s;
+      const disk = HZ.hole?.disk || document.createElement("canvas"), cv = HZ.hole?.cv || document.createElement("canvas");
+      for (const b of [disk, cv]) { b.width = side; b.height = side; }   // cleared, its drawing state reset
+      const o = disk.getContext("2d"), x = cv.getContext("2d");
+      o.setTransform(s, 0, 0, s, mid, mid); o.scale(1, i);
+      const body = o.createRadialGradient(0, 0, rIn, 0, 0, rOut);
+      for (const [at, cl, a] of [[0, hot, 1], [.05, hot, .95], [.13, gold, .68], [.3, ember, .32], [.56, rust, .2], [1, rust, 0]]) body.addColorStop(at, A(cl, a));
+      o.fillStyle = body; o.beginPath(); o.arc(0, 0, rOut, 0, 6.2832); o.arc(0, 0, rIn, 0, 6.2832, true); o.fill();
+      o.globalCompositeOperation = "lighter"; o.lineCap = "round";
+      for (const st of HZ.streaks) { o.strokeStyle = A(hot, st.a.toFixed(3)); o.lineWidth = st.lw; o.beginPath(); o.arc(0, 0, st.r * R4, st.th, st.th + st.len); o.stroke(); }
+      if (o.createConicGradient) {
+        o.globalCompositeOperation = "destination-in"; const dop = o.createConicGradient(0, 0, 0);
+        for (const [at, a] of [[0, .4], [.25, .72], [.5, 1], [.75, .72], [1, .4]]) dop.addColorStop(at, A(space, a));
+        o.fillStyle = dop; o.fillRect(-rOut, -rOut, rOut * 2, rOut * 2);
+      }
+      const half = far => { x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.beginPath(); x.rect(0, far ? 0 : mid, side, far ? mid : side - mid); x.clip(); x.globalCompositeOperation = "lighter"; x.drawImage(disk, 0, 0); x.restore(); };
+      x.save(); x.globalCompositeOperation = "lighter"; x.globalAlpha = .55; x.filter = `blur(${Math.round(16 * s)}px)`; x.drawImage(disk, 0, 0); x.restore();
+      half(true);
+      x.setTransform(s, 0, 0, s, mid, mid); x.globalCompositeOperation = "source-over";
+      const sh = x.createRadialGradient(0, 0, Rs * .9, 0, 0, Rs * 1.35); sh.addColorStop(0, A(space, 1)); sh.addColorStop(1, A(space, 0));
+      x.fillStyle = sh; x.beginPath(); x.arc(0, 0, Rs * 1.35, 0, 6.2832); x.fill();
+      if (i < .95) {
+        const lw = Math.min(1, (1 - i) * 1.7), lgr = x.createLinearGradient(-Rs * 2.4, 0, Rs * 2.4, 0);
+        lgr.addColorStop(0, A(hot, 1)); lgr.addColorStop(.5, A(gold, .75)); lgr.addColorStop(1, A(gold, .4));
+        x.save(); x.globalCompositeOperation = "lighter"; x.strokeStyle = lgr; x.filter = `blur(${(1.2 * s).toFixed(1)}px)`;
+        for (let k = 0; k < 16; k++) { x.globalAlpha = lw * .85 * Math.exp(-k / 4.6); x.lineWidth = Rs * .09; x.beginPath(); x.arc(0, 0, Rs * (1.1 + k * .07), Math.PI, 2 * Math.PI); x.stroke(); }
+        for (let k = 0; k < 9; k++) { x.globalAlpha = lw * .3 * Math.exp(-k / 3.2); x.lineWidth = Rs * .07; x.beginPath(); x.arc(0, 0, Rs * (1.08 + k * .06), 0, Math.PI); x.stroke(); }
+        x.restore();
+      }
+      x.globalCompositeOperation = "source-over"; x.fillStyle = space; x.beginPath(); x.arc(0, 0, Rs, 0, 6.2832); x.fill();
+      x.save(); x.globalCompositeOperation = "lighter"; const pr = x.createLinearGradient(-Rs, 0, Rs, 0); pr.addColorStop(0, A(hot, .95)); pr.addColorStop(1, A(gold, .5));
+      x.strokeStyle = pr; x.lineWidth = 1.1; x.shadowColor = A(gold, .8); x.shadowBlur = 3 * s; x.beginPath(); x.arc(0, 0, Rs * 1.02, 0, 6.2832); x.stroke(); x.restore();
+      half(false);
+      return HZ.hole = { key, cv, disk, h };
     }
     function hzStep(k) {
       HZ.t = k;
       const e = HZ.d.ev[k - 1], prev = e && HZ.d.ev.slice(0, k - 1).filter(x => x.ag === e.ag).pop();
       if (e) HZ.comet = { ag: e.ag, to: e.at, from: prev?.at, t0: performance.now() };
+      if (e && HZ.track) hzFocus(e.at);   // CAM: the camera flies to each move
       renderHorizon();
     }
     function hzStop() { clearInterval(HZ.play); HZ.play = null; }
@@ -3841,17 +4040,69 @@
       hzStep(HZ.t + 1);
     }
     $("hzp").addEventListener("click", e => {
-      const t = e.target.closest("#hzplay,[data-hzk],[data-hzag],[data-hzv]"); if (!t) return;
+      const t = e.target.closest("#hzplay,[data-hzk],[data-hzag],[data-hzv],[data-hzz]"); if (!t) return;
       if (t.id === "hzplay") return hzPlay();
       if (t.dataset.hzk) { hzStop(); return hzStep(+t.dataset.hzk); }
+      if (t.dataset.hzz) return hzZoomKey(t.dataset.hzz);
       if (t.dataset.hzag) { HZ.follow = HZ.follow === t.dataset.hzag ? null : t.dataset.hzag; HZ.pick = null; }
       if (t.dataset.hzv) HZ.view = t.dataset.hzv;
       renderHorizon();
     });
-    const hzNear = e => { const b = $("hzcv").getBoundingClientRect(), mx = e.clientX - b.left, my = e.clientY - b.top; let best = null, bd = 18; for (const h of HZ.hits) { const d = Math.hypot(h.x - mx, h.y - my); if (d < bd) { bd = d; best = h.k; } } return best; };
-    $("hzcv").addEventListener("click", e => { const k = hzNear(e); HZ.pick = k && HZ.pick !== k ? k : null; if (k) HZ.follow = null; renderHorizon(); });
-    // hover names any place, its callout drawn or not, in full
-    $("hzcv").addEventListener("mousemove", e => { const k = hzNear(e); e.target.style.cursor = k ? "pointer" : "default"; e.target.title = k ? HZ.d.places[k]?.label ?? "" : ""; });
+    // the zoom controls and keys: + and − twice or half as close about the stage's centre, FIT (0, Esc) the whole map
+    // with nothing picked, CAM whether a replay's camera flies to each move
+    const HZZOOM = { "+": "in", "=": "in", "-": "out", "_": "out", "0": "fit" };
+    function hzZoomKey(z) {
+      const g = HZ.geo;
+      if (z === "cam") HZ.track = !HZ.track;
+      else if (z === "fit") { HZ.pick = null; hzFlyTo({ k: 1, x: 0, y: 0 }); }
+      else if (g) hzFlyTo(hzZoom(HZ.fly?.b || HZ.cam, [g.cw / 2, g.ch / 2], z === "in" ? 2 : .5, g.cw, g.ch));
+      renderHorizon();
+    }
+    // what is under a point of the stage: the nearest place or closed folder within its reach, else the smallest open
+    // folder round it
+    function hzHit(hits, mx, my) {
+      let best = null, bd = Infinity;
+      for (const h of hits) { const d = Math.hypot(h.x - mx, h.y - my); if (!h.open && d < h.r && d < bd) { best = h; bd = d; } }
+      for (const h of best ? [] : hits) if (h.open && ((h.x - mx) / h.r) ** 2 + ((h.y - my) / h.ry) ** 2 <= 1 && !(best && best.r < h.r)) best = h;
+      return best ? best.k : null;
+    }
+    // the stage: the wheel or a trackpad's pinch zooms toward the pointer, a drag pans, a click picks a place and flies
+    // to it, a double-click flies in; on touch one finger scrolls the page, two pinch and pan the map
+    const hzcv = $("hzcv"), hzAt = e => { const b = hzcv.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
+    const hzSet = c => { HZ.fly = null; HZ.cam = c; hzDraw(); };
+    hzcv.addEventListener("wheel", e => {
+      const g = HZ.geo; if (!g) return;
+      e.preventDefault();
+      hzSet(hzZoom(HZ.cam, hzAt(e), Math.exp(-e.deltaY * (e.deltaMode ? 16 : 1) * (e.ctrlKey ? .01 : .002)), g.cw, g.ch));
+    }, { passive: false });
+    hzcv.addEventListener("pointerdown", e => { if (e.pointerType !== "touch" && !e.button) HZ.drag = { at: [e.clientX, e.clientY], cam: HZ.cam, moved: false }; });
+    hzcv.addEventListener("pointermove", e => {
+      const d = HZ.drag, g = HZ.geo;
+      if (d && g && (d.moved ||= Math.hypot(e.clientX - d.at[0], e.clientY - d.at[1]) > 4)) {
+        hzcv.setPointerCapture?.(e.pointerId); hzcv.style.cursor = "grabbing";
+        return hzSet(hzClamp({ k: d.cam.k, x: d.cam.x + e.clientX - d.at[0], y: d.cam.y + e.clientY - d.at[1] }, g.cw, g.ch));
+      }
+      // hover names any place or folder, its callout drawn or not, in full
+      const k = hzHit(HZ.hits, ...hzAt(e)); hzcv.style.cursor = k ? "pointer" : HZ.cam.k > 1 ? "grab" : "default"; hzcv.title = k ? HZ.d.places[k]?.label ?? HZ.d.folds[k].label : "";
+    });
+    for (const t of ["pointerup", "pointercancel"]) hzcv.addEventListener(t, () => { HZ.dragged = HZ.drag?.moved; HZ.drag = null; });
+    hzcv.addEventListener("click", e => {
+      if (HZ.dragged) { HZ.dragged = false; return; }   // the end of a drag, not a click
+      const k = hzHit(HZ.hits, ...hzAt(e));
+      HZ.pick = k;
+      if (k) { HZ.follow = null; hzFocus(k); }
+      renderHorizon();
+    });
+    hzcv.addEventListener("dblclick", e => { const g = HZ.geo; if (g) hzFlyTo(hzAim(hzWorld(HZ.cam, hzAt(e)), (HZ.fly?.b || HZ.cam).k * 2.5, g.cw, g.ch)); });
+    const hzTouch = e => { const [a, b] = e.touches, r = hzcv.getBoundingClientRect(); return [[(a.clientX + b.clientX) / 2 - r.left, (a.clientY + b.clientY) / 2 - r.top], Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)]; };
+    hzcv.addEventListener("touchstart", e => { HZ.pinch = e.touches.length === 2 ? hzTouch(e) : null; }, { passive: true });
+    hzcv.addEventListener("touchmove", e => {
+      const g = HZ.geo, p = HZ.pinch; if (!p || !g || e.touches.length !== 2) return;
+      e.preventDefault();
+      const [m, d] = HZ.pinch = hzTouch(e), c = hzZoom(HZ.cam, m, d / (p[1] || d), g.cw, g.ch);
+      hzSet(hzClamp({ k: c.k, x: c.x + m[0] - p[0][0], y: c.y + m[1] - p[0][1] }, g.cw, g.ch));
+    }, { passive: false });
+    hzcv.addEventListener("touchend", e => { if (e.touches.length < 2) HZ.pinch = null; });
     function evidenceView(el) {
       const r = scope && RUNS.get(scope);
       if (!r) { put("whyv", `<div class="empty">Select a run: its evidence is its bundle.</div>`); $("wvsum").textContent = ""; return; }
@@ -4835,7 +5086,8 @@
       if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex],[data-ingrp][tabindex]")) e.target.click();
       else if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
       else if (V2 && !BOOT && scope && rpKeys(e)) return;
-      else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; schedule(); }
+      else if (PAGE === "horizon" && HZZOOM[e.key]) hzZoomKey(HZZOOM[e.key]);
+      else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; if (PAGE === "horizon") hzZoomKey("fit"); schedule(); }
       else if (e.key === "f" || e.key === "F") { F.flag = !F.flag; schedule(); }
       else if (e.key === "t" || e.key === "T") $("theme").click();
       else if (PAGE === "run" && /^[1-7]$/.test(e.key)) { show(RVIEWS[+e.key - 1]); wvKey = ""; schedule(); }

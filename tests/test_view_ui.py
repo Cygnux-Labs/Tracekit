@@ -1184,6 +1184,10 @@ class WhyCauses(unittest.TestCase):
         self.assertIn('setTimeout(() => { b.textContent = label; }, 1200)', PAGE)
 
 
+# what hzFrame calls beside the names a test lists: the camera and the black hole's bitmap
+HZ_DRAW = ["HZKMAX", "hzScr", "hzWorld", "hzClamp", "hzOpenAt", "hzHole"]
+
+
 def hz_call(seq, tool, args, run="r1", decision="allow", rules=(), cwd="/home/u/shop"):
     return {"event": "PreToolUse", "session_id": run, "tk_seq": seq, "ts": 1000 + seq, "tool_use_id": f"c{seq}", "tool_name": tool,
             "tool_input": args, "cwd": cwd, "agent": "?", "v2": {"decision": decision, "rules": [{"id": i, "reason": r} for i, r in rules]}}
@@ -1219,7 +1223,7 @@ class Horizon(unittest.TestCase):
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1260,7 +1264,7 @@ class Horizon(unittest.TestCase):
     def hz_cap(self, recs):
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1281,7 +1285,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData", "hzSecs"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzData", "hzSecs"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1294,7 +1298,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(i, "w", 100 + i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData", "hzChain"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzData", "hzChain"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true, n: 0 }}, STOPPED = "";
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1315,8 +1319,8 @@ class Horizon(unittest.TestCase):
                 hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
-                                  "hzRgba", "hzShort", "hzDraw", "hzFrame"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
             const ctx = new Proxy({{}}, {{ get: (o, k) => k in o ? o[k] : () => ({{ addColorStop() {{}}, width: 10 }}) }});
@@ -1341,7 +1345,7 @@ class Horizon(unittest.TestCase):
 
     def test_reduced_motion_draws_a_still_frame_on_each_change_and_no_loop(self):
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], """
             const ctx = new Proxy({}, { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {}, width: 10 }) });
             let frames = 0, reduce = true, PAGE = "horizon";
             const queued = [], cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => { frames++; return ctx; },
@@ -1367,7 +1371,7 @@ class Horizon(unittest.TestCase):
         """"release-agent · flagged" at api.github.com was drawn over CHAIN ✓ VERIFIED: the callouts' room left out the
         HUD's readouts, which sit over the stage."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], """
             const texts = [], ctx = new Proxy({ fillText: (t, x, y) => texts.push([t, x, y]), measureText: t => ({ width: t.length * 6 }) },
                                               { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }) });
             const hud = { offsetLeft: 580, offsetTop: 16, offsetWidth: 202, offsetHeight: 190 }, PAGE = "horizon";
@@ -1405,7 +1409,7 @@ class Horizon(unittest.TestCase):
     def test_a_phone_draws_only_callouts_that_fit_and_only_for_restricted_places_and_stops(self):
         """At 390px HORIZON's callouts printed over each other: one with no room was drawn anyway, wherever it fell."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], self.HZ_STAGE + """
             const places = { "src/a.py": { kind: "project", label: "src/a.py", r: .31, th: hzRad(200), rest: null } }, evs = [ev(1, "src/a.py", "flag")];
             for (let k = 0; k < 14; k++) {   // fourteen restricted places, side by side: more callouts than the stage has room for
               places["~/.s" + k] = { kind: "machine", label: "~/.secret" + k, r: .565, th: hzRad(80 + k * 3), rest: "TK-F005 · secrets_access" };
@@ -1423,7 +1427,7 @@ class Horizon(unittest.TestCase):
     def test_a_phone_gives_restricted_places_their_callouts_before_busier_stops(self):
         """At 390px a restricted place got no callout: busiest first, the busier blocked places around it took the room."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], self.HZ_STAGE + """
             const places = { env: { kind: "project", label: ".env", r: .31, th: hzRad(96), rest: "TK-F005 · secrets_access" } }, evs = [ev(1, "env", "read")];
             for (let k = 0; k < 14; k++) {   // busy blocked places on both sides of it
               places["b" + k] = { kind: "machine", label: "rm-" + k, r: .565, th: hzRad(76 + k * 3), rest: null };
@@ -1439,7 +1443,7 @@ class Horizon(unittest.TestCase):
         """On a phone THIS MACHINE and PROJECT were drawn over each other, and on a desktop a blocked place's ✕ covered
         THIS MACHINE: each ring's name sat at the same angle whatever was there."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], self.HZ_STAGE + """
             const places = { m: { kind: "machine", label: "rm", r: .565, th: hzRad(-20), rest: null },
                              o: { kind: "outside", label: "x.example", r: .85, th: hzRad(-44), rest: null } };
             HZ.d = { ev: [ev(1, "m", "blocked"), ev(2, "o", "net")], dirs: [], agents: [["coder", 0]], cwd: "", places };
@@ -1458,7 +1462,7 @@ class Horizon(unittest.TestCase):
         and stops first, then the busiest, each only where it covers nothing drawn; a long path shows its last two
         parts, and hover gives it whole."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"],
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW],
                                  self.HZ_STAGE + """
             const places = {}, evs = [];
             for (let k = 0; k < 120; k++) {   // every third restricted (TK-D007 on a checkout of Tracekit itself)
@@ -1475,19 +1479,20 @@ class Horizon(unittest.TestCase):
         desk, picked = out
         self.assertEqual(desk["over"], 0)                          # no label over another
         self.assertTrue(5 < len(desk["labels"]) < 120, desk["labels"])
-        self.assertEqual(desk["labels"][0], "…/tracekit/module_15.py")   # a restricted place first, its path's last parts
-        self.assertIn("…/tracekit/module_43.py", desk["labels"])          # then the busiest
-        rest = [int(re.search(r"module_(\d+)", lb)[1]) % 3 == 0 for lb in desk["labels"]]
-        self.assertEqual(rest, sorted(rest, reverse=True))
+        nums = [int(re.search(r"^…/tracekit/module_(\d+)\.py$", lb)[1]) for lb in desk["labels"]]   # each its path's last parts
+        rest = [n % 3 == 0 for n in nums]
+        self.assertEqual(rest, sorted(rest, reverse=True))                # restricted places first
+        busy = [30 if n == 43 else n % 4 + 1 for n in nums if n % 3]
+        self.assertTrue(busy and busy == sorted(busy, reverse=True), busy)   # then the busiest
         self.assertTrue(all(lb.startswith("…/tracekit/module_") for lb in desk["labels"]), desk["labels"])
         self.assertEqual(picked[0], "…/tracekit/module_7.py")      # a clicked place gets its callout
-        hover = PAGE[PAGE.index('$("hzcv").addEventListener("mousemove"'):]
-        self.assertIn("e.target.title = k ? HZ.d.places[k]?.label", hover.split("\n")[0])
+        hover = PAGE[PAGE.index('hzcv.addEventListener("pointermove"'):]
+        self.assertIn('hzcv.title = k ? HZ.d.places[k]?.label ?? HZ.d.folds[k].label : ""', hover[:hover.index("});")])
 
     def test_following_an_agent_numbers_its_newest_moves_and_never_one_over_another(self):
         """Following coder piled about 100 numbered squares into one block in the project."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], self.HZ_STAGE + """
             const places = { a: { kind: "project", label: "src/a.py", r: .24, th: hzRad(30), rest: null },
                              b: { kind: "project", label: "src/b.py", r: .39, th: hzRad(60), rest: null } };
             HZ.d = { ev: Array.from({ length: 50 }, (_, n) => ev(n + 1, n % 2 ? "b" : "a", "read")), dirs: [], agents: [["coder", 0]], cwd: "", places };
@@ -1509,7 +1514,7 @@ class Horizon(unittest.TestCase):
         """A tab left open across a viewer restart showed HORIZON's stage as a white box with a broken-image icon: what
         Chromium draws for a canvas it can't back (its 2D context lost: too big, or memory taken back)."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], """
             let lost = false, drawn = 0; const cls = {};
             const ctx = new Proxy({ isContextLost: () => lost, fillRect() { drawn++; } }, { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }) });
             const cv = { clientWidth: 1252, clientHeight: 27000, width: 0, height: 0, getContext: () => ctx,
@@ -1926,7 +1931,7 @@ class ApproveThenRetry(unittest.TestCase):
         """HORIZON drew the retry that ran as held (◯) and its HUD counted HOLDS by held marks, DESK's HELD by decisions."""
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
-                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
+                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzData"], f"""
             const ALL = {json.dumps(retried("fin"))}, RUNS = new Map([["fin", {{ id: "fin", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
