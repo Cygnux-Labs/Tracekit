@@ -420,12 +420,48 @@ class WaitingForYou(unittest.TestCase):
 
 
 
+class Restarted(unittest.TestCase):
+    """A tab left open across a viewer restart (a new token and session key) kept its old tape and drawing, said "ALL
+    CLEAR" and kept its toasts, with no word of why nothing was live any more."""
+
+    def test_a_session_the_viewer_refuses_after_it_worked_ends_the_live_parts_with_one_reason(self):
+        needs_node(self)
+        get = re.search(r"^    async function getJSON\(.*?^    }$", PAGE, re.M | re.S).group(0)
+        out = json.loads(page_js(["hzStop", "endLive"], get + """
+            let ENDED = "", SNAPPED = false, liveOk = true, liveErr = "", toasting = true, checking = 7, closed = 0, asked = [], next;
+            const es = { close: () => closed++ }, HZ = { play: 3, ended: false }, toasts = { n: 3, replaceChildren() { this.n = 0; } };
+            const $ = () => toasts, schedule = () => {}, stopped = [], clearInterval = id => stopped.push(id);
+            const fetch = async p => { asked.push(p); return next; }, answer = (status, body = {}) => ({ status, ok: status < 300, json: async () => body });
+            const seen = [], at = async (p, a) => { next = a; try { await getJSON(p); seen.push("ok"); } catch (e) { seen.push([e.message, !!e.fatal]); } };
+            (async () => {
+              await at("api/snapshot", answer(401));                  // never worked: the first-time words
+              SNAPPED = true;
+              await at("api/why/workspace", answer(403));             // an OIDC session has no why logs: nothing ended
+              seen.push(ENDED);
+              await at("api/verify", answer(401, { error: "missing or wrong token", login: "/login" }));
+              seen.push([liveOk, liveErr === ENDED, closed, checking, stopped, HZ.ended, toasting, toasts.n]);
+              await at("api/rows?run=r1", answer(200, {}));           // asks nothing more
+              seen.push(asked);
+              process.stdout.write(JSON.stringify(seen));
+            })();"""))
+        self.assertEqual(out[0][0][:33], "This viewer needs a token: open t")
+        self.assertEqual(out[1:3], [["observer answered HTTP 403", False], ""])
+        ended = ("This viewer was restarted or your session ended: sign in again (/login) or open the link tracekit view "
+                 "printed. What this page shows is as it was then.")
+        self.assertEqual(out[3], [ended, True])
+        self.assertEqual(out[4], [False, True, 1, None, [7, 3], True, False, 0])   # the checks, then the replay
+        self.assertEqual(out[5:], [[ended, True], ["api/snapshot", "api/why/workspace", "api/verify"]])
+        # NEEDS YOU says it first, never ALL CLEAR; HORIZON draws still frames only
+        self.assertIn('if (ENDED) out.unshift({ kind: "ENDED", sev: "high", open: null, what: ENDED', PAGE)
+        self.assertIn('if (matchMedia("(prefers-reduced-motion: reduce)").matches || HZ.ended) hzFrame(0);', PAGE)
+
+
 class NeedsYou(unittest.TestCase):
-    def needs(self, recs, runs, stopped=""):
+    def needs(self, recs, runs, stopped="", ended=""):
         return json.loads(page_js(["FIELD", "subject", "plural", "failLines", "shq", "word", "waiting", "OPENHOLD", "waitingElsewhere", "ELSEWHERE",
                                    "needsYou"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), STOPPED = {json.dumps(stopped)};
-            let waitKey = [], waitList = [];
+            let waitKey = [], waitList = [], ENDED = {json.dumps(ended)};
             process.stdout.write(JSON.stringify(needsYou()));"""))
 
     def test_an_id_in_a_command_to_copy_is_one_shell_word(self):
@@ -646,7 +682,7 @@ class Permissions(unittest.TestCase):
             const LOADED = new Map(), RUNS = new Map([["r1", {{ verdict: "verified", records: 9, tenant: "default", permissions: {{ blocked: 1 }} }}],
                                                       ["r2", {{ verdict: "failed", records: 4 }}]]);
             const ALL = [], asked = [], seen = [], document = {{ URL: "http://127.0.0.1/" }};
-            let DROPPED = 7, scope = "r1", R = null, permKey = [], permList = [], rebuilt = 0, later = [];
+            let DROPPED = 7, scope = "r1", R = null, permKey = [], permList = [], rebuilt = 0, later = [], ENDED = "";
             const rebuild = () => rebuilt++, schedule = () => {{}}, setTimeout = f => later.push(f);
             const inScope = r => r.session_id === scope, runRows = () => LOADED.get(scope) || ALL;
             let answer = Promise.resolve({{ rows: {json.dumps(rows)} }}); const getJSON = p => {{ asked.push(p); return answer; }};
@@ -1375,6 +1411,28 @@ class Horizon(unittest.TestCase):
         phone = css[css.index("/* HORIZON: the map first"):]
         self.assertIn(".hzmain {\n        display: contents\n      }", phone)
         self.assertIn(".hzstage {\n        order: -1;\n        height: 440px;", phone)
+
+    def test_a_stage_the_browser_cannot_back_says_so_and_none_is_sized_past_what_it_can(self):
+        """A tab left open across a viewer restart showed HORIZON's stage as a white box with a broken-image icon: what
+        Chromium draws for a canvas it can't back (its 2D context lost: too big, or memory taken back)."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], """
+            let lost = false, drawn = 0; const cls = {};
+            const ctx = new Proxy({ isContextLost: () => lost, fillRect() { drawn++; } }, { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }) });
+            const cv = { clientWidth: 1252, clientHeight: 27000, width: 0, height: 0, getContext: () => ctx,
+                         parentNode: { querySelectorAll: () => [], classList: { toggle: (c, on) => { cls[c] = on; } } } };
+            const PAGE = "horizon", window = { devicePixelRatio: 2 }, $ = id => id === "hzcv" ? cv : null;
+            const document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
+            const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
+            const matchMedia = () => ({ matches: true }), requestAnimationFrame = () => {};
+            HZ.d = { ev: [], dirs: [], agents: [], cwd: "", places: {} }; HZ.col = {};
+            const seen = [];
+            hzDraw(); seen.push([cv.width * cv.height <= 16e6, cv.width > 0, cls.hzlost, drawn > 0]);
+            lost = true; drawn = 0; hzDraw(); seen.push([cls.hzlost, drawn]);
+            lost = false; hzDraw(); seen.push([cls.hzlost, drawn > 0]);   // given back: drawn again
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, [[True, True, False, True], [True, 0], [False, True]])
+        self.assertIn(".hzstage.hzlost::after {\n      content: \"The browser could not draw the map", PAGE)
 
     def test_the_stage_is_as_tall_as_the_panel_never_the_side_card(self):
         """Following an agent listed its 500 moves beside the stage, and the stage (flex-basis auto) grew with them: a

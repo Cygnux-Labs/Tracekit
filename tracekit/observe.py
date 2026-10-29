@@ -512,7 +512,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                     return self._send(401, "<!doctype html><title>Tracekit view</title><p>This viewer needs its token: "
                                            "open the URL <code>tracekit view</code> printed (it ends in "
                                            "<code>?token=…</code>).", "text/html")
-                return self._send(401, '{"error":"missing or wrong token"}')
+                # a page whose session ended names where a person signs in again
+                return self._send(401, json.dumps({"error": "missing or wrong token", **({"login": "/login"} if login else {})}))
             if exchange:
                 return self._send(303, "", "text/plain", headers=[
                     ("Location", "/runs" if u.path == "/runs" else "/"),

@@ -1839,6 +1839,21 @@
       height: 100%
     }
 
+    .hzstage.hzlost canvas {
+      visibility: hidden
+    }
+
+    .hzstage.hzlost::after {
+      content: "The browser could not draw the map, or took its drawing surface back: reload the page. Each run's CALLS lists every move.";
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      text-align: center;
+      color: var(--hz-ink)
+    }
+
     .hzstage::before {
       content: "";
       position: absolute;
@@ -3369,7 +3384,7 @@
     // a call's arguments (the signer's copy), else its tool. Each mark is a call, or an effect a sensor saw, graded signed,
     // observed or unverified (its run did not verify)
     const HZMAX = 500;   // lean: the newest 500 calls are drawn; past that a run's own views have every call
-    const HZ = { t: 0, n: 0, play: null, pick: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: Object.create(null), t0: performance.now() };
+    const HZ = { t: 0, n: 0, play: null, pick: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: Object.create(null), t0: performance.now(), ended: false };
     const HZACT = { read: "read", run: "ran", write: "wrote", net: "reached", seen: "was seen at", blocked: "was blocked at", held: "was held at", flag: "was flagged at", approved: "was approved at" };
     const HZSYM = { read: "●", run: "●", net: "●", seen: "●", write: "■", approved: "■", blocked: "✕", held: "◯", flag: "◆" };
     const HZWORST = ["blocked", "held", "flag", "write", "approved", "net", "seen", "run", "read"];
@@ -3504,18 +3519,22 @@
       put("hzside", `<div class="hzstats">` + stats.map(([v, k, c, sub]) => `<div class="${c && v ? "warn" : ""}"><b>${esc(v)}</b>${esc(k)}${sub ? `<span>${esc(sub)}</span>` : ""}</div>`).join("") + `</div><div class="hzcard">` + card + `</div>`);
       hzDraw();
     }
-    // a frame now and, unless motion is reduced (a still frame, drawn again on each change), one every animation frame
+    // a frame now and, unless motion is reduced or the viewer ended this page's session (a still frame, drawn again on
+    // each change), one every animation frame
     function hzDraw() {
       if (HZ.raf) return;
-      if (matchMedia("(prefers-reduced-motion: reduce)").matches) hzFrame(0);
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches || HZ.ended) hzFrame(0);
       else HZ.raf = requestAnimationFrame(hzFrame);
     }
     function hzFrame(now) {
       HZ.raf = 0;
-      const cv = $("hzcv"), D = HZ.d, still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const cv = $("hzcv"), D = HZ.d, still = matchMedia("(prefers-reduced-motion: reduce)").matches || HZ.ended;
       if (PAGE !== "horizon" || !cv || !D) return;
       if (!still) HZ.raf = requestAnimationFrame(hzFrame);
-      const dpr = Math.min(2, window.devicePixelRatio || 1), cw = cv.clientWidth, ch = cv.clientHeight, ow = Math.round(cw * dpr), oh = Math.round(ch * dpr);
+      // at most 16M pixels behind the stage whatever its size: a canvas the browser can't back is a white box with a
+      // broken-image icon
+      const cw = cv.clientWidth, ch = cv.clientHeight, dpr = Math.min(2, window.devicePixelRatio || 1, Math.sqrt(16e6 / (cw * ch || 1)));
+      const ow = Math.round(cw * dpr), oh = Math.round(ch * dpr);
       if (!cw || !ch) return;
       if (cv.width !== ow || cv.height !== oh) { cv.width = ow; cv.height = oh; }
       if (!HZ.off) {   // the disk's streaks and the stars: the same every time
@@ -3526,7 +3545,10 @@
       }
       const [hot, gold, ember, rust] = css("--hz-gas").split(/\s+/), ink = css("--hz-ink"), space = css("--hz-space"), amber = css("--hz-amber"), red = css("--hz-red"), cyan = css("--hz-cyan");
       const A = hzRgba, font = (w, px) => `${w} ${px}px ${css("--mono")}`, AC = act => act === "blocked" ? red : /^(write|approved|held)$/.test(act) ? amber : cyan;
-      const x = cv.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const x = cv.getContext("2d"), lost = x.isContextLost?.() === true;   // the browser took it back (memory, a GPU reset)
+      cv.parentNode.classList?.toggle("hzlost", lost);   // said in its place, not drawn half
+      if (lost) return;
+      x.setTransform(dpr, 0, 0, dpr, 0, 0);
       HZ.i += ((HZ.view === "orbit" ? .6 : 1) - HZ.i) * (still ? 1 : .07);
       const i = HZ.i, T = still ? 0 : (now - HZ.t0) / 1000, tt = Math.min(1, Math.max(0, (1 - i) / .4));
       const R4 = Math.min(ch * .45, cw * .46) * (1 - tt) + Math.min(cw * .46, ch * .78) * tt, cx = cw / 2, cy = ch * (.5 + .03 * tt), Rs = R4 * .082;
@@ -4035,6 +4057,7 @@
       for (const r of runs) if (r.verdict === "failed" || r.verdict === "error")
         out.push({ kind: r.verdict === "failed" ? "FAILED" : "NOT CHECKED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${r.id.slice(0, 8)} ` + (r.verdict === "failed" ? "failed verification: none of its records are shown" : "could not be checked"), detail: failLines(r.report)[0] || "", cmds: [] });
       if (STOPPED) out.push({ kind: "STOPPED", sev: "high", open: null, what: STOPPED, detail: "", cmds: [] });
+      if (ENDED) out.unshift({ kind: "ENDED", sev: "high", open: null, what: ENDED, detail: "nothing here is live", cmds: [] });
       return out;
     }
     function renderNeeds() {
@@ -4740,14 +4763,31 @@
     /* ---------------- live mode ---------------- */
     // SOURCE: "bundle" when the server shows a file, not a live log; STOPPED: why the viewer stopped checking runs;
     // CHECKING: how many of the store's runs it has not read yet; SIGNER: the signer a run's commands name (runCmds)
-    let liveOk = false, liveErr = "", SOURCE = "", STOPPED = "", CHECKING = 0, SIGNER = null;
+    // ENDED: why the viewer refused this page's session after it had worked
+    let liveOk = false, liveErr = "", SOURCE = "", STOPPED = "", CHECKING = 0, SIGNER = null, ENDED = "";
     async function getJSON(path) {
+      const ended = () => Object.assign(new Error(ENDED), { fatal: true });
+      if (ENDED) throw ended();
       const r = await fetch(path, { credentials: "same-origin" });
+      // refused after it worked (a why log's 403 is an OIDC session's, which has none): the viewer restarted, with a new
+      // token and session key, or the session ended
+      if (SNAPPED && (r.status === 401 || r.status === 403 && !path.startsWith("api/why/"))) {
+        endLive((await r.json().catch(() => ({}))).login);
+        throw ended();
+      }
       if (r.status === 401) throw Object.assign(new Error("This viewer needs a token: open the URL it printed (?token=…; TRACEKIT_VIEW_TOKEN, or TRACEKIT_OBSERVE_TOKEN for tracekit observe)."), { fatal: true });
       if (!r.ok) throw new Error(`observer answered HTTP ${r.status}`);
       return r.json();
     }
-    let checking = null;
+    // the live parts stop, so nothing on the page reads as live: the stream, the checks, HORIZON's motion and the
+    // toasts; the banner and NEEDS YOU say why. What the page shows stays, as it was
+    function endLive(login) {
+      ENDED = "This viewer was restarted or your session ended: " + (login ? `sign in again (${login}) or open` : "open") + " the link tracekit view printed. What this page shows is as it was then.";
+      es?.close(); clearInterval(checking); checking = null; hzStop(); HZ.ended = true;
+      toasting = false; $("toasts").replaceChildren();
+      liveOk = false; liveErr = ENDED; schedule();
+    }
+    let checking = null, es = null, SNAPPED = false;
     async function startLive() {
       try {
         const snap = await getJSON("api/snapshot");
@@ -4755,9 +4795,9 @@
         // restarted numbers its records anew, so resuming from the old position would miss or repeat records
         if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); LOADED.clear(); selected = null; reset(); }
         DROPPED = snap.dropped || 0; MAXREC = snap.max || MAXREC;
-        toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; SIGNER = snap.signer || null; loadWhy(); schedule();
+        toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; SIGNER = snap.signer || null; SNAPPED = true; loadWhy(); schedule();
         followLink();
-        const es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
+        es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
         es.onerror = () => { es.close(); liveOk = false; liveErr = "Connection to the viewer lost; reconnecting…"; schedule(); setTimeout(startLive, 2000); };
@@ -4843,7 +4883,7 @@
         LOADED.set(id, d.rows);
         while (LOADED.size > 4) LOADED.delete(LOADED.keys().next().value);
         if (scope === id && !R) { rebuild(); schedule(); }
-      }, () => setTimeout(() => { LOADED.delete(id); if (scope === id) loadRun(id); }, 10000));
+      }, () => ENDED || setTimeout(() => { LOADED.delete(id); if (scope === id) loadRun(id); }, 10000));
     }
     function setScope(id) {
       if (R) stopRun(true);

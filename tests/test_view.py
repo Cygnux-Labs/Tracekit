@@ -1968,6 +1968,19 @@ class Pages(unittest.TestCase):
         self.assertTrue(r.getheader("Set-Cookie").startswith("tracekit_observe="))
 
 
+    def test_a_refused_session_is_told_where_to_sign_in_again(self):
+        """A tab whose session ended (the viewer restarted, or the sign-in expired) had no word of where to sign in."""
+        login = mock.Mock(redirect_uri="http://127.0.0.1/callback")
+        login.tenant.return_value = None   # no session: the old one died with the viewer's session key
+        srv = view.server(None, "127.0.0.1", 0, "t0k", login=login, runs=mock.Mock())
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+        c.request("GET", "/api/runs", headers={"Cookie": "tracekit_observe=1.old"})
+        r = c.getresponse()
+        self.assertEqual((r.status, json.loads(r.read())), (401, {"error": "missing or wrong token", "login": "/login"}))
+
     def test_text_set_on_the_page_shows_bidi_and_invisible_characters_escaped(self):
         """DETAIL's heading is set as text: a tool name holding U+202E rendered reversed there, though escaped
         everywhere else."""
