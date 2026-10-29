@@ -5391,13 +5391,15 @@
       });
       N.forEach(n => {
         const [x, y] = pos[n.id], unt = n.trust === "untrusted" && n.type === "input", dc = n.type === "action" && decided(n.policy), rule = dc && (n.policy.rule_ids || [])[0];
+        // a state too long to share its line with the rule (APPROVED · RETRY RAN) keeps it, and the rule goes up beside the tool
+        const up = rule && (dc[0] + " " + rule).length > 21;
         if (n.fx) {   // what a sensor saw: half a node's height, its record opens on a click
           svg += `<g data-tkseq="${esc(n.fx.rec.tk_seq)}" style="${esc("cursor:pointer" + (keep && !keep.nodes.has(n.id) ? ";opacity:.13" : ""))}" transform="${esc(`translate(${x},${y + BH / 4})`)}"><rect width="${esc(BW)}" height="${esc(BH / 2)}" style="fill:var(--panel2);stroke:var(--cyan)"/>`
             + `<text x="8" y="14" style="fill:var(--cyan);font-size:10.5px">${esc(fit(n.label, 24))}</text><title>${esc(`${n.fx.rec.v2.effect.kind} ${n.label} · ${effectHow(n.fx)}` + (n.fx.rec.text ? " · " + n.fx.rec.text : ""))}</title></g>`;
           return;
         }
         svg += `<g data-wnode="${esc(n.id)}" style="${esc("cursor:pointer" + (keep && !keep.nodes.has(n.id) ? ";opacity:.13" : ""))}" transform="${esc(`translate(${x},${y})`)}"><rect width="${esc(BW)}" height="${esc(BH)}" rx="8" style="${esc(`fill:var(--panel2);stroke:${unt ? "var(--red)" : "var(--line2)"};stroke-width:${unt ? 2 : 1}`)}"/><rect width="4" height="${esc(BH - 12)}" x="6" y="6" rx="2" style="${esc(`fill:var(${TC[n.type] || "--muted"})`)}"/>`
-          + `<text x="16" y="17" style="fill:var(--text);font-size:11px;font-weight:600">${esc(fit(n.label, 20))}</text><text x="16" y="32" style="fill:var(--muted);font-size:10.5px">${dc ? `<tspan style="${esc(`fill:var(${dc[1]})`)}">${esc(fit(dc[0] + (rule ? " " + rule : ""), 21))}</tspan>` : ""}${esc(dc ? "" : fit(`${GTYPE[n.type] || n.type} · ${n.agent}`, 21))}</text>`
+          + `<text x="16" y="17" style="fill:var(--text);font-size:11px;font-weight:600">${esc(fit(n.label, up ? Math.max(5, 19 - rule.length) : 20))}${up ? `<tspan style="${esc(`fill:var(${dc[1]});font-weight:400`)}">${esc(" " + rule)}</tspan>` : ""}</text><text x="16" y="32" style="fill:var(--muted);font-size:10.5px">${dc ? `<tspan style="${esc(`fill:var(${dc[1]})`)}">${esc(fit(dc[0] + (rule && !up ? " " + rule : ""), 21))}</tspan>` : ""}${esc(dc ? "" : fit(`${GTYPE[n.type] || n.type} · ${n.agent}`, 21))}</text>`
           + `${n.sensitive ? `<circle cx="${esc(BW - 10)}" cy="10" r="4" style="fill:var(--amber)"><title>sensitive</title></circle>` : ""}<title>${esc(n.label + (dc ? ` · ${dc[0]} ${(n.policy.rule_ids || []).join(", ")}` : "") + ` · ${GTYPE[n.type] || n.type} · ${n.agent}`)}</title></g>`;
       });
       // the legend names only what this graph shows

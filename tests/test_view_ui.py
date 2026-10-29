@@ -1904,6 +1904,22 @@ class ApproveThenRetry(unittest.TestCase):
                                                  decided({ decision: "ask" })]));"""))
         self.assertEqual(out, [["APPROVED · RETRY RAN", "--green"], ["APPROVED", "--green"], ["HELD", "--amber"]])
 
+    def test_graph_shows_a_long_state_and_its_rule_whole(self):
+        """The node read "APPROVED · RETRY RAN…": the state and the rule after it were cut."""
+        needs_node(self)
+        d = {"run_id": "w1", "agents": [{"name": "executor"}], "edges": [], "nodes": [
+            {**call({"decision": "ask", "rule_ids": ["TK-A032"], "approval": {"decision": "approve", "ran_by": "c2"}}),
+             "id": "held", "seq": 1, "label": "Bash"},
+            {**call({"decision": "deny", "rule_ids": ["TK-D003"]}), "id": "no", "seq": 2, "label": "Bash"}]}
+        svg = json.loads(page_js(["dict", "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
+                                  "whyRef", "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"], f"""
+            const GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, CSS = {{ escape: s => s }}, got = {{}};
+            const el = {{ clientWidth: 900, clientHeight: 600, querySelector: () => null }}, $ = id => id === "gsvg" ? null : (got[id] ??= {{}});
+            const WHY = {{ calls: {{}} }}, S = {{ actions: new Map(), effects: new Map() }};
+            graphView(el, {json.dumps(d)}); process.stdout.write(JSON.stringify(el.innerHTML));"""))
+        lines = [text(t) for t in re.findall(r'<text x="16" y="(?:17|32)"[^>]*>(.*?)</text>', svg)]
+        self.assertEqual(lines, ["Bash TK-A032", "APPROVED · RETRY RAN", "Bash", "DENIED TK-D003"])
+
 
 class FinalQA(unittest.TestCase):
     """What the final hands-on QA of 1.5.1 found: a run with no links drew 167 calls 3.7 by 1 px (FIT) or one 35,000 px
