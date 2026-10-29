@@ -168,7 +168,7 @@ class WhyThisDecision(unittest.TestCase):
             "WHY THIS DECISION 1 CALL send_email from coder·5e67 · class email (the policy's map of this tool) "
             "2 DENY RULES read 7 · none matched 3 ASK RULES read 6 · matched TK-P001 email outside the company what "
             "to do: Send it from a person. 4 FLAG RULES read 3 · none matched 5 DECISION ASK the first section with a "
-            "match decides: deny, then ask, then flag; none, allow 6 OUTCOME WAITING 7 WHO ANSWERS a person the "
+            "match decides: deny, then ask, then flag; none, allow 6 OUTCOME NOT ANSWERED YET 7 WHO ANSWERS a person the "
             "signer takes as an approver, on the approvals page , or in a terminal with the signer's approvals command no "
             "agent approver may answer it: the rule has no agent bounds tracekit approvals approve &#39;apr&lt;1&gt;&#39; COPY "
             "tracekit approvals reject &#39;apr&lt;1&gt;&#39; COPY"))   # the id one quoted shell word
@@ -381,7 +381,7 @@ class WaitingForYou(unittest.TestCase):
                 hold(7, "c3", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 8},
                 hold(9, "c4"), answer(10, "c4", "escalated"), hold(11, "c5", run="r 3&x"),
                 {**hold(12, "c6"), "v2": {"decision": "flag"}}, answer(13, "c7", "expired")]
-        out = json.loads(page_js(["waiting", "waitingElsewhere", "waitingCount", "renderWaiting"], f"""
+        out = json.loads(page_js(["waiting", "OPENHOLD", "waitingElsewhere", "waitingCount", "renderWaiting"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), el = {{}}, $ = id => el[id] ??= {{}};
             let desk = false, waitKey = [], waitList = []; const DESK = () => desk;
             const seen = [waiting().map(w => [w.rec.tool_use_id, w.req?.v2.approval_id ?? null, w.open])];
@@ -390,14 +390,14 @@ class WaitingForYou(unittest.TestCase):
             ALL.push({json.dumps(answer(14, "c1", "reject"))}); seen.push(waiting().map(w => w.rec.tool_use_id));
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out, [[["c1", "apr-1", ["r1", 1]], ["c4", None, ["r1", 9]], ["c5", None, ["r 3&x", 11]]],
-                               [False, "WAITING FOR YOU 3", "open the oldest: its detail has the command that answers it"],
+                               [False, "TO ANSWER 3", "open the oldest: its detail has the command that answers it"],
                                "answer them on the approvals page", ["c4", "c5"]])
         # no link carries data: a hold opens through the page's state (checklist item 3)
         self.assertIn("if (DESK()) DESK().click(); else if (w) openRec(...w);", PAGE)
 
     def test_a_new_hold_or_high_alert_toasts_as_text_and_the_snapshot_does_not(self):
         needs_node(self)
-        out = json.loads(page_js(["vis", "toastOf"], f"""
+        out = json.loads(page_js(["vis", "OPENHOLD", "toastOf"], f"""
             const made = [], box = {{ children: [], prepend(t) {{ this.children.unshift(t); }} }};
             Object.defineProperty(box, "lastChild", {{ get() {{ return {{ remove: () => box.children.pop() }}; }} }});
             const document = {{ createElement: tag => {{ const e = {{ tag, kids: [], dataset: {{}}, append(...k) {{ this.kids.push(...k); }},
@@ -413,7 +413,8 @@ class WaitingForYou(unittest.TestCase):
             process.stdout.write(JSON.stringify([box.children.length, made.filter(e => e.tag === "b").map(e => e.textContent),
                                                  made.filter(e => e.dataset.orun).map(e => [e.dataset.orun, e.dataset.oseq])]));"""))
         self.assertEqual(out[0], 3)
-        self.assertEqual(out[1][:2], ["HELD · send_email waits for a person", "HIGH · rm\\u202e<b>"])
+        # it said "waits for a person": the hook blocked the call at once, and an approval lets the agent's retry run
+        self.assertEqual(out[1][:2], ["HELD · send_email: approve it to let the agent's retry run", "HIGH · rm\\u202e<b>"])
         self.assertEqual(out[2][:2], [["r1", 2], ["r", 3]])
         self.assertIn("toasting = false; snap.records.forEach(accept); toasting = true;", PAGE)
 
@@ -421,7 +422,7 @@ class WaitingForYou(unittest.TestCase):
 
 class NeedsYou(unittest.TestCase):
     def needs(self, recs, runs, stopped=""):
-        return json.loads(page_js(["j", "plural", "failLines", "shq", "word", "waiting", "waitingElsewhere", "ELSEWHERE",
+        return json.loads(page_js(["j", "plural", "failLines", "shq", "word", "waiting", "OPENHOLD", "waitingElsewhere", "ELSEWHERE",
                                    "needsYou"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), STOPPED = {json.dumps(stopped)};
             let waitKey = [], waitList = [];
@@ -453,7 +454,8 @@ class NeedsYou(unittest.TestCase):
         self.assertEqual([(n["kind"], n["open"]) for n in out], [
             ("HOLD", ["r1", 1]), ("HOLD", ["r1", 3]), ("CONTAINED", ["r1", ""]), ("FAILED", ["r2xxxxxxxx", ""]),
             ("STOPPED", None)])
-        self.assertEqual(out[0]["what"], "send_email · billing waits for a person: TK-P001 an email outside the company")
+        self.assertEqual(out[0]["what"], "send_email · billing held: approve it to let the agent's retry run (TK-P001 an "
+                                         "email outside the company)")
         self.assertEqual(out[0]["detail"], 'binds { "to": "x@outside.example" }')
         self.assertEqual(out[0]["cmds"], ["tracekit approvals approve apr-1", "tracekit approvals reject apr-1"])
         self.assertEqual((out[1]["detail"], out[1]["cmds"]),
@@ -471,20 +473,21 @@ class NeedsYou(unittest.TestCase):
         keeps the newest 50,000 records. An open run's review counts its waiting holds; past the ones the live view
         lists, each run is one item that opens it. A final run's unanswered hold waits for nobody."""
         needs_node(self)
-        runs = [{"id": "r1", "agent": "billing", "state": "open", "permissions": {"waiting": 1}},
-                {"id": "r9xxxxxxxxxx", "agent": "claude-code", "state": "open", "permissions": {"waiting": 2, "blocked": 4}},
+        runs = [{"id": "r1", "agent": "billing", "state": "open", "permissions": {"not answered yet": 1}},
+                {"id": "r9xxxxxxxxxx", "agent": "claude-code", "state": "open",
+                 "permissions": {"not answered yet": 2, "blocked": 4}},
                 {"id": "r8", "agent": "claude-code", "state": "final", "permissions": {"not answered": 3}},
                 {"id": "r7", "verdict": "pending"}]
         out = self.needs([hold(1, "c1")], runs)
         self.assertEqual([(n["kind"], n["open"], n["cmds"]) for n in out], [
             ("HOLD", ["r1", 1], []), ("HOLD", ["r9xxxxxxxxxx", ""], ["tracekit approvals list"])])
-        self.assertEqual(out[1]["what"], "claude-code · run r9xxxxxx: 2 held calls waiting for a person")
-        badge = json.loads(page_js(["waiting", "waitingElsewhere", "waitingCount", "renderWaiting"], f"""
+        self.assertEqual(out[1]["what"], "claude-code · run r9xxxxxx: 2 held calls not answered yet")
+        badge = json.loads(page_js(["waiting", "OPENHOLD", "waitingElsewhere", "waitingCount", "renderWaiting"], f"""
             const ALL = {json.dumps([hold(1, "c1")])}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r]));
             const el = {{}}, $ = id => el[id] ??= {{}}, DESK = () => null;
             let waitKey = [], waitList = [];
             renderWaiting(); process.stdout.write(JSON.stringify(el.waiting.textContent));"""))
-        self.assertEqual(badge, "WAITING FOR YOU 3")
+        self.assertEqual(badge, "TO ANSWER 3")
 
     def test_it_never_reads_all_clear_while_runs_of_the_store_are_not_read_yet(self):
         """On start the viewer reads the store's runs one at a time (minutes for a big store): DESK said ALL CLEAR with
@@ -572,7 +575,7 @@ class Permissions(unittest.TestCase):
             scope = "r2"; seen.push(rows(permRows()));
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out[0], [["c9", "all ask expired", "NOT ANSWERED", None, None],
-                                  ["c6", "all ask waiting", "WAITING", None, "apr-6"],
+                                  ["c6", "all ask waiting", "NOT ANSWERED YET", None, "apr-6"],
                                   ["c5", "all ask expired", "EXPIRED", None, None],
                                   ["c4", "all ask rejected", "REJECTED", "uid:501", None],
                                   ["c3", "all ask approved", "APPROVED · RAN", "oidc:alice", "apr-3"],
@@ -623,7 +626,8 @@ class Permissions(unittest.TestCase):
                 v2rec(11, "policy.decision", {"tool_use_id": "c6", "tool": "pay", "decision": "ask", "rule_ids": ["T-PAY"]})]
         rep = mock.Mock(integrity="VERIFIED", assurance="dev")
         got = view.review(recs, rep, "verified")
-        self.assertEqual(got["permissions"], {"blocked": 1, "approved · ran": 1, "expired": 1, "flagged": 1, "waiting": 1})
+        self.assertEqual(got["permissions"], {"blocked": 1, "approved · ran": 1, "expired": 1, "flagged": 1,
+                                              "not answered yet": 1})
         self.assertEqual(len(got["approvals"]), 1)   # the approvals list is as it was
         final = view.review(recs + [v2rec(12, "run.final", {})], rep, "verified")
         self.assertEqual(final["permissions"]["not answered"], 1)
@@ -854,13 +858,13 @@ class Waterfall(unittest.TestCase):
         _, x, w = bars[8]                                          # the hold still waiting runs to the right edge
         self.assertAlmostEqual(float(x) + float(w), 900 - 340, places=0)
         self.assertIn('title="coder · send_email · REJECTED"', html)
-        self.assertIn("<title>waiting for a person · 1s</title><", html)
+        self.assertIn("<title>held for a person · 1s</title><", html)
         self.assertIn("<title>failed · 500 ms</title>", html)
         self.assertIn("<title>rejected</title>", html)
         # the legend names only what the run shows
         self.assertEqual(re.findall(r'class="wk-(\w+)">([^<]+)<', legend),
                          [("ok", "allowed"), ("flag", "flagged"), ("deny", "blocked, refused or failed"),
-                          ("wait", "waiting for a person")])
+                          ("wait", "held for a person")])
         self.assertEqual(re.findall(r'class="wk-(\w+)">([^<]+)<', capped_legend), [("ok", "allowed")])
         # the newest 600 are drawn, and it says how many are not
         self.assertEqual(len(re.findall(r'data-wf="', capped)), 600)
@@ -1395,7 +1399,7 @@ class InvisibleCharacters(unittest.TestCase):
         req = {"event": "tk_alert", "session_id": "r1", "tk_seq": 8, "ts": 1760000001,
                "v2": {"tool_use_id": "c1", "approval": "requested", "approval_id": "apr-1"}}
         out = json.loads(page_js(["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
-                                  "waitingElsewhere", "waitingCount", "permOf", "heldRows", "renderApprovalsPage"], f"""
+                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req])}, RUNS = new Map(), html = {{}}, el = {{}};
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
@@ -1460,7 +1464,7 @@ class PlainPages(unittest.TestCase):
         older = {**done, "session_id": "e1", "ts": 1759990000}   # read later: a fresh load
         approve = {**answer, "session_id": "e1", "ts": 1759990001, "v2": {"tool_use_id": "c1", "approval": "approve"}}
         out = json.loads(page_js(["esc", "j", "fmtT", "fmtD", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
-                                  "waitingElsewhere", "waitingCount", "permOf", "heldRows", "renderApprovalsPage"], f"""
+                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req, done, answer, older, approve])}, RUNS = new Map(), html = {{}}, el = {{}}, TZ = "GMT+5:30";
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
@@ -1532,7 +1536,7 @@ class PlainPages(unittest.TestCase):
 
 GRAPH_FNS = ["dict", "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE", "whyRef",
              "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"]
-APPROVALS_FNS = ["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting", "waitingElsewhere",
+APPROVALS_FNS = ["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting", "OPENHOLD", "waitingElsewhere",
                  "waitingCount", "permOf", "heldRows", "renderApprovalsPage"]
 
 
@@ -1634,10 +1638,13 @@ class FinalQA(unittest.TestCase):
              "by uid:501 · not self-approved"),
             ("dim", "EXPIRED", "coder · run coder", "Bash · arguments not kept", "expired before anyone answered"),
             ("dim", "ABANDONED", "planner · run planner", "Bash · arguments not kept", "no answer; moved on")])
-        self.assertIn("NO LONGER WAITING", page)
+        self.assertIn("ANSWERED OR ENDED", page)
         self.assertNotIn("ANSWERED<", page)
-        self.assertEqual(summary, "1 waiting · 1 approved · 1 expired · 1 abandoned")   # one hold still waits
-        self.assertEqual(page.count('<span class="sev wait">WAITING</span>'), 1)
+        # it said "1 waiting" and WAITING: nothing waits on a held call, which the agent's retry needs answered
+        self.assertEqual(summary, "1 not answered yet · 1 approved · 1 expired · 1 abandoned")
+        self.assertEqual(page.count('<span class="sev wait">HELD</span>'), 1)
+        self.assertNotIn("WAITING", page)
+        self.assertIn("approving one lets the agent's retry of the same call run, once", page)
 
     def test_approvals_rows_stack_on_a_phone_and_the_panel_grows(self):
         css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
@@ -1954,7 +1961,7 @@ class NothingLost(unittest.TestCase):
             "tool mix": ["function renderMix()"], "lanes": ["TIMELINE · ONE LANE PER AGENT"],
             "timeline by call and by agent": ["function renderWaterfall()", "TIMELINE · ONE ROW PER CALL",
                                               'data-wfby="call"', 'data-wfby="agent"', '<pattern id="wfhatch"',
-                                              '"waiting for a person"'],
+                                              '"held for a person"'],
             "reasoning": ["REASONING<small>self-reported, not proof</small>"],
             "files": ["<th>PATH</th>", "LAST AGENT"],
             "detail, why, node": ['data-wtab="detail"', 'data-wtab="why"', 'data-wtab="node"', "LEDGER EVIDENCE · SEQ"],
@@ -1967,7 +1974,7 @@ class NothingLost(unittest.TestCase):
                           "CLEAR HIGHLIGHT", "SHOW WHAT IT REACHED", "INFLUENCE MATRIX", "CRITICAL PATH",
                           "HOW TO READ THE EVIDENCE"],
             "new v7 pieces": ["function renderRunHead()", "function renderRunsPage()", "function renderApprovalsPage()",
-                              "function evidenceView(", "NEEDS YOU", "WHY THIS DECISION", "WAITING FOR YOU"],
+                              "function evidenceView(", "NEEDS YOU", "WHY THIS DECISION", "TO ANSWER"],
             "evidence": ["function evidenceOf(", "CHAIN · EACH SIGNED RECORD IN ORDER",
                          "CHECKS · THE VIEWER'S VERIFIER REPORT", '<div class="stamp ${esc(e.stamp[0])}">',
                          "reviewHtml(r, false)", "VERIFIER REPORT · AS THE VIEWER PRINTED IT"],

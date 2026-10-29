@@ -25,7 +25,7 @@ The header holds the pages, the command box, and on a run's page that run's view
 | **DESK** | every run at once: the stats strip, the tape across runs, alerts, tool mix, one lane per agent, reasoning, files and the detail panel (the panels below) |
 | **RUNS** | every run with its counts (calls, blocked, held, flagged, gaps) and verdict, newest first; click one for its page. With why logs, their runs follow; on a central deployment, a link to its searchable runs page |
 | **LIVE** | the page of the newest run still open |
-| **APPROVALS** | each call waiting for a person, in every run: what it binds (the signer's copy of the arguments, when the viewer has it), its rule in words and the `tracekit approvals approve` / `reject` commands to copy; then each held call no longer waiting, once, with what came of it (approved, rejected, expired, abandoned, ...: PERMISSIONS' outcome, which `tracekit report` counts too) and the call (its tool and the visible part of its arguments, or "arguments not kept"). The count on the button is the number waiting. The page answers nothing: the approvals page (with OIDC login, a passkey) or the signer's command does |
+| **APPROVALS** | each held call nobody has answered yet, in every run (approving one lets the agent's retry of the same call run, once): what it binds (the signer's copy of the arguments, when the viewer has it), its rule in words and the `tracekit approvals approve` / `reject` commands to copy; then each held call answered or ended, once, with what came of it (approved, rejected, expired, abandoned, ...: PERMISSIONS' outcome, which `tracekit report` counts too) and the call (its tool and the visible part of its arguments, or "arguments not kept"). The count on the button (`TO ANSWER`) is the number not answered yet. The page answers nothing: the approvals page (with OIDC login, a passkey) or the signer's command does |
 | **PERMISSIONS** | every decision that was not a plain allow, and what came of it: blocked, ran flagged, approved, rejected, expired or not answered, who answered and when |
 | **HORIZON** | where the agents went, around a black hole: the project, this machine and the outside world ([below](#horizon)) |
 | **INFLUENCE** | with why logs: what content reached which tools across every run ([below](#influence)) |
@@ -46,9 +46,10 @@ AGENTS need the run's why log, which the viewer builds for each verified run.
 
 ![LIVE: the release agent's run, still open, its tape with a git push held and waiting, and the run review](viewer/1.5/live.png)
 
-**NEEDS YOU**, under the stats strip, lists across every run what needs a person, first the calls waiting (oldest
-first), then runs an incident holds, runs that failed verification or weren't checked, and a viewer that stopped
-checking; each with the command that acts on it and **OPEN**. A run whose waiting calls left the live view (it keeps
+**NEEDS YOU**, under the stats strip, lists across every run what needs a person, first the held calls nobody has
+answered yet (oldest first: "held: approve it to let the agent's retry run", since a coding agent's hook blocks the
+call at once and the agent goes on), then runs an incident holds, runs that failed verification or weren't checked,
+and a viewer that stopped checking; each with the command that acts on it and **OPEN**. A run whose held calls left the live view (it keeps
 the newest 50,000 records) is one line with its count, from its review: OPEN it, and its PERMISSIONS lists each call
 with the command that answers it. With nothing to do it reads `ALL CLEAR · N agents working`; while the viewer is still
 reading the store's runs (on start, one at a time) it says how many are left instead, since it can't know yet. The
@@ -94,7 +95,7 @@ says how many; each run's latest verdict stays in the run list, for up to 10,000
 Under each run: calls, **blocked** (red: the policy
 denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
 call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded
-under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `WAITING`) in STATUS, `SESS` the run's start and
+under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `NOT ANSWERED YET`) in STATUS, `SESS` the run's start and
 end. A row marked `ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `FINDING`s
 of its analysis have no seq and no hash, and replay skips them; a row marked `WHY` comes from a why log. A findings
 run's signed findings (`tracekit analyze --v2`) are `FINDING` rows of that run: each says who wrote it (the identity the

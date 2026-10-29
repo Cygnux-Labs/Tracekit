@@ -583,8 +583,8 @@ class TestCli(unittest.TestCase):
             self.addCleanup(srv.server_close)
             self.addCleanup(srv.shutdown)
         listed = tracekit("approvals", "--signer", cfg["socket"], "list")
-        first, note = listed.stdout.splitlines()   # what is waiting first, then who may see one
-        self.assertEqual(first, "nothing is waiting for approval")
+        first, note = listed.stdout.splitlines()   # that it lists none, then who may see one
+        self.assertEqual(first, "no approvals to show")   # it said "nothing is waiting": nothing waits on a held call
         self.assertIn(f"you are uid:{os.getuid()}", note)
         self.assertIn("approvals.approvers", note)
         listed = tracekit("approvals", "--signer", cfg["socket"], "list", "--json")

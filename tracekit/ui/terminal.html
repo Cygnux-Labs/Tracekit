@@ -329,7 +329,7 @@
       border-color: var(--red)
     }
 
-    /* WAITING FOR YOU: calls a person must answer, in every run; it opens the approvals page or the oldest one */
+    /* TO ANSWER: held calls nobody answered yet, in every run; it opens the approvals page or the oldest one */
     .mode.wait {
       color: var(--ink);
       background: var(--amber);
@@ -2906,7 +2906,7 @@
           </tr>
           <tr>
             <td>DESK · RUNS · LIVE · APPROVALS · PERMISSIONS · HORIZON · INFLUENCE</td>
-            <td>The pages (header): every panel at once; every run; the newest open run; calls waiting for a person;
+            <td>The pages (header): every panel at once; every run; the newest open run; held calls nobody answered yet;
               every decision that was not a plain allow; where the agents went; with why logs, what content reached
               which tools. Back and Forward step through what you opened</td>
           </tr>
@@ -3046,7 +3046,7 @@
         const ap = lastAnswer(a);
         if (ap === "approve") return ["s-ok", a.post ? "APPROVED · RAN" : "APPROVED"];
         if (ap) return ["s-deny", ANSWER[ap]];
-        return ["s-flag", ended(a) ? "NOT ANSWERED" : "WAITING"];
+        return ["s-flag", ended(a) ? "NOT ANSWERED" : "NOT ANSWERED YET"];
       }
       if (a.post) return a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"];
       return ended(a) ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"];
@@ -3314,25 +3314,25 @@
       // newest first, as a fresh viewer loads runs in any order
       const w = waiting(), more = waitingElsewhere(), done = heldRows().filter(r => !r.tabs.includes("waiting")).sort((x, y) => y.rec.ts - x.rec.ts), by = new Map();
       for (const r of done) { const o = r.out[1].split(" · ")[0].toLowerCase(); by.set(o, (by.get(o) || 0) + 1); }
-      put("apprp", `<p class="dim" style="padding:0 8px">Calls the signer is holding until a person answers. An answer binds to the exact arguments, is signed and can't be undone. This page answers nothing: copy the command`
+      put("apprp", `<p class="dim" style="padding:0 8px">Held calls nobody has answered yet. A coding agent's hook blocked each at once and the agent went on: approving one lets the agent's retry of the same call run, once. An answer binds to the exact arguments, is signed and can't be undone. This page answers nothing: copy the command`
         + (DESK() ? `, or answer on the <a href="/approvals">approvals page</a> with a passkey` : "") + `.</p>`
         + (w.map(x => {
           const args = x.rec.tool_input && Object.keys(x.rec.tool_input).length ? j(x.rec.tool_input) : "";
           const cmds = x.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(x.req.v2.approval_id)}`) : [], ex = Date.parse(x.req?.v2.expires) / 1000;
-          return `<div class="hold"><span class="sev wait">WAITING</span> <b>${esc(x.rec.tool_name)}</b> · ${esc(x.rec.agent)} · ${esc(fmtT(x.rec.ts))} <button type="button" class="cp" data-orun="${esc(x.open[0])}" data-oseq="${esc(x.open[1])}">OPEN</button>`
+          return `<div class="hold"><span class="sev wait">HELD</span> <b>${esc(x.rec.tool_name)}</b> · ${esc(x.rec.agent)} · ${esc(fmtT(x.rec.ts))} <button type="button" class="cp" data-orun="${esc(x.open[0])}" data-oseq="${esc(x.open[1])}">OPEN</button>`
             + `<pre>${esc(args || "arguments kept as a commitment only")}</pre><div>${esc((x.rec.v2.rules || []).map(r => (r.id + " " + (r.reason || "")).trim()).join("; ") || "held")}</div>`
             + `<div class="dim">${esc(x.req ? `approval ${x.req.v2.approval_id}` + (ex ? ` · expires ${fmtD(ex)} ${fmtT(ex)} ${TZ}` : x.req.v2.expires ? ` · expires ${x.req.v2.expires}` : "") : "no approval requested yet: nobody can answer it until the agent asks")}</div>`
             + cmds.map(c => `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`).join("") + `</div>`;
-        }).join("") + more.map(x => `<div class="hold"><span class="sev wait">WAITING</span> <b>${esc(plural(x.n, "held call"))}</b> · ${esc(x.run.agent || "run")} · run ${esc(x.run.id.slice(0, 8))} <button type="button" class="cp" data-orun="${esc(x.run.id)}" data-oseq="">OPEN</button>`
+        }).join("") + more.map(x => `<div class="hold"><span class="sev wait">HELD</span> <b>${esc(plural(x.n, "held call"))}</b> · ${esc(x.run.agent || "run")} · run ${esc(x.run.id.slice(0, 8))} <button type="button" class="cp" data-orun="${esc(x.run.id)}" data-oseq="">OPEN</button>`
           + `<div class="dim">${esc(ELSEWHERE)}</div><div><code class="shell">tracekit approvals list</code>` + cp("tracekit approvals list") + `</div></div>`).join("")
-          || `<div class="empty">Nothing is waiting for a person.</div>`)
+          || `<div class="empty">Nothing to answer.</div>`)
         // the call as the tape names it: its tool and the visible part of its arguments, when the signer kept them
-        + `<div class="sec">NO LONGER WAITING</div><table class="wt"><tbody>` + (done.slice(0, 100).map(r => {
+        + `<div class="sec">ANSWERED OR ENDED</div><table class="wt"><tbody>` + (done.slice(0, 100).map(r => {
           const kept = r.rec.tool_input && Object.keys(r.rec.tool_input).length, ans = r.ans || r.answers.filter(x => x.v2.approval !== "requested").pop();
           return `<tr class="row" data-orun="${esc(r.rec.session_id)}" data-oseq="${esc(r.rec.tk_seq)}"><td class="dim">${esc(fmtT(r.rec.ts))}</td><td class="${esc(r.out[0])}">${esc(r.out[1])}</td><td>${esc(`${r.rec.agent} · run ${String(r.rec.session_id).slice(0, 8)}`)}</td>`
             + `<td>${esc(r.rec.tool_name)} · <span class="${kept ? "" : "dim"}">${esc(kept ? subject(r.rec.tool_name, r.rec.tool_input).slice(0, 200) : "arguments not kept")}</span></td><td class="dim">${esc(ans ? ans.text : "nobody answered before the run ended")}</td></tr>`;
         }).join("") || `<tr><td class="empty">None in the live view.</td></tr>`) + `</tbody></table>`);
-      $("apprsum").textContent = [`${waitingCount()} waiting`, ...[...by].map(([o, n]) => `${n} ${o}`)].join(" · ");
+      $("apprsum").textContent = [`${waitingCount()} ${OPENHOLD}`, ...[...by].map(([o, n]) => `${n} ${o}`)].join(" · ");
     }
     // EVIDENCE: the chain walk (the run's signed records in order, each marked covered when the viewer's check verified
     // the run), the checks its verifier report lists and the stamp. All of it is the server's result as it reported it:
@@ -3945,11 +3945,11 @@
       const list = alertGroups(S.alerts.filter(al => !al.agent || agentMatch(al.agent))).slice(0, 200);
       const row = (al, n, cls = "") => `<div class="al${esc(cls)}" data-al="${esc(al.i)}" tabindex="0"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`;
       const wait = waiting().filter(w => !scope || w.rec.session_id === scope);
-      put("alerts", wait.map(w => `<div class="al" data-orun="${esc(w.open[0])}" data-oseq="${esc(w.open[1])}" tabindex="0"><span class="sev wait">WAIT</span><span class="tx"><span class="src">WAITING FOR YOU</span>${esc(w.rec.tool_name)} · ${esc(w.rec.agent)}</span><span class="sub">${esc(fmtT(w.rec.ts))} · ${esc((w.rec.v2.rules || []).map(x => x.id).join(" ") || "held")} · ${esc(w.req ? "approval " + w.req.v2.approval_id : "no approval requested yet")}</span></div>`).join("")
+      put("alerts", wait.map(w => `<div class="al" data-orun="${esc(w.open[0])}" data-oseq="${esc(w.open[1])}" tabindex="0"><span class="sev wait">HELD</span><span class="tx"><span class="src">TO ANSWER</span>${esc(w.rec.tool_name)} · ${esc(w.rec.agent)}</span><span class="sub">${esc(fmtT(w.rec.ts))} · ${esc((w.rec.v2.rules || []).map(x => x.id).join(" ") || "held")} · ${esc(w.req ? "approval " + w.req.v2.approval_id : "no approval requested yet")}</span></div>`).join("")
         + why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
         + list.map(g => g.all.length === 1 ? row(g.al, 1) : `<div class="al grp${OPENGRP.has(g.key) ? " on" : ""}" data-grp="${esc(g.key)}" tabindex="0"><span class="sev ${esc(g.al.sev)}">${esc(String(g.al.sev).toUpperCase())}</span><span class="tx">${src(g.al) ? `<span class="src">${esc(src(g.al))}</span>` : ""}${esc(g.key)}<span class="n">× ${esc(g.all.length)}</span> in ${esc(plural(g.runs, "run"))}</span><span class="sub">${esc(String(g.al.text).slice(0, 160))} · newest ${esc(fmtT(g.al.ts))} · ${esc(OPENGRP.has(g.key) ? "▾ listed below" : "▸ click to list")}</span></div>`
           + (OPENGRP.has(g.key) ? g.all.slice(-GRP_PAGE * (OPENGRP.get(g.key))).reverse().map(al => row(al, 1, " in")).join("") + (g.all.length > GRP_PAGE * OPENGRP.get(g.key) ? `<div class="al in" data-grpmore="${esc(g.key)}">SHOW ${esc(Math.min(GRP_PAGE, g.all.length - GRP_PAGE * OPENGRP.get(g.key)))} MORE · ${esc(g.all.length - GRP_PAGE * OPENGRP.get(g.key))} NOT SHOWN</div>` : "") : "")).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
-      $("alsum").textContent = (wait.length ? `${wait.length} waiting · ` : "") + `${S.alerts.length + why.length} total · ${highCount()} high`;
+      $("alsum").textContent = (wait.length ? `${wait.length} ${OPENHOLD} · ` : "") + `${S.alerts.length + why.length} total · ${highCount()} high`;
     }
     // the calls a person must answer, in every run the page has: a hold (ask) no answer has ended, in a run still open;
     // [{rec: its decision, req: its approval request or null, link}], oldest first
@@ -3976,10 +3976,13 @@
       const shown = new Map();
       for (const w of waiting()) shown.set(w.rec.session_id, (shown.get(w.rec.session_id) || 0) + 1);
       return [...RUNS.values()].filter(r => r.state === "open")
-        .map(r => ({ run: r, n: (r.permissions?.waiting || 0) - (shown.get(r.id) || 0) })).filter(x => x.n > 0);
+        .map(r => ({ run: r, n: (r.permissions?.[OPENHOLD] || 0) - (shown.get(r.id) || 0) })).filter(x => x.n > 0);
     }
     const waitingCount = () => waiting().length + waitingElsewhere().reduce((n, x) => n + x.n, 0);
     const ELSEWHERE = "its records left the live view: open the run, then PERMISSIONS for each with the command that answers it";
+    // a hold nobody answered in a run still open (view.OPEN, the run review's count): nothing waits on it, as a coding
+    // agent's hook blocks the call at once, and an approval lets the agent's retry of the same call run, once
+    const OPENHOLD = "not answered yet", RETRY = "approve it to let the agent's retry run";
     // the span of the runs the page lists, from the first record of the earliest to the last of the latest
     function runsSpan() {
       let lo = Infinity, hi = -Infinity;
@@ -3993,12 +3996,12 @@
       const out = [];
       for (const w of waiting()) {
         const v = w.rec.v2, args = w.rec.tool_input && Object.keys(w.rec.tool_input).length ? j(w.rec.tool_input).replace(/\s+/g, " ") : "";
-        out.push({ kind: "HOLD", sev: "med", open: w.open, what: `${w.rec.tool_name} · ${w.rec.agent} waits for a person: ` + ((v.rules || []).map(x => x.reason ? `${x.id} ${x.reason}` : x.id).join("; ") || "held"),
+        out.push({ kind: "HOLD", sev: "med", open: w.open, what: `${w.rec.tool_name} · ${w.rec.agent} held: ${RETRY} (` + ((v.rules || []).map(x => x.reason ? `${x.id} ${x.reason}` : x.id).join("; ") || "held") + ")",
           detail: (args ? "binds " + args.slice(0, 300) : "arguments kept as a commitment only") + (w.req ? "" : " · no approval requested yet"),
           cmds: w.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(w.req.v2.approval_id)}`) : [] });
       }
       for (const x of waitingElsewhere())
-        out.push({ kind: "HOLD", sev: "med", open: [x.run.id, ""], what: `${x.run.agent || "run"} · run ${x.run.id.slice(0, 8)}: ${plural(x.n, "held call")} waiting for a person`,
+        out.push({ kind: "HOLD", sev: "med", open: [x.run.id, ""], what: `${x.run.agent || "run"} · run ${x.run.id.slice(0, 8)}: ${plural(x.n, "held call")} ${OPENHOLD}`,
           detail: ELSEWHERE, cmds: ["tracekit approvals list"] });
       const runs = [...RUNS.values()];
       for (const r of runs) for (const i of r.incidents || []) if (i.state === "held" || i.state === "quarantined")
@@ -4023,7 +4026,7 @@
     }
     // PERMISSIONS: every decision that was not a plain allow (deny, hold, flag) and what came of it, in the selected run
     // or in every run the page has; each row's `tabs`: all, its decision, its outcome. Newest first
-    const PTABS = [["all", "ALL"], ["waiting", "WAITING"], ["deny", "BLOCKED"], ["ask", "HELD"], ["flag", "FLAGGED"], ["approved", "APPROVED"], ["rejected", "REJECTED"], ["expired", "EXPIRED OR UNANSWERED"]];
+    const PTABS = [["all", "ALL"], ["waiting", "NOT ANSWERED YET"], ["deny", "BLOCKED"], ["ask", "HELD"], ["flag", "FLAGGED"], ["approved", "APPROVED"], ["rejected", "REJECTED"], ["expired", "EXPIRED OR UNANSWERED"]];
     const PERM = { tab: "all", page: 0 }, PERM_PAGE = 50;
     let permKey = [], permList = [];
     function permRows() {
@@ -4048,7 +4051,7 @@
         const d = row.rec.v2.decision, ans = row.answers.filter(x => x.v2.approval in ANSWER).pop(), a = ans?.v2.approval, done = ended.has(row.rec.session_id);
         const [tab, out] = d === "deny" ? ["", ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
           : a === "approve" ? ["approved", ["s-ok", row.post ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
-          : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "WAITING"]];
+          : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "NOT ANSWERED YET"]];
         return { ...row, ans, req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
       });
     }
@@ -4074,12 +4077,12 @@
             + `<td class="dim">${esc(r.ans ? `${r.ans.v2.approver || "?"} · ${fmtT(r.ans.ts)}` : v.decision === "deny" ? "nobody may: never held" : r.tabs.includes("waiting") && !r.req ? "no approval requested yet" : "–")}</td><td>` + cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join("<br>") + `</td></tr>`;
         }).join("") || `<tr><td colspan="9" class="empty">Nothing here.</td></tr>`) + `</tbody></table>`
         + (pages > 1 ? `<div class="wbar"><button type="button" data-ppage="-1">◀</button><span>${esc(`${from + 1}–${from + shown.length} of ${list.length} · newest first`)}</span><button type="button" data-ppage="1">▶</button></div>` : ""));
-      $("wvsum").textContent = `${plural(rows.length, "decision")} · ${n("waiting")} waiting`;
+      $("wvsum").textContent = `${plural(rows.length, "decision")} · ${n("waiting")} ${OPENHOLD}`;
     }
     function renderWaiting() {
       const n = waitingCount(), el = $("waiting");
       el.hidden = !n;
-      el.textContent = `WAITING FOR YOU ${n}`;
+      el.textContent = `TO ANSWER ${n}`;
       el.title = DESK() ? "answer them on the approvals page" : "open the oldest: its detail has the command that answers it";
     }
     // the badge: the approvals page where this server has one, else the oldest hold
@@ -4100,7 +4103,7 @@
       if (!hold && !high) return;
       const t = document.createElement("div"), b = document.createElement("b"), x = document.createElement("button"), sub = document.createElement("span"), go = document.createElement("button");
       t.className = "toast" + (high ? " high" : "");
-      b.textContent = vis(hold ? `HELD · ${r.tool_name} waits for a person` : `HIGH · ${r.title}`);
+      b.textContent = vis(hold ? `HELD · ${r.tool_name}: ${RETRY}` : `HIGH · ${r.title}`);
       sub.textContent = vis(`${r.agent} · run ${String(r.session_id).slice(0, 8)}` + (hold ? "" : ` · ${String(r.text || "").slice(0, 160)}`));
       x.type = go.type = "button"; x.textContent = "✕"; x.title = "dismiss"; x.onclick = () => t.remove();
       go.dataset.orun = r.session_id; go.dataset.oseq = r.tk_seq; go.textContent = "OPEN";
@@ -4203,7 +4206,7 @@
     }
     // a run's TIMELINE: BY CALL, one row per call on one time axis (a waterfall), or BY AGENT, the lanes above
     let WFBY = "call";
-    const WFMAX = 600, WFK = { ok: "allowed", flag: "flagged", deny: "blocked, refused or failed", wait: "waiting for a person" };
+    const WFMAX = 600, WFK = { ok: "allowed", flag: "flagged", deny: "blocked, refused or failed", wait: "held for a person" };
     // a call's bars, [kind, from, to]; to null: still waiting or running, so to the axis' right edge. A hold waits (hatched)
     // from its decision to its answer, then runs if it was approved; a refused one ends there, red
     function wfBars(a) {
@@ -4238,7 +4241,7 @@
       const dur = d => d < 1 ? Math.round(d * 1000) + " ms" : fmtDur(d);
       const bar = (a, [k, f, t]) => {
         const x0 = x(f), x1 = Math.max(x0 + 3, t == null ? TW : x(t));
-        return `<rect class="wk-${esc(k)}" x="${esc(x0.toFixed(1))}" y="4" width="${esc((x1 - x0).toFixed(1))}" height="${esc(RH - 8)}"><title>${esc((k === "wait" ? "waiting for a person" : callState(a)[1].toLowerCase()) + (t != null && t > f ? " · " + dur(t - f) : ""))}</title></rect>`;
+        return `<rect class="wk-${esc(k)}" x="${esc(x0.toFixed(1))}" y="4" width="${esc((x1 - x0).toFixed(1))}" height="${esc(RH - 8)}"><title>${esc((k === "wait" ? "held for a person" : callState(a)[1].toLowerCase()) + (t != null && t > f ? " · " + dur(t - f) : ""))}</title></rect>`;
       };
       wf.style.setProperty("--lw", LW + "px");
       put("wf", `<div class="wfr wfh"><span class="wl"><span class="wa">AGENT · </span>TOOL · TARGET</span><svg width="${esc(TW)}" height="${esc(RH)}"><defs><pattern id="wfhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect class="hatch-b" width="6" height="6"/><rect class="hatch-a" width="2" height="6"/></pattern></defs>`
@@ -4352,7 +4355,7 @@
         : !req ? "nobody yet: the agent has not requested an approval for this call (no approval.request record)"
         : "a person the signer takes as an approver" + (DESK() ? `, on the <a href="/approvals">approvals page</a>` : "") + ", or in a terminal with the signer's approvals command";
       if (req?.v2.agents) who += `<div class="dim">${esc((req.v2.agents.eligible ? "an agent approver may answer it too: " : "no agent approver may answer it: ") + req.v2.agents.reason)}</div>`;
-      if (out[1] === "WAITING" && req?.v2.approval_id) for (const d of ["approve", "reject"]) { const c = `tracekit approvals ${d} ${word(req.v2.approval_id)}`; who += `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`; }
+      if (out[1] === "NOT ANSWERED YET" && req?.v2.approval_id) for (const d of ["approve", "reject"]) { const c = `tracekit approvals ${d} ${word(req.v2.approval_id)}`; who += `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`; }
       steps.push(["", "WHO ANSWERS", who]);
       return `<div class="sec">WHY THIS DECISION</div><div class="steps">` + steps.map(([k, l, h], i) => `<b class="${esc(k)}">${esc(i + 1)}</b><span class="dim">${esc(l)}</span><span>` + h + `</span>`).join("") + `</div>`;
     }

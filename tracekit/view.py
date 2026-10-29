@@ -284,7 +284,7 @@ ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PAR
                 "TK-LIMIT-SUM": "a sum limit counts this call: send the amount as a non-negative integer in minor "
                                 "units, with its three-letter currency code",
                 "TK-CONSTRAINT": "the person's request in this run said not to do this, so a person must approve it",
-                "TK-HOLD": "the run is held by an incident: every call waits for a person",
+                "TK-HOLD": "the run is held by an incident: every call is held for a person",
                 "TK-QUARANTINE": "the run is quarantined by an incident: its calls are refused",
                 "TK-ARGS-INVALID": "arguments the signer could not read, so it refused the call",
                 "TK-A2A-NAME": policy_compile.ENGINE_REASONS["TK-A2A-NAME"]["reason"]}
@@ -505,7 +505,7 @@ class Translator(observe.Translator):
             return [r]
         aid = d.get("approval_id")
         tool, rule_ids, _ = self.requests.get(aid, ("", [], None))
-        was = self.held.get(aid, "waiting")
+        was = self.held.get(aid, OPEN)
         now = held_outcome(was, t, d) if t == "approval" or t in OUTCOMES else was
         if aid and now != was:
             self.held[aid] = now
@@ -716,6 +716,9 @@ CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only
                "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
 
 
+# a held call nobody has answered in a run still open. Nothing waits: a coding agent's hook blocks the call at once (a
+# gateway's waits up to its approval_wait_s), and approving it lets the agent's retry of the same call run, once
+OPEN = "not answered yet"
 # an approval's later records, as a permission's outcome
 OUTCOMES = {"approval.consumed": "approved · ran", "approval.expired": "expired", "approval.abandoned": "abandoned",
             "approval.refused": "refused", "approval.binding_mismatch": "refused: arguments changed",
@@ -726,15 +729,15 @@ ANSWERS = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
 
 def held_outcome(was, t, d):
     """What a held call came to after its approval's record of type `t` and data `d`, from what it had come to (`was`:
-    waiting, approved, ...): review() counts these, and the page's rows say them. A refused use that names its
+    OPEN, approved, ...): review() counts these, and the page's rows say them. A refused use that names its
     approval's state repeats what the approval's own records said, so it changes nothing: one nobody had answered yet
-    (TK-APPROVAL-REQUESTED) still waits, and one that came after the approval ended (abandoned, expired, rejected, ...)
-    keeps that end. A use refused because the approval expired or was rejected, with no record of that end before it,
-    is that end."""
+    (TK-APPROVAL-REQUESTED) is still not answered, and one that came after the approval ended (abandoned, expired,
+    rejected, ...) keeps that end. A use refused because the approval expired or was rejected, with no record of that end
+    before it, is that end."""
     ids = d.get("rule_ids") or ()
     if t == "approval":
         return ANSWERS.get(d.get("decision"), d.get("decision"))
-    if t == "approval.refused" and ("TK-APPROVAL-REQUESTED" in ids or was not in ("waiting", "approved")
+    if t == "approval.refused" and ("TK-APPROVAL-REQUESTED" in ids or was not in (OPEN, "approved")
                                     and {"TK-APPROVAL-EXPIRED", "TK-APPROVAL-REJECTED"} & set(ids)):
         return was
     return "expired" if "TK-APPROVAL-EXPIRED" in ids else "rejected" if "TK-APPROVAL-REJECTED" in ids else OUTCOMES[t]
@@ -744,7 +747,7 @@ def review(records, rep, verdict):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
     report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
     decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
-    answered, waiting, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
+    answered, not answered yet, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
     when the run's records have left the live view; `holds`: the same outcomes, of the calls held for a person (decided
     ask) only, and `hold_examples` the first such call (its tool_use_id) of each. Counts keep each snapshot small
     whatever the run's size."""
@@ -771,7 +774,7 @@ def review(records, rep, verdict):
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
             if key != "allow":
-                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, "waiting")
+                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
                 asked.add(d.get("tool_use_id"))
         elif t == "constraint.added":
@@ -815,7 +818,7 @@ def review(records, rep, verdict):
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
-    ended = {c: "not answered" if o == "waiting" and out["state"] == "final" else o for c, o in perms.items()}
+    ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
     out["permissions"] = collections.Counter(ended.values())
     out["holds"] = collections.Counter(o for c, o in ended.items() if c in asked)
     out["hold_examples"] = {}

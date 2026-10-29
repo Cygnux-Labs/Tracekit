@@ -1039,7 +1039,7 @@ def _approvals(a):
                     me = "{scheme}:{subject}".format(**c.status({})["identity"])
                 except (RPCError, SignerUnavailable):
                     me = "this identity"
-                print(f"nothing is waiting for approval\n(you are {me}: the signer lists an approval only to its run's "
+                print(f"no approvals to show\n(you are {me}: the signer lists an approval only to its run's "
                       "owner and to those who may answer it, which with an approvals section in signer.yaml are the "
                       "identities approvals.approvers lists)")
         elif a.action == "show":

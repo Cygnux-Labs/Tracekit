@@ -374,7 +374,7 @@ class Translate(unittest.TestCase):
         open_ = held("open", "c1", "apr-3", unanswered, final=False)
         rep = mock.Mock(integrity="VERIFIED", assurance="dev")
         self.assertEqual([dict(view.review(r, rep, "verified")["holds"]) for r in (planner, coder, open_)],
-                         [{"abandoned": 1}, {"expired": 1}, {"waiting": 1}])
+                         [{"abandoned": 1}, {"expired": 1}, {"not answered yet": 1}])
         rows = self.feed(*planner, *coder)
         words = [(r["title"], r["text"], r["v2"]["approval"]) for r in rows if r["v2"].get("approval")
                  and r["v2"]["approval"] != "requested"]
