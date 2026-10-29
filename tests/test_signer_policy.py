@@ -662,6 +662,19 @@ class CodingPack(unittest.TestCase):
                            ("Write", {"file_path": "/repo/docs/hooks.md"})):
             self.assertEqual(self.e.decide(tool, args)["verdict"], "allow", args)
 
+    def test_a_file_tool_writing_a_login_script_or_cron_file_asks(self):
+        # TK-A010 knew service managers' places only: a Write of a download-and-run line into /etc/profile.d ran at
+        # the next login unheld. A shell append to a startup file stays flagged (TK-F011), and reading one is allowed
+        self.verdicts([({"file_path": p}, "TK-A010") for p in (
+            "/Users/dev/.zshrc", "/home/dev/.bashrc", "/home/dev/.profile", "/Users/dev/.zprofile",
+            "/etc/profile.d/00-update.sh", "/etc/profile", "/etc/cron.d/update", "/var/spool/cron/crontabs/root")],
+            tool="Write")
+        d = self.e.decide("Bash", {"command": "echo 'export PATH=\"$HOME/bin:$PATH\"' >> ~/.zshrc"})
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-F011"]))
+        for tool, args in (("Read", {"file_path": "/Users/dev/.zshrc"}), ("Bash", {"command": "cat ~/.zshrc"}),
+                           ("Write", {"file_path": "/repo/docs/profile.md"})):
+            self.assertEqual(self.e.decide(tool, args)["verdict"], "allow", args)
+
     def test_a_copy_is_held_by_its_destination_and_reading_a_place_is_not(self):
         # TK-A011 and TK-A013 found a place anywhere after cp/install/mv/ln and only with a trailing slash: a copy into
         # the directory itself was allowed and a copy out of it held; `systemctl --now enable` was missed and reading

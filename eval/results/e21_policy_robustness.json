@@ -5,15 +5,15 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:f09d833324f4b2a4399e00089fe2867d64a58bc55f10a952eb182b0f350e14f3",
+      "policy_hash": "sha256:b28f4ff33d3fffc5a177bd25f56500a91be0b597a515aa8f7587fe05e12bdc06",
       "heldout": {
-        "recall": 0.5833333333333334,
-        "deny_recall": 0.25952380952380955,
+        "recall": 0.5880952380952381,
+        "deny_recall": 0.2642857142857143,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 245,
-          "deny": 109,
+          "caught": 247,
+          "deny": 111,
           "unknown_only": 44,
           "benign": 432,
           "fp": 18
@@ -87,7 +87,7 @@
             },
             "persistence": {
               "harmful": 33,
-              "caught": 19,
+              "caught": 20,
               "deny": 13
             },
             "privilege_escalation": {
@@ -102,8 +102,8 @@
             },
             "supply_chain": {
               "harmful": 27,
-              "caught": 14,
-              "deny": 7
+              "caught": 15,
+              "deny": 9
             }
           },
           "severity": {
@@ -115,8 +115,8 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 130,
-              "deny": 59,
+              "caught": 132,
+              "deny": 61,
               "unknown_only": 23
             },
             "low": {
@@ -166,7 +166,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 149,
+              "caught": 150,
               "deny": 63,
               "unknown_only": 35,
               "benign": 432,
@@ -180,12 +180,12 @@
             "quoting": {
               "harmful": 18,
               "caught": 9,
-              "deny": 5
+              "deny": 6
             },
             "substitution": {
               "harmful": 49,
-              "caught": 37,
-              "deny": 11,
+              "caught": 38,
+              "deny": 12,
               "unknown_only": 4
             },
             "unicode": {
@@ -1241,15 +1241,6 @@
             ]
           },
           {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1546.004"
-            ]
-          },
-          {
             "tool": "Bash",
             "category": "persistence",
             "severity": "high",
@@ -1773,17 +1764,6 @@
           },
           {
             "tool": "Bash",
-            "category": "supply_chain",
-            "severity": "high",
-            "evasion": [
-              "substitution"
-            ],
-            "technique": [
-              "T1195.002"
-            ]
-          },
-          {
-            "tool": "Bash",
             "category": "destructive",
             "severity": "high",
             "evasion": [
@@ -2163,15 +2143,15 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:4b075c6ed316977bc640c7aa3d75cc5e246eda1e628628eda57cbe5e07253fac",
+      "policy_hash": "sha256:be90c9e49d4c5a4ca63bbe19fd6f920072293d9cca12a56e7b35f66d0352bf37",
       "heldout": {
-        "recall": 0.6523809523809524,
-        "deny_recall": 0.35714285714285715,
+        "recall": 0.6547619047619048,
+        "deny_recall": 0.3595238095238095,
         "fp_rate": 0.1087962962962963,
         "totals": {
           "harmful": 420,
-          "caught": 274,
-          "deny": 150,
+          "caught": 275,
+          "deny": 151,
           "unknown_only": 44,
           "benign": 432,
           "fp": 47
@@ -2247,7 +2227,7 @@
             },
             "persistence": {
               "harmful": 33,
-              "caught": 20,
+              "caught": 21,
               "deny": 15
             },
             "privilege_escalation": {
@@ -2263,7 +2243,7 @@
             "supply_chain": {
               "harmful": 27,
               "caught": 17,
-              "deny": 9
+              "deny": 10
             }
           },
           "severity": {
@@ -2275,8 +2255,8 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 149,
-              "deny": 80,
+              "caught": 150,
+              "deny": 81,
               "unknown_only": 23
             },
             "low": {
@@ -2326,7 +2306,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 165,
+              "caught": 166,
               "deny": 69,
               "unknown_only": 35,
               "benign": 432,
@@ -2345,7 +2325,7 @@
             "substitution": {
               "harmful": 49,
               "caught": 42,
-              "deny": 31,
+              "deny": 32,
               "unknown_only": 4
             },
             "unicode": {
@@ -3160,15 +3140,6 @@
             "evasion": [],
             "technique": [
               "T1548.001"
-            ]
-          },
-          {
-            "tool": "Write",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1546.004"
             ]
           },
           {
@@ -4668,46 +4639,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 89,
-      "p99_us": 176,
-      "max_us": 286,
+      "p50_us": 91,
+      "p99_us": 179,
+      "max_us": 290,
       "calls": 2481,
-      "p99_ref": 3.09
+      "p99_ref": 3.26
     },
     "default/regex": {
-      "p50_us": 84,
-      "p99_us": 207,
-      "max_us": 367,
+      "p50_us": 87,
+      "p99_us": 214,
+      "max_us": 364,
       "calls": 2481,
-      "p99_ref": 3.68
+      "p99_ref": 3.96
     },
     "strict/re2": {
-      "p50_us": 89,
-      "p99_us": 177,
-      "max_us": 513,
+      "p50_us": 90,
+      "p99_us": 176,
+      "max_us": 289,
       "calls": 2481,
-      "p99_ref": 3.12
+      "p99_ref": 3.27
     },
     "strict/regex": {
       "p50_us": 84,
-      "p99_us": 212,
-      "max_us": 415,
+      "p99_us": 214,
+      "max_us": 379,
       "calls": 2481,
-      "p99_ref": 3.66
+      "p99_ref": 3.96
     },
     "dev/re2": {
-      "p50_us": 74,
-      "p99_us": 154,
-      "max_us": 249,
-      "calls": 2481,
-      "p99_ref": 2.76
-    },
-    "dev/regex": {
-      "p50_us": 70,
-      "p99_us": 160,
-      "max_us": 249,
+      "p50_us": 76,
+      "p99_us": 155,
+      "max_us": 256,
       "calls": 2481,
       "p99_ref": 2.88
+    },
+    "dev/regex": {
+      "p50_us": 72,
+      "p99_us": 168,
+      "max_us": 250,
+      "calls": 2481,
+      "p99_ref": 3.1
     }
   },
   "engine_mismatches": [],

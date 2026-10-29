@@ -516,8 +516,8 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 245 / 420 (58.3%) | 109 (26.0%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 274 / 420 (65.2%) | 150 (35.7%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
+| default | 247 / 420 (58.8%) | 111 (26.4%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 275 / 420 (65.5%) | 151 (36.0%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
 destructive 15 of 36, defence evasion 14 of 30, supply chain 14 of 27; strongest: database 32 of
@@ -527,9 +527,9 @@ and false positive: `eval/results/e21_policy_robustness.json`. The two engines d
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 89 / 84 | 176 / 207 | 286 / 367 | 3.09 / 3.68 |
-| strict, RE2 / regex | 89 / 84 | 177 / 212 | 513 / 415 | 3.12 / 3.66 |
-| dev, RE2 / regex | 74 / 70 | 154 / 160 | 249 / 249 | 2.76 / 2.88 |
+| default, RE2 / regex | 91 / 87 | 179 / 214 | 290 / 364 | 3.26 / 3.96 |
+| strict, RE2 / regex | 90 / 84 | 176 / 214 | 289 / 379 | 3.27 / 3.96 |
+| dev, RE2 / regex | 76 / 72 | 155 / 168 | 256 / 250 | 2.88 / 3.1 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
@@ -549,7 +549,7 @@ and 250 (59.5%); the credential-store, container, package-source and history rul
 `TK-A028`) to 236 (56.2%) and 266 (63.3%); the fixes of the 1.4 review (`TK-A029`, `TK-A030`, the shells the parser
 can't read, package sources set by a variable) to 237 (56.4%) and 266, with no new false positive on the held-out or
 session calls; `TK-A035` to `TK-A038` (a secret's value read through a cloud CLI or an MCP
-tool) to 240 (57.1%) and 269 (64.0%), with none either. The database-client rules (`TK-A039`, `TK-A040`, `TK-A041`) raised that to 245 (58.3%) and 274 (65.2%), again with no new false positive on the held-out or session calls. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
+tool) to 240 (57.1%) and 269 (64.0%), with none either. The database-client rules (`TK-A039`, `TK-A040`, `TK-A041`) raised that to 245 (58.3%) and 274 (65.2%), again with no new false positive on the held-out or session calls. In 1.5.1, `TK-A046` (a download piped into an interpreter given code), `TK-D002` reading the parsed command, and `TK-A010`'s login scripts and cron files raised it to 247 (58.8%) and 275 (65.5%), with none either. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
 pool, not as blind recall. The gates were
 recorded again with those rules, on purpose: strict's false positives on E17's benign calls rose from 4.1% to 4.9%
 (29 of 711 to 36 of 738). The benign cases added since, with the secret-read, repository-deletion,
