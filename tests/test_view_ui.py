@@ -554,15 +554,30 @@ class Span(unittest.TestCase):
         runs = [{"id": "r1", "first_ts": "2026-10-18T03:43:23Z", "last_ts": "2026-10-19T00:00:00Z"},
                 {"id": "r2", "first_ts": "2026-10-27T10:00:00Z", "last_ts": "2026-10-28T03:43:23Z"},
                 {"id": "r3", "verdict": "pending"}]
-        out = json.loads(page_js(["esc", "fmtDur", "runsSpan", "heldCall", "renderTicker"], f"""
+        out = json.loads(page_js(["esc", "fmtDur", "runsSpan", "ANSWER", "lastAnswer", "heldCall", "renderTicker"], f"""
             const RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), html = {{}}, put = (id, h) => {{ html[id] = h; }};
-            const S = {{ agents: new Map(), sessions: new Map(), actList: [], firstTs: 1793183000, lastTs: 1793183017, approved: 0, gaps: 0 }};
+            const S = {{ agents: new Map(), sessions: new Map(), actList: [], firstTs: 1793183000, lastTs: 1793183017, gaps: 0 }};
             const document = {{ URL: "http://127.0.0.1/" }}, nowTs = () => 1793183017, highCount = () => 0, chainState = {{ n: 9 }};
             let V2 = true, scope = null, SOURCE = "", lastCounts = {{}};
             const span = () => /<b>SPAN<\\/b><i class="">([^<]*)</.exec(html.ticker)[1];
             const seen = []; renderTicker(); seen.push(span()); scope = "r2"; renderTicker(); seen.push(span());
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out, ["240.0h", "17s"])
+
+    def test_desk_counts_approved_as_approvals_does(self):
+        """DESK said APPROVED 4 (approval answers) where APPROVALS said 3 approved: one of the four expired unused."""
+        needs_node(self)
+        out = json.loads(page_js(["esc", "fmtDur", "runsSpan", "ANSWER", "lastAnswer", "heldCall", "renderTicker"], """
+            const RUNS = new Map(), html = {}, put = (id, h) => { html[id] = h; }, ask = { decision: "ask" };
+            const held = (...answers) => ({ v2: ask, flags: [], approvals: answers.map(a => ({ v2: { approval: a } })) });
+            const S = { agents: new Map(), sessions: new Map(), firstTs: 0, lastTs: 1, gaps: 0,
+                        actList: [held("requested", "approve"), held("approve", "expired"), held("reject"), held()] };
+            S.actList.push({ v2: ask, flags: [], approvals: [{ v2: { approval: "consumed" } }], retryOf: S.actList[0] });   // its retry
+            const document = { URL: "http://127.0.0.1/" }, nowTs = () => 1, highCount = () => 0, chainState = { n: 9 };
+            let V2 = true, scope = null, SOURCE = "", lastCounts = {};
+            const tile = k => new RegExp(`<b>${k}</b><i class="[^"]*">([^<]*)<`).exec(html.ticker)[1];
+            renderTicker(); process.stdout.write(JSON.stringify([tile("HELD"), tile("APPROVED")]));"""))
+        self.assertEqual(out, ["4", "1"])
 
 
 
@@ -1791,7 +1806,7 @@ class ApproveThenRetry(unittest.TestCase):
         out = json.loads(page_js(["tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended", "heldCall",
                                   "callState", "ingest", "wfBars", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
             const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
-                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, approved: 0, firstTs: null, lastTs: null }};
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
             const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
             const sessionOf = r => {{ if (!S.sessions.has(r.session_id)) S.sessions.set(r.session_id, {{ prompts: [], end: null }}); return S.sessions.get(r.session_id); }};
             const pushTape = r => r, alert = () => {{}}, STOPPED = "", ALL = {json.dumps(recs)};

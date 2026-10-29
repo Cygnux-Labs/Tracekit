@@ -3074,7 +3074,7 @@
         asked: new Map(),  // v2: a call (tuid) -> the model message that asked for it {x: exchange id, seq: its record's run_seq}
         effects: new Map(),  // v2: a kernel sensor's effect (session|run_seq) -> {rec, call: tuid or null, how, status}: the run's analysis joins it to a call
         cited: new Map(),  // v2: a record (session|run_seq) -> the findings that cite it
-        firstTs: null, lastTs: null, gaps: 0, approved: 0,
+        firstTs: null, lastTs: null, gaps: 0,
         signer: { key: "signer", session: "", id: "signer", type: "signer", sub: false, signer: true, desc: "", status: "idle", actions: 0, tokIn: 0, tokOut: 0, cost: 0, first: 0, last: 0, current: null, errors: 0, blocked: 0, flags: 0, model: "" }
       };
     }
@@ -3259,7 +3259,6 @@
           if (e) Object.assign(e, { call: j.call == null ? null : r.session_id + "|" + j.call, how: j.how, status: j.status });
         }
         if (r.tape === "GAP") S.gaps++;
-        if (r.v2?.approval === "approve") S.approved++;
         // a finding and the records it cites link both ways (a signed finding's cites are of the run it is about)
         for (const c of r.v2?.cites || []) { const k = (r.v2.about || r.session_id) + "|" + c.run_seq; S.cited.set(k, [...(S.cited.get(k) || []), r]); }
         const v = r.v2 || {};
@@ -3912,14 +3911,16 @@
       const flagged = S.actList.filter(a => a.flags.length).length;
       // DESK's SPAN is its runs' (the live view keeps the newest records, which come in no time order); a run's, its rows'
       const elapsed = V2 && !scope ? runsSpan() : S.firstTs ? (V2 || done || document.URL.startsWith("file:") ? S.lastTs : t) - S.firstTs : 0;
-      const held = S.actList.filter(heldCall).length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = highCount();
+      // HELD and APPROVED: calls held for a person, and those whose last answer is an approval, as APPROVALS counts them
+      // (one approved that expired unused is expired)
+      const held = S.actList.filter(heldCall).length, approved = S.actList.filter(a => heldCall(a) && lastAnswer(a) === "approve").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = highCount();
       // signed records: the run's own count (its review), else every record the viewer verified (the chain badge's)
       const signed = scope ? RUNS.get(scope)?.records ?? (RUNS.get(scope)?.verdict === "failed" ? "–" : null) : chainState.n;
       const items = V2 ? [
         // a v2 agent is keyed per run (its session): count the agents by name, as the runs list names them
         ["RUNS", scope ? 1 : [...RUNS.values()].length, ""], ["AGENTS", new Set(agents.map(a => a.name || a.type)).size, ""], ["CALLS", S.actList.length, "am"],
         ["FLAGGED", v2flag, v2flag ? "am" : ""], ["BLOCKED", blocked, blocked ? "dn" : ""], ["HELD", held, held ? "am" : ""],
-        ["APPROVED", S.approved, S.approved ? "up" : ""], ["GAPS", S.gaps, S.gaps ? "dn" : ""], ["HIGH ALERTS", high, high ? "dn" : ""],
+        ["APPROVED", approved, approved ? "up" : ""], ["GAPS", S.gaps, S.gaps ? "dn" : ""], ["HIGH ALERTS", high, high ? "dn" : ""],
         ["ERRORS", errors, errors ? "dn" : ""], ["SPAN", fmtDur(elapsed), ""], ["RECORDS", signed ?? "…", ""]] : [
         ["SESSIONS", S.sessions.size, ""], ["AGENTS", agents.length, ""], ["RUNNING", running, running ? "up" : ""],
         ["ACTIONS", S.actList.length, "am"], ["ACT/MIN", recent, recent ? "up" : ""],
