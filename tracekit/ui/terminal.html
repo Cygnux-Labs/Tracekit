@@ -3046,7 +3046,7 @@
         const ap = lastAnswer(a);
         if (ap === "approve") return ["s-ok", a.post ? "APPROVED · RAN" : "APPROVED"];
         if (ap) return ["s-deny", ANSWER[ap]];
-        return ["s-flag", ended(a) ? "NOT ANSWERED" : "NOT ANSWERED YET"];
+        return ["s-flag", ended(a) ? "NOT ANSWERED" : "TO ANSWER"];
       }
       if (a.post) return a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"];
       return ended(a) ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"];
@@ -3391,6 +3391,8 @@
       }
       return sh?.trim() ? ["machine", hzCmd(sh) || tool, "command"] : null;
     }
+    // a long path as a callout names it, its last two parts; hover and the side card give it whole
+    const hzShort = l => l.length > 28 && l.includes("/") ? "…/" + l.split("/").filter(Boolean).slice(-2).join("/") : l;
     // a restricted place's rule: a TK-F or TK-D rule whose reason is about secrets, harness configuration or Tracekit's files
     const hzRest = rules => rules.filter(x => /^TK-[FD]\d/.test(x.id) && /secret|credential|harness|tracekit/i.test(x.reason || "")).map(x => x.id + " · " + x.reason)[0] || null;
     // every run's calls and sensor effects, the newest HZMAX of all runs together by the signer's time (v2 ts, v1
@@ -3621,16 +3623,17 @@
         if (q.rest) rows.push([red, "RESTRICTED · " + q.rest.split(" · ")[0], true]);
         pairs.slice(0, 3).forEach(e => rows.push([HZ.col[e.ag], e.ag + " · " + HZACT[e.act].replace(/^was | at$/g, "")]));
         if (pairs.length > 3) rows.push([A(ink, .4), "+" + (pairs.length - 3) + " more"]);
-        x.font = font(400, 10.5); let w = x.measureText(q.label).width;
+        x.font = font(400, 10.5); let w = x.measureText(hzShort(q.label)).width;
         x.font = font(400, 9.5); rows.forEach(([, t, bad]) => { w = Math.max(w, x.measureText(t).width + (bad ? 0 : 10)); });
         const rank = q.rest ? 0 : worst === "blocked" || worst === "held" ? 1 : worst ? 2 : 3;
         if (narrow && rank > 1 && HZ.pick !== k) continue;   // a phone: callouts for restricted places and stops only
-        blocks.push({ k, q, px, py, worst, rows, w, h: 13 * rows.length, rank, gap: q.rest ? 30 : 8 });
+        blocks.push({ k, q, px, py, worst, rows, w, h: 13 * rows.length, rank, gap: q.rest ? 30 : 8, n: es.length });
       }
       const hit = a => placed.some(b => a[0] < b[2] + 4 && a[2] > b[0] - 4 && a[1] < b[3] + 3 && a[3] > b[1] - 3)
         || marks.some(([mx, my, mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - mr && my < a[3] + mr)
         || a[0] < 6 || a[2] > cw - 6 || a[1] < 70 || a[3] > ch - 30 || (a[0] < cx + Rs * 2 && a[2] > cx - Rs * 2 && a[1] < cy + Rs * 1.4 && a[3] > cy - Rs * 1.6);
-      blocks.sort((a, b) => a.rank - b.rank);
+      // the picked place first, then the busiest: each where it covers nothing drawn, else left to hover and a click
+      blocks.sort((a, b) => (b.k === HZ.pick) - (a.k === HZ.pick) || b.n - a.n || a.rank - b.rank);
       for (const b of blocks) {
         const pref = Math.sin(b.q.th) < 0 ? -1 : 1, side0 = b.px < cx ? -1 : 1;
         let best = null;
@@ -3641,8 +3644,8 @@
           }
           if (best) break;
         }
-        if (!best) {   // lean: a callout with no free room is left out unless the place is restricted or stopped someone (on a phone, always); a click still lists it
-          if (b.rank > 1 || narrow) continue;
+        if (!best) {   // no free room: left out, but for the picked place; hover names it, a click lists it
+          if (HZ.pick !== b.k) continue;
           const ey = b.py + pref * (b.gap + 10), x0 = Math.max(6, Math.min(cw - 6 - b.w, side0 > 0 ? b.px + 11 : b.px - 11 - b.w));
           best = { box: [x0, ey - 10, x0 + b.w, ey + b.h + 3], ey, dy: pref, sd: side0 };
         }
@@ -3650,7 +3653,7 @@
         const { ey, dy, sd } = best, tx = sd > 0 ? best.box[0] : best.box[2];
         x.strokeStyle = A(ink, .35); x.lineWidth = 1; x.beginPath(); x.moveTo(b.px, b.py + dy * b.gap); x.lineTo(b.px, ey); x.lineTo(b.px + sd * 8, ey); x.stroke();
         x.textAlign = sd > 0 ? "left" : "right"; x.font = font(400, 10.5);
-        x.fillStyle = HZ.pick === b.k ? amber : A(ink, b.worst ? .95 : .42); x.fillText(b.q.label, tx, ey + 3);
+        x.fillStyle = HZ.pick === b.k ? amber : A(ink, b.worst ? .95 : .42); x.fillText(hzShort(b.q.label), tx, ey + 3);
         x.font = font(400, 9.5);
         b.rows.forEach(([c, t, bad], n) => {
           const ry = ey + 3 + dy * 13 * (n + 1); x.fillStyle = c;
@@ -3698,7 +3701,8 @@
     });
     const hzNear = e => { const b = $("hzcv").getBoundingClientRect(), mx = e.clientX - b.left, my = e.clientY - b.top; let best = null, bd = 18; for (const h of HZ.hits) { const d = Math.hypot(h.x - mx, h.y - my); if (d < bd) { bd = d; best = h.k; } } return best; };
     $("hzcv").addEventListener("click", e => { const k = hzNear(e); HZ.pick = k && HZ.pick !== k ? k : null; if (k) HZ.follow = null; renderHorizon(); });
-    $("hzcv").addEventListener("mousemove", e => { e.target.style.cursor = hzNear(e) ? "pointer" : "default"; });
+    // hover names any place, its callout drawn or not, in full
+    $("hzcv").addEventListener("mousemove", e => { const k = hzNear(e); e.target.style.cursor = k ? "pointer" : "default"; e.target.title = k ? HZ.d.places[k]?.label ?? "" : ""; });
     function evidenceView(el) {
       const r = scope && RUNS.get(scope);
       if (!r) { put("whyv", `<div class="empty">Select a run: its evidence is its bundle.</div>`); $("wvsum").textContent = ""; return; }
@@ -4026,7 +4030,7 @@
     }
     // PERMISSIONS: every decision that was not a plain allow (deny, hold, flag) and what came of it, in the selected run
     // or in every run the page has; each row's `tabs`: all, its decision, its outcome. Newest first
-    const PTABS = [["all", "ALL"], ["waiting", "NOT ANSWERED YET"], ["deny", "BLOCKED"], ["ask", "HELD"], ["flag", "FLAGGED"], ["approved", "APPROVED"], ["rejected", "REJECTED"], ["expired", "EXPIRED OR UNANSWERED"]];
+    const PTABS = [["all", "ALL"], ["waiting", "TO ANSWER"], ["deny", "BLOCKED"], ["ask", "HELD"], ["flag", "FLAGGED"], ["approved", "APPROVED"], ["rejected", "REJECTED"], ["expired", "EXPIRED OR UNANSWERED"]];
     const PERM = { tab: "all", page: 0 }, PERM_PAGE = 50;
     let permKey = [], permList = [];
     function permRows() {
@@ -4051,7 +4055,7 @@
         const d = row.rec.v2.decision, ans = row.answers.filter(x => x.v2.approval in ANSWER).pop(), a = ans?.v2.approval, done = ended.has(row.rec.session_id);
         const [tab, out] = d === "deny" ? ["", ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
           : a === "approve" ? ["approved", ["s-ok", row.post ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
-          : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "NOT ANSWERED YET"]];
+          : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "TO ANSWER"]];
         return { ...row, ans, req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
       });
     }
@@ -4355,7 +4359,7 @@
         : !req ? "nobody yet: the agent has not requested an approval for this call (no approval.request record)"
         : "a person the signer takes as an approver" + (DESK() ? `, on the <a href="/approvals">approvals page</a>` : "") + ", or in a terminal with the signer's approvals command";
       if (req?.v2.agents) who += `<div class="dim">${esc((req.v2.agents.eligible ? "an agent approver may answer it too: " : "no agent approver may answer it: ") + req.v2.agents.reason)}</div>`;
-      if (out[1] === "NOT ANSWERED YET" && req?.v2.approval_id) for (const d of ["approve", "reject"]) { const c = `tracekit approvals ${d} ${word(req.v2.approval_id)}`; who += `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`; }
+      if (out[1] === "TO ANSWER" && req?.v2.approval_id) for (const d of ["approve", "reject"]) { const c = `tracekit approvals ${d} ${word(req.v2.approval_id)}`; who += `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`; }
       steps.push(["", "WHO ANSWERS", who]);
       return `<div class="sec">WHY THIS DECISION</div><div class="steps">` + steps.map(([k, l, h], i) => `<b class="${esc(k)}">${esc(i + 1)}</b><span class="dim">${esc(l)}</span><span>` + h + `</span>`).join("") + `</div>`;
     }

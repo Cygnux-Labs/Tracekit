@@ -94,8 +94,10 @@ placed that way.
   `origin/main` is drawn as a project place; in a Bash command, a `dir/name` with no file extension is not, and a
   program is named with its verb only for some (git, npm, docker, kubectl and the like)
   ([limits](limits.md#investigation-tracekit-why)).
-- On a phone it draws callouts only for restricted places and places where an agent was stopped; at any width, a move's
-  number that would cover another's is left out ([limits](limits.md#investigation-tracekit-why)).
+- On a phone it draws callouts only for restricted places and places where an agent was stopped. At any width it draws
+  them busiest place first and leaves out each that would cover one already drawn; a long path's callout names its
+  last two parts, and hovering a place gives its whole path. A move's number that would cover another's is left out
+  ([limits](limits.md#investigation-tracekit-why)).
 - It shows the network effects a kernel sensor saw, not the egress observer's records
   ([limits](limits.md#investigation-tracekit-why)).
 - A why log time it can't read is drawn as the oldest ([limits](limits.md#investigation-tracekit-why)).

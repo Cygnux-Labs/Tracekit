@@ -168,7 +168,7 @@ class WhyThisDecision(unittest.TestCase):
             "WHY THIS DECISION 1 CALL send_email from coder·5e67 · class email (the policy's map of this tool) "
             "2 DENY RULES read 7 · none matched 3 ASK RULES read 6 · matched TK-P001 email outside the company what "
             "to do: Send it from a person. 4 FLAG RULES read 3 · none matched 5 DECISION ASK the first section with a "
-            "match decides: deny, then ask, then flag; none, allow 6 OUTCOME NOT ANSWERED YET 7 WHO ANSWERS a person the "
+            "match decides: deny, then ask, then flag; none, allow 6 OUTCOME TO ANSWER 7 WHO ANSWERS a person the "
             "signer takes as an approver, on the approvals page , or in a terminal with the signer's approvals command no "
             "agent approver may answer it: the rule has no agent bounds tracekit approvals approve &#39;apr&lt;1&gt;&#39; COPY "
             "tracekit approvals reject &#39;apr&lt;1&gt;&#39; COPY"))   # the id one quoted shell word
@@ -575,7 +575,7 @@ class Permissions(unittest.TestCase):
             scope = "r2"; seen.push(rows(permRows()));
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out[0], [["c9", "all ask expired", "NOT ANSWERED", None, None],
-                                  ["c6", "all ask waiting", "NOT ANSWERED YET", None, "apr-6"],
+                                  ["c6", "all ask waiting", "TO ANSWER", None, "apr-6"],
                                   ["c5", "all ask expired", "EXPIRED", None, None],
                                   ["c4", "all ask rejected", "REJECTED", "uid:501", None],
                                   ["c3", "all ask approved", "APPROVED · RAN", "oidc:alice", "apr-3"],
@@ -1186,7 +1186,7 @@ class Horizon(unittest.TestCase):
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
                                   "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
-                                  "hzRgba", "hzDraw", "hzFrame"], f"""
+                                  "hzRgba", "hzShort", "hzDraw", "hzFrame"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
             const ctx = new Proxy({{}}, {{ get: (o, k) => k in o ? o[k] : () => ({{ addColorStop() {{}}, width: 10 }}) }});
@@ -1211,7 +1211,7 @@ class Horizon(unittest.TestCase):
 
     def test_reduced_motion_draws_a_still_frame_on_each_change_and_no_loop(self):
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], """
             const ctx = new Proxy({}, { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {}, width: 10 }) });
             let frames = 0, reduce = true, PAGE = "horizon";
             const queued = [], cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => { frames++; return ctx; },
@@ -1237,7 +1237,7 @@ class Horizon(unittest.TestCase):
         """"release-agent · flagged" at api.github.com was drawn over CHAIN ✓ VERIFIED: the callouts' room left out the
         HUD's readouts, which sit over the stage."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], """
             const texts = [], ctx = new Proxy({ fillText: (t, x, y) => texts.push([t, x, y]), measureText: t => ({ width: t.length * 6 }) },
                                               { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }) });
             const hud = { offsetLeft: 580, offsetTop: 16, offsetWidth: 202, offsetHeight: 190 }, PAGE = "horizon";
@@ -1275,7 +1275,7 @@ class Horizon(unittest.TestCase):
     def test_a_phone_draws_only_callouts_that_fit_and_only_for_restricted_places_and_stops(self):
         """At 390px HORIZON's callouts printed over each other: one with no room was drawn anyway, wherever it fell."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], self.HZ_STAGE + """
             const places = { "src/a.py": { kind: "project", label: "src/a.py", r: .31, th: hzRad(200), rest: null } }, evs = [ev(1, "src/a.py", "flag")];
             for (let k = 0; k < 14; k++) {   // fourteen restricted places, side by side: more callouts than the stage has room for
               places["~/.s" + k] = { kind: "machine", label: "~/.secret" + k, r: .565, th: hzRad(80 + k * 3), rest: "TK-F005 · secrets_access" };
@@ -1290,10 +1290,38 @@ class Horizon(unittest.TestCase):
         self.assertTrue(phone["labels"])
         self.assertIn("src/a.py", desk["labels"])
 
+    def test_a_desktop_stage_of_many_long_paths_draws_only_labels_that_fit_busiest_first(self):
+        """With about 100 places, many of them long worktree paths, the desktop drew a callout for every restricted
+        place whether or not it had room: dozens of labels piled into unreadable text. Callouts go busiest first, each
+        only where it covers nothing drawn; a long path shows its last two parts, and hover gives it whole."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"],
+                                 self.HZ_STAGE + """
+            const places = {}, evs = [];
+            for (let k = 0; k < 120; k++) {   // every third restricted (TK-D007 on a checkout of Tracekit itself)
+              places["p" + k] = { kind: k % 2 ? "machine" : "project", r: k % 2 ? .565 : [.24, .39, .31][k % 3], th: hzRad(k * 3),
+                                  label: `~/Tracekit/.claude/worktrees/agent-issue-${k}/tracekit/module_${k}.py`,
+                                  rest: k % 3 ? null : "TK-D007 · touching Tracekit's own files" };
+              for (let n = 0; n < (k === 43 ? 30 : k % 4 + 1); n++) evs.push(ev(evs.length + 1, "p" + k, k % 3 ? "read" : "blocked"));
+            }
+            HZ.d = { ev: evs, dirs: [], agents: [["coder", 0]], cwd: "", places };
+            Object.assign(HZ, { t: evs.length, col: { coder: "#d98bff" }, follow: null, pick: null });
+            const desk = draw(1440);
+            HZ.pick = "p7"; const picked = draw(1440);
+            process.stdout.write(JSON.stringify([desk, picked.labels]));"""))
+        desk, picked = out
+        self.assertEqual(desk["over"], 0)                          # no label over another
+        self.assertTrue(5 < len(desk["labels"]) < 120, desk["labels"])
+        self.assertEqual(desk["labels"][0], "…/tracekit/module_43.py")   # the busiest first, its path's last parts
+        self.assertTrue(all(lb.startswith("…/tracekit/module_") for lb in desk["labels"]), desk["labels"])
+        self.assertEqual(picked[0], "…/tracekit/module_7.py")      # a clicked place gets its callout
+        hover = PAGE[PAGE.index('$("hzcv").addEventListener("mousemove"'):]
+        self.assertIn("e.target.title = k ? HZ.d.places[k]?.label", hover.split("\n")[0])
+
     def test_following_an_agent_numbers_its_newest_moves_and_never_one_over_another(self):
         """Following coder piled about 100 numbered squares into one block in the project."""
         needs_node(self)
-        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], self.HZ_STAGE + """
             const places = { a: { kind: "project", label: "src/a.py", r: .24, th: hzRad(30), rest: null },
                              b: { kind: "project", label: "src/b.py", r: .39, th: hzRad(60), rest: null } };
             HZ.d = { ev: Array.from({ length: 50 }, (_, n) => ev(n + 1, n % 2 ? "b" : "a", "read")), dirs: [], agents: [["coder", 0]], cwd: "", places };

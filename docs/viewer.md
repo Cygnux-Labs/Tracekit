@@ -95,7 +95,7 @@ says how many; each run's latest verdict stays in the run list, for up to 10,000
 Under each run: calls, **blocked** (red: the policy
 denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
 call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded
-under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `NOT ANSWERED YET`) in STATUS, `SESS` the run's start and
+under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `TO ANSWER`) in STATUS, `SESS` the run's start and
 end. A row marked `ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `FINDING`s
 of its analysis have no seq and no hash, and replay skips them; a row marked `WHY` comes from a why log. A findings
 run's signed findings (`tracekit analyze --v2`) are `FINDING` rows of that run: each says who wrote it (the identity the
