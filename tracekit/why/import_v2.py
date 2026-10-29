@@ -67,22 +67,20 @@ def store_records(data_dir: str, run: Optional[str] = None) -> Dict[str, List[Di
 
 
 def bundle_records(path: str, trust: str, memo=None):
-    """(run_id -> records, report, exit code) of a v2 bundle; no records unless it verifies against `trust`. The file
-    is read once, so the records are the ones verified, and they are parsed as the verifier parses them. `memo`:
-    verify.v2's (tracekit view's watcher keeps one: records it checked are not checked for signature and schema
-    again)."""
-    from ..bundle_v2 import run_files
+    """(run_id -> records, report, exit code) of a v2 bundle (its path, or {name: bytes} of its files from
+    bundle_v2.bundle); no records unless it verifies against `trust`. The file is read once, so the records are the
+    ones verified, as the verifier parsed them. `memo`: verify.v2's (tracekit view's watcher keeps one, a v2.Memo:
+    records it checked are not checked for signature and schema again, nor the records of a run it checked before
+    parsed again)."""
     from ..verify import v2
-    with open(path, "rb") as f:
-        mine = io.BytesIO(f.read())
-    rep, code = v2.verify(mine, trust, memo=memo)
+    if not isinstance(path, dict):
+        with open(path, "rb") as f:
+            path = io.BytesIO(f.read())
+    runs = {}
+    rep, code = v2.verify(path, trust, memo=memo, runs=runs)
     if code:
         return {}, rep, code
-    out, files = {}, v2.read_zip(mine)
-    for parts in run_files(files).values():
-        recs = [r for n in parts for r in v2._jsonl(files[n])]
-        out[recs[0]["event"]["run_id"]] = recs
-    return out, rep, code
+    return {recs[0]["event"]["run_id"]: recs for recs in runs.values()}, rep, code
 
 
 # --------------------------------------------------------------------------- records

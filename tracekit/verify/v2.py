@@ -401,12 +401,29 @@ def _version(v):
     return tuple(int(x) for x in re.findall(r"[0-9]+", v)[:3])
 
 
-def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), revocations=(), memo=None):
+class Memo(set):
+    """verify()'s memo for a caller that checks runs as they grow (tracekit view): the record_digests whose signature
+    and schema held, and `runs`, of the RUNS_KEPT run files checked last whose records all held and none is a run.final:
+    {name: (length, SHA-256 of those bytes, their records' count, SHA-256 of what the records' checks read besides
+    them: the key records, trust and revocations)}. A run file that starts with those bytes, under the same keys, has
+    only its later records checked (and parsed strictly: the ones before are read with json.loads, which reads bytes
+    that loads_strict took the same way), their links to the ones before included; every check of the run as a whole
+    runs again."""
+    RUNS_KEPT = 64
+
+    def __init__(self):
+        super().__init__()
+        self.runs = collections.OrderedDict()
+
+
+def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), revocations=(), memo=None, runs=None):
     """Verify a v2 bundle against the pinned trust config at `trust_path`, with `v1_ledger` (a v1 ledger.jsonl) and
     `v1_key` (its signer.pub) the format bridge into it, with `monitor_reports` (paths) the log's monitoring and with
-    `revocations` (paths) the record-key revocations known. `memo`: a set the caller keeps across calls (tracekit
-    view, as a run grows): the record_digest of each record whose signature and schema held, so the same record is not
-    checked for them again; everything else is. Never raises on a malformed bundle."""
+    `revocations` (paths) the record-key revocations known. `path`: the bundle's path or binary file, or {name: bytes}
+    of its files (bundle_v2.bundle: not zipped). `memo`: a set the caller keeps across calls (tracekit view, as a run
+    grows): the record_digest of each record whose signature and schema held, so the same record is not checked for them
+    again, and as a Memo the runs it checked too; everything else is. `runs`: a dict that gets {run file: its records as
+    parsed}. Never raises on a malformed bundle."""
     rep = Report()
     rep.integrity, rep.assurance = "UNUSABLE BUNDLE", "none"
     try:
@@ -417,7 +434,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
                   f"not valid JSON ({e})" if isinstance(e, StrictJSONError) else str(e))
         return rep, EXIT_BAD
     try:
-        files = read_zip(path)
+        files = dict(path) if isinstance(path, dict) else read_zip(path)
         if "manifest.json" not in files:
             raise Damaged("no manifest.json")
         manifest = loads_strict(files.pop("manifest.json"))
@@ -437,7 +454,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
             str(e) if isinstance(e, Unusable) else f"{type(e).__name__}: {e}"))
         return rep, EXIT_BAD
     try:
-        _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations, memo)
+        _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations, memo, runs)
     except Exception as e:
         rep.check("bundle structure", False, "", [f"malformed and could not be fully checked: {type(e).__name__}: {e}"])
     if rep.failures:
@@ -521,7 +538,7 @@ def _found(problems, passed, scope):
     return f"{len(problems)} problem(s) in {scope}" if problems else passed
 
 
-def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations, memo=None):
+def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations, memo=None, out=None):
     listed, hashes = manifest.get("files"), {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
     bad = sorted(n for n in set(listed) | set(hashes) if n not in listed or n not in hashes or listed[n] != hashes[n]) \
         if isinstance(listed, dict) else []
@@ -638,8 +655,23 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     names = run_files(files)
     run_set = "registry/run-set.json" in files
     runs, problems, chain, outside, layout, seen = {}, [], [], [], [], set()
+    reads = [files["keys/records.jsonl"].decode("utf-8"), trust, sorted(revocations.items())]   # besides the records
+    keyed = isinstance(memo, Memo) and hashlib.sha256(json.dumps(reads, default=str).encode()).digest()
     for name, parts in names.items():
-        pieces = [_jsonl(files[n]) for n in parts]
+        # with a Memo, the run's bytes: its parts' in order, each a JSON lines file of whole records
+        marks, data = (len(problems), len(chain), len(revoked_records)), keyed and b"".join(files[n] for n in parts)
+        kept = keyed and memo.runs.get(name)
+        start = kept[2] if kept and kept[3] == keyed and len(data) >= kept[0] and \
+            hashlib.sha256(memoryview(data)[:kept[0]]).digest() == kept[1] and \
+            all(not files[n] or files[n].endswith(b"\n") for n in parts) else 0
+        if start:   # the records it kept, read with json.loads (as loads_strict read them), then the rest as ever
+            read = [json.loads(line) for line in data[:kept[0]].split(b"\n")[:-1]] + _jsonl(data[kept[0]:])
+            pieces, at = [], 0
+            for n in parts:   # each part's records, as reading it alone gives them
+                pieces.append(read[at:at + files[n].count(b"\n")])
+                at += len(pieces[-1])
+        else:
+            pieces = [_jsonl(files[n]) for n in parts]
         records = runs[name] = [r for p in pieces for r in p]
         layout += _parted(name, parts, pieces)
         if not records:
@@ -650,7 +682,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
             if key in seen:
                 chain.append(f"run {key[1][:200]!r} of tenant {key[0][:64]!r} again in {name}")
             seen.add(key)
-        for i, r in enumerate(records):
+        for i in range(start, len(records)):   # those a Memo kept were checked as they are
+            r = records[i]
             check_record(r, keys_at(r["event"]["seq"]), problems)
             e = r["event"]
             if (e.get("run_seq") != i or e.get("run_prev_hash") != (records[i - 1]["hash"] if i else ZERO_HASH)
@@ -663,6 +696,15 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
             outside.append(f"run {str(head.get('run_id'))[:200]!r}" + (
                 f": the last record of {parts[-1]} is not in the checkpointed tree, so a later part may be missing"
                 if parts != [name] and included(records[0]) else ""))
+        if keyed:   # a run that can grow, all of whose records held: kept for its next check
+            memo.runs.pop(name, None)
+            if marks == (len(problems), len(chain), len(revoked_records)) \
+                    and records[-1]["event"].get("type") != "run.final":
+                memo.runs[name] = (len(data), hashlib.sha256(data).digest(), len(records), keyed)
+                while len(memo.runs) > memo.RUNS_KEPT:
+                    memo.runs.popitem(last=False)
+    if out is not None:
+        out.update(runs)
     if len(runs) != 1 and not run_set and not _about_one(runs):
         raise ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set")
     retired, proven_to, reg_cosigs = [], -1, []

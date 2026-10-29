@@ -172,6 +172,56 @@ class Reader(unittest.TestCase):
             self.store.checkpoint_put(5, checkpoint.body("example.org/log", 5, self.store.tree.root()))
         self.assertEqual(calls, [("sync", self.store.log.fd), ("note", os.path.join(self.root, file_storage.NOTE))])
 
+    def test_update_reads_only_what_was_appended_and_holds_what_a_new_reader_would(self):
+        """tracekit view opened a new reader at every store change: 2.5 s and 1.2 GB for 400k records, every second
+        while an agent wrote. update() reads the bytes appended since, and the reader then holds what a new one does,
+        the key records (key_records, so an export reads no other record for them) and registry leaves included."""
+        chain = Chain()
+        chain.batch(5)   # the records setUp appended
+        r = FileReader(self.root)
+        self.store.append_batch([chain.next(type_="signer.epoch")] + chain.batch(3, runs=("run-2",)))
+        self.store.registry_append("acme", b"leaf")
+        with mock.patch.object(FileReader, "_index", autospec=True, side_effect=FileReader._index) as parsed:
+            self.assertFalse(r.update())   # appended to: not written in place
+        self.assertEqual([c.args[1]["event"]["seq"] for c in parsed.call_args_list], [5, 6, 7, 8])
+        fresh = FileReader(self.root)
+        self.assertEqual((r.tree.size, r.tree.root(), r.runs, r.key_seqs), (9, fresh.tree.root(), fresh.runs, [5]))
+        self.assertEqual(r.key_records(9), [next(fresh.iter_range(5, 6))])
+        self.assertEqual(r.key_records(5), [])
+        self.assertEqual(r.registry_merkle("acme").root(), fresh.registry_merkle("acme").root())
+        self.assertTrue(r.unchanged())
+
+    def test_an_edit_or_a_replaced_file_is_told_never_read_as_new_records(self):
+        """A reader kept across store changes must not hold records the file no longer has: a file replaced, cut back
+        or with its last line rewritten is StorageCorrupt (open a new reader), and an edit in place that keeps every
+        line where it was is unchanged() False, written to without growing (update() True) when nothing was appended."""
+        path = os.path.join(self.root, "records.jsonl")
+        with open(path, "rb") as f:
+            orig = f.read()
+        for label, data in (("cut back", orig[:orig.rindex(b"\n", 0, -1) + 1]),
+                            ("its last line rewritten", orig[:-30] + b"x" * 29 + b"\n")):
+            with self.subTest(label):
+                r = FileReader(self.root)
+                with open(path, "wb") as f:
+                    f.write(data)
+                with self.assertRaises(file_storage.StorageCorrupt):
+                    r.update()
+                with open(path, "wb") as f:
+                    f.write(orig)
+        r = FileReader(self.root)
+        os.replace(path, path + ".old")
+        with open(path, "wb") as f:   # the same bytes in another file
+            f.write(orig)
+        with self.assertRaises(file_storage.StorageCorrupt):
+            r.update()
+        r = FileReader(self.root)
+        st = os.stat(path)
+        with open(path, "r+b") as f:   # a record's tool name, same length, in a line before the last
+            f.write(orig.replace(b'"name":"Bash"', b'"name":"Bosh"', 1))
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1000))
+        self.assertTrue(r.update())
+        self.assertFalse(r.unchanged())
+
     @unittest.skipUnless(os.name == "posix", "modes and owners are POSIX")
     def test_refuses_a_file_others_may_write(self):
         os.chmod(os.path.join(self.root, "records.jsonl"), 0o666)

@@ -20,13 +20,13 @@ from unittest import mock
 
 from factories import damage_crc, rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
-from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export, needs, run_name
+from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, bundle, export, needs, run_name
 from tracekit.format import checkpoint
 from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
 from tracekit.format.records import make_record
 from tracekit.storage.base import ZERO_HASH
-from tracekit.storage.file import FileStorage
+from tracekit.storage.file import FileReader, FileStorage
 from tracekit.verify import v2
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -616,6 +616,59 @@ class TestVerifyV2(Case):
                 self.assertEqual((code, rep.integrity), (1, "FAILED"))
                 self.assertIn("signatures", rep.failures)
 
+    def test_a_growing_run_is_read_and_checked_from_where_it_was_and_checked_as_a_whole_again(self):
+        """tracekit view exported and checked a growing run whole at each checkpoint: 6 s for 48k records, a core
+        pinned while an agent worked. bundle() with the `kept` of its last bundle reads only the records after it,
+        into the same bytes; verify() with a Memo parses and checks only the records after the run file it checked
+        before (byte for byte, under the same keys), and every check of the run as a whole runs again: the report is
+        a fresh verify's. Records before them that changed, other key records, a problem, or a final run: all of it."""
+        log, _ = self.honest(close=False)
+        trust, memo, seen = self.trust, v2.Memo(), []
+        files, info = bundle(log.store, "acme", "run-a", log.note(), kept={})
+        self.assertEqual(v2.verify(files, trust, memo=memo)[1], 0)
+
+        def checked(files):   # the seqs whose records verify() checked, its report and a fresh verify's
+            with mock.patch.object(v2, "verify_record", wraps=v2.verify_record) as calls:
+                rep, code = v2.verify(files, trust, memo=memo)
+            seen.append([c.args[0]["event"]["seq"] for c in calls.call_args_list])
+            fresh = v2.verify(files, trust)
+            self.assertEqual((rep.checks, rep.integrity, code), (fresh[0].checks, fresh[0].integrity, fresh[1]))
+            return rep
+        added = [log.call()["event"]["seq"], log.call("run-b"), log.call()["event"]["seq"]][::2]
+        note = log.note()
+        files, info = bundle(log.store, "acme", "run-a", note, kept=info["kept"])
+        self.assertEqual(files, bundle(log.store, "acme", "run-a", note)[0])   # what reading it all builds
+        self.assertEqual(checked(files).integrity, "VERIFIED TO HEAD 5 (open)")
+        self.assertEqual(seen[-1], [0] + added)   # the key record, then the two it added
+        name = run_name("acme", "run-a")
+
+        def edited(files, old, new):   # an edit before the records it added, the manifest made to match
+            out = dict(files, **{name: files[name].replace(old, new, 1)})
+            manifest = json.loads(out["manifest.json"])
+            manifest["files"][name] = hashlib.sha256(out[name]).hexdigest()
+            return dict(out, **{"manifest.json": json.dumps(manifest).encode()})
+        self.assertIn("signatures", checked(edited(files, b'"name":"Bash"', b'"name":"Bosh"')).failures)
+        self.assertEqual(len(set(seen[-1])), 1 + 6)   # all of it (the edited one twice: against a retired key too)
+        checked(files)   # its bytes as they were, after it failed: all of it again, then from there
+        checked(files)
+        self.assertEqual((len(seen[-2]), seen[-1]), (1 + 6, [0]))
+        log.epoch(KEY2)   # another key record: what the run's records are checked against changed
+        log.final()
+        files, info = bundle(log.store, "acme", "run-a", log.note(), kept=info["kept"])
+        self.assertEqual(checked(files).integrity, "VERIFIED")
+        self.assertEqual(len(seen[-1]), 2 + 7)   # both key records and every record of the run
+        self.assertNotIn(name, memo.runs)   # final: never checked again as it grows
+
+    def test_an_export_from_a_reader_reads_no_record_but_the_key_records_for_them(self):
+        """Each export read every record of the log for the key records (1.75 s of 3.5 s for a run of a 400k-record
+        store); a FileReader indexes them, and the bundle is the same."""
+        log, out = self.honest()
+        reader = FileReader(log.store.root)
+        mine = os.path.join(self.d, "reader.tkb")
+        with mock.patch.object(FileReader, "iter_range", side_effect=AssertionError("read every record")):
+            export(reader, "acme", "run-a", log.note(), mine)
+        self.assertEqual(v2.read_zip(mine), v2.read_zip(out))
+
     def test_rebuilt_chain_with_the_real_key_fails(self):
         _, out = self.honest()
         forged = self.log("forged")  # same record key, a different history
@@ -877,6 +930,28 @@ class TestRunParts(Case):
             rep, code = self.verify(out)
         self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
         self.assertEqual(needs([], ["run parts"]), ("1.4.0", "1.4.0"))
+
+    def test_a_growing_run_in_parts_is_checked_from_where_it_was_too(self):
+        """A run past the file limit is bundled in parts (the dev signer's own run passed 64 MiB): verify() with a Memo
+        checked it whole at every checkpoint. Its parts read as one file: only the records after the bytes it checked
+        before are checked, whichever part they are in, and the report is a fresh verify's."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        for _ in range(12):
+            log.call()
+        memo = v2.Memo()
+        with mock.patch.object(v2, "MAX_ENTRY", 4096):
+            files, info = bundle(log.store, "acme", "run-a", log.note(), kept={})
+            self.assertEqual(v2.verify(files, self.trust, memo=memo)[1], 0)
+            added = [log.call()["event"]["seq"] for _ in range(8)]
+            files, info = bundle(log.store, "acme", "run-a", log.note(), kept=info["kept"])
+            self.assertGreater(len([n for n in files if ".part-" in n]), 2)
+            with mock.patch.object(v2, "verify_record", wraps=v2.verify_record) as calls:
+                rep, code = v2.verify(files, self.trust, memo=memo)
+            fresh = v2.verify(files, self.trust)
+        self.assertEqual((rep.checks, rep.integrity, code), (fresh[0].checks, fresh[0].integrity, fresh[1]))
+        self.assertEqual([c.args[0]["event"]["seq"] for c in calls.call_args_list], [0] + added)
 
     def test_a_run_that_fits_is_one_file_as_before(self):
         log, out = self.parted(cap=64 << 20)
