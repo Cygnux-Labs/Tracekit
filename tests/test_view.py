@@ -27,6 +27,7 @@ from factories import wait_for
 from test_observe_render import XSS, script_of, unescaped
 from test_sensor import SENSOR
 from tracekit import cli, findings_v2, observe, view
+from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash as canon_hash
 from tracekit.observe import _session
 from tracekit.policy2 import compile as policy_compile
@@ -1147,8 +1148,9 @@ class View(unittest.TestCase):
                 return [(r["event"], r.get("tape")) for r in feed.records if r["session_id"] == "r1"]
         with mock.patch.object(view, "reader", return_value=fake), \
                 mock.patch.object(view, "check", side_effect=verified) as check, \
+                mock.patch.object(view.checkpoint, "open_note"), \
                 mock.patch.object(view, "BACKOFF", 0):   # each refresh() checks the grown run (BACKOFF: its own test)
-            fake.checkpoint_latest.return_value = (3, "note at 3")
+            fake.checkpoint_latest.return_value = (3, "note at 3")   # each note checks, as `verified` says
             feed = store_feed(self, {"data_dir": self.d})
             self.assertTrue(wait_for(lambda: rows(), 5))
             self.assertEqual(rows(), [("SessionStart", None), ("PreToolUse", None), ("PreToolUse", None),
@@ -1352,6 +1354,35 @@ class View(unittest.TestCase):
             feed = store_feed(self, {"data_dir": self.d})
             self.assertTrue(wait_for(lambda: self.failed(feed, x), 15), feed.verify())
         self.assertEqual(flips, [x])
+
+    @pytest.mark.unverified_bundles
+    def test_a_checkpoint_note_edited_in_place_fails_runs_that_stopped_growing(self):
+        """A run was checked again only when it grew or its records' bytes changed: one letter of the checkpoint note's
+        signature changed (the same size) never failed a run that had stopped growing, while a fresh viewer failed it.
+        A note that changes is checked as each run's check reads it; a witness's cosignature merged in checks as
+        before, and no run is checked again for it."""
+        x = self.finished_run()
+        self.service.close()
+        feed = store_feed(self, {"data_dir": self.d})
+        self.report(feed, x)
+        self.assertTrue(wait_for(lambda: any(k[1] == view.SIGNER_RUN[1] and s.get("count")
+                                             for k, s in list(feed.runs.items())), 15))   # every run checked once
+        path = os.path.join(self.d, "store", NOTE)
+        with open(path, encoding="utf-8") as f:
+            note = f.read()
+        checks, real = [], view.check
+        with mock.patch.object(view, "check", side_effect=lambda r, t, rid, *a, **k: checks.append(rid)
+                               or real(r, t, rid, *a, **k)):
+            cosigned = note + checkpoint.cosign(note.partition("\n\n")[0] + "\n", "witness.example.org/w1", b"w" * 32,
+                                                1700000000)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(cosigned)
+            self.assertTrue(wait_for(lambda: feed.signed == cosigned, 10))
+            self.assertEqual((checks, self.failed(feed, x)), ([], False))
+            i = cosigned.index("\n\n") + 2 + cosigned[cosigned.index("\n\n") + 2:].index(" ") + 20   # its signature
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(cosigned[:i] + ("A" if cosigned[i] != "A" else "B") + cosigned[i + 1:])
+            self.assertTrue(wait_for(lambda: self.failed(feed, x), 15), feed.verify())
 
     @pytest.mark.unverified_bundles
     def test_a_run_that_fails_when_its_rows_are_read_reads_failed_in_the_run_list(self):

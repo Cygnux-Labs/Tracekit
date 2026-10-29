@@ -103,7 +103,9 @@ run turns `FAILED`. The store it then reads anew is compared, piece by piece, wi
 meanwhile anywhere in it is caught as well. A check verifies exactly the bytes the viewer read and hashed: it keeps 8
 bytes of a keyed hash of each record it read (4 MB for 500,000 records), and a record that reads otherwise when a check
 reads it again (the honest bytes put back only while the check reads them) is an edit too, caught at that check: the
-store is read anew at once and the run checked again. So an edit that stays in the store is caught within the minute
+store is read anew at once and the run checked again. A checkpoint note that changes is checked as each run's check
+reads it: one that no longer checks (an edit of its signature) or names another root has every run checked again; a
+witness's cosignature merged into it checks no run again. So an edit that stays in the store is caught within the minute
 however it is timed; bytes that are the honest ones each time the viewer reads them are not, by this viewer or any
 reader. A run that fails when `/api/rows` reads its records from the store reads `PENDING` (re-checking) at once,
 until the viewer checks it again. A run of a Postgres store, and a run that failed or could not be checked, is checked again five

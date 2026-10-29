@@ -929,7 +929,7 @@ class StoreFeed:
         # path}), which the snapshot gives the page for a run's export and trust commands
         self.cfg, self.pg, self.signer = cfg, bool(cfg.get("storage")), signer
         self.store = store_name(cfg)
-        vkeys, self.note = store_trust(cfg, log_vkey)
+        self.vkeys, self.note = store_trust(cfg, log_vkey)
         self.records, self.base, self.lock = [], 0, threading.Condition()
         # past it the oldest records leave the live view (base counts them), as observe.Feed's
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
@@ -957,6 +957,7 @@ class StoreFeed:
         # verification stopped
         self.stopped = None
         self.noted = 0   # the most records a checkpoint note covered: a signed note never goes back
+        self.signed = None   # the latest checkpoint note read, as its text: one that changes is checked (refresh)
         self.listed = set()   # the store's client runs at the latest refresh (checking)
         self.on_run, self.content, self.analyze = on_run, content, analyze
         # (tenant, run_id) -> the newest records of a run to mirror (on_run), off the watch thread: the tape never
@@ -967,7 +968,7 @@ class StoreFeed:
             self.threads.append(threading.Thread(target=self._mirrors, daemon=True))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
-        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
+        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), self.vkeys)
         self.threads.append(threading.Thread(target=self._watch, daemon=True))
         for t in self.threads:
             t.start()
@@ -1030,7 +1031,19 @@ class StoreFeed:
             if (note[0] if note else 0) < self.noted:   # every run would go unchecked (covered 0) or partly checked
                 raise StorageCorrupt(f"its checkpoint note went back from {self.noted} to {note[0] if note else 0} "
                                      "records: the store was edited or replaced")
-            self.noted = note[0] if note else 0
+            # a note that changed (a new one, or a witness's cosignature merged in) is checked as each run's check reads
+            # it: one that no longer checks, or names another root at the same size, fails the runs that did not grow
+            if note and self.signed and note[1] != self.signed:
+                try:
+                    checkpoint.open_note(note[1], self.vkeys)
+                    same = note[0] > self.noted or note[1].partition("\n\n")[0] == self.signed.partition("\n\n")[0]
+                except checkpoint.NoteError:
+                    same = False
+                if not same:
+                    print("tracekit view: the checkpoint note was rewritten and no longer checks: every run is checked "
+                          "again", file=sys.stderr, flush=True)
+                    self._again(None)
+            self.noted, self.signed = (note[0], note[1]) if note else (0, None)
             with self.lock:
                 self.listed = {k for k in r.runs if k[1] != SIGNER_RUN[1]}
             def order(kv):   # what runs added, the one checked longest ago first; then runs waiting for a re-check, in
