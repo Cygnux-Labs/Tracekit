@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -210,6 +211,30 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", out)
         self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust))
         self.assertTrue(self.held())   # the signer kept running throughout
+
+    def test_export_says_what_it_wrote_and_the_commands_it_gives_verify_it(self):
+        """`tracekit export --v2` printed bundle_v2.export's summary as raw JSON: it says what it wrote and where, then
+        the commands that verify the bundle, which run as printed. --json keeps the JSON for scripts."""
+        c = Client()
+        self.addCleanup(c.close)
+        with c.run("e2e") as run:
+            run.decide("c1", "Bash", '{"command": "ls"}')
+            run.complete("c1")
+        store = os.path.join(service.dev_data_dir(), "store")
+        self.assertTrue(wait_for(lambda: list(FileReader(store).iter_run("default", run.run_id))[-1]["event"]["type"]
+                                 == "run.final", 20), "no run.final after the grace window")
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.dir)
+        said = self.cli("export", "--v2", "--run", run.run_id, "-o", "run.tkb")
+        self.assertRegex(said, rf"^wrote run\.tkb: run {run.run_id}, \d+ records; a verifier needs tracekit "
+                               r"\d+\.\d+\.\d+ or newer\nnext, pin the signer's log key and verify the bundle against "
+                               r"it:\n  tracekit signer trust -o trust\.json\n  tracekit verify run\.tkb --trust "
+                               r"trust\.json\n$")
+        trust, verify = [shlex.split(x)[1:] for x in said.splitlines() if x.startswith("  tracekit ")]
+        self.cli(*trust)
+        self.assertIn("Integrity: VERIFIED.", self.cli(*verify))
+        info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "-o", "again.tkb", "--json"))
+        self.assertEqual((info["bundle"], info["verifier_min_version"] in said), ("again.tkb", True))
 
     def test_the_dev_user_signs_findings_about_its_runs_and_they_read_self_asserted(self):
         """The dev signer lists its user in analyzers (#309): a findings run about the user's own run signs a finding,

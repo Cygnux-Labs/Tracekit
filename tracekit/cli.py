@@ -286,6 +286,8 @@ def main(argv=None):
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
     p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's findings runs "
                    "(`tracekit analyze --v2`, `tracekit why`) and replay runs, which the verifier checks")
+    p.add_argument("--json", action="store_true", help="print what was written as one JSON object, for scripts (with "
+                   "--v2: the verifier version the bundle needs, verifier_min_version, and the records that raised it)")
 
     p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
                                     "and verify it")
@@ -669,9 +671,15 @@ def _run(a):
     if a.cmd == "export":
         from . import bundle
         from .otel import parse_headers
-        info = bundle.export(_signer_home(a), a.out, run=a.run, last=not (a.run or a.since), since=a.since, otel=a.otel,
+        home = _signer_home(a)
+        info = bundle.export(home, a.out, run=a.run, last=not (a.run or a.since), since=a.since, otel=a.otel,
                              otel_endpoint=a.otel_endpoint, otel_headers=parse_headers(a.otel_header))
-        print(json.dumps(info, indent=2))
+        print(json.dumps(info, indent=2) if a.json else
+              f"wrote {info['path']}: {'run' if len(info['runs']) == 1 else 'runs'} {', '.join(info['runs'])}, "
+              f"{info['records']} records, {info['checkpoints']} checkpoint(s)"
+              + (f"; spans sent to {a.otel_endpoint}: {info['otel_push']['status']}" if "otel_push" in info else "")
+              + f"\nnext, verify it against the signer's key:\n  tracekit verify {_quote(info['path'])} --key "
+              + _quote(os.path.join(home, "ledger", "signer.pub")))
         return 0
     if a.cmd == "verify":
         from .verify import is_v2
@@ -779,8 +787,8 @@ def _signer_extra():
 
 def _export_v2(a, show=print):
     """`tracekit export --v2`: read the store without its lock, with the newest checkpoint note. When none covers the
-    run's last record yet, nudge the running signer and wait up to NUDGE_WAIT_S for one. `show` gets the export's
-    summary (JSON)."""
+    run's last record yet, nudge the running signer and wait up to NUDGE_WAIT_S for one. `show` gets what it says
+    it wrote (_exported)."""
     import time
 
     from .bundle_v2 import about as about_run
@@ -816,8 +824,10 @@ def _export_v2(a, show=print):
             reg = reader.checkpoint_latest(registry_tree(tenant))
             if note is None or reg is None:
                 raise ValueError(f"no registry checkpoint of tenant {tenant!r} in the store yet")
-            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt,
-                                    policy_dir=os.path.join(cfg["data_dir"], "policies")), indent=2))
+            info = export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt,
+                          policy_dir=os.path.join(cfg["data_dir"], "policies"))
+            show(_exported(a, info, f"the run-set of tenant {tenant}: {info['runs']} runs, "
+                                    f"{info['registry_leaves']} registry leaves"))
             return 0
         run = reader.runs.get((tenant, a.run))
         if run is None:
@@ -864,8 +874,20 @@ def _export_v2(a, show=print):
     finally:
         if reader:
             reader.close()
-    show(json.dumps(info, indent=2))
+    show(_exported(a, info, f"run {a.run}" + (f" and {len(about)} findings or replay run(s) about it" if about else "")))
     return 0
+
+
+def _exported(a, info, what):
+    """What `tracekit export --v2` says it wrote (info: bundle_v2.export's summary): the bundle, `what` it holds and
+    the commands that verify it; with --json, info itself, for scripts."""
+    if a.json:
+        return json.dumps(info, indent=2)
+    where, out = f" --config {_quote(a.config)}" if a.config else "", _quote(info["bundle"])
+    return (f"wrote {info['bundle']}: {what}, {info['records']} records; a verifier needs tracekit "
+            f"{info['verifier_min_version']} or newer\n" + (f"spans: {info['otel']}\n" if info.get("otel") else "")
+            + "next, pin the signer's log key and verify the bundle against it:\n"
+              f"  tracekit signer trust{where} -o trust.json\n  tracekit verify {out} --trust trust.json")
 
 
 def _quote(path):
@@ -931,7 +953,7 @@ def _last(a):
     (tenant, run_id), _, agent = pick[0]
     out = os.path.abspath(a.out or f"{run_id}.tkb")
     ns = argparse.Namespace(run=run_id, run_set=False, dev=True, config=None, tenant=tenant, out=out, otel=False,
-                            otel_endpoint=None, with_findings=False)
+                            otel_endpoint=None, with_findings=False, json=False)
     if _export_v2(ns, show=lambda s: None):
         return 1
     try:

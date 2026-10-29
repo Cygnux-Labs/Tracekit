@@ -207,7 +207,7 @@ class ExportWithoutSigner(unittest.TestCase):
             return r
         out = os.path.join(self.dir, "x.tkb")
         with mock.patch.object(file_storage, "FileReader", reader):
-            code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out)
+            code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out, "--json")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(stdout)["tree_size"], 5)
         # the summary says what verifier the bundle needs, which records made it need that one, and what verifier

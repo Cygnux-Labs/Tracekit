@@ -556,9 +556,9 @@ reports it `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
 critical entries a bundled record uses, else `1.0.0`, and at least 1.4.0 when a record has an `ext` field or is of type
 `ext`. `verifier_version` (from 1.4.0; advisory, like the whole manifest) is the newest version whose entries, ext names
 among them, the records use: the oldest verifier that checks everything in the bundle, not the version that exported it.
-`tracekit export --v2` prints both, `verifier_version` as `verifier_min_version_full`, and which records raised
-`verifier_min_version` (`raised_by`). A row is frozen once its version's first release candidate
-ships (`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists what it added:
+`tracekit export --v2` says the first; with `--json` it prints both, `verifier_version` as
+`verifier_min_version_full`, and which records raised `verifier_min_version` (`raised_by`). A row is frozen once its
+version's first release candidate ships (`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists what it added:
 record types, data fields per record type, and enum values per (record type, field), gap and tamper `kind`s among
 them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layout`; `raised_by` names them); and from
 1.4.0 the ext names it interprets, which are not:
