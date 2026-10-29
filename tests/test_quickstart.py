@@ -112,16 +112,17 @@ class Quickstart(unittest.TestCase):
         blocked = self.hook("PreToolUse", "c2", wait=False, tool_name="Bash", tool_input={"command": "pkill tracekitd"})
         self.assertEqual(blocked.wait(120), 2)
         self.assertIn("TK-D007", blocked.stderr.read())
+        # a held call is blocked at once with the command that approves it; once a person approves, the agent's retry
+        # of the same call runs
         held = self.hook("PreToolUse", "c3", wait=False, tool_name="Bash", tool_input=HELD)
-        deadline, pending = time.monotonic() + 60, []
-        while not pending and time.monotonic() < deadline:
-            pending = [line.split() for line in self.sh(self.tracekit, "approvals", "list").stdout.splitlines()
-                       if " requested " in line]
-            time.sleep(0.2)
-        self.assertTrue(pending, "the hook asked for no approval")
-        self.approve_when_asked(pending[0][0])
-        self.assertEqual(held.wait(120), 0, held.stderr.read())
-        self.assertEqual(self.hook("PostToolUse", "c3", tool_name="Bash", tool_input=HELD, tool_response={}), 0)
+        self.assertEqual(held.wait(120), 2)
+        said = held.stderr.read()
+        [aid] = [line.split()[0] for line in self.sh(self.tracekit, "approvals", "list").stdout.splitlines()
+                 if " requested " in line]
+        self.assertIn(f"tracekit approvals approve {aid}", said)
+        self.approve_when_asked(aid)
+        self.assertEqual(self.hook("PreToolUse", "c4", tool_name="Bash", tool_input=HELD), 0)
+        self.assertEqual(self.hook("PostToolUse", "c4", tool_name="Bash", tool_input=HELD, tool_response={}), 0)
         self.assertEqual(self.hook("SessionEnd", reason="exit"), 0)
         self.last()
 
