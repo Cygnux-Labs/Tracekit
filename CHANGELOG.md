@@ -2,12 +2,13 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 1.5.1 (2026-10-29) — held calls you can answer, hooks the agent can't remove, a weekly report
+## 1.5.1 (2026-10-29) — held calls you can answer, holds on moving money, hooks the agent can't remove, a weekly report
 
 A patch release from a week of running Tracekit on its own maintainer's laptop and a hands-on QA pass. That week, the
 coding-agent hooks held 208 calls; each waited about 8 minutes for an answer nobody could see and was then blocked, and
 none was approved. A held call now returns at once with the command that approves it, and once a person approves,
-the agent's retry of the same call runs. Claude Code's v2 hooks can go in its admin-managed settings, where the
+the agent's retry of the same call runs. Calls that move money through Stripe, PayPal or Square are held for a person,
+whatever API key the agent holds. Claude Code's v2 hooks can go in its admin-managed settings, where the
 agent's user can't remove or turn them off;
 `tracekit report` summarizes a week of a signer's store on one page; and the viewer, the browser verifier, the CLI's
 messages and the Claude Code transcript reader are fixed where a person using them ran into problems. Bundles are
@@ -18,9 +19,11 @@ unchanged, and the signer protocol stays 20.
   (`tracekit approvals approve <id>`, the viewer's APPROVALS page or Slack), then ask the agent to try the same call
   again, with exactly the same arguments (a reworded Bash `description` is another call). Where a person answers during the wait (Slack approvals, an agent approver), set `TRACEKIT_APPROVAL_WAIT` to
   the seconds to wait (capped at 540; the hook also stops short of its own timeout) to keep the old behaviour.
-- **Policy packs.** Coding `2026.10-v2-40` (from `2026.10-v2-39`): `TK-A014` no longer holds WebSearch (Changed).
-  Server `2026.10-server-10` and strict `2026.10-strict-4`: a held call's remedy reads "Have a person approve the held
-  call" (it said "Wait for…", which a hook that blocks at once no longer does). No verdict changes.
+- **Policy packs.** Coding `2026.10-v2-41` (from `2026.10-v2-39`), server `2026.10-server-11` (from `-9`),
+  server-comms `2026.10-server-comms-4` (from `-3`) and strict `2026.10-strict-5` (from `-3`). New holds on calls that
+  move money (Added); `TK-A014` no longer holds WebSearch (Changed); a held call's remedy reads "Have a person approve
+  the held call" (it said "Wait for…", which a hook that blocks at once no longer does). No verdict changes on the E17
+  corpus.
 - **PCM's `Replay.check` takes `key=`** (experimental API, released the day before): the raw 32-byte Ed25519 public key
   that verified the message. `pcm.verify(replay=...)` passes it for you; a direct caller gets a `TypeError` until it
   passes one.
@@ -46,6 +49,17 @@ unchanged, and the signer protocol stays 20.
   FAILED, and the command exits 1). It reads the store as the viewer does, never starts a signer, prints arguments
   only from a running dev signer's content vault, and says it is an operator summary, not evidence
   ([viewer](docs/viewer.md#weekly-report)).
+- **Holds on moving money (`TK-A043` to `TK-A045`; server-comms `TK-M005`).** In the coding packs, these are held for a person:
+  - the Stripe CLI's refunds, payouts, transfers, charges, payment intents and invoice payments;
+  - `stripe post` to those endpoints;
+  - a curl, wget, HTTPie or xh POST to Stripe's, PayPal's or Square's money endpoints;
+  - Stripe's MCP tools that move money.
+
+  Listing, retrieving, `stripe listen`, `trigger` and help aren't held. The hold says what to check: the amount,
+  currency and payee, in the command or the file it sends. Stripe holds such calls itself only for agent-tagged API
+  keys; these hold them whatever the key. On the server packs, a refund or payment tool called without an amount (a
+  full refund) is held, over MCP too. What they don't see, such as SDK calls inside a script or other providers, is in
+  [coding agents](docs/coding-agents.md#calls-that-move-money) and [limits](docs/limits.md#policy).
 - **CI for the independent Go verifier**: `go vet`, `go test` and its differential against the golden corpus.
 
 ### Changed
