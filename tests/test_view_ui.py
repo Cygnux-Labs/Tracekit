@@ -1695,11 +1695,12 @@ class HorizonZoom(unittest.TestCase):
             while (rafs.length) rafs.shift()(5000); seen.push([rafs.length, HZ.comet]);
             cv.clientHeight = 590; hzDraw(); rafs.shift()(6000); seen.push(blurs);          // a little smaller: drawn, not painted
             cv.clientHeight = 300; hzDraw(); rafs.shift()(6000); seen.push([blurs, made]);   // half the size: painted again, same bitmaps
-            const b0 = blurs; HZ.view = "top"; hzDraw(); let n = 0; while (rafs.length && n < 99) { rafs.shift()(7000); n++; }  // the tilt eases, then stops
-            seen.push([n > 3 && n < 60, HZ.i, blurs - b0]);   // the hole painted once, when it settles: not each frame
+            const b0 = blurs, round = []; ctx.drawImage = (img, ...a) => { if (a.length === 4 && img === HZ.hole?.cv) round.push(a[2] === a[3]); };
+            HZ.view = "top"; hzDraw(); let n = 0; while (rafs.length && n < 99) { rafs.shift()(7000); n++; }  // the tilt eases, then stops
+            seen.push([n > 3 && n < 60, HZ.i, blurs - b0, round.length === n && round.every(Boolean)]);   // the hole painted once, when it settles; round all along
             process.stdout.write(JSON.stringify(seen));""")
         self.assertEqual(out[:6], [[0, 2, 2], [0, 2, 2], 1, [0, None], 2, [4, 2]])
-        self.assertEqual(out[6], [True, 1, 1])
+        self.assertEqual(out[6], [True, 1, 1, True])
 
     PLACE = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP",
              "hzDataWords", "hzHost", "hzPlace"]

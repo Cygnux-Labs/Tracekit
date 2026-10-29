@@ -3941,9 +3941,10 @@
       for (const sg of [-1, 1]) { x.beginPath(); x.moveTo(...hzScr(c, [cx + sg * R4 * .8, -10])); x.quadraticCurveTo(...hzScr(c, [cx + sg * R4 * .12, cy]), ...hzScr(c, [cx + sg * R4 * .8, ch + 10])); x.stroke(); }
       for (const [r, a, dash] of [[.47, .22, []], [.66, .14, []], [1, .1, [2, 6]]]) { x.setLineDash(dash); x.strokeStyle = A(gold, a); x.lineWidth = 1; x.beginPath(); x.ellipse(hx, hy, r * R4 * K, r * R4 * i * K, 0, 0, 6.2832); x.stroke(); }
       x.setLineDash([]);
-      // while the tilt moves, the black hole painted for the last one, scaled to this one; painted again once it settles
-      const hole = i !== ti && HZ.hole ? HZ.hole : hzHole(R4, i, dpr, { hot, gold, ember, rust, space }), hk = hole.h * R4 / hole.R * K, hy2 = hk * i / hole.i;
-      x.drawImage(hole.cv, hx - hk, hy - hy2, 2 * hk, 2 * hy2);
+      // while the tilt moves, the black hole painted for the last one, its tilt kept so it stays round; painted again once
+      // it settles
+      const hole = i !== ti && HZ.hole ? HZ.hole : hzHole(R4, i, dpr, { hot, gold, ember, rust, space }), hk = hole.h * R4 / hole.R * K;
+      x.drawImage(hole.cv, hx - hk, hy - hk, 2 * hk, 2 * hk);
       // what shows at this zoom: a folder big enough on screen (hzOpenAt) opens into its parts; the rest are drawn whole
       // (a closed folder, its places as dots)
       const nodes = [], opened = [], visit = keys => { for (const k of keys) { const f = D.folds?.[k]; if (f && f.rho * R4 * K >= hzOpenAt(f, HZ.geo.open)) { opened.push(k); visit(f.kids); } else nodes.push(k); } };
@@ -4150,8 +4151,7 @@
     // gas, orbiting streaks, the side turning toward us brighter), its bloom, the far half, the shadow, the lensed arc
     // over the top, the horizon and photon ring, then the near half. Painted for the stage's size rounded up to a
     // quarter octave, so a stage that grows or shrinks a little (the panels above it change as records arrive) only
-    // scales it; painted again when that, the tilt or the pixel ratio changes. R and i: the size and tilt it was painted
-    // for
+    // scales it; painted again when that, the tilt or the pixel ratio changes. R: the size it was painted for
     // lean: at most 1600px a side, so past about 1.5x zoom the disk softens; paint it at the zoom if that bites
     function hzHole(need, i, dpr, { hot, gold, ember, rust, space }) {
       const R4 = 2 ** (Math.ceil(Math.log2(need) * 4) / 4), h = R4 * .6 + 30, s = Math.min(dpr * 2, 1600 / (2 * h));
@@ -4190,7 +4190,7 @@
       x.save(); x.globalCompositeOperation = "lighter"; const pr = x.createLinearGradient(-Rs, 0, Rs, 0); pr.addColorStop(0, A(hot, .95)); pr.addColorStop(1, A(gold, .5));
       x.strokeStyle = pr; x.lineWidth = 1.1; x.shadowColor = A(gold, .8); x.shadowBlur = 3 * s; x.beginPath(); x.arc(0, 0, Rs * 1.02, 0, 6.2832); x.stroke(); x.restore();
       half(false);
-      return HZ.hole = { key, cv, disk, h, R: R4, i };
+      return HZ.hole = { key, cv, disk, h, R: R4 };
     }
     function hzStep(k) {
       HZ.t = k;
