@@ -253,6 +253,23 @@ class VerifierNeverCrashes(unittest.TestCase):
         self.assertEqual([n for n in os.listdir(d) if ".tmp-" in n], [])
 
 
+class LineSeparators(unittest.TestCase):
+    def test_a_record_holding_unicode_line_separators_exports_and_verifies(self):
+        """A record's JSON keeps U+0085, U+2028 and U+2029 unescaped, and str.splitlines also splits there: exporting
+        such a run raised while rendering replay.html, and the verifier read the record as two lines of bad JSON."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = os.path.join(d, "s")
+        s = make_signer(home, witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100)
+        s.handle({"op": "append", "cseq": 0, "event": run_start("a"), "attach": {"policy": policy.load()[1]}})
+        s.handle({"op": "append", "cseq": 1, "event": ev("run.end", {"reason": "a\u2028b\u2029c\x85d"}, "a")})
+        out = os.path.join(d, "a.tkb")
+        bundle.export(home, out, run="a")
+        with zipfile.ZipFile(out) as z:
+            self.assertIn("a\u2028b\u2029c\x85d", z.read("records.jsonl").decode("utf-8"))
+        self.assertEqual(bundle.verify(out, [f"file:{d}/w.jsonl"])[1], 0)
+
+
 class Witnesses(unittest.TestCase):
     def cp(self, seq=0):
         from tracekit.ledger import Keys

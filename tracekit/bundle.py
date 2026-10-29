@@ -186,10 +186,16 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
             "checkpoints": len(cps_in), "end_seq": end, **({"otel_push": {"status": pushed[0]}} if pushed else {})}
 
 
+def _lines(text):
+    """The lines of a .jsonl file, split at "\n" only, as the exporter writes them: a record's JSON keeps U+0085,
+    U+2028 and U+2029 unescaped, and str.splitlines would also split there."""
+    return text.split("\n")[:-1] if text.endswith("\n") else text.split("\n") if text else []
+
+
 def _replay(manifest, blobs):
     """replay.html rendered from the bundle files alone, so the verifier can regenerate it and compare."""
     from .replay import render
-    jl = lambda n: [json.loads(l) for l in blobs.get(n, b"").decode("utf-8").splitlines() if l.strip()]
+    jl = lambda n: [json.loads(l) for l in _lines(blobs.get(n, b"").decode("utf-8")) if l.strip()]
     pols = {k: v.decode("utf-8") for k, v in blobs.items() if k.startswith("policies/")}
     files = {k: v for k, v in (manifest.get("files") or {}).items() if k != "replay.html"}
     return render({**manifest, "files": files}, jl("records.jsonl"), jl("checkpoints.jsonl"),
@@ -310,7 +316,7 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     pub = blobs.get("signer.pub", b"")
     kid = crypto.kid(pub) if len(pub) == 32 else None
     recs = []
-    for i, line in enumerate(blobs.get("records.jsonl", b"").decode("utf-8", "replace").splitlines(), 1):
+    for i, line in enumerate(_lines(blobs.get("records.jsonl", b"").decode("utf-8", "replace")), 1):
         try:
             rec = json.loads(line)
         except ValueError:
@@ -412,7 +418,7 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
 
     # 4. head matches a witness checkpoint
     cps, cp_probs = [], []
-    for l in blobs.get("checkpoints.jsonl", b"").decode("utf-8", "replace").splitlines():
+    for l in _lines(blobs.get("checkpoints.jsonl", b"").decode("utf-8", "replace")):
         if not l.strip():
             continue
         try:
