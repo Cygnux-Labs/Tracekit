@@ -383,7 +383,7 @@ class WaitingForYou(unittest.TestCase):
                 {**hold(12, "c6"), "v2": {"decision": "flag"}}, answer(13, "c7", "expired")]
         out = json.loads(page_js(["waiting", "OPENHOLD", "waitingElsewhere", "waitingCount", "renderWaiting"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), el = {{}}, $ = id => el[id] ??= {{}};
-            let desk = false, waitKey = [], waitList = []; const DESK = () => desk;
+            let desk = false, waitKey = [], waitList = [], ENDED = ""; const DESK = () => desk;
             const seen = [waiting().map(w => [w.rec.tool_use_id, w.req?.v2.approval_id ?? null, w.open])];
             renderWaiting(); seen.push([el.waiting.hidden, el.waiting.textContent, el.waiting.title]);
             desk = true; renderWaiting(); seen.push(el.waiting.title);
@@ -451,9 +451,32 @@ class Restarted(unittest.TestCase):
         self.assertEqual(out[3], [ended, True])
         self.assertEqual(out[4], [False, True, 1, None, [7, 3], True, False, 0])   # the checks, then the replay
         self.assertEqual(out[5:], [[ended, True], ["api/snapshot", "api/why/workspace", "api/verify"]])
-        # NEEDS YOU says it first, never ALL CLEAR; HORIZON draws still frames only
-        self.assertIn('if (ENDED) out.unshift({ kind: "ENDED", sev: "high", open: null, what: ENDED', PAGE)
         self.assertIn('if (matchMedia("(prefers-reduced-motion: reduce)").matches || HZ.ended) hzFrame(0);', PAGE)
+
+    def test_an_ended_page_says_so_once_and_its_live_counters_go_quiet(self):
+        """After a restart the bar and NEEDS YOU said the same sentence twice, while TO ANSWER, the green CHAIN count
+        and the APPROVALS count stayed up on a page nothing updated any more."""
+        needs_node(self)
+        ended = "This viewer was restarted or your session ended: open the link tracekit view printed."
+        out = json.loads(page_js(["FIELD", "subject", "plural", "failLines", "shq", "word", "waiting", "OPENHOLD", "waitingElsewhere",
+                                  "ELSEWHERE", "waitingCount", "needsYou", "renderWaiting", "renderTop", "filterChips"], f"""
+            const ALL = {json.dumps([{**hold(1, "c1"), "v2": {"decision": "ask", "rules": []}},
+                                     answer(2, "c1", "requested", approval_id="apr-1")])}, RUNS = new Map(), STOPPED = "";
+            const el = {{}}, $ = id => el[id] ??= {{ classList: {{ toggle() {{}} }} }}, DESK = () => null, put = () => {{}};
+            const document = {{ URL: "http://127.0.0.1/", body: {{ classList: {{ toggle() {{}} }} }} }};
+            let waitKey = [], waitList = [], ENDED = "", mode = "live", liveOk = true, liveErr = "", SOURCE = "";
+            const BOOT = null, V2 = true, scope = null, F = {{}}, TZ = "UTC", nowTs = () => 0, chainState = {{ ok: true, n: 9 }};
+            const look = () => {{ renderWaiting(); renderTop(); return [el.waiting.hidden, el.mode.textContent, el.mode.className,
+                                  el.chain.textContent, el.chain.className, el.lost.textContent, needsYou().map(n => n.what)]; }};
+            const seen = [look()];
+            ENDED = {json.dumps(ended)}; liveOk = false; liveErr = ENDED; seen.push(look());
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out[0][:5], [False, "LIVE", "mode live", "CHAIN \u2713 9 SIGNED RECORDS", "chain ok"])
+        self.assertEqual(out[1][:6], [True, "ENDED", "mode ended", "CHAIN \u2013", "chain", ended])
+        # NEEDS YOU says it first, never ALL CLEAR, and points at the bar instead of saying the sentence again
+        self.assertEqual(out[1][6][0], "nothing here is live: the bar above says why")
+        self.assertEqual(sum(ended in w for w in out[1][6]), 0)
+        self.assertIn("const n = ENDED ? 0 : waitingCount()", PAGE)   # the APPROVALS button's count
 
 
 class NeedsYou(unittest.TestCase):
@@ -522,7 +545,7 @@ class NeedsYou(unittest.TestCase):
         badge = json.loads(page_js(["waiting", "OPENHOLD", "waitingElsewhere", "waitingCount", "renderWaiting"], f"""
             const ALL = {json.dumps([hold(1, "c1")])}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r]));
             const el = {{}}, $ = id => el[id] ??= {{}}, DESK = () => null;
-            let waitKey = [], waitList = [];
+            let waitKey = [], waitList = [], ENDED = "";
             renderWaiting(); process.stdout.write(JSON.stringify(el.waiting.textContent));"""))
         self.assertEqual(badge, "TO ANSWER 3")
 
@@ -2089,7 +2112,7 @@ class RunChip(unittest.TestCase):
         out = json.loads(page_js(["renderTop", "filterChips"], """
             const el = {}, $ = id => el[id] ??= { classList: { toggle() {} } };
             const document = { URL: "http://127.0.0.1/", body: { classList: { toggle() {} } } };
-            let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = "";
+            let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = "", ENDED = "";
             const BOOT = null, V2 = true, scope = "r1", F = {}, TZ = "UTC", nowTs = () => 0, esc = s => s, put = () => {};
             const RUNS = new Map([["r1", { id: "r1", verdict: "verified", integrity: "VERIFIED", label: "operator-side" }]]);
             const chainState = { ok: false, n: 0, detail: "" }, seen = [];

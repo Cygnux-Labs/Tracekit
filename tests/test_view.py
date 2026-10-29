@@ -2317,7 +2317,7 @@ class LiveRuns(unittest.TestCase):
         top = json.loads(page_js(["renderTop", "filterChips"], f"""
             const el = {{}}, $ = id => el[id] ??= {{ classList: {{ toggle() {{}} }} }};
             const document = {{ URL: "http://127.0.0.1/", body: {{ classList: {{ toggle() {{}} }} }} }};
-            let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = {json.dumps(feed.stopped)};
+            let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = {json.dumps(feed.stopped)}, ENDED = "";
             const BOOT = null, V2 = true, scope = null, RUNS = new Map(), F = {{}}, TZ = "UTC", nowTs = () => 0;
             const chainState = {{ ok: false, n: 0, detail: "" }}, esc = s => s, put = () => {{}};
             renderTop();

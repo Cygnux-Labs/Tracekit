@@ -329,6 +329,12 @@
       border-color: var(--red)
     }
 
+    /* a page whose session the viewer refused: nothing on it is live */
+    .mode.ended {
+      color: var(--muted);
+      border-color: var(--line2)
+    }
+
     /* TO ANSWER: held calls nobody answered yet, in every run; it opens the approvals page or the oldest one */
     .mode.wait {
       color: var(--ink);
@@ -3356,7 +3362,7 @@
       : PAGE === "permissions" || PAGE === "influence" ? PAGE : "desk";
     // the header: the global pages (APPROVALS counts the holds waiting), and on a run's page its views, keys 1–7
     function renderPages() {
-      const n = waitingCount(), on = p => p === "live" ? PAGE === "run" && RUNS.get(scope)?.state === "open" : PAGE === p;
+      const n = ENDED ? 0 : waitingCount(), on = p => p === "live" ? PAGE === "run" && RUNS.get(scope)?.state === "open" : PAGE === p;
       put("pages", PAGES.filter(p => p !== "influence" || WHY).map(p => `<button type="button" data-page="${esc(p)}" class="${on(p) ? "on" : ""}">${esc(p.toUpperCase())}${p === "approvals" && n ? `<span class="n">${esc(n)}</span>` : ""}</button>`).join(""));
       $("rviews").hidden = PAGE !== "run";
       put("rviews", RVIEWS.map((v, i) => `<button type="button" data-rv="${esc(v)}" class="${RV === v ? "on" : ""}">${esc(RVNAME[v] || v.toUpperCase())}<kbd>${esc(i + 1)}</kbd></button>`).join(""));
@@ -3864,8 +3870,8 @@
     window.addEventListener("popstate", () => linked && followLink());
     function renderTop() {
       const m = $("mode"), live = liveOk && !STOPPED;   // a viewer that stopped checking runs is not live, connected or not
-      m.className = "mode " + (mode === "live" ? (live ? "live" : "off") : "replay");
-      m.textContent = mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : SOURCE === "bundle" ? "BUNDLE" : STOPPED ? "STOPPED" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
+      m.className = "mode " + (ENDED ? "ended" : mode === "live" ? (live ? "live" : "off") : "replay");
+      m.textContent = ENDED ? "ENDED" : mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : SOURCE === "bundle" ? "BUNDLE" : STOPPED ? "STOPPED" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
       m.title = mode === "live" && !live ? STOPPED || liveErr : "";
       // a page that lost its viewer, or whose viewer stopped checking, says so where it can't be missed
       $("lost").hidden = live || !!BOOT || document.URL.startsWith("file:");
@@ -3888,6 +3894,7 @@
           : chainState.detail ? "CHAIN n/a" : "CHAIN …";
         c.title = chainState.detail || "";
       }
+      if (ENDED) { c.className = "chain"; c.textContent = "CHAIN –"; c.title = "not checked since the viewer ended this page's session"; }
       $("clock").textContent = new Date(nowTs() * 1000).toTimeString().slice(0, 8) + " " + TZ + (mode === "replay" ? " (REPLAY)" : "");
       $("tzh").title = "times are this browser's local time, " + TZ;
       put("chips", filterChips().map(([k, v, t]) => `<button class="chip" data-${esc(k)}="${esc(v)}" type="button" title="remove this filter">${esc(t)} ✕</button>`).join(""));
@@ -4124,7 +4131,7 @@
       for (const r of runs) if (r.verdict === "failed" || r.verdict === "error")
         out.push({ kind: r.verdict === "failed" ? "FAILED" : "NOT CHECKED", sev: "high", open: [r.id, ""], what: `${r.agent || "run"} · run ${r.id.slice(0, 8)} ` + (r.verdict === "failed" ? "failed verification: none of its records are shown" : "could not be checked"), detail: failLines(r.report)[0] || "", cmds: [] });
       if (STOPPED) out.push({ kind: "STOPPED", sev: "high", open: null, what: STOPPED, detail: "", cmds: [] });
-      if (ENDED) out.unshift({ kind: "ENDED", sev: "high", open: null, what: ENDED, detail: "nothing here is live", cmds: [] });
+      if (ENDED) out.unshift({ kind: "ENDED", sev: "high", open: null, what: "nothing here is live: the bar above says why", detail: "what is listed is as it was", cmds: [] });
       return out;
     }
     function renderNeeds() {
@@ -4202,7 +4209,7 @@
     }
     function renderWaiting() {
       const n = waitingCount(), el = $("waiting");
-      el.hidden = !n;
+      el.hidden = !n || !!ENDED;   // a page the viewer ended counts nothing live
       el.textContent = `TO ANSWER ${n}`;
       el.title = DESK() ? "answer them on the approvals page" : "open the oldest: its detail has the command that answers it";
     }
