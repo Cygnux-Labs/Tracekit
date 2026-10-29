@@ -1612,6 +1612,10 @@ class PlainPages(unittest.TestCase):
         # the word is a phone card's, shown there only (a phone said "1 sources")
         self.assertIn('<td>1<span class="ph"> source</span></td>', page)
         self.assertNotIn('content: " sources"', PAGE)
+        # the key's chips are placeholders: "Bash 2 blocked" in it read as data
+        key = page[page.index('class="wbar glegend"'):page.index("<table")]
+        self.assertEqual(re.findall(r'<span class="tag[^"]*">([^<]*)</span>', key),
+                         ["tool N", "tool N blocked", "tool N held", "tool N flagged", "tool +effect", "tool N"])
         self.assertIn('<span class="tag deny" title="reached in 2 runs · a replay confirmed it a cause: effect +0.62">Bash +0.62</span>', page)
         self.assertIn('<span class="tag held" title="reached in 1 run · of the calls it reached, 1 held">Deploy 1 held</span>', page)
         self.assertIn('<span class="tag ruled" title="reached in 1 run · a replay tested it and ruled it out">Read 1</span>', page)
