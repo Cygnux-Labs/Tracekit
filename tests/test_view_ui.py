@@ -964,6 +964,32 @@ class Waterfall(unittest.TestCase):
         self.assertIn("5 earlier calls are not drawn: the newest 600 are.", capped)
         self.assertIn("No call matches the filters.", none)
 
+    def test_a_render_of_the_lanes_reads_each_call_once_and_each_colour_once(self):
+        """Each lane read every call of the live view, and each call asked the page's style for its colour: DESK spent
+        1.8 s in 30 s drawing its lanes (agents x calls), and the page took 23% of a core while a run was written."""
+        needs_node(self)
+        out = json.loads(page_js(["CAT_COLOR", "fmtT", "tickStep", "tickText", "label", "renderLanes"], """
+            const V2 = true, R = null, rpos = 0, mode = "live", selected = null, drawn = [], asked = [];
+            const ctx = { setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, strokeRect() {},
+                          fillRect: (x, y, w, h) => drawn.push(y), fillText() {}, measureText: t => ({ width: t.length * 6.6 }) };
+            const cv = { width: 0, height: 0, style: {}, getContext: () => ctx }, wrap = { clientWidth: 1600, clientHeight: 400, scrollTop: 0 };
+            const $ = id => ({ lanes: cv, lanewrap: wrap })[id], window = {}, css = n => (asked.push(n), n);
+            let matched = 0;
+            const agentMatch = () => true, actMatch = () => ++matched, category = () => "read", callState = () => ["", ""], nowTs = () => 100;
+            let laneHits = [], walked = 0;
+            const S = { agents: new Map(), actList: [], firstTs: 0, lastTs: 100 };
+            S.actList[Symbol.iterator] = function* () { for (let i = 0; i < this.length; i++) { walked++; yield this[i]; } };
+            for (let i = 0; i < 20; i++) {
+              const a = { session: "r" + i, sub: false, first: 0, last: 100, name: "coder", actions: 10, status: "done" };
+              S.agents.set(a.session + "|main", a);
+              for (let k = 0; k < 10; k++) S.actList.push({ agent: a, start: k * 9, end: k * 9 + 1, flags: [], denied: false });
+            }
+            renderLanes();
+            process.stdout.write(JSON.stringify({ walked, matched, colour: asked.filter(n => n === CAT_COLOR.read).length,
+                                                  hits: laneHits.length }));"""))
+        # two passes over the calls (the time scale, then the lanes), not one a lane (4,200)
+        self.assertEqual(out, {"walked": 400, "matched": 200, "colour": 1, "hits": 200})
+
     def test_every_run_has_a_lane_busy_ones_first_and_the_panel_scrolls_to_the_rest(self):
         """DESK's 140px timeline drew 8 of 12 lanes: runs with calls fell off its bottom, unreachable, while empty runs
         kept lanes; a lane's id (coder·7372) was not the run's id the rest of the page shows (00cb7f43); the axis' last

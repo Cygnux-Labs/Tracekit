@@ -4337,6 +4337,9 @@
         const xx = Math.round(x(t)) + .5; g.beginPath(); g.moveTo(xx, top - 4); g.lineTo(xx, H); g.stroke();
         ticks.push([tickText(t, step), xx]);
       }
+      // each lane's calls, read once: a lane each reading every call drew agents x calls (seconds a render on DESK)
+      const acts = new Map(), paint = new Map();
+      for (const act of S.actList) if (actMatch(act)) (acts.get(act.agent) || acts.set(act.agent, []).get(act.agent)).push(act);
       agents.forEach((a, i) => {
         const y = top + i * laneH;
         if (i && agents[i - 1].session !== a.session) { g.fillStyle = css("--amber-dim"); g.fillRect(0, y, W, 1); }
@@ -4345,11 +4348,11 @@
         // life span
         const xf = Math.max(labelW, x(a.first));  // v2: the run may start before the calls the scale fits
         g.fillStyle = css("--life"); g.fillRect(xf, y + laneH / 2 - 1, Math.max(1, Math.min(W, x(a.status === "done" ? a.last : t1)) - xf), 2);
-        for (const act of S.actList) {
-          if (act.agent !== a || !actMatch(act)) continue;
+        for (const act of acts.get(a) || []) {
           // only a call that may still be running reaches the right edge; a blocked, refused or unanswered one never ran
           const x0 = x(act.start), x1 = Math.max(x0 + 3, x(act.end ?? (callState(act)[1] === "RUNNING" ? t1 : act.start)));
-          g.fillStyle = css(CAT_COLOR[category(act)]);
+          const k = category(act);   // a colour read once a render, not once a call
+          g.fillStyle = paint.get(k) ?? paint.set(k, css(CAT_COLOR[k])).get(k);
           g.globalAlpha = selected === act ? 1 : .85;
           g.fillRect(x0, y + 3, x1 - x0, laneH - 6);
           if (act.flags.length && !act.denied) { g.fillStyle = css("--yellow"); g.fillRect(x0, y + 1, 3, 2); }
