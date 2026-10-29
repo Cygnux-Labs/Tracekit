@@ -18,6 +18,7 @@ AGENT_ARGS_MAX = 16 * 1024  # bytes of a call's arguments (as canonical JSON) an
 ALIASES = (classes.SHELL_KEYS, classes.PATH_KEYS, classes.PAYEE_KEYS, classes.RECIPIENT_KEYS,
            ("amount", "amount_cents"), ("sql", "query", "statement"), ("db", "database"))
 _URL = re.compile(r"(?i)\b(?:https?|wss?|ftp):[^\s'\"<>`]*")
+_DOTTED = re.compile(r"(?:^|/)\.\.?(?:/|$)|(?<!:)//")   # a path with . or .. parts, or an empty one (not a URL's)
 _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 2852039166/latest
 # ...when it reads as an IPv4 address outside 0.0.0.0/8, which no call reaches: not 1.txt, 2fa/ or head -n 50's 50.
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
@@ -282,6 +283,9 @@ class Engine:
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
             targets = [" ".join(w) for w in words] + parsed[2] + stdin
+            # a path also as plainly written: /etc/./x, /etc//x and /etc/y/../x name /etc/x
+            targets += [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
+                                    for t in targets) if n not in targets]
             have = set(targets)
             return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
         if cls == "fs":

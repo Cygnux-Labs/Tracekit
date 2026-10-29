@@ -181,7 +181,9 @@ protocol stays 20.
   `grep` or `rg` pattern, a `sed -n` script or a commit message naming a download pipe or Tracekit's files. They now
   read the parsed command: what it runs and the files it acts on, and `tracekit … --help` and `--version` pass. Text
   written into a place that runs it later (cron, a login script, a heredoc run in the same call) is still read as
-  code, as are a `sed` script that writes, reads or runs something and a git alias's shell command. Over 9,924
+  code, as are a `sed` script that writes, reads or runs something and a git alias's shell command (set with `-c`,
+  `git config` or `GIT_CONFIG_VALUE_<n>`; one from `--config-env`, an included file or `GIT_CONFIG_PARAMETERS` is held,
+  as unreadable). Over 9,924
   decisions (E17, E21 and the developer sessions, four packs, both regex engines), none is weaker than in 1.5.0; a
   752-case sweep of attack shapes found only the interpreter-given-code holds of `TK-A046` above
   ([limits](docs/limits.md#policy)).
@@ -225,6 +227,9 @@ protocol stays 20.
   one witness with two classes. The independent Go verifier now also agrees with Python and TypeScript on a duplicate
   witness entry (counted once), on a quorum above the pinned witnesses (exit 1), and on a key pinned as a witness
   vkey and as another type's (another entry, failed at the checkpoint).
+- **A path written with `.` or `..` parts, or an empty one, no longer gets past the shell rules** (in 1.5.0 too):
+  `/etc/./tracekit`, `/var/lib//tracekit` and `/var/lib/x/../tracekit` are matched as the paths they name, so
+  `TK-D007` stops them as it stops `/etc/tracekit`.
 - **One approval, one run.** A held call that ran without using its approval (an `executed_against_policy` gap: the
   harness ran it anyway) left the approval approved, so the agent's retry of the same call ran too. An approval whose
   own call has a result is no longer given to a retry. A call decided again after it used its approval and completed

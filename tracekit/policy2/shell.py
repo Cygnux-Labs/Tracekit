@@ -237,6 +237,15 @@ def analyse_argv(argv):
             [x for x in lines + ctx["kept"] if x])
 
 
+def _git_env_alias(word):
+    """The command of a git `!` alias that a `GIT_CONFIG_VALUE_<n>=!cmd` word sets through the environment, else None;
+    ParseError for GIT_CONFIG_PARAMETERS, whose aliases this parser doesn't read."""
+    if word.startswith("GIT_CONFIG_PARAMETERS="):
+        raise ParseError("git config from GIT_CONFIG_PARAMETERS is not read")
+    m = re.fullmatch(r"(?s)GIT_CONFIG_VALUE_\d+=\s*!(.*)", word)
+    return m and m.group(1)
+
+
 def _sed_prints(script):
     """Whether a sed script only picks and prints lines: with its /pattern/ addresses left out, nothing but line
     numbers, ranges, braces and the commands that read, write and run nothing."""
@@ -747,6 +756,8 @@ class _Parser:
             if not words and _ASSIGN.match(self.s, start, self.i):   # within the word, as bash reads it
                 self.ctx["refs"].append(text)
                 self.ctx["command_names_mutable"] |= bool(_COMMAND_NAME_ASSIGN.match(text))
+                if (alias := _git_env_alias(text)) is not None:
+                    self.nested(alias, self.via + ["git alias"])
                 continue
             words.append(text)
             dynamic |= bool(re.search(r"[$`]", raw))
@@ -844,6 +855,10 @@ class _Parser:
                    "opaque": unreadable[0] or tainted, "stdin": []}
             self.ctx["cmds"].append(cmd)
             cmds.append(cmd)
+            if name in ("export", "declare", "typeset", "readonly", "local", "env"):   # git config set in the environment
+                for a in args:
+                    if (alias := _git_env_alias(a)) is not None:
+                        self.nested(alias, via + ["git alias"])
             if name in DASH_C:
                 if _dash_c(args) is None:
                     cmd["opaque"] = True   # an interactive shell: it runs whatever its stdin holds
@@ -899,7 +914,10 @@ class _Parser:
                 self.nested(" ".join(args), via + ["eval"])
             elif name == "git":
                 # a shell alias runs its command as sh -c does: set for this run (`git -c alias.x='!cmd' x`) or saved
-                # for a later one (`git config alias.x '!cmd'`)
+                # for a later one (`git config alias.x '!cmd'`); one from a variable or an included file isn't read
+                if any(re.match(r"(?i)--config-env=(alias|include)", a)
+                       or j and args[j - 1] == "-c" and re.match(r"(?i)include(if)?\.", a) for j, a in enumerate(args)):
+                    raise ParseError("git config from a variable or an included file is not read")
                 for j, a in enumerate(args):
                     m = re.fullmatch(r"(?is)alias\.[^=\s]+(?:=\s*!(.*))?", a)
                     nxt = args[j + 1].lstrip() if m and m.group(1) is None and j + 1 < len(args) else ""

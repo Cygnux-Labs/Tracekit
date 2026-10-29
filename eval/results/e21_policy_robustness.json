@@ -5,7 +5,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:6bd9a45007296d49c39e1f02ba16354ba0d569ba7aaf44fe0b9fae9989dbf59d",
+      "policy_hash": "sha256:72c1c2dabf88e27574437be5b96e0c65248c7e0dd747e592e41941b176b6103d",
       "heldout": {
         "recall": 0.5880952380952381,
         "deny_recall": 0.2642857142857143,
@@ -2143,7 +2143,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:33a9d504a95a418c4ea8056ef767801ea7d0a5bfb86ecfc678b91c142341a2b3",
+      "policy_hash": "sha256:7064feaf6404df83c95761ea580df995780fce83278338529bcc68897b9569ea",
       "heldout": {
         "recall": 0.6547619047619048,
         "deny_recall": 0.3595238095238095,
@@ -4640,45 +4640,45 @@
   "latency": {
     "default/re2": {
       "p50_us": 90,
-      "p99_us": 178,
-      "max_us": 288,
+      "p99_us": 185,
+      "max_us": 297,
       "calls": 2481,
-      "p99_ref": 3.32
+      "p99_ref": 3.46
     },
     "default/regex": {
       "p50_us": 85,
-      "p99_us": 212,
-      "max_us": 375,
+      "p99_us": 220,
+      "max_us": 374,
       "calls": 2481,
-      "p99_ref": 4.01
+      "p99_ref": 4.12
     },
     "strict/re2": {
       "p50_us": 90,
-      "p99_us": 180,
-      "max_us": 340,
+      "p99_us": 184,
+      "max_us": 300,
       "calls": 2481,
-      "p99_ref": 3.32
+      "p99_ref": 3.41
     },
     "strict/regex": {
-      "p50_us": 84,
-      "p99_us": 214,
-      "max_us": 376,
+      "p50_us": 87,
+      "p99_us": 218,
+      "max_us": 388,
       "calls": 2481,
-      "p99_ref": 3.97
+      "p99_ref": 4.03
     },
     "dev/re2": {
-      "p50_us": 76,
-      "p99_us": 157,
-      "max_us": 258,
+      "p50_us": 77,
+      "p99_us": 162,
+      "max_us": 266,
       "calls": 2481,
-      "p99_ref": 2.88
+      "p99_ref": 3.02
     },
     "dev/regex": {
       "p50_us": 72,
-      "p99_us": 167,
-      "max_us": 250,
+      "p99_us": 178,
+      "max_us": 442,
       "calls": 2481,
-      "p99_ref": 3.08
+      "p99_ref": 3.18
     }
   },
   "engine_mismatches": [],
