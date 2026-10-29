@@ -33,6 +33,7 @@ from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
+from tracekit.storage import file as file_storage
 from tracekit.storage.file import NOTE, FileStorage
 from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run, referenced_refs
 from tracekit.why.demo import EXFIL_TARGET, SYSTEM
@@ -61,6 +62,9 @@ def page_js(names, script):
                    for n in names)
     # on stdin: Linux caps one argument at 128 KiB (MAX_ARG_STRLEN), which a test's records can pass
     return subprocess.run(["node", "-"], input=code + script, capture_output=True, encoding="utf-8", check=True).stdout
+
+
+UNCHANGED = {"update.return_value": False, "changed.return_value": []}   # a fake reader of a store only appended to
 
 
 def v2rec(seq, typ, data, run="r1", **top):
@@ -1074,7 +1078,7 @@ class View(unittest.TestCase):
                              {("signer", view.SIGNER_RUN[1])})
 
     def test_a_run_no_checkpoint_covers_yet_is_listed_as_pending(self):
-        fake = mock.Mock(runs={("default", "r9"): {"seqs": [0]}})
+        fake = mock.Mock(runs={("default", "r9"): {"seqs": [0]}}, **UNCHANGED)
         fake.checkpoint_latest.return_value = None
         fake.iter_run.side_effect = lambda *key: iter([v2rec(0, "run.registered", {"agent": {"name": "late"}}, "r9")])
         with mock.patch.object(view, "reader", return_value=fake):
@@ -1092,7 +1096,8 @@ class View(unittest.TestCase):
         recs = {"r1": [v2rec(0, "run.registered", {"agent": {"name": "a"}}, "r1"), v2rec(1, "run.final", {}, "r1")],
                 "f1": [v2rec(2, "run.registered", {"agent": {"name": "tracekit-analyze"}, "analyzes": "r1"}, "f1"),
                        v2rec(3, "run.final", {}, "f1")]}
-        fake = mock.Mock(runs={("default", k): {"seqs": [r["event"]["seq"] for r in v]} for k, v in recs.items()})
+        fake = mock.Mock(runs={("default", k): {"seqs": [r["event"]["seq"] for r in v]} for k, v in recs.items()},
+                         **UNCHANGED)
         fake.checkpoint_latest.return_value = None
         fake.iter_run.side_effect = lambda tenant, rid: iter(recs[rid])
         analysed = []
@@ -1132,7 +1137,7 @@ class View(unittest.TestCase):
         recs = [v2rec(0, "run.registered", {"agent": {"name": "bulk"}}, "r1")] + [
             v2rec(i, "policy.decision", {"tool_use_id": f"c{i}", "tool": "Bash", "decision": "allow"}, "r1")
             for i in range(1, 5)] + [v2rec(5, "run.final", {}, "r1")]
-        fake = mock.Mock(runs={("default", "r1"): {"seqs": list(range(6))}}, tree=mock.Mock(size=6))
+        fake = mock.Mock(runs={("default", "r1"): {"seqs": list(range(6))}}, tree=mock.Mock(size=6), **UNCHANGED)
         fake.iter_run.side_effect = lambda tenant, rid: iter(recs)
         def verified(reader, tenant, rid, note, *a, **k):   # what the note covers, as the check read it
             return mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.", recs[:int(note[-1])]
@@ -1160,7 +1165,7 @@ class View(unittest.TestCase):
 
     def test_a_tenants_signer_run_is_the_signer_never_an_agent_run(self):
         signer = ("acme", view.SIGNER_RUN[1])   # content.accessed and content.erased go in each tenant's own
-        fake = mock.Mock(runs={signer: {"seqs": [0]}, ("default", "r9"): {"seqs": [1]}})
+        fake = mock.Mock(runs={signer: {"seqs": [0]}, ("default", "r9"): {"seqs": [1]}}, **UNCHANGED)
         fake.checkpoint_latest.return_value = None
         fake.iter_run.side_effect = lambda *key: iter([v2rec(0, "run.registered", {"agent": {"name": "late"}}, key[1])])
         with mock.patch.object(view, "reader", return_value=fake):
@@ -1228,22 +1233,78 @@ class View(unittest.TestCase):
         self.assertEqual([r["v2"]["run_seq"] for r in self.rows(feed, run.run_id) if "v2" in r], [0, 1, 2])
 
     @pytest.mark.unverified_bundles
-    def test_an_edit_among_new_records_is_caught_when_the_store_is_hashed_again(self):
-        """The viewer reads only what is appended to a store: an edit of a record it read before, made as records were
-        appended, would never be read again. It hashes the bytes it read again every EDIT_S, and a change has every
-        run checked again."""
-        run_id = self.finished_run()
-        feed = store_feed(self, {"data_dir": self.d})
-        self.report(feed, run_id)
+    def edit_decision(self, run_id, mtime=False):
+        """Change a letter of run `run_id`'s first decision in the store, in place (the same length); with `mtime`,
+        set the file's modification time back after."""
         path = os.path.join(self.d, "store", "records.jsonl")
+        st = os.stat(path)
         with open(path, "r+b") as f:
             data = f.read()
-            f.seek(0)
-            f.write(data.replace(b'"tool":"Bash"', b'"tool":"Bosh"', 1))
-        self.finished_run()   # appended after the edit: the store grew
-        self.assertFalse(wait_for(lambda: feed.verify()[1], 2))   # not hashed again yet
+            at = next(m.start() for m in re.finditer(rb'"type":"policy.decision"', data)
+                      if run_id.encode() in data[data.rfind(b"\n", 0, m.start()) + 1:data.index(b"\n", m.start())])
+            at = data.index(b'"decision":"', at) + len(b'"decision":"')
+            f.seek(at)
+            f.write(b"X")
+        if mtime:
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        return path
+
+    def failed(self, feed, run_id):
+        return f"run {run_id} of tenant default: FAILED" in feed.verify()[1]
+
+    @pytest.mark.unverified_bundles
+    def test_an_edit_of_records_read_before_is_caught_at_the_next_change_or_when_the_store_is_hashed_again(self):
+        """The viewer reads only what is appended to a store: an edit of a record it read before would never be read
+        again. The piece the reader's last update began in is hashed again at each change, so an edit there shows at
+        the store's next change, appended records or a partial line; every piece is hashed again every EDIT_S (an edit
+        with no change the viewer sees, its modification time set back, shows then); and each edited run is checked
+        again."""
+        feed = store_feed(self, {"data_dir": self.d})
+        first = self.finished_run()
+        self.assertTrue(wait_for(lambda: feed.runs.get(("default", first), {}).get("count"), 15))
+        self.edit_decision(first)
+        self.finished_run()   # appended: the store grew
+        self.assertTrue(wait_for(lambda: self.failed(feed, first), 10))
+        run = self.client.run(agent="grow")   # an earlier record of a run edited while it grows
+        run.decide("c1", "Bash", {"command": "ls"})
+        self.assertTrue(wait_for(lambda: (feed.runs.get(("default", run.run_id)) or {}).get("count"), 15))
+        self.edit_decision(run.run_id)
+        run.decide("c2", "Bash", {"command": "pwd"})
+        self.assertTrue(wait_for(lambda: self.failed(feed, run.run_id), 10))
+        quiet = self.finished_run()   # an edit no change shows: when the store is hashed again
+        self.assertTrue(wait_for(lambda: feed.runs.get(("default", quiet), {}).get("count"), 15))
+        path = self.edit_decision(quiet, mtime=True)
+        self.assertFalse(wait_for(lambda: self.failed(feed, quiet), 2))
         feed.edit_due = feed.due = 0   # EDIT_S later
-        self.assertTrue(wait_for(lambda: feed.verify()[1] == [f"run {run_id} of tenant default: FAILED"], 15))
+        self.assertTrue(wait_for(lambda: self.failed(feed, quiet), 10))
+        last = self.finished_run()   # and with a partial line after it (one byte: the writer mid-append)
+        self.assertTrue(wait_for(lambda: feed.runs.get(("default", last), {}).get("count"), 15))
+        self.service.close()
+        self.edit_decision(last)
+        with open(path, "ab") as f:
+            f.write(b"{")
+        self.assertTrue(wait_for(lambda: self.failed(feed, last), 10))
+
+    @pytest.mark.unverified_bundles
+    def test_an_edit_before_the_last_piece_read_is_caught_when_the_store_is_hashed_again(self):
+        """An edit before the piece the last update began in, as records are appended, shows within EDIT_S, when every
+        piece is hashed again, and only the runs with records in an edited piece are checked again."""
+        with mock.patch.object(file_storage, "PIECE", 256):
+            run_id = self.finished_run()
+            feed = store_feed(self, {"data_dir": self.d})
+            self.report(feed, run_id)
+            other = self.finished_run()
+            self.assertTrue(wait_for(lambda: feed.runs.get(("default", other), {}).get("count"), 15))
+            checked = []
+            real = view.check
+            with mock.patch.object(view, "check", side_effect=lambda r, t, rid, *a, **k: checked.append(rid)
+                                   or real(r, t, rid, *a, **k)):
+                self.edit_decision(run_id)
+                self.finished_run()   # appended after the edit: the store grew
+                self.assertFalse(wait_for(lambda: self.failed(feed, run_id), 2))   # not hashed again yet
+                feed.edit_due = feed.due = 0   # EDIT_S later
+                self.assertTrue(wait_for(lambda: self.failed(feed, run_id), 15))
+            self.assertNotIn(other, checked)   # its bytes are as they were: not checked again
 
     @pytest.mark.unverified_bundles
     def test_an_edit_of_a_run_already_shown_takes_its_records_back_at_its_next_check(self):
@@ -2090,7 +2151,8 @@ class LiveRuns(unittest.TestCase):
         self.fake = mock.Mock(tree=mock.Mock(size=10 ** 6))
         self.fake.iter_run.side_effect = lambda tenant, rid: iter(list(self.recs[rid]))
         self.fake.checkpoint_latest.return_value = (10 ** 6, "note")
-        self.fake.update.return_value, self.fake.unchanged.return_value = False, True   # appended to, never edited
+        self.fake.update.return_value, self.fake.changed.return_value = False, []   # appended to, never edited
+        self.fake.log.offsets, self.fake.key_seqs = range(10 ** 8), []   # line n at byte n; no key record
         self.now, self.cfg = [1000.0], {"data_dir": self.d}
         real = view.reader   # another test's feed, still watching its own store, reads that store
         self.clock = types.SimpleNamespace(time=lambda: self.now[0], monotonic=lambda: self.now[0],
@@ -2298,6 +2360,29 @@ class LiveRuns(unittest.TestCase):
         self.assertTrue(wait_for(lambda: sorted(imported) == ["b", "c"], 5))
         self.assertFalse(wait_for(lambda: "a" in imported, 0.3))
 
+    def test_after_a_store_change_each_run_waits_its_turn_reading_rechecking_never_its_old_verdict(self):
+        """When the store's bytes changed every run was marked to check again, newest first, in 5 s slices, keeping
+        its VERIFIED meanwhile: with the bytes changing more often than a pass takes, the oldest run, the edited one,
+        stayed VERIFIED for as long as that went on (42 changes in 61 s). A run waiting for its re-check reads
+        re-checking (pending) from the change on; one waiting keeps its place at the next change, behind the runs
+        that waited before it, so each gets its turn."""
+        self.recs = {r: [v2rec(10 * i + k, "policy.decision", {"tool": "Bash", "decision": "allow"}, r)
+                         for k in range(2)] for i, r in enumerate("abcdefghij")}   # j the newest
+        feed = self.feed(lambda run_id: VERIFIED)
+        for _ in range(4):
+            self.refresh(feed)
+        self.assertEqual(sorted(self.checks), list("abcdefghij"))
+        self.checks.clear()
+        self.fake.changed.return_value = [(0, 10 ** 6)]   # every run's records changed, at every refresh from now
+        self.refresh(feed)
+        self.assertEqual(self.checks, ["j", "i", "h"])   # 2 s each: REFRESH_S
+        with feed.lock:
+            self.assertEqual({k[1]: x["review"]["verdict"] for k, x in feed.latest.items()},
+                             {**dict.fromkeys("abcdefg", "pending"), **dict.fromkeys("hij", "verified")})
+        for _ in range(3):
+            self.refresh(feed)
+        self.assertEqual(self.checks[:10], list("jihgfedcba"))   # each in turn, the oldest too
+
     def test_a_growing_runs_graph_is_imported_again_no_sooner_than_backoff_times_its_last_import(self):
         """A run's graph is imported whole each time it grows (4.7 s for 20k records, on a thread holding the CPU the
         checks need): it is imported again no sooner than MIRROR_BACKOFF times its last import's time, and a run that
@@ -2356,7 +2441,7 @@ class LiveRuns(unittest.TestCase):
         self.refresh(feed)
         wall = self.now[0] - 3600
         self.clock.time = lambda: wall   # the wall clock steps back an hour; the monotonic one goes on
-        self.fake.unchanged.return_value = False   # an edit in place, among appends
+        self.fake.changed.return_value = [(0, 2)]   # an edit in place of r1's lines, among appends
         self.now[0] += view.EDIT_S
         self.refresh(feed)
         self.assertEqual(self.checks, ["r1", "r1"])
@@ -2375,13 +2460,23 @@ class LiveRuns(unittest.TestCase):
         self.now[0] += view.RECHECK_S
         self.refresh(feed)
         self.assertEqual(self.checks, ["r1"])   # its bytes unchanged: not checked again
-        self.fake.update.return_value, self.fake.unchanged.return_value = True, False   # rewritten in place
+        self.fake.update.return_value, self.fake.changed.return_value = True, [(0, 2)]   # r1's lines rewritten in place
         self.refresh(feed)
-        self.assertEqual((self.checks, len(feed.records)), (["r1", "r1"], rows))   # the same verdict: nothing new
+        with feed.lock:   # re-checking (never its old verdict) until checked again: the same verdict, no record rows
+            self.assertEqual([r["review"]["verdict"] for r in feed.records[rows:]], ["pending", "verified"])
+            self.assertEqual(feed.records[rows]["review"]["integrity"],
+                             "RE-CHECKING: the store's bytes changed after they were read")
+        self.assertEqual(self.checks, ["r1", "r1"])
+        self.fake.update.return_value, self.fake.changed.return_value = False, []
+        rows = len(feed.records)
+        self.now[0] += view.RECHECK_S
+        self.refresh(feed)
+        self.assertEqual((self.checks, len(feed.records)), (["r1", "r1"], rows))   # unchanged since: nothing
+        self.fake.changed.return_value = [(0, 2)]
         self.refresh(feed)
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
-            self.assertEqual([r for r in feed.records if not r.get("analysis")], [observe.RETRACTED] * 3)
+            self.assertTrue(all(r is observe.RETRACTED for r in feed.records[:-1]))   # every row of it taken back
 
     def test_a_run_whose_check_raises_says_not_checked_and_every_other_run_is_still_checked(self):
         """An error checking one run escaped the watch thread and ended it: no run was checked again. That run gets a

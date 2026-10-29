@@ -92,10 +92,14 @@ written shows once its own check is done (about 20 s for a 50,000-record run), a
 of one core for a 430,000-record store). A run still being written is shown up to the newest checkpoint and grows with
 each one: only the records it added are read and checked one by one (the checks of the run as a whole run again over
 all of them), and checking what runs added takes at most 1/41 of a core, each run in turn. The viewer reads a file
-store once, then only what is appended to it, and hashes the bytes it read again every minute (and at once when the
-file is written to without growing): an edit of records it showed has every run checked again, so that run turns
-`FAILED`. A run of a Postgres store, and a run that failed or could not be checked, is checked again five minutes
-after its last check, one run at a time. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live
+store once, then only what is appended to it, and hashes the bytes it read again in pieces of 1 MiB: at each change
+of the store the piece its last read began in (the newest records), and every piece every minute and whenever the file
+is written to without growing. An edit of records it showed is caught at the store's next change when it is in that
+last piece, at once when the file is written to without growing (its time not set back), and otherwise within the
+minute; each run with a record in a piece that changed (every run for a key record's, or a file replaced or cut back)
+then reads `PENDING` (re-checking) until it is checked again, in the order the runs started waiting, and the edited
+run turns `FAILED`. A run of a Postgres store, and a run that failed or could not be checked, is checked again five
+minutes after its last check, one run at a time. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live
 view and the tape says how many; each run's latest verdict stays in the run list, for up to 10,000 runs (a failed
 run's goes last). Once rows have left it, a run older than every record the live view holds shows only its verdict
 there; its records load when you open it.

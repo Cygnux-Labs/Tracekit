@@ -189,12 +189,13 @@ class Reader(unittest.TestCase):
         self.assertEqual(r.key_records(9), [next(fresh.iter_range(5, 6))])
         self.assertEqual(r.key_records(5), [])
         self.assertEqual(r.registry_merkle("acme").root(), fresh.registry_merkle("acme").root())
-        self.assertTrue(r.unchanged())
+        self.assertEqual(r.changed(), [])
 
     def test_an_edit_or_a_replaced_file_is_told_never_read_as_new_records(self):
         """A reader kept across store changes must not hold records the file no longer has: a file replaced, cut back
         or with its last line rewritten is StorageCorrupt (open a new reader), and an edit in place that keeps every
-        line where it was is unchanged() False, written to without growing (update() True) when nothing was appended."""
+        line where it was is in changed(), the pieces of the file read again that differ (written to without growing:
+        update() True when nothing was appended)."""
         path = os.path.join(self.root, "records.jsonl")
         with open(path, "rb") as f:
             orig = f.read()
@@ -220,7 +221,16 @@ class Reader(unittest.TestCase):
             f.write(orig.replace(b'"name":"Bash"', b'"name":"Bosh"', 1))
         os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1000))
         self.assertTrue(r.update())
-        self.assertFalse(r.unchanged())
+        self.assertEqual(r.changed(), [(0, len(orig))])
+        with mock.patch.object(file_storage, "PIECE", 64):   # pieces of 64 bytes: only the edited one differs
+            r = FileReader(self.root)
+            with open(path, "r+b") as f:
+                data = f.read()
+                pos = data.index(b'"name":"Bosh"') + len(b'"name":"B')
+                f.seek(pos)
+                f.write(b"u")
+            self.assertEqual(r.changed(), [(pos // 64 * 64, pos // 64 * 64 + 64)])
+            self.assertEqual(r.changed(pos + 64), [])   # from the piece after it on, as read
 
     @unittest.skipUnless(os.name == "posix", "modes and owners are POSIX")
     def test_refuses_a_file_others_may_write(self):

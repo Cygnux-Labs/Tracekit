@@ -51,6 +51,7 @@ import hmac
 import io
 import logging
 import json
+import math
 import os
 import secrets
 import shutil
@@ -942,6 +943,7 @@ class StoreFeed:
         # (tenant, run_id) -> bundle_v2.bundle's `kept` of the run's last bundle that verified, so a run that grew is
         # read from there
         self.reader, self.edit_due, self.bundles = None, 0, {}
+        self.detected = 0   # store changes found (_again): a run waiting for a re-check holds the one it waits since
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
@@ -1006,11 +1008,10 @@ class StoreFeed:
     def refresh(self):
         """Verify every run with records a checkpoint covers that were not verified yet: what runs added first, then the
         runs not checked yet, the newest first. A run still being written is shown up to the newest checkpoint, not
-        only once it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a core, each in turn. A refresh
-        starts no check past REFRESH_S, so the newest records are read again while the runs of a large store are
-        checked. An edit of records already read shows in a file store's bytes (_open, every EDIT_S); a run of a
-        Postgres store, and one that failed or could not be checked, is checked again RECHECK_S after its last check
-        (the run checked longest ago, one a pass)."""
+        only once it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a core, each in turn. A refresh starts no check past REFRESH_S, so the newest records are read again while the
+        runs of a large store are checked. An edit of records already read shows in a file store's bytes (_open, every
+        EDIT_S); a run of a Postgres store, and one that failed or could not be checked, is checked again RECHECK_S
+        after its last check (the run checked longest ago, one a pass)."""
         now, stale = time.monotonic(), None
         due = [now + RECHECK_S]
         self.due = due[0]   # a store that cannot be read is tried again when it changes, not every POLL_S
@@ -1027,11 +1028,11 @@ class StoreFeed:
             self.noted = note[0] if note else 0
             with self.lock:
                 self.listed = {k for k in r.runs if k[1] != SIGNER_RUN[1]}
-            def order(kv):   # what runs added, the one checked longest ago first; then the runs not checked yet, the
-                state = self.runs.get(kv[0]) or {}   # newest first, the signer's own after the agents'
-                if state.get("count") and not state.get("again"):
+            def order(kv):   # what runs added, the one checked longest ago first; then runs waiting for a re-check, in
+                state = self.runs.get(kv[0]) or {}   # the order they started waiting; then runs not checked yet, the
+                if state.get("count") and not state.get("again"):   # newest first, the signer's own after the agents'
                     return 0, state["checked"]
-                return 1, kv[0][1] == SIGNER_RUN[1], -kv[1]["seqs"][-1]
+                return 1, state.get("again") or math.inf, kv[0][1] == SIGNER_RUN[1], -kv[1]["seqs"][-1]
             for key, run in sorted(r.runs.items(), key=order):
                 covered = bisect.bisect_left(run["seqs"], note[0]) if note else 0   # its records the note covers
                 state = self.runs.get(key, {})
@@ -1064,28 +1065,50 @@ class StoreFeed:
 
     def _open(self):
         """The store's reader: a new one of a Postgres store; a file store's kept across refreshes, updated with the
-        records appended since (FileReader.update), and read anew, every run then checked again, when the file is no
-        longer the one it read or no longer holds the bytes it read (hashed again every EDIT_S, and at once when the
-        file was written to without growing): an edit of records already read."""
+        records appended since (FileReader.update), and read anew when the bytes it read changed. Those are hashed
+        again: the piece the update began in each time, every piece every EDIT_S and when the file was written to
+        without growing. A run with a record in bytes that changed (every run, for a key record's, or a file replaced
+        or cut back) is checked again (_again)."""
         if self.pg:
             return reader(self.cfg)
         if self.reader is not None:
+            old = self.reader
             try:
-                if self.reader.update() or time.monotonic() >= self.edit_due:
+                full = old.update() or time.monotonic() >= self.edit_due
+                if full:
                     self.edit_due = time.monotonic() + EDIT_S
-                    if not self.reader.unchanged():
-                        raise StorageCorrupt("records.jsonl no longer holds the records the viewer read")
-                return self.reader
+                changed = old.changed(0 if full else old.tail)
+                if not changed:
+                    return old
+                print("tracekit view: records.jsonl no longer holds records the viewer read: their runs are checked "
+                      "again", file=sys.stderr, flush=True)
+                self._again(touched(old, changed))
             except StorageCorrupt as e:
                 print(f"tracekit view: {e}: every run is checked again", file=sys.stderr, flush=True)
-                self.reader = None
-                self.bundles.clear()
-                with self.lock:
-                    for state in self.runs.values():
-                        state["again"] = True
+                self._again(None)
+            self.reader = None
         self.reader = reader(self.cfg)
         self.edit_due = time.monotonic() + EDIT_S
         return self.reader
+
+    def _again(self, keys):
+        """Runs `keys` (None: every run) are checked again, from a reader opened anew, after the runs waiting already:
+        until then a run that verified reads re-checking (a pending review), never its old verdict."""
+        self.detected += 1
+        with self.lock:
+            for key, state in self.runs.items():
+                if keys is not None and key not in keys or state.get("again"):
+                    continue
+                state["again"] = self.detected
+                self.bundles.pop(key, None)
+                was = (self.latest.get(key) or self.kept.get(key) or {}).get("review")
+                if state.get("count") and not state.get("failed") and was:
+                    row = {**self.tr._base({"run_id": key[1]}, {}, "tk_run"), "tenant": key[0], "analysis": True,
+                           "review": dict(was, verdict="pending", integrity="RE-CHECKING: the store's bytes changed "
+                                                                            "after they were read")}
+                    if key[1] == SIGNER_RUN[1]:
+                        row.update(signer=True, agent="signer")
+                    self._append([row], key)
 
     def _check(self, reader, note, key, count):
         """_verify, where an error gives the run a "not checked" row and is tried again as a run that did not grow
@@ -1115,7 +1138,8 @@ class StoreFeed:
             self.memo.clear()
         state = dict(self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}, checked=time.monotonic(),
                      took=time.thread_time() - t, again=False)
-        if not code and count == state["count"] and not state["failed"]:   # checked again, unchanged: nothing new
+        waited = (self.runs.get(key) or {}).get("again")   # re-checked after a store change: its review says so
+        if not code and count == state["count"] and not state["failed"] and not waited:   # unchanged: nothing new
             with self.lock:
                 self.runs[key] = state
             return
@@ -1360,9 +1384,11 @@ class StoreFeed:
 
     def checking(self, tenant=None):
         """How many of the store's runs (of `tenant`, else of all) this viewer has not checked yet (on start it checks
-        them one at a time): until then the page knows nothing of what they hold, so NEEDS YOU can't say all clear."""
+        them one at a time), or waits to check again after their bytes changed: until then the page knows nothing of
+        what they hold, so NEEDS YOU can't say all clear."""
         with self.lock:
-            return sum(tenant is None or k[0] == tenant for k in self.listed - self.runs.keys())
+            return sum((tenant is None or k[0] == tenant) and (k not in self.runs or bool(self.runs[k].get("again")))
+                       for k in self.listed)
 
     def verify(self, tenant=None):
         """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""
@@ -1405,6 +1431,18 @@ def _rename(src, dst):
                 raise
             time.sleep(0.05)
     os.rename(src, dst)
+
+
+def touched(reader, ranges):
+    """The runs with a record in byte ranges `ranges` of the records.jsonl `reader` read, as it read them; None (every
+    run) when a key record is in one."""
+    offsets, seqs = reader.log.offsets, []
+    for lo, hi in ranges:   # the lines that overlap [lo, hi): a line's seq is its number
+        seqs.append((max(0, bisect.bisect_right(offsets, lo) - 1), bisect.bisect_left(offsets, hi)))
+    if any(bisect.bisect_left(reader.key_seqs, a) < bisect.bisect_left(reader.key_seqs, b) for a, b in seqs):
+        return None
+    return {k for k, run in reader.runs.items()
+            if any(bisect.bisect_left(run["seqs"], a) < bisect.bisect_left(run["seqs"], b) for a, b in seqs)}
 
 
 def remove_later(path):

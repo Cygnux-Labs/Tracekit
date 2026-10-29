@@ -659,6 +659,25 @@ class TestVerifyV2(Case):
         self.assertEqual(len(seen[-1]), 2 + 7)   # both key records and every record of the run
         self.assertNotIn(name, memo.runs)   # final: never checked again as it grows
 
+    def test_a_memo_checks_every_record_again_under_another_trust_or_revocations(self):
+        """What a run's records were checked against besides them, the trust config and the revocations as the key
+        records, is part of what a Memo keeps: under another, every record is checked again."""
+        log, _ = self.honest(close=False)
+        files, _ = bundle(log.store, "acme", "run-a", log.note(), kept={})
+        memo, seen = v2.Memo(), []
+
+        def checked(trust, revocations=None):
+            with mock.patch.object(v2, "verify_record", wraps=v2.verify_record) as calls, \
+                    mock.patch.object(v2, "_revocations", wraps=v2._revocations,
+                                      **({"return_value": revocations} if revocations is not None else {})):
+                self.assertEqual(v2.verify(files, trust, memo=memo)[1], 0)
+            seen.append(len({c.args[0]["event"]["seq"] for c in calls.call_args_list}))
+        checked(self.trust)
+        checked(self.trust)
+        checked(self.write_trust(witnesses_required=0, name="other.json"))   # another trust config
+        checked(self.trust, {("issuer", "serial"): 3})   # a revocation known now
+        self.assertEqual(seen, [5, 1, 5, 5])   # the key record and the run's 4, or the key record alone
+
     def test_an_export_from_a_reader_reads_no_record_but_the_key_records_for_them(self):
         """Each export read every record of the log for the key records (1.75 s of 3.5 s for a run of a 400k-record
         store); a FileReader indexes them, and the bundle is the same."""
@@ -952,6 +971,16 @@ class TestRunParts(Case):
             fresh = v2.verify(files, self.trust)
         self.assertEqual((rep.checks, rep.integrity, code), (fresh[0].checks, fresh[0].integrity, fresh[1]))
         self.assertEqual([c.args[0]["event"]["seq"] for c in calls.call_args_list], [0] + added)
+        first = sorted(n for n in files if ".part-" in n)[0]   # a record edited inside a part it checked before
+        edited = dict(files, **{first: files[first].replace(b'"name":"Bash"', b'"name":"Bosh"', 1)})
+        manifest = json.loads(edited["manifest.json"])
+        manifest["files"][first] = hashlib.sha256(edited[first]).hexdigest()
+        edited["manifest.json"] = json.dumps(manifest).encode()
+        self.assertNotEqual(edited[first], files[first])
+        with mock.patch.object(v2, "MAX_ENTRY", 4096):
+            rep, code = v2.verify(edited, self.trust, memo=memo)
+        self.assertEqual((code, rep.integrity), (1, "FAILED"))
+        self.assertIn("signatures", rep.failures)
 
     def test_a_run_that_fits_is_one_file_as_before(self):
         log, out = self.parted(cap=64 << 20)

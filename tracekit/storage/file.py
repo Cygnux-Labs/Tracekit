@@ -57,6 +57,7 @@ QUEUE = "witness-queue.json"
 ANCHORS = "anchors.jsonl"
 LOGS = ("records.jsonl", "registry.jsonl", "registry-notes.jsonl")
 SNAPSHOTS = "snapshots"
+PIECE = 1 << 20   # a FileReader hashes records.jsonl in pieces of this many bytes, to say which bytes changed
 CONTENT = "content"
 
 
@@ -693,9 +694,11 @@ class FileReader(_Records):
         # lean: rebuilds the trees in memory from every leaf, O(records) per open; read the tiles once views stay open
         self.tree = Tree(MemoryTileStore())
         self.log = _Lines(os.path.join(root, "records.jsonl"), b"")
-        # what update() read: the file (device, inode), the SHA-256 of its lines and the last of them, and its size and
-        # modification time then
-        self._file, self.digest, self._last, self._stamp = None, hashlib.sha256(), b"", None
+        # what update() read: the file (device, inode), the last line, the file's size and modification time then; the
+        # SHA-256 of each whole PIECE of the lines read (sums) and the hash of the rest (_piece); and `tail`, where the
+        # piece holding the end read before the last update() starts
+        self._file, self._last, self._stamp, self.tail = None, b"", None, 0
+        self.sums, self._piece, self._piece_len = [], hashlib.sha256(), 0
         self.update()
 
     def update(self):
@@ -703,8 +706,9 @@ class FileReader(_Records):
         registry logs again, as a reader opened now would, at the cost of the new bytes only: the file is append-only.
         StorageCorrupt when it is no longer the file read before or no longer ends with the line read last (replaced,
         cut back or rewritten): open a new reader then. Returns whether the file was written to without growing since
-        (its bytes may have been rewritten in place: unchanged() says)."""
+        (its bytes may have been rewritten in place: changed() says)."""
         log = self.log
+        self.tail = log.offsets[-1] // PIECE * PIECE
         fd = os.open(log.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY)
         with os.fdopen(fd, "rb") as f:
             st = os.fstat(fd)
@@ -725,7 +729,7 @@ class FileReader(_Records):
                         raise StorageCorrupt(f"records.jsonl line {len(log.offsets) - 1}: {e}; run fsck") from None
                     log.offsets.append(log.offsets[-1] + len(line) + 1)
                     self._last = line + b"\n"
-                self.digest.update(memoryview(data)[:end])
+                self._hash(memoryview(data)[:end])
                 rest = data[end:]
         self.registry, self.notes, self.latest_notes = {}, {}, {}
         self.reg_log, self.note_log, self.anchor_log = (self._lines(n) for n in (
@@ -733,15 +737,33 @@ class FileReader(_Records):
         self._index_registry()
         return rewritten
 
-    def unchanged(self):
-        """Whether records.jsonl still holds, byte for byte, the lines this reader indexed: they are hashed again."""
-        h, left = hashlib.sha256(), self.log.offsets[-1]
+    def _hash(self, data):
+        """Fold `data`, the next bytes of the lines read, into the pieces' hashes."""
+        while data:
+            room = PIECE - self._piece_len
+            self._piece.update(data[:room])
+            self._piece_len += min(room, len(data))
+            if self._piece_len == PIECE:
+                self.sums.append(self._piece.digest())
+                self._piece, self._piece_len = hashlib.sha256(), 0
+            data = data[room:]
+
+    def changed(self, start=0):
+        """The byte ranges [from, to) of records.jsonl, from the piece holding byte `start` to the end of the lines
+        read, that no longer hold what this reader read: those pieces are read and hashed again (all of the file from
+        0, the piece the last update() began in from `tail`)."""
+        out, at, end = [], start // PIECE * PIECE, self.log.offsets[-1]
         fd = os.open(self.log.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY)
         with os.fdopen(fd, "rb") as f:
-            while left > 0 and (chunk := f.read(min(left, 1 << 24))):
-                h.update(chunk)
-                left -= len(chunk)
-        return not left and h.digest() == self.digest.digest()
+            f.seek(at)
+            while at < end:
+                data = f.read(min(PIECE, end - at))
+                i = at // PIECE
+                want = self.sums[i] if i < len(self.sums) else self._piece.digest()
+                if len(data) != min(PIECE, end - at) or hashlib.sha256(data).digest() != want:
+                    out.append((at, min(at + PIECE, end)))
+                at += PIECE
+        return out
 
     def _index(self, record):
         super()._index(record)
