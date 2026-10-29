@@ -1238,10 +1238,18 @@ class Shell(unittest.TestCase):
                  (["git", "commit", "--message=msg"], {2}), (["git", "tag", "-mmsg", "v1"], {2}),
                  (["grep", "-rn", "pat", "dir"], {2}), (["git", "grep", "-n", "pat"], {3}), (["rg", "--", "-x", "d"], {2}),
                  (["grep", "-e", "pat", "f"], set()), (["grep", "-rf", "pats", "f"], set()),
-                 (["git", "diff", "--no-index", "-m", "a", "b"], set()), (["cat", "-m", "x"], set())]
+                 (["git", "diff", "--no-index", "-m", "a", "b"], set()), (["cat", "-m", "x"], set()),
+                 (["echo", "/etc/tracekit/client.json"], set()),
+                 (["printf", "%s", "/etc/tracekit/client.json"], set())]
         for argv, want in cases:
             with self.subTest(argv=argv):
                 self.assertEqual(shell.data_words(argv), want)
+
+    def test_echo_data_words_need_the_parser_approved_raw_line_cut(self):
+        safe = shell.analyse("echo /etc/tracekit/client.json > note.txt; cd /tmp")[0][0]
+        unsafe = shell.analyse(". ./defs; echo /etc/tracekit/client.json > out | xargs rm")[0][1]
+        self.assertEqual(safe.get("data_words"), [1])
+        self.assertNotIn("data_words", unsafe)
 
 
 class Classes(unittest.TestCase):

@@ -63,6 +63,8 @@ class Engine:
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
                        rx(r, "unless") if "unless" in r else None, literals(r["pattern"]))
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
+        # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
+        self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._of = {}
         # an ask rule's approval.agent patterns: (rule id, argument name) -> compiled
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
@@ -158,7 +160,11 @@ class Engine:
             else:
                 unreadable = hits[self.policy.get("on_parse_error", "ask")]   # TK-SHELL-PARSE's section
                 try:
-                    parsed = _shell(args)
+                    if self._persistent_targets:
+                        parsed = _shell(args, lambda target: any(p.search(target.casefold())
+                                                                  for p in self._persistent_targets))
+                    else:
+                        parsed = _shell(args)
                 except shell.ParseError:
                     unreadable.append("TK-SHELL-PARSE")
                     # its own target and code
@@ -267,13 +273,15 @@ class Engine:
         mcp, app and unknown tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
         decimal, hex, octal or IPv6 form reads as the address it is."""
         if cls == "shell":
-            words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in parsed[0]
-                     for data in [shell.data_words(c["argv"])]]
-            found = [a for ws in words for a in ws] + parsed[2]
+            commands = parsed[0]
+            words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in commands
+                     for data in [shell.data_words(c["argv"]) | set(c.get("data_words", ()))]]
+            stdin = [s for c in commands if not c.get("data_stdin") for s in c["stdin"]]
+            found = [a for ws in words for a in ws] + parsed[2] + stdin
             urls = [t for t in map(classes.url_target, (u for w in found for u in _URL.findall(w))) if t]
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
-            targets = [" ".join(w) for w in words] + parsed[2]
+            targets = [" ".join(w) for w in words] + parsed[2] + stdin
             have = set(targets)
             return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
         if cls == "fs":
@@ -294,7 +302,7 @@ class Engine:
         return [canonical(args)] if cls in ("mcp", "app", "unknown") else []
 
 
-def _shell(args):
+def _shell(args, persistent_target=None):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
     a list of command lines. Anything else, or more than one of them, raises ParseError."""
@@ -304,9 +312,9 @@ def _shell(args):
     value = args[present[0]] if present else ""
     strings = isinstance(value, list) and value and all(isinstance(a, str) for a in value)
     if isinstance(value, str):
-        return shell.analyse(value)
+        return shell.analyse(value, persistent_target)
     if strings and present == ["commands"]:
-        return shell.analyse("\n".join(value))
+        return shell.analyse("\n".join(value), persistent_target)
     if strings:
         return shell.analyse_argv(value)
     raise shell.ParseError("the command is neither a string nor a list of strings")

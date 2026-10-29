@@ -49,8 +49,8 @@ deny:
     rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
   - id: TK-D002
     class: shell
-    field: line
-    pattern: '(curl|wget)[^|;&]*\|\s*(sudo\s+)?(\S*/)?((ba|z|da)?sh|python3?|perl|ruby|node)\b|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(curl|wget)\b[^\n]*(&&|;)\s*(sudo\s+)?((ba|z|da)?sh\s+\S|\./\S|chmod\s+\+x[^\n]*(&&|;)\s*\./)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
+    field: code
+    pattern: '(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(env\s+|nohup\s+)?(\S*/)?(sh|bash|zsh|dash)\b(?: -(?:e|x|n|v|u|a|C|f|l|i))*(?:\s+-s|\s*(?:[;&|)>]|$))|(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(\S*/)?(python3?|perl|ruby|node)\b(?: -(?:I|B|u|s|w|W|O|OO|x))*(?:\s+-)?\s*(?:[;&|)>]|$)|(curl|wget)\b[^;&\n]*\|\s*xargs\b[^;&\n]*\b(sh|bash|zsh|dash)\s+-c(?:\s|[;&|)]|$)|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*\b(sh|bash|zsh|dash|python3?|node|perl|ruby)\b\s+\S+|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*(?:\bsource|\.)\s+\S+|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*(^|[;&]\s*)\./\S+|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
     reason: running a downloaded script
     remedy: Download the script to a file and show it for review instead of piping it into a shell; a person runs it once they have read it.
     rationale: Remote code execution without review.
@@ -140,10 +140,11 @@ deny:
   # --- harness self-protection ---
   - id: TK-D007
     class: shell
-    field: code
+    field: target
     # the dev signer's data and runtime dirs (signer/service.py dev_data_dir, sdk/autospawn.py runtime_dir) and the
     # installed packs too, wherever a command acts on them: not in text it only writes into another file (#423)
-    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|AppData[/\\]Local[/\\]tracekit|LOCALAPPDATA%?[/\\]tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
+    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
+    unless: '^tracekit(?: [^ ]+)* --help$|^tracekit --version$'
     reason: touching Tracekit's own files or signer
     remedy: Leave Tracekit's files, signer and policy alone; a person changes them through the signer's own configuration.
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
@@ -194,6 +195,13 @@ deny:
     rationale: A URL bypasses the configured package source and can install unreviewed code.
 
 ask:
+  - id: TK-A046
+    class: shell
+    field: code
+    pattern: '^(sudo\s+)?(curl|wget)[^|;&\n]*\|\s*(sudo\s+)?(?:/[A-Za-z0-9._+-]{1,64}){0,8}/?((ba|z|da)?sh|python3?|perl|ruby|node)\b[^\n]*(\s(-c|-e|--eval|--execute)(\s|$)|\s[^-][^\s;&|)]*(\.py|\.js|\.pl|\.rb|\.php|\.lua)?(\s|$))'
+    reason: downloaded data passed to an interpreter
+    remedy: Have a person check what the interpreter does with the downloaded input before approving it.
+    rationale: Inline code and script paths can execute downloaded input in ways the policy cannot determine from the command.
   - id: TK-A020
     class: fs
     tool: Read|Grep
@@ -575,7 +583,7 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)library/launch(agents|daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init\.d|rc\.local|xdg/autostart)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
+    pattern: '(^|/)library/launch(agents|daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init(\.d)?|rc\.local|xdg/autostart|profile\.d)(/|$)|(^|/)etc/(cron[^/]*|profile|bash\.bashrc|rc[^/]*\.d)(/|$)|(^|/)var/spool/cron(/|$)|(^|/)(\.bashrc|\.bash_profile|\.profile|\.zshrc|\.zprofile)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
     reason: adding something that runs at every login or boot
     remedy: Have a person approve the held call, or keep the file in the project and start the program when it is needed.
     rationale: Startup items and service definitions outlive the agent's session; a person confirms each one.
