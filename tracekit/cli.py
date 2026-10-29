@@ -22,9 +22,11 @@ def experimental_gate(enabled, what):
     return True
 
 
-def experimental(what):
-    """The one line each experimental command or server prints when it starts (docs/support.md)."""
-    print(f"tracekit: {what} is experimental: it works and is tested, but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
+def experimental(what, help=False):
+    """The one line each experimental command or server prints when it starts (docs/support.md); with `help`, the line
+    its --help ends with, on stdout."""
+    text = f"{what} is experimental: it works and is tested, but may change ({wiki_url('docs/support.md')})"
+    print(f"\n{text}" if help else f"tracekit: {text}", file=sys.stdout if help else sys.stderr)
 
 
 def _signer_home(a):
@@ -81,9 +83,16 @@ def main(argv=None):
         return 2
     if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
         import importlib
-        if args[0] in _EXPERIMENTAL and not {"-h", "--help"} & set(args[1:]):   # its help says so itself
+        run = importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main
+        if args[0] not in _EXPERIMENTAL:
+            return run(args[1:])
+        if not {"-h", "--help"} & set(args[1:]):
             experimental(_EXPERIMENTAL[args[0]])
-        return importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main(args[1:])
+            return run(args[1:])
+        try:   # its help ends with it, once, rather than a banner over the help
+            return run(args[1:])
+        finally:
+            experimental(_EXPERIMENTAL[args[0]], help=True)
     ap = argparse.ArgumentParser(prog="tracekit", description="Tamper-evident records of what AI agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
