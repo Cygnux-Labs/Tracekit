@@ -902,6 +902,43 @@ class CodexHookTrust(unittest.TestCase):
         self.assertTrue(self.row()["detail"].startswith(f"can't confirm that Codex trusts Tracekit's hooks in "
                                                         f"{self.hooks} ({self.toml}: "))
 
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_codex_home_is_where_the_hooks_and_their_trust_go(self):
+        """Codex reads $CODEX_HOME in place of ~/.codex: init wrote the hooks to ~/.codex, which that Codex never reads,
+        and doctor looked for their trust there."""
+        cx = os.path.join(self.home, "cx")
+        os.makedirs(cx)
+        with mock.patch.dict(os.environ, {"CODEX_HOME": cx}):
+            line = self.init("--v2")[-1]
+            self.hooks, self.toml = os.path.join(cx, "hooks.json"), os.path.join(cx, "config.toml")
+            self.assertTrue(os.path.exists(self.hooks))
+            self.assertFalse(os.path.exists(os.path.join(self.home, ".codex", "hooks.json")))
+            self.assertIn(f"Run codex with CODEX_HOME={cx} in a terminal, type /hooks and trust Tracekit's hooks (Codex "
+                          f"records that in {self.toml})", line)
+            self.trust(*self.EVENTS)
+            self.assertEqual(self.row()["status"], "ok")
+        self.assertEqual(agent_hooks.codex_trust_store("/home/agent"), "/home/agent/.codex/config.toml")   # system mode
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_doctor_checks_the_v1_hooks_trust_too(self):
+        """init --dev --agent codex (v1) writes hooks Codex skips just the same until trusted."""
+        self.init()   # v1
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.home)
+        out = io.StringIO()
+        with mock.patch.object(client, "system_config", return_value=None), contextlib.redirect_stdout(out):
+            cli.main(["doctor", "--json"])
+        got = next(r for r in json.loads(out.getvalue()) if r["id"] == "D-CODEX-HOOK-TRUST")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn(f"hook(s) in {self.hooks}: nobody trusted them in Codex's /hooks", got["detail"])
+        self.trust(*self.EVENTS)
+        with mock.patch.object(client, "system_config", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            cli.main(["doctor", "--json"])
+        self.assertIn({"id": "D-CODEX-HOOK-TRUST", "status": "ok", "fix": "",
+                       "detail": f"Codex trusts each of Tracekit's hooks in {self.hooks} ({self.toml})"},
+                      json.loads(out.getvalue()))
+
     def test_doctor_says_when_it_cant_tell(self):
         with mock.patch.dict(sys.modules, {"tomllib": None}):   # Python 3.9 and 3.10
             got = self.row()

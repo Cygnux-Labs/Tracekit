@@ -97,16 +97,26 @@ def collect(config=None, issuer_key=None):
                                else None, no_hooks=h.get("no_hooks") is True)
     if sc:
         return out
+    from . import agent_hooks
     from .signer.service import dev_content, dev_data_dir
     project = os.path.join(os.getcwd(), ".claude")
-    mine = client.client_config()
-    return v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
-                     settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=_dev_harnesses(),
+    mine, harnesses = client.client_config(), _dev_harnesses()
+    rows = v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
+                     settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=harnesses,
                      no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
                                        os.path.join(project, "settings.local.json"), _managed()],
                      gemini_settings=_gemini(os.path.expanduser("~"),
                                              os.path.join(os.getcwd(), ".gemini", "settings.json")))
+    if "codex" not in harnesses:   # v1 Codex hooks (init --dev --agent codex) run only once trusted, as v2 ones do
+        for path in (agent_hooks.config_path("codex"), agent_hooks.config_path("codex", os.getcwd())):
+            try:
+                hooks = _harness_hooks("codex", _json(path) or {})
+            except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
+                continue
+            _codex_trust(lambda id, ok, detail, fix, bad=FAIL: rows.append(result(id, OK if ok else bad, detail, fix)),
+                         path, hooks if isinstance(hooks, dict) else {}, None, WARN)
+    return rows
 
 
 def _managed():
@@ -263,22 +273,23 @@ def _agy_runs(add, path, home, fix):
 
 
 def _codex_trust(add, path, hooks, home, bad):
-    """D-CODEX-HOOK-TRUST: whether Codex runs Tracekit's hooks in `path` (a Codex hooks.json, read as `hooks`). Codex
-    runs a hook that isn't managed only once a person trusted it in its /hooks browser, and records that in the user's
-    config.toml as [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash (and enabled = false for a
-    hook turned off there); one nobody trusted it skips, saying nothing (learn.chatgpt.com/docs/hooks; codex-rs/hooks
-    hook_key and engine/discovery.rs).
+    """D-CODEX-HOOK-TRUST: whether Codex runs Tracekit's hooks, v2 or v1, in `path` (a Codex hooks.json, read as
+    `hooks`). Codex runs a hook that isn't managed only once a person trusted it in its /hooks browser, and records that
+    in the user's config.toml ($CODEX_HOME's, else ~/.codex's; `home`: the agent user's, whose ~/.codex it is) as
+    [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash (and enabled = false for a hook turned off
+    there); one nobody trusted it skips, saying nothing (learn.chatgpt.com/docs/hooks; codex-rs/hooks hook_key and
+    engine/discovery.rs).
     lean: checks that trust is recorded for each of Tracekit's hooks, not that the recorded hash is the hook's current
-    one (Codex hashes its own TOML form of the hook), and reads ~/.codex, not $CODEX_HOME; Codex asks again in /hooks
-    when a hook changed"""
+    one (Codex hashes its own TOML form of the hook); Codex asks again in /hooks when a hook changed"""
     from . import agent_hooks
     keys = {f"{os.path.abspath(path)}:{re.sub(r'(?<!^)(?=[A-Z])', '_', ev).lower()}:{g}:{h}": ev
-            for ev, groups in hooks.items() for g, group in enumerate(groups) if isinstance(group, dict)
-            for h, hook in enumerate(group.get("hooks") or ())
-            if isinstance(hook, dict) and agent_hooks._version(hook.get("command")) == "v2"}
+            for ev, groups in hooks.items() for g, group in enumerate(groups if isinstance(groups, list) else ())
+            if isinstance(group, dict) for h, hook in enumerate(group.get("hooks") if isinstance(group.get("hooks"), list)
+                                                                 else ())
+            if isinstance(hook, dict) and agent_hooks._version(hook.get("command"))}
     if not keys:   # D-HOOKS-EVENT says there are none
         return
-    store, state, why = os.path.join(home, ".codex", "config.toml"), {}, None
+    store, state, why = agent_hooks.codex_trust_store(home), {}, None
     try:
         import tomllib   # Python 3.11 and newer
         state = tomllib.loads(install.agent_file(store).decode("utf-8")).get("hooks", {}).get("state", {})
@@ -336,7 +347,7 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
         if harness == "codex":
-            _codex_trust(add, path, hooks, home or os.path.expanduser("~"), FAIL if prod else WARN)
+            _codex_trust(add, path, hooks, home, FAIL if prod else WARN)
         unnamed =sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
         blocking = sorted({ev for ev, h in cmds if ev not in agent_hooks.PRE
                            and (FAIL_CLOSED in h["command"] or h.get("failClosed") is True)})   # Cursor's failClosed

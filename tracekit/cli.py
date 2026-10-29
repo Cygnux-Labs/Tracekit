@@ -486,8 +486,10 @@ def _run(a):
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
             if settings and a.agent == "codex":
+                import pwd
+
                 from .agent_hooks import codex_trust_line
-                print(codex_trust_line(a.user))
+                print(codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
             return 0
         if a.dev and a.v2 and a.agent != "claude":
             from . import agent_hooks

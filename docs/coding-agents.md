@@ -3,7 +3,7 @@
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
 
 ```bash
-tracekit init --dev --v2 --agent codex      # ~/.codex/hooks.json
+tracekit init --dev --v2 --agent codex      # ~/.codex/hooks.json ($CODEX_HOME/hooks.json when it is set)
 tracekit init --dev --v2 --agent cursor     # ~/.cursor/hooks.json
 tracekit init --dev --v2 --agent gemini     # ~/.gemini/settings.json
 tracekit init --dev --v2 --agent qwen       # ~/.qwen/settings.json
@@ -32,9 +32,11 @@ tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's o
 **Codex runs these hooks only once you trust them.** Codex skips a hook that isn't managed until a person has reviewed
 and trusted it, and says nothing when it does: until then no Codex call is recorded or decided. After init, run `codex`
 in a terminal, type `/hooks`, and trust Tracekit's hooks; Codex asks again whenever they change, as after another
-init. Codex keeps that trust in your `~/.codex/config.toml` as `[hooks.state."<hooks.json path>:<event>:<group>:<handler>"]`
-with a `trusted_hash` ([Codex hooks](https://learn.chatgpt.com/docs/hooks)). Init ends by saying so, and `tracekit
-doctor` checks that each of Tracekit's Codex hooks is trusted and not turned off (`D-CODEX-HOOK-TRUST`); it can't
+init. Codex keeps that trust in your `~/.codex/config.toml` (`$CODEX_HOME/config.toml` when it is set; then init
+writes the hooks there too, and you run Codex with the same `CODEX_HOME`) as
+`[hooks.state."<hooks.json path>:<event>:<group>:<handler>"]` with a `trusted_hash`
+([Codex hooks](https://learn.chatgpt.com/docs/hooks)). Init ends by saying so, v1 and v2, and `tracekit doctor` checks
+that each of Tracekit's Codex hooks, v1 or v2, is trusted and not turned off (`D-CODEX-HOOK-TRUST`); it can't
 recompute Codex's hash, and with Python 3.9 or 3.10 it can't read the file, so it says it can't confirm
 ([limits](limits.md#signer-and-capture)).
 

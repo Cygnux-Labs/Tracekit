@@ -496,9 +496,13 @@ def _reply(harness, stdout, allowed, msg, is_pre):
 
 def config_path(harness, project=None, home=None):
     """The hook config of `harness`: a project's (project) or a user's (home, default ~), which differ for OpenCode,
-    whose 1.0 releases load plugins from plugin/ only (plugins/ from 1.1.1)."""
+    whose 1.0 releases load plugins from plugin/ only (plugins/ from 1.1.1). This user's Codex reads $CODEX_HOME in place
+    of ~/.codex.
+    lean: another user's (home) is ~/.codex: their CODEX_HOME isn't known here"""
     base = project or home or os.path.expanduser("~")
-    return {"codex": os.path.join(base, ".codex", "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
+    codex = os.path.abspath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
+        else os.path.join(base, ".codex")
+    return {"codex": os.path.join(codex, "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
             "qwen": os.path.join(base, ".qwen", "settings.json"),
@@ -598,13 +602,25 @@ def reasoning_line(path, value, changed):
             "the model's reasoning; set it to \"auto\" to check it")
 
 
-def codex_trust_line(user=None):
+def codex_trust_store(home=None):
+    """The config.toml where Codex records which hooks a person trusted (in /hooks): this user's Codex home's
+    ($CODEX_HOME, else ~/.codex), or that of the user whose home is `home`."""
+    return os.path.join(os.path.dirname(config_path("codex", home=home)), "config.toml")
+
+
+def codex_trust_line(user=None, home=None):
     """What init says last for Codex: it runs a hook only once a person trusted it in /hooks, and skips it until then,
-    saying nothing (learn.chatgpt.com/docs/hooks); doctor's D-CODEX-HOOK-TRUST checks."""
+    saying nothing (learn.chatgpt.com/docs/hooks); doctor's D-CODEX-HOOK-TRUST checks. user, home: system mode's agent
+    user."""
+    run = f"As {user}, run" if user else "Run"
+    if not user and os.environ.get("CODEX_HOME"):   # the Codex that reads it, not one that reads ~/.codex
+        run += f" codex with CODEX_HOME={os.environ['CODEX_HOME']}"
+    else:
+        run += " codex"
     return ("next, trust these hooks in Codex: Codex skips a hook nobody trusted, without saying so, so until then no "
-            f"Codex call is recorded or decided. {f'As {user}, run' if user else 'Run'} codex in a terminal, type /hooks "
-            "and trust Tracekit's hooks; Codex asks again whenever they change (as after tracekit init). `tracekit "
-            "doctor` says whether they are trusted")
+            f"Codex call is recorded or decided. {run} in a terminal, type /hooks and trust Tracekit's hooks (Codex "
+            f"records that in {codex_trust_store(home)}); it asks again whenever they change (as after tracekit init). "
+            "`tracekit doctor` says whether they are trusted")
 
 
 def _version(cmd):
