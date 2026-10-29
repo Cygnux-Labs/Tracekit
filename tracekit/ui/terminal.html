@@ -1908,8 +1908,7 @@
     .hzhud.tr {
       top: 16px;
       right: 18px;
-      text-align: right;
-      pointer-events: auto
+      text-align: right
     }
 
     .hzhud.bl {
@@ -1924,7 +1923,9 @@
       margin-bottom: 10px
     }
 
+    /* the HUD lets a click through to the stage but on its buttons */
     .hzvt button {
+      pointer-events: auto;
       font: inherit;
       font-weight: 600;
       background: none;

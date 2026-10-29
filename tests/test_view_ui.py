@@ -1852,6 +1852,15 @@ class HorizonZoom(unittest.TestCase):
         self.assertTrue(out["first"])                                   # open, its name under its circle
         self.assertTrue(out["now"] is None or out["now"] > 36, out)    # not on the shield (24px, and its ring)
 
+    def test_a_place_under_the_huds_readouts_can_be_clicked_and_its_buttons_still_can(self):
+        """Zoomed in, a place under the top-right readouts (EGRESS ... CHAIN) could not be clicked: the whole block took
+        the click for its buttons."""
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        self.assertIn(".hzhud.tr {\n      top: 16px;\n      right: 18px;\n      text-align: right\n    }", css)   # none: from .hzhud
+        self.assertIn(".hzhud {\n      position: absolute;\n      z-index: 1;", css)
+        self.assertIn("pointer-events: none", css[css.index(".hzhud {"):css.index(".hzhud b {")])
+        self.assertIn(".hzvt button {\n      pointer-events: auto;", css)
+
     def test_cmd_ctrl_or_alt_with_a_zoom_key_is_the_browsers_zoom(self):
         """Cmd+0, Cmd++ and Cmd+- zoomed HORIZON as well as the page."""
         needs_node(self)
