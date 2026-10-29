@@ -3118,7 +3118,9 @@ class SignerService:
         if not (call and call["decision"] == "ask" and digest and self._same(call, digest)):
             return None
         now, ran = _iso(time.time()), self.log.runs[key]["results"]
-        # lean: scans the signer's live approvals, as the sweep does; index approved ones by run if a run holds many
+        # lean: scans the signer's live approvals, as the sweep does; index approved ones by run if a run holds many.
+        # `ran` is by tool call id: a later attempt's approval of an id that ran before (a LangChain retry) is not
+        # reused either, so its retry asks again; key results by attempt too if that gets in the way
         found = [aid for aid, a in self.log.approvals.items()
                  if a["run_key"] == key and a["state"] == "approved" and a["tool"] == call["tool"]
                  and a.get("via") == call.get("via")   # a gateway's call by the same gateway, an agent's by the agent
