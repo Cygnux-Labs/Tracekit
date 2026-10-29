@@ -261,6 +261,15 @@ def _agy_runs(add, path, home, fix):
         bad=WARN)
 
 
+def _hook_run(scale=1, unit="s"):
+    """What D-HOOKS-TIMEOUT holds a pre-tool hook's timeout to (claude_code._pre): the hook answers within
+    APPROVAL_WAIT_S, and a held call's hook waits for its answer only with TRACEKIT_APPROVAL_WAIT set, keeping two
+    signer calls' time (30 s each, the hook client's timeout) of it for the answer and the consume."""
+    from .integrations.claude_code import APPROVAL_WAIT_S, WAIT_ENV
+    return (f"the hook answers within {APPROVAL_WAIT_S * scale} {unit} (a held call waits up to about "
+            f"{(APPROVAL_WAIT_S - 2 * 30) * scale} {unit}, only with {WAIT_ENV} set)")
+
+
 def _harness_hook_checks(add, harnesses, prod, home=None):
     """Event arguments and approval timeouts of the other coding agents' v2 command hooks (home: the agent user's home
     directory, where agy's sign-in settings are)."""
@@ -304,8 +313,7 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         pre = [t if type(t) in (int, float) and 0 <= t < float("inf") else 0 for t in pre]
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
-                f"{harness} pre-tool timeout {min(pre)} {unit} in {path}, approval wait {APPROVAL_WAIT_S * scale} {unit}",
-                fix, bad=WARN)
+                f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
 
 
 def _json(path):
@@ -589,7 +597,15 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 os.path.join(os.path.dirname(unit), (install.HELPER_LABEL + ".plist") if unit.endswith(".plist")
                              else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
 
-    hook_fix = REINIT if prod else "tracekit init --dev --v2"
+    managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
+    hook_fix = (REINIT + " --managed" if managed else REINIT) if prod else "tracekit init --dev --v2"
+    if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
+        read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
+        bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
+                                         "it" if read == [] else None)
+        add("D-HOOKS-MANAGED", not bad, bad or f"{settings} is root-owned and writable by root only"
+            + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown root:root and sudo chmod 644 "
+            f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
     from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin_settings}"
     others = "v2 hooks for " + ", ".join(f"{h} in {p}" for h, p in sorted((harnesses or {}).items()))
@@ -613,18 +629,25 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", True, others, "")
         elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
-            add("D-HOOKS-PRESENT", not missing, f"no v2 hook for {', '.join(missing)} in {settings}" if missing else
-                f"v2 hooks in {settings}", hook_fix, bad=sev)
+            own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
+            twice = not missing and own and install._v2_hooks_in(own)   # Claude Code runs both files' hooks
+            unused = twice and _setting(settings, "allowManagedHooksOnly") is True   # unless it runs managed ones only
+            add("D-HOOKS-PRESENT", not (missing or twice) or unused,
+                f"no v2 hook for {', '.join(missing)} in {settings}" if missing
+                else f"v2 hooks in {settings}; those in {own} don't run (allowManagedHooksOnly)" if unused
+                else f"v2 hooks in {settings}, and in {own} too: Claude Code runs both, so every call is decided twice"
+                if twice else f"v2 hooks in {settings}", hook_fix, bad=WARN if twice else sev)
         if hooks is not None:
             layers = sandbox_settings or dict.fromkeys((os.path.join(agent.pw_dir, ".claude", "settings.json") if agent
                                                         else install.user_settings(), settings))
             cmds = [(ev, h.get("command") or "") for ev, hs in hooks.items() for h in hs]
             unnamed = sorted({ev for ev, c in cmds if not re.search(rf"\b{ev}\b", c)})
             blocking = sorted({ev for ev, c in cmds if ev != "PreToolUse" and FAIL_CLOSED in c})
-            # what Claude Code skips: every hook (disableAllHooks, a true value in JavaScript), the tools a matcher
-            # other than "*", "" or none leaves out, and on POSIX a PreToolUse hook that can't start and isn't wrapped
-            # to block the call
-            off = [p for p in dict.fromkeys([*layers, settings])   # the hooks' own file too (init's record of it)
+            # what Claude Code skips: every hook (disableAllHooks, a true value in JavaScript; only managed settings can
+            # turn managed hooks off), the tools a matcher other than "*", "" or none leaves out, and on POSIX a
+            # PreToolUse hook that can't start and isn't wrapped to block the call
+            # lean: of the managed files, managed-settings.json only, not managed-settings.d/; read it if admins use it
+            off = [p for p in ([settings] if managed else dict.fromkeys([*layers, settings]))   # the hooks' own file too
                    if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \
                 if any(hooks.values()) or plugin else []
             narrowed = {ev: hs[0]["matcher"] for ev, hs in hooks.items()
@@ -650,11 +673,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                                                                                 pre=ev == "PreToolUse")
                                                           for a in ((ev,), ()))]   # a pre-1.2 one is D-HOOKS-EVENT's
                 add("D-HOOKS-VENV", not stray, f"{len(stray)} hooks are not the command init writes for {python} "
-                    "(another Python, or init from before 1.3)" if stray else f"hooks run {python}", REINIT)
+                    "(another Python, or init from before 1.3)" if stray else f"hooks run {python}", hook_fix)
             pre = [t if type(t) in (int, float) else 0 for t in (h.get("timeout", 60) for h in hooks["PreToolUse"])]
             if pre:
-                add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S, f"PreToolUse timeout {min(pre)} s, approval wait "
-                    f"{APPROVAL_WAIT_S} s", f"set the PreToolUse hook timeout to {install.HOOK_TIMEOUT['PreToolUse']}")
+                add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S, f"PreToolUse timeout {min(pre)} s; " + _hook_run(),
+                    f"set the PreToolUse hook timeout to {install.HOOK_TIMEOUT['PreToolUse']}")
             if any(hooks.values()) or plugin:   # without Claude Code's hooks none of its reasoning is recorded
                 vault = isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True
                 value, where = None, None   # Claude Code's precedence: the last file that sets it wins

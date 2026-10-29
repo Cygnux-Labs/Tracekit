@@ -5,7 +5,9 @@
 The log signs with type 0x01 (Ed25519 over the note text) under a key named after the origin; witnesses cosign with
 type 0x04 (8-byte timestamp ‖ Ed25519 over "cosignature/v1\\ntime <t>\\n" + text). Key id = SHA-256(name ‖ 0x0A ‖ type ‖
 public key)[:4]. Keys are pinned as vkeys, `name+hex8+base64(type ‖ public key)`. A verifier ignores signature lines of
-keys it doesn't pin (unknown types too), and rejects the note when a pinned key's signature fails.
+keys it doesn't pin (unknown types too), and rejects the note when a pinned key's signature fails. A cosignature signs
+no key name and a witness has one key (tlog-cosignature), so one witness key pinned under two names, or two under one
+name, is refused: each witness counts once.
 
 Hybrid line (04-design §3.1): the log may also sign with SLH-DSA-SHA2-128s (FIPS 205) under a second key of the same
 name, type 0xff, whose "public key" is SLH_DSA ‖ the 32-byte SLH-DSA public key. When a verifier pins it, a note of its
@@ -103,6 +105,22 @@ def signers(note):
     return out
 
 
+def check_witnesses(vkeys):
+    """NoteError when `vkeys` pin one cosignature key under two names, or two under one name: a witness is one key
+    under one name, and counts once."""
+    names, keys = {}, {}
+    for k in vkeys:
+        name, _, type_, public = parse_vkey(k)
+        if type_ != COSIGNATURE:
+            continue
+        if names.setdefault(public, name) != name:
+            raise NoteError(f"trust pins one witness key under two names ({names[public]}, {name}); a key is one "
+                            "witness: keep it under the name it cosigns with")
+        if keys.setdefault(name, public) != public:
+            raise NoteError(f"trust pins two witness keys under one name ({name}); a name is one witness: keep only "
+                            "its current key")
+
+
 def _cosigned(text, ts):
     return f"cosignature/v1\ntime {ts}\n{text}".encode("utf-8")
 
@@ -141,6 +159,7 @@ def open_note(note, log_keys, witness_keys=()):
     root = _unb64(root)
     if len(root) != 32:
         raise NoteError("bad root hash")
+    check_witnesses(witness_keys)
     pinned = {}
     for keys, want in ((log_keys, (ED25519, HYBRID)), (witness_keys, (COSIGNATURE,))):
         for k in keys:

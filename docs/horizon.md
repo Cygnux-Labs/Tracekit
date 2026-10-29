@@ -87,7 +87,9 @@ placed that way.
 - A call whose arguments the viewer has only as a commitment is placed by its tool, not at a file or host
   ([limits](limits.md#investigation-tracekit-why)).
 - A word with a slash in a call's arguments is read as a path, so a git ref such as `origin/main` is drawn as a project
-  place.
+  place ([limits](limits.md#investigation-tracekit-why)).
+- On a phone it draws callouts only for restricted places and places where an agent was stopped; at any width, a move's
+  number that would cover another's is left out ([limits](limits.md#investigation-tracekit-why)).
 - It shows the network effects a kernel sensor saw, not the egress observer's records
   ([limits](limits.md#investigation-tracekit-why)).
 - A why log time it can't read is drawn as the oldest ([limits](limits.md#investigation-tracekit-why)).

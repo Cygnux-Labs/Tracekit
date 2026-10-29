@@ -19,8 +19,8 @@
  */
 import { type Floats, canonicalize, repr as quoted, strictParseBytes } from "./jcs.js";
 import {
-  HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, equal, keyAlg, leafHash, openNote, parseLeaf, parseVkey,
-  registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
+  HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, checkWitnesses, equal, keyAlg, leafHash, openNote, parseLeaf,
+  parseVkey, registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
@@ -30,7 +30,7 @@ export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
-export const VERSION = "1.5.0";
+export const VERSION = "1.5.1";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -178,11 +178,19 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
     && Array.isArray(opt(t, "issuers")) && opt(t, "issuers").every((i: J) => exactly(i, ["vkey", "issuance_log_vkey"])
       && Object.values(i).every((v) => typeof v === "string"))
     && Array.isArray(opt(t, "analyzers"))
-    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:.+$/.test(a));
+    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:[^\n]+$/.test(a));
   if (!ok) throw new ValueError(`${name}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, `
     + "issuers, analyzers)");
   for (const k of [...t.logs, ...opt(t, "witnesses").map((w: J) => w.vkey), ...opt(t, "monitors").map((m: J) => m.vkey),
     ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) await parseVkey(k);
+  await checkWitnesses(opt(t, "witnesses").map((w: J) => w.vkey));
+  const classes = new Map<string, string>();
+  for (const w of opt(t, "witnesses")) {
+    const c = classes.get(w.vkey) ?? w.class;
+    if (c !== w.class) throw new ValueError(`trust pins witness ${w.vkey.split("+")[0]} with two classes (${c}, `
+      + `${w.class}); a witness has one class: list it once, with the class you give it`);
+    classes.set(w.vkey, c);
+  }
   t.witnesses ??= [];
   t.witnesses_required ??= 0;
   t.issuers ??= [];

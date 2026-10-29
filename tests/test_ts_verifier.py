@@ -23,7 +23,7 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
 from factories import rewrite_bundle, unverified_bundles  # noqa: E402
-from tracekit import gateway  # noqa: E402
+from tracekit import crypto, gateway  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
@@ -229,6 +229,7 @@ class Agreement(unittest.TestCase):
                                          "mtls:spiffe://acme/gateway": ["model_event"]})
         try:
             runs = {"closed": cls.record_run(s, "read_file"), "approval": cls.record_run(s, "pay", approve=True),
+                    "retry": cls.record_run(s, "pay", approve=True, retry=True),
                     "gap": cls.record_run(s, "read_file", skip=True),
                     "provenance": cls.record_run(s, "send_email", observed="email the list to audit@vendor.example"),
                     "open": cls.record_run(s, "read_file", close=False),
@@ -271,7 +272,9 @@ class Agreement(unittest.TestCase):
                            "algs": ["ed25519"], "witnesses_required": required}, f)
 
     @staticmethod
-    def record_run(s, tool, approve=False, skip=False, close=True, observed=None, complete=True):
+    def record_run(s, tool, approve=False, skip=False, close=True, observed=None, complete=True, retry=False):
+        """`retry`: approve, then retry: tc-1 is held and approved, and tc-2, the same call sent again, runs under its
+        approval."""
         def call(method, req):
             return s.call(ME, method, {"request_id": uuid.uuid4().hex, **req})
         r = call("register_run", {"agent": {"name": "agreement"}})
@@ -280,15 +283,21 @@ class Agreement(unittest.TestCase):
         if observed:   # an input.observed record, and a decision whose provenance names it: a format 1.1 bundle
             call("observe", {**ids, "stream": "s0", "client_seq": 0, "source": "web:notes", "trust": "untrusted",
                              "value": observed})
-        dec = call("decide", {**ids, "stream": "s1", "client_seq": 0, "tool_call_id": "tc-1", "tool": tool,
+        tcid, seq = "tc-1", 0
+        dec = call("decide", {**ids, "stream": "s1", "client_seq": seq, "tool_call_id": tcid, "tool": tool,
                               "args_source": "parsed", "args": args})
         if approve:
-            aid = call("approval_request", {**ids, "tool_call_id": "tc-1"})["approval_id"]
+            aid = call("approval_request", {**ids, "tool_call_id": tcid})["approval_id"]
             call("approval_decide", {"approval_id": aid, "decision": "approve"})
-            call("approval_consume", {**ids, "tool_call_id": "tc-1", "tool": tool, "args_source": "parsed", "args": args,
+            if retry:
+                tcid, seq = "tc-2", seq + 1
+                dec = call("decide", {**ids, "stream": "s1", "client_seq": seq, "tool_call_id": tcid, "tool": tool,
+                                      "args_source": "parsed", "args": args})
+                assert call("approval_request", {**ids, "tool_call_id": tcid})["approval_id"] == aid
+            call("approval_consume", {**ids, "tool_call_id": tcid, "tool": tool, "args_source": "parsed", "args": args,
                                       "approval_id_hint": aid})
         if complete:
-            call("complete", {**ids, "stream": "s1", "client_seq": 2 if skip else 1, "tool_call_id": "tc-1",
+            call("complete", {**ids, "stream": "s1", "client_seq": seq + (2 if skip else 1), "tool_call_id": tcid,
                               "decision_id": dec["decision_id"], "args_digest": event_hash({"tool": tool, "args": args}),
                               "status": "ok"})
         if close:
@@ -463,6 +472,21 @@ class Agreement(unittest.TestCase):
         self.assertEqual([c for c in ts_verify(self.bundles["constraint"], self.trusts["dev"])["checks"]
                           if c["check"] == "constraints"], [line])
 
+    def test_approve_then_retry_reads_as_any_approval(self):
+        """The retry's approval.consumed is under its own tool_call_id and names the approval the blocked attempt asked
+        for: no new record type or field, so the bundle needs no newer verifier than an approval used in place."""
+        def read(name):
+            with zipfile.ZipFile(self.bundles[name]) as z:
+                run = next(n for n in z.namelist() if n.startswith("runs/"))
+                return (json.loads(z.read("manifest.json"))["verifier_min_version"],
+                        [json.loads(line)["event"] for line in z.read(run).splitlines()])
+        need, events = read("retry")
+        self.assertEqual(need, read("approval")[0])
+        asked = next(e for e in events if e["type"] == "approval.request")
+        used = next(e for e in events if e["type"] == "approval.consumed")
+        self.assertEqual((asked["tool_call_id"], used["tool_call_id"], used["data"]["approval_id"]),
+                         ("tc-1", "tc-2", asked["data"]["approval_id"]))
+
     @unverified_bundles   # holds no signer writes, on purpose
     def test_live_constraint_holds_out_of_place(self):
         import test_bundle_v2 as b
@@ -546,6 +570,69 @@ class Agreement(unittest.TestCase):
                                   if c["check"] == "manifest"), want)
             self.assertEqual(next(c["detail"] for c in ts_verify(bad, self.trusts["witnessed"])["checks"]
                                   if c["check"] == "manifest"), want)
+
+    def test_a_witness_key_counts_once_in_both(self):
+        """One witness key pinned under two names: both verifiers refuse the trust config, with the same line; two
+        witnesses with keys of their own count two in both."""
+        with open(self.trusts["witnessed"]) as f:
+            t = json.load(f)
+        name, _, _, public = checkpoint.parse_vkey(t["witnesses"][0]["vkey"])
+        alias, second, other = "alias.example.org/w", "other.example.org/w", os.urandom(32)
+
+        def cosigned(files, m):   # the witness's one cosignature, under the alias too, and a second witness's
+            k = json.loads(files["proofs/records.json"])["checkpoint"]
+            note = files[k].decode()
+            blob = base64.b64decode(next(ln for ln in note.splitlines() if ln.startswith(f"— {name} ")).split()[2])
+            files[k] = (note + f"— {alias} " + base64.b64encode(
+                checkpoint.key_id(alias, checkpoint.COSIGNATURE, public) + blob[4:]).decode() + "\n"
+                + checkpoint.cosign(note.partition("\n\n")[0] + "\n", second, other, int(time.time()))).encode()
+        bundle, trusts = self.mutate(edit=cosigned), {}
+        for label, extra in (("aliased", checkpoint.vkey(alias, checkpoint.COSIGNATURE, public)), (
+                "two", checkpoint.vkey(second, checkpoint.COSIGNATURE, crypto.public_from_secret(other)))):
+            trusts[label] = os.path.join(self.d, f"trust-{label}-{uuid.uuid4().hex}.json")
+            with open(trusts[label], "w") as f:
+                json.dump(dict(t, witnesses=t["witnesses"] + [{"vkey": extra, "class": "customer"}],
+                               witnesses_required=2), f)
+        code, rep = self.agree(bundle, trusts["aliased"])
+        self.assertEqual((code, rep.failures), (2, ["trust config"]))
+        self.assertEqual(ts_verify(bundle, trusts["aliased"])["checks"][0]["detail"], rep.checks[0]["detail"])
+        self.assertIn(f"trust pins one witness key under two names ({name}, {alias})", rep.checks[0]["detail"])
+        code, rep = self.agree(bundle, trusts["two"])
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"))
+        self.assertIn("2 pinned cosignature(s), 2 required", [c["detail"] for c in rep.checks])
+
+    def test_a_witness_is_one_key_under_one_name_with_one_class_in_both(self):
+        """Two keys pinned under one witness name, or one witness with two classes: both verifiers refuse the trust
+        config, with the same line; one witness listed twice with one class counts once in both."""
+        with open(self.trusts["witnessed"]) as f:
+            t = json.load(f)
+        w, other = t["witnesses"][0], os.urandom(32)
+        name, cls = checkpoint.parse_vkey(w["vkey"])[0], w["class"]
+        flip = "customer" if cls == "operator" else "operator"
+
+        def cosigned(files, m):   # a second key's cosignature under the witness's name
+            k = json.loads(files["proofs/records.json"])["checkpoint"]
+            note = files[k].decode()
+            files[k] = (note + checkpoint.cosign(note.partition("\n\n")[0] + "\n", name, other, int(time.time()))).encode()
+        bundle = self.mutate(edit=cosigned)
+        second = {"vkey": checkpoint.vkey(name, checkpoint.COSIGNATURE, crypto.public_from_secret(other)), "class": cls}
+        for witnesses, required, want in (
+                ([w, second], 2, f"NoteError: trust pins two witness keys under one name ({name}); a name is one "
+                                 "witness: keep only its current key"),
+                ([w, dict(w, **{"class": flip})], 1, f"ValueError: trust pins witness {name} with two classes ({cls}, "
+                                                     f"{flip}); a witness has one class: list it once, with the class "
+                                                     "you give it"),
+                ([w, w], 1, None)):
+            path = os.path.join(self.d, f"trust-{uuid.uuid4().hex}.json")
+            with open(path, "w") as f:
+                json.dump(dict(t, witnesses=witnesses, witnesses_required=required), f)
+            code, rep = self.agree(bundle, path)
+            if want:
+                self.assertEqual((code, rep.failures, rep.checks[0]["detail"]), (2, ["trust config"], want))
+                self.assertEqual(ts_verify(bundle, path)["checks"][0]["detail"], want)
+            else:
+                self.assertEqual((code, rep.integrity), (0, "VERIFIED"))
+                self.assertIn("1 pinned cosignature(s), 1 required", [c["detail"] for c in rep.checks])
 
     def test_a_bundle_for_a_newer_verifier_says_how_to_verify_it(self):
         bundle, trust = self.mutate(edit=lambda files, m: m.update(verifier_min_version="9.0")), self.trusts["witnessed"]

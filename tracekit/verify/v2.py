@@ -4,7 +4,9 @@ Trust comes only from the verifier's own pinned config (JSON):
 
     {"logs": ["<log vkey>", ...],                         Ed25519 (0x01) log keys; the key name is the origin; and
                                                           hybrid SLH-DSA (0xff) log keys (tracekit.format.checkpoint)
-     "witnesses": [{"vkey": "<cosigner vkey>", "class": "public|customer|tracekit|operator"}, ...],
+     "witnesses": [{"vkey": "<cosigner vkey>", "class": "public|customer|tracekit|operator"}, ...],   each key under
+                                                          one name, one key per name (checkpoint.check_witnesses),
+                                                          one class per key
      "algs": ["ed25519"],                                 record signature algorithms accepted
      "witnesses_required": 0,                             pinned cosignatures a checkpoint must carry
      "rekor": {"trusted_root": {...}, "publishing_key": "<base64 SPKI>", "class": "public"},   optional: a Sigstore
@@ -363,6 +365,12 @@ def load_trust(path):
     for k in (t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]
               + [v for i in t.get("issuers", []) for v in i.values()]):
         checkpoint.parse_vkey(k)
+    checkpoint.check_witnesses([w["vkey"] for w in t.get("witnesses", [])])
+    classes = {}
+    for w in t.get("witnesses", []):
+        if classes.setdefault(w["vkey"], w["class"]) != w["class"]:
+            raise ValueError(f"trust pins witness {w['vkey'].split('+')[0]} with two classes ({classes[w['vkey']]}, "
+                             f"{w['class']}); a witness has one class: list it once, with the class you give it")
     return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], "analyzers": [], **t}
 
 

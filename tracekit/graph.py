@@ -360,6 +360,8 @@ def _add_run(g: Graph, recs: List[Dict[str, Any]], ok: bool, args: Optional[Dict
     calls = _calls(recs, args)
     by_seq: Dict[int, str] = {}   # run_seq -> the node of the record that brought a value into the run
     asked: Dict[str, str] = {}    # approval id -> the call it is for (a later approval record may not name it)
+    latest: Dict[str, str] = {}   # tool call id -> the node of its latest decision
+    held: Dict[str, str] = {}     # approval id -> the tool call id it was asked for
     unread = 0
     for r in recs:
         e = r["event"]
@@ -379,8 +381,9 @@ def _add_run(g: Graph, recs: List[Dict[str, Any]], ok: bool, args: Optional[Dict
             _edge(g, ok, run, by_seq[e["run_seq"]], "observed " + str(d.get("trust")), "SIGNED", at)
         elif t == "policy.decision":
             # what a call's decision and result were: from verified records only (a node's label is any record's)
-            call = _node(g, calls[d["decision_id"]], "call", str(d.get("tool")), tool_use_id=d.get("tool_use_id"),
-                         **({"decision": d.get("decision")} if ok else {}))
+            call = latest[str(e.get("tool_call_id"))] = _node(
+                g, calls[d["decision_id"]], "call", str(d.get("tool")), tool_use_id=d.get("tool_use_id"),
+                **({"decision": d.get("decision")} if ok else {}))
             _edge(g, ok, run, call, "decided " + str(d.get("decision")), "SIGNED", at)
             for rule in d.get("rule_ids") or []:
                 _edge(g, ok, _node(g, "rule:" + rule, "rule", rule), call, str(d.get("decision")), "SIGNED", at)
@@ -411,7 +414,7 @@ def _add_run(g: Graph, recs: List[Dict[str, Any]], ok: bool, args: Optional[Dict
                                          **({"ok": bool(d.get("ok"))} if ok else {}))
         elif t == "approval.request":   # for the decision it binds; an approval record names only a tool call id
             b, aid = d.get("binding") or {}, str(d.get("approval_id"))
-            asked[aid] = calls.get(d.get("decision_id"), run)
+            asked[aid], held[aid] = calls.get(d.get("decision_id"), run), str(e.get("tool_call_id"))
             _edge(g, ok, asked[aid], _node(g, "approval:" + aid, "approval", f"approval of {b.get('tool')}"),
                   "held for approval", "SIGNED", at, rule_ids=d.get("rule_ids") or [])
         elif t == "approval":
@@ -422,7 +425,10 @@ def _add_run(g: Graph, recs: List[Dict[str, Any]], ok: bool, args: Optional[Dict
                   **({"approval_id": d["approval_id"]} if d.get("approval_id") else {}))
         elif t.startswith("approval.") and str(d.get("approval_id")) in asked:
             reason = f" ({d['reason']})" if isinstance(d.get("reason"), str) else ""
-            _edge(g, ok, "approval:" + str(d["approval_id"]), asked[str(d["approval_id"])],
+            # consumed under another call's id (approve, then retry): the call that ran under it
+            tcid = str(e.get("tool_call_id"))
+            ran = latest.get(tcid) if t == "approval.consumed" and tcid != held[str(d["approval_id"])] else None
+            _edge(g, ok, "approval:" + str(d["approval_id"]), ran or asked[str(d["approval_id"])],
                   t.split(".", 1)[1] + reason, "SIGNED", at)
         elif t in ("capture.gap", "trace.tamper") or t.startswith("reconcile."):
             what = " ".join(filter(None, [t, d.get("kind")]))

@@ -542,7 +542,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                             "max": getattr(feed, "max_records", None),
                             "records": [r for r in itertools.chain(getattr(feed, "kept", {}).values(), feed.records)
                                         if r is not RETRACTED and (scope is ALL or r.get("tenant") == scope)],
-                            **({"source": feed.source} if getattr(feed, "source", None) else {})}
+                            **({"source": feed.source} if getattr(feed, "source", None) else {}),
+                            **({"signer": feed.signer} if getattr(feed, "signer", None) else {})}
                 return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/rows" and hasattr(feed, "rows"):   # a run of the store, verified again, in full
                 q = {k: v[0] for k, v in parse_qs(u.query).items()}

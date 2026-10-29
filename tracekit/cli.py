@@ -40,7 +40,8 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "a2a-gateway": "a2a_gateway", "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
-              "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli"}  # subcommands with their own parsers
+              "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli",
+              "report": "report"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
@@ -51,8 +52,9 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
-                 "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm"}
-_MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
+                 "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm",
+                 "report": "tracekit report"}
+_MOVED = {"sql": "query", "proofpack": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
 def main(argv=None):
@@ -119,8 +121,12 @@ def main(argv=None):
     p.add_argument("--experimental", action="store_true", help="allow experimental surfaces (--proxy)")
     p.add_argument("--proxy-port", type=int, default=8787)
     p.add_argument("--fail-closed", action="store_true", help="proxy: refuse to forward when the signer can't record")
-    p.add_argument("--managed", action="store_true", help="system mode: install hooks in Claude Code's admin-managed settings")
-    p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly")
+    p.add_argument("--managed", action="store_true", help="system mode, Claude Code: hooks in its admin-managed "
+                   "settings (managed-settings.json), which the agent's user can't edit or turn off; they run in "
+                   "every user's Claude Code on this machine (limits: a server-managed or MDM policy replaces the "
+                   f"file, claude --bare may skip it; {wiki_url('docs/limits.md', 'dev-mode-vs-system-mode')})")
+    p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly, which "
+                   "stops every user's own Claude Code hooks on this machine (user, project, local and plugin ones)")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
                                        "antigravity"), default="claude",
                    help="which coding agent's hooks to install (default: Claude Code)")
@@ -226,6 +232,9 @@ def main(argv=None):
     p = sub.add_parser("view", help="the viewer: the v2 signer's runs, each verified; --why DIR, --ledger, --bundle (read-only web UI)")
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("graph", help="what agents did across verified bundles: `graph build|query|verify`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("report", help="what the agents did this week, on one page, from the v2 signer's store: runs, "
+                       "calls, holds, denies and flags by rule, gaps, integrity (--since, --json)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)
@@ -414,6 +423,13 @@ def _run(a):
         if a.managed_only and not a.managed:   # alone, the hooks would go to settings the agent's user can edit
             print("tracekit: --managed-only goes with --managed", file=sys.stderr)
             return 2
+        if a.managed and (a.dev or a.project or a.agent != "claude"):
+            print("tracekit: " + ("--managed is for system mode: a --dev setup belongs to its user" if a.dev else
+                                  "--managed and --project name different settings files: use one" if a.project else
+                                  f"--managed is for Claude Code only: Tracekit wires no admin-managed settings for "
+                                  f"{a.agent}, so its hooks go in the agent user's own config "
+                                  f"({wiki_url('docs/limits.md')})"), file=sys.stderr)
+            return 2
         signer = None
         if a.key_attestation and not a.signer_cmd:
             print("tracekit: --key-attestation goes with --signer-cmd (an attestation is about an external key)", file=sys.stderr)
@@ -431,8 +447,8 @@ def _run(a):
                       "assurance": a.key_assurance}
             if a.key_attestation:
                 signer["attestation"] = os.path.abspath(a.key_attestation)
-        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer or a.managed):
-            print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd and --managed are v1 "
+        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer):
+            print("tracekit: --home, --witness, --proxy, --fail-closed and --signer-cmd are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
         if (a.approver or a.policy or a.public_witness or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
@@ -447,7 +463,7 @@ def _run(a):
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
                                                         a.allow_privileged, a.agent, a.harness, a.public_witness,
-                                                        a.egress, not a.no_thinking_summaries)
+                                                        a.egress, not a.no_thinking_summaries, a.managed, a.managed_only)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -666,7 +682,12 @@ def _run(a):
                       file=sys.stderr)
                 return 2
             if not a.trust:
-                print("tracekit verify: a v2 bundle needs --trust (the verifier's pinned trust config)", file=sys.stderr)
+                print("tracekit verify: a v2 bundle needs --trust: the trust file of the signer that made it, a small "
+                      ".json that pins its log key\n"
+                      "  your own run: tracekit last writes <run>.trust.json next to the bundle; tracekit signer trust "
+                      "-o trust.json writes the dev signer's (--config <signer.yaml> for a configured one)\n"
+                      "  someone else's run: get theirs from the sender directly, not from beside or inside the bundle",
+                      file=sys.stderr)
                 return 2
             if bool(a.v1_ledger) != bool(a.v1_key):
                 print("tracekit verify: --v1-ledger and --v1-key go together", file=sys.stderr)
@@ -982,9 +1003,9 @@ def _approvals(a):
                     me = "{scheme}:{subject}".format(**c.status({})["identity"])
                 except (RPCError, SignerUnavailable):
                     me = "this identity"
-                print(f"no approvals {me} may see: the signer lists an approval only to its run's owner and to those "
-                      "who may answer it (with an approvals section in signer.yaml, the identities approvals.approvers "
-                      "lists)")
+                print(f"nothing is waiting for approval\n(you are {me}: the signer lists an approval only to its run's "
+                      "owner and to those who may answer it, which with an approvals section in signer.yaml are the "
+                      "identities approvals.approvers lists)")
         elif a.action == "show":
             x = c.approval_get({"approval_id": a.approval_id})
             args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]

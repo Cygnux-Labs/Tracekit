@@ -557,7 +557,7 @@ class Permissions(unittest.TestCase):
                 hold(13, "c6"), answer(14, "c6", "requested", approval_id="apr-6"),
                 {**hold(15, "c7"), "v2": {"decision": "allow"}}, {**hold(16, "c8"), "analysis": True},
                 hold(17, "c9", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 18}]
-        out = json.loads(page_js(["ANSWER", "permRows"], f"""
+        out = json.loads(page_js(["ANSWER", "permRows", "permOf"], f"""
             const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
             const rows = r => r.map(x => [x.rec.tool_use_id, x.tabs.filter(Boolean).join(" "), x.out[1], x.ans?.v2.approver ?? null,
                                           x.req?.v2.approval_id ?? null]);
@@ -571,6 +571,32 @@ class Permissions(unittest.TestCase):
                                   ["c3", "all ask approved", "APPROVED · RAN", "oidc:alice", "apr-3"],
                                   ["c2", "all flag", "RAN · FLAGGED", None, None], ["c1", "all deny", "BLOCKED", None, None]])
         self.assertEqual(out[1], [["c9", "all ask expired", "NOT ANSWERED", None, None]])
+
+    def test_a_use_refused_after_a_rejection_or_a_revoke_reads_as_the_run_review_says(self):
+        """A use the signer refused because a person rejected the approval read rejected in the run review and the
+        report, and REFUSED in PERMISSIONS; one of an approval a person revoked read rejected and REFUSED."""
+        needs_node(self)
+        tr, recs, reviewed = view.Translator(), [], []
+        for run, answer, then in (("r1", {"decision": "reject", "approver": "uid:501"}, None),
+                                  ("r2", {"decision": "approve", "approver": "uid:990", "approver_kind": "agent"},
+                                   {"by": "uid:501"})):
+            mine = [v2rec(1, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                                 "rule_ids": ["TK-A032"]}, run=run),
+                    v2rec(2, "approval.request", {"approval_id": f"apr-{run}", "binding": {"tool_call_id": "c1"}},
+                          run=run),
+                    v2rec(3, "approval", {"tool_use_id": "c1", "approval_id": f"apr-{run}", **answer}, run=run)]
+            if then:
+                mine.append(v2rec(4, "approval.revoked", {"approval_id": f"apr-{run}", **then}, run=run,
+                                  tool_call_id="c1"))
+            mine.append(v2rec(5, "approval.refused", {"tool_use_id": "c1", "approval_id": f"apr-{run}",
+                                                      "rule_ids": ["TK-APPROVAL-REJECTED"]}, run=run))
+            recs += [x for r in mine for x in tr.feed(r)]
+            reviewed.append(dict(view.review(mine, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]))
+        out = json.loads(page_js(["ANSWER", "permRows", "permOf"], f"""
+            const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
+            process.stdout.write(JSON.stringify(permRows().map(x => [x.rec.session_id, x.out[1]])));"""))
+        self.assertEqual(reviewed, [{"rejected": 1}, {"revoked": 1}])
+        self.assertEqual(out, [["r2", "REVOKED"], ["r1", "REJECTED"]])
 
     def test_a_run_review_counts_every_permission_by_outcome(self):
         """Run reviews listed only approve and reject answers: a hold that expired, was abandoned or got no answer was in
@@ -604,7 +630,7 @@ class Permissions(unittest.TestCase):
         the live view showed nothing, in its views or PERMISSIONS."""
         needs_node(self)
         rows = [{**hold(5, "c1"), "v2": {"decision": "deny", "rules": [{"id": "T-DENY", "reason": "rm"}]}}]
-        out = json.loads(page_js(["ANSWER", "loadRun", "permRows"], f"""
+        out = json.loads(page_js(["ANSWER", "loadRun", "permRows", "permOf"], f"""
             const LOADED = new Map(), RUNS = new Map([["r1", {{ verdict: "verified", records: 9, tenant: "default", permissions: {{ blocked: 1 }} }}],
                                                       ["r2", {{ verdict: "failed", records: 4 }}]]);
             const ALL = [], asked = [], seen = [], document = {{ URL: "http://127.0.0.1/" }};
@@ -721,7 +747,7 @@ class Evidence(unittest.TestCase):
         out = json.loads(page_js(["esc", "cp", "tuid", "WALK_MAX", "evidenceOf", "evidenceView"], f"""
             const S = {{ recs: {json.dumps(recs)}, actions: new Map() }}, RUNS = new Map(), el = {{}}, html = {{}};
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }};
-            const runCmds = r => ["tracekit export --v2 --run " + r.id, "tracekit verify " + r.id + ".tkb"], reviewHtml = (r, cmds) => `<REVIEW cmds=${{cmds}}>`;
+            const cmdLines = r => `<CMDS ${{r.id}}>`, reviewHtml = (r, cmds) => `<REVIEW cmds=${{cmds}}>`;
             let scope = "r1", STOPPED = ""; const seen = [];
             for (const verdict of ["verified", "failed"]) {{
               RUNS.set("r1", {{ id: "r1", verdict, records: 2, decisions: {{}}, report: {json.dumps(VERIFIED_REPORT)} }});
@@ -733,7 +759,7 @@ class Evidence(unittest.TestCase):
         self.assertEqual(re.findall(r'<div class="rec( ok)?" data-tkseq="(\d+)"', ok), [(" ok", "5"), (" ok", "6")])
         self.assertIn('<div class="stamp ok">VERIFIED</div>', ok)
         self.assertIn("THE VIEWER'S CHECK, OPERATOR-SIDE: tracekit view exported this run's bundle", ok)
-        for text in ("tracekit export --v2 --run r1", "tracekit verify r1.tkb", "<REVIEW cmds=false>",
+        for text in ('<dl class="kv"><CMDS r1></dl>', "<REVIEW cmds=false>",
                      "Download the bundle and check it with tracekit verify from the signed release: that, not this "
                      "page, is the evidence.", "VERIFIER REPORT · AS THE VIEWER PRINTED IT"):
             self.assertIn(text, ok)
@@ -835,6 +861,46 @@ class Waterfall(unittest.TestCase):
         self.assertNotIn('data-wf="4"', capped)
         self.assertIn("5 earlier calls are not drawn: the newest 600 are.", capped)
         self.assertIn("No call matches the filters.", none)
+
+    def test_every_run_has_a_lane_busy_ones_first_and_the_panel_scrolls_to_the_rest(self):
+        """DESK's 140px timeline drew 8 of 12 lanes: runs with calls fell off its bottom, unreachable, while empty runs
+        kept lanes; a lane's id (coder·7372) was not the run's id the rest of the page shows (00cb7f43); the axis' last
+        word ran past the panel's edge."""
+        needs_node(self)
+        out = json.loads(page_js(["CAT_COLOR", "fmtT", "tickStep", "tickText", "label", "renderLanes"], """
+            const V2 = true, R = null, rpos = 0, mode = "live", selected = null, texts = [], rects = [];
+            const ctx = { setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, strokeRect() {},
+                          fillRect: (x, y, w, h) => rects.push([x, y, w, h]), fillText: (t, x, y) => texts.push([t, x, y]),
+                          measureText: t => ({ width: t.length * 6.6 }) };
+            const cv = { width: 0, height: 0, style: {}, getContext: () => ctx }, wrap = { clientWidth: 1600, clientHeight: 110, scrollTop: 0 };
+            const $ = id => ({ lanes: cv, lanewrap: wrap })[id], window = {}, css = n => n;
+            const agentMatch = () => true, actMatch = () => true, category = () => "read", callState = () => ["", ""], nowTs = () => 100;
+            let laneHits = [];
+            const S = { agents: new Map(), actList: [], firstTs: 0, lastTs: 100 };
+            // 4 runs with no calls whose ids sort first, then 8 with calls
+            for (let i = 0; i < 12; i++) {
+              const busy = i >= 4, id = (busy ? "b" : "0") + i.toString(16) + "c0ffee".repeat(5), a = { session: id, sub: false, first: 0, last: 100,
+                name: busy ? "coder" : "agent-a", actions: busy ? 2 : 0, status: "done" };
+              S.agents.set(id + "|main", a);
+              if (busy) S.actList.push({ agent: a, start: i * 8, end: i * 8 + 1, flags: [], denied: false }, { agent: a, start: 100, end: 100, flags: [], denied: false });
+            }
+            const lanes = () => texts.filter(([t, x]) => x === 6 && !t.startsWith("▾")).map(([t, , y]) => [t, y]), cue = () => texts.filter(([t]) => t.startsWith("▾")).map(([t]) => t);
+            renderLanes();
+            const first = { lanes: lanes(), cue: cue(), cssHeight: cv.style.height, height: cv.height, ticks: texts.filter(([, x]) => x > 6) };
+            texts.length = 0; wrap.scrollTop = 54; renderLanes();   // scrolled to the bottom
+            process.stdout.write(JSON.stringify({ ...first, scrolled: texts.filter(([, x]) => x > 6).map(([, , y]) => y), strip: rects.some(r => r[1] === 54), cueEnd: cue() }));"""))
+        lanes = out["lanes"]
+        self.assertEqual(len(lanes), 12)
+        self.assertTrue(all(y < out["height"] for _, y in lanes), (lanes, out["height"]))   # every lane is on the canvas
+        self.assertEqual(out["cssHeight"], f"{out['height']}px")                            # ...which is taller: it scrolls
+        self.assertEqual([t.split("·")[0] for t, _ in lanes], ["coder"] * 8 + ["agent-a"] * 4)
+        self.assertEqual(lanes[0][0], "coder·b4c0ffee")                                     # the run's own 8-character id
+        self.assertTrue(out["ticks"])
+        self.assertTrue(all(x + len(t) * 6.6 <= 1600 for t, x, _ in out["ticks"]), out["ticks"])
+        self.assertEqual(out["cue"], ["▾ 5 more"])                                         # the lanes below say so
+        self.assertEqual(set(out["scrolled"]), {61})                                        # the axis' words stay in view
+        self.assertTrue(out["strip"])
+        self.assertEqual(out["cueEnd"], [])
 
     def test_a_row_and_the_toggle_are_opened_by_the_pages_click_handlers(self):
         self.assertIn("if (t.dataset.wf) return select(S.actList[+t.dataset.wf]);", PAGE)
@@ -1143,7 +1209,7 @@ class Horizon(unittest.TestCase):
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out, [[2, 0, 0, True], [2, 1], [3, 1], [3, 0]])
 
-    def test_a_callout_is_never_drawn_over_the_hud(self):
+    def test_a_callout_with_room_elsewhere_is_never_drawn_over_the_hud(self):
         """"release-agent · flagged" at api.github.com was drawn over CHAIN ✓ VERIFIED: the callouts' room left out the
         HUD's readouts, which sit over the stage."""
         needs_node(self)
@@ -1163,6 +1229,63 @@ class Horizon(unittest.TestCase):
             const callout = texts.filter(([s]) => /api\\.github\\.com|release-agent/.test(s));
             process.stdout.write(JSON.stringify([callout.map(([s]) => s), callout.filter(([, x, y]) => x >= l && x <= r && y >= t && y <= b + 10)]));"""))
         self.assertEqual(out, [["api.github.com", "release-agent · flagged"], []])
+
+    HZ_STAGE = """
+            const texts = [], squares = [], ctx = new Proxy({ fillText(t, x, y) { texts.push([String(t), x, y, this.font, this.textAlign]); },
+                                                              fillRect(x, y, w, h) { if (w === 16 && h === 16) squares.push([x, y]); },
+                                                              measureText: t => ({ width: String(t).length * 6 }) },
+                                              { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }) });
+            const PAGE = "horizon", window = {}, document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
+            const cv = { clientWidth: 0, clientHeight: 440, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [] } };
+            const $ = id => id === "hzcv" ? cv : null, matchMedia = () => ({ matches: true }), requestAnimationFrame = () => {};
+            const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
+            const ev = (seq, at, act, ag = "coder") => ({ t: seq, seq, ag, at, act, gr: "signed", run: "r1", w: "" });
+            const draw = w => { cv.clientWidth = w; texts.length = squares.length = 0; HZ.raf = 0; hzDraw();
+              const box = ([t, x, y, f, al]) => { const l = al === "right" ? x - t.length * 6 : al === "center" ? x - t.length * 3 : x; return [l, y - 9, l + t.length * 6, y + 3]; };
+              const co = texts.filter(t => /10\\.5px|9\\.5px/.test(t[3])), over = [];
+              co.forEach((a, i) => co.slice(i + 1).forEach(b => { const p = box(a), q = box(b); if (p[0] < q[2] && q[0] < p[2] && p[1] < q[3] && q[1] < p[3]) over.push([a[0], b[0]]); }));
+              return { labels: texts.filter(t => /10\\.5px/.test(t[3])).map(t => t[0]), over: over.length, squares: squares.length,
+                       numbers: texts.filter(t => /^\\d+$/.test(t[0])).map(t => +t[0]) }; };
+    """
+
+    def test_a_phone_draws_only_callouts_that_fit_and_only_for_restricted_places_and_stops(self):
+        """At 390px HORIZON's callouts printed over each other: one with no room was drawn anyway, wherever it fell."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+            const places = { "src/a.py": { kind: "project", label: "src/a.py", r: .31, th: hzRad(200), rest: null } }, evs = [ev(1, "src/a.py", "flag")];
+            for (let k = 0; k < 14; k++) {   // fourteen restricted places, side by side: more callouts than the stage has room for
+              places["~/.s" + k] = { kind: "machine", label: "~/.secret" + k, r: .565, th: hzRad(80 + k * 3), rest: "TK-F005 · secrets_access" };
+              evs.push(ev(k + 2, "~/.s" + k, "blocked"));
+            }
+            HZ.d = { ev: evs, dirs: [], agents: [["coder", 0]], cwd: "", places };
+            Object.assign(HZ, { t: evs.length, col: { coder: "#d98bff" }, follow: null, pick: null });
+            process.stdout.write(JSON.stringify([draw(390), draw(1200)]));"""))
+        phone, desk = out
+        self.assertEqual(phone["over"], 0)
+        self.assertNotIn("src/a.py", phone["labels"])           # a flagged place: its callout is left to a click
+        self.assertTrue(phone["labels"])
+        self.assertIn("src/a.py", desk["labels"])
+
+    def test_following_an_agent_numbers_its_newest_moves_and_never_one_over_another(self):
+        """Following coder piled about 100 numbered squares into one block in the project."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+            const places = { a: { kind: "project", label: "src/a.py", r: .24, th: hzRad(30), rest: null },
+                             b: { kind: "project", label: "src/b.py", r: .39, th: hzRad(60), rest: null } };
+            HZ.d = { ev: Array.from({ length: 50 }, (_, n) => ev(n + 1, n % 2 ? "b" : "a", "read")), dirs: [], agents: [["coder", 0]], cwd: "", places };
+            Object.assign(HZ, { t: 50, col: { coder: "#d98bff" }, follow: "coder", pick: null });
+            process.stdout.write(JSON.stringify(draw(1200)));"""))
+        self.assertIn(50, out["numbers"])                         # the newest move keeps its number
+        self.assertLess(out["squares"], 5)                        # every other move to the same spot is left to the route list
+        self.assertEqual(out["squares"], len(out["numbers"]))
+
+    def test_a_phone_shows_the_map_first_with_the_huds_readouts(self):
+        """At 390px the map started below the first screen and the HUD's readouts (egress, restricted, chain) were hidden."""
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        self.assertFalse(".hzhud .hztel {\n        display: none" in css)
+        phone = css[css.index("/* HORIZON: the map first"):]
+        self.assertIn(".hzmain {\n        display: contents\n      }", phone)
+        self.assertIn(".hzstage {\n        order: -1;\n        height: 440px;", phone)
 
     def test_the_stage_is_as_tall_as_the_panel_never_the_side_card(self):
         """Following an agent listed its 500 moves beside the stage, and the stage (flex-basis auto) grew with them: a
@@ -1251,11 +1374,11 @@ class InvisibleCharacters(unittest.TestCase):
                 "v2": {"decision": "ask", "run_seq": 7, "tool_use_id": "c1", "rules": [{"id": "TK-P001", "reason": "email"}]}}
         req = {"event": "tk_alert", "session_id": "r1", "tk_seq": 8, "ts": 1760000001,
                "v2": {"tool_use_id": "c1", "approval": "requested", "approval_id": "apr-1"}}
-        out = json.loads(page_js(["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "waiting", "waitingElsewhere",
-                                  "waitingCount", "renderApprovalsPage"], f"""
+        out = json.loads(page_js(["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
+                                  "waitingElsewhere", "waitingCount", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req])}, RUNS = new Map(), html = {{}}, el = {{}};
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
-            let PAGE = "approvals", waitKey = [], waitList = [];
+            let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
             renderApprovalsPage();
             process.stdout.write(JSON.stringify(html.apprp));"""))
         pre = out[out.index("<pre>"):out.index("</pre>")]
@@ -1263,6 +1386,294 @@ class InvisibleCharacters(unittest.TestCase):
         self.assertIn("attached.\\u{e0053}\\u{e0045}\\u{e004e}\\u{e0044}", pre)   # S E N D, shown
         self.assertIn("\\u00ad\\u206a\\u180e\\ufff9", pre)
         self.assertIn("Thanks\\u{e0143}\\u{e0135}\\u{e013e}\\u{e0134}", pre)   # S E N D as variation selectors, shown
+
+
+class PlainPages(unittest.TestCase):
+    """What hands-on QA of 1.5.1 found a person could not read: an empty graph and chart with no word, the graph's
+    controls scrolled away, an expiry in UTC ISO, answers with no agent or run, the why runs under other ids and a
+    title that was not true, "task: content committed, not in the log", "1 agents", and a cut-off search hint."""
+
+    def test_a_run_with_no_links_says_so_and_the_graph_scrolls_under_its_controls(self):
+        needs_node(self)
+        d = {"run_id": "w1", "agents": [{"name": "planner"}], "edges": [], "nodes": [
+            {"id": f"a{i}", "type": "action", "agent": "planner", "seq": i, "label": "Read", **SIGNED} for i in range(1, 40)]}
+        out = json.loads(page_js(["dict", "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
+                                  "whyRef", "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"], f"""
+            const GV = {{ inferred: false, ruled: false, focus: null, fit: false }}, CSS = {{ escape: s => s }}, WHY = {{ calls: {{}} }};
+            const S = {{ actions: new Map(), effects: new Map() }}, rect = top => ({{ getBoundingClientRect: () => ({{ top }}), style: {{}} }});
+            const el = {{ clientWidth: 900, clientHeight: 600, scrollTop: 0, querySelector: () => null, getBoundingClientRect: () => ({{ top: 100 }}) }};
+            const got = {{ gsvg: rect(190), gscroll: rect(190), wvsum: {{}} }}, $ = id => got[id];
+            graphView(el, {json.dumps(d)});
+            process.stdout.write(JSON.stringify([el.innerHTML, got.gscroll.style.maxHeight || null, got.gsvg.style.height || null]));"""))
+        html_, scroll_room, fit_height = out
+        self.assertIn("<span><b>No links between calls yet:</b> nothing in this run records one call using another's result", html_)
+        # the bars come before the graph's own scroller, so a scroll moves only the graph
+        self.assertLess(html_.index('data-gfit=""'), html_.index('<div id="gscroll"><svg id="gsvg"'))
+        self.assertEqual((scroll_room, fit_height), ("504px", None))   # ACTUAL SIZE: the room below the bars scrolls
+
+    def test_influence_with_no_sources_says_nothing_yet_and_draws_no_empty_chart(self):
+        needs_node(self)
+        page = lambda sources: json.loads(page_js(["dict", "esc", "plural", "pct", "influenceView"], f"""
+            const WHY = {{ runs: [{{}}, {{}}], influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
+                          edges: [{{ source: "s1", tool: "Bash", reach_runs: 1 }}] }} }}, got = {{}}, $ = id => got[id] ??= {{}};
+            const el = {{ clientWidth: 900 }}; influenceView(el); process.stdout.write(JSON.stringify(el.innerHTML));"""))
+        empty = page([])
+        self.assertIn('<div class="empty">Nothing yet: no model call in these runs cites content the agents read', empty)
+        self.assertNotIn("<svg", empty)
+        self.assertNotIn("SOURCES", empty)
+        full = page([{"id": "s1", "labels": ["task"], "trust": "trusted", "runs": 1, "cited_by": 2, "confirmed_tools": []}])
+        self.assertIn(">1 run<", full)   # not "1 runs"
+        self.assertIn("SOURCES", full)
+
+    def test_an_approval_expires_in_local_time_and_each_held_call_names_its_agent_and_run(self):
+        needs_node(self)
+        hold = {"event": "PreToolUse", "session_id": "r1", "tk_seq": 7, "ts": 1760000000, "tool_use_id": "c1",
+                "tool_name": "Bash", "agent": "deploy-bot", "tool_input": {"command": "ls"},
+                "v2": {"decision": "ask", "run_seq": 7, "tool_use_id": "c1", "rules": []}}
+        req = {"event": "tk_alert", "session_id": "r1", "tk_seq": 8, "ts": 1760000001,
+               "v2": {"tool_use_id": "c1", "approval": "requested", "approval_id": "apr-1",
+                      "expires": "2026-10-29T05:21:45.800520Z"}}
+        done = {**hold, "session_id": "d6dbae8755b57baa", "tk_seq": 2, "ts": 1760000002, "agent": "coder"}
+        answer = {"event": "tk_alert", "session_id": "d6dbae8755b57baa", "tk_seq": 3, "ts": 1760000003, "agent": "coder",
+                  "title": "APPROVAL EXPIRED · Bash", "text": "expired before anyone answered",
+                  "v2": {"tool_use_id": "c1", "approval": "expired"}}
+        older = {**done, "session_id": "e1", "ts": 1759990000}   # read later: a fresh load
+        approve = {**answer, "session_id": "e1", "ts": 1759990001, "v2": {"tool_use_id": "c1", "approval": "approve"}}
+        out = json.loads(page_js(["esc", "j", "fmtT", "fmtD", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
+                                  "waitingElsewhere", "waitingCount", "permOf", "heldRows", "renderApprovalsPage"], f"""
+            const ALL = {json.dumps([hold, req, done, answer, older, approve])}, RUNS = new Map(), html = {{}}, el = {{}}, TZ = "GMT+5:30";
+            const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
+            let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
+            renderApprovalsPage();
+            const t = Date.parse("2026-10-29T05:21:45.800520Z") / 1000;
+            process.stdout.write(JSON.stringify([html.apprp, fmtD(t) + " " + fmtT(t) + " GMT+5:30"]));"""))
+        page, local = out
+        self.assertIn(f"approval apr-1 · expires {local}</div>", page)
+        self.assertNotIn("2026-10-29T05:21:45", page)
+        self.assertIn('<td class="dim">EXPIRED</td><td>coder · run d6dbae87</td><td>Bash · <span class="">ls</span></td>',
+                      page)
+        self.assertEqual(re.findall(r'<td class="[\w-]+">([A-Z]+)</td>', page), ["EXPIRED", "APPROVED"])   # newest first
+
+    def test_the_why_runs_use_the_runs_own_ids_a_true_title_and_say_whose_alerts_they_count(self):
+        needs_node(self)
+        run = {"run_id": "tk-7dbf45d49daffb8533adfe0291456a2c-42fd13efc715963d", "task": {"content": "content committed, not in the log"},
+               "started": "2026-10-29T04:27:14Z", "agents": ["agent-b"], "decisions": 0, "actions": 3, "tests": 0,
+               "alerts": {"high": 1, "review": 0}, "integrity": "ok", "finished": True}
+        out = json.loads(page_js(["esc", "fmtT", "fmtD", "COMMITTED", "taskText", "tiles", "runsView"], f"""
+            const WHY = {{ runs: [{json.dumps(run)}, {{ ...{json.dumps(run)}, run_id: "native-run", task: "Close ACC-9" }}] }}, TZ = "UTC";
+            const got = {{}}, $ = id => got[id] ??= {{}}, el = {{}}; runsView(el); process.stdout.write(JSON.stringify(el.innerHTML));"""))
+        self.assertIn('<td title="tk-7dbf45d49daffb8533adfe0291456a2c-42fd13efc715963d">7dbf45d4<br>', out)
+        self.assertIn('<td title="native-run">native-run<br>', out)
+        self.assertNotIn("multi-agent", out)
+        self.assertIn("HIGH WHY ALERTS", out)
+        self.assertIn("<th>WHY ALERTS</th>", out)
+        self.assertIn("task text not kept: only its hash is in the log", out)
+
+    def test_the_viewers_own_content_reads_in_a_row_are_one_line_with_the_newest(self):
+        """Each start of tracekit view filled the tape's first screen with its own reads, one row per run read. The
+        purpose is the reader's word: another principal's reads that gave it folded under the newest reader's name.
+        tracekit report's reads did not fold at all: one row per run per report."""
+        needs_node(self)
+        out = json.loads(page_js(["esc", "KINDS", "anyFilter", "kindChips", "reader", "tapeRow", "renderTape"], """
+            const el = {}, $ = id => el[id] ??= { textContent: "", innerHTML: "" }, put = (id, h) => { $(id).innerHTML = h; };
+            const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", rowMatch = () => true, signer = { name: "signer" };
+            const read = (ts, run, n, who = "uid:501") => ({ ts, agent: signer, ev: "SIGNER", text: `CONTENT READ FOR TRACEKIT VIEW · ${who} read ${n} records of run ${run}`,
+              rec: { event: "tk_note", title: "CONTENT READ FOR TRACEKIT VIEW", text: `${who} read ${n} records of run ${run}`, v2: { principal: who, purpose: "tracekit view" } } });
+            const report = (ts, run, n, purpose = "tracekit report") => ({ ts, agent: signer, ev: "SIGNER", text: `CONTENT READ · “${purpose}” · uid:501 read ${n} records of run ${run}`,
+              rec: { event: "tk_note", title: `CONTENT READ · “${purpose}”`, text: `uid:501 read ${n} records of run ${run}`, v2: { principal: "uid:501", purpose } } });
+            const other = ts => ({ ts, agent: signer, ev: "SIGNER", text: "CONTENT READ · token:svc read 1 record of run r9", rec: { event: "tk_note", v2: {} } });
+            let F = { agent: null, tool: null, file: null, flag: false, find: null, kind: null }, selected = null;
+            let tapeKey = [], tapeMax = 600, tapeShown = 0, PAGE = "desk", V2 = true, WHY = null; const DROPPED = 0, MAXREC = 50000, TAPE_PAGE = 600;
+            const S = { recs: [], effects: new Map(), tape: [other(1), other(2), read(3, "aaaa", 70), read(4, "bbbb", 100), read(5, "cccc", 3),
+                                                              read(6, "dddd", 9, "token:svc"), report(7, "r1", 4), report(8, "r2", 5),
+                                                              report(9, "r3", 1, "incident review")] };
+            S.tape.forEach((r, i) => r.i = i);
+            renderTape();
+            process.stdout.write(JSON.stringify([...$("tape").innerHTML.matchAll(/<td class="tgt dim"[^>]*>(.*?)<\\/td>/g)].map(m => m[1].replace(/<[^>]+>/g, ""))));"""))
+        self.assertEqual(out, ["CONTENT READ · “incident review” · uid:501 read 1 records of run r3",
+                               "×2 CONTENT READ · “tracekit report” · the newest: uid:501 read 5 records of run r2",
+                               "CONTENT READ FOR TRACEKIT VIEW · token:svc read 9 records of run dddd",
+                               "×3 CONTENT READ FOR TRACEKIT VIEW · the newest: uid:501 read 3 records of run cccc",
+                               "×2 CONTENT READ · token:svc read 1 record of run r9"])
+
+    def test_one_agent_is_one_agent(self):
+        needs_node(self)
+        out = json.loads(page_js(["esc", "plural", "COMMITTED", "taskText", "runHead"], """
+            process.stdout.write(JSON.stringify(runHead({ run_id: "w1", summary: { task: null, integrity: "ok", replayable: false,
+              agents: ["planner"], decisions: 1, actions: 3, messages: 0 } })));"""))
+        self.assertIn("1 agent · 1 model call · 3 tool calls · 0 messages", out)
+
+    def test_the_search_hint_fits_and_one_cut_short_ends_in_an_ellipsis(self):
+        hint = re.search(r'<input id="cmd"[^>]*placeholder="([^"]*)"', PAGE).group(1)
+        self.assertLessEqual(len(hint), 40)   # about 330px at 1600px wide, beside WAITING, LIVE and the chain
+        self.assertIn("HELP", hint)
+        self.assertIn("text-transform: uppercase;\n      text-overflow: ellipsis;", PAGE)
+
+
+GRAPH_FNS = ["dict", "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE", "whyRef",
+             "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"]
+APPROVALS_FNS = ["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting", "waitingElsewhere",
+                 "waitingCount", "permOf", "heldRows", "renderApprovalsPage"]
+
+
+class FinalQA(unittest.TestCase):
+    """What the final hands-on QA of 1.5.1 found: a run with no links drew 167 calls 3.7 by 1 px (FIT) or one 35,000 px
+    row, its run order drawn like signed links; APPROVALS cut off on a phone, counted three unanswered holds as six
+    answers and read an SDK's early use as a person's refusal; tracekit report's reads filled the tape; a verify hint
+    named a trust.json nothing writes; "1 gaps", a wrapped HORIZON card and two words for one requester."""
+
+    def graph(self, n, fit):
+        d = {"run_id": "w1", "agents": [{"name": "coder"}], "edges": [], "nodes": [
+            {"id": f"a{i}", "type": "action", "agent": "coder", "seq": i, "label": "Read", **SIGNED} for i in range(n)]}
+        return json.loads(page_js(GRAPH_FNS, f"""
+            const GV = {{ inferred: false, ruled: false, focus: null, fit: {json.dumps(fit)} }}, CSS = {{ escape: s => s }}, WHY = {{ calls: {{}} }};
+            const S = {{ actions: new Map(), effects: new Map() }}, rect = top => ({{ getBoundingClientRect: () => ({{ top }}), style: {{}} }});
+            const el = {{ clientWidth: 900, clientHeight: 600, scrollTop: 0, querySelector: () => null, getBoundingClientRect: () => ({{ top: 100 }}) }};
+            const got = {{ gsvg: rect(190), gscroll: rect(190), wvsum: {{}} }}, $ = id => got[id];
+            graphView(el, {json.dumps(d)});
+            process.stdout.write(JSON.stringify([el.innerHTML, got.wvsum.textContent, got.gsvg.style.height || null]));"""))
+
+    def test_a_run_with_no_links_wraps_its_calls_into_lines_the_panel_holds_and_run_order_is_not_a_link(self):
+        needs_node(self)
+        for fit in (True, False):
+            svg, summary, shrunk = self.graph(40, fit)
+            w, h = map(int, re.search(r'viewBox="0 0 (\d+) (\d+)"', svg).groups())
+            self.assertLessEqual(w, 900 - 16)   # no sideways scroll in a 900 px panel
+            self.assertIn(f'width="{w}" style="height:{h}px"', svg)   # full size, FIT too: never shrunk to a thin line
+            self.assertIsNone(shrunk)
+            at = [tuple(map(int, m)) for m in re.findall(r'data-wnode="a\d+"[^>]*translate\((\d+),(\d+)\)', svg)]
+            self.assertEqual(at, sorted(at, key=lambda p: (p[1], p[0])))   # run order reads left to right, then down
+            self.assertEqual(len({y for _, y in at}), 10)   # 4 calls a line
+            self.assertIn("so its calls are drawn in run order, left to right and down.", svg)
+            self.assertTrue(summary.endswith("· 39 in run order · scroll ↓"))
+        titles = [html.unescape(t) for t in re.findall(r"<path [^>]*><title>([^<]*)</title>", svg)]
+        self.assertEqual(set(titles), {"next in the run · run order: the next call, not a recorded link"})
+        # dashed and muted, not the signed links' solid amber; a line's last call leads into the next line's first
+        styles = re.findall(r'<path d="([^"]*)" style="([^"]*)" marker-end', svg)
+        self.assertEqual({s for _, s in styles}, {"fill:none;stroke:var(--muted);stroke-width:1.3;stroke-dasharray:2 5;"})
+        self.assertEqual(sum(" V" in p for p, _ in styles), 9)
+        self.assertEqual(re.findall(r"</svg> ([^<]*)</span>", svg), ["run order: the next call, not a recorded link"])
+        self.assertIn('<marker id="ar-muted"', svg)
+
+    def test_a_graph_with_links_keeps_its_columns_and_fit(self):
+        needs_node(self)
+        d = {"run_id": "w1", "agents": [{"name": "x"}], "nodes": [
+            {"id": "in", "type": "input", "agent": "x", "seq": 1, "label": "msg", **SIGNED},
+            {"id": "dec", "type": "decision", "agent": "x", "seq": 2, "label": "mock", **SIGNED},
+            {**call({"decision": "allow"}), "agent": "x", "id": "ok", "seq": 3, "label": "fetch"}],
+            "edges": [{"src": "in", "dst": "dec", "kind": "context", "evidence": "observed"},
+                      {"src": "dec", "dst": "ok", "kind": "invoked", "evidence": "observed"}]}
+        out = json.loads(page_js(GRAPH_FNS, f"""
+            const GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, CSS = {{ escape: s => s }}, WHY = {{ calls: {{}} }};
+            const S = {{ actions: new Map(), effects: new Map() }}, el = {{ clientWidth: 300, clientHeight: 600, querySelector: () => null }};
+            const $ = id => id === "gsvg" ? null : {{}};
+            graphView(el, {json.dumps(d)}); process.stdout.write(JSON.stringify(el.innerHTML));"""))
+        self.assertIn('viewBox="0 0 626 106" width="100%" style="max-width:626px"', out)   # one row, wider than the panel
+
+    def held(self, recs):
+        return json.loads(page_js(APPROVALS_FNS, f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map(), html = {{}}, el = {{}};
+            const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
+            let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
+            renderApprovalsPage();
+            process.stdout.write(JSON.stringify([html.apprp, el.apprsum.textContent]));"""))
+
+    def test_approvals_lists_each_held_call_once_with_its_outcome_and_counts_calls_not_records(self):
+        """The records the Translator gives three holds nobody answered (test_view's) and one a person approved."""
+        needs_node(self)
+        tr, recs = view.Translator(), []
+        for run, (seq, later), args in (
+                ("planner", (1, [("approval.abandoned", {"reason": "no answer; moved on"}),
+                                 ("approval.refused", {"rule_ids": ["TK-APPROVAL-EXPIRED"]})]), None),
+                ("coder", (2, [("approval.refused", {"rule_ids": ["TK-APPROVAL-REQUESTED"]}),
+                               ("approval.expired", {})]), None),
+                ("executor", (3, [("approval", {"decision": "approve", "approver": "uid:501"}),
+                                  ("approval.consumed", {})]), {"to": "c.rao@example.com", "body": "hi"}),
+                ("open", (4, [("approval.refused", {"rule_ids": ["TK-APPROVAL-REQUESTED"]})]), None)):
+            aid = f"apr-{seq}"
+            if args:
+                tr.content[(run, 2)] = args
+            evs = [v2rec(1, "run.registered", {"agent": {"name": run}}, run=run),
+                   v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "send_email" if args else "Bash",
+                                                "decision": "ask", "rule_ids": ["TK-A032"]}, run=run),
+                   v2rec(3, "approval.request", {"approval_id": aid, "binding": {"tool": "Bash", "tool_call_id": "c1"}},
+                         run=run),
+                   *[v2rec(4 + i, t, {"approval_id": aid, "tool_use_id": "c1", **d}, run=run) for i, (t, d) in enumerate(later)]]
+            if args:
+                evs.append(v2rec(8, "tool.result", {"tool_use_id": "c1"}, run=run))
+            if run != "open":
+                evs.append(v2rec(9, "run.final", {"head_run_seq": 9}, run=run))
+            for e in evs:
+                for x in tr.feed(e):
+                    recs.append({**x, "ts": seq * 10 + e["event"]["seq"], "session_id": run, "tk_seq": e["event"]["seq"]})
+        page, summary = self.held(recs)
+        rows = re.findall(r'<tr class="row"[^>]*><td class="dim">[^<]*</td><td class="([\w-]+)">([^<]*)</td><td>([^<]*)</td>'
+                          r'<td>([^<]*<span[^>]*>[^<]*</span>)</td><td class="dim">([^<]*)</td></tr>', page)
+        self.assertEqual([(c, o, who, re.sub(r"<[^>]+>", "", what), html.unescape(why)) for c, o, who, what, why in rows], [
+            ("s-ok", "APPROVED · RAN", "executor · run executor", "send_email · to=c.rao@example.com",
+             "by uid:501 · not self-approved"),
+            ("dim", "EXPIRED", "coder · run coder", "Bash · arguments not kept", "expired before anyone answered"),
+            ("dim", "ABANDONED", "planner · run planner", "Bash · arguments not kept", "no answer; moved on")])
+        self.assertIn("NO LONGER WAITING", page)
+        self.assertNotIn("ANSWERED<", page)
+        self.assertEqual(summary, "1 waiting · 1 approved · 1 expired · 1 abandoned")   # one hold still waits
+        self.assertEqual(page.count('<span class="sev wait">WAITING</span>'), 1)
+
+    def test_approvals_rows_stack_on_a_phone_and_the_panel_grows(self):
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        tablet = css[css.index("@media (max-width:900px)"):css.index("@media (max-width:700px)")]
+        self.assertRegex(tablet, r"\.p\.hzp,\s*\.p\.apprp \{\s*max-height: none")
+        phone = css[css.rindex("@media (max-width:700px)"):]
+        self.assertRegex(phone, r"\.apprp tr\.row \{\s*display: grid;\s*grid-template-columns: 72px minmax\(0, 1fr\)")
+        self.assertRegex(phone, r"\.apprp tr\.row td \{\s*border: 0;\s*overflow-wrap: anywhere")
+        self.assertRegex(phone, r"\.apprp tr\.row td:nth-child\(n\+3\) \{\s*grid-column: 1/-1")
+
+    def test_the_commands_write_the_trust_file_they_verify_against_and_name_the_signer_read(self):
+        needs_node(self)
+        out = json.loads(page_js(["esc", "shq", "word", "cp", "runCmds", "cmdLines"], """
+            const r = { id: "72c9631d2ab83ca8cc88feaee340293c", tenant: "acme" }, seen = [];
+            for (const s of [{ dev: true }, { config: "/etc/tracekit/my signer.yaml" }, { data_dir: "/srv/tk/data" }, null]) {
+              SIGNER = s; seen.push(runCmds(r));
+            }
+            SIGNER = { data_dir: "/srv/tk/data" }; seen.push(cmdLines(r));
+            process.stdout.write(JSON.stringify(seen));""".replace("const r =", "let SIGNER = null; const r =")))
+        exp = "tracekit export --v2{} --run 72c9631d2ab83ca8cc88feaee340293c --tenant acme --with-findings -o " \
+              "72c9631d2ab83ca8cc88feaee340293c.tkb"
+        ver = "tracekit verify 72c9631d2ab83ca8cc88feaee340293c.tkb --trust trust.json"
+        note = "neither command has --data-dir: signer.yaml is a file holding the line data_dir: /srv/tk/data"
+        self.assertEqual(out[:4], [
+            [exp.format(" --dev"), "tracekit signer trust --dev -o trust.json", ver, ""],
+            [exp.format(" --config '/etc/tracekit/my signer.yaml'"),
+             "tracekit signer trust --config '/etc/tracekit/my signer.yaml' -o trust.json", ver, ""],
+            [exp.format(" --config signer.yaml"), "tracekit signer trust --config signer.yaml -o trust.json", ver, note],
+            [exp.format(""), "tracekit signer trust -o trust.json", ver, ""]])   # a server that names no signer
+        self.assertEqual(re.findall(r"<dt>(\w+)<button", out[4]), ["EXPORT", "TRUST", "VERIFY"])
+        self.assertIn(html.escape(note, quote=False), out[4])
+
+    def test_a_runs_list_says_1_gap_and_1_call(self):
+        needs_node(self)
+        out = page_js(["esc", "plural", "renderRuns"], """
+            const RUNS = new Map([["r1", { id: "r1", agent: "coder", first_ts: "2026-10-29T08:00:00Z", last_ts: "2026-10-29T08:01:00Z",
+                                           state: "final", verdict: "verified", decisions: { allow: 1 }, gaps: { signer_unavailable: 1 } }]]);
+            let PAGE = "desk", scope = null; const el = {}, $ = id => el[id] ??= {}, put = (id, h) => { el[id] = { innerHTML: h }; };
+            const vchip = () => "", verifiedCount = () => "", indent = () => "", fmtD = String, fmtT = String, fmtDur = String;
+            const treeOrder = (l) => l.map(r => [r, 0]);
+            renderRuns(); process.stdout.write(el.agents.innerHTML);""")
+        self.assertIn("<span>1 call</span>", out)
+        self.assertIn('<span class="s-err">1 gap</span>', out)
+        self.assertIn("<span>1 run</span>", out)
+
+    def test_horizon_says_how_many_restricted_tries_ran_on_a_line_of_its_own(self):
+        self.assertIn('[rest.length, "RESTRICTED TRIES", 1, ran ? ran + " RAN" : "NONE RAN"]', PAGE)
+        self.assertIn('${sub ? `<span>${esc(sub)}</span>` : ""}', PAGE)
+        self.assertRegex(PAGE, r"\.hzstats span \{\s*display: block")
+
+    def test_an_answer_by_the_requester_reads_alike_approved_or_rejected(self):
+        needs_node(self)
+        out = json.loads(page_js(["bySelf"], """
+            process.stdout.write(JSON.stringify([["approve", true], ["reject", true], ["approve", false], ["reject", false]]
+              .map(([d, s]) => bySelf(d, s))));"""))
+        self.assertEqual(out, [" · by the requester · SELF-APPROVED", " · by the requester", " · not self-approved", ""])
 
 
 class RunChip(unittest.TestCase):
@@ -1524,7 +1935,9 @@ class NothingLost(unittest.TestCase):
             "honesty tips": ["A row is a signed record of the hash-chained ledger unless it says ANALYSIS",
                              "Times are this browser's local time",
                              "Reasoning is what the model reported about itself; actions are what it did",
-                             "trust.json pins the signer's log key; that check, not this page, is the evidence",
+                             "trust.json pins the signer's log key; tracekit export writes none",
+                             "compares the key in trust.json with their own copy of it first; that check, not this page, "
+                             "is the evidence",
                              "Download the bundle and check it with tracekit verify from the signed release: that, "
                              "not this page, is the evidence", "THE VIEWER'S CHECK, OPERATOR-SIDE", "operator-side"],
             "security": ["const esc = s =>", "const vis = s =>", "[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\p{Default_Ignorable_Code_Point}]/gu"],

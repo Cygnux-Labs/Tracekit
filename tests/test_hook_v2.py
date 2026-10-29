@@ -40,10 +40,13 @@ class HookV2(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(dir="/tmp")   # short path: macOS caps socket paths at 104 bytes
         self.addCleanup(shutil.rmtree, self.dir, True)
+        # these tests answer a held call while its hook waits (as Slack or the viewer would): the waiting setting;
+        # HeldCalls tests the default, no wait
         env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": os.path.join(self.dir, "run"),
                                            "TRACEKIT_DEV_IDLE": "60", "PYTHONPATH": ROOT,
                                            "HOME": os.path.join(self.dir, "home"),
-                                           "XDG_DATA_HOME": os.path.join(self.dir, "data")})
+                                           "XDG_DATA_HOME": os.path.join(self.dir, "data"),
+                                           claude_code.WAIT_ENV: str(claude_code.APPROVAL_WAIT_S)})
         env.start()
         self.addCleanup(env.stop)
         for k in ("TRACEKIT_SIGNER", "TRACEKIT_FAIL_CLOSED", "TRACEKIT_POLICY"):
@@ -959,6 +962,90 @@ class HookV2(unittest.TestCase):
         print(f"\nv2 hook PreToolUse median over 20, warm signer: {statistics.median(times) * 1000:.0f} ms")
 
 
+@unittest.skipUnless(os.name == "posix", "as HookV2")
+class HeldCalls(unittest.TestCase):
+    """The default (no TRACEKIT_APPROVAL_WAIT): a held call is blocked at once, saying how to approve it; once a person
+    has, the agent's retry of the same call runs, once. Through the command init wires, against the dev signer."""
+    UPLOAD = "aws s3 cp build/ s3://releases/ --recursive"   # held by the dev pack (TK-A032)
+    hook, post, events, run_handle = HookV2.hook, HookV2.post, HookV2.events, HookV2.run_handle
+
+    def setUp(self):
+        HookV2.setUp(self)
+        os.environ.pop(claude_code.WAIT_ENV)
+
+    def pre(self, command, tid):
+        """(exit code, stdout, stderr) of the PreToolUse hook for Bash `command`."""
+        p = subprocess.run(HOOK, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60, input=json.dumps(
+            {"hook_event_name": "PreToolUse", "session_id": "s1", "tool_name": "Bash", "tool_use_id": tid,
+             "tool_input": {"command": command}}))
+        return p.returncode, p.stdout, p.stderr
+
+    def held(self, command, tid):
+        """The approval id a held call's hook names, after checking what it says to whom."""
+        start = time.monotonic()
+        code, out, err = self.pre(command, tid)
+        self.assertLess(time.monotonic() - start, 30, "the hook waited")
+        self.assertEqual(code, 2, err)
+        aid = err.split()[4]
+        self.assertTrue(err.startswith(f"[tracekit] held for approval {aid} (TK-A032): to let it run, approve it with "
+                                       f"`tracekit approvals approve {aid}`, then ask the agent to try the same call "
+                                       "again, with exactly the same arguments (to refuse it: `tracekit approvals "
+                                       f"reject {aid}`). Why: uploading to cloud storage. "), err)
+        self.assertEqual(err.count("\n"), 1, err)
+        reply = json.loads(out)   # Claude Code shows the person the systemMessage and the model the deny's reason
+        self.assertEqual((reply["systemMessage"], reply["hookSpecificOutput"]["permissionDecisionReason"],
+                          reply["hookSpecificOutput"]["permissionDecision"]), (err.strip(), err.strip(), "deny"))
+        return aid
+
+    def approvals(self, *args):
+        """`tracekit approvals ARGS` as the person, from another terminal."""
+        p = subprocess.run([sys.executable, "-m", "tracekit", "approvals", *args], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p.stdout.strip()
+
+    def test_approve_then_retry_runs_the_same_call_once_and_the_run_verifies(self):
+        self.assertEqual(self.hook("SessionStart")[0], 0)
+        aid = self.held(self.UPLOAD, "t1")
+        early = self.held(self.UPLOAD, "t2")   # the agent retries before the person answered: held again
+        self.assertNotEqual(early, aid)
+        self.assertEqual(self.approvals("approve", aid), f"approved: {aid} (self-approved: dev mode only)")
+        self.assertEqual(self.pre(self.UPLOAD, "t3"), (0, "", ""))   # the same call again: it runs
+        self.assertEqual(self.post(self.UPLOAD, "t3"), (0, ""))
+        self.assertNotIn(self.held(self.UPLOAD, "t4"), (aid, early))   # once: the next one is held again
+        self.assertNotIn(self.held(self.UPLOAD.replace("releases", "backups"), "t5"), (aid, early))   # other args
+        run = self.run_handle()
+        self.assertEqual(self.hook("SessionEnd", reason="exit"), (0, ""))
+        deadline = time.monotonic() + 20
+        while run.call("read")["events"][-1]["type"] != "run.final":   # after the grace window
+            self.assertLess(time.monotonic(), deadline, "no run.final")
+            time.sleep(0.25)
+        autospawn.down()
+        store = FileStorage(os.path.join(service.dev_data_dir(), "store"))
+        self.addCleanup(store.close)
+        events = [r["event"] for r in store.iter_run("default", run.run_id)]
+        used = [(e["tool_call_id"], e["data"]["approval_id"]) for e in events if e["type"] == "approval.consumed"]
+        asked = {e["data"]["approval_id"]: e["tool_call_id"] for e in events if e["type"] == "approval.request"}
+        self.assertEqual((used, asked[aid]), ([("t3", aid)], "t1"))   # which approval let t3 run, and asked for t1
+        self.assertEqual([e for e in events if e["type"] == "capture.gap"], [])
+        text = checkpoint.body(ORIGIN, store.tree.size, store.tree.root_at(store.tree.size))
+        trust, out = os.path.join(self.dir, "trust.json"), os.path.join(self.dir, "run.tkb")
+        with open(trust, "w") as f:
+            json.dump({"logs": [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))], "algs": ["ed25519"]}, f)
+        export(store, "default", run.run_id, text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET), out)
+        rep, code = v2.verify(out, trust)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+
+    def test_the_agent_cannot_approve_its_own_held_call(self):
+        """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
+        held."""
+        aid = self.held(self.UPLOAD, "t1")
+        code, _, err = self.pre(f"tracekit approvals approve {aid}", "t2")
+        self.assertEqual(code, 2)
+        self.assertIn("TK-D012", err)
+        self.assertNotEqual(self.held(self.UPLOAD, "t3"), aid)
+
+
 class InitV2(unittest.TestCase):
     def setUp(self):   # init reads the user's Claude Code settings and makes the dev signer's data dir
         self.home = tempfile.mkdtemp()
@@ -1246,14 +1333,14 @@ if __name__ == "__main__":
 
 
 class HoldLine(unittest.TestCase):
-    def hold_lines(self, reason, signer=None):
-        """Return the waiting line and the not-approved follow-up from one ask that is rejected."""
+    def pre(self, reason, signer=None, wait=str(claude_code.APPROVAL_WAIT_S), answer="rejected"):
+        """(exit code, stderr lines, stdout) of the hook's PreToolUse for one ask, answered `answer` while it waits."""
         client = mock.Mock(timeout=30.0, signer=signer)
         run = mock.Mock(run_id="r1")
 
         def call(method, **fields):
-            return {"approval_request": {"approval_id": "apr-1"},
-                    "approval_wait": {"state": "rejected"}}[method]
+            return {"approval_request": {"approval_id": "apr-1", "state": "requested"},
+                    "approval_wait": {"state": answer}}[method]
 
         run.call = call
 
@@ -1261,13 +1348,47 @@ class HoldLine(unittest.TestCase):
             return run, {"decision": "ask", "rule_ids": ["TK-A003"], "decision_id": "d1",
                          "reason": reason}
 
-        err = io.StringIO()
-        with mock.patch.object(claude_code, "_run", decide), contextlib.redirect_stderr(err):
-            self.assertEqual(claude_code._pre(client, {"tool_name": "Bash", "tool_input": {"command": "x"}}, "s1", "t1"), 2)
-        lines = err.getvalue().splitlines()
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(claude_code, "_run", decide), contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(out), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: wait}):
+            code = claude_code._pre(client, {"tool_name": "Bash", "tool_input": {"command": "x"}}, "s1", "t1")
+        return code, err.getvalue().splitlines(), out.getvalue()
+
+    def hold_lines(self, reason, signer=None):
+        """Return the waiting line and the not-approved follow-up from one ask that is rejected while its hook waits."""
+        code, lines, _ = self.pre(reason, signer)
+        self.assertEqual(code, 2)
         waiting = next(l for l in lines if "waiting for approval" in l)
         not_approved = next(l for l in lines if "not approved" in l)
         return waiting, not_approved
+
+    def test_by_default_a_held_call_is_blocked_at_once_with_how_to_approve_and_retry(self):
+        """No harness shows a running hook's output, so a hook that waited for an answer waited for a person who could
+        not know: it blocks at once, telling the person (systemMessage) and the model (the deny reason) the command
+        that approves the call and to try the same call again, with exactly the same arguments."""
+        for wait in ("", "0", "-5", "soon", "nan"):
+            with self.subTest(wait=wait):
+                code, lines, out = self.pre("force push. Push without --force.", wait=wait, answer="approved")
+                self.assertEqual(code, 2)
+                held = ("[tracekit] held for approval apr-1 (TK-A003): to let it run, approve it with `tracekit "
+                        "approvals approve apr-1`, then ask the agent to try the same call again, with exactly the "
+                        "same arguments (to refuse it: `tracekit approvals reject apr-1`). Why: force push. Push "
+                        "without --force")
+                self.assertEqual(lines, [held])   # no waiting line: nothing waited
+                self.assertEqual(json.loads(out), {"systemMessage": held, "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": held}})
+
+    def test_an_unanswered_wait_ends_with_how_to_approve_and_retry(self):
+        code, lines, _ = self.pre("x", wait="0.2", answer="requested")
+        self.assertEqual(code, 2)
+        self.assertIn("waiting for approval apr-1", lines[0])
+        self.assertTrue(lines[-1].startswith("[tracekit] held for approval apr-1 (TK-A003): to let it run, approve it "
+                                             "with "), lines)
+
+    def test_the_wait_is_capped_below_the_hooks_timeout(self):
+        for wait, s in (("30", 30.0), ("1e9", claude_code.APPROVAL_WAIT_S), ("inf", claude_code.APPROVAL_WAIT_S)):
+            with self.subTest(wait=wait), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: wait}):
+                self.assertEqual(claude_code.approval_wait_s(), s)
 
     def test_hold_line_drops_a_trailing_period_from_the_reason(self):
         """A rule's reason ends with a period (often from the joined remedy). The hold line joins it to the approval
@@ -1311,7 +1432,8 @@ class PreBudget(unittest.TestCase):
         def call(method, **fields):
             calls.append(method)
             now[0] += client.timeout + fields.get("timeout_ms", 0) / 1000
-            return {"approval_request": {"approval_id": "a1"}, "approval_consume": {"ok": True}}.get(method) or \
+            return {"approval_request": {"approval_id": "a1", "state": "requested"},
+                    "approval_consume": {"ok": True}}.get(method) or \
                 {"state": "requested" if fields.get("timeout_ms") == 300_000 else "approved"}
         run = mock.Mock(run_id="r1", call=call, approval_consume=lambda *a, **kw: call("approval_consume"))
 
@@ -1320,7 +1442,8 @@ class PreBudget(unittest.TestCase):
             return run, {"decision": "ask", "rule_ids": ["R1"], "decision_id": "d1"}
         with mock.patch.object(claude_code, "_run", decide), mock.patch.object(claude_code, "files"), \
                 mock.patch.object(claude_code, "time", mock.Mock(monotonic=lambda: now[0])), \
-                contextlib.redirect_stderr(io.StringIO()):
+                contextlib.redirect_stderr(io.StringIO()), \
+                mock.patch.dict(os.environ, {claude_code.WAIT_ENV: str(claude_code.APPROVAL_WAIT_S)}):
             self.assertEqual(claude_code._pre(client, {"tool_name": "pay", "tool_input": {}}, "s1", "t1"), 0)
         self.assertEqual(calls[-1], "approval_consume")
         self.assertLessEqual(now[0], claude_code.APPROVAL_WAIT_S)

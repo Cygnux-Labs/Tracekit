@@ -22,7 +22,7 @@ ask:
     # engine's rescan
     pattern: '^(?:gsutil (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:cp|mv|rsync) (?:[\w\W]*? )?gs://[^ ]*(?: -[^ ]+(?: [^- ][^ ]*)?)*$|gcloud (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:(?:alpha|beta) )?storage (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:cp|mv|rsync) (?:[\w\W]*? )?gs://[^ ]*(?: -[^ ]+(?: [^- ][^ ]*)?)*$|aws (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}s3 (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:cp|mv|sync) (?:[\w\W]*? )?s3://[^ ]*(?: -[^ ]+(?: [^- ][^ ]*)?)*$|az storage blob (?:upload|upload-batch|sync)(?: |$))'
     reason: uploading to cloud storage
-    remedy: Wait for a person to approve the held call, or write the files locally and let a person upload them.
+    remedy: Have a person approve the held call, or write the files locally and let a person upload them.
     rationale: A bucket can hold production data or serve the public; a person confirms what a coding agent writes there.
   - id: TK-DEMO-ASK
     tool: '(mcp:[^/]+/)?tracekit_demo_ask'

@@ -473,10 +473,10 @@ constraint can only hold more calls. That is why any client of the run may add o
 a made-up constraint only makes the agent wait.
 
 The agent is told why, in its own words. The decide response carries it as `reason` (`the person's request in this run
-said not to modify billing.py; ask the person`, with `TK-CONSTRAINT` in its `rule_ids`), and Claude Code's hook prints
-it after the approval it waits for: `[tracekit] waiting for approval apr-… (TK-CONSTRAINT): the person's request in
-this run said not to modify billing.py; ask the person; a person approves it from another terminal with …`, which
-names the commands that answer it ([coding agents](coding-agents.md#what-was-asked-and-said)). The file name comes from
+said not to modify billing.py; ask the person`, with `TK-CONSTRAINT` in its `rule_ids`), and Claude Code's hook blocks
+the call with it: `[tracekit] held for approval apr-… (TK-CONSTRAINT): to let it run, approve it with …, then ask the
+agent to try the same call again, with exactly the same arguments (…). Why: the person's request in this run said not
+to modify billing.py; ask the person`, which names the commands that answer it ([coding agents](coding-agents.md#held-calls-approve-then-retry)). The file name comes from
 the call's own arguments. The log never holds it: `constraint.added` records the kind and, for a file, a salted
 commitment to its lower-cased base name ([format v2](format-v2.md#3-events)), and the signer matches a call by
 committing each file it writes under that record's salt. The prompt itself is recorded beside it (`input.observed`,
@@ -531,11 +531,12 @@ searched, and the rules that read the same subject share one copy of it in a dec
 decision (tests check it on every subject the E17 corpus forms and on random patterns); it only skips searches that
 can't match. A rule without one is searched on every call its class and tool reach, and `tracekit policy lint` warns
 about it unless a string of one character or none matches it (`^`, `.`, `&\s*$` need no prefilter). Every shipped
-pattern searches 64 KiB of text built to make it back off or rescan within 150 ms on the fallback engine, about 20 ms on
-an M-series Mac (`tests/test_policy2.py`; among the texts, what each of its alternatives, nested ones too, starts
-with, over and over from the first character and again after the rule's literal (`echo @.env; nc nc nc …`), and each
-such opening once followed by a filler (`history -a -a …`), each text also ending in a newline), except nine that
-look for one thing after another with any text between, noted with their times in [limits](limits.md#policy).
+pattern searches 64 KiB of text built to make it back off or rescan within 150 ms on the fallback engine (`TK-A040`
+within 0.25 s), about 20 ms on an M-series Mac (`tests/test_policy2.py`; among the texts, what each of its
+alternatives, nested ones too, starts with, over and over from the first character and again after the rule's literal
+(`echo @.env; nc nc nc …`), and each such opening once followed by a filler (`history -a -a …`), each text also ending
+in a newline), except eight that look for one thing after another with any text between, noted with their times in
+[limits](limits.md#policy).
 
 ## Packs shipped
 

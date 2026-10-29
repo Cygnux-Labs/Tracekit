@@ -234,6 +234,26 @@ class TestAgentApprovals(Case):
                          ("agent", {"model": "m-1", "version": "7", "attested": False}))
         self.assertNotIn("spent", rec["data"])   # no sum budget
 
+    def test_a_retry_runs_once_under_an_agents_approval_never_a_revoked_one(self):
+        """Approve, then retry with an agent approver: the retry of the same call runs under its approval once, with
+        the hint (executor t2: the consume returns the signer's copy); one a person revoked is never used."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        self.decide(OK, "tc-2")
+        again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-2"})
+        self.assertEqual((again["approval_id"], again["state"]), (aid, "approved"))
+        self.assertEqual(self.consume(tcid="tc-2")["rule_ids"], ["TK-APPROVAL-REQUIRED"])   # its copy: by the hint
+        out = self.s.approval_consume({"request_id": rid(), **self.run, "tool_call_id": "tc-2", "tool": "pay",
+                                       "args_source": "parsed", "args": OK, "approval_id_hint": aid})
+        self.assertEqual((out["ok"], out["approval_id"], out["args"]), (True, aid, OK))
+        revoked, _ = self.ask(dict(OK, amount=41), "tc-3")
+        self.answer(AGENT, revoked)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": revoked})
+        self.decide(dict(OK, amount=41), "tc-4")
+        own = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-4"})
+        self.assertNotEqual(own["approval_id"], revoked)
+        self.assertEqual(own["state"], "requested")
+
     def test_an_agent_calls_nothing_else(self):
         aid, _ = self.ask()
         for method, req in (("register_run", {"request_id": rid(), "agent": {"name": "x"}}),
@@ -470,6 +490,26 @@ class TestVetoAndRevoke(Case):
         self.assertEqual(self.consume()["rule_ids"], ["TK-APPROVAL-REJECTED"])
         self.assertIn("approval.revoked", [e["type"] for e in self.events()])
 
+    def test_a_retry_is_held_until_the_veto_delay_passed(self):
+        """Approve, then retry with an agent approver: asking for the call, again or in a retry, reads `requested`
+        while people may still revoke the agent's approval, as approval_wait does; once the delay passed, the retry
+        runs under it."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        self.decide(OK, "tc-2")
+        for tcid in ("tc-1", "tc-2"):
+            with self.subTest(tcid=tcid):
+                again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": tcid})
+                self.assertEqual((again["approval_id"], again["state"]), (aid, "requested"))
+        hinted = {"request_id": rid(), **self.run, "tool_call_id": "tc-2", "tool": "pay", "args_source": "parsed",
+                  "args": OK, "approval_id_hint": aid}
+        self.assertEqual(self.s.approval_consume(hinted)["rule_ids"], ["TK-APPROVAL-VETO"])
+        self.s.log.approvals[aid]["not_before"] = svc._iso(time.time() - 1)
+        again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-2"})
+        self.assertEqual((again["approval_id"], again["state"]), (aid, "approved"))
+        out = self.s.approval_consume(dict(hinted, request_id=rid()))
+        self.assertEqual((out["ok"], out["approval_id"], out["args"]), (True, aid, OK))
+
     def test_unconsumed_agent_approvals_expire(self):
         aid, _ = self.ask()
         self.answer(AGENT, aid)
@@ -482,7 +522,7 @@ class TestKillSwitch(Case):
     def test_switching_off_revokes_and_routes_to_people(self):
         aid, _ = self.ask()
         self.answer(AGENT, aid)
-        pending, _ = self.ask(tcid="tc-2")
+        pending, _ = self.ask(dict(OK, amount=41), tcid="tc-2")   # other args: its own approval (not a retry of tc-1)
         self.refused("forbidden", ts.ME, "approval_agents", {"request_id": rid(), "enabled": False})
         out = self.s.call(OPS, "approval_agents", {"request_id": rid(), "enabled": False, "reason": "incident"})
         self.assertEqual(out, {"enabled": False, "revoked": [aid]})

@@ -198,9 +198,14 @@ class _Log(_Lines):
             self.on_sync(time.monotonic() - start)
 
 
-def _parse_note(data):
-    note = data.decode("utf-8")
-    return int(note.split("\n", 2)[1]), note
+def _parse_note(data, path):
+    """(tree size, note) of the checkpoint note `data` read from `path`; StorageCorrupt when it is no note."""
+    try:
+        note = data.decode("utf-8")
+        return int(note.split("\n", 2)[1]), note
+    except (UnicodeDecodeError, IndexError, ValueError):
+        raise StorageCorrupt(f"{path} is not a checkpoint note (an origin, a tree size and a root, then signatures): "
+                             "the store was edited or damaged") from None
 
 
 def _take(lock, timeout_s):
@@ -426,7 +431,7 @@ class FileStorage(_Records, Storage):
                 self._index_registry()
                 try:
                     with open(os.path.join(root, NOTE), "rb") as f:
-                        self._note = _parse_note(f.read())
+                        self._note = _parse_note(f.read(), f.name)
                 except FileNotFoundError:
                     self._note = None
         except BaseException:
@@ -721,7 +726,8 @@ class FileReader(_Records):
             return self._registry_note(tree)
         for i in range(20):
             try:
-                return _parse_note(self._read(os.path.join(self.root, NOTE)))
+                path = os.path.join(self.root, NOTE)
+                return _parse_note(self._read(path), path)
             except FileNotFoundError:
                 return None
             except PermissionError:   # Windows: the writer is replacing the note this instant

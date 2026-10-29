@@ -556,25 +556,28 @@ def _installed_tracekit_plugin(plugin_id, settings_path):
 
 
 def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
-                  module="tracekit.hook", signer=None, thinking=False):
+                  module="tracekit.hook", signer=None, thinking=False, dry_run=False):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
     env.ANTHROPIC_BASE_URL (C3), signer env.TRACEKIT_SIGNER or a dict of env variables (each removed on uninstall
-    while it still has that value); the SIGNER_ENV variables it doesn't name are removed. thinking: also turn
-    Claude Code's thinking summaries on (THINKING: true) unless the file already sets them; uninstall turns them off
-    again only when init turned them on and they are still on (_thinking). Returns the file's THINKING setting then.
+    while it still has that value); the SIGNER_ENV variables it doesn't name are removed. extra: {setting: on} of the
+    true/false settings to turn on (allowManagedHooksOnly); off, or uninstall, removes one only when init turned it on
+    and it is still on. thinking: also turn Claude Code's thinking summaries on (THINKING: true) unless the file
+    already sets them; uninstall turns them off again only when init turned them on and they are still on (_thinking).
+    Returns the file's THINKING setting then.
     Raises SettingsError instead of overwriting a file it cannot parse,
-    or one that is a symlink. With owner (as root) the whole edit runs as that user. python, module: see _hook_command."""
+    or one that is a symlink; dry_run: raises as the edit would, and changes nothing. With owner (as root) the whole
+    edit runs as that user. python, module: see _hook_command."""
     if owner is not None:
         return files.as_user(owner, install_hooks, settings_path, uninstall, None, proxy_url, extra, mode, python,
-                             module, signer, thinking, errors=(SettingsError,))
+                             module, signer, thinking, dry_run, errors=(SettingsError,))
     settings_path = os.path.abspath(settings_path)
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
     try:
         d = files.open_dir(os.path.dirname(settings_path))
         try:
             return _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python, module, signer,
-                                     thinking)
+                                     thinking, dry_run)
         finally:
             files.close(d)
     except files.UnsafePath as e:
@@ -594,7 +597,7 @@ def _parse_settings(raw, settings_path):
 
 
 def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None, module="tracekit.hook",
-                      signer=None, thinking=False):
+                      signer=None, thinking=False, dry_run=False):
     name = os.path.basename(settings_path)
     raw = files.read(d, name)
     s = _parse_settings(raw, settings_path)
@@ -652,12 +655,15 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
         s["env"] = env
     else:
         s.pop("env", None)
-    for k, v in (extra or {}).items():
-        if uninstall:
-            s.pop(k, None)
-        else:
-            s[k] = v
+    for k, on in (extra or {}).items():   # an admin's own value stays: no marker
+        if uninstall or not on:
+            if s.pop(f"_tracekit_{k}", None) and s.get(k) is True:
+                s.pop(k)
+        elif s.get(k) is not True:
+            s[k], s[f"_tracekit_{k}"] = True, True
     _thinking(s, thinking, uninstall)
+    if dry_run:
+        return None
     if raw is not None:
         if _parse_settings(raw, settings_path) == s:
             return s.get(THINKING)
@@ -1077,13 +1083,15 @@ def stop_dev_daemon(home):
     _stop_pidfile(os.path.join(home, "tracekitd.pid"))
 
 
-def install_managed(proxy_url=None, managed_only=False, path=None, python=None):
-    """C5: put the hooks in Claude Code's admin-managed settings, which users and projects cannot
-    override. managed_only additionally sets allowManagedHooksOnly (user/project hooks stop running)."""
-    path = path or MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
-    install_hooks(path, proxy_url=proxy_url, extra={"allowManagedHooksOnly": True} if managed_only else None, mode=0o644,
-                  python=python)
-    return path
+def install_managed(proxy_url=None, managed_only=False, path=None, python=None, uninstall=False, **kw):
+    """C5: put the hooks in Claude Code's admin-managed settings, which users and projects cannot override, as root and
+    readable by every user (Claude Code starts without a managed file it can't read). managed_only additionally sets
+    allowManagedHooksOnly (user/project hooks stop running); without it, or with uninstall (which takes the hooks out),
+    allowManagedHooksOnly goes only if init set it. kw: install_hooks' (v2: module, signer, thinking). Returns the
+    file's THINKING setting."""
+    return install_hooks(path or MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"], uninstall,
+                         proxy_url=proxy_url, extra={"allowManagedHooksOnly": managed_only}, mode=0o644,
+                         python=python, **kw)
 
 
 def _write_system_client_config(cfg):
@@ -1468,14 +1476,16 @@ def v2_plist(user):
 
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
                    experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=False,
-                   egress=False, thinking=True):
+                   egress=False, thinking=True, managed=False, managed_only=False):
     """`tracekit init --v2 --user AGENT` as root: the v2 signer service as its own user, from the root-owned venv, with
     the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
     different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
     which the harness helper attests. public_witness (`--public-witness`): the public witness cosigns the signer's logs.
     egress (`--egress`, Linux): the agent's outside traffic only through a local egress observer (docs/egress.md).
     thinking: turn Claude Code's thinking summaries (install_hooks), or Codex's reasoning summaries
-    (agent_hooks.codex_reasoning), on for AGENT unless its settings set them.
+    (agent_hooks.codex_reasoning), on for AGENT unless its settings set them. managed (`--managed`, Claude Code only):
+    the hooks go in Claude Code's admin-managed settings (install_managed), for every user of this machine, and out of
+    the file the last init put them in; managed_only (`--managed-only`) also sets allowManagedHooksOnly.
     Returns (socket, settings path or None)."""
     if public_witness:
         from . import public_witness as pw
@@ -1504,6 +1514,11 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
             raise SystemExit(f"--policy: {bad}. The policy must be a root-owned file in root-owned directories, so "
                              f"{target_user} cannot change it")
     harnesses = [resolve_harness(h, agent) for h in harnesses]
+    sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
+    recorded = (sc.get("hooks") or {}).get("settings")
+    # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
+    if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
+        install_managed(None, True, recorded, uninstall=True, dry_run=True)
     requirement = _install_source()
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
@@ -1534,15 +1549,10 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         _write_root_file(EGRESS_CONFIG, (f"# written by `tracekit init --v2 --egress`\nlisten: {json.dumps(EGRESS_LISTEN)}"
                                          f"\nsigner: {json.dumps(sock)}\n").encode())
     from . import agent_hooks
-    settings = None if not hooks else (os.path.join(project or owner.pw_dir, ".claude", "settings.json")
-                                       if agent == "claude" else agent_hooks.config_path(agent, project, owner.pw_dir))
-    sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
-    # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
-    _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
-                                     hooks={"user": target_user, "settings": settings, "agent": agent,
-                                            **({"env": proxy} if proxy else {})},
-                                     **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
-                                        if agent == "claude" and not why else {})))
+    admin = MANAGED_SETTINGS["darwin" if darwin else "linux"]
+    settings = None if not hooks else admin if managed else (
+        os.path.join(project or owner.pw_dir, ".claude", "settings.json") if agent == "claude"
+        else agent_hooks.config_path(agent, project, owner.pw_dir))
     failed = []   # what to check for each service that did not start
     if not no_service:
         if harnesses:   # before the signer, which asks it from its first register_run
@@ -1572,10 +1582,20 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                   f"needed): see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then "
                                   f"{target_user}'s network is reported only")
     if settings and agent == "claude":
-        on = install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK,
-                           signer={"TRACEKIT_SIGNER": sock, **proxy} if proxy else sock, thinking=thinking)
+        env = {"TRACEKIT_SIGNER": sock, **proxy} if proxy else sock
+        on = (install_managed(None, managed_only, settings, OPT_PYTHON, module=V2_HOOK, signer=env, thinking=thinking)
+              if managed else install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK, signer=env,
+                                            thinking=thinking))
         if thinking:
             print(thinking_line(settings, on))
+        if managed:
+            print(f"admin-managed hooks: {target_user} can't edit or turn them off, and they run in every user's Claude "
+                  f"Code on this machine, not only {target_user}'s."
+                  + (" allowManagedHooksOnly is on: every user's own hooks (user, project, local, plugin) stop running."
+                     if managed_only else "")
+                  + f" A server-managed or MDM Claude Code policy would replace this file: in {target_user}'s Claude "
+                  f"Code, /status must list `Enterprise managed settings (file)` "
+                  f"({wiki_url('docs/deploy.md', 'laptop-system-mode')})")
     elif settings:
         files.as_user(owner, agent_hooks.install, agent, None, False, True, OPT_PYTHON, settings, errors=(SettingsError,))
         if agent == "codex" and thinking:
@@ -1584,9 +1604,63 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     if proxy and agent != "claude":
         print(f"egress: start {target_user}'s agent with HTTPS_PROXY=http://{EGRESS_LISTEN}: anything else it sends "
               "outside is refused by the firewall")
+    try:
+        was = pwd.getpwnam(sc["hooks"]["user"])   # the user of the file the last init recorded
+    except (KeyError, TypeError):
+        was = None
+    _remove_v2_hooks(sc, was, settings, owner if managed else None)
+    # after the hooks, so a failed init leaves the config recording the file that still has them;
+    # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
+    _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
+                                     hooks={"user": target_user, "settings": settings, "agent": agent,
+                                            **({"env": proxy} if proxy else {})},
+                                     **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
+                                        if agent == "claude" and not why else {})))
     if failed:
         raise ServiceError("; ".join(failed))
     return sock, settings
+
+
+def _v2_hooks_in(path):
+    """Whether the Claude Code settings file `path` has Tracekit's v2 hooks (not when it's missing or unreadable)."""
+    try:
+        return "v2" in _hook_summary(json.loads(agent_file(path)))["versions"]
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
+def _same_file(a, b):
+    """Whether paths `a` and `b` name one existing file, however each is spelled (a home that is a symlink, say)."""
+    try:
+        return a is not None and b is not None and os.path.samefile(a, b)
+    except OSError:   # one is missing
+        return False
+
+
+def _remove_v2_hooks(sc, owner, keep=None, own=None):
+    """Take init's v2 hooks out of each settings file but `keep` that may have them (Claude Code runs every file's
+    hooks, deciding each call once per file): the file system config `sc` records, as `owner` (its user); with `own`
+    (the agent's user), that user's ~/.claude/settings.json, as that user; and Claude Code's admin-managed settings,
+    recorded or not (their hooks run in every user's Claude Code and block every call once the signer is gone), as
+    root (install_managed, which keeps the file readable by every user)."""
+    h = sc.get("hooks") or {}
+    signer = {**({"TRACEKIT_SIGNER": sc["signer"]} if sc.get("signer") else {}), **h["env"]} if h.get("env") else \
+        sc.get("signer")
+    if h.get("settings") and not _same_file(h["settings"], keep) and os.path.exists(h["settings"]):
+        if h.get("agent", "claude") != "claude":
+            from . import agent_hooks
+            files.as_user(owner, agent_hooks.install, h["agent"], None, True, True, None, h["settings"],
+                          errors=(SettingsError,))
+        elif h["settings"] in MANAGED_SETTINGS.values():
+            install_managed(None, True, h["settings"], uninstall=True, signer=signer)
+        else:
+            install_hooks(h["settings"], uninstall=True, owner=owner, signer=signer)
+    mine = own and os.path.join(own.pw_dir, ".claude", "settings.json")
+    if mine and not _same_file(mine, keep) and files.as_user(own, _v2_hooks_in, mine):
+        install_hooks(mine, uninstall=True, owner=own, signer=signer)
+    admin = MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    if not _same_file(admin, keep) and _v2_hooks_in(admin):
+        install_managed(None, True, admin, uninstall=True, signer=signer)
 
 
 def uninstall_system_v2(purge=False):
@@ -1600,15 +1674,7 @@ def uninstall_system_v2(purge=False):
         owner = pwd.getpwnam(h["user"])
     except KeyError:
         owner = None
-    if h.get("settings") and os.path.exists(h["settings"]):
-        if h.get("agent", "claude") == "claude":
-            install_hooks(h["settings"], uninstall=True, owner=owner, signer={
-                **({"TRACEKIT_SIGNER": sc["signer"]} if sc.get("signer") else {}), **h["env"]} if h.get("env") else
-                sc.get("signer"))
-        else:
-            from . import agent_hooks
-            files.as_user(owner, agent_hooks.install, h["agent"], None, True, True, None, h["settings"],
-                          errors=(SettingsError,))
+    _remove_v2_hooks(sc, owner)
     users = [V2_USER_DARWIN, V2_TAILER_DARWIN] if darwin else [V2_USER, V2_TAILER] + ([V2_EGRESS] if h.get("env") else [])
     if owner and h.get("agent", "claude") == "claude":   # also when init kept no `tailer` key: the ACL may be set
         why = _tailer_acl(owner, users[1], darwin, grant=False)
@@ -1748,7 +1814,8 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     if not hooks:
         settings = None  # hooks come from elsewhere (the Claude Code plugin)
     elif managed:
-        settings = install_managed(cfg.get("proxy_url"), managed_only, python=OPT_PYTHON)
+        settings = MANAGED_SETTINGS["darwin" if darwin else "linux"]
+        install_managed(cfg.get("proxy_url"), managed_only, settings, OPT_PYTHON)
     else:
         settings = os.path.join(project, ".claude", "settings.json") if project else os.path.join(owner.pw_dir, ".claude", "settings.json")
         install_hooks(settings, owner=owner, proxy_url=cfg.get("proxy_url"), python=OPT_PYTHON)
@@ -1766,21 +1833,24 @@ def _hook_summary(settings):
 def status():
     cfg = client.client_config()
     visible_cfg = {k: v for k, v in cfg.items() if k != "socket_token"}
-    out = {"client_config": visible_cfg or None}
-    try:
-        from . import policy as P
-        pol, _ = P.load()
-        out["policy"] = {"version": pol.get("version"), "hash": P.policy_hash(pol), "fail_mode": pol.get("fail_mode", "open"),
-                         "content_capture": pol.get("content_capture", "hashed"), "reasoning_capture": pol.get("reasoning_capture", False)}
-    except Exception as e:
-        out["policy"] = {"error": str(e)}
+    out = {"client_config": visible_cfg or None, "policy": None}
     try:
         out["signer"] = client.status()
     except client.SignerUnavailable as e:
-        out["signer"] = {"ok": False, "error": f"unreachable at {client.socket_path()}: {e}"}
+        # null on a v2-only setup: no config or TRACEKIT_SOCKET names a v1 signer, and none answers at the default
+        named = cfg.get("socket") or client.socket_path() != client.DEFAULT_SOCKET
+        out["signer"] = {"ok": False, "error": f"unreachable at {client.socket_path()}: {e}"} if named else None
+    if out["signer"] is not None:   # the v1 hooks' policy and fail mode; v2 hooks follow the v2 signer's policy
+        try:
+            from . import policy as P
+            pol, _ = P.load()
+            out["policy"] = {"version": pol.get("version"), "hash": P.policy_hash(pol), "fail_mode": pol.get("fail_mode", "open"),
+                             "content_capture": pol.get("content_capture", "hashed"), "reasoning_capture": pol.get("reasoning_capture", False)}
+        except Exception as e:
+            out["policy"] = {"error": str(e)}
     out["hooks"] = _installed_hooks()
     out["capture_sources"] = ["hook"] + (["proxy"] if cfg.get("proxy") else []) + \
-        (["transcript"] if out["policy"].get("reasoning_capture") else [])
+        (["transcript"] if (out["policy"] or {}).get("reasoning_capture") else [])
     if cfg.get("proxy_url"):
         import urllib.request
         try:

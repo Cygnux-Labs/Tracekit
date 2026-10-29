@@ -1,10 +1,11 @@
 """L1 transcript tailer (04-design §6): follows one Claude Code session transcript and reports it to the signer.
 
-    python -I -m tracekit.tailer   (started by the v2 hook at SessionStart; the run handle comes on stdin as JSON:
-                                    {"run_id", "run_token", "path", "until"?, "offsets"?})
+    python -I -m tracekit.tailer   (started by the v2 hook at the run's first event; the run handle comes on stdin as
+                                    JSON: {"run_id", "run_token", "path", "until"?, "offsets"?})
 
-`offsets` ({path: offset}): where to start reading the session's transcripts, for a run after the session's first (an
-idle close, a resumed session): the lines before are an earlier run's (the hook measures them, as it names the path).
+`offsets` ({path: offset}): where to start reading the session's transcripts: {path: 0} for a new session; for a later
+run (an idle close, a resumed session, a session that goes on after SessionEnd), where the hook measured them, as the
+lines before are an earlier run's.
 
 Dev mode: a detached process of the agent's own user, which exits once the hook's session state (`until`) is gone
 (SessionEnd). System mode (`tracekit init --v2`): run through sudo as the tracekit-tailer user, which reads the agent's

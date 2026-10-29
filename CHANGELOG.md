@@ -2,6 +2,108 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.5.1 (2026-10-29) — held calls you can answer, hooks the agent can't remove, a weekly report
+
+A patch release from a week of running Tracekit on its own maintainer's laptop and a hands-on QA pass. That week, the
+coding-agent hooks held 208 calls; each waited about 8 minutes for an answer nobody could see and was then blocked, and
+none was approved. A held call now returns at once with the command that approves it, and once a person approves,
+the agent's retry of the same call runs. Claude Code's v2 hooks can go in its admin-managed settings, where the
+agent's user can't remove or turn them off;
+`tracekit report` summarizes a week of a signer's store on one page; and the viewer, the browser verifier, the CLI's
+messages and the Claude Code transcript reader are fixed where a person using them ran into problems. Bundles are
+unchanged, and the signer protocol stays 20.
+
+### Upgrade notes
+- **Held calls don't wait.** The coding-agent hooks block a held call at once (they waited about 8 minutes). Approve it
+  (`tracekit approvals approve <id>`, the viewer's APPROVALS page or Slack), then ask the agent to try the same call
+  again, with exactly the same arguments (a reworded Bash `description` is another call). Where a person answers during the wait (Slack approvals, an agent approver), set `TRACEKIT_APPROVAL_WAIT` to
+  the seconds to wait (capped at 540; the hook also stops short of its own timeout) to keep the old behaviour.
+- **Policy packs.** Coding `2026.10-v2-40` (from `2026.10-v2-39`): `TK-A014` no longer holds WebSearch (Changed).
+  Server `2026.10-server-10` and strict `2026.10-strict-4`: a held call's remedy reads "Have a person approve the held
+  call" (it said "Wait for…", which a hook that blocks at once no longer does). No verdict changes.
+- **PCM's `Replay.check` takes `key=`** (experimental API, released the day before): the raw 32-byte Ed25519 public key
+  that verified the message. `pcm.verify(replay=...)` passes it for you; a direct caller gets a `TypeError` until it
+  passes one.
+- **Trust files.** A trust.json is now refused as a configuration error (exit 2) when it pins one Ed25519 log key under
+  two or more log names, one witness key under two or more names, two keys under one witness name (such as a witness's
+  old and new key during a rotation: keep only its current key), or one witness with two classes; and a signer.yaml
+  that lists one witness key twice doesn't load. No trust file Tracekit writes has any of these. The same witness entry
+  listed twice is still accepted and counts once.
+- **`tracekit report`** is the new weekly summary. The old proof-pack report moved to `contrib/proofpack` in 1.0 as
+  `tracekit-report`; its help points there.
+
+### Added
+- **Admin-managed hooks for Claude Code (`tracekit init --v2 --user AGENT --managed [--managed-only]`).** System mode
+  writes the v2 hooks into Claude Code's managed settings (merged with an admin's own, kept readable at 0644) instead
+  of the agent user's `~/.claude/settings.json`. Claude Code's docs say user, project and local settings,
+  `--settings` and `disableAllHooks` outside managed settings can't remove or disable them; `--managed-only` also sets
+  `allowManagedHooksOnly`. `tracekit doctor` checks the file and its folders (`D-HOOKS-MANAGED`); `uninstall --v2`
+  removes only Tracekit's entries. Managed settings apply to every Claude Code user on the machine, and a
+  server-managed or MDM policy replaces the file ([limits](docs/limits.md#dev-mode-vs-system-mode)).
+- **`tracekit report` (experimental).** One page on a signer's store for a window (`--since 7d` by default): runs by
+  agent, calls by outcome, holds and who answered them, denies and flags by rule with examples, gaps by kind, and
+  whether each run's chain verifies (it checks every record of the store first: a run holding an edited record is
+  FAILED, and the command exits 1). It reads the store as the viewer does, never starts a signer, prints arguments
+  only from a running dev signer's content vault, and says it is an operator summary, not evidence
+  ([viewer](docs/viewer.md#weekly-report)).
+- **CI for the independent Go verifier**: `go vet`, `go test` and its differential against the golden corpus.
+
+### Changed
+- **Held calls: block at once, then approve and retry.** The hook answers a held call in about 0.1 s with the rule,
+  the reason and the exact approve and reject commands (in Claude Code, also where the person sees it). An approved
+  approval that nothing has used lets the agent's next call in the same run, with the same tool and exactly the same
+  arguments, under the same policy, run once before it expires; a rejected, revoked, expired or used one never does.
+  The signer decides this, so who may approve is unchanged (in system mode never the agent's user), and the record
+  names the approval and the blocked attempt. Bundles and the RPC protocol are unchanged
+  ([approvals](docs/approvals.md), [limits](docs/limits.md#approvals)).
+- **`TK-A014` holds only Bash, PowerShell and Monitor calls** whose `allowed_domains` widens Claude Code's sandbox, not
+  WebSearch's `allowed_domains`, which only narrows its results.
+- **The browser verifier explains each line by its outcome.** A failed line said what the check means when it passes
+  ("no record was edited after signing" under a FAIL); every check now has its own text for pass, warn and fail.
+- **CLI messages.** `tracekit approvals list` says first that nothing is waiting; `tracekit verify` without `--trust`
+  says where to get a trust file; `tracekit status` reports no v1 signer or v1 policy on a v2-only setup, and the
+  system signer in system mode.
+- **The viewer**: every run has a lane on DESK's timeline (busy ones first; the panel scrolls); HORIZON on a phone
+  shows its readouts and only callouts that fit, and a followed agent's move numbers never cover each other; GRAPH
+  wraps a run with few or no links between calls into lines the panel holds, and draws run order apart from recorded
+  links; a PCM message or grant is a row, not an alert; a row of content reads by one reader for one purpose folds
+  into one line (in `tracekit report` too); APPROVALS lists each held call that is no longer waiting once, with its
+  agent, run, call and outcome, counted by outcome, in local time, and as cards on a phone; each run's EXPORT, TRUST and
+  VERIFY commands name the signer the viewer reads and write the trust.json VERIFY uses; run IDs match across pages.
+- **The TypeScript client and verifier take any character but a line feed in an identity's subject**, as Python does
+  (`\r`, U+2028 and U+2029 were refused).
+
+### Fixed
+- **Gap noise from Claude Code runs (#471).** The transcript reader follows Workflow agents' transcripts, and a session
+  that goes on after a SessionEnd is read from where its transcripts end, so their calls are no longer reported as
+  `reconcile.fabricated` or `reconcile.hook_missing`. DESK's NEEDS YOU counts holds outside the live view and says
+  while runs are still being read, and SPAN spans the runs, not the rows loaded first.
+- **HORIZON stays responsive on large live runs (#473)**: the stage no longer grows with the side card, and callouts
+  aren't drawn over the readouts.
+- **A held call's outcome in the viewer and `tracekit report`.** A use the signer refused before anyone answered read
+  as a refusal, and one after the approval ended replaced that end (an abandoned hold read expired). Each held call
+  now comes to one outcome, the one its approval's records say: waiting, approved, rejected, revoked, expired,
+  abandoned or not answered.
+- **A `TRACEKIT_RUNTIME_DIR` too long for a Unix socket path** gets a short private directory of its own instead of
+  failing every call closed.
+- **docs/pcm.md's Python example runs as written** (the signer.yaml and approver it needs, the trust file, and the
+  replay state made before sending), with a test that runs it; the spec is linked where the docs cite it.
+- Flaky tests made deterministic: the pydantic_ai gateway hop, the detection ack-time test (medians), and the policy
+  speed test (TK-A040's own fillers within a 0.25 s budget, instead of skipping them).
+
+### Security
+- **PCM: a replay sender is the public key that signed and its agent, and a trust.json pins each Ed25519 key under one
+  log name** (PCM 0.1 9 and 10.1), in `tracekit.pcm` and the standalone verifier.
+- **A witness key counts once toward `witnesses_required`.** A cosignature names no witness, so one key is one witness
+  (C2SP tlog-cosignature), and one witness is one key under one name with one class: every verifier (Python,
+  TypeScript, Go, PCM) refuses a trust config that pins one witness key under two names, two keys under one name, or
+  one witness with two classes. The independent Go verifier now also agrees with Python and TypeScript on a duplicate
+  witness entry (counted once) and on a quorum above the pinned witnesses (exit 1).
+
+### Docs
+- The 1.4 viewer page is kept beside 1.5's; 1.5 viewer screenshots; `docs/deploy.md` names the `tracekit-central`
+  chart and what it authenticates; AGENTS.md asks agents to test like a user.
+
 ## 1.5.0 (2026-10-28) — A2A gateway, proof-carrying messages, a new viewer and four more coding agents
 
 Calls between agents can now be gated and recorded: the A2A gateway decides each message one agent sends another,

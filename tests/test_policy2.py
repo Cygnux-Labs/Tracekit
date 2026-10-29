@@ -538,11 +538,13 @@ class Speed(unittest.TestCase):
     # backing off over the rest of the command) or in an SQL statement
     # (TK-DB003 DELETE FROM, then an always-true WHERE): a backtracking engine rescans that text from each occurrence of
     # their first word, so 64 KiB repeating it in one command or statement spends the fallback's 1 s and denies
-    # (nondeterministic). TK-A040 reads up to eight options after each redis-cli on a line, so 64 KiB repeating
-    # `a/redis-cli -` reads eight tokens from each: linear, ~70 ms on a laptop and up to 0.2 s on CI's runners. RE2,
-    # the default engine, is linear; they are held to the generic fillers here. Upgrade: structural pipeline and argv
-    # rules
-    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032", "TK-A040"}
+    # (nondeterministic). RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade:
+    # structural pipeline and argv rules
+    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
+    # TK-A040 reads up to eight options after each redis-cli on a line, so 64 KiB repeating `a/redis-cli -` reads eight
+    # tokens from each: linear, ~75 ms on an M-series Mac and 152-188 ms on CI's Linux runners. Reading on to the end
+    # of the line from each redis-cli runs into the search's 0.6 s timeout
+    RULE_BUDGET_S = {"TK-A040": 0.25}
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4
@@ -610,10 +612,11 @@ class Speed(unittest.TestCase):
     def test_every_pack_pattern_searches_64_kib_within_budget(self):
         slow = []
         for rid, key, pattern in pack_patterns():
+            budget = self.RULE_BUDGET_S.get(rid, self.BUDGET_S)
             rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
             for s in self.fillers(rid, pattern):
-                took = min(self.search(rx, s) for _ in range(3)) if self.search(rx, s) > self.BUDGET_S else 0
-                if took > self.BUDGET_S:
+                took = min(self.search(rx, s) for _ in range(3)) if self.search(rx, s) > budget else 0
+                if took > budget:
                     slow.append(f"{rid} {key} {took * 1e3:.0f} ms on {s[:24]!r}")
         self.assertEqual(slow, [])
 

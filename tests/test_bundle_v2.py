@@ -284,6 +284,39 @@ class TestCheckpointNotes(unittest.TestCase):
             with self.subTest(why), self.assertRaises(NoteError):
                 checkpoint.open_note(n, lk, wk)
 
+    def test_a_witness_key_counts_once(self):
+        """A cosignature signs no key name (C2SP tlog-cosignature), so one key pinned under two names is one witness:
+        open_note refuses the pins, whichever comes first. Two witnesses with keys of their own count two."""
+        text = checkpoint.body(ORIGIN, 1, b"\0" * 32)
+        signed = text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET)
+        log = [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))]
+        alias = "alias.example.org/w"
+        note = signed + cosign(text, WITNESS, WIT_SECRET, 1760000000) + cosign(text, alias, WIT_SECRET, 1760000000)
+        pins = [checkpoint.vkey(n, COSIGNATURE, pub(WIT_SECRET)) for n in (WITNESS, alias)]
+        for keys, names in ((pins, (WITNESS, alias)), (pins[::-1], (alias, WITNESS))):
+            with self.subTest(keys=keys), self.assertRaisesRegex(
+                    NoteError, rf"^trust pins one witness key under two names \({names[0]}, {names[1]}\); a key is "
+                               r"one witness: keep it under the name it cosigns with$"):
+                checkpoint.open_note(note, log, keys)
+        two = signed + cosign(text, WITNESS, WIT_SECRET, 1760000000) + cosign(text, OPERATOR, OP_SECRET, 1760000000)
+        self.assertEqual(len(checkpoint.open_note(two, log, [pins[0], checkpoint.vkey(OPERATOR, COSIGNATURE,
+                                                                                      pub(OP_SECRET))])[3]), 2)
+
+    def test_a_witness_name_has_one_key(self):
+        """A witness cosigns with one key, so two keys pinned under one name are refused, whichever comes first; one
+        vkey listed twice is one key, and counts once."""
+        text = checkpoint.body(ORIGIN, 1, b"\0" * 32)
+        log = [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))]
+        note = (text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET) + cosign(text, WITNESS, WIT_SECRET, 1760000000)
+                + cosign(text, WITNESS, OP_SECRET, 1760000000))   # two keys' cosignatures under one name
+        pins = [checkpoint.vkey(WITNESS, COSIGNATURE, pub(s)) for s in (WIT_SECRET, OP_SECRET)]
+        for keys in (pins, pins[::-1]):
+            with self.subTest(keys=keys), self.assertRaisesRegex(
+                    NoteError, rf"^trust pins two witness keys under one name \({WITNESS}\); a name is one witness: "
+                               r"keep only its current key$"):
+                checkpoint.open_note(note, log, keys)
+        self.assertEqual(len(checkpoint.open_note(note, log, pins[:1] * 2)[3]), 1)
+
     def test_wrong_origin(self):
         other = "other.example.org/log"
         text = checkpoint.body(other, 1, b"\0" * 32)
@@ -417,6 +450,68 @@ class TestVerifyV2(Case):
             self.assertTrue(rep.assurance.startswith(level + ";"), rep.assurance)
         # the default trust config requires one pinned cosignature
         self.assert_fails(os.path.join(self.d, "dev.tkb"), "witness quorum")
+
+    def test_a_witness_key_counts_once_toward_the_quorum(self):
+        """A trust config that pins one witness key under two names is refused (exit 2) before the bundle is read,
+        saying what to do; two witnesses with keys of their own count two."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.final()
+        alias = "alias.example.org/w"
+        note = log.note()   # the witness's one cosignature
+        text = note.partition("\n\n")[0] + "\n"
+        out = os.path.join(self.d, "w.tkb")
+        export(log.store, "acme", "run-a", note + cosign(text, alias, WIT_SECRET, 1760000000), out)
+        t = trust_config(2)
+        t["witnesses"][1] = {"vkey": checkpoint.vkey(alias, COSIGNATURE, pub(WIT_SECRET)), "class": "customer"}
+        aliased = os.path.join(self.d, "aliased.json")
+        with open(aliased, "w") as f:
+            json.dump(t, f)
+        rep, code = self.verify(out, aliased)
+        self.assertEqual((code, rep.integrity, rep.failures), (2, "UNUSABLE BUNDLE", ["trust config"]), rep.checks)
+        self.assertEqual(rep.checks[0]["detail"], f"NoteError: trust pins one witness key under two names ({WITNESS}, "
+                                                  f"{alias}); a key is one witness: keep it under the name it cosigns "
+                                                  "with")
+        two = os.path.join(self.d, "two.tkb")
+        export(log.store, "acme", "run-a", log.note(witnesses=((WITNESS, WIT_SECRET), (OPERATOR, OP_SECRET))), two)
+        rep, code = self.verify(two, self.write_trust(2, name="t2.json"))
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+        self.assertIn({"check": "witness quorum", "status": "pass", "detail": "2 pinned cosignature(s), 2 required",
+                       "problems": []}, rep.checks)
+
+    def test_a_witness_is_one_key_under_one_name_with_one_class(self):
+        """A trust config that pins two keys under one witness name, or one witness with two classes, is refused (exit
+        2) before the bundle is read, saying what to do; one witness listed twice with one class counts once."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.final()
+        out = os.path.join(self.d, "w.tkb")   # cosigned by two keys under the witness's one name
+        export(log.store, "acme", "run-a", log.note(witnesses=((WITNESS, WIT_SECRET), (WITNESS, OP_SECRET))), out)
+
+        def trust(*witnesses, required=2):   # (secret, class) of each witness pinned under WITNESS
+            p = os.path.join(self.d, f"trust-{len(os.listdir(self.d))}.json")
+            with open(p, "w") as f:
+                json.dump(dict(trust_config(required), witnesses=[
+                    {"vkey": checkpoint.vkey(WITNESS, COSIGNATURE, pub(s)), "class": c} for s, c in witnesses]), f)
+            return p
+        for path, detail in (
+                (trust((WIT_SECRET, "customer"), (OP_SECRET, "customer")), f"NoteError: trust pins two witness keys "
+                 f"under one name ({WITNESS}); a name is one witness: keep only its current key"),
+                (trust((WIT_SECRET, "customer"), (WIT_SECRET, "operator")), f"ValueError: trust pins witness {WITNESS} "
+                 "with two classes (customer, operator); a witness has one class: list it once, with the class you "
+                 "give it"),
+                (trust((WIT_SECRET, "operator"), (WIT_SECRET, "customer")), f"ValueError: trust pins witness {WITNESS} "
+                 "with two classes (operator, customer); a witness has one class: list it once, with the class you "
+                 "give it")):
+            rep, code = self.verify(out, path)
+            self.assertEqual((code, rep.failures, rep.checks[0]["detail"]), (2, ["trust config"], detail), rep.checks)
+        rep, code = self.verify(out, trust((WIT_SECRET, "customer"), (WIT_SECRET, "customer"), required=1))
+        self.assertEqual((code, rep.integrity, rep.assurance.split(";")[0]), (0, "VERIFIED", "witnessed"), rep.checks)
+        self.assertIn("1 pinned cosignature(s), 1 required", [c["detail"] for c in rep.checks])
+        rep, code = self.verify(out, trust((WIT_SECRET, "customer"), (WIT_SECRET, "customer")))
+        self.assertEqual((code, rep.failures), (1, ["witness quorum"]), rep.checks)
 
     def test_e1_mutations_fail(self):
         log, out = self.honest()
@@ -608,7 +703,11 @@ class TestVerifyV2(Case):
         code, stdout, _ = self.cli(out, "--trust", self.trust)
         self.assertEqual(code, 0)
         self.assertIn("Integrity: VERIFIED.\nAssurance: witnessed;", stdout)
-        self.assertEqual(self.cli(out)[0], 2)
+        code, stdout, err = self.cli(out)
+        self.assertEqual((code, stdout), (2, ""))
+        for where in ("tracekit last writes <run>.trust.json", "tracekit signer trust -o trust.json",
+                      "from the sender directly"):   # where to get one
+            self.assertIn(where, err)
         self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 0)   # no warning
 
     def test_cli_refuses_flags_of_the_other_format(self):

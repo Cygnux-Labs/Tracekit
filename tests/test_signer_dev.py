@@ -121,6 +121,28 @@ class DevSignerEndToEnd(unittest.TestCase):
             self.assertEqual(autospawn.down(), pid_b)   # `tracekit down` in HOME B stops B's alone
         self.assertTrue(self.held())
 
+    def test_a_runtime_dir_too_long_for_a_socket_path_gets_a_short_one_of_its_own(self):
+        """macOS caps socket paths at 104 bytes: a TRACEKIT_RUNTIME_DIR too long for one serves its signer from
+        /tmp/tk-<uid>.<hex of its path>, which every client given that dir finds and `tracekit status` names."""
+        long = {"TRACEKIT_RUNTIME_DIR": os.path.join(self.dir, "r" * 100)}
+        with mock.patch.dict(os.environ, long):
+            short = autospawn.runtime_dir()
+            self.addCleanup(shutil.rmtree, short, True)
+            self.addCleanup(lambda: mock.patch.dict(os.environ, long)(autospawn.down)())
+            self.assertTrue(short.startswith(f"/tmp/tk-{os.getuid()}."), short)
+            self.assertEqual(os.stat(short).st_mode & 0o777, 0o700)
+            first = Client()
+            self.addCleanup(first.close)
+            pid = self.one_run(first)
+            again = Client()
+            self.addCleanup(again.close)
+            self.assertEqual(self.one_run(again), pid)
+            self.assertEqual(json.loads(self.cli("status"))["signer_v2"]["socket"], os.path.join(short, autospawn.SOCK))
+        self.assertNotEqual(autospawn.runtime_dir(), short)   # another dir's is never this one
+        near = "/tmp/" + "s" * (103 - len("/tmp/") - len("/" + autospawn.SOCK))   # its socket path fits, a side dir's not
+        self.assertEqual(autospawn._short(near), near)
+        self.assertLessEqual(len(os.path.join(autospawn._side(near), autospawn.SOCK).encode()), 103)
+
     def test_a_signer_from_before_1_4_is_this_homes_when_this_data_dirs_store_is_held(self):
         os.makedirs(self.run_dir, 0o700)
         with open(self.path(autospawn.ENDPOINT), "w") as f:   # as a 1.3 dev signer published it: no data_dir
@@ -310,6 +332,33 @@ class SpawnAndStatus(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.main(["status"]), 0)
         self.assertFalse(json.loads(out.getvalue())["signer_v2"]["running"])
+        self.assertFalse(os.path.exists(self.run_dir))
+
+    def test_status_shows_no_v1_signer_or_policy_on_a_v2_only_setup(self):
+        """`signer` and `policy` are the v1 signer's and the v1 hooks' (whose fail mode v2 hooks don't follow): null
+        when no config or TRACEKIT_SOCKET names a v1 signer and none answers at the default socket."""
+        from tracekit import client, install
+        os.environ.pop("TRACEKIT_SOCKET", None)   # setUp's patch.dict puts it back
+        down = client.SignerUnavailable("[Errno 2] No such file or directory")
+        cases = (({"hooks_settings": "/h/.claude/settings.json"}, down, None),   # init --dev --v2 writes only this
+                 ({"socket": "/srv/v1.sock"}, down, {"ok": False, "error": f"unreachable at /srv/v1.sock: {down}"}),
+                 ({}, None, {"ok": True}))   # a v1 signer from before 0.2.1's config, at the default socket
+        for cfg, err, signer in cases:
+            with self.subTest(cfg=cfg, reachable=err is None), \
+                    mock.patch.object(client, "system_config", return_value=None), \
+                    mock.patch.object(client, "client_config", return_value=cfg), \
+                    mock.patch.object(client, "status", side_effect=err, return_value={"ok": True}), \
+                    mock.patch.object(install, "_installed_hooks", return_value=[]):
+                out = install.status()
+                self.assertEqual(out["signer"], signer)
+                self.assertEqual(out["policy"] and out["policy"]["fail_mode"], signer and "open")
+
+    def test_status_names_the_system_signer_in_system_mode(self):
+        from tracekit import client
+        sock = os.path.join(self.dir, "system.sock")
+        with mock.patch.object(client, "system_config", return_value={"signer": sock}):
+            got = autospawn.status()
+        self.assertEqual((got["socket"], got["running"]), (sock, False))
         self.assertFalse(os.path.exists(self.run_dir))
 
 

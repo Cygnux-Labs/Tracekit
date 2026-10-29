@@ -146,7 +146,7 @@ function page() {
       s.append(line);
       d.append(s);
       for (const p of c.problems) d.append(el("div", clean(p), "problem"));   // one by one: a spread overflows the stack
-      d.append(el("p", `What this means: ${MEANING[c.check] ?? "see docs/verdicts.md."}`, "means"));
+      d.append(el("p", `What this means: ${MEANING[c.check]?.[c.status] ?? "see docs/verdicts.md."}`, "means"));
       d.open = c.status !== "pass" && c.problems.length > 0;
       return d;
     }));

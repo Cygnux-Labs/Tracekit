@@ -88,9 +88,10 @@ def since(ts):
 
 def approval(tenant, run_id, data, ts):
     """The signer's state for the approval an `approval.request` record (`data`, written at `ts`) opened. `agent`: the
-    record's agent eligibility; `escalated`: only people answer it now (`escalation`: by whom and why); an answer adds
-    `answered` (by, kind) and `answer` (its self_approved and person, when the record has them); an agent's approval
-    adds `kind` agent and the times it may be consumed between (`not_before`, `consume_by`)."""
+    record's agent eligibility; `via`: the gateway whose call it is; `escalated`: only people answer it now
+    (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
+    when the record has them); an agent's approval adds `kind` agent and the times it may be consumed between
+    (`not_before`, `consume_by`); one a later call of the same arguments consumed adds `used_by` (ran)."""
     b = data["binding"]
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
@@ -98,11 +99,18 @@ def approval(tenant, run_id, data, ts):
             "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested",
             "executor": data.get("executor", "t1"), "passkey": data.get("passkey", False),
             "requester_person": data.get("requester_person"), "label": salt_label({"type": "approval.request", "data": data}),
-            "agent": data.get("agent"), "escalated": False, "requested_at": ts, "incident_id": data.get("incident_id")}
+            "agent": data.get("agent"), "escalated": False, "requested_at": ts, "incident_id": data.get("incident_id"),
+            "via": data.get("via")}
 
 
 APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired",
                  "approval.revoked": "rejected"}
+
+
+def ran(a):
+    """(tool_call_id, attempt, decision_id) of the call approval `a` lets run: its own, or the later call of the same
+    tool and arguments in its run that consumed it (`used_by`: the agent's retry after a person approved)."""
+    return tuple(a.get("used_by") or (a["tool_call_id"], a["attempt"], a["decision_id"]))
 
 
 def person_only_keys(a):
@@ -557,6 +565,8 @@ class RecordLog:
                 for aid in by_run.pop(key, ()):
                     a = approvals.pop(aid)
                     del index[(*key, a["tool_call_id"], a["attempt"])]
+                    if a.get("used_by"):
+                        del index[(*key, *ran(a)[:2])]
             elif e["type"] == "policy.decision":
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
@@ -582,10 +592,11 @@ class RecordLog:
                         [d["decision_id"], out["hash"], d.get("ok") is True and out.get("size") != NO_RESULT,
                          out.get("redacted") is True, None]]
                 run["decisions"].pop(e["data"]["decision_id"], None)
-                aid = index.get((e["tenant"], e["run_id"], e["tool_call_id"], e.get("attempt", 0)))
-                if aid and approvals[aid]["state"] == "consumed":   # its approved call completed (Service._complete)
+                used = (e["tool_call_id"], e.get("attempt", 0))
+                a = approvals.get(index.get((e["tenant"], e["run_id"], *used)))
+                if a and a["state"] == "consumed" and ran(a)[:2] == used:   # it ran under it (Service._complete)
                     # lean: by call and attempt; the writer also checks the arguments against the approval's
-                    run["decisions"].pop(approvals[aid]["decision_id"], None)
+                    run["decisions"].pop(ran(a)[2], None)
             elif e["type"] == "approval.request":
                 a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"], e["ts"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
@@ -594,7 +605,12 @@ class RecordLog:
                 approvals[e["data"]["approval_id"]]["state"] = ("approved" if e["data"]["decision"] == "approve"
                                                                  else "rejected")
             elif e["type"] in APPROVAL_ENDS:
-                approvals[e["data"]["approval_id"]]["state"] = APPROVAL_ENDS[e["type"]]
+                a = approvals[e["data"]["approval_id"]]
+                a["state"] = APPROVAL_ENDS[e["type"]]
+                used = [e.get("tool_call_id"), e.get("attempt", 0)]
+                if e["type"] == "approval.consumed" and used != [a["tool_call_id"], a["attempt"]]:   # a later call's
+                    a["used_by"] = [*used, (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)
+                    index[(e["tenant"], e["run_id"], *used)] = e["data"]["approval_id"]
             if not run["final"]:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)

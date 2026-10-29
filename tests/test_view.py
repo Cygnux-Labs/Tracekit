@@ -93,7 +93,7 @@ class Translate(unittest.TestCase):
         self.assertEqual(call["policy"], {"decision": "deny", "reasons": ["TK-N001", "TK-S001", "TK-NEW"], "flags": []})
         self.assertEqual(call["v2"], {"type": "policy.decision", "run_seq": 2, "tool_use_id": "c3", "decision": "deny",
                                       "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
-                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 6, "flag": 3},
+                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 5, "flag": 3},
                                       "secs": {"TK-N001": "deny", "TK-S001": "deny"}, "rules": [
                                           {"id": "TK-N001", "reason": "request to an internal address"},
                                           {"id": "TK-S001", "reason": "cloud metadata service",
@@ -304,10 +304,123 @@ class Translate(unittest.TestCase):
         self.assertIn("TK-X201: not checkable for 1: " + findings_v2.REASONS["withheld"][0], coverage["text"])
         self.assertEqual((seen["event"], seen["tape"], seen["title"]),
                          ("tk_note", "INPUT", "INPUT · claude:UserPromptSubmit"))
-        self.assertEqual((read["event"], read["tape"], read["signer"], read["text"]),
-                         ("tk_note", "SIGNER", True, "uid:501 read the kept content of 2 records of run r1 · "
-                                                     "“tracekit view”"))
+        # the viewer's own reads say so, as the tape filled with them read like someone else's
+        self.assertEqual((read["event"], read["tape"], read["signer"], read["title"], read["text"]),
+                         ("tk_note", "SIGNER", True, "CONTENT READ FOR TRACEKIT VIEW",
+                          "uid:501 read the kept content of 2 records of run r1 to show it in tracekit view (the "
+                          "purpose its reader gave)"))
+        [other] = self.feed(v2rec(6, "content.accessed", {"principal": "token:svc", "run_id": "r1", "seqs": [3],
+                                                          "purpose": "incident review"}, run=signer))
+        # the purpose leads, where a narrow tape cell still shows it
+        self.assertEqual((other["title"], other["text"]),
+                         ("CONTENT READ · “incident review”", "token:svc read the kept content of 1 record of run r1"))
+        # the tape folds a row of reads by one reader for one purpose
+        self.assertEqual([(r["v2"].get("principal"), r["v2"].get("purpose")) for r in (read, other)],
+                         [("uid:501", "tracekit view"), ("token:svc", "incident review")])
         self.assertNotIn("{", "".join(r["text"] for r in (finding, coverage, seen, read)))
+
+    def test_a_proof_carrying_message_is_a_row_not_an_alert(self):
+        """A pcm.sent record was a red ALERT on the tape and in ALERTS, its record's JSON as its text."""
+        sent, grant = self.feed(
+            v2rec(1, "ext", {"name": "pcm.sent", "message": "sha256:m", "id": "9f2c", "to": "uid:990102",
+                             "intent": "sha256:i"}),
+            v2rec(2, "ext", {"name": "pcm.grant", "grant": "sha256:g", "subject": "uid:990102", "intent": "sha256:i",
+                             "approval_id": "apr-1"}))
+        self.assertEqual((sent["event"], sent["tape"], sent["title"], sent["text"]),
+                         ("tk_note", "STATE", "PCM · MESSAGE SENT", "to uid:990102 · message 9f2c · intent sha256:i"))
+        self.assertEqual((grant["event"], grant["tape"], grant["title"], grant["text"]),
+                         ("tk_note", "STATE", "PCM · GRANT ISSUED", "to uid:990102 · intent sha256:i · approval apr-1"))
+
+    def test_a_use_refused_because_its_approval_expired_reads_expired(self):
+        """It read REFUSED with "not approved (state=expired)" on APPROVALS and in the run's permission counts."""
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}),
+                v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                             "rule_ids": ["TK-D001"], "policy_hash": SERVER_HASH}),
+                v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-D001"],
+                                              "binding": {"tool": "Bash", "tool_call_id": "c1"}}),
+                v2rec(4, "approval.refused", {"tool_use_id": "c1", "approval_id": "apr-1",
+                                              "rule_ids": ["TK-APPROVAL-EXPIRED"], "reason": "not approved (state=expired)"}),
+                v2rec(5, "approval.refused", {"tool_use_id": "c1", "approval_id": "apr-1",
+                                              "rule_ids": ["TK-APPROVAL-REJECTED"], "reason": "not approved (state=rejected)"})]
+        expired, late = self.feed(*recs)[-2:]
+        self.assertEqual((expired["title"], expired["severity"], expired["tape"], expired["v2"]["approval"]),
+                         ("APPROVAL EXPIRED · Bash", "med", "HOLD", "expired"))
+        # a use after the approval ended repeats its state: no outcome of its own, so the hold stays expired
+        self.assertEqual((late["title"], late["text"], late["v2"]["approval"]),
+                         ("APPROVAL ALREADY ENDED · Bash", "expired before the call tried to run: the call did not run",
+                          "ended"))
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        self.assertEqual(view.review(recs[:4], rep, "verified")["permissions"], {"expired": 1})
+        self.assertEqual(view.review(recs, rep, "verified")["permissions"], {"expired": 1})
+
+    def test_each_held_call_comes_to_one_outcome_and_a_use_nobody_answered_is_no_refusal(self):
+        """Three holds nobody answered read "0 waiting · 6 answered": an abandoned one read expired (the use refused
+        after it repeats the signer's state, expired), and the SDK's use of an approval nobody had answered yet read
+        REFUSED · not approved (state=requested), as if a person had refused it."""
+        def held(run, call, aid, *later, final=True):
+            return [v2rec(1, "run.registered", {"agent": {"name": run}}, run=run),
+                    v2rec(2, "policy.decision", {"tool_use_id": call, "tool": "Bash", "decision": "ask",
+                                                 "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}, run=run),
+                    v2rec(3, "approval.request", {"approval_id": aid, "rule_ids": ["TK-A032"],
+                                                  "binding": {"tool": "Bash", "tool_call_id": call}}, run=run),
+                    *[v2rec(4 + i, t, {"approval_id": aid, **d}, run=run) for i, (t, d) in enumerate(later)],
+                    *([v2rec(9, "run.final", {"head_run_seq": 9}, run=run)] if final else [])]
+        unanswered = ("approval.refused", {"tool_use_id": "c1", "rule_ids": ["TK-APPROVAL-REQUESTED"],
+                                           "reason": "not approved (state=requested)"})
+        planner = held("planner", "c1", "apr-1", ("approval.abandoned", {"reason": "no answer; moved on"}),
+                       ("approval.refused", {"tool_use_id": "c1", "rule_ids": ["TK-APPROVAL-EXPIRED"],
+                                             "reason": "not approved (state=expired)"}))
+        coder = held("coder", "c1", "apr-2", unanswered, ("approval.expired", {}))
+        open_ = held("open", "c1", "apr-3", unanswered, final=False)
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        self.assertEqual([dict(view.review(r, rep, "verified")["holds"]) for r in (planner, coder, open_)],
+                         [{"abandoned": 1}, {"expired": 1}, {"waiting": 1}])
+        rows = self.feed(*planner, *coder)
+        words = [(r["title"], r["text"], r["v2"]["approval"]) for r in rows if r["v2"].get("approval")
+                 and r["v2"]["approval"] != "requested"]
+        self.assertEqual(words, [
+            ("APPROVAL ABANDONED · Bash", "no answer; moved on", "abandoned"),
+            ("APPROVAL ALREADY ENDED · Bash", "abandoned before the call tried to run: the call did not run", "ended"),
+            ("APPROVAL NOT ANSWERED YET · Bash", "not answered yet when the call tried to run: the call did not run",
+             "unanswered"),
+            ("APPROVAL EXPIRED · Bash", "expired before anyone answered", "expired")])
+
+    def test_a_use_refused_because_a_person_revoked_it_reads_revoked(self):
+        """A person revoked an agent's approval and the call came to use it: the signer refuses it as rejected (the
+        revoke sets the approval's state to rejected), and the hold read rejected in the run review, the report and
+        PERMISSIONS, and refused on the tape."""
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}),
+                v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                             "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}),
+                v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A032"],
+                                              "binding": {"tool": "Bash", "tool_call_id": "c1"}}),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve",
+                                      "approver_kind": "agent", "approver": "uid:990"}),
+                v2rec(5, "approval.revoked", {"approval_id": "apr-1", "by": "uid:501"}, tool_call_id="c1"),
+                v2rec(6, "approval.refused", {"tool_use_id": "c1", "approval_id": "apr-1",
+                                              "rule_ids": ["TK-APPROVAL-REJECTED"], "reason": "not approved (state=rejected)"})]
+        refused = self.feed(*recs)[-1]
+        self.assertEqual((refused["title"], refused["text"], refused["v2"]["approval"]),
+                         ("APPROVAL ALREADY ENDED · Bash", "revoked before the call tried to run: the call did not run",
+                          "ended"))
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual((rv["permissions"], rv["holds"]), ({"revoked": 1}, {"revoked": 1}))
+
+    def test_a_use_refused_because_a_person_rejected_it_reads_rejected(self):
+        """A person rejected the hold, the agent tried the call anyway and the signer refused it: the hold read
+        refused, in PERMISSIONS and in tracekit report's holds, and the person's answer was lost."""
+        who = {"scheme": "uid", "subject": "501", "attested": True}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}),
+                v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                             "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}),
+                v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A032"],
+                                              "binding": {"tool": "Bash", "tool_call_id": "c1"}}),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "reject",
+                                      "approver": "uid:501", "approver_identity": who}),
+                v2rec(5, "approval.refused", {"tool_use_id": "c1", "approval_id": "apr-1",
+                                              "rule_ids": ["TK-APPROVAL-REJECTED"], "reason": "not approved (state=rejected)"})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual((rv["permissions"], rv["holds"]), ({"rejected": 1}, {"rejected": 1}))
 
     def test_a_rejection_is_never_a_self_approval_and_signer_rules_have_reasons(self):
         who = {"scheme": "uid", "subject": "501", "attested": True}
@@ -316,8 +429,10 @@ class Translate(unittest.TestCase):
             v2rec(2, "approval", {"decision": "approve", "self_approved": True, "approver_identity": who}),
             v2rec(3, "policy.decision", {"tool_use_id": "c1", "tool": "Edit", "decision": "ask",
                                          "rule_ids": ["TK-CONSTRAINT"], "policy_hash": SERVER_HASH}))
+        # both say who answered alike; only the approval is marked as the risk
         self.assertEqual((rejected["severity"], rejected["text"]), ("info", "by uid:501 (attested) · by the requester"))
-        self.assertEqual((approved["severity"], approved["text"]), ("med", "by uid:501 (attested) · SELF-APPROVED"))
+        self.assertEqual((approved["severity"], approved["text"]),
+                         ("med", "by uid:501 (attested) · by the requester · SELF-APPROVED"))
         self.assertEqual(held["v2"]["rules"], [{"id": "TK-CONSTRAINT", "reason": view.ENGINE_RULES["TK-CONSTRAINT"]}])
 
     def test_a_model_line_shows_only_what_was_recorded(self):
@@ -1604,11 +1719,12 @@ class WhyLive(WhyServer):
 
 class WhyPage(WhyServer):
     def test_a_task_kept_out_of_the_log_reads_as_committed(self):
-        # a signed run's imported task is a committed value, not text: the run header showed "[object Object]"
+        # a signed run's imported task is a committed value, not text: the run header showed "[object Object]", then
+        # "task: content committed, not in the log", which a person can't read
         out = page_js(["COMMITTED", "taskText"], 'for (const v of [{content: COMMITTED, hash: "h"}, "Close ACC-9", null])'
                                                  ' console.log(JSON.stringify(taskText(v)))')
         self.assertEqual([json.loads(x) for x in out.splitlines()],
-                         ["task: content committed, not in the log", "Close ACC-9", ""])
+                         ["task text not kept: only its hash is in the log", "Close ACC-9", ""])
 
     def test_the_page_is_the_viewers_and_the_why_api_needs_the_token(self):
         self.assertEqual(self.request("GET", "/api/why/workspace")[0], 401)
@@ -1888,6 +2004,28 @@ class LiveRuns(unittest.TestCase):
         c.request("GET", "/api/verify", headers={"Authorization": "Bearer t0k"})
         self.assertEqual(json.loads(c.getresponse().read())["checking"], 0)
         c.close()
+
+    def test_the_snapshot_names_the_signer_a_runs_commands_name(self):
+        """A run's EXPORT and VERIFY named no signer and a trust.json nothing writes: the page gets the signer the viewer
+        reads, for `tracekit export --v2` and `tracekit signer trust`."""
+        for signer in ({"config": "/etc/tracekit/signer.yaml"}, None):
+            snap, _ = self.served(self.feed(lambda run_id: VERIFIED, signer=signer))
+            self.assertEqual(snap.get("signer"), signer)
+
+        class Built(Exception):
+            pass
+
+        def feed(*a, **k):
+            raise Built(a[5])
+        for argv, want in ((["--data-dir", "d"], {"data_dir": os.path.abspath("d")}), ([], {"dev": True}),
+                           (["--config", "signer.yaml"], {"config": os.path.abspath("signer.yaml")})):
+            with mock.patch.object(view, "StoreFeed", side_effect=feed), \
+                    mock.patch.object(view, "load_config", return_value={"data_dir": self.d}), \
+                    mock.patch.object(view, "dev_data_dir", return_value=self.d), \
+                    mock.patch.object(view, "dev_content_source"), mock.patch.object(view, "dev_analysis"), \
+                    self.assertRaises(Built) as got:
+                view.main(argv)
+            self.assertEqual(got.exception.args[0], want)
 
     def test_a_run_that_fails_at_a_later_checkpoint_takes_back_every_record_it_showed(self):
         """A run that verified at one checkpoint and failed at the next kept its earlier rows on the tape as SIGNED,

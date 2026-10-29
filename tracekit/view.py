@@ -335,18 +335,27 @@ class Reasons(dict):
     policies = {}
 
 
-def policy_reasons(paths=()):
-    """Reasons of the shipped packs and the policy files `paths`: a decision's rule reasons are shown only from the
-    policy whose hash it records, and so is how many rules it read."""
+def policy_reasons(paths=(), kept=None):
+    """Reasons of the shipped packs, the policy files `paths` and the compiled policies a signer kept in directory
+    `kept` (its data_dir/policies, each file named by the SHA-256 of its bytes, its policy_hash: read only when it is):
+    a decision's rule reasons are shown only from the policy whose hash it records, and so is how many rules it read."""
     out = Reasons()
     out.policies = {}
     for p in sorted(glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))) + list(paths):
         pol, errors = policy_compile.build(p)
         if not errors:
             out.policies[policy_compile.policy_hash(pol)] = pol
-            out[policy_compile.policy_hash(pol)] = {
-                r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
-                for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
+    for p in sorted(glob.glob(os.path.join(glob.escape(kept), "*.json"))) if kept else ():
+        try:   # 0600, the signer's: another user reads the rule ids only, as for a policy it doesn't have
+            with open(p, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        if os.path.basename(p) == hashlib.sha256(data).hexdigest() + ".json":
+            out.policies["sha256:" + os.path.basename(p)[:-5]] = json.loads(data)
+    for h, pol in out.policies.items():
+        out[h] = {r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
+                  for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out
 
 
@@ -375,6 +384,7 @@ class Translator(observe.Translator):
         # approval_id -> (tool, rule ids, tool call id), and shadow suggestions: the newest MAX_RUNS_KEPT each, like agent_names
         self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
                                          observe._Bounded(observe.MAX_RUNS_KEPT))
+        self.held = observe._Bounded(observe.MAX_RUNS_KEPT)   # approval_id -> what its call came to so far (held_outcome)
         self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
         self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
@@ -439,11 +449,14 @@ class Translator(observe.Translator):
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
                                                        "only its commitment", "INPUT", trust=d.get("trust"),
                         source=d.get("source"))
-        if t == "content.accessed":
+        if t == "content.accessed":   # the tape folds a row of reads by one reader for one purpose
             seqs = d.get("seqs") or []
-            return note("CONTENT READ", f"{d.get('principal')} read the kept content of {len(seqs)} record"
-                                        f"{'s' * (len(seqs) != 1)} of run {d.get('run_id')} · “{d.get('purpose')}”",
-                        "SIGNER")
+            what = f"the kept content of {len(seqs)} record{'s' * (len(seqs) != 1)} of run {d.get('run_id')}"
+            who = {"principal": d.get("principal"), "purpose": d.get("purpose")}
+            if d.get("purpose") == "tracekit view":   # a viewer's own reads, to show that content on its tape
+                return note("CONTENT READ FOR TRACEKIT VIEW", f"{d.get('principal')} read {what} to show it in "
+                                                              "tracekit view (the purpose its reader gave)", "SIGNER", **who)
+            return note(f"CONTENT READ · “{d.get('purpose')}”", f"{d.get('principal')} read {what}", "SIGNER", **who)
         if t == "review":   # a signed finding of a findings run, about the run it analyzes
             v, (about, author) = d.get("verdict") or {}, self.analyzes.get(e["run_id"], (None, "?"))
             rule = v.get("rule", "")
@@ -492,6 +505,16 @@ class Translator(observe.Translator):
             return [r]
         aid = d.get("approval_id")
         tool, rule_ids, _ = self.requests.get(aid, ("", [], None))
+        was = self.held.get(aid, "waiting")
+        now = held_outcome(was, t, d) if t == "approval" or t in OUTCOMES else was
+        if aid and now != was:
+            self.held[aid] = now
+        if t == "approval.refused" and now == was:   # it repeats its approval's state: no outcome of the call's own
+            if "TK-APPROVAL-REQUESTED" in (d.get("rule_ids") or ()):   # e.g. an SDK that did not wait for the answer
+                return alert("med", f"APPROVAL NOT ANSWERED YET · {tool}", "not answered yet when the call tried to "
+                             "run: the call did not run", "HOLD", approval="unanswered")
+            return alert("low", f"APPROVAL ALREADY ENDED · {tool}", f"{was} before the call tried to run: the call "
+                         "did not run", "HOLD", approval="ended")
         if t == "approval.request":
             tool = (d.get("binding") or {}).get("tool", "")
             self.requests[aid] = (tool, d.get("rule_ids") or [], (d.get("binding") or {}).get("tool_call_id"))
@@ -539,8 +562,8 @@ class Translator(observe.Translator):
                     + (f" · vouched for by {_who(d['via'])} via {d.get('channel')}" if d.get("via") else "")
                     + (f" · “{d['reason']}”" if d.get("reason") else "")
                     # only an approval can be a self-approval: the requester rejecting their own call is no risk
-                    + ((" · SELF-APPROVED" if d.get("self_approved") else " · not self-approved") if dec == "approve"
-                       else " · by the requester" if d.get("self_approved") else "")
+                    + ((" · by the requester · SELF-APPROVED" if d.get("self_approved") else " · not self-approved")
+                       if dec == "approve" else " · by the requester" if d.get("self_approved") else "")
                     + (" · BREAK-GLASS" if d.get("break_glass") else "") + (" · passkey" if d.get("passkey") else "")
                     + shadow)
             sev = "high" if dec == "self_approval_refused" or d.get("break_glass") else \
@@ -551,6 +574,13 @@ class Translator(observe.Translator):
                          "APPROVE" if dec == "approve" else "REJECT", approval=dec, approver=_who(who) if who else
                          d.get("approver"), via=d.get("via") and _who(d["via"]), self_approved=d.get("self_approved"),
                          break_glass=bool(d.get("break_glass")), reason=d.get("reason"))
+        if t == "approval.refused" and "TK-APPROVAL-EXPIRED" in (d.get("rule_ids") or ()):
+            return alert("med", f"APPROVAL EXPIRED · {tool}", "the approval had expired when the call came to use "
+                         "it: the call did not run", "HOLD", approval="expired")
+        if t == "approval.refused" and "TK-APPROVAL-REJECTED" in (d.get("rule_ids") or ()):
+            # its rejection (or a revoke, which rejects: signer _revoke) is not on this tape
+            return alert("med", f"APPROVAL REJECTED · {tool}", "the approval was rejected when the call came to use "
+                         "it: the call did not run", "REJECT", approval="reject")
         if t in ("approval.consumed", "approval.expired", "approval.abandoned", "approval.refused",
                  "approval.binding_mismatch"):
             word = t.split(".")[1]
@@ -634,6 +664,12 @@ class Translator(observe.Translator):
                          + (f" by {d['by']}" if d.get("by") else "")
                          + (f" · policy {str(d['policy_hash'])[:16]}" if d.get("policy_hash") else "")
                          + f" · via {d.get('observer')}; its message is committed, not shown", "STATE")
+        if t == "ext" and d.get("name") == "pcm.sent":   # a proof-carrying message the signer signed: a row, not an alert
+            return note("PCM · MESSAGE SENT", f"to {d.get('to')} · message {d.get('id')} · intent {d.get('intent')}",
+                        "STATE")
+        if t == "ext" and d.get("name") == "pcm.grant":
+            return note("PCM · GRANT ISSUED", f"to {d.get('subject')} · intent {d.get('intent')}"
+                        + (f" · approval {d['approval_id']}" if d.get("approval_id") else ""), "STATE")
         if t == "effect.observed" and d.get("sensor"):   # what a kernel sensor saw; the run's analysis joins it to a call
             k = d.get("kind")
             target = (f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("path") if k == "file" else
@@ -684,6 +720,24 @@ CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only
 OUTCOMES = {"approval.consumed": "approved · ran", "approval.expired": "expired", "approval.abandoned": "abandoned",
             "approval.refused": "refused", "approval.binding_mismatch": "refused: arguments changed",
             "approval.revoked": "revoked"}
+ANSWERS = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
+           "self_approval_refused": "self-approval refused"}
+
+
+def held_outcome(was, t, d):
+    """What a held call came to after its approval's record of type `t` and data `d`, from what it had come to (`was`:
+    waiting, approved, ...): review() counts these, and the page's rows say them. A refused use that names its
+    approval's state repeats what the approval's own records said, so it changes nothing: one nobody had answered yet
+    (TK-APPROVAL-REQUESTED) still waits, and one that came after the approval ended (abandoned, expired, rejected, ...)
+    keeps that end. A use refused because the approval expired or was rejected, with no record of that end before it,
+    is that end."""
+    ids = d.get("rule_ids") or ()
+    if t == "approval":
+        return ANSWERS.get(d.get("decision"), d.get("decision"))
+    if t == "approval.refused" and ("TK-APPROVAL-REQUESTED" in ids or was not in ("waiting", "approved")
+                                    and {"TK-APPROVAL-EXPIRED", "TK-APPROVAL-REJECTED"} & set(ids)):
+        return was
+    return "expired" if "TK-APPROVAL-EXPIRED" in ids else "rejected" if "TK-APPROVAL-REJECTED" in ids else OUTCOMES[t]
 
 
 def review(records, rep, verdict):
@@ -691,13 +745,15 @@ def review(records, rep, verdict):
     report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
     decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
     answered, waiting, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
-    when the run's records have left the live view. Counts keep each snapshot small whatever the run's size."""
+    when the run's records have left the live view; `holds`: the same outcomes, of the calls held for a person (decided
+    ask) only, and `hold_examples` the first such call (its tool_use_id) of each. Counts keep each snapshot small
+    whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0,
            "state": "open", "first": {}}
-    perms, calls = {}, {}   # tool_use_id -> its outcome; approval_id -> its tool_use_id
+    perms, calls, asked = {}, {}, set()   # tool_use_id -> its outcome; approval_id -> its tool_use_id; calls held
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -716,6 +772,8 @@ def review(records, rep, verdict):
             key = d.get("decision")
             if key != "allow":
                 perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, "waiting")
+            if key == "ask":
+                asked.add(d.get("tool_use_id"))
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -752,42 +810,54 @@ def review(records, rep, verdict):
         if t == "approval.request":
             calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
         call = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id") or calls.get(d.get("approval_id")))
-        if call in perms and t == "approval":
-            perms[call] = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
-                           "self_approval_refused": "self-approval refused"}.get(d.get("decision"), d.get("decision"))
-        elif call in perms and t in OUTCOMES:
-            perms[call] = OUTCOMES[t]
+        if call in perms and (t == "approval" or t in OUTCOMES):
+            perms[call] = held_outcome(perms[call], t, d)
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
-    out["permissions"] = collections.Counter("not answered" if o == "waiting" and out["state"] == "final" else o
-                                             for o in perms.values())
+    ended = {c: "not answered" if o == "waiting" and out["state"] == "final" else o for c, o in perms.items()}
+    out["permissions"] = collections.Counter(ended.values())
+    out["holds"] = collections.Counter(o for c, o in ended.items() if c in asked)
+    out["hold_examples"] = {}
+    for c, o in ended.items():
+        if c in asked:
+            out["hold_examples"].setdefault(o, c)
     return out
 
 
-def dev_content_source():
+def dev_content_source(purpose="tracekit view", connect=None, say=None):
     """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
     model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
     service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
     doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed
-    record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the
-    signer is down it reads nothing."""
+    record naming `purpose`. `connect()`: the client (default Client(), which starts the dev signer when none runs). A
+    refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good; while the signer is down or
+    speaks another protocol it reads nothing. `say(text)` is told once why calls show no arguments, for a refusal or a
+    signer of another protocol (default: printed to stderr after `purpose`)."""
     from .why.signed import vault_content
-    state = {"client": None, "off": False}
+    state = {"client": None, "off": False, "said": False}
+
+    def tell(text):
+        (say or (lambda s: print(f"{purpose}: {s}", file=sys.stderr, flush=True)))(
+            f"calls show their rules, not their arguments: {text}")
 
     def read(run_id, records):
         if state["off"]:
             return {}
         out = {}
         try:
-            state["client"] = state["client"] or Client()
+            state["client"] = state["client"] or (connect or Client)()
             # content redaction changed opens no commitment: not shown as what the record holds
-            out = {seq: content for seq, content, opened in vault_content(state["client"], records, "tracekit view")
+            out = {seq: content for seq, content, opened in vault_content(state["client"], records, purpose)
                    if opened}
         except RPCError as e:
             state["off"] = True
-            print(f"tracekit view: calls show their rules, not their arguments: the dev signer keeps none for this "
-                  f"viewer ({e.code}: {e})", file=sys.stderr, flush=True)
+            tell(f"the dev signer keeps none for {purpose} ({e.code}: {e})")
+        except Incompatible as e:   # tried again on the next read: it may be replaced
+            state["client"] = None
+            if not state["said"]:
+                state["said"] = True
+                tell(str(e))
         except (SignerUnavailable, OSError):
             state["client"] = None
         return out
@@ -822,21 +892,12 @@ class StoreFeed:
     show (dev_content_source; EvidenceAlert when the content does not open its record: a CONTENT NOT SHOWN alert).
     `analyze(records)`: a final run's findings (dev_analysis), once per run."""
 
-    def __init__(self, cfg, log_vkey=None, on_run=None, content=None, analyze=None):
-        self.cfg, self.pg = cfg, bool(cfg.get("storage"))
-        self.store = "the Postgres store" if self.pg else os.path.join(cfg["data_dir"], "store")
-        self.note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if self.pg else DEV_NOTE
-        if not log_vkey and self.pg:
-            r = reader(cfg)
-            try:
-                log_vkey = r.meta("log_vkey")
-            finally:
-                r.close()
-            if log_vkey is None:
-                raise ValueError("the store holds no log vkey yet: start the signer once, or pass --log-vkey")
-        vkeys = [log_vkey] if log_vkey else read_vkeys(cfg["data_dir"])   # a file store: the hybrid key's too
-        for k in vkeys:
-            checkpoint.parse_vkey(k)
+    def __init__(self, cfg, log_vkey=None, on_run=None, content=None, analyze=None, signer=None):
+        # `signer`: how a person's commands name this store's signer ({"dev": True}, {"config": path} or {"data_dir":
+        # path}), which the snapshot gives the page for a run's export and trust commands
+        self.cfg, self.pg, self.signer = cfg, bool(cfg.get("storage")), signer
+        self.store = store_name(cfg)
+        vkeys, self.note = store_trust(cfg, log_vkey)
         self.records, self.base, self.lock = [], 0, threading.Condition()
         # past it the oldest records leave the live view (base counts them), as observe.Feed's
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
@@ -1262,6 +1323,29 @@ def _rename(src, dst):
     os.rename(src, dst)
 
 
+def store_name(cfg):
+    """The store of config `cfg` in words."""
+    return "the Postgres store" if cfg.get("storage") else os.path.join(cfg["data_dir"], "store")
+
+
+def store_trust(cfg, log_vkey=None):
+    """(vkeys, note): the log vkeys a check of config `cfg`'s store pins, `log_vkey` else the store's own (the one a
+    Postgres store holds, a file store's data_dir/log.vkey with the hybrid key's), and what that pin proves."""
+    note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if cfg.get("storage") else DEV_NOTE
+    if not log_vkey and cfg.get("storage"):
+        r = reader(cfg)
+        try:
+            log_vkey = r.meta("log_vkey")
+        finally:
+            r.close()
+        if log_vkey is None:
+            raise ValueError("the store holds no log vkey yet: start the signer once, or pass --log-vkey")
+    vkeys = [log_vkey] if log_vkey else read_vkeys(cfg["data_dir"])
+    for k in vkeys:
+        checkpoint.parse_vkey(k)
+    return vkeys, note
+
+
 def write_trust(path, vkeys):
     """A verify.v2 trust config at `path` that pins the log vkeys `vkeys` and no witness; returns `path`."""
     with open(path, "w", encoding="utf-8") as f:
@@ -1565,8 +1649,10 @@ def main(argv=None):
             feed = observe.Feed(ledger, source="bundle" if a.bundle else None)
         else:
             dev = not (a.config or a.data_dir)
+            signer = {"dev": True} if dev else {"config": os.path.abspath(a.config)} if a.config else \
+                {"data_dir": os.path.abspath(a.data_dir)}
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
-                                                        dev_analysis() if dev else None)
+                                                        dev_analysis() if dev else None, signer)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None

@@ -3,7 +3,7 @@
  * mean, what to do next, a line per check on what it means (docs/verdicts.md, shortened), and a summary of the bundle's
  * runs. The report itself is the CLI's, unchanged: this module only reads it. No DOM, so Node tests it.
  */
-import { EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatReport, runFiles } from "./index.js";
+import { type Check, EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatReport, runFiles } from "./index.js";
 
 type J = any;
 export type Names = { bundle: string; trust: string | null };
@@ -120,56 +120,153 @@ export function nextSteps(rep: Report, code: number, names: Names): Step[] {
     command: `uvx --from tracekit-ai tracekit verify ${b} --trust ${t}` }];
 }
 
-/** One line per check: what it means (docs/verdicts.md#lines). */
-export const MEANING: Record<string, string> = {
-  "trust config": "Your trust file: the log key and witnesses you trust, never ones the bundle brings.",
-  "bundle readable": "The file is a Tracekit v2 bundle this verifier can read.",
-  "bundle structure": "The bundle is well formed; a failure here means it is malformed in a way no other line covers.",
-  "manifest": "The files in the bundle are exactly those its manifest lists, with those hashes.",
-  "checkpoint": "The log's checkpoint (the signed root of every record) is signed by the log key your trust file pins.",
-  "witness quorum": "Enough witnesses your trust file pins cosigned the checkpoint: they vouch it was not rolled back.",
-  "keys": "The record keys were declared by records the checkpoint includes, in order, and retired keys stop signing.",
-  "run parts": "A long run comes in numbered parts: none is missing between the first and the last, extra or out of "
-    + "order, so they read as one run. Parts cut off its end leave it open, never VERIFIED.",
-  "signatures": "Every record's signature verifies under a key valid at its position: no record was edited after signing.",
-  "run chain": "Each run's records follow one another without a gap from the first: none deleted, swapped or added.",
-  "inclusion": "Each run's first and last records are in the checkpointed tree: the run wasn't rebuilt.",
-  "policy snapshot": "The bundled policy file is named by its own hash: it wasn't edited.",
-  "policy": "A tool call ran against a deny, or an ask nobody approved, and the signer recorded it.",
-  "held calls": "A call held for a gateway or executor got no result before its run ended.",
-  "gaps": "The signer recorded something a person should read: a gap, a tamper attempt or a mismatched approval.",
-  "external decisions": "Decisions imported from another policy system, and whether they disagreed with the signer's.",
-  "coverage": "Which capture layers reported, and calls the signer could not match across them.",
-  "coverage matrix": "How each kind of action was covered: enforced, observed, only reported by the agent, or not at all.",
-  "observers": "An observer outside the agent went silent or restarted while the run was open.",
-  "reviews": "Signed findings about the run, each labelled by who wrote it: independent, unpinned or self-asserted.",
-  "reviews counted": "Findings whose analysed run isn't in the bundle, so their citations weren't checked.",
-  "incidents": "Detections the signer opened, recomputed from the run's records where the bundle allows.",
-  "incident policies": "Policies an incident cites that aren't in the bundle: those incidents are the signer's word.",
-  "content vault": "Who read or erased retained content, as the signer recorded it.",
-  "tiers": "Tool calls by how they were captured: T2 gateway or executor, T1 adapter, T3 import (receipt only).",
-  "args source": "Whether recorded arguments are the model's exact bytes (raw), parsed, or changed by a framework.",
-  "isolation": "How the signer measured its separation from the agent: separate-user and remote are out of its reach.",
-  "principals": "The person or service each run acted for, attested by the signer or asserted by the app.",
-  "harness": "The agent harness the signer bound each run to.",
-  "fail-open classes": "Tool classes allowed to run while the signer is down, so such calls may be unrecorded.",
-  "key assurance": "Whether the record keys are only declared by the log (asserted) or certified by an issuer.",
-  "approvals by people": "Held calls approved by people.",
-  "approvals by agents": "Held calls approved by agents (model output), checked against the rules that allow it.",
-  "break-glass approvals": "Approvals given under the break-glass role, with who and why.",
-  "not interpreted": "Records carry an extension this verifier doesn't read. They verified like every other record.",
-  "gateway amendments": "Requests the LLM gateway changed so the provider shows its reasoning; each record commits to "
-    + "the request as sent.",
-  "openshell policy": "Changes of the sandbox's policy or configuration that NVIDIA OpenShell reported, signed into "
-    + "the run as OpenShell's report.",
-  "constraints": "What the person's request said not to do, added while the run was open, and the calls it held.",
-  "run-set": "Every run of the tenant in the registry range is in the bundle (COMPLETE), or what is missing.",
-  "tenant-level gaps": "Signer gaps in the range that concern every tenant, such as witness failures.",
-  "log tail": "Whether records after the checkpoint are proven absent (a log.closed) or simply unproven.",
-  "rekor anchor": "A Rekor transparency-log anchor of the checkpoint, which this page can't check.",
-  "SLH-DSA-SHA2-128s checkpoint signature": "A post-quantum checkpoint signature, which browsers can't check yet.",
-  "record-key certificates": "Certificates of the record keys, which this page doesn't check.",
-  "tracekit why findings": "tracekit why investigation findings, which this page doesn't check.",
+/** What each line means, for each outcome it can have (docs/verdicts.md#lines): a line that fails or warns never reads
+ * as a pass. */
+export const MEANING: Record<string, Partial<Record<Check["status"], string>>> = {
+  "trust config": {
+    warn: "You chose no trust file, so no log key you trust checked the checkpoint: the bundle can't be VERIFIED.",
+    fail: "Your trust file isn't a Tracekit v2 trust config (the log key and witnesses you trust), so nothing was "
+      + "checked.",
+  },
+  "bundle readable": { fail: "This verifier can't read the file as a Tracekit v2 bundle: it isn't one, is damaged, or "
+    + "needs a newer verifier. Nothing in it was checked." },
+  "bundle structure": { fail: "The bundle is malformed in a way no other line covers, so it couldn't be fully "
+    + "checked." },
+  "manifest": {
+    pass: "The files in the bundle are exactly those its manifest lists, with those hashes.",
+    fail: "A file was added, removed or changed after the bundle was exported: the files don't match its manifest.",
+  },
+  "checkpoint": {
+    pass: "The log's checkpoint (the signed root of every record) matches the proofs and is signed by the log key "
+      + "your trust file pins; without a trust file its signature isn't checked.",
+    fail: "The checkpoint isn't signed by the log key your trust file pins, or it was changed: the bundle comes from "
+      + "another signer, or was edited.",
+  },
+  "witness quorum": {
+    pass: "Enough witnesses your trust file pins cosigned the checkpoint: they vouch it was not rolled back.",
+    fail: "Fewer witnesses your trust file pins cosigned the checkpoint than it requires: not enough vouch it was not "
+      + "rolled back.",
+  },
+  "keys": {
+    pass: "The record keys were declared by records the checkpoint includes, in order, and retired keys stop signing.",
+    fail: "A key record is missing from the checkpointed tree, out of order, or retires a key never declared: the "
+      + "record keys can't be trusted.",
+    warn: "Nothing proves the bundle shows every key retirement: one left out would not show. It doesn't mean one was.",
+  },
+  "run parts": {
+    pass: "A long run comes in numbered parts: none is missing between the first and the last, extra or out of "
+      + "order, so they read as one run. Parts cut off its end leave it open, never VERIFIED.",
+    fail: "A long run's parts don't read as one run: a part is missing, extra, empty or out of order.",
+  },
+  "signatures": {
+    pass: "Every record's signature verifies under a key valid at its position: no record was edited after signing.",
+    fail: "A record doesn't verify: it was edited after signing, or signed by a key not valid at its position.",
+  },
+  "run chain": {
+    pass: "Each run's records follow one another without a gap from the first: none deleted, swapped or added.",
+    fail: "A run's records don't follow one another: one was deleted, swapped, copied from another run, or added "
+      + "after the run ended.",
+  },
+  "inclusion": {
+    pass: "Each run's first and last records are in the checkpointed tree: the run wasn't rebuilt.",
+    fail: "A run's first or last record isn't in the checkpointed tree: the run was rebuilt or cut short, or the "
+      + "proofs are for another tree.",
+  },
+  "policy snapshot": {
+    pass: "The bundled policy file is named by its own hash: it wasn't edited.",
+    fail: "The bundled policy file doesn't match the hash it is named by: it was edited.",
+  },
+  "policy": { warn: "A tool call ran against a deny, or an ask nobody approved, and the signer recorded it." },
+  "held calls": { warn: "A call held for a gateway or executor got no result before its run ended." },
+  "gaps": { warn: "The signer recorded something a person should read: a gap, a tamper attempt or a mismatched "
+    + "approval." },
+  "external decisions": {
+    pass: "Decisions imported from another policy system: none disagreed with the signer's.",
+    warn: "A decision imported from another policy system disagreed with the signer's: the signer's is the one that "
+      + "applied.",
+  },
+  "coverage": {
+    pass: "Which capture layers reported; the signer matched every call across them. The record is only as complete "
+      + "as those layers.",
+    warn: "The signer couldn't match some calls across capture layers, or saw a host no call explains. It doesn't "
+      + "mean the agent hid a call: a layer may simply not have reported.",
+  },
+  "coverage matrix": { pass: "How each kind of action was covered: enforced, observed, only reported by the agent, or "
+    + "not at all." },
+  "observers": { warn: "An observer outside the agent went silent or restarted while the run was open." },
+  "reviews": {
+    pass: "Reviews of the run, each labelled by who wrote it; every signed finding cites records the run has.",
+    warn: "A signed finding is self-asserted: the agent could have written it about itself.",
+    fail: "A signed finding cites a record the run doesn't have or that has another hash, or isn't shaped as a "
+      + "signer writes one: it misstates the evidence.",
+  },
+  "reviews counted": { warn: "Findings whose analysed run isn't in the bundle, so their citations weren't checked." },
+  "incidents": {
+    pass: "Detections the signer opened, recomputed from the run's records where the bundle allows.",
+    fail: "An incident doesn't follow from the run's records, or the records don't honour a hold or quarantine it "
+      + "recorded.",
+  },
+  "incident policies": { warn: "Policies an incident cites that aren't in the bundle: those incidents are the "
+    + "signer's word." },
+  "content vault": { pass: "Who read or erased retained content, as the signer recorded it." },
+  "tiers": {
+    pass: "Tool calls by how they were captured: T2 gateway or executor, T1 adapter, T3 import (receipt only).",
+    warn: "A tool call was decided and completed by different capture paths, so it counts at the weaker tier.",
+  },
+  "args source": { pass: "Whether recorded arguments are the model's exact bytes (raw), parsed, or changed by a "
+    + "framework." },
+  "isolation": { pass: "How the signer measured its separation from the agent: separate-user and remote are out of "
+    + "its reach." },
+  "principals": { pass: "The person or service each run acted for, attested by the signer or asserted by the app." },
+  "harness": { pass: "The agent harness the signer bound each run to." },
+  "fail-open classes": {
+    pass: "No tool class runs while the signer is down: every call needed the signer.",
+    warn: "Tool classes allowed to run while the signer is down, so such calls may be unrecorded.",
+  },
+  "key assurance": { pass: "Whether the record keys are only declared by the log (asserted) or certified by an "
+    + "issuer." },
+  "approvals by people": { pass: "Held calls approved by people." },
+  "approvals by agents": {
+    pass: "Held calls approved by agents (model output), checked against the rules that allow it.",
+    warn: "Held calls approved by agents (model output); some couldn't be checked against their rules: the bundle "
+      + "lacks the policy they were held under.",
+    fail: "An agent approved a call the rules for agent approvals don't let it approve.",
+  },
+  "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
+  "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "
+    + "record." },
+  "gateway amendments": {
+    pass: "Requests the LLM gateway changed so the provider shows its reasoning; each record commits to the request "
+      + "as sent.",
+    warn: "A record carries a gateway amendment where or how the signer never writes one. The record verified like "
+      + "every other.",
+  },
+  "openshell policy": {
+    pass: "Changes of the sandbox's policy or configuration that NVIDIA OpenShell reported, signed into the run as "
+      + "OpenShell's report.",
+    warn: "A record carries an OpenShell policy change where or how the signer never writes one. The record verified "
+      + "like every other.",
+  },
+  "constraints": {
+    pass: "What the person's request said not to do, added while the run was open, and the calls it held.",
+    fail: "A call held by a live constraint comes before any constraint in its run, or wasn't held for approval: the "
+      + "signer never writes either.",
+  },
+  "run-set": {
+    pass: "Every run of the tenant in the registry range is in the bundle (COMPLETE).",
+    fail: "A run of the tenant in the registry range is missing or cut short, or the bundle holds one that doesn't "
+      + "belong (INCOMPLETE).",
+  },
+  "tenant-level gaps": { warn: "Signer gaps in the range that concern every tenant, such as witness failures." },
+  "log tail": {
+    pass: "No records follow the checkpoint: a log.closed proves it is the log's last.",
+    warn: "Nothing proves no records follow the checkpoint (no log.closed). It doesn't mean any were hidden.",
+  },
+  "rekor anchor": { warn: "A Rekor transparency-log anchor of the checkpoint, which this page can't check." },
+  "SLH-DSA-SHA2-128s checkpoint signature": { warn: "A post-quantum checkpoint signature, which browsers can't check "
+    + "yet." },
+  "record-key certificates": { warn: "Certificates of the record keys, which this page doesn't check." },
+  "tracekit why findings": { warn: "tracekit why investigation findings, which this page doesn't check." },
 };
 
 const day = (ts: string) => ts.slice(0, 19).replace("T", " ") + " UTC";

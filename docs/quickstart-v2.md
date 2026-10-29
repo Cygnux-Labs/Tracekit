@@ -81,7 +81,8 @@ refuses the call. An unanswered approval expires after an hour.
 
 A call held in an SDK agent prints nothing while it waits: the agent just seems to stop. Run `tracekit approvals list`
 in another terminal to see the held call, then answer it ([below](#approve-from-another-terminal)). Only the coding-agent
-hooks print a line naming the approval and the command that answers it.
+hooks name the approval and the command that answers it: they block the held call at once with that message, and the
+agent's retry of the same call runs once you approved it ([held calls](coding-agents.md#held-calls-approve-then-retry)).
 
 | Integration | How it waits | Timeout | Then |
 |---|---|---|---|
@@ -98,7 +99,7 @@ hooks print a line naming the approval and the command that answers it.
 | Microsoft Agent Framework | timed wait in the `Tracekit` function middleware, before the function runs | 300 s | the call is refused and the model gets the approval's state as the call's result; an unanswered approval, or one whose agent run is cancelled, is withdrawn |
 | Strands Agents | timed wait in the `Tracekit` hook provider, before the tool runs (not a Strands interrupt) | 300 s | the call is refused and the model gets the approval's state as an error tool result; an unanswered approval, or one whose agent is cancelled (`agent.cancel()` or its task), is withdrawn |
 | Claude Agent SDK (Python, TS) | timed wait in its PreToolUse hook | 540 s (the hook's own timeout is 600 s) | a `deny` with the reason when not approved; the session goes on |
-| Claude Code, Codex, Cursor, Gemini hooks | timed wait in the hook process | 540 s (hook timeout 600 s) | the harness's deny when not approved; the model may retry |
+| Claude Code and the other coding-agent hooks | blocked at once, naming the approval and its command (no harness shows a hook's output while it runs) | none by default; `TRACEKIT_APPROVAL_WAIT` seconds, up to about 480 (the hook answers within 540 s; its timeout is 600 s), where Slack, the viewer or an agent approver answers | the harness's deny; once a person approved, the agent's retry of the same call runs, once |
 | Vercel AI SDK (TS, `tk.ai`) | the SDK's own tool approval | none of its own | `approvalResponses(parts)`, pushed to `messages`, resumes it; a call not approved throws |
 | `tracekit.why` runtime | timed wait in `act()` | `approval_wait_s`, 300 s | an error result; retrying the same call in the same run reuses the approval |
 
@@ -106,7 +107,9 @@ You don't start anything yourself. The first client that needs a signer starts o
 clients reuse it (`tracekit up` / `tracekit down` do the same by hand). The signer's keys and store live in your user's
 data dir, one per `HOME`. It listens on a Unix socket in a private runtime dir; where two of your `HOME`s share that
 dir (macOS's `/tmp` fallback for a long `HOME`, Linux's `$XDG_RUNTIME_DIR`), each gets its own signer, the second in a
-sibling dir named after its data dir. On Windows it listens on a loopback TCP port instead,
+sibling dir named after its data dir. `TRACEKIT_RUNTIME_DIR` sets that dir; one too long for a socket path (macOS caps
+them at 104 bytes) gives way to a short private dir of its own, `/tmp/tk-<uid>.<12 hex>`, which `tracekit status`
+names. On Windows it listens on a loopback TCP port instead,
 and publishes the port and a token in `%LOCALAPPDATA%\tracekit\run\endpoint.json`, which only you can read. Each side
 proves it holds the token before any request is answered.
 
@@ -281,7 +284,9 @@ What system mode protects, and what it doesn't:
   processes ([what binding does not stop](faq.md#what-does-harness-binding-not-stop)). Root on the machine can do anything; witnesses on another host are the defence against that.
 - **Not protected either:** the hook lives in AGENT's own settings (`~/.claude/settings.json` for Claude Code), which
   AGENT can edit. Removing the hook, or running tools outside the hook or the SDK, leaves no record and no gap; system
-  mode secures what is recorded, not that everything is.
+  mode secures what is recorded, not that everything is. For Claude Code, `--managed` puts the hook in its
+  admin-managed settings, which AGENT can't edit or turn off; it then runs in every user's Claude Code on the machine
+  ([admin-managed hooks](deploy.md#admin-managed-hooks-claude-code)).
 
 Check an install with `sudo /opt/tracekit/bin/python -I -m tracekit doctor` ([docs/doctor.md](doctor.md) lists every
 check and its fix).

@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-39'
+version: '2026.10-v2-40'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -209,7 +209,7 @@ ask:
     pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add\s+-L)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
     unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)'
     reason: reading credentials from an operating-system or browser store, or listing an SSH agent's keys
-    remedy: Wait for a person to approve the held call, or ask the person for the one credential or key the task needs.
+    remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
     rationale: These commands can read saved credentials or list the keys an SSH agent holds; a person confirms the access.
   - id: TK-A022
     class: fs
@@ -224,7 +224,7 @@ ask:
     field: container_host_access
     pattern: '^host-access$'
     reason: starting a container with host-level privileges or mounts
-    remedy: Wait for a person to approve the held call, or run the container without --privileged, host namespaces or a root mount.
+    remedy: Have a person approve the held call, or run the container without --privileged, host namespaces or a root mount.
     rationale: These options expose the host disk, process space or device access to the container; a person confirms it.
   - id: TK-A024
     class: fs
@@ -239,7 +239,7 @@ ask:
     field: package_index
     pattern: '^'
     reason: installing packages through an explicitly selected index
-    remedy: Wait for a person to approve the held call, or install from the package index already configured.
+    remedy: Have a person approve the held call, or install from the package index already configured.
     rationale: The signer cannot establish whether a custom index is trusted; a person confirms the source.
   - id: TK-A026
     class: fs
@@ -258,7 +258,7 @@ ask:
     # so the fallback engine stays linear
     pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*?/)?(?:\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):(?:/private)?/var/log(?:/|$)'
     reason: clearing shell history or system logs
-    remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
+    remedy: Have a person approve the held call, or leave shell history and system logs as they are.
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
   - id: TK-A029
     class: shell
@@ -266,7 +266,7 @@ ask:
     # history -c (alone or in a cluster, after other options), turning the history file off, vacuuming the journal
     pattern: '^history\s(?:[^\n]*?\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl(?:[ \t\f\r]|\s*?\n)[^\n]*?--vacuum-[^\s=]+(?:=|\s|$)'
     reason: clearing shell history or system logs
-    remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
+    remedy: Have a person approve the held call, or leave shell history and system logs as they are.
     rationale: Clearing the history, turning it off or vacuuming the journal can hide earlier activity; a person confirms it.
   - id: TK-A030
     class: shell
@@ -274,14 +274,14 @@ ask:
     # TK-A024 for the shell: a file a command writes (a redirection, cp, mv, install, ln, tee, dd, sed -i …)
     pattern: '^WRITE_TARGET:(?:[^\n]*?/)?(?:\.npmrc|pip\.conf|\.pypirc)$|^WRITE_TARGET:(?:[^\n]*?/)?etc/apt/sources\.list(?:\.d/[^/]+\.(?:list|sources))?$|^WRITE_TARGET:(?:[^\n]*?/)?etc/yum\.repos\.d/[^/]+\.repo$'
     reason: changing a package manager's source configuration
-    remedy: Wait for a person to approve the held call, or install from the package source already configured.
+    remedy: Have a person approve the held call, or install from the package source already configured.
     rationale: Package source settings can redirect future installs to an untrusted index; reading configuration is allowed.
   - id: TK-A028
     class: shell
     field: argv
     pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*git\+(https?|ssh)://'
     reason: installing a package directly from a version-control source
-    remedy: Wait for a person to approve the held call, or install a released version from the configured index.
+    remedy: Have a person approve the held call, or install a released version from the configured index.
     rationale: Version-control installs are common but their source and revision need human review.
   - id: TK-A001
     class: shell
@@ -299,7 +299,7 @@ ask:
     # two short lower-case words counts: the subject joins argv with spaces, so `-m ' --help'` must not read as one
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
     reason: destroying a deployment, database or volume
-    remedy: Wait for a person to approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
+    remedy: Have a person approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
     rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
   - id: TK-A039
     class: shell
@@ -333,7 +333,7 @@ ask:
     # whitespace after a flag decides in milliseconds.
     pattern: '^((docker(\s+container|\s+compose)?|docker-compose|kubectl)\s+exec(\s+[^\s]+){0,8}?\s+)?((psql|mysql|mariadb)(\s+[^\s]+){0,16}?\s+(--command|--execute|-[A-Za-z01]{0,8}[ce])=?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r|--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)*?([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:(?:\s|\\n)+?(?:[^\s;\\][^\s;]*|\\(?:[^\s;n][^\s;]*)?)(?:\s(?:\s|\\n)*?(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s(?:\s|\\n)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s|\\n)+?\\n|(?:\s|\\n)\s*\\n(?:\\n)*\s(?:\s|\\n)*?(?:(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)|(?:\s|\\n)+?\\n\\n[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*|(?:\s|\\n)[^;]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z])))|(mongosh|mongo)(\s+[^\s]+){0,16}?\s+--eval=?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r)*?(db\s*\.\s*dropDatabase\s*\(|db\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*drop\s*\(|db\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*(deleteMany|deleteOne|remove)\s*\(\s*(\{\s*\}\s*)?\))|(redis-cli|valkey-cli)(\s+[^\s]+){0,16}?\s+([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])(\s+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?\s*$|sqlite3(\s+[^\s]+){0,16}?\s((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r|--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)*?([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:(?:\s|\\n)+?(?:[^\s;\\][^\s;]*|\\(?:[^\s;n][^\s;]*)?)(?:\s(?:\s|\\n)*?(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s(?:\s|\\n)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s|\\n)+?\\n|(?:\s|\\n)\s*\\n(?:\\n)*\s(?:\s|\\n)*?(?:(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)|(?:\s|\\n)+?\\n\\n[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*|(?:\s|\\n)[^;]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z])))|psql(\s+[^\s]+){0,16}?\s+-[abegi-nq-uw-zA-EG-KMNOQSV-Z01]{9}[abegi-nq-uw-zA-EG-KMNOQSV-Z01]*[ce]|(mysql|mariadb)(\s+[^\s]+){0,16}?\s+-[a-dfgi-oq-tv-zA-CE-OQRT-Z]{9}[a-dfgi-oq-tv-zA-CE-OQRT-Z]*[ce]|clickhouse-client(\s+[^\s]+){0,16}?\s+(--query|-q)=?((?:[^;\\]|\\[^Gg])*(?:;|\\[Gg])){0,8}(?:\s|\\n|\\t|\\r|--[^\\\n]*(?:\n|\\n)|/\*([^*]|\*[^/])*\*/)*?([Dd][Rr][Oo][Pp](?:\s|\\n)+|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|$)|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:(?:\s|\\n)+?(?:[^\s;\\][^\s;]*|\\(?:[^\s;n][^\s;]*)?)(?:\s(?:\s|\\n)*?(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s(?:\s|\\n)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|(?:\s|\\n)+?\\n|(?:\s|\\n)\s*\\n(?:\\n)*\s(?:\s|\\n)*?(?:(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)?|[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*)|(?:\s|\\n)+?\\n\\n[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;]*|(?:\s|\\n)[^;]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))(?:\s*(?:;|\\[Gg]|$)|(?:\s+-[A-Za-z]))))'
     reason: dropping, truncating or deleting without a WHERE through a database client
-    remedy: Wait for a person to approve the held call, or run the change as a reviewed migration.
+    remedy: Have a person approve the held call, or run the change as a reviewed migration.
     rationale: A DROP, TRUNCATE or unscoped DELETE through psql, mysql, mongosh, or a cache flush through redis-cli, wipes production data in one step; a person confirms it.
   - id: TK-A040
     class: shell
@@ -355,7 +355,7 @@ ask:
     # wrapper isn't read. The directory before a name is bounded, so the fallback engine stays linear
     pattern: '(^|[|;&({]\s*)((command|builtin|env)\s+){0,2}([^\s|;&(){}]{0,256}/)?((echo(\s+-[a-zA-Z]+){0,4}\s+|printf\s+)\W{0,1}([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])(\s+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?((\\r)?\\n)?\W{0,1}(\s*[;)}]){0,4}\s*(?:\|\s*tee\b[^|]*){0,4}\|\s*((command|env)\s+){0,2}([^\s|;&(){}]{0,256}/)?(redis-cli|valkey-cli)\b)|(^|[\s|;&({''"])([^\s|;&(){}''"]{0,256}/)?(redis-cli|valkey-cli)(\s+-[^\s|;&()<>]*(\s+[^-\s|;&()<>][^\s|;&()<>]*)?){0,8}\s*(<<<\s*(\$?[''"])?([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])(\s+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?((\\r)?\\n)?[''"]?[ \t]*($|[\n|;&)}])|<<-?[ \t]*[''"\\]{0,8}[A-Za-z_][^\n]{0,256}\n([^\n]*\n){0,8}?[ \t]*([Ff][Ll][Uu][Ss][Hh][Aa][Ll][Ll]|[Ff][Ll][Uu][Ss][Hh][Dd][Bb])([ \t]+([Aa][Ss][Yy][Nn][Cc]|[Ss][Yy][Nn][Cc]))?[ \t]*(\n|$))'
     reason: flushing a cache with a command fed into redis-cli
-    remedy: Wait for a person to approve the held call, or flush only the keys the change needs.
+    remedy: Have a person approve the held call, or flush only the keys the change needs.
     rationale: FLUSHALL and FLUSHDB piped or fed into redis-cli empty the whole cache or database; a person confirms it.
   - id: TK-A041
     class: mcp
@@ -373,7 +373,7 @@ ask:
     # by a transaction in another. A list-valued argument isn't read. Its whitespace runs are lazy, as TK-A039's are.
     pattern: '"(sql|query|statement)":"((?:[^;\"\\]|\\.)*;){0,8}(?:\s|\\n|\\t|\\r|--[^\\\n"]*(?:\n|\\n)|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?([Dd][Rr][Oo][Pp](?:(?:\s|\\n)+?[Tt][Ee][Mm][Pp](?:[Oo][Rr][Aa][Rr][Yy])?)?(?:\s|\\n)+?([Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Rr][Oo][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd](?:\s|\\n)+[Vv][Ii][Ee][Ww]|[Ff][Oo][Rr][Ee][Ii][Gg][Nn](?:\s|\\n)+[Tt][Aa][Bb][Ll][Ee]|[Dd][Oo][Mm][Aa][Ii][Nn]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Pp][Uu][Bb][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]|[Ss][Uu][Bb][Ss][Cc][Rr][Ii][Pp][Tt][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Aa][Ss][Tt]|[Cc][Oo][Ll][Ll][Aa][Tt][Ii][Oo][Nn]|[Oo][Ww][Nn][Ee][Dd](?:\s|\\n)+[Bb][Yy])|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\n|;|")|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\n)+[Ff][Rr][Oo][Mm](?:\s|\\n)(?:\s*[^\s;"]+(?:\s(?:\s|\\n)*?(?:[Aa][Ss](?:\s|\\n)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\n)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;"]*|(?:\s|\\n)*?)|(?:\s(?:\s|\\n)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\n)[^;"]*|(?:\s(?:\s|\\n)*?)?)|[^;"]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\n)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1)(?:\s|\\n)*?)(;|"))'
     reason: a destructive SQL statement through an MCP database tool
-    remedy: Wait for a person to approve the held call, or run the change as a reviewed migration.
+    remedy: Have a person approve the held call, or run the change as a reviewed migration.
     rationale: An MCP tool whose sql, query or statement argument drops, truncates or deletes without a WHERE destroys data the same way a SQL tool call does; a person confirms it.
   - id: TK-A031
     class: shell
@@ -384,7 +384,7 @@ ask:
     # a newline inside an argument; lazy, so the fallback engine stays linear
     pattern: '^(?:gsutil (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:rb(?: |$)|rm(?:(?: [\w\W]*?)?(?: -[A-HJ-QS-Zb-qs-z]*[aIrR][A-Za-z]*| --read-paths-from-stdin)(?: |$)| [\w\W]*?[*]))|gcloud (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:(?:alpha|beta) )?storage (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:buckets (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}delete(?: |$)|rm(?:(?: [\w\W]*?)?(?: --all-versions| --recursive)(?: |=|$)|(?: [\w\W]*?)?(?: -[A-HJ-QS-Zb-qs-z]*[aIrR][A-Za-z]*| --read-paths-from-stdin)(?: |$)| [\w\W]*?[*]))|aws (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:s3 (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:rb(?: |$)|rm(?: [\w\W]*?)? --recursive(?: |=|$))|s3api (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:(?:delete-objects|delete-bucket)(?: |$)|delete-object(?: [\w\W]*?)? --version-id(?: |=|$)))|az storage (?:(?:blob|file) delete-batch|container delete|fs delete|fs directory delete)(?: |$)|az storage remove(?: [\w\W]*?)? (?:-r|--recursive)(?: |$)|rclone (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:purge|delete|rmdirs|cleanup)(?: |$)|s3cmd (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}(?:rb(?: |$)|(?:del|rm)(?:(?: [\w\W]*?)? (?:-[A-Za-qs-z]*r[A-Za-z]*|--recursive)(?: |$)| [\w\W]*?[*]))|s3cmd (?:-[^ ]+ (?:[^- ][^ ]* )?){0,7}(?:-[A-Za-qs-z]*r[A-Za-z]*|--recursive) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,7}(?:del|rm)(?: |$))'
     reason: destroying cloud storage data (a version purge, a bulk or wildcard delete, or a bucket)
-    remedy: Wait for a person to approve the held call; a person deletes bucket data or its version history themselves.
+    remedy: Have a person approve the held call; a person deletes bucket data or its version history themselves.
     rationale: Bulk deletes and version purges in object storage can't be undone, and a bucket's version history is often the only copy left.
   - id: TK-A002
     class: shell
@@ -396,7 +396,7 @@ ask:
     # engine stays linear
     pattern: '^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
-    remedy: Wait for a person to approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
+    remedy: Have a person approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
   - id: TK-A033
     class: shell
@@ -410,7 +410,7 @@ ask:
     # lean: any request to a merge endpoint is held, a status check (GET) too; match the method when one gets in the way
     pattern: '^(?:gh (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}pr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}merge(?: |$)|glab (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}mr (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:merge|accept)(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:/(?:pulls|merge_requests)/[^/ ]+/merge(?:[ ?#/]|$)|(?:mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeRequestAccept)\b))'
     reason: merging a pull request
-    remedy: Wait for a person to approve the held call, or leave the pull request open for a person to review and merge.
+    remedy: Have a person approve the held call, or leave the pull request open for a person to review and merge.
     rationale: A merge lands code on a shared branch, often with a deploy behind it; a person confirms it.
   - id: TK-A042
     class: shell
@@ -434,7 +434,7 @@ ask:
     # matched when one gets in the way (a GET of the same URL is routine)
     pattern: '^(gh (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}repo (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}delete(?: |$)|glab (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}repo (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}delete(?: |$)|glab (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}project (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}delete(?: |$)|hub (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}delete(?: |$)|vercel (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:remove|rm)(?: |$)|vercel (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}projects? (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:remove|rm)(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:(?:(-X|--method|--request)[ =]?DELETE(?:\s+[^\s]+){0,16}\s*(?:(?:https?://[^/ ?#]+(?:/api/v3)?/repos/[^/ ?#]+/[^/ ?#]+|https?://[^/ ?#]+/api/v4/projects/[^/ ?#]+|https?://[^/ ?#]+/v9/projects/[^/ ?#]+))(?:/)?(?:[?# ]|$)|(?:(?:https?://[^/ ?#]+(?:/api/v3)?/repos/[^/ ?#]+/[^/ ?#]+|https?://[^/ ?#]+/api/v4/projects/[^/ ?#]+|https?://[^/ ?#]+/v9/projects/[^/ ?#]+))(?:/)?(?:[?# ]|$)(?:\s+[^\s]+){0,16}\s*(-X|--method|--request)[ =]?DELETE|deleteRepository\b))|(?:https?|xhs?) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:DELETE|delete) (?:(?:(?:https?://)?[^/ ?#]+(?:/api/v3)?/repos/[^/ ?#]+/[^/ ?#]+|(?:https?://)?[^/ ?#]+/api/v4/projects/[^/ ?#]+|(?:https?://)?[^/ ?#]+/v9/projects/[^/ ?#]+))(?:/)?(?:[?# ]|$)|(?:gh|hub) api (?:[^ ]+ ){0,16}(-X|--method)[ =]?DELETE(?:\s+[^\s]+){0,16}\s/?repos/[^/ ?#]+/[^/ ?#]+(?:/)?(?:[?# ]|$)|glab api (?:[^ ]+ ){0,16}(-X|--method)[ =]?DELETE(?:\s+[^\s]+){0,16}\s/?projects/[^/ ?#]+(?:/)?(?:[?# ]|$)|(?:gh|hub) api (?:[^ ]+ ){0,16}/?repos/[^/ ?#]+/[^/ ?#]+(?:/)?(?:[?# ]|$)(?:\s+[^\s]+){0,16}\s*(-X|--method)[ =]?DELETE|glab api (?:[^ ]+ ){0,16}/?projects/[^/ ?#]+(?:/)?(?:[?# ]|$)(?:\s+[^\s]+){0,16}\s*(-X|--method)[ =]?DELETE)'
     reason: deleting a repository or project through a platform's API
-    remedy: Wait for a person to approve the held call, or delete a single item (an issue, a comment) rather than the whole repository or project.
+    remedy: Have a person approve the held call, or delete a single item (an issue, a comment) rather than the whole repository or project.
     rationale: Deleting a repository or project removes all of its code, issues and history in one step; a person confirms it.
   - id: TK-A034
     class: shell
@@ -447,7 +447,7 @@ ask:
     # get in the way
     pattern: '^(apply_?patch(\.(bat|cmd))?|[^ ]+( [^- ][^ ]*)? --codex-run-as-apply-patch|(node|bun|deno)(\.exe)? (-[^ ]+ ){1,8}[^- ][^ ]* --codex-run-as-apply-patch|(exec|env) (-[^ ]+ )*?(-a|--argv0)[ =]([^ ]*/)?apply_?patch)( |$)'
     reason: applying a patch through the shell
-    remedy: Wait for a person to approve the held call, or edit files with the apply_patch tool, which Tracekit decides file by file.
+    remedy: Have a person approve the held call, or edit files with the apply_patch tool, which Tracekit decides file by file.
     rationale: A patch applied from the shell writes files that no file rule reads; a person confirms it.
   - id: TK-A035
     class: shell
@@ -456,7 +456,7 @@ ask:
     # az's `keyvault secret show`. Up to eight options (with a value) before the service and again before each word
     pattern: '^(aws (-[^ ]+ ([^- ][^ ]* )?){0,8}(secretsmanager (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( [\w\W]*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ ([^- ][^ ]* )?){0,8}((alpha|beta) (-[^ ]+ ([^- ][^ ]* )?){0,8})?secrets (-[^ ]+ ([^- ][^ ]* )?){0,8}versions (-[^ ]+ ([^- ][^ ]* )?){0,8}access(["]| |$)|az (-[^ ]+ ([^- ][^ ]* )?){0,8}keyvault (-[^ ]+ ([^- ][^ ]* )?){0,8}secret (-[^ ]+ ([^- ][^ ]* )?){0,8}(show|show-deleted|download)(["]| |$))'
     reason: reading a secret's value from a cloud secret store
-    remedy: Wait for a person to approve the held call, or ask the person for the one value the task needs.
+    remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: An agent that can read a live password or key can use it or send it anywhere; listing secrets, describing one and reading a parameter without decryption stay allowed.
   - id: TK-A036
     class: mcp
@@ -467,7 +467,7 @@ ask:
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Aa]ws|[Cc]li|[Cc]ommand|[Cc]md|[Ee]xec(ute)?|[Rr]un|[Ss]hell|[Bb]ash|[Tt]erminal)|mcp(:[^/]+/|__).*(Aws|Cli|Command|Cmd|Exec|Execute|Run|Shell|Bash|Terminal)'
     pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":" *(aws (-[^ ]+ ([^- ][^ ]* )?){0,8}(secretsmanager (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ ([^- ][^ ]* )?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( ([^"\\]|\\.)*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ ([^- ][^ ]* )?){0,8}((alpha|beta) (-[^ ]+ ([^- ][^ ]* )?){0,8})?secrets (-[^ ]+ ([^- ][^ ]* )?){0,8}versions (-[^ ]+ ([^- ][^ ]* )?){0,8}access(["]| |$)|az (-[^ ]+ ([^- ][^ ]* )?){0,8}keyvault (-[^ ]+ ([^- ][^ ]* )?){0,8}secret (-[^ ]+ ([^- ][^ ]* )?){0,8}(show|show-deleted|download)(["]| |$))'
     reason: reading a secret's value from a cloud secret store through an MCP tool
-    remedy: Wait for a person to approve the held call, or ask the person for the one value the task needs.
+    remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same commands are held, listing and describing stay allowed.
   - id: TK-A037
     class: mcp
@@ -476,14 +476,14 @@ ask:
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])(([Bb]atch[_-]?)?([Gg]et|[Rr]ead|[Ff]etch|[Rr]etrieve|[Rr]eveal|[Ss]how)[_-]?([Kk]ey[_-]?[Vv]ault[_-]?)?[Ss]ecret([_-]?[Vv]alue)?|[Aa]ccess[_-]?[Ss]ecret[_-]?[Vv]ersion|[Kk]ey[_-]?[Vv]ault[_-]?[Ss]ecret[_-]?([Gg]et|[Ss]how|[Rr]ead))|mcp(:[^/]+/|__).*((Batch)?(Get|Read|Fetch|Retrieve|Reveal|Show)(Key[_-]?Vault)?Secret(Value)?|AccessSecretVersion|KeyVaultSecret(Get|Show|Read))'
     pattern: '^'
     reason: reading a secret's value through an MCP tool
-    remedy: Wait for a person to approve the held call, or ask the person for the one value the task needs.
+    remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: The MCP twin of TK-A035, for a tool whose name says it returns a secret (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault); a tool that lists or describes secrets is not held.
   - id: TK-A038
     class: mcp
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])[Gg]et[_-]?[Pp]arameters?([_-]?[Bb]y[_-]?[Pp]ath|[_-]?[Hh]istory)?|mcp(:[^/]+/|__).*Get(Parameters?)(ByPath|History)?'
     pattern: '"([Ww]ith_?[Dd]ecrypt(ion)?|with-decryption|[Dd]ecrypt(ion)?)":(true|"true"|"True"|"TRUE"|1)'
     reason: reading a decrypted parameter through an MCP tool
-    remedy: Wait for a person to approve the held call, or read the parameter without decryption.
+    remedy: Have a person approve the held call, or read the parameter without decryption.
     rationale: SSM Parameter Store returns a SecureString's plaintext only when asked to decrypt it; the call that asks is the one a person confirms.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
@@ -492,16 +492,17 @@ ask:
     field: dangerouslyDisableSandbox
     pattern: '^[Tt][Rr][Uu][Ee]$'
     reason: running a command outside Claude Code's sandbox
-    remedy: Wait for a person to approve the held call, or run the command inside the sandbox, without dangerouslyDisableSandbox.
+    remedy: Have a person approve the held call, or run the command inside the sandbox, without dangerouslyDisableSandbox.
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that leaves it.
   - id: TK-A014
     # TK-A003's twin for Claude Code's auto mode: a Bash, PowerShell or Monitor call's allowed_domains opens those hosts
     # to that one command inside the sandbox. Matched as canonical JSON: any list with an entry (or a value that isn't
-    # a list); an empty list opens nothing and isn't held
+    # a list); an empty list opens nothing and isn't held. WebSearch's allowed_domains only narrows its results
+    tool: Bash|PowerShell|Monitor
     field: allowed_domains
     pattern: '^(\[[^\]]|[^\[])'
     reason: opening network hosts beyond Claude Code's sandbox for one command
-    remedy: Wait for a person to approve the held call, or run the command with the sandbox's own network allow list, without allowed_domains.
+    remedy: Have a person approve the held call, or run the command with the sandbox's own network allow list, without allowed_domains.
     rationale: The sandbox limits which hosts a command can reach; a person confirms each command that asks for more.
   - id: TK-A004
     # Gemini CLI's sandbox expansion: with security.toolSandboxing on, a run_shell_command call's additional_permissions
@@ -511,7 +512,7 @@ ask:
     field: additional_permissions
     pattern: '"network":\s*true|"(read|write)":\s*\[\s*"'
     reason: running a command with more than Gemini CLI's sandbox allows
-    remedy: Wait for a person to approve the held call, or run the command with the sandbox's own permissions, without additional_permissions.
+    remedy: Have a person approve the held call, or run the command with the sandbox's own permissions, without additional_permissions.
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that asks for more.
 
   # --- autostart locations: what runs at every login or boot ---
@@ -521,7 +522,7 @@ ask:
     field: path
     pattern: '(^|/)library/launch(agents|daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init\.d|rc\.local|xdg/autostart)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
     reason: adding something that runs at every login or boot
-    remedy: Wait for a person to approve the held call, or keep the file in the project and start the program when it is needed.
+    remedy: Have a person approve the held call, or keep the file in the project and start the program when it is needed.
     rationale: Startup items and service definitions outlive the agent's session; a person confirms each one.
   - id: TK-A011
     class: shell
@@ -534,7 +535,7 @@ ask:
     # restart`)
     pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^tee [\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^dd ([\w\W]*? )?of=[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^[^ =]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^launchctl (load|bootstrap|enable)\b|^systemctl (-[^ ]+ ([^- ][^ ]* )?)*(enable|reenable|preset|preset-all|add-wants|add-requires)( |$)'
     reason: adding something that runs at every login or boot
-    remedy: Wait for a person to approve the held call, or run the program directly for this session; a person installs and enables services.
+    remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
 
   # --- Git hooks: code that runs on every commit, checkout or push in the repository ---
@@ -544,7 +545,7 @@ ask:
     field: path
     pattern: '(^|/)\.git/hooks/'
     reason: writing a Git hook
-    remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
+    remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: A hook runs on every developer's commit or push in this clone; a person confirms it.
   - id: TK-A013
     class: shell
@@ -554,7 +555,7 @@ ask:
     # held
     pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
-    remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
+    remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
 
 flag:

@@ -486,6 +486,11 @@ class CodingPack(unittest.TestCase):
         for args in ({"command": "npm test", "allowed_domains": []}, {"command": "npm test"},
                      {"command": "npm test", "blocked_domains": ["example.org"]}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
+        for tool in ("PowerShell", "Monitor"):   # the other tools whose allowed_domains widens the sandbox
+            self.assertIn("TK-A014", dev.decide(tool, {"command": "npm install", "allowed_domains": ["a.example"]})["rule_ids"])
+        # WebSearch's allowed_domains only narrows which results come back: it opens nothing
+        d = dev.decide("WebSearch", {"query": "pytest fixtures", "allowed_domains": ["docs.pytest.org"]})
+        self.assertNotIn("TK-A014", d["rule_ids"], d)
 
     def test_a_command_asking_for_more_than_geminis_sandbox_asks(self):
         self.verdicts([({"command": "npm install", "additional_permissions": {"network": True}}, "TK-A004"),

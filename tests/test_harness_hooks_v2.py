@@ -59,6 +59,8 @@ class HarnessCase(unittest.TestCase):
 class Mapping(HarnessCase):
     def setUp(self):
         super().setUp()
+        # the held cases are approved while the hook waits (as Slack or the viewer would): the waiting setting
+        os.environ[claude_code.WAIT_ENV] = str(claude_code.APPROVAL_WAIT_S)
         self.decision, self.sent, mutex = "allow", [], threading.Lock()
         self.signer = FakeSigner(lambda tool, args: (self.decision, [] if self.decision == "allow" else ["R-1"]))
 
@@ -393,16 +395,15 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
         self.assertIn("TK-D005", err)
 
-    def test_a_gemini_sandbox_expansion_waits_for_a_person(self):
+    def test_a_gemini_sandbox_expansion_is_held_for_a_person(self):
         pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
                "tool_input": {"command": "npm install", "additional_permissions": {"network": True}}}
-        # nobody answers: under twice the hook client's 30 s timeout the hook asks once and doesn't wait, and 10 s leaves
-        # a slow runner room for its decide and request (1 s left none on Windows py3.9)
-        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 10):
-            code, out, err = self.hook("gemini", pre)
+        code, out, err = self.hook("gemini", pre)   # blocked at once: Gemini CLI shows nothing while a hook runs
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
-        self.assertIn("waiting for approval", err)
-        self.assertIn("TK-A004", err)
+        aid = err.split()[4]
+        self.assertRegex(json.loads(out)["reason"],   # what Gemini CLI shows the person and the model
+                         rf"\(TK-A004\): to let it run, approve it with `tracekit approvals( --signer \S+)? approve {aid}`"
+                         ", then ask the agent to try the same call again, with exactly the same arguments")
         pre["tool_input"]["additional_permissions"] = {"network": False}
         self.assertEqual(self.hook("gemini", pre)[0], 0)
 
@@ -419,11 +420,10 @@ class OnTheDevPolicy(HarnessCase):
                 self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
                 self.assertIn("Blocked by tracekit policy", json.loads(out)["reason"])
         cmd = {"CommandLine": "mkdir -p /tmp/x", "BypassSandbox": True}
-        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 10):   # nobody answers: see the Gemini test above
-            code, out, err = self.hook("antigravity", pre(3, "run_command", cmd), "PreToolUse")
+        code, out, err = self.hook("antigravity", pre(3, "run_command", cmd), "PreToolUse")   # held: blocked at once
         self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
-        self.assertIn("waiting for approval", err)
-        self.assertIn("TK-A003", err)
+        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\): to let it run, approve it with `tracekit approvals "
+                                                    r"(--signer \S+ )?approve apr-")
         self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
                          (0, '{"decision": "allow"}'))
 
