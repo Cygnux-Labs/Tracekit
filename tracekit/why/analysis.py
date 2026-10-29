@@ -288,8 +288,9 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
             out.append({**base, "severity": "review",
                         "title": f"Sensitive action {ev['tool']} is downstream of untrusted input",
                         "detail": "Reached from " + ", ".join(untrusted_up) + ". Reach is not cause; test it."})
-        if ev.get("status") == "blocked":
-            pol = ev.get("policy") or {}
+        pol = ev.get("policy") or {}
+        # a held call blocked at once whose retry ran under its approval is approved, as a call that ran itself
+        if ev.get("status") == "blocked" and not (pol.get("approval") or {}).get("ran_by"):
             # a held call that no one approved never ran: it was held, not blocked
             answer = (pol.get("approval") or {}).get("decision")
             title = (f"{ev['tool']} was held for approval and " + {

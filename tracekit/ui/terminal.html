@@ -3035,16 +3035,22 @@
     // before anyone answered (unanswered) or after the approval ended (ended): view.held_outcome
     const ANSWER = { approve: "APPROVED", reject: "REJECTED", timeout: "TIMED OUT", self_approval_refused: "SELF-APPROVAL REFUSED", revoked: "REVOKED",
                      expired: "EXPIRED", abandoned: "ABANDONED", refused: "REFUSED", binding_mismatch: "REFUSED: ARGUMENTS CHANGED" };
-    // a call's last answer: approve, reject, ... revoked (a person vetoed an agent's approval: the call never runs), expired
-    const lastAnswer = a => a.approvals?.filter(x => x.v2.approval in ANSWER).pop()?.v2.approval;
+    // a call's last answer: approve, reject, ... revoked (a person vetoed an agent's approval: the call never runs), expired;
+    // a retry's, that of the held call whose approval it used
+    const lastAnswer = a => (a.retryOf || a).approvals?.filter(x => x.v2.approval in ANSWER).pop()?.v2.approval;
     const ended = a => S.sessions.get(a.agent.session)?.end != null;
-    // a call's final state: [class, words]; only a call that may still be running is RUNNING
+    // a call held for a person (decided ask), the agent's retry of one counted with it: DESK's HELD, HORIZON's HOLDS
+    const heldCall = a => a.v2?.decision === "ask" && !a.retryOf;
+    // a run's calls held for a person, as its review counts them (view.review's holds)
+    const runHeld = r => Object.values(r.holds || {}).reduce((x, y) => x + y, 0);
+    // a call's final state: [class, words]; only a call that may still be running is RUNNING. A held call blocked at once,
+    // approved, then sent again by the agent: RETRY RAN, its retry APPROVED · RAN
     function callState(a) {
       if (a.denied) return ["s-deny", "BLOCKED"];
       if (a.error) return ["s-err", "FAILED"];
       if (a.v2?.decision === "ask") {
         const ap = lastAnswer(a);
-        if (ap === "approve") return ["s-ok", a.post ? "APPROVED · RAN" : "APPROVED"];
+        if (ap === "approve") return ["s-ok", a.ranBy?.post ? "APPROVED · RETRY RAN" : a.post ? "APPROVED · RAN" : "APPROVED"];
         if (ap) return ["s-deny", ANSWER[ap]];
         return ["s-flag", ended(a) ? "NOT ANSWERED" : "TO ANSWER"];
       }
@@ -3160,6 +3166,10 @@
         // a verifier report of a run with no record shown (it failed) is no agent: no lane, not counted
         const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" }, act = r.v2?.approval && S.actions.get(tuid(r));
         if (act) act.approvals.push(r);
+        // the agent's retry of a held call, using that call's approval: the held call's answer is the retry's, and the
+        // held call ran as its retry
+        const held = act && r.v2.held && S.actions.get(r.session_id + "|" + r.v2.held);
+        if (held) { act.retryOf = held; if (r.v2.approval === "consumed") held.ranBy = act; }
         // v2: an effect is shown under the call its process names, unchecked (the agent's claim), until the run's analysis joins it (TK-X206), which may say otherwise
         const ef = r.v2?.effect;
         if (ef) S.effects.set(r.session_id + "|" + r.v2.run_seq, { rec: r, call: ef.claim ? r.session_id + "|" + ef.claim : null, how: null, status: null });
@@ -3280,7 +3290,7 @@
       const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
       const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, [exp, trust, ver] = runCmds(r);
       put("runhead", crumb + `<h1>${esc(r.agent || "run")}</h1><div class="meta">${esc([r.id, r.tenant && r.tenant !== "default" ? "tenant " + r.tenant : "", t0 ? `started ${fmtD(t0)} ${fmtT(t0)} ${TZ}` : "", t1 ? fmtDur(t1 - t0) : "", r.state, r.records != null ? plural(r.records, "record") : ""].filter(Boolean).join(" · "))}</div>`
-        + `<div class="cnt">` + vchip(r.verdict) + `<span class="tag">${esc(plural(calls, "call"))}</span>${d.deny ? `<span class="tag deny">${esc(d.deny)} blocked</span>` : ""}${d.ask ? `<span class="tag held">${esc(d.ask)} held</span>` : ""}${d.flag ? `<span class="tag flag">${esc(d.flag)} flagged</span>` : ""}${gaps ? `<span class="tag deny">${esc(plural(gaps, "gap"))}</span>` : ""}</div>`
+        + `<div class="cnt">` + vchip(r.verdict) + `<span class="tag">${esc(plural(calls, "call"))}</span>${d.deny ? `<span class="tag deny">${esc(d.deny)} blocked</span>` : ""}${runHeld(r) ? `<span class="tag held">${esc(runHeld(r))} held</span>` : ""}${d.flag ? `<span class="tag flag">${esc(d.flag)} flagged</span>` : ""}${gaps ? `<span class="tag deny">${esc(plural(gaps, "gap"))}</span>` : ""}</div>`
         + (r.decisions ? `<div class="acts"><span>EXPORT <code class="shell">${esc(exp)}</code>` + cp(exp) + `</span><span>TRUST <code class="shell">${esc(trust)}</code>` + cp(trust) + `</span><span>VERIFY <code class="shell">${esc(ver)}</code>` + cp(ver) + `</span></div>` : ""));
     }
     // RUNS: every run with its counts and verdict, newest first, each opening its page; then the why logs' runs
@@ -3291,7 +3301,7 @@
         + list.map(r => {
           const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
           return `<tr class="row" data-openrun="${esc(r.id)}" tabindex="0"><td title="${esc(r.id)}">${esc(r.id.slice(0, 8))}${r.tenant && r.tenant !== "default" ? `<br><span class="dim">tenant ${esc(r.tenant)}</span>` : ""}</td><td class="s-flag">${esc(r.agent || "run")}</td><td class="dim">${esc(t0 ? fmtD(t0) + " " + fmtT(t0) : "")}</td><td class="dim">${esc(t1 ? fmtDur(t1 - t0) : "")}</td><td>${esc(r.state || "")}</td>`
-            + `<td>${esc(Object.values(d).reduce((x, y) => x + y, 0))}</td><td class="${d.deny ? "s-deny" : "dim"}">${esc(d.deny || 0)}</td><td class="${d.ask ? "s-flag" : "dim"}">${esc(d.ask || 0)}</td><td class="${d.flag ? "s-flag" : "dim"}">${esc(d.flag || 0)}</td><td class="${gaps ? "s-err" : "dim"}">${esc(gaps)}</td><td>` + vchip(r.verdict, r.label) + `</td></tr>`;
+            + `<td>${esc(Object.values(d).reduce((x, y) => x + y, 0))}</td><td class="${d.deny ? "s-deny" : "dim"}">${esc(d.deny || 0)}</td><td class="${runHeld(r) ? "s-flag" : "dim"}">${esc(runHeld(r))}</td><td class="${d.flag ? "s-flag" : "dim"}">${esc(d.flag || 0)}</td><td class="${gaps ? "s-err" : "dim"}">${esc(gaps)}</td><td>` + vchip(r.verdict, r.label) + `</td></tr>`;
         }).join("") + `</tbody></table>` + (list.length ? "" : `<div class="empty">No runs yet.</div>`)
         + (DROPPED ? `<p class="dim" style="padding:0 8px">${esc(`The live view keeps the newest ${MAXREC} records; ${DROPPED} older ones left it. Every run stays in this list with its verdict.`)}</p>` : "")
         + (document.querySelector('.nav a[href="/runs"]') ? `<p style="padding:0 8px">Every log of this deployment, searchable: the <a href="/runs">runs page</a>.</p>` : ""));
@@ -3314,7 +3324,7 @@
       // newest first, as a fresh viewer loads runs in any order
       const w = waiting(), more = waitingElsewhere(), done = heldRows().filter(r => !r.tabs.includes("waiting")).sort((x, y) => y.rec.ts - x.rec.ts), by = new Map();
       for (const r of done) { const o = r.out[1].split(" · ")[0].toLowerCase(); by.set(o, (by.get(o) || 0) + 1); }
-      put("apprp", `<p class="dim" style="padding:0 8px">Held calls nobody has answered yet. A coding agent's hook blocked each at once and the agent went on: approving one lets the agent's retry of the same call run, once. An answer binds to the exact arguments, is signed and can't be undone. This page answers nothing: copy the command`
+      put("apprp", `<p class="dim" style="padding:0 8px">Held calls nobody has answered yet. A coding agent's hook blocks the call at once, unless TRACEKIT_APPROVAL_WAIT makes it wait first, and approving it lets the agent's retry of the same call run, once; a gateway waits for the answer up to its approval wait. An answer binds to the exact arguments, is signed and can't be undone. This page answers nothing: copy the command`
         + (DESK() ? `, or answer on the <a href="/approvals">approvals page</a> with a passkey` : "") + `.</p>`
         + (w.map(x => {
           const args = x.rec.tool_input && Object.keys(x.rec.tool_input).length ? j(x.rec.tool_input) : "";
@@ -3330,7 +3340,7 @@
         + `<div class="sec">ANSWERED OR ENDED</div><table class="wt"><tbody>` + (done.slice(0, 100).map(r => {
           const kept = r.rec.tool_input && Object.keys(r.rec.tool_input).length, ans = r.ans || r.answers.filter(x => x.v2.approval !== "requested").pop();
           return `<tr class="row" data-orun="${esc(r.rec.session_id)}" data-oseq="${esc(r.rec.tk_seq)}"><td class="dim">${esc(fmtT(r.rec.ts))}</td><td class="${esc(r.out[0])}">${esc(r.out[1])}</td><td>${esc(`${r.rec.agent} · run ${String(r.rec.session_id).slice(0, 8)}`)}</td>`
-            + `<td>${esc(r.rec.tool_name)} · <span class="${kept ? "" : "dim"}">${esc(kept ? subject(r.rec.tool_name, r.rec.tool_input).slice(0, 200) : "arguments not kept")}</span></td><td class="dim">${esc(ans ? ans.text : "nobody answered before the run ended")}</td></tr>`;
+            + `<td>${esc(r.rec.tool_name)} · <span class="${kept ? "" : "dim"}">${esc(kept ? subject(r.rec.tool_name, r.rec.tool_input).slice(0, 200) : "arguments not kept")}</span></td><td class="dim">${esc((ans ? ans.text : "nobody answered before the run ended") + (r.ranBy ? ` · its retry ${r.ranBy.rec.v2.tool_use_id} ran with the approved arguments` : ""))}</td></tr>`;
         }).join("") || `<tr><td class="empty">None in the live view.</td></tr>`) + `</tbody></table>`);
       $("apprsum").textContent = [`${waitingCount()} ${OPENHOLD}`, ...[...by].map(([o, n]) => `${n} ${o}`)].join(" · ");
     }
@@ -3372,10 +3382,12 @@
     // lean: these programs are named with their verb (git checkout), any other by its name alone; add one whose verb a
     // person needs to see
     const HZVERB = /^(git|gh|npm|pnpm|yarn|bun|docker|kubectl|helm|cargo|go|pip3?|uv|poetry|brew|aws|gcloud|az|terraform|make|tracekit)$/;
+    // these name a noun, then its verb: gh pr merge
+    const HZNOUN = /^gh$/;
     // a shell command's program (its file name, past VAR=value words) and, for one run by subcommands, its verb
     function hzCmd(c) {
-      const [p = "", v = ""] = c.trim().split(/\s+/).filter(w => !/^\w+=/.test(w)), prog = p.split("/").pop();
-      return HZVERB.test(prog) && /^[a-z][\w-]*$/.test(v) ? prog + " " + v : prog;
+      const [p = "", v = "", v2 = ""] = c.trim().split(/\s+/).filter(w => !/^\w+=/.test(w)), prog = p.split("/").pop(), sub = w => /^[a-z][\w-]*$/.test(w);
+      return HZVERB.test(prog) && sub(v) ? prog + " " + v + (HZNOUN.test(prog) && sub(v2) ? " " + v2 : "") : prog;
     }
     // where a call went: [ring, label] of the first host or path among its arguments, its subject first; else null. A
     // Bash move reads its command alone, past a leading cd: a path there is one no ref or branch looks like (~, /, ./,
@@ -3402,16 +3414,19 @@
     function hzData() {
       const key = [ALL.length, ALL[ALL.length - 1], RUNS.size, chainState.ok];
       if (key.every((x, i) => x === hzKey[i])) return hzD;
-      const ans = new Map(), raw = [], places = dict(), parent = dict(), cwds = new Set(), groups = dict(), dirs = [];
-      for (const r of ALL) if (r.v2?.approval in ANSWER) ans.set(r.session_id + "|" + r.v2.tool_use_id, r.v2.approval);
+      const ans = new Map(), retry = new Map(), raw = [], places = dict(), parent = dict(), cwds = new Set(), groups = dict(), dirs = [];
+      for (const r of ALL) {
+        if (r.v2?.approval in ANSWER) ans.set(r.session_id + "|" + r.v2.tool_use_id, r.v2.approval);
+        if (r.v2?.approval && r.v2.held) retry.set(r.session_id + "|" + r.v2.tool_use_id, r.session_id + "|" + r.v2.held);   // the held call it retried
+      }
       for (const r of ALL) {
         const fx = r.v2?.effect, d = r.v2?.decision ?? (r.policy?.decision === "deny" ? "deny" : "allow"), rules = r.v2?.rules || [];
         if (r.analysis || r.signer || !(r.event === "PreToolUse" || fx?.kind === "connect" || fx?.kind === "file")) continue;
         // a why log's row (r.why) is the agent's own unsigned record: never signed, whatever the chain check says
-        const a = ans.get(r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id)), ok = !r.why && (V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true);
+        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), a = ans.get(retry.get(k) || k), ok = !r.why && (V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true);
         const p = fx ? (fx.kind === "connect" ? ["outside", String(fx.target).replace(/:\d+$/, "")] : hzPath(String(fx.target), r.cwd))
           : hzPlace(r.tool_name, r.tool_input, r.cwd) || [category({ tool: r.tool_name, flags: [] }) === "net" ? "outside" : "machine", r.tool_name, true];
-        raw.push({ t: r.ts_signed ?? r.ts, unread: !!r.ts_unread, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules),
+        raw.push({ t: r.ts_signed ?? r.ts, unread: !!r.ts_unread, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules), hold: d === "ask" && !retry.has(k),
           ag: vis(RUNS.get(r.session_id)?.agent || r.agent || "agent"), gr: !ok ? "unverified" : fx ? "observed" : "signed",
           act: fx ? (fx.kind === "connect" ? "net" : "seen") : d === "deny" ? "blocked" : d === "ask" ? (a === "approve" ? "approved" : "held") : d === "flag" ? "flag"
             : p[0] === "outside" ? "net" : FILE_TOOLS[r.tool_name] === "W" ? "write" : /^(Read|Glob|Grep|LS)$/.test(r.tool_name) ? "read" : "run",
@@ -3472,7 +3487,7 @@
       $("hzclock").textContent = "T+ " + [s / 3600, s % 3600 / 60, s % 60].map(v => String(Math.floor(v)).padStart(2, "0")).join(":");
       $("hzmove").textContent = `${String(HZ.t).padStart(2, "0")} / ${N}`;
       [[new Set(out.map(e => e.at)).size, out.length ? "warn" : ""], [`${rest.length} · ${ran} RAN`, rest.length ? "warn" : ""], [ev.filter(e => e.act === "blocked").length, ""],
-       [ev.filter(e => e.act === "held").length, ""], hzChain(ev)]
+       [ev.filter(e => e.hold).length, ""], hzChain(ev)]
         .forEach(([v, c], k) => { $("hzt" + k).textContent = vis(v); $("hzt" + k).className = c; });
       document.querySelectorAll("[data-hzv]").forEach(b => b.classList.toggle("on", b.dataset.hzv === HZ.view));
       // beside the stage: the counts, then the followed agent's route, the picked place's visitors or how to read it
@@ -3562,9 +3577,14 @@
       // in the top view, the project's folders
       const placed = [...cv.parentNode.querySelectorAll(".hzhud")].map(h => [h.offsetLeft, h.offsetTop, h.offsetLeft + h.offsetWidth, h.offsetTop + h.offsetHeight]);
       x.font = font(600, 9); x.textAlign = "left"; x.letterSpacing = "2.5px";
+      const dots = Object.keys(D.places).map(pt), hits = a => 99 * placed.filter(b => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]).length
+        + dots.filter(([mx, my]) => mx > a[0] - 9 && mx < a[2] + 9 && my > a[1] - 9 && my < a[3] + 9).length;
       for (const [r, l, c] of [[.47, D.cwd ? "PROJECT · " + D.cwd : "PROJECT", A(amber, .8)], [.66, "THIS MACHINE", A(ink, .5)], [1, "OUTSIDE WORLD", A(ink, .4)]]) {
-        const [lx, ly] = P(r, hzRad(-40)); x.fillStyle = c; x.fillRect(lx - 2, ly - 2, 4, 4); x.fillText(l, lx + 7, ly - 5);
-        placed.push([lx - 2, ly - 14, lx + 9 + x.measureText(l).width, ly + 2]);
+        const w = x.measureText(l).width, at = deg => { const [lx, ly] = P(r, hzRad(deg)); return [lx - 2, ly - 14, lx + 9 + w, ly + 2]; };
+        // upper left on its ring, where it covers no other ring's name or readout and the fewest places
+        const b = [-40, -48, -32, -56, -24, -64, -16, -72, -8].map(at).reduce((p, q) => hits(q) < hits(p) ? q : p);
+        x.fillStyle = c; x.fillRect(b[0], b[3] - 4, 4, 4); x.fillText(l, b[0] + 9, b[3] - 7);
+        placed.push(b);
       }
       x.letterSpacing = "0px";
       if (i > .6) { x.textAlign = "center"; x.fillStyle = A(ink, (i - .6) / .4 * .5); for (const q of D.dirs) { const [px, py] = P(q.r, q.th); x.fillText(q.label, px, py + 3); } }
@@ -3632,8 +3652,9 @@
       const hit = a => placed.some(b => a[0] < b[2] + 4 && a[2] > b[0] - 4 && a[1] < b[3] + 3 && a[3] > b[1] - 3)
         || marks.some(([mx, my, mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - mr && my < a[3] + mr)
         || a[0] < 6 || a[2] > cw - 6 || a[1] < 70 || a[3] > ch - 30 || (a[0] < cx + Rs * 2 && a[2] > cx - Rs * 2 && a[1] < cy + Rs * 1.4 && a[3] > cy - Rs * 1.6);
-      // the picked place first, then the busiest: each where it covers nothing drawn, else left to hover and a click
-      blocks.sort((a, b) => (b.k === HZ.pick) - (a.k === HZ.pick) || b.n - a.n || a.rank - b.rank);
+      // the picked place first, then restricted places and stops (blocked, held), then the busiest: each where it covers
+      // nothing drawn, else left to hover and a click
+      blocks.sort((a, b) => (b.k === HZ.pick) - (a.k === HZ.pick) || Math.min(a.rank, 2) - Math.min(b.rank, 2) || b.n - a.n || a.rank - b.rank);
       for (const b of blocks) {
         const pref = Math.sin(b.q.th) < 0 ? -1 : 1, side0 = b.px < cx ? -1 : 1;
         let best = null;
@@ -3803,7 +3824,7 @@
       const flagged = S.actList.filter(a => a.flags.length).length;
       // DESK's SPAN is its runs' (the live view keeps the newest records, which come in no time order); a run's, its rows'
       const elapsed = V2 && !scope ? runsSpan() : S.firstTs ? (V2 || done || document.URL.startsWith("file:") ? S.lastTs : t) - S.firstTs : 0;
-      const held = S.actList.filter(a => a.v2?.decision === "ask").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = highCount();
+      const held = S.actList.filter(heldCall).length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = highCount();
       // signed records: the run's own count (its review), else every record the viewer verified (the chain badge's)
       const signed = scope ? RUNS.get(scope)?.records ?? (RUNS.get(scope)?.verdict === "failed" ? "–" : null) : chainState.n;
       const items = V2 ? [
@@ -3838,7 +3859,7 @@
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
         html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}" tabindex="0" style="${esc(indent(depth))}"><span class="nm">${depth ? `<span class="dim">└ </span>` : ""}${esc(r.agent || "run")}</span>` + vchip(r.verdict, (r.integrity || "") + " · " + r.label) + `
           <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(fmtD(t0))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
-          ${r.decisions ? `<span class="meta"><span>${esc(plural(calls, "call"))}</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${d.flag ? "s-flag" : ""}">${esc(d.flag || 0)} flagged</span><span class="${gaps ? "s-err" : ""}">${esc(plural(gaps, "gap"))}</span></span>` : ""}</div>`;
+          ${r.decisions ? `<span class="meta"><span>${esc(plural(calls, "call"))}</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${runHeld(r) ? "s-flag" : ""}">${esc(runHeld(r))} held</span><span class="${d.flag ? "s-flag" : ""}">${esc(d.flag || 0)} flagged</span><span class="${gaps ? "s-err" : ""}">${esc(plural(gaps, "gap"))}</span></span>` : ""}</div>`;
       }
       put("agents", html);
       $("agtitle").textContent = fam ? "AGENTS" : "RUNS";
@@ -3999,9 +4020,10 @@
     function needsYou() {
       const out = [];
       for (const w of waiting()) {
-        const v = w.rec.v2, args = w.rec.tool_input && Object.keys(w.rec.tool_input).length ? j(w.rec.tool_input).replace(/\s+/g, " ") : "";
-        out.push({ kind: "HOLD", sev: "med", open: w.open, what: `${w.rec.tool_name} · ${w.rec.agent} held: ${RETRY} (` + ((v.rules || []).map(x => x.reason ? `${x.id} ${x.reason}` : x.id).join("; ") || "held") + ")",
-          detail: (args ? "binds " + args.slice(0, 300) : "arguments kept as a commitment only") + (w.req ? "" : " · no approval requested yet"),
+        // the call first (its tool, what it names, its rule and why), as a narrow row cuts the end; then what to do
+        const v = w.rec.v2, kept = w.rec.tool_input && Object.keys(w.rec.tool_input).length;
+        out.push({ kind: "HOLD", sev: "med", open: w.open, what: [w.rec.tool_name, kept ? subject(w.rec.tool_name, w.rec.tool_input).slice(0, 200) : "", (v.rules || []).map(x => x.reason ? `${x.id} ${x.reason}` : x.id).join("; ")].filter(Boolean).join(" · "),
+          detail: `${w.rec.agent} · ` + (kept ? "" : "arguments kept as a commitment only · ") + (w.req ? RETRY : "no approval requested yet"),
           cmds: w.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(w.req.v2.approval_id)}`) : [] });
       }
       for (const x of waitingElsewhere())
@@ -4040,23 +4062,28 @@
       return permList = permOf(runRows().filter(r => !scope || r.session_id === scope));
     }
     // what came of each decision in records `recs` that was not a plain allow: [{rec, answers, post, ans: the answer it
-    // came to, req: its approval request, out: [class, words], tabs}], in their order, newest first
+    // came to, who: the answer that names who gave it, req: its approval request, ranBy: the agent's retry that ran under
+    // its approval, out: [class, words], tabs}], in their order, newest first. A retry is its held call's row, not one of
+    // its own (view.review counts them once)
     function permOf(recs) {
       const by = new Map(), ended = new Set(), rows = [];
       for (const r of recs) {
         if (r.analysis) continue;
-        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id);
+        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), held = r.v2?.held && by.get(r.session_id + "|" + r.v2.held);
         if (r.event === "SessionEnd") ended.add(r.session_id);
         else if (r.event === "PreToolUse" && r.v2 && r.v2.decision !== "allow") { const row = { rec: r, answers: [] }; by.set(k, row); rows.push(row); }
         else if (r.event === "PostToolUse" && by.has(k)) by.get(k).post = r;
-        else if (r.v2?.approval && by.has(k)) by.get(k).answers.push(r);
+        else if (r.v2?.approval && by.has(k)) {
+          by.get(k).answers.push(r);
+          if (held) { by.get(k).retry = true; if (r.v2.approval === "consumed") held.ranBy = by.get(k); }
+        }
       }
-      return rows.reverse().map(row => {
+      return rows.filter(row => !row.retry).reverse().map(row => {
         const d = row.rec.v2.decision, ans = row.answers.filter(x => x.v2.approval in ANSWER).pop(), a = ans?.v2.approval, done = ended.has(row.rec.session_id);
         const [tab, out] = d === "deny" ? ["", ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
-          : a === "approve" ? ["approved", ["s-ok", row.post ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
+          : a === "approve" ? ["approved", ["s-ok", row.ranBy?.post ? "APPROVED · RETRY RAN" : row.post ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
           : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "TO ANSWER"]];
-        return { ...row, ans, req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
+        return { ...row, ans, who: row.answers.filter(x => x.v2.approver).pop(), req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
       });
     }
     // a run's review counts its permissions by outcome: what PERMISSIONS says while its rows are not on the page
@@ -4078,7 +4105,7 @@
           const cmds = r.tabs.includes("waiting") && r.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(r.req.v2.approval_id)}`) : [];
           return `<tr class="row" data-tkseq="${esc(r.rec.tk_seq)}"><td class="dim">${esc(fmtD(r.rec.ts) + " " + fmtT(r.rec.ts))}</td><td class="s-flag">${esc(r.rec.agent)}</td><td>${esc(r.rec.tool_name)}</td><td title="${esc(args)}" class="${args ? "" : "dim"}">${esc(args ? args.slice(0, 160) : "kept as a commitment only")}</td>`
             + `<td class="${esc((DEC[v.decision] || DEC.flag)[0])}">${esc((DEC[v.decision] || DEC.flag)[1])}</td><td>${esc((v.rules || []).map(x => (x.id + " " + (x.reason || "")).trim()).join("; ") || "–")}</td><td class="${esc(r.out[0])}">${esc(r.out[1])}</td>`
-            + `<td class="dim">${esc(r.ans ? `${r.ans.v2.approver || "?"} · ${fmtT(r.ans.ts)}` : v.decision === "deny" ? "nobody may: never held" : r.tabs.includes("waiting") && !r.req ? "no approval requested yet" : "–")}</td><td>` + cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join("<br>") + `</td></tr>`;
+            + `<td class="dim">${esc(r.ans ? (r.who ? `${r.who.v2.approver} · ${fmtT(r.who.ts)}` : `${["expired", "abandoned", "timeout"].includes(r.ans.v2.approval) ? "nobody answered" : "–"} · ${fmtT(r.ans.ts)}`) + (r.ranBy ? ` · its retry ${r.ranBy.rec.v2.tool_use_id} ran` : "") : v.decision === "deny" ? "nobody may: never held" : r.tabs.includes("waiting") && !r.req ? "no approval requested yet" : "–")}</td><td>` + cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join("<br>") + `</td></tr>`;
         }).join("") || `<tr><td colspan="9" class="empty">Nothing here.</td></tr>`) + `</tbody></table>`
         + (pages > 1 ? `<div class="wbar"><button type="button" data-ppage="-1">◀</button><span>${esc(`${from + 1}–${from + shown.length} of ${list.length} · newest first`)}</span><button type="button" data-ppage="1">▶</button></div>` : ""));
       $("wvsum").textContent = `${plural(rows.length, "decision")} · ${n("waiting")} ${OPENHOLD}`;
@@ -4212,14 +4239,15 @@
     let WFBY = "call";
     const WFMAX = 600, WFK = { ok: "allowed", flag: "flagged", deny: "blocked, refused or failed", wait: "held for a person" };
     // a call's bars, [kind, from, to]; to null: still waiting or running, so to the axis' right edge. A hold waits (hatched)
-    // from its decision to its answer, then runs if it was approved; a refused one ends there, red
+    // from its decision to its answer, then runs if it was approved; a refused one ends there, red. A call whose retry ran
+    // under its approval waits only (the retry's row runs), and the retry runs at once
     function wfBars(a) {
       if (a.denied) return [["deny", a.start, a.start]];
       const kind = a.error ? "deny" : a.flags.some(f => f !== "held_for_approval") ? "flag" : "ok", run = from => [kind, from, a.end ?? (ended(a) ? from : null)];
-      if (a.v2?.decision !== "ask") return [run(a.start)];
+      if (a.v2?.decision !== "ask" || a.retryOf) return [run(a.start)];
       const ans = a.approvals.filter(x => x.v2.approval in ANSWER).pop();
       if (!ans) return [["wait", a.start, null]];
-      return [["wait", a.start, ans.ts], ans.v2.approval === "approve" ? run(ans.ts) : ["deny", ans.ts, ans.ts]];
+      return [["wait", a.start, ans.ts], ...a.ranBy ? [] : [ans.v2.approval === "approve" ? run(ans.ts) : ["deny", ans.ts, ans.ts]]];
     }
     function renderWaterfall() {
       const on = PAGE === "run" && RV === "waterfall", by = on && WFBY === "call", wf = $("wf");
@@ -4336,7 +4364,8 @@
     // WHY THIS DECISION: the policy's walk for a call, as far as its records and the viewer's copy of its policy say
     function whyDecision(a) {
       const v = a.v2 || {}, rules = v.rules || [], secs = v.secs || {}, out = callState(a);
-      const req = a.approvals.find(r => r.v2.approval === "requested"), ans = a.approvals.filter(r => r.v2.approval in ANSWER).pop();
+      const h = a.retryOf || a, req = h.approvals.find(r => r.v2.approval === "requested"), ans = h.approvals.filter(r => r.v2.approval in ANSWER).pop();
+      const retry = a.ranBy ? ` · its retry ${a.ranBy.pre.v2.tool_use_id} ran with the approved arguments` : a.retryOf ? ` · the agent's retry of ${a.retryOf.pre.v2.tool_use_id}, under that call's approval` : "";
       const rule = x => `<span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(no reason in this policy)")}` + (x.remedy ? `<div class="dim">what to do: ${esc(x.remedy)}</div>` : "");
       const steps = [["", "CALL", `${esc(a.tool)} from ${esc(label(a.agent))}` + (v.cls ? ` · class ${esc(v.cls)} <span class="dim">(the policy's map of this tool)</span>` : "")
         + (v.other ? `<div class="s-flag">a rule matched under another class too (a class hint the signer also checked, or an MCP tool's bare name): the counts are class ${esc(v.cls)}'s</div>` : "")]];
@@ -4354,7 +4383,7 @@
         if (own.length) steps.push([v.decision, v.read ? "ENGINE" : "MATCHED", own.map(rule).join("")]);
       }
       steps.push([v.decision, "DECISION", `${esc(String(v.decision).toUpperCase())} <span class="dim">the first section with a match decides: deny, then ask, then flag; none, allow</span>`]);
-      steps.push([out[0] === "s-ok" ? "allow" : out[0] === "s-deny" ? "deny" : "ask", "OUTCOME", `<span class="${esc(out[0])}">${esc(out[1])}</span>` + (ans ? ` <span class="dim">${esc(ans.text)}</span>` : "")]);
+      steps.push([out[0] === "s-ok" ? "allow" : out[0] === "s-deny" ? "deny" : "ask", "OUTCOME", `<span class="${esc(out[0])}">${esc(out[1])}</span>` + (ans || retry ? ` <span class="dim">${esc((ans ? ans.text : "") + retry)}</span>` : "")]);
       let who = v.decision === "deny" ? "nobody: a denied call is never held" : v.decision !== "ask" ? "nobody: it did not wait for an answer"
         : !req ? "nobody yet: the agent has not requested an approval for this call (no approval.request record)"
         : "a person the signer takes as an approver" + (DESK() ? `, on the <a href="/approvals">approvals page</a>` : "") + ", or in a terminal with the signer's approvals command";
@@ -4371,7 +4400,7 @@
     const TEXT_RULES = ["TK-X205", "TK-X101", "TK-X102", "TK-X103", "TK-X104", "TK-X111", "TK-X112", "TK-X113", "TK-X114"];
     // a call's signed outcome: [mark, words, the record that shows it]
     function didFact(c) {
-      const p = c.post;
+      const p = c.post || c.ranBy?.post;
       if (c.denied) return ["x", "blocked by the signer: it never ran", c.pre];
       if (c.v2?.decision === "ask" && lastAnswer(c) !== "approve") return ["x", `held, ${callState(c)[1].toLowerCase()}: it has not run`, c.approvals.at(-1) || c.pre];
       if (!p) return ["w", "no result recorded", c.pre];
@@ -4500,8 +4529,8 @@
     function runSentence(r) {
       if (r.verdict === "failed") return "Failed verification: " + (failLines(r.report).join(" · ").replace(/^\[FAIL\]\s*/, "") || "see the verifier report") + ". None of its records are shown.";
       if (r.verdict !== "verified") return "Pending: no checkpoint covers this run's last record yet.";
-      const acts = S.actList, held = acts.filter(a => a.v2?.decision === "ask"), by = new Map();
-      for (const a of held) { const w = (ANSWER[lastAnswer(a)] || (ended(a) ? "not answered" : "waiting")).toLowerCase(); by.set(w, (by.get(w) || 0) + 1); }
+      const acts = S.actList, held = acts.filter(heldCall), by = new Map();
+      for (const a of held) { const w = (ANSWER[lastAnswer(a)] || (ended(a) ? "not answered" : OPENHOLD)).toLowerCase(); by.set(w, (by.get(w) || 0) + 1); }
       let out = "Verified" + (STOPPED ? " · checks stopped" : "") + ". " + plural(acts.length, "call") + (acts.length ? `: ${acts.filter(a => a.post).length} ran, ${acts.filter(a => a.denied).length} blocked, ${held.length} held` + (held.length ? " (" + [...by].map(([w, n]) => n + " " + w).join(", ") + ")" : "") : "") + ".";
       const fs = S.recs.filter(x => x.v2?.finding?.kind === "finding"), hi = fs.filter(x => x.severity === "high").length;
       if (r.findings || fs.length) out += fs.length ? " " + plural(fs.length, "finding") + (hi ? `, ${hi} high` : "") + "." : r.findings?.not_checkable?.length ? " No findings in what could be checked." : " No findings.";
@@ -4549,7 +4578,8 @@
           + (r.findings ? line(null, "FINDINGS", r.findings.line) + (r.findings.monitorability ? line(null, "MONITORABILITY", r.findings.monitorability + " (the share of actions whose reasoning can be read)") : "")
             + (r.findings.not_checkable?.length ? `<dt>NOT CHECKABLE</dt><dd class="s-flag">` + r.findings.not_checkable.map(g => `<div title="${esc(g.code)}">${esc(`${g.rule} for ${g.n}: ${g.text}`)}</div>`).join("") + `<div class="dim">never counted as a pass: tracekit analyze --v2 says what makes each checkable</div></dd>` : "") : "");
         if (cmds) left += cmdLines(r);
-        right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", d.ask || 0, d.ask ? "s-flag" : "");
+        right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", runHeld(r), d.ask ? "s-flag" : "")
+          + ((d.ask || 0) > runHeld(r) ? line(null, "RETRIED", `${(d.ask || 0) - runHeld(r)} · the agent's retry of a held call, under that call's approval`) : "");   // decided ask too
         for (const a of r.approvals) right += line(a.seq, "→ " + (ANSWER[a.decision] || String(a.decision).toUpperCase()), `${a.tool_use_id} by ${a.approver}` + (a.via ? ` vouched for by ${a.via}` : "") + bySelf(a.decision, a.self_approved) + (a.break_glass ? " · BREAK-GLASS" : ""), a.decision !== "approve" || a.self_approved || a.break_glass ? "s-deny" : "s-ok");
         for (const i of r.incidents || []) right += line(i.seq, "INCIDENT", `${i.trigger} ${i.rule_ids.join(" ")} · ${i.incident_id} · ${i.mode} · ${i.actions.join("+") || "no action"} · run ${i.state}`, i.actions.length ? "s-deny" : "s-flag");
         right += (gaps.length ? gaps.map(([k, n]) => line(f["gap:" + k], "GAP", `${(r.gap_words || {})[k] || k} ×${n}`, "s-err", k)).join("") : line(null, "GAPS", "none signed")) + `</dl>`;
@@ -5034,7 +5064,7 @@
         const ap = n.policy && n.policy.approval;
         const g = n.guard ? n.guard.verdict + (n.guard.alerts && n.guard.alerts.length ? ": " + n.guard.alerts.map(a => a.title).join("; ") : "") : null;
         body = kv([["tool", n.tool], ["took", ms(n.duration_ms)], ["status", n.status], ["executed", n.mode], ["sensitive", n.sensitive ? "yes" : null], ["signed decision", pol],
-          ["approval", ap ? `${ap.decision} by ${ap.approver}${ap.self_approved ? " (self-approved)" : ""}` : null], ["guard", g]])
+          ["approval", ap ? `${ap.decision} by ${ap.approver}${ap.self_approved ? " (self-approved)" : ""}` + (ap.ran_by ? ` · its retry ${ap.ran_by} ran with the approved arguments` : ap.retry_of ? ` · the agent's retry of ${ap.retry_of}, under that call's approval` : "") : null], ["guard", g]])
           + `<div class="sec">ARGUMENTS</div><pre>${esc(JSON.stringify(n.args, null, 2))}</pre><div class="sec">RESULT</div><pre>${esc(n.result)}</pre>`
           + (d.actions[n.id] ? `<p><button type="button" data-wwhy="${esc(n.id)}">WHY DID THIS HAPPEN? →</button></p>` : "");
       } else {
@@ -5180,8 +5210,8 @@
     const DECIDED = { deny: ["DENIED", "--red"], ask: ["HELD", "--amber"], flag: ["FLAGGED", "--amber"], allow: ["ALLOWED", "--muted"] };
     function decided(p) {   // a tool call's signed decision: [word, colour], an approval's answer over a hold
       if (!p || !p.decision) return null;
-      const ap = p.approval && p.approval.decision;
-      return ap === "approve" ? ["APPROVED", "--green"] : ap ? [ANSWER[ap] || String(ap).toUpperCase(), "--red"] : DECIDED[p.decision] || [String(p.decision).toUpperCase(), "--muted"];
+      const ap = p.approval && p.approval.decision;   // a held call whose retry ran under its approval: RETRY RAN
+      return ap === "approve" ? [p.approval.ran_by ? "APPROVED · RETRY RAN" : "APPROVED", "--green"] : ap ? [ANSWER[ap] || String(ap).toUpperCase(), "--red"] : DECIDED[p.decision] || [String(p.decision).toUpperCase(), "--muted"];
     }
     const GTYPE = { input: "Input", decision: "Model call", action: "Tool call", message: "Message" };
     // an edge's proof, as GRAPH draws it: tested, inferred, observed (a kernel or egress sensor saw it), blocked (into a call

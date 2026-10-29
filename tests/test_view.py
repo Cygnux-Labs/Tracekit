@@ -379,7 +379,8 @@ class Translate(unittest.TestCase):
         words = [(r["title"], r["text"], r["v2"]["approval"]) for r in rows if r["v2"].get("approval")
                  and r["v2"]["approval"] != "requested"]
         self.assertEqual(words, [
-            ("APPROVAL ABANDONED · Bash", "no answer; moved on", "abandoned"),
+            ("APPROVAL ABANDONED · Bash", "withdrawn by the agent's adapter before anyone answered: the call did not run · "
+             "no answer; moved on", "abandoned"),
             ("APPROVAL ALREADY ENDED · Bash", "abandoned before the call tried to run: the call did not run", "ended"),
             ("APPROVAL NOT ANSWERED YET · Bash", "not answered yet when the call tried to run: the call did not run",
              "unanswered"),
@@ -405,6 +406,65 @@ class Translate(unittest.TestCase):
                           "ended"))
         rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
         self.assertEqual((rv["permissions"], rv["holds"]), ({"revoked": 1}, {"revoked": 1}))
+
+    HELD = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}),
+            v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
+                                         "policy_hash": SERVER_HASH}),
+            v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A032"],
+                                          "binding": {"tool": "Bash", "tool_call_id": "c1"}}, tool_call_id="c1")]
+
+    def approved(self, seq, **kw):
+        return v2rec(seq, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve",
+                                       "approver_identity": {"scheme": "uid", "subject": "501", "attested": True}, **kw})
+
+    def test_the_agents_retry_that_ran_under_a_held_calls_approval_is_that_held_call(self):
+        """Approve, then retry: the signer files the consume under the retry's own tool call id. The run review and
+        tracekit report counted two holds for one held action, "approved" and "approved · ran"; in an open run the
+        retry was "not answered yet", and its tape row named no held call."""
+        def run(final):
+            return [*self.HELD, self.approved(4),
+                    v2rec(5, "policy.decision", {"tool_use_id": "c2", "tool": "Bash", "decision": "ask",
+                                                 "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}),
+                    v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c2"),
+                    v2rec(7, "tool.result", {"tool_use_id": "c2", "ok": True}, tool_call_id="c2"),
+                    *([v2rec(8, "run.final", {"head_run_seq": 8})] if final else [])]
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        for final in (True, False):
+            rv = view.review(run(final), rep, "verified")
+            self.assertEqual((dict(rv["permissions"]), dict(rv["holds"]), rv["hold_examples"]),
+                             ({"approved · ran": 1}, {"approved · ran": 1}, {"approved · ran": "c1"}), final)
+            self.assertEqual((dict(rv["decisions"]), rv["retries"]), ({"ask": 2}, 1))   # both are decisions
+        [used] = [r for r in self.feed(*run(True)) if r["v2"].get("approval") == "consumed"]
+        self.assertEqual((used["v2"]["tool_use_id"], used["v2"]["held"], used["text"]),
+                         ("c2", "c1", "the agent's retry of c1 ran with the approved arguments"))
+
+    def test_a_use_refused_only_for_its_approvals_state_changes_no_outcome(self):
+        """A second use of an approval whose call ran turned "approved · ran" into "refused" (TK-APPROVAL-CONSUMED); an
+        agent's approval within the delay people may revoke it in read "refused", then APPROVAL ALREADY ENDED, while it
+        was still approved and usable once the delay passed."""
+        again = v2rec(6, "approval.refused", {"tool_use_id": "c1", "approval_id": "apr-1",
+                                              "rule_ids": ["TK-APPROVAL-CONSUMED"], "reason": "not approved (state=consumed)"})
+        veto = {"tool_use_id": "c1", "approval_id": "apr-1", "rule_ids": ["TK-APPROVAL-VETO"],
+                "reason": "an agent's approval: people may revoke it until 2026-10-10T17:05:00Z"}
+        ran = [*self.HELD, self.approved(4), v2rec(5, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1"),
+               again]
+        waits = [*self.HELD, self.approved(4, approver_kind="agent", approver="uid:990"),
+                 v2rec(5, "approval.refused", veto), v2rec(6, "approval.refused", veto)]
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        self.assertEqual(dict(view.review(ran, rep, "verified")["holds"]), {"approved · ran": 1})
+        self.assertEqual(dict(view.review(waits, rep, "verified")["holds"]), {"approved": 1})
+        words = lambda rows: [(r["title"], r["text"], r["v2"]["approval"]) for r in rows]   # noqa: E731
+        self.assertEqual(words(self.feed(*ran)[-1:]), [
+            ("APPROVAL ALREADY ENDED · Bash", "approved · ran before the call tried to run: the call did not run", "ended")])
+        self.assertEqual(words(self.feed(*waits)[-2:]), 2 * [
+            ("APPROVAL NOT USABLE YET · Bash", "an agent's approval: people may revoke it until 2026-10-10T17:05:00Z: the "
+             "call did not run", "veto")])
+
+    def test_an_approval_that_expired_unused_names_who_approved_it(self):
+        """It read "expired before anyone answered", and PERMISSIONS named its approver "?"."""
+        [row] = self.feed(*self.HELD, self.approved(4), v2rec(5, "approval.expired", {"approval_id": "apr-1"}))[-1:]
+        self.assertEqual((row["title"], row["text"]),
+                         ("APPROVAL EXPIRED · Bash", "approved by uid:501 (attested), not used before it expired"))
 
     def test_a_use_refused_because_a_person_rejected_it_reads_rejected(self):
         """A person rejected the hold, the agent tried the call anyway and the signer refused it: the hold read

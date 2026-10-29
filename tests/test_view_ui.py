@@ -422,7 +422,7 @@ class WaitingForYou(unittest.TestCase):
 
 class NeedsYou(unittest.TestCase):
     def needs(self, recs, runs, stopped=""):
-        return json.loads(page_js(["j", "plural", "failLines", "shq", "word", "waiting", "OPENHOLD", "waitingElsewhere", "ELSEWHERE",
+        return json.loads(page_js(["FIELD", "subject", "plural", "failLines", "shq", "word", "waiting", "OPENHOLD", "waitingElsewhere", "ELSEWHERE",
                                    "needsYou"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), STOPPED = {json.dumps(stopped)};
             let waitKey = [], waitList = [];
@@ -454,12 +454,13 @@ class NeedsYou(unittest.TestCase):
         self.assertEqual([(n["kind"], n["open"]) for n in out], [
             ("HOLD", ["r1", 1]), ("HOLD", ["r1", 3]), ("CONTAINED", ["r1", ""]), ("FAILED", ["r2xxxxxxxx", ""]),
             ("STOPPED", None)])
-        self.assertEqual(out[0]["what"], "send_email · billing held: approve it to let the agent's retry run (TK-P001 an "
-                                         "email outside the company)")
-        self.assertEqual(out[0]["detail"], 'binds { "to": "x@outside.example" }')
+        # the call first (its tool, what it names, its rule and why): a desktop row that began with the fixed "held:
+        # approve it to let the agent's retry run" was cut before the rule and the command
+        self.assertEqual(out[0]["what"], "send_email · to=x@outside.example · TK-P001 an email outside the company")
+        self.assertEqual(out[0]["detail"], "billing · approve it to let the agent's retry run")
         self.assertEqual(out[0]["cmds"], ["tracekit approvals approve apr-1", "tracekit approvals reject apr-1"])
-        self.assertEqual((out[1]["detail"], out[1]["cmds"]),
-                         ("arguments kept as a commitment only · no approval requested yet", []))
+        self.assertEqual((out[1]["what"], out[1]["detail"], out[1]["cmds"]),
+                         ("send_email", "billing · arguments kept as a commitment only · no approval requested yet", []))
         self.assertEqual(out[2]["what"], "billing · run held by incident inc-1")
         self.assertEqual(out[3]["detail"], "[FAIL] signatures")
 
@@ -517,7 +518,7 @@ class Span(unittest.TestCase):
         runs = [{"id": "r1", "first_ts": "2026-10-18T03:43:23Z", "last_ts": "2026-10-19T00:00:00Z"},
                 {"id": "r2", "first_ts": "2026-10-27T10:00:00Z", "last_ts": "2026-10-28T03:43:23Z"},
                 {"id": "r3", "verdict": "pending"}]
-        out = json.loads(page_js(["esc", "fmtDur", "runsSpan", "renderTicker"], f"""
+        out = json.loads(page_js(["esc", "fmtDur", "runsSpan", "heldCall", "renderTicker"], f"""
             const RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), html = {{}}, put = (id, h) => {{ html[id] = h; }};
             const S = {{ agents: new Map(), sessions: new Map(), actList: [], firstTs: 1793183000, lastTs: 1793183017, approved: 0, gaps: 0 }};
             const document = {{ URL: "http://127.0.0.1/" }}, nowTs = () => 1793183017, highCount = () => 0, chainState = {{ n: 9 }};
@@ -1089,7 +1090,7 @@ class Horizon(unittest.TestCase):
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1130,7 +1131,7 @@ class Horizon(unittest.TestCase):
     def hz_cap(self, recs):
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1151,7 +1152,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData", "hzSecs"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData", "hzSecs"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1164,7 +1165,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(i, "w", 100 + i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData", "hzChain"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData", "hzChain"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true, n: 0 }}, STOPPED = "";
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1185,7 +1186,7 @@ class Horizon(unittest.TestCase):
                 hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
                                   "hzRgba", "hzShort", "hzDraw", "hzFrame"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
@@ -1290,10 +1291,43 @@ class Horizon(unittest.TestCase):
         self.assertTrue(phone["labels"])
         self.assertIn("src/a.py", desk["labels"])
 
-    def test_a_desktop_stage_of_many_long_paths_draws_only_labels_that_fit_busiest_first(self):
+    def test_a_phone_gives_restricted_places_their_callouts_before_busier_stops(self):
+        """At 390px a restricted place got no callout: busiest first, the busier blocked places around it took the room."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+            const places = { env: { kind: "project", label: ".env", r: .31, th: hzRad(96), rest: "TK-F005 · secrets_access" } }, evs = [ev(1, "env", "read")];
+            for (let k = 0; k < 14; k++) {   // busy blocked places on both sides of it
+              places["b" + k] = { kind: "machine", label: "rm-" + k, r: .565, th: hzRad(76 + k * 3), rest: null };
+              for (let n = 0; n < 5; n++) evs.push(ev(evs.length + 1, "b" + k, "blocked"));
+            }
+            HZ.d = { ev: evs, dirs: [], agents: [["coder", 0]], cwd: "", places };
+            Object.assign(HZ, { t: evs.length, col: { coder: "#d98bff" }, follow: null, pick: null });
+            process.stdout.write(JSON.stringify(draw(390)));"""))
+        self.assertEqual(out["labels"][0], ".env")
+        self.assertEqual(out["over"], 0)
+
+    def test_the_rings_names_cover_no_other_name_or_place(self):
+        """On a phone THIS MACHINE and PROJECT were drawn over each other, and on a desktop a blocked place's ✕ covered
+        THIS MACHINE: each ring's name sat at the same angle whatever was there."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"], self.HZ_STAGE + """
+            const places = { m: { kind: "machine", label: "rm", r: .565, th: hzRad(-20), rest: null },
+                             o: { kind: "outside", label: "x.example", r: .85, th: hzRad(-44), rest: null } };
+            HZ.d = { ev: [ev(1, "m", "blocked"), ev(2, "o", "net")], dirs: [], agents: [["coder", 0]], cwd: "", places };
+            Object.assign(HZ, { t: 2, col: { coder: "#d98bff" }, follow: null, pick: null });
+            const look = w => { draw(w);
+              const rings = texts.filter(t => /^(PROJECT|THIS MACHINE|OUTSIDE WORLD)$/.test(t[0])).map(([t, x, y]) => [t, x - 9, y - 9, x + 2 + t.length * 6, y + 7]);
+              const marks = texts.filter(t => /^[✕●]$/.test(t[0])).map(([, x, y]) => [x, y - 4]);
+              return [rings.length, rings.flatMap((a, i) => rings.slice(i + 1).filter(b => a[1] < b[3] && b[1] < a[3] && a[2] < b[4] && b[2] < a[4]).map(b => [a[0], b[0]])),
+                      rings.flatMap(a => marks.filter(([x, y]) => x > a[1] && x < a[3] && y > a[2] && y < a[4]).map(() => a[0]))]; };
+            process.stdout.write(JSON.stringify([look(390), look(1440)]));"""))
+        self.assertEqual(out, [[3, [], []], [3, [], []]])
+
+    def test_a_desktop_stage_of_many_long_paths_draws_only_labels_that_fit_restricted_first_then_busiest(self):
         """With about 100 places, many of them long worktree paths, the desktop drew a callout for every restricted
-        place whether or not it had room: dozens of labels piled into unreadable text. Callouts go busiest first, each
-        only where it covers nothing drawn; a long path shows its last two parts, and hover gives it whole."""
+        place whether or not it had room: dozens of labels piled into unreadable text. Callouts go to restricted places
+        and stops first, then the busiest, each only where it covers nothing drawn; a long path shows its last two
+        parts, and hover gives it whole."""
         needs_node(self)
         out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame"],
                                  self.HZ_STAGE + """
@@ -1312,7 +1346,10 @@ class Horizon(unittest.TestCase):
         desk, picked = out
         self.assertEqual(desk["over"], 0)                          # no label over another
         self.assertTrue(5 < len(desk["labels"]) < 120, desk["labels"])
-        self.assertEqual(desk["labels"][0], "…/tracekit/module_43.py")   # the busiest first, its path's last parts
+        self.assertEqual(desk["labels"][0], "…/tracekit/module_15.py")   # a restricted place first, its path's last parts
+        self.assertIn("…/tracekit/module_43.py", desk["labels"])          # then the busiest
+        rest = [int(re.search(r"module_(\d+)", lb)[1]) % 3 == 0 for lb in desk["labels"]]
+        self.assertEqual(rest, sorted(rest, reverse=True))
         self.assertTrue(all(lb.startswith("…/tracekit/module_") for lb in desk["labels"]), desk["labels"])
         self.assertEqual(picked[0], "…/tracekit/module_7.py")      # a clicked place gets its callout
         hover = PAGE[PAGE.index('$("hzcv").addEventListener("mousemove"'):]
@@ -1568,6 +1605,117 @@ APPROVALS_FNS = ["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "su
                  "waitingCount", "permOf", "heldRows", "renderApprovalsPage"]
 
 
+def retried(run, final=True, retry=True):
+    """The page's records (view.Translator's) of a held call c1 a person approved: the hook blocked it at once and the
+    agent's retry c2 ran under its approval (signer _reusable: its consume filed under c2); without `retry`, the
+    approval expired unused. An open run also holds c3, requested and not answered."""
+    who = {"scheme": "uid", "subject": "501", "attested": True}
+    ask = lambda seq, call: v2rec(seq, "policy.decision", {"tool_use_id": call, "tool": "Bash", "decision": "ask",  # noqa: E731
+                                                           "rule_ids": ["TK-A032"]}, run=run)
+    evs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}, run=run), ask(2, "c1"),
+           v2rec(3, "approval.request", {"approval_id": f"apr-{run}", "binding": {"tool": "Bash", "tool_call_id": "c1"}},
+                 run=run, tool_call_id="c1"),
+           v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": f"apr-{run}", "decision": "approve",
+                                 "approver_identity": who}, run=run)]
+    evs += [ask(5, "c2"), v2rec(6, "approval.consumed", {"approval_id": f"apr-{run}"}, run=run, tool_call_id="c2"),
+            v2rec(7, "tool.result", {"tool_use_id": "c2", "ok": True}, run=run, tool_call_id="c2")] if retry else \
+        [v2rec(5, "approval.expired", {"approval_id": f"apr-{run}"}, run=run)]
+    evs += [v2rec(9, "run.final", {"head_run_seq": 9}, run=run)] if final else \
+        [ask(10, "c3"), v2rec(11, "approval.request", {"approval_id": f"apr-{run}-3", "binding": {"tool_call_id": "c3"}},
+                              run=run, tool_call_id="c3")]
+    tr, out = view.Translator(), []
+    for e in evs:
+        out += [{**x, "ts": e["event"]["seq"], "session_id": run, "tk_seq": e["event"]["seq"]} for x in tr.feed(e)]
+    return out
+
+
+class ApproveThenRetry(unittest.TestCase):
+    """The core 1.5.1 flow: a held call is blocked at once, a person approves, and the agent's retry (a new tool call id)
+    uses the approval and runs. The page read the call that ran HELD or NOT ANSWERED, the blocked one APPROVED, counted
+    two holds for one, and disagreed with the run review and tracekit report ("approved · ran")."""
+
+    def test_the_held_call_reads_approved_and_run_by_its_retry_on_every_view(self):
+        needs_node(self)
+        recs = retried("fin") + retried("open", final=False)
+        out = json.loads(page_js(["tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended", "heldCall",
+                                  "callState", "ingest", "wfBars", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, approved: 0, firstTs: null, lastTs: null }};
+            const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
+            const sessionOf = r => {{ if (!S.sessions.has(r.session_id)) S.sessions.set(r.session_id, {{ prompts: [], end: null }}); return S.sessions.get(r.session_id); }};
+            const pushTape = r => r, alert = () => {{}}, STOPPED = "", ALL = {json.dumps(recs)};
+            for (const r of ALL) {{ sessionOf(r); if (r.event === "SessionEnd") S.sessions.get(r.session_id).end = r.ts; ingest(r); }}
+            const fin = S.actList.filter(a => a.agent.session === "fin");
+            S.actList = S.actList.filter(a => a.agent.session === "open");
+            process.stdout.write(JSON.stringify({{
+              states: fin.map(a => [a.id, callState(a)[1], heldCall(a), wfBars(a).map(b => b[0])]),
+              open: [runSentence({{ verdict: "verified" }}), S.actList.filter(heldCall).length],
+              perm: permOf(ALL).map(r => [r.rec.session_id, r.rec.tool_use_id, r.tabs.filter(Boolean).join(" "), r.out[1],
+                                          r.who?.v2.approver ?? null, r.ranBy?.rec.tool_use_id ?? null]) }}));"""))
+        # the call the hook blocked: approved, and its retry ran; the retry: ran under that approval
+        self.assertEqual(out["states"], [["fin|c1", "APPROVED · RETRY RAN", True, ["wait"]],
+                                         ["fin|c2", "APPROVED · RAN", False, ["ok"]]])
+        # one held call each; open, the retry was "not answered yet" (TO ANSWER) and the sentence said "waiting"
+        self.assertEqual(out["open"], ["Verified. 3 calls: 1 ran, 0 blocked, 2 held (1 approved, 1 not answered yet).", 2])
+        self.assertEqual(out["perm"], [
+            ["open", "c3", "all ask waiting", "TO ANSWER", None, None],
+            ["open", "c1", "all ask approved", "APPROVED · RETRY RAN", "uid:501 (attested)", "c2"],
+            ["fin", "c1", "all ask approved", "APPROVED · RETRY RAN", "uid:501 (attested)", "c2"]])
+        self.assertIn("const held = S.actList.filter(heldCall).length", PAGE)   # DESK's HELD
+
+    def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
+        """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an
+        APPROVED blocked call; an approval that expired unused read "expired before anyone answered"."""
+        needs_node(self)
+        page, summary = FinalQA.held(self, retried("fin") + retried("exp", retry=False) + retried("open", final=False))
+        rows = re.findall(r'<tr class="row" data-orun="(\w+)"[^>]*><td class="dim">[^<]*</td><td class="[\w-]+">([^<]*)</td>'
+                          r'.*?<td class="dim">([^<]*)</td></tr>', page)
+        self.assertEqual([(run, o, html.unescape(why)) for run, o, why in rows], [
+            ("open", "APPROVED · RETRY RAN", "by uid:501 (attested) · not self-approved · its retry c2 ran with the "
+                                             "approved arguments"),
+            ("exp", "EXPIRED", "approved by uid:501 (attested), not used before it expired"),
+            ("fin", "APPROVED · RETRY RAN", "by uid:501 (attested) · not self-approved · its retry c2 ran with the "
+                                            "approved arguments")])
+        self.assertEqual(summary, "1 not answered yet · 2 approved · 1 expired")
+
+    def test_horizon_marks_the_retry_approved_and_counts_one_hold(self):
+        """HORIZON drew the retry that ran as held (◯) and its HUD counted HOLDS by held marks, DESK's HELD by decisions."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
+                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
+            const ALL = {json.dumps(retried("fin"))}, RUNS = new Map([["fin", {{ id: "fin", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null;
+            const D = hzData();
+            process.stdout.write(JSON.stringify([D.ev.map(e => [e.seq, e.act, e.hold]), D.ev.filter(e => e.hold).length,
+                                                 hzCmd("gh pr merge 42 --squash"), hzCmd("git push origin")]));"""))
+        self.assertEqual(out, [[[2, "approved", True], [5, "approved", False]], 1, "gh pr merge", "git push"])
+        self.assertIn("[ev.filter(e => e.hold).length, \"\"]", PAGE)   # the HUD's HOLDS
+
+    def test_a_runs_held_count_is_its_reviews_held_calls(self):
+        """RUNS, panel 1, the run header and the review's POLICY counted HELD by decisions: two for one held call."""
+        needs_node(self)
+        out = page_js(["esc", "plural", "runHeld", "renderRuns"], """
+            const RUNS = new Map([["r1", { id: "r1", agent: "claude-code", first_ts: "2026-10-29T08:00:00Z", last_ts: "2026-10-29T08:01:00Z",
+                                           state: "final", verdict: "verified", decisions: { ask: 2 }, holds: { "approved · ran": 1 } }]]);
+            let PAGE = "desk", scope = null; const el = {}, $ = id => el[id] ??= {}, put = (id, h) => { el[id] = { innerHTML: h }; };
+            const vchip = () => "", verifiedCount = () => "", indent = () => "", fmtD = String, fmtT = String, fmtDur = String;
+            const treeOrder = (l) => l.map(r => [r, 0]);
+            renderRuns(); process.stdout.write(el.agents.innerHTML);""")
+        self.assertIn("<span>2 calls</span>", out)
+        self.assertIn('<span class="s-flag">1 held</span>', out)
+        self.assertIn('line(f.ask, "HELD", runHeld(r), ', PAGE)
+        self.assertIn('line(null, "RETRIED", `${(d.ask || 0) - runHeld(r)} · the agent\'s retry of a held call, under that '
+                      "call's approval`)", PAGE)
+
+    def test_graph_labels_the_retry_approved_and_the_blocked_call_retry_ran(self):
+        needs_node(self)
+        out = json.loads(page_js(["ANSWER", "DECIDED", "decided"], """
+            process.stdout.write(JSON.stringify([decided({ decision: "ask", approval: { decision: "approve", ran_by: "c2" } }),
+                                                 decided({ decision: "ask", approval: { decision: "approve", retry_of: "c1" } }),
+                                                 decided({ decision: "ask" })]));"""))
+        self.assertEqual(out, [["APPROVED · RETRY RAN", "--green"], ["APPROVED", "--green"], ["HELD", "--amber"]])
+
+
 class FinalQA(unittest.TestCase):
     """What the final hands-on QA of 1.5.1 found: a run with no links drew 167 calls 3.7 by 1 px (FIT) or one 35,000 px
     row, its run order drawn like signed links; APPROVALS cut off on a phone, counted three unanswered holds as six
@@ -1665,14 +1813,19 @@ class FinalQA(unittest.TestCase):
             ("s-ok", "APPROVED · RAN", "executor · run executor", "send_email · to=c.rao@example.com",
              "by uid:501 · not self-approved"),
             ("dim", "EXPIRED", "coder · run coder", "Bash · arguments not kept", "expired before anyone answered"),
-            ("dim", "ABANDONED", "planner · run planner", "Bash · arguments not kept", "no answer; moved on")])
+            # its last column was empty without the adapter's reason
+            ("dim", "ABANDONED", "planner · run planner", "Bash · arguments not kept",
+             "withdrawn by the agent's adapter before anyone answered: the call did not run · no answer; moved on")])
         self.assertIn("ANSWERED OR ENDED", page)
         self.assertNotIn("ANSWERED<", page)
         # it said "1 waiting" and WAITING: nothing waits on a held call, which the agent's retry needs answered
         self.assertEqual(summary, "1 not answered yet · 1 approved · 1 expired · 1 abandoned")
         self.assertEqual(page.count('<span class="sev wait">HELD</span>'), 1)
         self.assertNotIn("WAITING", page)
-        self.assertIn("approving one lets the agent's retry of the same call run, once", page)
+        # it said every held call was "blocked at once": not with TRACEKIT_APPROVAL_WAIT, nor a gateway's
+        self.assertIn("A coding agent's hook blocks the call at once, unless TRACEKIT_APPROVAL_WAIT makes it wait first, and "
+                      "approving it lets the agent's retry of the same call run, once; a gateway waits for the answer up to "
+                      "its approval wait.", page)
 
     def test_approvals_rows_stack_on_a_phone_and_the_panel_grows(self):
         css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
@@ -1738,7 +1891,7 @@ class FinalQA(unittest.TestCase):
 
     def test_a_runs_list_says_1_gap_and_1_call(self):
         needs_node(self)
-        out = page_js(["esc", "plural", "renderRuns"], """
+        out = page_js(["esc", "plural", "runHeld", "renderRuns"], """
             const RUNS = new Map([["r1", { id: "r1", agent: "coder", first_ts: "2026-10-29T08:00:00Z", last_ts: "2026-10-29T08:01:00Z",
                                            state: "final", verdict: "verified", decisions: { allow: 1 }, gaps: { signer_unavailable: 1 } }]]);
             let PAGE = "desk", scope = null; const el = {}, $ = id => el[id] ??= {}, put = (id, h) => { el[id] = { innerHTML: h }; };
@@ -1787,7 +1940,7 @@ class RunChip(unittest.TestCase):
         review), EVIDENCE's stamp, HORIZON's HUD, ALL RUNS' count and the review's summary still read VERIFIED."""
         needs_node(self)
         out = json.loads(page_js(["esc", "vchip", "tuid", "WALK_MAX", "evidenceOf", "hzChain", "plural", "verifiedCount",
-                                  "runSentence"], """
+                                  "heldCall", "runSentence"], """
             const S = { actions: new Map(), actList: [], recs: [] }, seen = [];
             let STOPPED = "";
             for (const s of ["", "verification stopped: the store can't be checked"]) {

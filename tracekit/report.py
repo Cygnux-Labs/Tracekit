@@ -163,9 +163,10 @@ def _tally(key, records, tr, rules, unread):
 
 
 def _answer(a):
-    """Who answered a hold (an entry of view.review's approvals), marked when they answered their own run's call or
-    broke the glass."""
-    return f"{a['approver']}" + " · self-approved" * a["self_approved"] + " · break-glass" * a["break_glass"]
+    """Who answered a hold (an entry of view.review's approvals), marked when they approved their own run's call (a
+    rejection by the requester is no self-approval) or broke the glass."""
+    return f"{a['approver']}" + " · self-approved" * (a["self_approved"] and a["decision"] == "approve") \
+        + " · break-glass" * a["break_glass"]
 
 
 def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None, notes=()):
@@ -178,7 +179,7 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
     tr = view.Translator(view.policy_reasons([cfg["policy"]] if cfg.get("policy") else [],
                                              cfg.get("data_dir") and os.path.join(cfg["data_dir"], "policies")))
     rules, waits, alerts, unread, hold_examples = {}, [], [], collections.Counter(), {}
-    totals = {k: collections.Counter() for k in ("decisions", "holds", "answered", "gaps")}
+    totals = {k: collections.Counter() for k in ("decisions", "holds", "answered", "gaps", "retries")}
     words = {}
     with tempfile.TemporaryDirectory(prefix="tk-report-") as tmp:
         trust = view.write_trust(os.path.join(tmp, "trust.json"), vkeys)
@@ -253,6 +254,7 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
                         hold_examples[outcome] = key, held[call][2]
                 totals["decisions"].update(rv["decisions"])
                 totals["holds"].update(rv["holds"])
+                totals["retries"]["n"] += rv["retries"]
                 # answers to the holds in the window only, as Holds counts them
                 totals["answered"].update(_answer(a) for a in rv["approvals"]
                                           if a["decision"] in ("approve", "reject") and a["tool_use_id"] in held)
@@ -287,6 +289,7 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
             "by_identity": dict(collections.Counter(x["identity"] for x in ok if x["identity"]).most_common()),
             "calls": {"total": sum(totals["decisions"].values()), **{k: totals["decisions"][k] for k in DECISIONS}},
             "holds": {"total": sum(totals["holds"].values()), "outcomes": dict(totals["holds"].most_common()),
+                      "retries": totals["retries"]["n"],
                       "answered_by": dict(totals["answered"].most_common()),
                       "longest_wait": max(waits, key=lambda w: w["seconds"], default=None),
                       "examples": {o: example(*hold_examples[o]) for o, _ in totals["holds"].most_common()
@@ -330,7 +333,10 @@ def text(rep, config=None, data_dir=None):
         out.append(f"  by identity: {_counts(rep['by_identity'])}")
     out += ["", f"Tool calls: {calls['total']:,}   " + _counts({k: calls[k] for k in DECISIONS})]
     if holds["total"]:
-        out += ["", f"Holds (calls that waited for a person): {holds['total']:,}   {_counts(holds['outcomes'])}"]
+        out += ["", f"Holds (calls held for a person): {holds['total']:,}   {_counts(holds['outcomes'])}"]
+        if holds["retries"]:   # the asks that are no hold of their own
+            out.append(f"  and {holds['retries']:,} of the agent's retries of a held call, under its approval: counted "
+                       "with it")
         if holds["answered_by"]:
             out.append(f"  answered by: {_counts(holds['answered_by'])}")
         if holds["longest_wait"]:

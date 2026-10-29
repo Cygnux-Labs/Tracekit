@@ -47,9 +47,9 @@ AGENTS need the run's why log, which the viewer builds for each verified run.
 ![LIVE: the release agent's run, still open, its tape with a git push held and waiting, and the run review](viewer/1.5/live.png)
 
 **NEEDS YOU**, under the stats strip, lists across every run what needs a person, first the held calls nobody has
-answered yet (oldest first: "held: approve it to let the agent's retry run", since a coding agent's hook blocks the
-call at once and the agent goes on), then runs an incident holds, runs that failed verification or weren't checked,
-and a viewer that stopped checking; each with the command that acts on it and **OPEN**. A run whose held calls left the live view (it keeps
+answered yet (oldest first: the call, its rule and why, then "approve it to let the agent's retry run", since a
+coding agent's hook blocks the call at once and the agent goes on), then runs an incident holds, runs that failed
+verification or weren't checked, and a viewer that stopped checking; each with the command that acts on it and **OPEN**. A run whose held calls left the live view (it keeps
 the newest 50,000 records) is one line with its count, from its review: OPEN it, and its PERMISSIONS lists each call
 with the command that answers it. With nothing to do it reads `ALL CLEAR · N agents working`; while the viewer is still
 reading the store's runs (on start, one at a time) it says how many are left instead, since it can't know yet. The
@@ -376,8 +376,8 @@ Runs: 4   by agent: researcher 1, planner 1, coder 1, reviewer 1
 
 Tool calls: 460   allow 413, flag 38, ask 3, deny 6
 
-Holds (calls that waited for a person): 3   expired 1, approved · ran 1, rejected 1
-  answered by: uid:501 (attested) · self-approved 2
+Holds (calls held for a person): 3   expired 1, approved · ran 1, rejected 1
+  answered by: uid:501 (attested) · self-approved 1, uid:501 (attested) 1
   longest wait for an answer: 6s (Bash, run 6a00d9bb2ee2b351a8c7e01922efc47d)
   e.g. expired: Bash gsutil -m rsync -r docs gs://acme-shop-docs/  (run 4fb9d51c5b3bf41b3281df18ead16d55)
   e.g. approved · ran: Bash gsutil cp -r dist gs://acme-shop-staging/releases/  (run 6a00d9bb2ee2b351a8c7e01922efc47d)
@@ -440,8 +440,9 @@ can't be checked, as `tracekit verify` does.
 - **Holds**: each call held for a person and what became of it, as the viewer's PERMISSIONS says it (approved,
   `approved · ran`, rejected, refused, `refused: arguments changed`, revoked, expired, abandoned, or waiting: not
   answered once the run ended; a call the signer refused because a person rejected or revoked its approval reads
-  rejected or revoked); one example call of each outcome; who answered the holds in the window, marked `self-approved`
-  when they answered their own run's call and `break-glass` when they broke the glass; and the longest a held call
+  rejected or revoked; a call blocked at once whose retry, sent again by the agent, ran under its approval is one
+  hold, `approved · ran`, and a line says how many such retries it counted with their held calls); one example call of each outcome; who answered the holds in the window, marked
+  `self-approved` when they approved their own run's call and `break-glass` when they broke the glass; and the longest a held call
   waited for its answer.
 - **Denied and flagged calls, by rule**: each rule that is why, a rule of the deny (or flag) section, with its id, its
   count and its description from the policy the signer ran (the signer keeps every policy it ran in its data dir's

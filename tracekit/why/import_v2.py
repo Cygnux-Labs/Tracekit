@@ -101,7 +101,9 @@ def cite(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """tool_call_id -> {"decision", "result": records, "approval": {decision, approver, self_approved}}; an approval
-    that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...)."""
+    that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...). The agent's retry
+    of a held call that consumed that call's approval (signer _reusable) has its approval and `retry_of`, the held call;
+    the held call, blocked at once, `ran_by`, the retry."""
     calls: Dict[str, Dict[str, Any]] = {}
     asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
     for r in recs:
@@ -114,6 +116,11 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             calls[d["tool_use_id"]]["approval"] = {k: d.get(k) for k in ("decision", "approver", "self_approved")}
         elif t == "approval.request":
             asked[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
+        elif t == "approval.consumed":
+            held, retry = asked.get(d.get("approval_id")), r["event"].get("tool_call_id")
+            if retry != held and retry in calls and (calls.get(held) or {}).get("approval"):
+                calls[retry]["approval"] = {**calls[held]["approval"], "retry_of": held}
+                calls[held]["approval"]["ran_by"] = retry
         elif t in ("approval.expired", "approval.abandoned", "approval.revoked"):
             call = calls.get(r["event"].get("tool_call_id") or asked.get(d.get("approval_id")))
             if call is not None and (call.get("approval") or {}).get("decision") in (None, "approve"):
@@ -247,9 +254,11 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                 (call.get("result") or call["decision"]) is r:   # at its result, or at its decision if it never ran
             dd, pol = call["decision"]["event"]["data"], _policy(call, reasons)
             ran = t == "tool.result"
-            # a call allowed (or approved) that has no result may have run: the signer recorded no outcome
+            # a call allowed (or approved) that has no result may have run: the signer recorded no outcome. A held call
+            # whose retry ran under its approval was blocked at once: the retry is the call that ran (signer _reusable)
+            ap = call.get("approval") or {}
             refused = dd["decision"] == "deny" or (dd["decision"] == "ask"
-                                                   and (call.get("approval") or {}).get("decision") != "approve")
+                                                   and (ap.get("decision") != "approve" or "ran_by" in ap))
             if not (ran or refused or final):   # still running, or its result not yet recorded: shown once it is
                 continue
             res = {"content": COMMITTED, **d["output"]} if ran else _blocked(pol) if refused else {"error": NO_OUTCOME}

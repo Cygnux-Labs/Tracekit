@@ -112,8 +112,11 @@ class WeeklyReport(unittest.TestCase):
             aid = b.call("approval_request", tool_call_id=tcid)["approval_id"]
             if answer:
                 self.client.call("approval_decide", {"approval_id": aid, "decision": answer})
-        self.assertTrue(b.approval_consume("c4", "pay", {"cents": 5})["ok"])
-        b.complete("c4")
+        # approve, then retry: the hook blocked c4 at once, and the agent's retry (a new call id) ran under its approval
+        self.assertEqual(b.decide("c7", "pay", {"cents": 5})["decision"], "ask")
+        hint = b.call("approval_request", tool_call_id="c7")["approval_id"]
+        self.assertTrue(b.approval_consume("c7", "pay", {"cents": 5}, approval_id_hint=hint)["ok"])
+        b.complete("c7")
         b.call("tailer_lost", reason="transcript rotated", offset=10)
         b.close()
         self.busy = b.run_id
@@ -172,11 +175,14 @@ class WeeklyReport(unittest.TestCase):
                           (self.edited, "cursor", "verified", "final")})
         self.assertEqual(rep["by_agent"], {"claude-code": 1, "codex": 1, "cursor": 1})
         self.assertEqual(rep["by_identity"], {f"uid:{os.getuid()} (attested)": 2, "uid:999003 (attested)": 1})
-        self.assertEqual(rep["calls"], {"total": 8, "allow": 2, "flag": 2, "ask": 3, "deny": 1})
+        self.assertEqual(rep["calls"], {"total": 9, "allow": 2, "flag": 2, "ask": 4, "deny": 1})
         holds = rep["holds"]
-        self.assertEqual((holds["total"], holds["outcomes"]), (3, {"approved · ran": 1, "rejected": 1, "expired": 1}))
-        # the run's own user answered its calls (self_approval: allow)
-        self.assertEqual(holds["answered_by"], {f"uid:{os.getuid()} (attested) · self-approved": 2})
+        # a held call and the agent's retry that ran under its approval were two holds, "approved" and "approved · ran"
+        self.assertEqual((holds["total"], holds["outcomes"], holds["retries"]),
+                         (3, {"approved · ran": 1, "rejected": 1, "expired": 1}, 1))
+        # the run's own user answered its calls (self_approval: allow); a rejection is no self-approval
+        self.assertEqual(holds["answered_by"], {f"uid:{os.getuid()} (attested) · self-approved": 1,
+                                                f"uid:{os.getuid()} (attested)": 1})
         self.assertEqual((holds["longest_wait"]["tool"], holds["longest_wait"]["run_id"]), ("pay", self.busy))
         # holds had no example calls, as denies and flags have: one of each outcome
         self.assertEqual({o: (x["call"], x["run_id"]) for o, x in holds["examples"].items()},
@@ -191,9 +197,10 @@ class WeeklyReport(unittest.TestCase):
         self.assertEqual(rep["gaps"]["by_kind"], {"tailer_lost": 1})
         page = weekly.text(rep)
         # a run id a person copies is a whole one: tracekit export --v2 --run takes no prefix
-        for line in ("Tool calls: 8   allow 2, flag 2, ask 3, deny 1",
-                     "Holds (calls that waited for a person): 3   approved · ran 1, rejected 1, expired 1",
-                     f"  answered by: uid:{os.getuid()} (attested) · self-approved 2",
+        for line in ("Tool calls: 9   allow 2, flag 2, ask 4, deny 1",
+                     "Holds (calls held for a person): 3   approved · ran 1, rejected 1, expired 1",
+                     "  and 1 of the agent's retries of a held call, under its approval: counted with it",
+                     f"  answered by: uid:{os.getuid()} (attested) · self-approved 1, uid:{os.getuid()} (attested) 1",
                      f'  e.g. rejected: pay {{"cents":6}}  (run {self.busy})',
                      "Denied calls (1), by rule (one call can match several rules):",
                      "  T-RM  1  deleting files", "  also matched (not why it was denied): T-PATH 1",
@@ -458,7 +465,7 @@ class WeeklyReport(unittest.TestCase):
         self.assertEqual(rep["store"]["verdict"], "verified")
         [run] = [x for x in rep["runs"] if x["run_id"] == self.edited]
         self.assertEqual((run["verdict"], run["calls"]), ("failed", {}))
-        self.assertEqual(rep["calls"]["total"], 7)
+        self.assertEqual(rep["calls"]["total"], 8)
         page = weekly.text(rep)
         self.assertIn("Integrity: 2 of 3 runs verify (assurance: dev)\n", page)
         self.assertIn(f"  FAILED   run {self.edited} (cursor): ", page)
@@ -525,10 +532,13 @@ class Rules(unittest.TestCase):
         self.assertEqual(unread["deny"], 0)
 
     def test_self_approved_and_break_glass_answers_are_marked(self):
-        a = {"approver": "uid:501 (attested)", "self_approved": False, "break_glass": True}
+        a = {"decision": "approve", "approver": "uid:501 (attested)", "self_approved": False, "break_glass": True}
         self.assertEqual(weekly._answer(a), "uid:501 (attested) · break-glass")
         self.assertEqual(weekly._answer(dict(a, self_approved=True, break_glass=False)),
                          "uid:501 (attested) · self-approved")
+        # the requester rejecting their own call was counted as a self-approval
+        self.assertEqual(weekly._answer(dict(a, decision="reject", self_approved=True, break_glass=False)),
+                         "uid:501 (attested)")
 
 
 class DevContent(unittest.TestCase):

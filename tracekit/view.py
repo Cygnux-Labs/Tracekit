@@ -385,6 +385,7 @@ class Translator(observe.Translator):
         self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
                                          observe._Bounded(observe.MAX_RUNS_KEPT))
         self.held = observe._Bounded(observe.MAX_RUNS_KEPT)   # approval_id -> what its call came to so far (held_outcome)
+        self.approvers = observe._Bounded(observe.MAX_RUNS_KEPT)   # approval_id -> who approved it
         self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
         self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
@@ -420,10 +421,12 @@ class Translator(observe.Translator):
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
         out = self._v2(e, rec, t, d)
-        # an approval's later records (one that expired at run.final names no call) are its request's call's
-        info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": d.get("tool_use_id")
-                or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
-                or self.requests.get(d.get("approval_id"), ("", [], None))[2],
+        call = d.get("tool_use_id") or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
+        asked = t.startswith("approval") and self.requests.get(d.get("approval_id"), ("", [], None))[2]
+        # an approval's later records (one that expired at run.final names no call) are its request's call's; one filed
+        # under the agent's retry of that call, which used its approval (signer _reusable), names it as `held`
+        info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": call or asked,
+                **({"held": asked} if call and asked and asked != call else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
@@ -504,7 +507,7 @@ class Translator(observe.Translator):
                          **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d}})
             return [r]
         aid = d.get("approval_id")
-        tool, rule_ids, _ = self.requests.get(aid, ("", [], None))
+        tool, rule_ids, asked = self.requests.get(aid, ("", [], None))
         was = self.held.get(aid, OPEN)
         now = held_outcome(was, t, d) if t == "approval" or t in OUTCOMES else was
         if aid and now != was:
@@ -513,6 +516,9 @@ class Translator(observe.Translator):
             if "TK-APPROVAL-REQUESTED" in (d.get("rule_ids") or ()):   # e.g. an SDK that did not wait for the answer
                 return alert("med", f"APPROVAL NOT ANSWERED YET · {tool}", "not answered yet when the call tried to "
                              "run: the call did not run", "HOLD", approval="unanswered")
+            if "TK-APPROVAL-VETO" in (d.get("rule_ids") or ()):   # still approved: usable once the delay has passed
+                return alert("low", f"APPROVAL NOT USABLE YET · {tool}", f"{d.get('reason')}: the call did not run",
+                             "HOLD", approval="veto")
             return alert("low", f"APPROVAL ALREADY ENDED · {tool}", f"{was} before the call tried to run: the call "
                          "did not run", "HOLD", approval="ended")
         if t == "approval.request":
@@ -550,6 +556,8 @@ class Translator(observe.Translator):
                          + (f" · “{d['reason']}”" if d.get("reason") else ""), "SIGNER")
         if t == "approval":
             dec, who = d.get("decision"), d.get("approver_identity")
+            if dec == "approve":   # named again if it expires unused
+                self.approvers[aid] = f"{'agent ' if agent else ''}{_who(who) if who else d.get('approver')}"
             shadow = ""
             if aid in self.suggested and not agent:   # a person's answer to a call an agent answered in shadow mode
                 hit = self.suggested.pop(aid) == dec
@@ -584,8 +592,13 @@ class Translator(observe.Translator):
         if t in ("approval.consumed", "approval.expired", "approval.abandoned", "approval.refused",
                  "approval.binding_mismatch"):
             word = t.split(".")[1]
-            text = {"approval.consumed": "the approved call ran with the approved arguments",
-                    "approval.expired": "expired before anyone answered",
+            retry = asked and e.get("tool_call_id") not in (None, asked)
+            text = {"approval.consumed": f"the agent's retry of {asked} ran with the approved arguments" if retry
+                    else "the approved call ran with the approved arguments",
+                    "approval.expired": f"approved by {self.approvers.get(aid, '?')}, not used before it expired"
+                    if was == "approved" else "expired before anyone answered",
+                    "approval.abandoned": "withdrawn by the agent's adapter before anyone answered: the call did not "
+                    "run" + (f" · {d['reason']}" if d.get("reason") else ""),
                     "approval.binding_mismatch": "the call's arguments differ from the approved ones: refused"}.get(
                 t, d.get("reason") or "")
             sev = {"approval.consumed": "info", "approval.expired": "med", "approval.abandoned": "low"}.get(t, "high")
@@ -729,16 +742,17 @@ ANSWERS = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
 
 def held_outcome(was, t, d):
     """What a held call came to after its approval's record of type `t` and data `d`, from what it had come to (`was`:
-    OPEN, approved, ...): review() counts these, and the page's rows say them. A refused use that names its
-    approval's state repeats what the approval's own records said, so it changes nothing: one nobody had answered yet
-    (TK-APPROVAL-REQUESTED) is still not answered, and one that came after the approval ended (abandoned, expired,
-    rejected, ...) keeps that end. A use refused because the approval expired or was rejected, with no record of that end
-    before it, is that end."""
+    OPEN, approved, ...): review() counts these, and the page's rows say them. A refused use that only repeats its
+    approval's state changes nothing: one nobody had answered yet (TK-APPROVAL-REQUESTED) is still not answered, an
+    agent's approval within the delay people may revoke it in (TK-APPROVAL-VETO) is still approved, and any use after
+    the approval ended (approved · ran, then TK-APPROVAL-CONSUMED; expired, then TK-HOLD; rejected, abandoned, ...) keeps
+    that end. A use refused because the approval expired or was rejected, with no record of that end before it, is that
+    end."""
     ids = d.get("rule_ids") or ()
     if t == "approval":
         return ANSWERS.get(d.get("decision"), d.get("decision"))
-    if t == "approval.refused" and ("TK-APPROVAL-REQUESTED" in ids or was not in (OPEN, "approved")
-                                    and {"TK-APPROVAL-EXPIRED", "TK-APPROVAL-REJECTED"} & set(ids)):
+    if t == "approval.refused" and ({"TK-APPROVAL-REQUESTED", "TK-APPROVAL-VETO"} & set(ids)
+                                    or was not in (OPEN, "approved")):
         return was
     return "expired" if "TK-APPROVAL-EXPIRED" in ids else "rejected" if "TK-APPROVAL-REJECTED" in ids else OUTCOMES[t]
 
@@ -749,12 +763,13 @@ def review(records, rep, verdict):
     decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
     answered, not answered yet, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
     when the run's records have left the live view; `holds`: the same outcomes, of the calls held for a person (decided
-    ask) only, and `hold_examples` the first such call (its tool_use_id) of each. Counts keep each snapshot small
-    whatever the run's size."""
+    ask) only, and `hold_examples` the first such call (its tool_use_id) of each. The agent's retry of a held call, which
+    used that call's approval, is that call: its use is the held call's outcome, counted once (`retries` counts them). Counts keep each snapshot
+    small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
-           "incidents": [], "constraints": [], "constraint_holds": 0,
+           "incidents": [], "constraints": [], "constraint_holds": 0, "retries": 0,
            "state": "open", "first": {}}
     perms, calls, asked = {}, {}, set()   # tool_use_id -> its outcome; approval_id -> its tool_use_id; calls held
     for rec in records:
@@ -812,7 +827,12 @@ def review(records, rep, verdict):
             out["state"] = "closing"
         if t == "approval.request":
             calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
-        call = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id") or calls.get(d.get("approval_id")))
+        own = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id"))
+        call = t.startswith("approval") and (calls.get(d.get("approval_id")) or own)
+        if own != call and own in perms and call in perms:   # the agent's retry of a held call, under its approval
+            del perms[own]   # (signer _reusable): one held call, whose outcome the retry's use is
+            asked.discard(own)
+            out["retries"] += 1
         if call in perms and (t == "approval" or t in OUTCOMES):
             perms[call] = held_outcome(perms[call], t, d)
         if key and key not in out["first"]:
