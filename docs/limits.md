@@ -210,7 +210,7 @@ What Tracekit guarantees and doesn't, per deployment, on one page: [guarantees](
 | `TK-A024` and `TK-A025` read npm's and pip's ways of setting a package source; Yarn Berry's (`yarn config set npmRegistryServer <url>`, or `.yarnrc.yml` written by a file tool) isn't held. | Each package manager names its registry setting differently, and the rules name npm's, pip's, apt's and yum's. | If your agents use Yarn 2 or later, add `ask` rules of your own for `yarn config set npmRegistryServer` and writes to `.yarnrc.yml`. | [policy](policy-v2.md#packs-shipped) |
 | The `payment` class doesn't extract `new_payee` yet. | Not built. | Match payees with your own rules. | [policy](policy-v2.md#classes-and-fields) |
 | `unless` on a whole command line could exempt a different target. | The subject holds several targets. | Use `unless` only where the subject is one target. | [policy](policy-v2.md#what-a-rule-matches-the-subject) |
-| v1 rules (`tracekit/policy/default.yaml`) match raw strings, so quoted text that mentions a risky command can trip them. | The v1 engine doesn't parse commands. | Use the v2 signer's policy; add exceptions for known false positives. | [evaluation](evaluation.md#e3-policy-gate) |
+| v1 rules (`tracekit/policy/default.yaml`) match raw strings, so quoted text that mentions a risky command can trip them. The v1 `TK-D008` and `TK-D009` leave Claude Code's memory notes (a `.md` file directly in `.claude/projects/<project>/memory/`) writable. | The v1 engine doesn't parse commands. | Use the v2 signer's policy; add exceptions for known false positives. | [evaluation](evaluation.md#e3-policy-gate) |
 
 ## Provenance (1.1)
 
