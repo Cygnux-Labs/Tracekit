@@ -707,7 +707,9 @@ def _run(a):
         return 0
     if a.cmd == "verify":
         from .verify import is_v2
-        if is_v2(a.bundle):
+        v2_flags = a.trust or a.v1_ledger or a.v1_key or a.monitor_report or a.revocations
+        v2 = is_v2(a.bundle)
+        if v2 or v2 is None and v2_flags:   # an unreadable file given v2's flags: the v2 verifier says what's wrong
             from .verify import v2 as mod
             if a.key or a.witness:
                 print("tracekit verify: --key and --witness are for v1 bundles; a v2 bundle is checked against --trust",
@@ -730,7 +732,7 @@ def _run(a):
             integrity, assurance = rep.integrity, rep.assurance
         else:
             from .verify import v1 as mod
-            if a.trust or a.v1_ledger or a.v1_key or a.monitor_report or a.revocations:
+            if v2_flags:
                 print("tracekit verify: --trust, --v1-ledger, --v1-key, --monitor-report and --revocations are for v2 "
                       "bundles; this is not a v2 bundle", file=sys.stderr)
                 return 2

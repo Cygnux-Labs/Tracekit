@@ -772,6 +772,43 @@ class TestVerifyV2(Case):
                                        "--trust", self.trust)
             self.assertEqual((code, stdout), (2, ""))
 
+    def test_cli_says_a_damaged_bundle_is_damaged(self):
+        """A file given --trust that can't be read as a zip, or has no readable manifest, gets the v2 report the other
+        verifiers print: `the bundle file is damaged: ...`, UNUSABLE BUNDLE, exit 2; not "this is not a v2 bundle"."""
+        golden = os.path.join(TESTS, "golden")
+        closed, trust = os.path.join(golden, "v2", "closed.tkb"), os.path.join(golden, "v2", "trust.json")
+        with open(closed, "rb") as f:
+            data = f.read()
+        with zipfile.ZipFile(closed) as z:
+            m = z.getinfo("manifest.json")
+        self.assertEqual(m.compress_type, zipfile.ZIP_DEFLATED)
+        at = m.header_offset + 30 + len(m.filename) + len(m.extra)
+        cases = {"cut short": (data[:len(data) // 2], "the bundle file is damaged: not a zip file, or bytes after its "
+                                                      "end record"),
+                 "empty": (b"", "the bundle file is damaged: not a zip file"),
+                 "not a zip": (b"hello\n" * 4, "the bundle file is damaged: not a zip file, or bytes after its end "
+                                               "record"),
+                 "manifest won't inflate": (data[:at] + b"\xff" + data[at + 1:],   # a reserved deflate block type
+                                            "the bundle file is damaged: Error -3 while decompressing data: invalid "
+                                            "block type")}
+        files = [(os.path.join(golden, "negative", "zip-no-manifest.tkb"), os.path.join(golden, "negative",
+                                                                                         "trust.json"),
+                  "the bundle file is damaged: no manifest.json")]
+        missing = os.path.join(self.d, "missing.tkb")
+        files.append((missing, trust, f"{missing}: No such file or directory"))
+        for why, (content, said) in cases.items():
+            path = os.path.join(self.d, why.replace(" ", "-") + ".tkb")
+            with open(path, "wb") as f:
+                f.write(content)
+            files.append((path, trust, said))
+        for path, t, said in files:
+            with self.subTest(os.path.basename(path)):
+                self.assertEqual(self.cli(path, "--trust", t), (2, f"[FAIL] bundle readable — cannot read bundle: {said}"
+                                                                   "\n\nIntegrity: UNUSABLE BUNDLE.\nAssurance: none.\n",
+                                                                ""))
+                code, stdout, _ = self.cli(path, "--trust", t, "--json")
+                self.assertEqual((code, json.loads(stdout)["integrity"]), (2, "UNUSABLE BUNDLE"))
+
     @unittest.skipIf(sys.version_info < (3, 10), "sys.stdlib_module_names is 3.10+")
     def test_verifiers_need_only_the_standard_library(self):
         """`pip install --no-deps tracekit-ai`: both verifiers import and run with every module outside the standard

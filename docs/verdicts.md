@@ -38,7 +38,7 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 | `VERIFIED TO HEAD n (open)` | the bundle's one run has no `run.final` yet; its records up to `run_seq` n verify. Records after n may exist |
 | `VERIFIED (k run(s) open)` | a run-set bundle in which k runs have no `run.final` yet |
 | `FAILED` | at least one check failed; the failed lines say which |
-| `UNUSABLE BUNDLE` | the zip could not be read (`the bundle file is damaged: ...` when an entry doesn't match its CRC-32 or won't inflate), or the manifest is not `tracekit.bundle.v2` |
+| `UNUSABLE BUNDLE` | the zip could not be read (`the bundle file is damaged: ...` when the file isn't a zip, has no manifest, or an entry doesn't match its CRC-32 or won't inflate), or the manifest is not `tracekit.bundle.v2` |
 | `UNVERIFIABLE (the trust file can't be used)` | your trust config could not be read or is not a valid one; the `trust config` line says why. Nothing in the bundle was checked |
 | `UNVERIFIABLE (needs tracekit >= x)` | the bundle asks for a newer verifier (`verifier_min_version`); nothing failed. The `bundle readable` line lists the commands that verify it ([below](#a-bundle-that-needs-a-newer-verifier)) |
 | `UNVERIFIABLE (key revoked)` | records signed by a record key whose certificate a passed `--revocations` file revokes ([issuer.md](issuer.md)) |

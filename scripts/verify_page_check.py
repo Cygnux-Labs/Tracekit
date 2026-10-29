@@ -342,8 +342,8 @@ def agree(page, bundle, trust, errors):
             problems.append(f"page JSON != TypeScript CLI: {_diff(rep, ts)}")
         if shown != lines(ts):
             problems.append(f"page lines != TypeScript CLI: {_diff(shown, lines(ts))}")
-        # Python checks what TypeScript lacks (UNVERIFIABLE here, never VERIFIED), and its CLI hands a zip without a
-        # v2 manifest to the v1 verifier
+        # Python checks what TypeScript lacks (UNVERIFIABLE here, never VERIFIED), and its CLI hands a zip whose
+        # manifest names another format to the v1 verifier
         if "stderr" not in py and not lacks and _py_order(rep) != py:
             problems.append(f"page JSON != Python CLI: {_diff(_py_order(rep), py)}")
     elif v1:   # the Python CLI verifies v1 bundles; the page names the command that does

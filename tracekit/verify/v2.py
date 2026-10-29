@@ -253,6 +253,10 @@ class Unusable(ValueError):
     pass
 
 
+class Damaged(Unusable):
+    """The file isn't a zip, or has no manifest: the report says the bundle file is damaged."""
+
+
 def _layout(f):
     """The entries of the one zip layout §9 accepts, in order: (name bytes, local offset, compressed size, size, CRC,
     method). The end record ends the file; the central directory sits between the last entry and it; the entries are
@@ -261,11 +265,11 @@ def _layout(f):
     f.seek(0, 2)
     size = f.tell()
     if size < 22:
-        raise Unusable("not a zip file")
+        raise Damaged("not a zip file")
     f.seek(size - 22)
     sig, disk, cd_disk, here, count, cd_size, cd_off, comment = _EOCD.unpack(f.read(22))
     if sig != 0x06054b50:
-        raise Unusable("not a zip file, or bytes after its end record")
+        raise Damaged("not a zip file, or bytes after its end record")
     if disk or cd_disk or here != count or comment or cd_off + cd_size != size - 22:
         raise Unusable("not the canonical zip layout: end record")
     if count > MAX_ENTRIES:
@@ -414,6 +418,8 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
         return rep, EXIT_BAD
     try:
         files = read_zip(path)
+        if "manifest.json" not in files:
+            raise Damaged("no manifest.json")
         manifest = loads_strict(files.pop("manifest.json"))
         if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
             raise Unusable(f"format is not {FORMAT}")
@@ -426,7 +432,8 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
             return rep, EXIT_BAD
     except Exception as e:
         rep.check("bundle readable", False, "cannot read bundle: " + (
-            f"the bundle file is damaged: {e}" if isinstance(e, (zipfile.BadZipFile, zlib.error)) else
+            f"the bundle file is damaged: {e}" if isinstance(e, (zipfile.BadZipFile, zlib.error, Damaged)) else
+            f"{e.filename}: {e.strerror}" if isinstance(e, OSError) and e.strerror else
             str(e) if isinstance(e, Unusable) else f"{type(e).__name__}: {e}"))
         return rep, EXIT_BAD
     try:
