@@ -300,6 +300,26 @@ class ReadAndDropPrivileges(unittest.TestCase):
         initgroups.assert_called_once_with("bob", 1001)
         setgroups.assert_not_called()
 
+    def test_as_user_output_reaches_a_piped_stdout_once(self):
+        """As root, the forked child ended with os._exit, which flushes nothing: with stdout a pipe (block-buffered),
+        what fn printed ("Tracekit v2 hooks removed from ...") was lost. Nor may the child print what the parent had
+        buffered before the fork a second time."""
+        child = "\n".join((
+            "from unittest import mock",
+            "from tracekit.deploy import files",
+            "pw = type('pw', (), {'pw_name': 'bob', 'pw_uid': 1001, 'pw_gid': 1001})",
+            "print('before')",
+            "with mock.patch.object(files.os, 'geteuid', return_value=0), "
+            "mock.patch.object(files.os, 'initgroups', create=True), mock.patch.object(files.os, 'setgid'), "
+            "mock.patch.object(files.os, 'setuid'):",
+            "    files.as_user(pw, lambda: print('Tracekit v2 hooks removed from settings.json'))",
+            "print('after')"))
+        root = os.path.dirname(os.path.dirname(os.path.abspath(files.__file__)))
+        p = subprocess.run([sys.executable, "-c", child], capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "PYTHONPATH": os.path.dirname(root)})
+        self.assertEqual((p.returncode, p.stdout), (0, "before\nTracekit v2 hooks removed from settings.json\nafter\n"),
+                         p.stderr)
+
 
 class DevTcpEndpoint(unittest.TestCase):
     def test_dev_socket_opens_no_socket(self):
