@@ -945,6 +945,7 @@ class StoreFeed:
         # read from there
         self.reader, self.edit_due, self.bundles = None, 0, {}
         self.detected = 0   # store changes found (_again): a run waiting for a re-check holds the one it waits since
+        self.before = None   # a file store's reader the next one is compared with (_open)
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
@@ -1074,7 +1075,9 @@ class StoreFeed:
         records appended since (FileReader.update), and read anew when the bytes it read changed. Those are hashed
         again: the piece the update began in each time, every piece every EDIT_S and when the file was written to
         without growing. A run with a record in bytes that changed (every run, for a key record's, or a file replaced
-        or cut back) is checked again (_again)."""
+        or cut back) is checked again (_again). A reader read anew is compared with the one before it (`before`, kept
+        until one opens): a run with a record in bytes that changed before it read them is checked again too, so no
+        change becomes what later ones are compared with unseen."""
         if self.pg:
             return reader(self.cfg)
         if self.reader is not None:
@@ -1092,10 +1095,14 @@ class StoreFeed:
             except StorageCorrupt as e:
                 print(f"tracekit view: {e}: every run is checked again", file=sys.stderr, flush=True)
                 self._again(None)
-            self.reader = None
-        self.reader = reader(self.cfg)
-        self.edit_due = time.monotonic() + EDIT_S
-        return self.reader
+            self.before, self.reader = old, None
+        new = reader(self.cfg, **({"against": self.before} if self.before else {}))
+        if self.before and new.differs:
+            print("tracekit view: records.jsonl changed while the viewer read it again: their runs are checked again",
+                  file=sys.stderr, flush=True)
+            self._again(touched(self.before, new.differs))
+        self.before, self.reader, self.edit_due = None, new, time.monotonic() + EDIT_S
+        return new
 
     def _again(self, keys):
         """Runs `keys` (None: every run) are checked again, from a reader opened anew, after the runs waiting already:

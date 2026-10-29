@@ -232,6 +232,33 @@ class Reader(unittest.TestCase):
             self.assertEqual(r.changed(), [(pos // 64 * 64, pos // 64 * 64 + 64)])
             self.assertEqual(r.changed(pos + 64), [])   # from the piece after it on, as read
 
+    def test_a_reader_read_anew_says_which_pieces_the_reader_before_read_otherwise(self):
+        """A reader read anew took the file as it found it: bytes changed before it read them were what later readings
+        were compared with. Read against the reader before, it says which of that reader's pieces differ, a whole one
+        or the part of its last one that reader read, as it reads them; a file cut back differs from where it ends."""
+        path = os.path.join(self.root, "records.jsonl")
+        with mock.patch.object(file_storage, "PIECE", 256):
+            old = FileReader(self.root)
+            end = old.log.offsets[-1]
+            self.assertEqual(FileReader(self.root, against=old).differs, [])   # the same bytes
+
+            def poke(at):   # a letter of a signature
+                with open(path, "r+b") as f:
+                    f.seek(at)
+                    b = f.read(1)
+                    f.seek(at)
+                    f.write(b"x" if b != b"x" else b"y")
+            with open(path, "rb") as f:
+                first = f.read().index(b'"sig":"') + 10
+            poke(first)   # the first record's: a whole piece
+            poke(end - 5)   # the last record's: in the last piece the reader before read, before where it ended
+            self.assertEqual(FileReader(self.root, against=old).differs,
+                             [(first // 256 * 256, first // 256 * 256 + 256), ((end - 5) // 256 * 256, end)])
+            with open(path, "r+b") as f:
+                f.truncate(end - 300)
+            cut = FileReader(self.root, against=old)   # its last whole line is before end - 300
+            self.assertEqual(cut.differs[-1], (cut.log.offsets[-1] // 256 * 256, end))
+
     @unittest.skipUnless(os.name == "posix", "modes and owners are POSIX")
     def test_refuses_a_file_others_may_write(self):
         os.chmod(os.path.join(self.root, "records.jsonl"), 0o666)
@@ -258,8 +285,8 @@ class ExportWithoutSigner(unittest.TestCase):
         note()
         opened = []
 
-        def reader(root):
-            r = FileReader(root)
+        def reader(root, against=None):
+            r = FileReader(root, against)
             if not opened:   # the signer appends and writes a newer note after the first reader opened
                 opened.append(r)
                 store.append_batch(chain.batch(2, runs=("run-2",)))

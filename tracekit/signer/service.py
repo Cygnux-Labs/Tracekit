@@ -4702,14 +4702,15 @@ def data_dir_at(path):
     return os.path.abspath(path)
 
 
-def reader(cfg):
-    """A read-only view of the store of config `cfg`, safe while the signer writes it: a FileReader of data_dir/store,
-    or a PostgresReader on the DSN of its storage section. Close it when done."""
+def reader(cfg, against=None):
+    """A read-only view of the store of config `cfg`, safe while the signer writes it: a FileReader of data_dir/store
+    (compared with `against`, a FileReader of it opened before: FileReader.differs), or a PostgresReader on the DSN of
+    its storage section. Close it when done."""
     if cfg.get("storage"):
         from tracekit.storage import postgres
         return postgres.PostgresReader(postgres.read_dsn(cfg["storage"]["postgres"]))
     from tracekit.storage import file
-    return file.FileReader(os.path.join(cfg["data_dir"], "store"))
+    return file.FileReader(os.path.join(cfg["data_dir"], "store"), against)
 
 
 def read_vkeys(data_dir):

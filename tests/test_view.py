@@ -64,7 +64,7 @@ def page_js(names, script):
     return subprocess.run(["node", "-"], input=code + script, capture_output=True, encoding="utf-8", check=True).stdout
 
 
-UNCHANGED = {"update.return_value": False, "changed.return_value": []}   # a fake reader of a store only appended to
+UNCHANGED = {"update.return_value": False, "changed.return_value": [], "differs": []}   # a store only appended to
 
 
 def v2rec(seq, typ, data, run="r1", **top):
@@ -704,9 +704,9 @@ class View(unittest.TestCase):
             def __getattr__(self, name):
                 return getattr(self.r, name)
 
-        def reader(cfg):
+        def reader(cfg, **kw):
             opened.append(1)
-            r = real_reader(cfg)
+            r = real_reader(cfg, **kw)
             return Behind(r) if len(opened) == 1 else r
         with mock.patch.object(view, "reader", side_effect=reader):
             self.assertIsNotNone(feed.rows(observe.ALL, *key))
@@ -722,10 +722,10 @@ class View(unittest.TestCase):
         body = feed.rows(observe.ALL, "default", run_id)   # the check: one reader
         opened, me, real = [], threading.get_ident(), view.reader
 
-        def reader(cfg):   # this thread's readers only: the watcher's own are its business
+        def reader(cfg, **kw):   # this thread's readers only: the watcher's own are its business
             if threading.get_ident() == me:
                 opened.append(cfg)
-            return real(cfg)
+            return real(cfg, **kw)
         with mock.patch.object(view, "reader", side_effect=reader):
             self.assertIs(feed.rows(observe.ALL, "default", run_id), body)   # a hit: the same bytes, sent as they are
             self.assertIsNone(feed.rows(observe.ALL, "default", "made-up"))
@@ -768,8 +768,8 @@ class View(unittest.TestCase):
         self.report(feed, run_id)
         opened, closed, me, real = [], [], threading.get_ident(), view.reader
 
-        def reader(cfg):   # this thread's readers only: the watcher's own are its business
-            r = real(cfg)
+        def reader(cfg, **kw):   # this thread's readers only: the watcher's own are its business
+            r = real(cfg, **kw)
             if threading.get_ident() == me:
                 opened.append(r)
                 close = r.close
@@ -1220,7 +1220,7 @@ class View(unittest.TestCase):
         covered = lambda: (storage.checkpoint_latest() or (0,))[0] == storage.tree.size  # noqa: E731
         self.assertTrue(wait_for(covered, 20))
         opened, real = [], view.reader
-        with mock.patch.object(view, "reader", side_effect=lambda cfg: opened.append(cfg) or real(cfg)):
+        with mock.patch.object(view, "reader", side_effect=lambda cfg, **kw: opened.append(cfg) or real(cfg, **kw)):
             feed = store_feed(self, {"data_dir": self.d})
             self.assertTrue(wait_for(lambda: (feed.runs.get(key) or {}).get("count") == 2, 15))
             with mock.patch.object(view.v2, "verify_record", wraps=view.v2.verify_record) as checked:
@@ -1284,6 +1284,38 @@ class View(unittest.TestCase):
         with open(path, "ab") as f:
             f.write(b"{")
         self.assertTrue(wait_for(lambda: self.failed(feed, last), 10))
+
+    @pytest.mark.unverified_bundles
+    def test_an_old_piece_edited_as_a_new_one_is_caught_never_taken_as_what_the_store_holds(self):
+        """An edit of the newest piece read the store again, and the reader read anew took every other piece as it was
+        then: run W, edited at the same time in an old piece, stayed VERIFIED for good (a fresh check failed it). A
+        reader read anew is compared with the one before, piece by piece as it reads, and the runs in each piece that
+        differs are checked again; so are those changed while it reads (the next hashing finds them)."""
+        with mock.patch.object(file_storage, "PIECE", 4096):
+            w = self.finished_run()
+            filler = self.client.run(agent="filler")
+            for c in range(30):
+                filler.decide(f"c{c}", "Bash", {"command": f"echo {c}"})
+            live = self.client.run(agent="live")
+            live.decide("l0", "Read", {"path": "a"})
+            storage = self.service.log.storage
+            self.assertTrue(wait_for(lambda: (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+            feed = store_feed(self, {"data_dir": self.d})
+            self.assertTrue(wait_for(lambda: all((feed.runs.get(("default", r)) or {}).get("count")
+                                                 for r in (w, filler.run_id, live.run_id)), 20))
+            path = self.edit_decision(w)   # W: an old piece
+            with open(path, "rb") as f:
+                data = f.read()
+            tail = data.rindex(b"\n", 0, len(data) - 1) + 1   # the last line: in the newest piece
+            at = data.rindex(b"\n", 0, tail - 1) + 1   # the line before it
+            self.assertLess(data.index(w.encode()), at // 4096 * 4096)
+            self.assertNotIn(b'"type":"signer.epoch"', data[at:tail])
+            i = at + data.index(b'"sig":"', at) - at + 8   # one letter of its signature
+            with open(path, "r+b") as f:
+                f.seek(i)
+                f.write(b"A" if data[i:i + 1] != b"A" else b"B")
+            live.decide("l1", "Read", {"path": "b"})   # the store grows: no hashing of every piece
+            self.assertTrue(wait_for(lambda: self.failed(feed, w), 15), feed.verify())
 
     @pytest.mark.unverified_bundles
     def test_an_edit_before_the_last_piece_read_is_caught_when_the_store_is_hashed_again(self):
@@ -2153,11 +2185,12 @@ class LiveRuns(unittest.TestCase):
         self.fake.checkpoint_latest.return_value = (10 ** 6, "note")
         self.fake.update.return_value, self.fake.changed.return_value = False, []   # appended to, never edited
         self.fake.log.offsets, self.fake.key_seqs = range(10 ** 8), []   # line n at byte n; no key record
+        self.fake.differs = []   # read again, the same as read before
         self.now, self.cfg = [1000.0], {"data_dir": self.d}
         real = view.reader   # another test's feed, still watching its own store, reads that store
         self.clock = types.SimpleNamespace(time=lambda: self.now[0], monotonic=lambda: self.now[0],
                                            thread_time=lambda: self.now[0], sleep=time.sleep)
-        for p in (mock.patch.object(view, "reader", side_effect=lambda cfg: self.fake if cfg is self.cfg else real(cfg)),
+        for p in (mock.patch.object(view, "reader", side_effect=lambda cfg, **kw: self.fake if cfg is self.cfg else real(cfg, **kw)),
                   mock.patch.object(view, "time", self.clock),
                   mock.patch.object(view, "PACE", 0)):   # no pause after a first check (PACE: its own test)
             p.start()

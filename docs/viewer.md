@@ -99,7 +99,8 @@ is written to without growing. An edit of records it showed is caught at the sto
 last piece, at once when the file is written to without growing (its time not set back), and otherwise within the
 minute; each run with a record in a piece that changed (every run for a key record's, or a file replaced or cut back)
 then reads `PENDING` (re-checking) until it is checked again, in the order the runs started waiting, and the edited
-run turns `FAILED`. A run of a Postgres store, and a run that failed or could not be checked, is checked again five
+run turns `FAILED`. The store it then reads anew is compared, piece by piece, with what it read before, so an edit made
+meanwhile anywhere in it is caught as well. A run of a Postgres store, and a run that failed or could not be checked, is checked again five
 minutes after its last check, one run at a time. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live
 view and the tape says how many; each run's latest verdict stays in the run list, for up to 10,000 runs (a failed
 run's goes last). Once rows have left it, a run older than every record the live view holds shows only its verdict

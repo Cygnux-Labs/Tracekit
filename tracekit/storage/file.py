@@ -685,7 +685,10 @@ class FileReader(_Records):
     Records, registry leaves, notes and anchors are those written when it was opened or last updated (update()); open
     or update it after reading the record note an export uses."""
 
-    def __init__(self, root):
+    def __init__(self, root, against=None):
+        """`against`: a reader of the same store opened before. The pieces of what it read that hold other bytes here,
+        compared as this reader reads them, are in `differs` [(from, to)]: a byte changed before this reader read it
+        shows there, one changed after in changed()."""
         self.root, self.runs, self.prev = root, {}, ZERO_HASH
         self.key_seqs = []   # the seqs of its signer.epoch and key.retire records (key_records)
         st = os.lstat(root)
@@ -699,7 +702,13 @@ class FileReader(_Records):
         # piece holding the end read before the last update() starts
         self._file, self._last, self._stamp, self.tail = None, b"", None, 0
         self.sums, self._piece, self._piece_len = [], hashlib.sha256(), 0
+        # what the reader before read: its pieces' hashes, its last piece's and where it ended
+        self._against = against and (list(against.sums), against._piece.digest(), against.log.offsets[-1])
+        self.differs = []
         self.update()
+        if self._against and self.log.offsets[-1] < self._against[2]:   # less than the reader before read: cut back
+            self.differs.append((self.log.offsets[-1] // PIECE * PIECE, self._against[2]))
+        self._against = None
 
     def update(self):
         """Index the records appended to records.jsonl since this reader read it (all of them on open) and read the
@@ -738,15 +747,24 @@ class FileReader(_Records):
         return rewritten
 
     def _hash(self, data):
-        """Fold `data`, the next bytes of the lines read, into the pieces' hashes."""
+        """Fold `data`, the next bytes of the lines read, into the pieces' hashes, each piece the reader before read
+        (`_against`) compared as it is done here: a whole one, and the last one at the very byte that reader ended."""
         while data:
-            room = PIECE - self._piece_len
-            self._piece.update(data[:room])
-            self._piece_len += min(room, len(data))
+            at, step = len(self.sums) * PIECE + self._piece_len, PIECE - self._piece_len
+            end = self._against and self._against[2]
+            if end and at < end:
+                step = min(step, end - at)
+            take, data = data[:step], data[step:]
+            self._piece.update(take)
+            self._piece_len += len(take)
+            if end and at < end == at + len(take) and end % PIECE and self._piece.digest() != self._against[1]:
+                self.differs.append((end // PIECE * PIECE, end))
             if self._piece_len == PIECE:
-                self.sums.append(self._piece.digest())
+                i, digest = len(self.sums), self._piece.digest()
+                if self._against and i < len(self._against[0]) and digest != self._against[0][i]:
+                    self.differs.append((i * PIECE, (i + 1) * PIECE))
+                self.sums.append(digest)
                 self._piece, self._piece_len = hashlib.sha256(), 0
-            data = data[room:]
 
     def changed(self, start=0):
         """The byte ranges [from, to) of records.jsonl, from the piece holding byte `start` to the end of the lines
