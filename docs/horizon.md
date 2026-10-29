@@ -27,7 +27,10 @@ Every run's calls sit around a black hole, the event horizon every run starts fr
 | **OUTSIDE WORLD** | hosts: of a URL, or of an email address |
 
 A call's place is the first host or path among its arguments (the signer's copy), its subject first. A call that names
-neither is placed by its tool: on this machine, or outside for a network tool.
+neither is placed by its tool: on this machine, or outside for a network tool. A Bash call reads its command alone,
+past a leading `cd`, where a path is one that can't be a branch or ref (`~/`, `/`, `./`, `../`, a dotfile, or a
+`dir/file.ext`); a command with neither a host nor such a path is named by its program and verb (`git checkout -b
+feature/x` is **git checkout**), on this machine, and its rows show the command.
 
 Each mark is a call, or a file or network effect a kernel sensor saw: `●` read, ran or reached; `■` wrote, or a person
 approved it; `✕` blocked by policy; `◯` held for a person; `◆` flagged. A **shield** marks a restricted place: a `TK-F`
@@ -64,8 +67,9 @@ setting) the map draws still frames, one for each change.
 
 Click a place to see who went there and how we know: each move there with its agent, what it did, the tool and
 the rules that matched, its run and seq, its grade, and **OPEN**, which opens the record on its run's page. The heading
-names the ring, and says **RESTRICTED** with the rule that made it so, or **A TOOL, NO FILE OR HOST RECORDED** for a
-place named after a tool. Click the place again for the key.
+names the ring, and says **RESTRICTED** with the rule that made it so, **A TOOL, NO FILE OR HOST RECORDED** for a
+place named after a tool, or **A COMMAND, NO FILE OR HOST IN IT** for one named after a command's program. Click the
+place again for the key.
 
 ![HORIZON with the Bash place clicked: a tool place, no file or host recorded; each agent that ran Bash there, approved, held or ran, with its run, seq, SIGNED and OPEN](viewer/1.5/horizon-place.png)
 
@@ -86,8 +90,10 @@ placed that way.
   machine ([limits](limits.md#investigation-tracekit-why)).
 - A call whose arguments the viewer has only as a commitment is placed by its tool, not at a file or host
   ([limits](limits.md#investigation-tracekit-why)).
-- A word with a slash in a call's arguments is read as a path, so a git ref such as `origin/main` is drawn as a project
-  place ([limits](limits.md#investigation-tracekit-why)).
+- Outside a Bash command, a word with a slash in a call's arguments is read as a path, so a git ref such as
+  `origin/main` is drawn as a project place; in a Bash command, a `dir/name` with no file extension is not, and a
+  program is named with its verb only for some (git, npm, docker, kubectl and the like)
+  ([limits](limits.md#investigation-tracekit-why)).
 - On a phone it draws callouts only for restricted places and places where an agent was stopped; at any width, a move's
   number that would cover another's is left out ([limits](limits.md#investigation-tracekit-why)).
 - It shows the network effects a kernel sensor saw, not the egress observer's records

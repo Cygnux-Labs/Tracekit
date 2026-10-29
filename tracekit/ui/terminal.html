@@ -3368,15 +3368,27 @@
     const hzRgba = (hex, a) => `rgba(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(",")},${a})`;
     // a path's ring: the project inside the run's cwd (a relative path is), else this machine, where a home reads as ~
     const hzPath = (p, cwd) => /^[~/]/.test(p) && !(cwd && (p + "/").startsWith(cwd + "/")) ? ["machine", p.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~")] : ["project", rel(p, cwd).replace(/^\.\//, "")];
-    // where a call went: [ring, label] of the first host or path among its arguments, its subject first; else null
+    // lean: these programs are named with their verb (git checkout), any other by its name alone; add one whose verb a
+    // person needs to see
+    const HZVERB = /^(git|gh|npm|pnpm|yarn|bun|docker|kubectl|helm|cargo|go|pip3?|uv|poetry|brew|aws|gcloud|az|terraform|make|tracekit)$/;
+    // a shell command's program (its file name, past VAR=value words) and, for one run by subcommands, its verb
+    function hzCmd(c) {
+      const [p = "", v = ""] = c.trim().split(/\s+/).filter(w => !/^\w+=/.test(w)), prog = p.split("/").pop();
+      return HZVERB.test(prog) && /^[a-z][\w-]*$/.test(v) ? prog + " " + v : prog;
+    }
+    // where a call went: [ring, label] of the first host or path among its arguments, its subject first; else null. A
+    // Bash move reads its command alone, past a leading cd: a path there is one no ref or branch looks like (~, /, ./,
+    // ../, a dotfile, a word/word.ext), so `git checkout -b feature/x` goes nowhere, and is named by its program and verb
     function hzPlace(tool, input, cwd) {
-      for (const w of [subject(tool, input), ...Object.values(input || {})].filter(v => typeof v === "string").join(" ").split(/[\s"'`;|&<>()=,]+/)) {
+      const sh = tool === "Bash" && typeof input?.command === "string" ? input.command.replace(/^\s*cd\s+\S+\s*(?:&&|;)\s*/, "") : null;
+      for (const w of (sh ?? [subject(tool, input), ...Object.values(input || {})].filter(v => typeof v === "string").join(" ")).split(/[\s"'`;|&<>()=,]+/)) {
         const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/]*@)?([^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
         if (host) return ["outside", host.toLowerCase()];
-        // lean: a word with a slash is a path, so a ref like origin/main is a project place; the signer's parser knows better
-        if (/^(~|\.{0,2}\/)|^[\w.-]+\/[\w.-]|^\.\w/.test(w)) return hzPath(w, cwd);
+        // lean: elsewhere a word with a slash is a path, so a ref like origin/main is a project place; the signer's parser knows better
+        if (w.startsWith("/dev/")) continue;   // 2>/dev/null and the like: no place
+        if (/^(~|\.{0,2}\/)|^\.\w/.test(w) || /^[\w.-]+\/[\w.-]/.test(w) && (sh == null || /\/[\w.-]*\.[a-z]\w*$/i.test(w))) return hzPath(w, cwd);
       }
-      return null;
+      return sh?.trim() ? ["machine", hzCmd(sh) || tool, "command"] : null;
     }
     // a restricted place's rule: a TK-F or TK-D rule whose reason is about secrets, harness configuration or Tracekit's files
     const hzRest = rules => rules.filter(x => /^TK-[FD]\d/.test(x.id) && /secret|credential|harness|tracekit/i.test(x.reason || "")).map(x => x.id + " · " + x.reason)[0] || null;
@@ -3400,12 +3412,12 @@
           ag: vis(RUNS.get(r.session_id)?.agent || r.agent || "agent"), gr: !ok ? "unverified" : fx ? "observed" : "signed",
           act: fx ? (fx.kind === "connect" ? "net" : "seen") : d === "deny" ? "blocked" : d === "ask" ? (a === "approve" ? "approved" : "held") : d === "flag" ? "flag"
             : p[0] === "outside" ? "net" : FILE_TOOLS[r.tool_name] === "W" ? "write" : /^(Read|Glob|Grep|LS)$/.test(r.tool_name) ? "read" : "run",
-          w: fx ? r.title : [r.tool_name, d === "ask" ? ANSWER[a] || "no answer yet" : "", ...rules.map(x => (x.id + " " + (x.reason || "")).trim())].filter(Boolean).join(" · ") });
+          w: fx ? r.title : [r.tool_name, r.tool_name === "Bash" && typeof r.tool_input?.command === "string" ? r.tool_input.command : "", d === "ask" ? ANSWER[a] || "no answer yet" : "", ...rules.map(x => (x.id + " " + (x.reason || "")).trim())].filter(Boolean).join(" · ") });
       }
       const ev = raw.sort((x, y) => y.unread - x.unread || x.t - y.t || (x.seq ?? 0) - (y.seq ?? 0)).slice(-HZMAX);
       for (const e of ev) {
         e.at = (e.p[2] ? "tool:" : "") + e.p[1];
-        (places[e.at] ||= { kind: e.p[0], label: vis(e.p[1]), tool: !!e.p[2], rest: null }).rest ||= e.rest;
+        (places[e.at] ||= { kind: e.p[0], label: vis(e.p[1]), tool: e.p[2] || false, rest: null }).rest ||= e.rest;
         const up = RUNS.get(RUNS.get(e.run)?.parent)?.agent;
         parent[e.ag] ??= up == null ? null : vis(up);
         if (e.cwd) cwds.add(e.cwd);
@@ -3466,7 +3478,7 @@
         + pill(e.gr) + ` <button type="button" class="cp" data-orun="${esc(e.run)}" data-oseq="${esc(e.seq)}">OPEN</button></div></div></div>`;
       const pick = HZ.pick && P(HZ.pick), here = ev.filter(e => e.at === HZ.pick);
       const card = HZ.follow ? `<div class="sec">ROUTE · ${esc(HZ.follow)}</div>` + ev.filter(e => e.ag === HZ.follow).map((e, n) => row(e, n + 1)).join("")
-        : pick ? `<div class="sec">${esc((pick.rest ? "RESTRICTED · " : "") + { project: "IN THE PROJECT", machine: "ON THIS MACHINE", outside: "OUTSIDE THE MACHINE" }[pick.kind] + (pick.tool ? " · A TOOL, NO FILE OR HOST RECORDED" : ""))}</div><h3>${esc(pick.label)}</h3>`
+        : pick ? `<div class="sec">${esc((pick.rest ? "RESTRICTED · " : "") + { project: "IN THE PROJECT", machine: "ON THIS MACHINE", outside: "OUTSIDE THE MACHINE" }[pick.kind] + (pick.tool === "command" ? " · A COMMAND, NO FILE OR HOST IN IT" : pick.tool ? " · A TOOL, NO FILE OR HOST RECORDED" : ""))}</div><h3>${esc(pick.label)}</h3>`
           + (pick.rest ? `<div class="s-flag">${esc(pick.rest)}</div>` : "") + (here.map(e => row(e)).join("") || `<div class="dim">${esc(`No agent has been here${HZ.t < N ? " yet" : ""}.`)}</div>`)
         : HZKEY;
       const stats = [[new Set(ev.map(e => e.ag)).size, "AGENTS"], [new Set(ev.map(e => e.at)).size, "PLACES"], [new Set(out.map(e => e.at)).size, "OUTSIDE THE MACHINE", 1],
