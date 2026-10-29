@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import sys
 import time
 import unittest
@@ -78,6 +79,7 @@ class OtherProtocol:
         raise Incompatible("protocol 99")
 
 
+@unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
 class WeeklyReport(unittest.TestCase):
     """`tracekit report` over a real signer's store: a run before the window; in it a run with a flag, a deny, holds
     approved, rejected and left to expire, a call whose arguments hold a secret and a lost transcript reader; an open
