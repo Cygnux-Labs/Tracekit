@@ -818,6 +818,11 @@
       width: 78px
     }
 
+    /* a status reads whole: a long one (REFUSED: ARGUMENTS CHANGED) wraps in its cell rather than being cut */
+    td.c-st {
+      white-space: normal
+    }
+
     .c-ms {
       width: 52px;
       text-align: right;
@@ -907,8 +912,9 @@
       width: 150px
     }
 
+    /* APPROVED · RETRY RAN, the approve-then-retry flow's, on one line */
     .v2 .c-st {
-      width: 116px
+      width: 156px
     }
 
     .v2 .c-ms {

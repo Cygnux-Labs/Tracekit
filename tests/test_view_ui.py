@@ -1904,6 +1904,15 @@ class ApproveThenRetry(unittest.TestCase):
                                                  decided({ decision: "ask" })]));"""))
         self.assertEqual(out, [["APPROVED · RETRY RAN", "--green"], ["APPROVED", "--green"], ["HELD", "--amber"]])
 
+    def test_the_tape_shows_a_calls_status_whole(self):
+        """The tape's STATUS cut the flow's own label to "APPROVED · RE…" (a 116px column, one line, ellipsis). Measured
+        in Chromium at 1600px, the 156px column holds "APPROVED · RETRY RAN" on one line, on DESK and a run's CALLS; a
+        longer status (REFUSED: ARGUMENTS CHANGED) wraps in its cell rather than being cut."""
+        css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
+        self.assertRegex(css, r"\.v2 \.c-st \{\s*width: 156px")
+        self.assertRegex(css, r"td\.c-st \{\s*white-space: normal")
+        self.assertIn('return ["s-ok", a.ranBy?.post ? "APPROVED · RETRY RAN"', PAGE)   # the label it is sized for
+
     def test_graph_shows_a_long_state_and_its_rule_whole(self):
         """The node read "APPROVED · RETRY RAN…": the state and the rule after it were cut."""
         needs_node(self)
