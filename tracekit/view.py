@@ -76,7 +76,7 @@ from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
-from .signer.service import dev_data_dir, load_config, lookup, read_vkeys, reader
+from .signer.service import data_dir_at, dev_data_dir, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
 from .verify import v2
@@ -1335,6 +1335,8 @@ def store_trust(cfg, log_vkey=None):
     """(vkeys, note): the log vkeys a check of config `cfg`'s store pins, `log_vkey` else the store's own (the one a
     Postgres store holds, a file store's data_dir/log.vkey with the hybrid key's), and what that pin proves."""
     note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if cfg.get("storage") else DEV_NOTE
+    if not cfg.get("storage"):   # view's and report's --data-dir, as signer_config checks export's
+        data_dir_at(cfg["data_dir"])
     if not log_vkey and cfg.get("storage"):
         r = reader(cfg)
         try:

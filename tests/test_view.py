@@ -1294,6 +1294,17 @@ class View(unittest.TestCase):
         with self.assertRaises(SystemExit):   # SIGTERM exits through atexit, which removes the temp dirs
             signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 
+    def test_a_data_dir_that_isnt_there_is_named(self):
+        """`tracekit view --data-dir` with no directory there printed a raw [Errno 2]."""
+        before = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, before)
+        nope = os.path.join(self.d, "nope")
+        for argv in ([], ["--log-vkey", svc.read_vkeys(self.d)[0]]):
+            with self.subTest(argv=argv):
+                with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+                    code = view.main(["--data-dir", nope, "--port", "0", *argv])
+                self.assertEqual((code, err.getvalue()), (1, f"tracekit view: no signer data dir at {nope}\n"))
+
     def test_hostile_tool_names_are_data_and_the_page_escapes_every_sink(self):
         run = self.client.run(agent="a")
         run.decide("c1", XSS, {"q": XSS})

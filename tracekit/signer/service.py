@@ -4651,11 +4651,16 @@ def signer_config(path=None, data_dir=None):
     if path:
         return load_config(path)
     if data_dir:
-        if not os.path.isdir(data_dir):
-            raise ValueError(f"no signer data dir at {os.path.abspath(data_dir)}")
-        return {"data_dir": os.path.abspath(data_dir)}
+        return {"data_dir": data_dir_at(data_dir)}
     from tracekit.sdk.autospawn import SOCK, signer_dir
     return {"data_dir": dev_data_dir(), "socket": os.path.join(signer_dir(), SOCK)}
+
+
+def data_dir_at(path):
+    """`path`, absolute: a signer data dir to read. ValueError when no directory is there."""
+    if not os.path.isdir(path):
+        raise ValueError(f"no signer data dir at {os.path.abspath(path)}")
+    return os.path.abspath(path)
 
 
 def reader(cfg):

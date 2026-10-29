@@ -487,6 +487,16 @@ class WeeklyReport(unittest.TestCase):
         self.assertTrue(out.getvalue().startswith("Tracekit report: "), out.getvalue()[:200])
         self.assertIn("This is an operator summary, not evidence.", out.getvalue())
 
+    def test_a_data_dir_that_isnt_there_is_named(self):
+        """`tracekit report --data-dir` with no directory there printed a raw [Errno 2]."""
+        nope = os.path.join(self.cfg["data_dir"], "nope")
+        for argv in ([], ["--log-vkey", svc.read_vkeys(self.cfg["data_dir"])[0]]):
+            with self.subTest(argv=argv):
+                with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+                    code = cli.main(["report", "--data-dir", nope, *argv])
+                self.assertEqual((code, err.getvalue().splitlines()[-1]),
+                                 (1, f"tracekit report: no signer data dir at {nope}"))
+
 
 class Window(unittest.TestCase):
     def test_since_and_until_read_days_hours_and_iso_dates(self):
