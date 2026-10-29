@@ -638,6 +638,43 @@ class DevFresh(unittest.TestCase):
             self.assertIn(f"assurance stays {level}", got["D-WITNESS-CONFIGURED"]["detail"])
 
 
+class NoHooksChosen(unittest.TestCase):
+    def test_after_init_no_hooks_doctor_says_what_is_still_recorded_and_exits_0(self):
+        """After `tracekit init --dev --v2 --no-hooks` doctor warned that Claude Code's hooks were missing, gave
+        installing them as the fix, and exited 2 on that and the dev warnings alone. Init records the choice; a later
+        init with hooks undoes it."""
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(home)   # no project settings or other agents' hooks from the checkout
+
+        def run(*argv):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = cli.main(list(argv))
+            return code, out.getvalue()
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}), \
+                mock.patch.object(client, "system_config", return_value=None):
+            self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, "v2 hooks: not installed\n"))
+            code, out = run("doctor", "--json")
+            rows = {r["id"]: r for r in json.loads(out)}
+            self.assertEqual((code, rows["D-HOOKS-PRESENT"]), (0, {
+                "id": "D-HOOKS-PRESENT", "status": "ok", "fix": "",
+                "detail": "no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send "
+                          "(tracekit.instrument()) are still recorded; to record Claude Code's calls too, run "
+                          "tracekit init --dev --v2"}))
+            self.assertIn("warn", {r["status"] for r in rows.values()})   # the dev signer's own warnings
+            self.assertEqual(run("init", "--dev", "--v2", "--no-thinking-summaries")[0], 0)
+            rows = {r["id"]: r for r in json.loads(run("doctor", "--json")[1])}
+            self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
+            self.assertTrue(rows["D-HOOKS-PRESENT"]["detail"].startswith("v2 hooks in "), rows["D-HOOKS-PRESENT"])
+            self.assertEqual(run("uninstall")[0], 0)   # hooks removed, no choice recorded: missing, and how to add them
+            rows = {r["id"]: r for r in json.loads(run("doctor", "--json")[1])}
+            self.assertEqual((rows["D-HOOKS-PRESENT"]["status"], rows["D-HOOKS-PRESENT"]["fix"]),
+                             ("warn", "tracekit init --dev --v2"))
+
+
 class Reinit(unittest.TestCase):
     def test_the_reinit_fix_runs_on_this_platform(self):
         """On macOS init refuses system mode without --experimental-macos, which the fix left out."""
@@ -835,8 +872,9 @@ class Report(unittest.TestCase):
         return code, out.getvalue()
 
     def test_exit_codes(self):
+        """Warnings alone exited 2, so a dev setup, which warns that it is one, always looked broken."""
         self.assertEqual(self.run_report(["ok", "ok"])[0], 0)
-        self.assertEqual(self.run_report(["ok", "warn"])[0], 2)
+        self.assertEqual(self.run_report(["ok", "warn"])[0], 0)
         self.assertEqual(self.run_report(["warn", "fail"])[0], 1)
 
     def test_json_lists_id_status_detail_fix(self):

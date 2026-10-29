@@ -443,14 +443,15 @@ def user_settings_all():
 def record_hooks_settings(path):
     """Record user settings file `path`, where init put the hooks, as hooks_settings in the client config (its other
     keys stay), as init_dev does for v1: user_settings_all then finds them from a shell without the same
-    CLAUDE_CONFIG_DIR."""
+    CLAUDE_CONFIG_DIR. None: init was told --no-hooks, recorded as no_hooks, which doctor reports as the choice it is."""
     d = client.client_dir()
     fd = files.open_dir(d)
     try:
         cfg = _read_config(fd)
     finally:
         files.close(fd)
-    _write_client_dir(d, {**cfg, "hooks_settings": os.path.abspath(path)})
+    cfg.pop("no_hooks", None)
+    _write_client_dir(d, {**cfg, **({"hooks_settings": os.path.abspath(path)} if path else {"no_hooks": True})})
 
 
 AGENT_FILE_MAX = 4 << 20   # bytes of an agent's settings file doctor and init read at most

@@ -35,8 +35,8 @@ witness verifies as `Assurance: dev` with `isolation: separate-user`: the agent 
 outside the host shows the log wasn't rolled back. Add a witness the operator doesn't run to reach `witnessed`: your own or a partner's
 ([witnesses](witnesses.md)); the free [public witness](witnesses.md#the-public-witness) is not deployed yet.
 
-Every mode is checked the same way: `tracekit doctor` ([doctor](doctor.md)) lists each check with its fix and exits 0
-(all ok), 1 (a check failed) or 2 (warnings only). Doctor output is advice about the host, not evidence.
+Every mode is checked the same way: `tracekit doctor` ([doctor](doctor.md)) lists each check with its fix and exits 1
+when a check failed, else 0 (warnings are advice). Doctor output is advice about the host, not evidence.
 
 ## Laptop dev
 

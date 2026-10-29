@@ -2,7 +2,7 @@
 
 It detects the setup: v1 system mode (/etc/tracekit/client.json names a socket), v2 system mode (it names a signer),
 the v2 dev signer (no system config), or the signer.yaml given with --config. Every check has a stable id and gives
-ok, warn or fail; docs/doctor.md lists them. Exit 0 when all are ok, 1 when any fails, 2 when there are only warnings.
+ok, warn or fail; docs/doctor.md lists them. Exit 1 when any fails, else 0: a warning is advice, not a failure.
 Run it as root for system mode: it then probes the files as the agent's user, in a forked child that dropped to it.
 `--k8s` checks the pod it runs in, or the manifests under `--manifests DIR`, instead.
 
@@ -51,15 +51,14 @@ def result(id, status, detail, fix=""):
 
 
 def report(results, as_json=False):
-    """Print the results; returns the exit code (0 all ok, 1 any fail, 2 only warnings)."""
+    """Print the results; returns the exit code (1 any fail, else 0)."""
     if as_json:
         print(json.dumps(results, indent=2))
     else:
         for r in results:
             print(f"{'ok' if r['status'] == OK else r['status'].upper():<6}{r['detail']}  ({r['id']})"
                   + (f"\n      fix: {r['fix']}" if r["fix"] else ""))
-    statuses = {r["status"] for r in results}
-    return 1 if FAIL in statuses else 2 if WARN in statuses else 0
+    return 1 if any(r["status"] == FAIL for r in results) else 0
 
 
 def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
@@ -100,8 +99,10 @@ def collect(config=None, issuer_key=None):
         return out
     from .signer.service import dev_content, dev_data_dir
     project = os.path.join(os.getcwd(), ".claude")
+    mine = client.client_config()
     return v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
                      settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=_dev_harnesses(),
+                     no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
                                        os.path.join(project, "settings.local.json"), _managed()],
                      gemini_settings=_gemini(os.path.expanduser("~"),
@@ -432,7 +433,7 @@ def _vault_off(cfg, keys):
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
               client_json=None, now=None, issuer_key=None, plugin=None, sandbox_settings=(), gemini_settings=(),
-              harnesses=None):
+              harnesses=None, no_hooks=False):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
@@ -440,7 +441,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     (settings file, plugin key) returned by install.plugin_enabled, whose hooks are init's;
     sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox);
     gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini); harnesses: {coding agent: its hook
-    config} of the other agents with v2 hooks (agent_hooks), whose hooks and reasoning settings are checked."""
+    config} of the other agents with v2 hooks (agent_hooks), whose hooks and reasoning settings are checked; no_hooks:
+    init was told --no-hooks (install.record_hooks_settings), so no Claude Code hook is the person's choice."""
     from . import agent_hooks
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
@@ -627,6 +629,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 f"keep one: tracekit uninstall (init's hooks), or /plugin disable {plugin_key}", bad=sev)
         elif hooks is not None and harnesses and not any(hooks.values()):   # another coding agent's, not Claude's
             add("D-HOOKS-PRESENT", True, others, "")
+        elif hooks is not None and no_hooks and not any(hooks.values()):
+            add("D-HOOKS-PRESENT", True, "no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send "
+                f"(tracekit.instrument()) are still recorded; to record Claude Code's calls too, run {hook_fix}", "")
         elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
             own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")

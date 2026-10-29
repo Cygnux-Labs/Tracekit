@@ -525,7 +525,7 @@ def _run(a):
                 try:
                     on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
                                                          thinking=not a.no_thinking_summaries)
-                    if hooks and not a.project:
+                    if not a.project:   # None: --no-hooks, which doctor then reports as chosen
                         install.record_hooks_settings(hooks)
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
