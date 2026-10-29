@@ -355,6 +355,7 @@ def _pre(client, p, sid, tid):
     if d["decision"] == "ask":
         reason = d.get("reason") or ""   # a live constraint's says which and what to do
         why = f": {reason if reason.endswith('..') else reason.removesuffix('.')}" if reason else ""   # keeps a ...
+        waited = {}   # the last approval_wait's answer
         try:
             cap()
             # the same call held earlier in the run (the agent's retry) gets that call's approval: approved, it runs
@@ -379,16 +380,23 @@ def _pre(client, p, sid, tid):
             while state == "requested" and deadline > time.monotonic():
                 left_s = min(deadline - time.monotonic(), 300)
                 cap(left_s)
-                state = run.call("approval_wait", approval_id=aid, timeout_ms=int(left_s * 1000))["state"]
+                waited = run.call("approval_wait", approval_id=aid, timeout_ms=int(left_s * 1000))
+                state = waited["state"]
+            if state == "requested" and not waited:   # an agent's approval in its veto delay reads requested too:
+                cap()                                  # only approval_wait's reason says it is approved
+                waited = run.call("approval_wait", approval_id=aid, timeout_ms=0)
+                state = waited["state"]
             cap()
             c = run.approval_consume(tid, tool, args, approval_id_hint=aid) if state == "approved" else None
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
-            held = (f"[tracekit] held for approval {aid} ({'; '.join(d['rule_ids'])}): to let it run, approve it with "
+            held = (f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is {waited['reason']}, then try the same "
+                    "call again, with exactly the same arguments" if waited.get("reason") else
+                    f"[tracekit] held for approval {aid} ({'; '.join(d['rule_ids'])}): to let it run, approve it with "
                     f"`{cmd} approve {aid}`, then ask the agent to try the same call again, with exactly the same "
                     "arguments (to refuse it: "
-                    f"`{cmd} reject {aid}`)" + (f". Why{why}" if why else ""))
+                    f"`{cmd} reject {aid}`)") + (f". Why{why}" if why else "")
             print(held, file=sys.stderr)
             if AGENT == "claude-code":   # the reason goes to the model, the system message to the person
                 print(json.dumps({"systemMessage": held, "hookSpecificOutput": {

@@ -1333,14 +1333,20 @@ if __name__ == "__main__":
 
 
 class HoldLine(unittest.TestCase):
-    def pre(self, reason, signer=None, wait=str(claude_code.APPROVAL_WAIT_S), answer="rejected"):
-        """(exit code, stderr lines, stdout) of the hook's PreToolUse for one ask, answered `answer` while it waits."""
+    def pre(self, reason, signer=None, wait=str(claude_code.APPROVAL_WAIT_S), answer="rejected", veto=None):
+        """(exit code, stderr lines, stdout) of the hook's PreToolUse for one ask, answered `answer` while it waits (a
+        look that doesn't wait finds it `requested`), or with `veto`, approved by an agent and in its veto delay
+        throughout (the signer's reason). The approval_wait timeouts are in self.waits."""
         client = mock.Mock(timeout=30.0, signer=signer)
         run = mock.Mock(run_id="r1")
+        self.waits = []
 
         def call(method, **fields):
+            if method == "approval_wait":
+                self.waits.append(fields["timeout_ms"])
             return {"approval_request": {"approval_id": "apr-1", "state": "requested"},
-                    "approval_wait": {"state": answer}}[method]
+                    "approval_wait": {"state": "requested", "reason": veto} if veto else
+                    {"state": answer if fields.get("timeout_ms") else "requested"}}[method]
 
         run.call = call
 
@@ -1375,8 +1381,21 @@ class HoldLine(unittest.TestCase):
                         "same arguments (to refuse it: `tracekit approvals reject apr-1`). Why: force push. Push "
                         "without --force")
                 self.assertEqual(lines, [held])   # no waiting line: nothing waited
+                self.assertEqual(self.waits, [0])   # one look, to see whether an agent approved it already
                 self.assertEqual(json.loads(out), {"systemMessage": held, "hookSpecificOutput": {
                     "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": held}})
+
+    def test_a_retry_in_an_agents_veto_delay_says_it_is_approved_and_how_long_to_wait(self):
+        """An agent approver's approval reads `requested` while people may still revoke it: the held retry said to
+        approve it with `tracekit approvals approve`, an approval already approved. It says so, and to wait."""
+        veto = "approved by an agent approver; people may still revoke it, so wait 42 s"
+        held = ("[tracekit] approval apr-1 (TK-A003) is approved by an agent approver; people may still revoke it, so "
+                "wait 42 s, then try the same call again, with exactly the same arguments. Why: x")
+        code, lines, out = self.pre("x", wait="", veto=veto)
+        self.assertEqual((code, lines, json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]),
+                         (2, [held], held))
+        code, lines, _ = self.pre("x", wait="0.2", veto=veto)   # a wait that ended inside the delay
+        self.assertEqual((code, lines[-1]), (2, held))
 
     def test_an_unanswered_wait_ends_with_how_to_approve_and_retry(self):
         code, lines, _ = self.pre("x", wait="0.2", answer="requested")

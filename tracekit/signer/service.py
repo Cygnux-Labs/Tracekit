@@ -3470,11 +3470,15 @@ class SignerService:
                    and end > time.monotonic()):
                 self._cond.wait(min(end - time.monotonic(), TICK_S))
 
-        # read on the writer, so only a committed state is answered; gone: its run went final, which expired it
+        # read on the writer, so only a committed state is answered; gone: its run went final, which expired it. An
+        # agent's approval within its veto delay reads requested, and its reason says it is approved and for how long
         def state(tx):
-            a = self.log.approvals.get(aid, {"state": "expired"})
-            return {"state": "requested" if _waiting(a, time.time()) else a["state"],
-                    **({"escalated": True} if a.get("escalated") else {})}
+            a, now = self.log.approvals.get(aid, {"state": "expired"}), time.time()
+            veto = a["state"] == "approved" and _waiting(a, now) and math.ceil(epoch(a["not_before"]) - now)
+            return {"state": "requested" if _waiting(a, now) else a["state"],
+                    **({"escalated": True} if a.get("escalated") else {}),
+                    **({"reason": f"approved by an agent approver; people may still revoke it, so wait {veto} s"}
+                       if veto else {})}
         return {"approval_id": aid, **self.log.write(state)}
 
     def _approval_consume(self, identity, req):
@@ -3506,7 +3510,11 @@ class SignerService:
             elif run.get("held") and not (a and a.get("incident_id") in run["held"]):   # expired by the holds
                 why = "TK-HOLD", self._why_contained(run)
             elif hint is not None and hint != aid:
-                why = "TK-APPROVAL-UNBOUND", "approval_id not bound to this call"
+                h = self.log.approvals.get(hint) or {}   # two retries of one call raced for it: this one lost
+                raced = h.get("run_key") == key and h["state"] == "consumed" and digest and \
+                    self._opens(h["commitment"], h["label"], digest)
+                why = "TK-APPROVAL-UNBOUND", f"approval {hint} was already used by another attempt of the same call" \
+                    if raced else "approval_id not bound to this call"
             elif digest is None:
                 why = "TK-ARGS-INVALID", "the arguments are not canonical JSON"
             elif a is None:

@@ -2,18 +2,22 @@
 the signer's guarantees against a reviewer agent that approves anything: eligibility, budgets, anti-shopping, escalation,
 revocation, the kill switch, shadow mode, the reviewer's view and the records, across a restart."""
 import collections
+import contextlib
 import hashlib
+import io
 import itertools
 import json
 import os
 import time
 import unittest
+from unittest import mock
 
 import pytest
 
 import test_signer_service as ts
 from tracekit import schema
 from tracekit.bundle_v2 import export
+from tracekit.integrations import claude_code
 from tracekit.format.canon import canonical, loads_strict
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as policy_compile
@@ -489,6 +493,44 @@ class TestVetoAndRevoke(Case):
                          "rejected")
         self.assertEqual(self.consume()["rule_ids"], ["TK-APPROVAL-REJECTED"])
         self.assertIn("approval.revoked", [e["type"] for e in self.events()])
+
+    def test_a_wait_in_the_veto_delay_says_it_is_approved_and_for_how_long(self):
+        """It reads `requested` there, so the hook told the person to approve an approval that was approved: the wait's
+        reason says it is, and how long until it can run."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        out = self.s.approval_wait({**self.run, "approval_id": aid})
+        self.assertEqual((out["state"], out["reason"]),
+                         ("requested", "approved by an agent approver; people may still revoke it, so wait 60 s"))
+        self.assertEqual(validate(RESPONSES["approval_wait"], out), [], out)
+        self.s.log.approvals[aid]["not_before"] = svc._iso(time.time() - 1)
+        self.assertEqual(self.s.approval_wait({**self.run, "approval_id": aid}), {"approval_id": aid, "state": "approved"})
+
+    def test_the_claude_code_hook_tells_a_retry_in_the_veto_delay_to_wait_not_to_approve(self):
+        """Through the hook, against this signer: the agent's retry inside the veto delay was told to approve it with
+        `tracekit approvals approve`, an approval an agent approver had approved."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        s, run = self.s, self.run
+
+        class Run:   # the hook's RunHandle, over this signer in process
+            run_id = run["run_id"]
+
+            def call(self, method, **fields):
+                return getattr(s, method)({**run, **fields, **({} if method == "approval_wait" else {"request_id": rid()})})
+
+            def approval_consume(self, *a, **kw):
+                raise AssertionError("consumed inside the veto delay")
+        d = self.decide(OK, "tc-2")
+        err = io.StringIO()
+        with mock.patch.object(claude_code, "_run", lambda *a, **kw: (Run(), d)), contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: ""}):
+            code = claude_code._pre(mock.Mock(timeout=30.0, signer=None), {"tool_name": "pay", "tool_input": OK}, "s1",
+                                    "tc-2")
+        self.assertEqual((code, err.getvalue()), (2, f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is "
+                                                     "approved by an agent approver; people may still revoke it, so wait "
+                                                     "60 s, then try the same call again, with exactly the same "
+                                                     f"arguments. Why: {d['reason']}\n"))
 
     def test_a_retry_is_held_until_the_veto_delay_passed(self):
         """Approve, then retry with an agent approver: asking for the call, again or in a retry, reads `requested`

@@ -44,7 +44,8 @@ retry of the same call after a person approved it ([approve, then retry](#approv
 
 Refusals are signed too: `approval.binding_mismatch` when the arguments differ from the approved ones
 (`TK-APPROVAL-MISMATCH`), and `approval.refused` for everything else: `TK-APPROVAL-UNBOUND` (the adapter's
-`approval_id_hint` names another approval), `TK-APPROVAL-REQUIRED` (none was requested), `TK-APPROVAL-REQUESTED` /
+`approval_id_hint` names another approval; when another attempt of the same call already used it, as when two retries
+race for one approval, the reason says so), `TK-APPROVAL-REQUIRED` (none was requested), `TK-APPROVAL-REQUESTED` /
 `-REJECTED` / `-CONSUMED` / `-EXPIRED` (its state), `TK-ARGS-INVALID` (arguments that are not strict JSON). A call
 that `decide` allowed or flagged needs no approval and consumes nothing.
 
@@ -77,7 +78,8 @@ it, the agent sends the same call again, under a new tool call id, and that call
    - is `approved`, by a person or an agent approver under [who may answer](#who-may-answer), and not yet consumed. A
      `requested`, `rejected`, revoked, `expired` or abandoned approval is never used, nor one past its `expires_at`
      (or an agent approval past its `consume_by`). An agent's approval reads `requested` until its veto delay has
-     passed, as `approval_wait` reads it: the retry is held until then.
+     passed, as `approval_wait` reads it: the retry is held until then, and the hook says it is approved and how many
+     seconds to wait before trying again.
 
    Otherwise it asks as before, with a new approval. The signer decides this; nothing the agent sends can name an
    approval into use.
@@ -335,7 +337,8 @@ answer (shadow mode included), `person` what an agent's answer can't decide.
 **Answers.** `approval_decide` with `approve`, `reject` or `escalate` (agents only), optionally `asserted: {model,
 version, prompt_hash}` (recorded `attested: false`). The `approval` record carries `approver_kind: agent`; an approval
 carries `not_before` (after `veto_s`) and `consume_by` (`agent_consume_s` later): `approval_wait` answers `requested`
-until `not_before`, a consume before it is refused `TK-APPROVAL-VETO`, and one after `consume_by` expires
+until `not_before`, with a `reason` that says it is approved and how many seconds are left, a consume before it is
+refused `TK-APPROVAL-VETO`, and one after `consume_by` expires
 (`approval.expired{reason: consume_window}`). `escalate` writes `approval.escalated`; the approval stays `requested`
 (`approval_wait` adds `escalated: true`) and only people answer it, across restarts. The signer escalates on its own
 after `agent_timeout_s` and when a budget is used up. In **shadow** mode an agent's answer is an `approval.suggested`

@@ -381,6 +381,26 @@ class TestRealSigner(unittest.TestCase):
                        "tool": "pay", "args_source": "parsed", "args": PAY})
         return self.s.approval_request({"request_id": f"a{tcid}", **self.run, "tool_call_id": tcid})
 
+    def test_the_retry_that_lost_the_race_for_an_approval_is_told_so(self):
+        """Two retries of one approved call: the one whose consume came second read "approval_id not bound to this
+        call", as if it had named another call's approval. It says the approval was used by another attempt."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        for tcid, seq in (("tc-2", 1), ("tc-3", 2)):
+            self.assertEqual(self.retry(tcid, seq)["approval_id"], aid)
+        self.assertTrue(self.consume(tool_call_id="tc-2", approval_id_hint=aid)["ok"])
+        lost = self.consume(tool_call_id="tc-3", approval_id_hint=aid)
+        self.assertEqual((lost["ok"], lost["rule_ids"], lost["reason"]), (
+            False, ["TK-APPROVAL-UNBOUND"], f"approval {aid} was already used by another attempt of the same call"))
+        other = self.retry("tc-4", 3)["approval_id"]   # another approval of the same call, never answered: not that
+        self.assertNotEqual(other, aid)
+        self.assertEqual(self.consume(tool_call_id="tc-4", approval_id_hint=other)["rule_ids"],
+                         ["TK-APPROVAL-REQUESTED"])
+        self.s.decide({"request_id": "d5", **self.run, "stream": "s", "client_seq": 4, "tool_call_id": "tc-5",
+                       "tool": "pay", "args_source": "parsed", "args": dict(PAY, cents=1)})
+        self.assertEqual(self.consume(tool_call_id="tc-5", args=dict(PAY, cents=1), approval_id_hint=aid)["reason"],
+                         "approval_id not bound to this call")   # used, but by a call of other arguments
+
     def test_a_retry_after_a_restart_runs_under_the_approval_and_completes(self):
         aid = self.pending()
         self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
