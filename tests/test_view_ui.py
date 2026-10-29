@@ -1695,11 +1695,11 @@ class HorizonZoom(unittest.TestCase):
             while (rafs.length) rafs.shift()(5000); seen.push([rafs.length, HZ.comet]);
             cv.clientHeight = 590; hzDraw(); rafs.shift()(6000); seen.push(blurs);          // a little smaller: drawn, not painted
             cv.clientHeight = 300; hzDraw(); rafs.shift()(6000); seen.push([blurs, made]);   // half the size: painted again, same bitmaps
-            HZ.view = "top"; hzDraw(); let n = 0; while (rafs.length && n < 99) { rafs.shift()(7000); n++; }  // the tilt eases, then stops
-            seen.push([n > 3 && n < 60, HZ.i]);
+            const b0 = blurs; HZ.view = "top"; hzDraw(); let n = 0; while (rafs.length && n < 99) { rafs.shift()(7000); n++; }  // the tilt eases, then stops
+            seen.push([n > 3 && n < 60, HZ.i, blurs - b0]);   // the hole painted once, when it settles: not each frame
             process.stdout.write(JSON.stringify(seen));""")
         self.assertEqual(out[:6], [[0, 2, 2], [0, 2, 2], 1, [0, None], 2, [4, 2]])
-        self.assertEqual(out[6], [True, 1])
+        self.assertEqual(out[6], [True, 1, 1])
 
     PLACE = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP",
              "hzDataWords", "hzPlace"]
@@ -1714,7 +1714,8 @@ class HorizonZoom(unittest.TestCase):
         cmds = {"for f in src/*.py; do pytest -q \"$f\"; done": "pytest", "while true; do sleep 5; done": "sleep",
                 "until curl -sf localhost:8080/health; do sleep 1; done": "curl", "if [ -f x ]; then make lint; fi": "make lint",
                 "! git diff --quiet": "git diff", "time npm test": "npm test", "export A=1 && cargo build": "cargo build",
-                "cd /home/u/shop; for i in 1 2 3; do echo $i; done": "echo", "export A=1": "Bash"}
+                "cd /home/u/shop; for i in 1 2 3; do echo $i; done": "echo", "export A=1": "Bash",
+                "command -v jq": "command"}   # a keyword's option is no program
         self.assertEqual(self.places(list(cmds)), [["machine", v, "command"] for v in cmds.values()])
 
     def test_a_search_pattern_a_filter_a_script_or_a_message_is_data_and_the_files_it_reads_are_places(self):
@@ -1825,6 +1826,15 @@ class HorizonZoom(unittest.TestCase):
             process.stdout.write(JSON.stringify({ first: !!first, now: now ? Math.hypot(now[1] - s[0], now[2] - 3 - s[1]) : null }));"""))
         self.assertTrue(out["first"])                                   # open, its name under its circle
         self.assertTrue(out["now"] is None or out["now"] > 36, out)    # not on the shield (24px, and its ring)
+
+    def test_cmd_ctrl_or_alt_with_a_zoom_key_is_the_browsers_zoom(self):
+        """Cmd+0, Cmd++ and Cmd+- zoomed HORIZON as well as the page."""
+        needs_node(self)
+        out = json.loads(page_js(["HZZOOM", "hzZoomOf"], """
+            process.stdout.write(JSON.stringify([{ key: "0" }, { key: "+" }, { key: "-" }, { key: "0", metaKey: true }, { key: "+", ctrlKey: true },
+                                                 { key: "-", altKey: true }, { key: "x" }].map(e => hzZoomOf(e) || null)));"""))
+        self.assertEqual(out, ["fit", "in", "out", None, None, None, None])
+        self.assertIn('else if (PAGE === "horizon" && hzZoomOf(e)) hzZoomKey(hzZoomOf(e));', PAGE)
 
     def test_a_comet_whose_place_left_the_stage_asks_for_no_more_frames(self):
         """A replayed move's comet whose place had left the newest moves (500 newer calls arrived) was never cleared: an
