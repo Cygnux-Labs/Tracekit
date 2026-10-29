@@ -49,6 +49,10 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 		rep.Detail = err.Error()
 		return rep
 	}
+	if _, ok := files["manifest.json"]; !ok {
+		rep.Detail = "the bundle file is damaged: no manifest.json"
+		return rep
+	}
 	manifest, err := parseFileObject(files, "manifest.json")
 	if err != nil {
 		rep.Detail = err.Error()

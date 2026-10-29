@@ -595,7 +595,7 @@ func ParseVKey(input string) (VKey, error) {
 		}
 	}
 	if prev < 0 {
-		return VKey{}, errors.New("invalid vkey")
+		return VKey{}, errors.New("a vkey is name+id+key")
 	}
 	name := input[:prev]
 	if !validNoteName(name) {
@@ -612,7 +612,7 @@ func ParseVKey(input string) (VKey, error) {
 	}
 	sum := sha256.Sum256(append(append([]byte(name+"\n"), raw[0]), raw[1:]...))
 	if !bytes.Equal(sum[:4], idRaw) {
-		return VKey{}, errors.New("incorrect vkey id")
+		return VKey{}, errors.New("vkey id does not match the key")
 	}
 	if !validEd25519PublicKey(raw[1:]) {
 		return VKey{}, errors.New("invalid vkey public key")
@@ -670,6 +670,9 @@ func checkWitnesses(witnesses []VKey) error {
 	}
 	return nil
 }
+
+// errQuorum: too few pinned witnesses cosigned a checkpoint whose log signature verified.
+var errQuorum = errors.New("witness quorum")
 
 // VerifyCheckpoint checks C2SP signed-note and tlog-cosignature/v1 signatures.
 // Pins must come from the auditor's own trust config, never from the bundle.
@@ -791,7 +794,7 @@ func VerifyCheckpoint(note []byte, log VKey, witnesses []VKey, quorum int) (Chec
 		return Checkpoint{}, errors.New("missing pinned log signature")
 	}
 	if cp.Witnesses < quorum {
-		return Checkpoint{}, errors.New("witness quorum not met")
+		return Checkpoint{}, fmt.Errorf("%w: %d pinned cosignature(s), %d required", errQuorum, cp.Witnesses, quorum)
 	}
 	return cp, nil
 }

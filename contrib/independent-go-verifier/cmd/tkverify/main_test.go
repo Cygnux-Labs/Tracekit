@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +41,29 @@ func TestReportGivesTheReasonBeforeTheVerdict(t *testing.T) {
 	writeReport(&b, report{ExitCode: 2, Integrity: verifier.TrustUnusable, Assurance: "none", Detail: "trust config: x"})
 	if want := "trust config: x\n\nIntegrity: " + verifier.TrustUnusable + ".\nAssurance: none.\n"; b.String() != want {
 		t.Fatalf("report:\n%s\nwant:\n%s", b.String(), want)
+	}
+}
+
+// A trust file that can't be read: the trust file's problem, with nothing checked, in the words of the other verifiers.
+func TestUnreadableTrustFile(t *testing.T) {
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "run.tkb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, args := os.Stdout, os.Args
+	os.Stdout, os.Args = w, []string{"tkverify", "-bundle", bundle, "-trust", filepath.Join(dir, "missing.json")}
+	flag.CommandLine = flag.NewFlagSet("tkverify", flag.ContinueOnError)
+	code := run()
+	os.Stdout, os.Args = stdout, args
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if code != 2 || !strings.HasSuffix(string(out), "\nIntegrity: "+verifier.TrustUnusable+".\nAssurance: none.\n") {
+		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }
 

@@ -143,7 +143,7 @@ func TestWitnessListedTwiceAndQuorum(t *testing.T) {
 	if cp, err := VerifyCheckpoint([]byte(checkpointNote+lineA), log, []VKey{a, a}, 1); err != nil || cp.Witnesses != 1 {
 		t.Fatalf("one witness pinned twice: %+v %v", cp, err)
 	}
-	if _, err := VerifyCheckpoint([]byte(checkpointNote+lineA), log, []VKey{a, a}, 2); err == nil || err.Error() != "witness quorum not met" {
+	if _, err := VerifyCheckpoint([]byte(checkpointNote+lineA), log, []VKey{a, a}, 2); err == nil || err.Error() != "witness quorum: 1 pinned cosignature(s), 2 required" {
 		t.Fatalf("one witness pinned twice counts once: %v", err)
 	}
 	files, trust := bundleFixture(t)
@@ -156,7 +156,7 @@ func TestWitnessListedTwiceAndQuorum(t *testing.T) {
 	}{
 		{[]any{pin("customer"), pin("customer")}, 0, 0, ""},
 		{[]any{pin("customer"), pin("operator")}, 0, 2, "trust config: witness witness.example/a with two classes (customer, operator); a witness has one class: list it once, with the class you give it"},
-		{[]any{pin("customer")}, 2, 1, "checkpoint: witness quorum not met"},
+		{[]any{pin("customer")}, 2, 1, "witness quorum: 0 pinned cosignature(s), 2 required"},
 	} {
 		if r := VerifyBundle(fixtureZip(files), trustWith(t, trust, tc.witnesses, tc.required)); r.ExitCode != tc.exit || r.Detail != tc.detail {
 			t.Fatalf("bundle under %v, %d required: %+v", tc.witnesses, tc.required, r)

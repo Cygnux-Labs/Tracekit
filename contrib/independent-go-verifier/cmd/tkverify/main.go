@@ -85,7 +85,7 @@ func run() int {
 		return r.ExitCode
 	}
 	fail := func(integrity, detail string) int {
-		return finish(report{ExitCode: 2, Integrity: integrity, Assurance: "not checked", Checks: []verifier.VerificationCheck{}, Detail: detail})
+		return finish(report{ExitCode: 2, Integrity: integrity, Assurance: "none", Checks: []verifier.VerificationCheck{}, Detail: detail})
 	}
 	if *bundle == "" {
 		return fail("UNVERIFIABLE", "usage: tkverify -bundle file.tkb [-trust trust.json | -key signer.pub]")

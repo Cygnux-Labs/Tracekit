@@ -667,6 +667,11 @@ func TestTrustProblemsReadAsTheReferences(t *testing.T) {
 	if r.ExitCode != 1 || r.Integrity != "FAILED" || r.Detail != "pinned key tracekit.example.org/log/golden has the wrong signature type" {
 		t.Fatalf("log key pinned as a witness: %+v", r)
 	}
+	notVKey := goldenTrust(t, func(trust map[string]any) { trust["logs"] = []any{"not a vkey"} })
+	r = VerifyBundle(bundle, notVKey)
+	if r.ExitCode != 2 || r.Integrity != TrustUnusable || r.Detail != `trust config: pinned key "not a vkey" is not a vkey: a vkey is name+id+key` {
+		t.Fatalf("a log key that is not a vkey: %+v", r)
+	}
 }
 
 // A quorum past any number of witnesses fits an int of 32 bits, and still fails the checkpoint.
@@ -700,5 +705,15 @@ func TestDamagedEntryIsSaidPlainly(t *testing.T) {
 	r := VerifyBundle(data, readGolden(t, "v2/trust.json"))
 	if r.ExitCode != 2 || r.Integrity != "UNUSABLE BUNDLE" || r.Detail != "the bundle file is damaged: "+name+" does not match its CRC-32 or size" {
 		t.Fatalf("damaged entry: %+v", r)
+	}
+	// a file cut short, or with no manifest, is damaged too, as the Python and TypeScript verifiers say
+	closed := readGolden(t, "v2/closed.tkb")
+	for detail, bundle := range map[string][]byte{
+		"the bundle file is damaged: not a zip file, or bytes after its end record": closed[:len(closed)/2],
+		"the bundle file is damaged: no manifest.json":                              fixtureZip(map[string][]byte{"a": []byte("x")}),
+	} {
+		if r := VerifyBundle(bundle, readGolden(t, "v2/trust.json")); r.ExitCode != 2 || r.Integrity != "UNUSABLE BUNDLE" || r.Detail != detail {
+			t.Fatalf("want %q: %+v", detail, r)
+		}
 	}
 }
