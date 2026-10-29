@@ -188,6 +188,15 @@ def _hint(tool):
         "transfer_to_") else ""
 
 
+def _summary(tool):
+    """What a fabricated detail adds for Claude Code's SubagentHandback, which its progress summary of a background
+    agent calls outside any transcript (docs/limits.md)."""
+    return ("; SubagentHandback is Claude Code's own tool: its progress summary of a background agent can call it in a "
+            "request no transcript records, with a short line of what that agent was doing as the message, and each "
+            "such call seen never completed ok. A hand-back with no ok result is most likely that; one that completed "
+            "ok is not") if tool == "SubagentHandback" else ""
+
+
 def explained(rec, host, explains, labels):
     """What explains `host` for the run of index `rec`: "call", "explains" (`explains`: the policy's entries; `labels`:
     rule id -> label), or None."""
@@ -294,7 +303,7 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
     for tcid, d in rec["l2"].items():
         if tcid not in l3 and tcid not in provider and tcid not in pairs.values() and not structured(d["name"]):
             out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"
-                        if tcid not in rec["l3"] else   # gateway_mandatory: only the agent reported the model asking
+                        f"{_summary(d['name'])}" if tcid not in rec["l3"] else   # gateway_mandatory: only the agent reported the model asking
                         f"a decide for {d['name'][:200]} that no gateway exchange asked for: the agent reported the "
                         "model asking for it, from a model call that went around the gateway"))
     for tcid in rec["sent"]:

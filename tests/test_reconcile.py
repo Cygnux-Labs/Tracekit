@@ -76,6 +76,28 @@ class Wording(unittest.TestCase):
         self.assertNotIn("never asked", detail)
 
 
+    def test_a_fabricated_subagent_handback_says_what_it_most_likely_is(self):
+        """Claude Code's progress summary of a background agent calls SubagentHandback in a request no transcript
+        records (docs/limits.md): that decide's gap stays a fabricated one, and its detail says what it most likely
+        is; another tool's says nothing of it."""
+        run = {"rec": reconcile.new(), "digests": {}}
+        put = lambda d, k, v: d.__setitem__(k, v)
+        reconcile.observe(put, run, {"type": "model.exchange", "source": "sdk", "data": {"tool_uses": [
+            use("toolu_0", "Read")]}})
+        for tcid, tool in (("toolu_1", "SubagentHandback"), ("toolu_2", "SendMessage"), ("toolu_3", "Agent")):
+            reconcile.observe(put, run, {"type": "policy.decision", "tool_call_id": tcid, "args_source": "parsed",
+                                         "source": "sdk", "data": {"tool": tool, "decision": "flag",
+                                                                   "rule_ids": ["TK-UNKNOWN-TOOL"]}})
+        found = {tcid: (kind, detail) for kind, tcid, _, detail in reconcile._found(run, mandatory=False)}
+        kind, detail = found["toolu_1"]
+        self.assertEqual(kind, "fabricated")
+        self.assertTrue(detail.startswith("a decide for SubagentHandback the model never asked for; SubagentHandback "
+                                          "is Claude Code's own tool: its progress summary of a background agent"))
+        self.assertIn("one that completed ok is not", detail)
+        self.assertLessEqual(len(detail), 1024)   # the record's detail limit
+        self.assertEqual(found["toolu_2"], ("fabricated", "a decide for SendMessage the model never asked for"))
+        self.assertEqual(found["toolu_3"], ("fabricated", "a decide for Agent the model never asked for"))
+
     def test_a_coerced_decide_does_not_hide_other_arguments_than_the_gateway_saw(self):
         put = lambda d, k, v: d.__setitem__(k, v)
         for source, gateway, mandatory in (("gateway", True, True), ("gateway", True, False), ("sdk", False, False)):
