@@ -2,18 +2,25 @@
 
     python3 -m pytest tests/test_view_ui.py -v
 """
+import contextlib
 import html
+import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tracekit import observe, view  # noqa: E402
+from factories import wait_for  # noqa: E402
+from tracekit import cli, observe, view  # noqa: E402
+from tracekit.sdk.client import Client  # noqa: E402
+from tracekit.signer import service as svc  # noqa: E402
 from test_view import page_js, v2rec  # noqa: E402
 
 PAGE = observe.read_text(observe.UI)
@@ -1640,15 +1647,46 @@ class FinalQA(unittest.TestCase):
         exp = "tracekit export --v2{} --run 72c9631d2ab83ca8cc88feaee340293c --tenant acme --with-findings -o " \
               "72c9631d2ab83ca8cc88feaee340293c.tkb"
         ver = "tracekit verify 72c9631d2ab83ca8cc88feaee340293c.tkb --trust trust.json"
-        note = "neither command has --data-dir: signer.yaml is a file holding the line data_dir: /srv/tk/data"
         self.assertEqual(out[:4], [
-            [exp.format(" --dev"), "tracekit signer trust --dev -o trust.json", ver, ""],
+            [exp.format(" --dev"), "tracekit signer trust --dev -o trust.json", ver],
             [exp.format(" --config '/etc/tracekit/my signer.yaml'"),
-             "tracekit signer trust --config '/etc/tracekit/my signer.yaml' -o trust.json", ver, ""],
-            [exp.format(" --config signer.yaml"), "tracekit signer trust --config signer.yaml -o trust.json", ver, note],
-            [exp.format(""), "tracekit signer trust -o trust.json", ver, ""]])   # a server that names no signer
+             "tracekit signer trust --config '/etc/tracekit/my signer.yaml' -o trust.json", ver],
+            # a viewer started with --data-dir: the commands named a signer.yaml the person had to write first
+            [exp.format(" --data-dir /srv/tk/data"), "tracekit signer trust --data-dir /srv/tk/data -o trust.json", ver],
+            [exp.format(""), "tracekit signer trust -o trust.json", ver]])   # a server that names no signer
         self.assertEqual(re.findall(r"<dt>(\w+)<button", out[4]), ["EXPORT", "TRUST", "VERIFY"])
-        self.assertIn(html.escape(note, quote=False), out[4])
+        self.assertNotIn("signer.yaml", out[4])
+
+    def test_a_runs_copied_commands_run_as_they_are_for_a_viewer_of_a_data_dir(self):
+        """Started with --data-dir, the page's EXPORT and TRUST named --config signer.yaml, a file the person had to
+        write first; a note under the run review said so, the header's COPY didn't. They run as copied now."""
+        needs_node(self)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        cfg = {"data_dir": os.path.join(d, "data"), "socket": os.path.join(d, "s.sock"), "grace_s": 0}
+        service = svc.open_service(cfg)
+        self.addCleanup(service.close)
+        for srv in svc.serve(cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        client = Client(cfg["socket"])
+        self.addCleanup(client.close)
+        run = client.run(agent="claude-code")
+        run.decide("x1", "Read", {"file_path": "README.md"})
+        run.complete("x1")
+        run.close()
+        store = service.log.storage
+        self.assertTrue(wait_for(lambda: list(store.iter_run("default", run.run_id))[-1]["event"]["type"] == "run.final"
+                                 and (store.checkpoint_latest() or (0,))[0] == store.tree.size, 20))
+        cmds = json.loads(page_js(["shq", "word", "runCmds"], f"""
+            const SIGNER = {json.dumps({"data_dir": cfg["data_dir"]})};
+            process.stdout.write(JSON.stringify(runCmds({json.dumps({"id": run.run_id, "tenant": "default"})})));"""))
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(d)
+        for c in cmds:
+            with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(cli.main(shlex.split(c)[1:]), 0, (c, err.getvalue()))
+        self.assertIn("Integrity: VERIFIED.", out.getvalue())
 
     def test_a_runs_list_says_1_gap_and_1_call(self):
         needs_node(self)

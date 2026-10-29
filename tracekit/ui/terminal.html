@@ -3277,10 +3277,10 @@
       const r = scope && RUNS.get(scope), crumb = `<div class="crumb"><button type="button" class="cp" data-page="runs">← RUNS</button> / ${esc(scope || WRUN || "")}</div>`;
       if (!r) return put("runhead", crumb + `<h1>${esc(WRUN ? "why log " + WRUN : "no run")}</h1>`);
       const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
-      const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, [exp, trust, ver, note] = runCmds(r);
+      const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, [exp, trust, ver] = runCmds(r);
       put("runhead", crumb + `<h1>${esc(r.agent || "run")}</h1><div class="meta">${esc([r.id, r.tenant && r.tenant !== "default" ? "tenant " + r.tenant : "", t0 ? `started ${fmtD(t0)} ${fmtT(t0)} ${TZ}` : "", t1 ? fmtDur(t1 - t0) : "", r.state, r.records != null ? plural(r.records, "record") : ""].filter(Boolean).join(" · "))}</div>`
         + `<div class="cnt">` + vchip(r.verdict) + `<span class="tag">${esc(plural(calls, "call"))}</span>${d.deny ? `<span class="tag deny">${esc(d.deny)} blocked</span>` : ""}${d.ask ? `<span class="tag held">${esc(d.ask)} held</span>` : ""}${d.flag ? `<span class="tag flag">${esc(d.flag)} flagged</span>` : ""}${gaps ? `<span class="tag deny">${esc(plural(gaps, "gap"))}</span>` : ""}</div>`
-        + (r.decisions ? `<div class="acts"><span>EXPORT <code class="shell">${esc(exp)}</code>` + cp(exp) + `</span><span title="${esc(note)}">TRUST <code class="shell">${esc(trust)}</code>` + cp(trust) + `</span><span>VERIFY <code class="shell">${esc(ver)}</code>` + cp(ver) + `</span></div>` : ""));
+        + (r.decisions ? `<div class="acts"><span>EXPORT <code class="shell">${esc(exp)}</code>` + cp(exp) + `</span><span>TRUST <code class="shell">${esc(trust)}</code>` + cp(trust) + `</span><span>VERIFY <code class="shell">${esc(ver)}</code>` + cp(ver) + `</span></div>` : ""));
     }
     // RUNS: every run with its counts and verdict, newest first, each opening its page; then the why logs' runs
     function renderRunsPage() {
@@ -4497,19 +4497,17 @@
       $("detsum").textContent = "run review";
     }
     // the commands that make a run's review evidence, as tracekit report gives them: export its bundle, write a trust file
-    // that pins the signer's log key (tracekit export writes none), verify the bundle against it; [export, trust, verify,
-    // note]. Both name the signer this viewer reads (SIGNER): --dev or its --config; neither takes --data-dir, so a data
-    // dir is named by a signer.yaml that holds it, which `note` says
+    // that pins the signer's log key (tracekit export writes none), verify the bundle against it; [export, trust, verify].
+    // Both name the signer this viewer reads (SIGNER) as it was started: --dev, --config or --data-dir
     function runCmds(r) {
-      const file = r.id + ".tkb", where = SIGNER?.config ? ` --config ${word(SIGNER.config)}` : SIGNER?.data_dir ? " --config signer.yaml" : SIGNER?.dev ? " --dev" : "";
+      const file = r.id + ".tkb", where = SIGNER?.config ? ` --config ${word(SIGNER.config)}` : SIGNER?.data_dir ? ` --data-dir ${word(SIGNER.data_dir)}` : SIGNER?.dev ? " --dev" : "";
       return [`tracekit export --v2${where} --run ${word(r.id)}` + (r.tenant && r.tenant !== "default" ? ` --tenant ${word(r.tenant)}` : "") + ` --with-findings -o ${word(file)}`,
-              `tracekit signer trust${where} -o trust.json`, `tracekit verify ${word(file)} --trust trust.json`,
-              SIGNER?.data_dir ? `neither command has --data-dir: signer.yaml is a file holding the line data_dir: ${SIGNER.data_dir}` : ""];
+              `tracekit signer trust${where} -o trust.json`, `tracekit verify ${word(file)} --trust trust.json`];
     }
     // runCmds as a definition list's lines, each with its copy button and what it is for
     function cmdLines(r) {
-      const [exp, trust, ver, note] = runCmds(r), row = (k, c, tip) => `<dt>${esc(k)}` + cp(c) + `</dt><dd><code class="shell">${esc(c)}</code>${tip ? `<div class="dim">${esc(tip)}</div>` : ""}</dd>`;
-      return row("EXPORT", exp) + row("TRUST", trust, "trust.json pins the signer's log key; tracekit export writes none" + (note ? "; " + note : ""))
+      const [exp, trust, ver] = runCmds(r), row = (k, c, tip) => `<dt>${esc(k)}` + cp(c) + `</dt><dd><code class="shell">${esc(c)}</code>${tip ? `<div class="dim">${esc(tip)}</div>` : ""}</dd>`;
+      return row("EXPORT", exp) + row("TRUST", trust, "trust.json pins the signer's log key; tracekit export writes none")
         + row("VERIFY", ver, "whoever checks the bundle compares the key in trust.json with their own copy of it first; that check, not this page, is the evidence");
     }
     // an answer by the requester, said alike for both answers (the tape's words); only an approval can be a

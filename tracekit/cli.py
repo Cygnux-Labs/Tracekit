@@ -284,6 +284,8 @@ def main(argv=None):
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
     p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
+    p.add_argument("--data-dir", help="with --v2: a signer data dir (holds store/ and log.vkey), as tracekit view "
+                   "reads one; it names no socket, so a run no checkpoint covers yet can't be exported from it")
     p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's findings runs "
                    "(`tracekit analyze --v2`, `tracekit why`) and replay runs, which the verifier checks")
     p.add_argument("--json", action="store_true", help="print what was written as one JSON object, for scripts (with "
@@ -799,8 +801,9 @@ def _export_v2(a, show=print):
     from .signer.service import reader as open_reader
     from .signer.service import signer_config
     from .storage.base import StorageCorrupt, StorageUnavailable, registry_tree
-    if not (a.run or a.run_set) or a.dev and a.config:
-        print("tracekit export --v2: needs --run RUN_ID or --run-set, and --dev or --config (not both)", file=sys.stderr)
+    if not (a.run or a.run_set) or (a.dev, bool(a.config), bool(a.data_dir)).count(True) > 1:
+        print("tracekit export --v2: needs --run RUN_ID or --run-set, and one of --dev, --config or --data-dir at most",
+              file=sys.stderr)
         return 2
     reader = None
 
@@ -810,7 +813,7 @@ def _export_v2(a, show=print):
             reader.close()
         reader = open_reader(cfg)
     try:
-        cfg = signer_config(a.config)
+        cfg = signer_config(a.config, a.data_dir)
         tenant = a.tenant or cfg.get("tenant", "default")
         reopen()
         if a.run_set:
@@ -846,6 +849,9 @@ def _export_v2(a, show=print):
             return note if note and note[0] > last else None
         note = covering()
         if note is None:
+            if a.data_dir:
+                raise ValueError(f"no checkpoint covers run {a.run!r} yet, and a data dir names no signer to ask for "
+                                 "one: export again after its signer's next checkpoint, or with --config or --dev")
             try:
                 if a.config and not cfg.get("socket"):
                     raise SignerUnavailable("the config names no socket")
@@ -883,7 +889,8 @@ def _exported(a, info, what):
     the commands that verify it; with --json, info itself, for scripts."""
     if a.json:
         return json.dumps(info, indent=2)
-    where, out = f" --config {_quote(a.config)}" if a.config else "", _quote(info["bundle"])
+    where = f" --config {_quote(a.config)}" if a.config else f" --data-dir {_quote(a.data_dir)}" if a.data_dir else ""
+    out = _quote(info["bundle"])
     return (f"wrote {info['bundle']}: {what}, {info['records']} records; a verifier needs tracekit "
             f"{info['verifier_min_version']} or newer\n" + (f"spans: {info['otel']}\n" if info.get("otel") else "")
             + "next, pin the signer's log key and verify the bundle against it:\n"
@@ -953,7 +960,7 @@ def _last(a):
     (tenant, run_id), _, agent = pick[0]
     out = os.path.abspath(a.out or f"{run_id}.tkb")
     ns = argparse.Namespace(run=run_id, run_set=False, dev=True, config=None, tenant=tenant, out=out, otel=False,
-                            otel_endpoint=None, with_findings=False, json=False)
+                            otel_endpoint=None, with_findings=False, json=False, data_dir=None)
     if _export_v2(ns, show=lambda s: None):
         return 1
     try:

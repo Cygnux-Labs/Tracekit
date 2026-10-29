@@ -410,20 +410,18 @@ class WeeklyReport(unittest.TestCase):
 
     def test_the_last_lines_are_commands_that_export_and_verify_a_run(self):
         """They left out --tenant, after --data-dir named a command that exports from the dev signer's store, and said
-        to verify with a trust.json that nothing wrote: tracekit export --v2 writes none."""
+        to verify with a trust.json that nothing wrote: tracekit export --v2 writes none. With --data-dir they named a
+        signer.yaml the person had to write first: export and signer trust take --data-dir too."""
         self.assertIn("\n  tracekit export --v2 --tenant beta --run <run id> -o run.tkb\n",
                       weekly.text(self.build(tenant="beta")))
         page = weekly.text(self.build(), data_dir=self.cfg["data_dir"])
-        self.assertIn("\n  tracekit export --v2 --config signer.yaml --run <run id> -o run.tkb\n"
-                      "  tracekit signer trust --config signer.yaml -o trust.json\n", page)
-        line = (f"\n  (neither has --data-dir: signer.yaml is a file holding the line "
-                f"data_dir: {self.cfg['data_dir']})\n")
-        self.assertIn(line, page)
+        where = f"--data-dir {shlex.quote(self.cfg['data_dir'])}"
+        self.assertIn(f"\n  tracekit export --v2 {where} --run <run id> -o run.tkb\n"
+                      f"  tracekit signer trust {where} -o trust.json\nThey check", page)
+        self.assertNotIn("signer.yaml", page)
         cwd = tmpdir(self)
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(cwd)
-        with open("signer.yaml", "w", encoding="utf-8") as f:   # as the report says
-            f.write(line.split("the line ")[1].rstrip(")\n") + "\n")
         # each command as printed, with a run id copied from the page
         tail = page.split("This is an operator summary")[1].replace("<run id>", self.busy).splitlines()
         commands = [x.strip() for x in tail if x.startswith("  tracekit ")] + [tail[-1].split("then: ")[1]]

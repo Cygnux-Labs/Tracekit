@@ -115,8 +115,8 @@ were allowed, flagged, denied and held, who approved, gaps in words (the gap's k
 coverage. Click a line to jump to its first record. Every verdict here is operator-side: for evidence, verify the
 bundle yourself with keys you pinned; **EXPORT**, **TRUST** and **VERIFY** give the exact `tracekit export --v2`,
 `tracekit signer trust -o trust.json` (export writes no trust file) and `tracekit verify` commands, each with a **COPY**
-button and naming the signer the viewer reads (`--dev`, or `--config`; for `--data-dir`, a signer.yaml holding that
-data dir). A run that fails leads with its failing check.
+button and naming the signer the viewer reads as it was started (`--dev`, `--config` or `--data-dir`), so they run as
+copied. A run that fails leads with its failing check.
 
 ### A denied call
 
@@ -458,9 +458,8 @@ can't be checked, as `tracekit verify` does.
   signer running, content older than its 7 days) or when redaction changed its arguments (a secret); when the dev
   signer running refuses the read or speaks another protocol, a `Note:` says so.
 - **Export**: the last lines are the commands that export a run (`tracekit export --v2`, with the report's `--config`
-  and `--tenant`) and write a trust file that pins the signer's log key (`tracekit signer trust`), then the one that
-  verifies the run against it. Every run id in the report is whole, as `--run` needs it. Neither command has
-  `--data-dir`: after `--data-dir DIR` they say to pass a signer.yaml holding the line `data_dir: DIR`. The trust file
+  or `--data-dir` and `--tenant`) and write a trust file that pins the signer's log key (`tracekit signer trust`), then
+  the one that verifies the run against it. Every run id in the report is whole, as `--run` needs it. The trust file
   is the operator's word for the key: whoever verifies checks the key in it against their own copy.
 
 It reads the store without the signer's lock, as the viewer does, and never starts, stops or replaces a signer. The

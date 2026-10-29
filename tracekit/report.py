@@ -379,16 +379,14 @@ def text(rep, config=None, data_dir=None):
         out.append(f"  not counted yet: {store['newer']:,} record{'s' * (store['newer'] != 1)} in the store newer than "
                    "the latest checkpoint")
     out += [f"  {a}" for a in rep["alerts"]]
-    # tracekit export --v2 and tracekit signer trust read a store by its config (--dev or --config): no --data-dir
-    where = f" --config {shlex.quote(config)}" if config else " --config signer.yaml" if data_dir else ""
+    # tracekit export --v2 and tracekit signer trust name the store as the report was given it
+    where = f" --config {shlex.quote(config)}" if config else \
+        f" --data-dir {shlex.quote(os.path.abspath(data_dir))}" if data_dir else ""
     out += ["", "This is an operator summary, not evidence. To hand evidence to someone, export the run (a full run id "
                 "from above) and a trust file that pins the signer's log key:",
             f"  tracekit export --v2{where}" + (f" --tenant {shlex.quote(rep['tenant'])}" if rep["tenant"] else "")
             + " --run <run id> -o run.tkb",
             f"  tracekit signer trust{where} -o trust.json"]
-    if data_dir and not config:
-        out.append(f"  (neither has --data-dir: signer.yaml is a file holding the line "
-                   f"data_dir: {os.path.abspath(data_dir)})")
     out.append("They check the key in trust.json against their own copy of it, then: "
                "tracekit verify run.tkb --trust trust.json")
     return "\n".join(_escaped(line) for line in out)

@@ -5,8 +5,8 @@
     tracekit signer fsck  --config signer.yaml
     tracekit signer migrate --config signer.yaml     # create the Postgres store's tables (as the migration role)
     tracekit signer close-log --config signer.yaml   # shut the log down for good (log.closed), signer stopped
-    tracekit signer vkey  [--dev | --config signer.yaml]               # the log's verifier key
-    tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it and the witnesses
+    tracekit signer vkey  [--dev | --config signer.yaml | --data-dir DIR]               # the log's verifier key
+    tracekit signer trust [--dev | --config signer.yaml | --data-dir DIR] -o trust.json  # pins it and the witnesses
     tracekit signer reveal --record SEQ [--dev | --config signer.yaml]  # the salt of one record's commitments
     tracekit signer token add NAME [--ttl 30d] [--tenant T] --config signer.yaml   # prints a token once (http.tokens)
     tracekit signer token list|revoke [NAME] --config signer.yaml
@@ -4637,10 +4637,13 @@ def load_config(path):
     return cfg
 
 
-def signer_config(path=None):
-    """The config at `path`, or the same-user dev signer's (data_dir and socket)."""
+def signer_config(path=None, data_dir=None):
+    """The config at `path`, a bare signer data dir `data_dir` (as `tracekit view --data-dir` reads one: no socket,
+    witnesses or other settings), or the same-user dev signer's (data_dir and socket)."""
     if path:
         return load_config(path)
+    if data_dir:
+        return {"data_dir": os.path.abspath(data_dir)}
     from tracekit.sdk.autospawn import SOCK, signer_dir
     return {"data_dir": dev_data_dir(), "socket": os.path.join(signer_dir(), SOCK)}
 
@@ -4988,6 +4991,8 @@ def main(argv=None):
         g = q.add_mutually_exclusive_group()
         g.add_argument("--config")
         g.add_argument("--dev", action="store_true", help="the same-user dev signer (the default)")
+        g.add_argument("--data-dir", help="a signer data dir (holds store/ and log.vkey), as tracekit view reads one: "
+                                          "its log key only, not a signer.yaml's witnesses")
         if name == "trust":
             q.add_argument("-o", "--out", required=True)
     q = sub.add_parser("reveal", help="print the salt of one record's commitments (the signer's owner only)")
@@ -5068,7 +5073,7 @@ def main(argv=None):
     if a.cmd in ("vkey", "trust"):
         from tracekit.sdk.client import SignerUnavailable
         try:
-            cfg = signer_config(a.config)
+            cfg = signer_config(a.config, a.data_dir)
             vkeys = read_vkeys(cfg["data_dir"])
             if a.cmd == "trust":
                 witnesses = [{"vkey": w["vkey"], "class": w["class"]} for w in cfg.get("witnesses") or ()]
@@ -5083,7 +5088,8 @@ def main(argv=None):
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
         print("\n".join(vkeys) if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkeys[0].split('+')[0]}"
-              f"{' (Ed25519 + SLH-DSA)' if len(vkeys) > 1 else ''} and {len(witnesses) or 'no'} witness(es)")
+              f"{' (Ed25519 + SLH-DSA)' if len(vkeys) > 1 else ''} and {len(witnesses) or 'no'} witness(es)"
+              + ("; a data dir names none: --config signer.yaml pins a signer's witnesses" if a.data_dir else ""))
         return 0
     from tracekit.signer import format_bridge
     try:

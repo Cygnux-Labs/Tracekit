@@ -228,6 +228,14 @@ class ExportWithoutSigner(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no checkpoint covers run 'run-1' yet and no signer answered", err)
         self.assertFalse(os.path.exists(out))
+        # a data dir names no socket: it says so, and never asks the dev signer, another signer, for a checkpoint
+        with mock.patch("tracekit.sdk.client.Client", side_effect=AssertionError("asked a signer")):
+            code, _, err = run_cli("export", "--v2", "--run", "run-1", "--tenant", "acme", "--data-dir", self.dir, "-o",
+                                   out)
+        self.assertEqual((code, err), (1, "tracekit export: no checkpoint covers run 'run-1' yet, and a data dir names no "
+                                          "signer to ask for one: export again after its signer's next checkpoint, or "
+                                          "with --config or --dev\n"))
+        self.assertEqual(run_cli("export", "--v2", "--run", "run-1", "--data-dir", self.dir, "--dev", "-o", out)[0], 2)
 
 
 if __name__ == "__main__":
