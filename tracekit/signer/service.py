@@ -2880,9 +2880,11 @@ class SignerService:
             if missing:
                 degrade(tx, run.get("prov"), "partial", f"{tcid} ({call['tool'][:64]}) completed with a digest, "
                                                           "not its result")
-            # approved: this call consumed the approval (pipeline.ran), not the attempt whose approval a retry consumed
+            # approved: this call consumed the approval (pipeline.ran), not the attempt whose approval a retry consumed,
+            # and only once: under the decision that consumed it, or a later one while that is still open
             a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {})
             approved = a.get("state") == "consumed" and ran(a)[:2] == (tcid, attempt) \
+                and (ran(a)[2] == did or ran(a)[2] in run["decisions"]) \
                 and self._opens(a["commitment"], a["label"], req["args_digest"])
             if approved and ran(a)[2] in run["decisions"]:   # the approved call completed under a later decision
                 tx.pop(run["decisions"], ran(a)[2])
@@ -3115,8 +3117,11 @@ class SignerService:
         attempt was blocked. It is `approved` (never consumed, rejected, revoked or expired), within its expiry and
         consume window, its own call has no result (one that ran anyway, against the policy, used it up), and was asked
         for the same tool and arguments (its commitment opens with `digest`) under the same policy, for every rule the
-        call's decision names. `prefer` (the caller's hint) when it is one; else the oldest; None when none is."""
-        if not (call and call["decision"] == "ask" and digest and self._same(call, digest)):
+        call's decision names; and the call's latest answer is no no (_said_no: a yes before a later no is not reused).
+        `prefer` (the caller's hint) when it is one; else the oldest usable now (past an agent's veto delay); else the
+        oldest; None when none is."""
+        if not (call and call["decision"] == "ask" and digest and self._same(call, digest)) \
+                or self._said_no(key, call["tool"], call.get("via"), digest):
             return None
         now, ran = _iso(time.time()), self.log.runs[key]["results"]
         # lean: scans the signer's live approvals, as the sweep does; index approved ones by run if a run holds many.
@@ -3128,6 +3133,7 @@ class SignerService:
                  and a["policy_hash"] == self.policy.policy_hash and set(call["rule_ids"]) <= set(a["rule_ids"])
                  and a["expires_at"] > now and a.get("consume_by", "~") > now and a["tool_call_id"] not in ran
                  and self._opens(a["commitment"], a["label"], digest)]
+        found.sort(key=lambda aid: self.log.approvals[aid].get("not_before", "") > now)   # stable: oldest first
         return prefer if prefer in found else found[0] if found else None
 
     def _said_no(self, key, tool, via, digest):

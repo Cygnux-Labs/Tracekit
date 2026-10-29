@@ -217,7 +217,10 @@ protocol stays 20.
   witness entry (counted once) and on a quorum above the pinned witnesses (exit 1).
 - **One approval, one run.** A held call that ran without using its approval (an `executed_against_policy` gap: the
   harness ran it anyway) left the approval approved, so the agent's retry of the same call ran too. An approval whose
-  own call has a result is no longer given to a retry.
+  own call has a result is no longer given to a retry. A call decided again after it used its approval and completed
+  under both decisions ran twice with no gap (in 1.5.0 too); the second result is now an `executed_against_policy`
+  gap. And a yes is not reused once a later no answered the same call: a person who approved the call and then
+  rejected the agent's early retry of it saw the next retry told "a person rejected this exact call" and run anyway.
 
 ### Docs
 - The 1.4 viewer page is kept beside 1.5's; 1.5 viewer screenshots; `docs/deploy.md` names the `tracekit-central`

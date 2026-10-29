@@ -75,6 +75,8 @@ it, the agent sends the same call again, under a new tool call id, and that call
      args digest), asked through the same gateway or none;
    - was asked under the same policy, for every rule the retry's decision names: a live constraint or a hold added
      since asks again;
+   - is not older than a no: when the latest answer to the same call was a reject or a revoke (of another of its
+     approvals), an earlier yes isn't used;
    - is `approved`, by a person or an agent approver under [who may answer](#who-may-answer), and not yet consumed. A
      `requested`, `rejected`, revoked, `expired` or abandoned approval is never used, nor one past its `expires_at`
      (or an agent approval past its `consume_by`), nor one whose blocked call ran anyway (its result is recorded: the
@@ -92,7 +94,8 @@ it, the agent sends the same call again, under a new tool call id, and that call
    under the retry's `tool_call_id`, and the approval's `approval.request` and `approval` records name the blocked
    attempt's. A T2 approval is consumed with the `approval_id_hint` that `approval_request` returned, and the consume
    returns the signer's copy of the arguments as for any T2 call.
-4. The retry completes as an approved call (no `executed_against_policy` gap). If it never completes, the retry, not
+4. The retry completes as an approved call (no `executed_against_policy` gap), once: a second result on the same
+   approval, under another decision of the same call, is signed with that gap. If it never completes, the retry, not
    the blocked attempt, is the run's `decided_not_completed` gap. The blocked attempt never ran under the approval: if
    it ran anyway (an SDK agent that ran it despite `ask`), its result, before or after the retry's, is signed with an
    `executed_against_policy` gap.

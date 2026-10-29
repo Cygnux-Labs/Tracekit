@@ -394,6 +394,45 @@ class TestRealSigner(unittest.TestCase):
                        "tool": "pay", "args_source": "parsed", "args": PAY})
         return self.s.approval_request({"request_id": f"a{tcid}", **self.run, "tool_call_id": tcid})
 
+    def test_a_yes_before_a_later_no_to_the_same_call_lets_no_retry_run(self):
+        """A person approved the call (tc-1), then rejected the agent's early retry of it (tc-2): the next retry was told
+        "a person rejected this exact call" and ran on the earlier yes. The latest answer is the no, so it asks again."""
+        aid = self.pending()
+        early = self.retry("tc-2", 1)["approval_id"]
+        self.assertNotEqual(early, aid)
+        self.s.approval_decide({"request_id": "h1", "approval_id": aid, "decision": "approve"})
+        self.s.approval_decide({"request_id": "h2", "approval_id": early, "decision": "reject"})
+        got = self.retry("tc-3", 2)["approval_id"]
+        self.assertNotIn(got, (aid, early))
+        self.assertEqual(self.consume(tool_call_id="tc-3", approval_id_hint=got)["rule_ids"], ["TK-APPROVAL-REQUESTED"])
+
+    def test_a_retry_takes_an_approval_usable_now_over_one_in_an_agents_veto_delay(self):
+        aid = self.pending()
+        later = self.retry("tc-2", 1)["approval_id"]
+        for h, a in (("h1", aid), ("h2", later)):
+            self.s.approval_decide({"request_id": h, "approval_id": a, "decision": "approve"})
+        self.s.log.approvals[aid]["not_before"] = svc._iso(time.time() + 60)   # as an agent approver's veto delay
+        self.assertEqual(self.retry("tc-3", 2)["approval_id"], later)
+
+    def test_a_call_completed_twice_on_one_approval_has_a_gap_the_second_time(self):
+        """A call that consumed its approval, decided again with the same arguments and completed under both decisions,
+        ran twice on one approval with no executed_against_policy gap."""
+        run = self.s.register_run({"request_id": "reg", "agent": {"name": "a"}})
+        self.run = {"run_id": run["run_id"], "run_token": run["run_token"]}
+        call = {**self.run, "stream": "s", "tool_call_id": "tc-1", "attempt": 0, "tool": "pay", "args_source": "parsed",
+                "args": PAY}
+        first = self.s.decide({"request_id": "d1", "client_seq": 0, **call})["decision_id"]
+        aid = self.s.approval_request({"request_id": "a", **self.run, "tool_call_id": "tc-1"})["approval_id"]
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.assertTrue(self.consume(approval_id_hint=aid)["ok"])
+        again = self.s.decide({"request_id": "d2", "client_seq": 1, **call})["decision_id"]
+        for seq, did in ((2, first), (3, again)):
+            self.s.complete({"request_id": f"r{seq}", **self.run, "stream": "s", "client_seq": seq, "tool_call_id": "tc-1",
+                             "attempt": 0, "decision_id": did, "args_digest": event_hash({"tool": "pay", "args": PAY}),
+                             "status": "ok"})
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.events() if e["type"] == "capture.gap"
+                          and e["data"]["kind"] == "executed_against_policy"], ["tc-1"])
+
     def test_the_retry_that_lost_the_race_for_an_approval_is_told_so(self):
         """Two retries of one approved call: the one whose consume came second read "approval_id not bound to this
         call", as if it had named another call's approval. It says the approval was used by another attempt."""

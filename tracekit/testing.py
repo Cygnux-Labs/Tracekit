@@ -250,7 +250,9 @@ class FakeSigner:
         """The real signer's approve, then retry (SignerService._reusable): an approved approval of an earlier call of
         run `run_id` with the tool, arguments and rules of `call`, an `ask`, whose own call has no result (it ran
         anyway, so it used the approval up). Unlike the real one it checks no expiry (approvals here never expire),
-        policy hash (one fixed policy), gateway (`via`) or veto delay: this signer has none of them."""
+        policy hash (one fixed policy), gateway (`via`) or veto delay: this signer has none of them. Nor does it keep
+        the order of answers (the real one reuses no yes once a later no answered the same call) or which decision
+        consumed an approval (the real one has a call completed twice on one approval ran against the policy)."""
         ran = {e["data"]["tool_call_id"] for e in self._runs[run_id]["events"] if e["type"] == "tool.result"}
         found = [aid for aid, a in self._approvals.items() if a["run_id"] == run_id and a["state"] == "approved"
                  and a["tool"] == call["tool"] and a["args_digest"] == call["args_digest"]
