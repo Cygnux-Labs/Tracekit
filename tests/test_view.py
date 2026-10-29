@@ -437,6 +437,11 @@ class Translate(unittest.TestCase):
         [used] = [r for r in self.feed(*run(True)) if r["v2"].get("approval") == "consumed"]
         self.assertEqual((used["v2"]["tool_use_id"], used["v2"]["held"], used["text"]),
                          ("c2", "c1", "the agent's retry of c1 ran with the approved arguments"))
+        # a record of another kind that names the approval is still its request's call's, and no retry
+        grant = self.feed(*self.HELD, v2rec(4, "ext", {"name": "pcm.grant", "approval_id": "apr-1"}, tool_call_id="c2"))[-1]
+        self.assertEqual((grant["v2"]["tool_use_id"], "held" in grant["v2"]), ("c2", False))
+        self.assertEqual(self.feed(*self.HELD, v2rec(4, "ext", {"name": "pcm.grant", "approval_id": "apr-1"}))[-1]
+                         ["v2"]["tool_use_id"], "c1")
 
     def test_a_use_refused_only_for_its_approvals_state_changes_no_outcome(self):
         """A second use of an approval whose call ran turned "approved · ran" into "refused" (TK-APPROVAL-CONSUMED); an

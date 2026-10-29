@@ -422,11 +422,11 @@ class Translator(observe.Translator):
         t, d = e["type"], e.get("data") or {}
         out = self._v2(e, rec, t, d)
         call = d.get("tool_use_id") or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
-        asked = t.startswith("approval") and self.requests.get(d.get("approval_id"), ("", [], None))[2]
+        asked = self.requests.get(d.get("approval_id"), ("", [], None))[2]
         # an approval's later records (one that expired at run.final names no call) are its request's call's; one filed
         # under the agent's retry of that call, which used its approval (signer _reusable), names it as `held`
         info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": call or asked,
-                **({"held": asked} if call and asked and asked != call else {}),
+                **({"held": asked} if t.startswith("approval") and call and asked and asked != call else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
