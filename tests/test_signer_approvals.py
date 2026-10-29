@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from unittest import mock
 
 import test_bundle_v2 as tb
@@ -318,7 +319,7 @@ class TestRealSigner(unittest.TestCase):
         return self.s.approval_request(req)["approval_id"]
 
     def consume(self, **kw):
-        return self.s.approval_consume({"request_id": f"c{time.monotonic_ns()}", **self.run, "tool_call_id": "tc-1",
+        return self.s.approval_consume({"request_id": f"c{uuid.uuid4().hex}", **self.run, "tool_call_id": "tc-1",
                                         "tool": "pay", "args_source": "parsed", "args": PAY, **kw})
 
     def events(self):
