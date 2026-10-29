@@ -4082,8 +4082,9 @@
         for (const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { x.moveTo(px + dx * s, py + dy * (sy - cc)); x.lineTo(px + dx * s, py + dy * sy); x.lineTo(px + dx * (s - cc), py + dy * sy); }
         x.stroke();
       }
+      if (HZ.comet && !D.places[HZ.comet.to]) HZ.comet = null;   // its place left the newest moves: no flight to draw
       const cm = HZ.comet;
-      if (cm && !still && D.places[cm.to]) {
+      if (cm && !still) {
         const pr = (now - cm.t0) / 700, [ex, ey] = pt(cm.to), [sx, sy] = D.places[cm.from] ? pt(cm.from) : P(.082 * 1.6, D.places[cm.to].th);
         const mx = (sx + ex) / 2 - ((sy + ey) / 2 - hy) * .18, my = (sy + ey) / 2 + ((sx + ex) / 2 - hx) * .18 * i, at = u => [(1 - u) ** 2 * sx + 2 * (1 - u) * u * mx + u * u * ex, (1 - u) ** 2 * sy + 2 * (1 - u) * u * my + u * u * ey];
         x.fillStyle = x.strokeStyle = HZ.col[cm.ag];

@@ -1758,6 +1758,15 @@ class HorizonZoom(unittest.TestCase):
             process.stdout.write(JSON.stringify([again, n - again, Object.keys(hzD.places).includes("~/T/new.py")]));""")
         self.assertEqual(out, [0, 1, True])
 
+    def test_a_comet_whose_place_left_the_stage_asks_for_no_more_frames(self):
+        """A replayed move's comet whose place had left the newest moves (500 newer calls arrived) was never cleared: an
+        idle stage asked for every animation frame, 100% of a core."""
+        out = self.run_stage("""
+            motion = true; HZ.comet = { ag: "coder", to: "gone", from: null, t0: 0 };
+            HZ.raf = 0; hzDraw(); rafs.shift()(16);
+            process.stdout.write(JSON.stringify([rafs.length, HZ.comet]));""")
+        self.assertEqual(out, [0, None])
+
     def test_routes_are_one_path_each_however_many_moves(self):
         """Each move was its own stroke: following an agent of 500 moves stroked 500 paths a frame, sixty frames a
         second. An agent's route is one path of curves now."""
