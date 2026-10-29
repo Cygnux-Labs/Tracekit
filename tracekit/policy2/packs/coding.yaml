@@ -50,7 +50,7 @@ deny:
   - id: TK-D002
     class: shell
     field: code
-    pattern: '(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(env\s+|nohup\s+)?(\S*/)?(sh|bash|zsh|dash)\b(?: -(?:e|x|n|v|u|a|C|f|l|i))*(?:\s+-s|\s*(?:[;&|)>]|$))|(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(\S*/)?(python3?|perl|ruby|node)\b(?: -(?:I|B|u|s|w|W|O|OO|x))*(?:\s+-)?\s*(?:[;&|)>]|$)|(curl|wget)\b[^;&\n]*\|\s*xargs\b[^;&\n]*\b(sh|bash|zsh|dash)\s+-c(?:\s|[;&|)]|$)|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*\b(sh|bash|zsh|dash|python3?|node|perl|ruby)\b\s+\S+|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*(?:\bsource|\.)\s+\S+|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*(^|[;&]\s*)\./\S+|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
+    pattern: '(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(env\s+|nohup\s+)?(\S*/)?(sh|bash|zsh|dash)\b(?: -(?:e|x|n|v|u|a|C|f|l|i))*(?:\s+-s|\s+(?:-|/dev/stdin|/dev/fd/0)\s*(?:[;&|)>\n]|$)|\s*(?:[;&|)>\n]|$))|(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(\S*/)?(python3?|perl|ruby|node)\b(?: -(?:I|B|u|s|w|W|O|OO|x))*(?:\s+(?:-|/dev/stdin|/dev/fd/0))?\s*(?:[;&|)>\n]|$)|(curl|wget)\b[^;&\n]*\|\s*xargs\b[^;&\n]*\b(sh|bash|zsh|dash)\s+-c(?:\s|[;&|)]|$)|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*\b(sh|bash|zsh|dash|python3?|node|perl|ruby)\b\s+\S+|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*(?:\bsource|\.)\s+\S+|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*(^|[;&]\s*)\./\S+|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
     reason: running a downloaded script
     remedy: Download the script to a file and show it for review instead of piping it into a shell; a person runs it once they have read it.
     rationale: Remote code execution without review.

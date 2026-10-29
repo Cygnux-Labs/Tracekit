@@ -897,6 +897,14 @@ class _Parser:
                 cmd["opaque"] = True
             elif name == "eval":
                 self.nested(" ".join(args), via + ["eval"])
+            elif name == "git":
+                # a shell alias runs its command as sh -c does: set for this run (`git -c alias.x='!cmd' x`) or saved
+                # for a later one (`git config alias.x '!cmd'`)
+                for j, a in enumerate(args):
+                    m = re.fullmatch(r"(?is)alias\.[^=\s]+(?:=\s*!(.*))?", a)
+                    nxt = args[j + 1].lstrip() if m and m.group(1) is None and j + 1 < len(args) else ""
+                    if m and (m.group(1) is not None or nxt.startswith("!")):
+                        self.nested(m.group(1) if m.group(1) is not None else nxt[1:], via + ["git alias"])
             elif name == "trap" and len(args) > 1 and not re.fullmatch(r"-[lpP]*", args[0]):
                 # its action runs on a signal or at exit (`trap 'rm -rf "$d"' EXIT`); `-` or a lone condition resets
                 self.nested(args[1] if args[0] == "--" else args[0], via + ["trap"])
