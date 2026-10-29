@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -116,7 +117,7 @@ func ReadBundle(input []byte) (map[string][]byte, error) {
 		data, readErr := io.ReadAll(io.LimitReader(file, int64(f.UncompressedSize64)+1))
 		closeErr := file.Close()
 		if readErr != nil || closeErr != nil || uint64(len(data)) != f.UncompressedSize64 {
-			return nil, errors.New("ZIP content/CRC failure")
+			return nil, fmt.Errorf("the bundle file is damaged: %s does not match its CRC-32 or size", f.Name)
 		}
 		content[f.Name] = data
 		pos = end
@@ -363,8 +364,9 @@ func loadTrust(raw []byte) (VKey, []VKey, int, error) {
 			if err != nil {
 				return VKey{}, nil, 0, err
 			}
+			// a vkey of another type is no trust error: the checkpoint fails it (exit 1), as in the reference
 			vkey, err := ParseVKey(name)
-			if err != nil || vkey.Type != 4 {
+			if err != nil {
 				return VKey{}, nil, 0, errors.New("invalid witness vkey")
 			}
 			witnesses = append(witnesses, vkey)
@@ -389,7 +391,8 @@ func loadTrust(raw []byte) (VKey, []VKey, int, error) {
 		if err != nil {
 			return VKey{}, nil, 0, err
 		}
-		quorum = int(n)
+		// int is 32 bits on some builds: past any number of witnesses, every larger quorum fails alike
+		quorum = int(min(n, math.MaxInt32))
 	}
 	return log, witnesses, quorum, nil
 }

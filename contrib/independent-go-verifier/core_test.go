@@ -125,7 +125,7 @@ func TestWitnessCountsOnce(t *testing.T) {
 		if _, _, _, err := loadTrust(raw); (tc.want == "") != (err == nil) {
 			t.Fatalf("trust %v: %v", tc.pins, err)
 		}
-		if r := VerifyBundle(fixtureZip(files), raw); tc.want != "" && (r.ExitCode != 2 || r.Detail != "trust: "+tc.want) {
+		if r := VerifyBundle(fixtureZip(files), raw); tc.want != "" && (r.ExitCode != 2 || r.Integrity != TrustUnusable || r.Detail != "trust config: "+tc.want) {
 			t.Fatalf("bundle under trust %v: %+v", tc.pins, r)
 		}
 	}
@@ -155,7 +155,7 @@ func TestWitnessListedTwiceAndQuorum(t *testing.T) {
 		detail    string
 	}{
 		{[]any{pin("customer"), pin("customer")}, 0, 0, ""},
-		{[]any{pin("customer"), pin("operator")}, 0, 2, "trust: witness witness.example/a with two classes (customer, operator); a witness has one class: list it once, with the class you give it"},
+		{[]any{pin("customer"), pin("operator")}, 0, 2, "trust config: witness witness.example/a with two classes (customer, operator); a witness has one class: list it once, with the class you give it"},
 		{[]any{pin("customer")}, 2, 1, "checkpoint: witness quorum not met"},
 	} {
 		if r := VerifyBundle(fixtureZip(files), trustWith(t, trust, tc.witnesses, tc.required)); r.ExitCode != tc.exit || r.Detail != tc.detail {

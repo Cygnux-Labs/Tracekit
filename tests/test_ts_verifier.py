@@ -22,7 +22,7 @@ import zipfile
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
-from factories import rewrite_bundle, unverified_bundles  # noqa: E402
+from factories import damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
 from tracekit import crypto, gateway  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
@@ -617,11 +617,10 @@ class Agreement(unittest.TestCase):
         bundle = self.mutate(edit=cosigned)
         second = {"vkey": checkpoint.vkey(name, checkpoint.COSIGNATURE, crypto.public_from_secret(other)), "class": cls}
         for witnesses, required, want in (
-                ([w, second], 2, f"NoteError: trust pins two witness keys under one name ({name}); a name is one "
-                                 "witness: keep only its current key"),
-                ([w, dict(w, **{"class": flip})], 1, f"ValueError: trust pins witness {name} with two classes ({cls}, "
-                                                     f"{flip}); a witness has one class: list it once, with the class "
-                                                     "you give it"),
+                ([w, second], 2, f"trust pins two witness keys under one name ({name}); a name is one witness: keep "
+                                 "only its current key"),
+                ([w, dict(w, **{"class": flip})], 1, f"trust pins witness {name} with two classes ({cls}, {flip}); a "
+                                                     "witness has one class: list it once, with the class you give it"),
                 ([w, w], 1, None)):
             path = os.path.join(self.d, f"trust-{uuid.uuid4().hex}.json")
             with open(path, "w") as f:
@@ -633,6 +632,27 @@ class Agreement(unittest.TestCase):
             else:
                 self.assertEqual((code, rep.integrity), (0, "VERIFIED"))
                 self.assertIn("1 pinned cosignature(s), 1 required", [c["detail"] for c in rep.checks])
+
+    def test_a_damaged_bundle_and_an_unusable_trust_file_read_the_same_in_both(self):
+        """An entry that no longer matches its CRC-32, and a trust file pinning a key that is no vkey: both verifiers
+        print the same lines, in plain words (the bundle file is damaged; the trust file's own problem), with no
+        exception's name, and keep exit 2."""
+        bad = os.path.join(self.d, f"damaged-{uuid.uuid4().hex}.tkb")
+        damage_crc(self.bundles["closed"], bad)
+        trust = os.path.join(self.d, f"trust-{uuid.uuid4().hex}.json")
+        with open(trust, "w") as f:
+            json.dump({"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}, f)
+        for bundle, t, integrity, said in (
+                (bad, self.trusts["witnessed"], "UNUSABLE BUNDLE", "cannot read bundle: the bundle file is damaged: "
+                                                                   "Bad CRC-32 for file 'runs/"),
+                (self.bundles["closed"], trust, "UNVERIFIABLE (the trust file can't be used)",
+                 "pinned key 'x+00000000+AA==' is not a vkey: ")):
+            with self.subTest(integrity):
+                code, rep = self.agree(bundle, t)
+                self.assertEqual((code, rep.integrity), (2, integrity))
+                self.assertEqual(ts_verify(bundle, t)["checks"], rep.checks)
+                self.assertTrue(rep.checks[0]["detail"].startswith(said), rep.checks)
+                self.assertNotRegex(ts_cli(bundle, t)[1], r"Error\b|BadZipFile")
 
     def test_a_bundle_for_a_newer_verifier_says_how_to_verify_it(self):
         bundle, trust = self.mutate(edit=lambda files, m: m.update(verifier_min_version="9.0")), self.trusts["witnessed"]
@@ -805,9 +825,9 @@ class Agreement(unittest.TestCase):
                       "pinned key checked).\nAssurance: none: no trust config pins a log key or witness.\n", alone)
         self.assertTrue(alone.endswith("\nExit code 2.\n"))
         edited = page_verify(self.mutate(lambda rs: rs[1]["event"]["data"].update(tool="other")))
-        self.assertIn("\n[FAIL] signatures — ", edited)
-        self.assertTrue(edited.endswith("\nIntegrity: FAILED.\nAssurance: none: no trust config pins a log key or "
-                                        "witness.\n\nExit code 1.\n"))
+        self.assertRegex(edited, r"\n\[FAIL\] signatures — 1 problem\(s\) in \d+ record\(s\)\n")
+        self.assertTrue(edited.endswith("\nIntegrity: FAILED.\nAssurance: not rated (the bundle failed verification)."
+                                        "\n\nExit code 1.\n"))
 
     def test_the_page_worker_runs_its_own_script_and_never_hangs(self):
         """An extension's script element first in the page (Chrome extensions add them): the worker still starts from the

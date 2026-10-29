@@ -152,14 +152,15 @@ import re
 import struct
 import sys
 import zipfile
+import zlib
 
 from tracekit import __version__, crypto
-from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, Report, _load_trusted_key
+from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, NOT_RATED, Report, _load_trusted_key
 from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, ext_names, run_files, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
-from tracekit.format.canon import loads_strict
+from tracekit.format.canon import StrictJSONError, loads_strict
 from tracekit.format.records import RecordError, record_digest, verify_record
 from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
@@ -364,7 +365,10 @@ def load_trust(path):
                          "issuers, analyzers)")
     for k in (t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]
               + [v for i in t.get("issuers", []) for v in i.values()]):
-        checkpoint.parse_vkey(k)
+        try:
+            checkpoint.parse_vkey(k)
+        except checkpoint.NoteError as e:
+            raise ValueError(f"pinned key {k[:80]!r} is not a vkey: {e}") from None
     checkpoint.check_witnesses([w["vkey"] for w in t.get("witnesses", [])])
     classes = {}
     for w in t.get("witnesses", []):
@@ -404,7 +408,9 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
     try:
         trust = load_trust(trust_path)
     except Exception as e:
-        rep.check("trust config", False, f"{type(e).__name__}: {e}")
+        rep.integrity = "UNVERIFIABLE (the trust file can't be used)"
+        rep.check("trust config", False, f"{e.filename}: {e.strerror}" if isinstance(e, OSError) and e.strerror else
+                  f"not valid JSON ({e})" if isinstance(e, StrictJSONError) else str(e))
         return rep, EXIT_BAD
     try:
         files = read_zip(path)
@@ -419,7 +425,9 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
             rep.check("bundle readable", False, rep.integrity, upgrade(need, path, trust_path))
             return rep, EXIT_BAD
     except Exception as e:
-        rep.check("bundle readable", False, f"cannot read bundle: {type(e).__name__}: {e}")
+        rep.check("bundle readable", False, "cannot read bundle: " + (
+            f"the bundle file is damaged: {e}" if isinstance(e, (zipfile.BadZipFile, zlib.error)) else
+            str(e) if isinstance(e, Unusable) else f"{type(e).__name__}: {e}"))
         return rep, EXIT_BAD
     try:
         _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations, memo)
@@ -500,6 +508,12 @@ def _manifest_detail(listed, hashes, bad):
     return "files differ from the manifest: " + ", ".join(how) + (f" and {len(bad) - 5} more" if len(bad) > 5 else "")
 
 
+def _found(problems, passed, scope):
+    """A check's detail: what it found when it passed, else how many problems in what (its lines say which), so a
+    failed line never reads as a pass."""
+    return f"{len(problems)} problem(s) in {scope}" if problems else passed
+
+
 def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations, memo=None):
     listed, hashes = manifest.get("files"), {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
     bad = sorted(n for n in set(listed) | set(hashes) if n not in listed or n not in hashes or listed[n] != hashes[n]) \
@@ -517,7 +531,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     except checkpoint.NoteError as e:
         rep.check("checkpoint", False, str(e))
         return
-    rep.check("checkpoint", size == proofs["tree_size"], f"{origin} at tree size {size}, signed by its pinned log key")
+    rep.check("checkpoint", size == proofs["tree_size"], f"{origin} at tree size {size}, signed by its pinned log key"
+              + ("" if size == proofs["tree_size"] else ", but the proofs are for another tree size"))
     rep.check("witness quorum", len(cosigs) >= trust["witnesses_required"],
               f"{len(cosigs)} pinned cosignature(s), {trust['witnesses_required']} required")
     anchors = _anchor(rep, files, trust, files[name], origin, size)
@@ -650,8 +665,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         listed = {(r["event"]["seq"], r["hash"]) for r in key_records}
         key_problems.extend(f"seq {seq}: key.retire withheld (the registry log has it)"
                             for seq, h in retired if (seq, h) not in listed)
-    rep.check("keys", bool(timeline) and not key_problems,
-              f"{len(timeline)} record key(s) from {len(key_records)} key record(s)", key_problems)
+    rep.check("keys", bool(timeline) and not key_problems, _found(
+        key_problems, f"{len(timeline)} record key(s) from {len(key_records)} key record(s)" if timeline else
+        "no key record declares a record key", f"{len(key_records)} key record(s)"), key_problems)
     # a key.retire left out of keys/records.jsonl shows only against a registry range from its start past every record
     # lean: a key.retire written before the tenant's first registry leaf is in no registry of the tenant; add signer
     # leaves to a tenant's registry when it is created if keys are ever retired while tenants are being added
@@ -664,20 +680,25 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     _bridge(rep, key_records, v1_ledger, v1_key)
     parted = [ps for n, ps in names.items() if ps != [n]]
     if parted:
-        rep.check("run parts", not layout, f"{len(parted)} run(s) in {sum(map(len, parted))} parts, each part "
-                                           "continuing the one before it", layout)
+        rep.check("run parts", not layout, _found(layout, f"{len(parted)} run(s) in {sum(map(len, parted))} parts, "
+                                                          "each part continuing the one before it",
+                                                  f"the parts of {len(parted)} run(s)"), layout)
     count = sum(map(len, runs.values()))
-    rep.check("signatures", not problems, f"{count} record(s), keys valid at their position", problems)
+    rep.check("signatures", not problems, _found(problems, f"{count} record(s), keys valid at their position",
+                                                 f"{count} record(s)"), problems)
     only = len(runs) == 1 and next(iter(runs.values()))[0]["event"]
-    rep.check("run chain", not chain, f"run {str(only.get('run_id'))[:200]!r} of tenant {only.get('tenant')!r}, "
-                                      "contiguous from run_seq 0" if only else
-              f"{len(runs)} run(s), each contiguous from run_seq 0", chain)
-    rep.check("inclusion", not outside, f"first and last records of {len(runs)} run(s) are in the checkpointed tree "
-                                        f"of size {size}", outside)
+    rep.check("run chain", not chain, _found(chain, f"run {str(only.get('run_id'))[:200]!r} of tenant "
+                                                    f"{only.get('tenant')!r}, contiguous from run_seq 0" if only else
+                                             f"{len(runs)} run(s), each contiguous from run_seq 0",
+                                             f"the chain of {len(runs)} run(s)"), chain)
+    rep.check("inclusion", not outside, _found(outside, f"first and last records of {len(runs)} run(s) are in the "
+                                                        f"checkpointed tree of size {size}",
+                                               f"the first and last records of {len(runs)} run(s)"), outside)
     policies = {}   # policy_hash -> the bundled snapshot named by it: the one set _incidents and _approvals read
     for p in sorted(n for n in files if n.startswith("policies/")):
         h = "sha256:" + hashlib.sha256(files[p]).hexdigest()
-        rep.check("policy snapshot", p == f"policies/{h[7:]}.json", p)
+        rep.check("policy snapshot", p == f"policies/{h[7:]}.json",
+                  p if p == f"policies/{h[7:]}.json" else f"{p} is not named by the SHA-256 of its bytes")
         if p == f"policies/{h[7:]}.json":
             policies[h] = files[p]
 
@@ -892,11 +913,11 @@ def _approvals(rep, runs, policies):
                     problems.append(f"{where}: rule {str(rid)[:64]} does not permit agents")
     if agents:   # a bundle without agent approvals keeps the report it always had
         rep.check("approvals by people", True, f"{people} approval(s) answered by people")
-        rep.check("approvals by agents", not problems and not unchecked,
-                  f"{agents} approval(s) answered by agents (model output); argument bounds are not checkable offline "
-                  "(salted commitments): audit one with `tracekit signer reveal`"
-                  + (f"; agent approval bounds unchecked for {len(unchecked)}" if unchecked else ""),
-                  (problems or unchecked)[:20], warn=not problems)
+        rep.check("approvals by agents", not problems and not unchecked, _found(
+            problems, f"{agents} approval(s) answered by agents (model output); argument bounds are not checkable "
+                      "offline (salted commitments): audit one with `tracekit signer reveal`"
+                      + (f"; agent approval bounds unchecked for {len(unchecked)}" if unchecked else ""),
+            f"{agents} approval(s) answered by agents"), (problems or unchecked)[:20], warn=not problems)
 
 
 def _coverage(matrices, k):
@@ -980,9 +1001,10 @@ def _incidents(rep, runs, policies):
                 expected += [d for t, d in det.observe(detect.Plain, st, e)[1] if t == "incident.opened"]
         problems += _honoured(events, pointers)
     n = len(opened) + len(pointers - opened.keys())
-    rep.check("incidents", not problems, f"{n} incident(s): {checked} checked against the bundle, {n - checked} "
-                                         "signer-asserted (operator, cross-run, under several policies, or under "
-                                         "a policy not in the bundle)", problems[:20])
+    rep.check("incidents", not problems, _found(problems, f"{n} incident(s): {checked} checked against the bundle, "
+                                                          f"{n - checked} signer-asserted (operator, cross-run, under "
+                                                          "several policies, or under a policy not in the bundle)",
+                                                f"{n} incident(s)"), problems[:20])
     if unbundled:
         rep.check("incident policies", False, f"{len(unbundled)} cited policy(ies) not in the bundle: their incidents "
                   "are signer-asserted, not recomputed (export the run with the signer's config, which bundles the "
@@ -1170,8 +1192,9 @@ def _findings(rep, runs):
     problems += [f"replay run {rid[:128]} of investigation {str(about[rid][2])[:128]} is counted by no finding" for rid in stray
                  if about[rid][2] in investigations]
     if found > len(uncounted):
-        rep.check("findings", not problems, f"{found - len(uncounted)} tracekit why finding(s), each counted from its "
-                  "replay runs", problems[:20])
+        rep.check("findings", not problems, _found(problems, f"{found - len(uncounted)} tracekit why finding(s), each "
+                                                             "counted from its replay runs",
+                                                   f"{found - len(uncounted)} tracekit why finding(s)"), problems[:20])
     if uncounted:
         rep.check("findings counted", False, f"{len(uncounted)} finding(s) not counted: export the analysed run with "
                   "`tracekit export --v2 --run <run> --with-findings` to count them", uncounted[:20], warn=True)
@@ -1257,8 +1280,9 @@ def _reviews(rep, runs, pinned):
             selfs.append(f"findings run {rid}: {reason}")
         labels[label] += len(signed)
     if total:
-        rep.check("reviews", not problems and not selfs, f"{total} review(s): " + ", ".join(
-            f"{n} {k}" for k, n in sorted(labels.items()) if n), (problems or selfs)[:20], warn=not problems)
+        said = f"{total} review(s): " + ", ".join(f"{n} {k}" for k, n in sorted(labels.items()) if n)
+        rep.check("reviews", not problems and not selfs, _found(problems, said, said), (problems or selfs)[:20],
+                  warn=not problems)
         verdicts = [r["event"]["data"].get("verdict") for rs in runs.values() for r in rs   # signed findings only: an
                     if r["event"].get("type") == "review" and "cites" in r["event"]["data"]]   # imported one is a label
         sev = collections.Counter(str(v.get("severity"))[:16] for v in verdicts
@@ -1291,7 +1315,8 @@ def _constraints(rep, runs):
                     problems.append(f"seq {e['seq']}: a {str(e['data'].get('decision'))[:16]} held by TK-CONSTRAINT "
                                     + ("before any constraint.added in its run" if not seen else "is no ask"))
     if added or held:
-        rep.check("constraints", not problems, f"{added} live constraint(s) added; {held} call(s) held by them",
+        rep.check("constraints", not problems, _found(problems, f"{added} live constraint(s) added; {held} call(s) "
+                                                                "held by them", "the calls held by live constraints"),
                   problems[:20])
 
 
@@ -1420,8 +1445,9 @@ def _bridge(rep, key_records, v1_ledger, v1_key):
         prev, expect, last = r.get("hash"), seq + 1, (seq, r.get("hash"), e.get("data"))
     if last != (b["v1_last_seq"], b["v1_head"], retire_data(b["v1_kid"], b["v1_last_seq"])):
         problems.append(f"the v1 ledger does not end at seq {b['v1_last_seq']} in the bridge's key retirement")
-    rep.check("format bridge", not problems, f"v1 ledger of {b['v1_kid']} verifies to seq {b['v1_last_seq']} and ends "
-                                             "in its key retirement", problems[:20])
+    rep.check("format bridge", not problems, _found(problems, f"v1 ledger of {b['v1_kid']} verifies to seq "
+                                                              f"{b['v1_last_seq']} and ends in its key retirement",
+                                                    f"the v1 ledger of {b['v1_kid']}"), problems[:20])
 
 
 def _anchor(rep, files, trust, note, origin, size):
@@ -1543,5 +1569,6 @@ def print_report(rep, code, stream=None):
         s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(c['detail'])}" if c["detail"] else "") + "\n")
         for p in c["problems"]:
             s.write(f"        {clean(p)}\n")
-    s.write(f"\nIntegrity: {clean(rep.integrity)}.\nAssurance: {clean(rep.assurance)}.\n"
+    s.write(f"\nIntegrity: {clean(rep.integrity)}.\n"
+            f"Assurance: {NOT_RATED if code == EXIT_FAIL else clean(rep.assurance)}.\n"
             + (f"Findings: {clean(rep.findings)}.\n" if getattr(rep, "findings", None) else ""))

@@ -30,6 +30,8 @@ TRUST = {"hook": "reported by a hook process (any process running as the agent's
          "transcript": "harness-reported, lower trust", "sdk": "reported by an instrumented app",
          "migrated": "converted from a v0.1 ledger (hash chain only, unsigned origin)", "signer": "written by tracekitd"}
 EXIT_OK, EXIT_FAIL, EXIT_BAD, EXIT_WARN = 0, 1, 2, 3
+# the printed Assurance line of a bundle that failed: an assurance level rates only evidence that verified
+NOT_RATED = "not rated (the bundle failed verification)"
 # companion runs (signed findings, causeway anchors) have no run.start/run.end of their own
 COMPANION_PREFIXES = ("findings:", "anchors:")
 
@@ -702,6 +704,7 @@ def print_report(rep, code, stream=None):
             s.write(f"        {p}\n")
     for n in getattr(rep, "notes", ()):
         s.write(f"warning: {n}\n")
-    s.write(f"\nIntegrity: {integrity(rep, code)}.\nAssurance: {assurance(rep)}.\n"
+    s.write(f"\nIntegrity: {integrity(rep, code)}.\n"
+            f"Assurance: {NOT_RATED if code == EXIT_FAIL else assurance(rep)}.\n"
             f"Tracekit proves what its capture path recorded and that it has not changed since it was "
             f"signed and checkpointed. It does not prove intent, complete coverage, or that reported results are real.\n")

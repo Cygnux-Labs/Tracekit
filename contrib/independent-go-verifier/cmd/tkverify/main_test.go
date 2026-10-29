@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	verifier "github.com/Cygnux-Labs/Tracekit/contrib/independent-go-verifier"
 )
 
 func TestReadLimited(t *testing.T) {
@@ -18,6 +20,25 @@ func TestReadLimited(t *testing.T) {
 	}
 	if _, err := readLimited(path, 3); err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("read over limit error = %v", err)
+	}
+}
+
+// The report reads as the reference CLI's: warning lines, the reason, then the verdict; a failed bundle's assurance is
+// not rated.
+func TestReportGivesTheReasonBeforeTheVerdict(t *testing.T) {
+	var b strings.Builder
+	writeReport(&b, report{ExitCode: 1, Integrity: "FAILED", Assurance: "witnessed; records ed25519",
+		Detail: "seq 3: invalid Ed25519 record signature",
+		Checks: []verifier.VerificationCheck{{Check: "gaps", Status: "warn", Detail: "1 signed gap"}}})
+	want := "[WARN] gaps — 1 signed gap\n[FAIL] seq 3: invalid Ed25519 record signature\n\nIntegrity: FAILED.\n" +
+		"Assurance: not rated (the bundle failed verification).\n"
+	if b.String() != want {
+		t.Fatalf("report:\n%s\nwant:\n%s", b.String(), want)
+	}
+	b.Reset()
+	writeReport(&b, report{ExitCode: 2, Integrity: verifier.TrustUnusable, Assurance: "none", Detail: "trust config: x"})
+	if want := "trust config: x\n\nIntegrity: " + verifier.TrustUnusable + ".\nAssurance: none.\n"; b.String() != want {
+		t.Fatalf("report:\n%s\nwant:\n%s", b.String(), want)
 	}
 }
 

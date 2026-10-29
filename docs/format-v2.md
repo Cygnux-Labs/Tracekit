@@ -645,7 +645,8 @@ for a signer; an auditor should build theirs from independent sources ([auditor 
 line and verdict is in [verdicts](verdicts.md).
 
 1. **Trust config.** Parse strictly; check the keys and types of §10; parse every vkey; each witness key under one
-   name, one witness key per name and one class per witness. Failure: exit 2.
+   name, one witness key per name and one class per witness. Failure: `UNVERIFIABLE (the trust file can't be used)`,
+   exit 2. A witness vkey's type is not checked here: a key of another type pinned as a witness fails step 4.
 2. **Read the zip** under the limits of §9. Parse `manifest.json`; `format` must be `tracekit.bundle.v2` and
    `verifier_min_version` a version number (one to three dot-separated runs of ASCII digits) not above the version of
    the format the verifier implements, else `UNVERIFIABLE (needs tracekit >= x)`, exit 2, the `bundle readable` line

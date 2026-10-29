@@ -118,8 +118,8 @@ test("checkpoints and trust: a witness is one key under one name with one class,
   const trust = JSON.parse(readFileSync(join(sampleDir, "sample.trust.json"), "utf8"));
   const out = await verify(new Uint8Array(readFileSync(join(sampleDir, "sample.tkb"))), bytes(JSON.stringify({ ...trust,
     witnesses: pins.map((k) => ({ vkey: k, class: "customer" })), witnesses_required: 2 })));
-  assert.deepEqual([out.code, out.report.failures, out.report.checks[0].detail],
-    [2, ["trust config"], "NoteError: " + refused("witness.example/a, witness.example/alias")]);
+  assert.deepEqual([out.code, out.report.failures, out.report.integrity, out.report.checks[0].detail],
+    [2, ["trust config"], "UNVERIFIABLE (the trust file can't be used)", refused("witness.example/a, witness.example/alias")]);
   // two keys under one name, whichever comes first, are refused too; one vkey listed twice counts once
   const named = [pins[0], await vkey("witness.example/a", COSIGNATURE, b.pub)];
   const twice = bytes(v.note + await cosign("witness.example/a", a) + await cosign("witness.example/a", b));
@@ -132,9 +132,9 @@ test("checkpoints and trust: a witness is one key under one name with one class,
   const sample = new Uint8Array(readFileSync(join(sampleDir, "sample.tkb")));
   const under = (ws) => verify(sample, bytes(JSON.stringify({ ...trust, witnesses: ws, witnesses_required: 0 })));
   const as = (k, c) => ({ vkey: k, class: c });
-  assert.equal((await under(named.map((k) => as(k, "customer")))).report.checks[0].detail, "NoteError: " + twoKeys);
+  assert.equal((await under(named.map((k) => as(k, "customer")))).report.checks[0].detail, twoKeys);
   assert.equal((await under([as(pins[0], "customer"), as(pins[0], "operator")])).report.checks[0].detail,
-    "ValueError: trust pins witness witness.example/a with two classes (customer, operator); a witness has one class: "
+    "trust pins witness witness.example/a with two classes (customer, operator); a witness has one class: "
     + "list it once, with the class you give it");
   assert.equal((await under([as(pins[0], "customer"), as(pins[0], "customer")])).code, 0);
 });
@@ -363,7 +363,7 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.deepEqual([rekor.code, cliExit(rekor.report)], [2, " The TypeScript command-line verifier exits with the same "
     + "code; the Python one checks what this page doesn't."]);
   const v1 = await words(file("tests/golden/v1/demo-run.tkb"), trust, { bundle: "demo-run.tkb", trust: "t.json" });
-  assert.deepEqual([v1.code, v1.v.word], [2, "UNVERIFIABLE"]);
+  assert.deepEqual([v1.code, v1.v.word, v1.report.integrity], [2, "UNUSABLE BUNDLE", "UNUSABLE BUNDLE"]);   // the CLIs' word
   assert.match(v1.v.means, /format v1 bundle/);
   assert.equal(cliExit(v1.report), "");
   assert.deepEqual(v1.steps.map((s) => s.command), ["uvx --from tracekit-ai tracekit verify demo-run.tkb --key signer.pub"]);
@@ -373,11 +373,32 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.deepEqual(newer.steps.map((s) => s.text.split(",")[0]),
     ["With Node.js:", "Or with Python", "Open the latest page"]);
   assert.match(v1.steps[0].text, /^A format v1 bundle: verify it with the signer.s public key/);
-  assert.match((await words(Uint8Array.of(1, 2, 3))).v.means, /couldn't be read as a Tracekit bundle/);
+  const unreadable = await words(Uint8Array.of(1, 2, 3));
+  assert.deepEqual([unreadable.v.word, unreadable.report.integrity], ["UNUSABLE BUNDLE", "UNUSABLE BUNDLE"]);
+  assert.match(unreadable.v.means, /couldn't be read as a Tracekit bundle/);
+  // a trust file that can't be used: said so, with its problem in plain words and no exception name, in the line, the
+  // verdict and the step
   const untrusted = await words(sample("sample.tkb"), bytes("{}"));
+  assert.deepEqual([untrusted.code, untrusted.v.word, untrusted.report.integrity],
+    [2, "UNVERIFIABLE", "UNVERIFIABLE (the trust file can't be used)"]);
   assert.match(untrusted.v.means, /trust file couldn't be used/);
-  assert.equal(untrusted.report.checks[0].detail, "ValueError: trust.json: not a v2 trust config (logs, witnesses, algs, "
-    + "witnesses_required, rekor, monitors, issuers, analyzers)");
+  const config = "trust.json: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers, "
+    + "analyzers)";
+  assert.equal(untrusted.report.checks[0].detail, config);
+  assert.equal(untrusted.steps[0].text, `Fix the trust file, or choose the right one: ${config}. If it isn't the `
+    + "sender's, ask for the sender's trust file: a small .json that names their signer's log key (tracekit last writes "
+    + "it next to the bundle, as <name>.trust.json).");
+  for (const [t, said] of [["{", /^not valid JSON \(syntax: /], ['{"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}',
+    /^pinned key 'x\+00000000\+AA==' is not a vkey: /]]) {
+    const { report, steps } = await words(sample("sample.tkb"), bytes(t));
+    assert.match(report.checks[0].detail, said, t);
+    assert.doesNotMatch(report.checks[0].detail + steps[0].text, /Error\b/, t);
+  }
+  // a failed bundle: the line that failed says so, and its assurance isn't rated
+  const tampered = bad.report.checks.find((c) => c.check === "signatures");
+  assert.equal(tampered.detail, `${tampered.problems.length} problem(s) in 12 record(s)`);
+  assert.ok(asText(bad.report, bad.code).endsWith("\nIntegrity: FAILED.\nAssurance: not rated (the bundle failed "
+    + "verification).\n\nExit code 1.\n"));
   // a meaning for exactly the outcomes each line can have, each its own: rep.check(name, ok, detail, problems, warn)
   // passes when ok, else warns when warn, else fails; rep.unsupport(name) warns
   const can = {}, yes = (n) => n?.kind === ts.SyntaxKind.TrueKeyword;
@@ -409,6 +430,25 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.match(facts.Records, /^12 signed record\(s\) in 1 run\(s\), 2026-/);
   assert.deepEqual([facts["Tool calls"], facts["Held for approval"], facts.Gaps, facts.Agents],
     ["3 decided: 2 allow, 0 deny, 1 ask", '"pay": approved by alice', "none recorded", '"support-bot" (uid:1000)']);
+});
+
+test("the summary says an approval expired, and why the assurance is dev", () => {
+  const run = (...events) => new Map([["runs/r.jsonl", bytes(events.map((e) => JSON.stringify({ event: e }) + "\n")
+    .join(""))]]);
+  const files = run({ type: "approval.request", ts: "2026-10-29T00:00:00.000000Z", data: { approval_id: "a1",
+    binding: { tool: "pay" } } }, { type: "approval.expired", ts: "2026-10-29T00:00:01.000000Z",
+    data: { approval_id: "a1" } }, { type: "approval.request", ts: "2026-10-29T00:00:02.000000Z",
+    data: { approval_id: "a2", binding: { tool: "send" } } });
+  const said = (assurance) => Object.fromEntries(summarize(files, { assurance, checks: [] }));
+  assert.equal(said("dev")["Held for approval"], '"pay": expired before anyone answered; "send": no answer recorded');
+  const witnessed = "dev; records ed25519; checkpoint Ed25519 only (o); cosigned ed25519 by w (customer) at "
+    + "2026-10-10T00:19:23Z; earliest independent anchor 2026-10-10T00:19:23Z; approvals: self";
+  assert.equal(said(witnessed).Assurance, "dev: a run holds a self-approval (whoever asked for the call approved it)");
+  assert.equal(said("dev; records ed25519; checkpoint Ed25519 only (o); no witness cosignature; approvals: self").Assurance,
+    "dev: a run holds a self-approval (whoever asked for the call approved it), and no independent witness vouches for "
+    + "the checkpoint");
+  assert.equal(said("dev; records ed25519; checkpoint Ed25519 only (o); no witness cosignature").Assurance,
+    "dev: no independent witness vouches for the checkpoint");
 });
 
 test("a failed line's meaning says what the failure means, never that the check passed", async () => {

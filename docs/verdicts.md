@@ -12,7 +12,10 @@ Assurance: witnessed; records ed25519; checkpoint Ed25519 only (tracekit.example
 Findings: 2 finding(s) (1 high, 1 medium) and 1 coverage review(s); 3 independent (an opinion of the run, not its integrity).
 ```
 
-Each line is `PASS`, `WARN` or `FAIL`. `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
+Each line is `PASS`, `WARN` or `FAIL`. A `FAIL` line says what failed: a line that counts problems reads `n problem(s)
+in ...` (for example `[FAIL] signatures — 1 problem(s) in 336 record(s)`), and the indented lines under it name each
+one, records by their log `seq`. A failed bundle's printed line is `Assurance: not rated (the bundle failed
+verification).`: a level rates only evidence that verified (`--json` keeps the level the checkpoint has). `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
 "integrity", "assurance", "notes"}`, with `"findings"` when there is a Findings line. The algorithm behind each line is in [format v2](format-v2.md#11-verification-algorithm);
 this page says what each one means, and what it does not. The v1 report is described in [signing](signing.md).
 
@@ -22,7 +25,7 @@ this page says what each one means, and what it does not. The v1 report is descr
 |---|---|
 | 0 | no line failed |
 | 1 | at least one line failed: `Integrity: FAILED` |
-| 2 | the trust config or the bundle could not be used at all (`UNUSABLE BUNDLE`, `UNVERIFIABLE`), or the flags were wrong |
+| 2 | the trust config or the bundle could not be used at all (`UNVERIFIABLE (the trust file can't be used)`, `UNUSABLE BUNDLE`, `UNVERIFIABLE`), or the flags were wrong |
 | 3 | `--strict` and no line failed but at least one is a warning |
 
 Use `--strict` in CI or an audit when a warning should stop the pipeline: every `WARN` line below makes it exit 3.
@@ -35,7 +38,8 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 | `VERIFIED TO HEAD n (open)` | the bundle's one run has no `run.final` yet; its records up to `run_seq` n verify. Records after n may exist |
 | `VERIFIED (k run(s) open)` | a run-set bundle in which k runs have no `run.final` yet |
 | `FAILED` | at least one check failed; the failed lines say which |
-| `UNUSABLE BUNDLE` | the trust config or the zip could not be read, or the manifest is not `tracekit.bundle.v2` |
+| `UNUSABLE BUNDLE` | the zip could not be read (`the bundle file is damaged: ...` when an entry doesn't match its CRC-32 or won't inflate), or the manifest is not `tracekit.bundle.v2` |
+| `UNVERIFIABLE (the trust file can't be used)` | your trust config could not be read or is not a valid one; the `trust config` line says why. Nothing in the bundle was checked |
 | `UNVERIFIABLE (needs tracekit >= x)` | the bundle asks for a newer verifier (`verifier_min_version`); nothing failed. The `bundle readable` line lists the commands that verify it ([below](#a-bundle-that-needs-a-newer-verifier)) |
 | `UNVERIFIABLE (key revoked)` | records signed by a record key whose certificate a passed `--revocations` file revokes ([issuer.md](issuer.md)) |
 | `UNVERIFIABLE (no trust config: ...)` | the [browser page](#verify-in-your-browser) without a trust file: nothing failed, but no pinned key checked the checkpoint |
@@ -72,9 +76,9 @@ own script, which inherits that policy.
 
 It shows, in this order:
 
-- the verdict, **VERIFIED** (exit 0), **FAILED** (exit 1) or **UNVERIFIABLE** (exit 2), with what it means and what it
-  doesn't: VERIFIED means the record is intact and signed by the signer your trust file names, not that the agent
-  behaved well;
+- the verdict, **VERIFIED** (exit 0), **FAILED** (exit 1), or **UNVERIFIABLE** or **UNUSABLE BUNDLE** (exit 2, the word
+  the command-line verifiers print), with what it means and what it doesn't: VERIFIED means the record is intact and
+  signed by the signer your trust file names, not that the agent behaved well;
 - what to do next, with the commands to run, for every result that isn't plainly VERIFIED;
 - when nothing failed, a summary: records and time span, signer, assurance, agents, tool calls, calls held for
   approval and who answered them, gaps, and findings with their author labels;
@@ -127,7 +131,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 
 | Line | Pass means | On failure |
 |---|---|---|
-| `trust config` | — | the trust config is malformed (exit 2). In the browser page without one: a warning, and the bundle is never VERIFIED |
+| `trust config` | — | the trust config can't be read or is malformed, and the line says how in plain words: `UNVERIFIABLE (the trust file can't be used)`, exit 2. A log key pinned under `witnesses` is no trust config error: it fails `checkpoint` (exit 1). In the browser page without one: a warning, and the bundle is never VERIFIED |
 | `bundle readable` | — | not a zip, unsafe entries, no manifest, or too new (exit 2): then it lists the commands that verify the bundle ([above](#a-bundle-that-needs-a-newer-verifier)) |
 | `manifest` | the files are exactly those listed, with those hashes | a file was added, removed or changed after export |
 | `checkpoint` | the note is signed by the pinned log key named after its origin (and by its pinned hybrid SLH-DSA key, if any), and is of the proofs' tree size | wrong key, wrong origin, edited note, a pinned hybrid line missing or bad |

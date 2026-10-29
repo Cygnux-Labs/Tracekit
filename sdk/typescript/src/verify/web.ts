@@ -9,7 +9,7 @@
  * large bundle doesn't freeze the page; in the page itself where the browser refuses the worker.
  */
 import { MEANING, asJson, asText, cliExit, nextSteps, sh, summarize, verdict } from "./explain.js";
-import { type Report, VERSION, clean, readZip, verify } from "./index.js";
+import { type Report, VERSION, assuranceLine, clean, readZip, verify } from "./index.js";
 
 /** The page's samples (src/verify/sample/), base64: a clean bundle, a tampered copy and their trust config. */
 declare const SAMPLES: Record<"sample.tkb" | "sample-tampered.tkb" | "sample.trust.json", string>;
@@ -123,7 +123,8 @@ function page() {
     if (mine !== turn) return;   // a later choice of files: its report wins
     const { report, code, summary } = result;
     const v = verdict(report, code);
-    $("banner").className = `banner ${{ VERIFIED: "ok", FAILED: "bad", UNVERIFIABLE: "warn" }[v.word]}`;
+    $("banner").className = `banner ${{ VERIFIED: "ok", FAILED: "bad", UNVERIFIABLE: "warn", "UNUSABLE BUNDLE": "warn" }[
+      v.word]}`;
     $("verdict-word").textContent = v.word;
     $("verdict-means").textContent = v.means;
     $("verdict-not").textContent = v.notMeans;
@@ -151,7 +152,7 @@ function page() {
       return d;
     }));
     $("integrity").textContent = `Integrity: ${clean(report.integrity)}.`;
-    $("assurance").textContent = `Assurance: ${clean(report.assurance)}.`;
+    $("assurance").textContent = assuranceLine(report);
     last = { text: asText(report, code), json: JSON.stringify(asJson(report, code), null, 2) + "\n", name: bundle.name };
     $("exit").textContent = last.text.trim().split("\n").at(-1) + cliExit(report);
     $("report").textContent = last.text;

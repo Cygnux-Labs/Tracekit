@@ -1,6 +1,7 @@
 package verifier
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -617,5 +619,86 @@ func TestV1SecurityMutations(t *testing.T) {
 				t.Fatalf("accepted forged v1 evidence: %+v", r)
 			}
 		})
+	}
+}
+
+// goldenTrust is tests/golden/v2/trust.json with `edit` applied.
+func goldenTrust(t *testing.T, edit func(map[string]any)) []byte {
+	t.Helper()
+	var trust map[string]any
+	if err := json.Unmarshal(readGolden(t, "v2/trust.json"), &trust); err != nil {
+		t.Fatal(err)
+	}
+	edit(trust)
+	raw, _ := json.Marshal(trust)
+	return raw
+}
+
+// A failure names its record by the log seq, as the reference verifier does, never by its place in the run.
+func TestFailuresNameRecordsByLogSeq(t *testing.T) {
+	trust := readGolden(t, "negative/trust.json")
+	for name, want := range map[string]string{
+		"record-bad-signature.tkb": "seq 3: invalid Ed25519 record signature",
+		"record-deleted.tkb":       "run_seq 2 (seq 7) does not continue the run",
+	} {
+		if r := VerifyBundle(readGolden(t, "negative/"+name), trust); r.ExitCode != 1 || r.Detail != want {
+			t.Errorf("%s: %d %q, want 1 %q", name, r.ExitCode, r.Detail, want)
+		}
+	}
+}
+
+// A trust config that can't be used is said to be the trust file's problem (exit 2); a log key pinned as a witness
+// is no trust config error: the checkpoint fails it (exit 1), as in the reference and the TypeScript verifier.
+func TestTrustProblemsReadAsTheReferences(t *testing.T) {
+	bundle := readGolden(t, "v2/closed.tkb")
+	aliased := goldenTrust(t, func(trust map[string]any) {
+		w := trust["witnesses"].([]any)[0].(map[string]any)
+		k, _ := ParseVKey(w["vkey"].(string))
+		trust["witnesses"] = append(trust["witnesses"].([]any), map[string]any{"vkey": fixtureVKey("alias.example.org/w", 4, k.Pub), "class": w["class"]})
+	})
+	r := VerifyBundle(bundle, aliased)
+	if r.ExitCode != 2 || r.Integrity != TrustUnusable || !strings.HasPrefix(r.Detail, "trust config: one witness key under two names") {
+		t.Fatalf("aliased witness: %+v", r)
+	}
+	logKey := goldenTrust(t, func(trust map[string]any) {
+		trust["witnesses"] = []any{map[string]any{"vkey": trust["logs"].([]any)[0], "class": "customer"}}
+	})
+	r = VerifyBundle(bundle, logKey)
+	if r.ExitCode != 1 || r.Integrity != "FAILED" || r.Detail != "pinned key tracekit.example.org/log/golden has the wrong signature type" {
+		t.Fatalf("log key pinned as a witness: %+v", r)
+	}
+}
+
+// A quorum past any number of witnesses fits an int of 32 bits, and still fails the checkpoint.
+func TestHugeWitnessQuorumIsClampedBeforeConversion(t *testing.T) {
+	trust := []byte(strings.Replace(string(readGolden(t, "v2/trust.json")), `"witnesses_required": 1`, `"witnesses_required": 9007199254740991`, 1))
+	_, _, quorum, err := loadTrust(trust)
+	if err != nil || quorum != math.MaxInt32 {
+		t.Fatalf("quorum %d, %v", quorum, err)
+	}
+	if r := VerifyBundle(readGolden(t, "v2/closed.tkb"), trust); r.ExitCode != 1 {
+		t.Fatalf("a quorum no checkpoint meets: %+v", r)
+	}
+}
+
+// An entry whose bytes no longer match its CRC-32 is a damaged bundle file, in those words (exit 2).
+func TestDamagedEntryIsSaidPlainly(t *testing.T) {
+	data := readGolden(t, "v2/closed.tkb")
+	z, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	for _, f := range z.File {
+		if strings.HasPrefix(f.Name, "runs/") {
+			name = f.Name
+			at, _ := f.DataOffset()
+			data[int(at)-30-len(name)+14] ^= 1 // the local header's CRC-32
+		}
+	}
+	data[bytes.LastIndex(data, []byte(name))-46+16] ^= 1 // the central directory's: its name follows its 46-byte header
+	r := VerifyBundle(data, readGolden(t, "v2/trust.json"))
+	if r.ExitCode != 2 || r.Integrity != "UNUSABLE BUNDLE" || r.Detail != "the bundle file is damaged: "+name+" does not match its CRC-32 or size" {
+		t.Fatalf("damaged entry: %+v", r)
 	}
 }

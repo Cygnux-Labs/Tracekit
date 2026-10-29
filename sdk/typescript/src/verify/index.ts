@@ -17,14 +17,14 @@
  * `verify(bundle, null)` (no trust config) checks what needs no pinned key and is never VERIFIED. web.ts is this
  * verifier as a browser page (verify.html).
  */
-import { type Floats, canonicalize, repr as quoted, strictParseBytes } from "./jcs.js";
+import { type Floats, StrictJSONError, canonicalize, repr as quoted, strictParseBytes } from "./jcs.js";
 import {
   HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, checkWitnesses, equal, keyAlg, leafHash, openNote, parseLeaf,
   parseVkey, registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
-import { MAX_ENTRY, Unusable, readZip } from "./zip.js";
+import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
 
 export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
@@ -95,6 +95,10 @@ function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad:
     : Object.hasOwn(listed, n) ? "missing" : "not listed"})`);
   return "files differ from the manifest: " + how.join(", ") + (bad.length > 5 ? ` and ${bad.length - 5} more` : "");
 }
+/** A check's detail: what it found when it passed, else how many problems in what (its lines say which), so a failed
+ * line never reads as a pass. */
+const found = (problems: unknown[], passed: string, scope: string) =>
+  problems.length ? `${problems.length} problem(s) in ${scope}` : passed;
 const kind = (v: unknown) => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
 function at(o: unknown, k: string): J {
   if (!isObj(o)) throw new TypeError(`${kind(o)} is not an object`);
@@ -182,7 +186,14 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   if (!ok) throw new ValueError(`${name}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, `
     + "issuers, analyzers)");
   for (const k of [...t.logs, ...opt(t, "witnesses").map((w: J) => w.vkey), ...opt(t, "monitors").map((m: J) => m.vkey),
-    ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) await parseVkey(k);
+    ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) {
+    try {
+      await parseVkey(k);
+    } catch (e) {
+      if (!(e instanceof NoteError)) throw e;
+      throw new ValueError(`pinned key ${repr(cut(k, 80))} is not a vkey: ${e.message}`);
+    }
+  }
   await checkWitnesses(opt(t, "witnesses").map((w: J) => w.vkey));
   const classes = new Map<string, string>();
   for (const w of opt(t, "witnesses")) {
@@ -240,7 +251,9 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
   } else try {
     t = await loadTrust(trust, names.trust);
   } catch (e) {
-    rep.check("trust config", false, errorText(e));
+    rep.integrity = "UNVERIFIABLE (the trust file can't be used)";
+    rep.check("trust config", false, e instanceof StrictJSONError ? `not valid JSON (${e.message})`
+      : e instanceof ValueError || e instanceof NoteError ? e.message : errorText(e));
     return { report: rep, code: EXIT_BAD };
   }
   const floats: Floats = new WeakMap();
@@ -262,7 +275,9 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
     }
   } catch (e) {
     // a format v1 bundle (the laptop signer's): the reference verifier checks it, against the signer.pub the sender pins
-    rep.check("bundle readable", false, `cannot read bundle: ${errorText(e)}`, v1 ? ["a format v1 bundle: verify it with "
+    const why = e instanceof BadZipFile ? `the bundle file is damaged: ${e.message}`
+      : e instanceof Unusable ? e.message : errorText(e);
+    rep.check("bundle readable", false, `cannot read bundle: ${why}`, v1 ? ["a format v1 bundle: verify it with "
       + `the signer's public key (signer.pub, from the sender): uvx --from tracekit-ai tracekit verify ${quote(names.bundle)}`
       + " --key signer.pub"] : []);
     return { report: rep, code: EXIT_BAD };
@@ -325,8 +340,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     return;
   }
   const { origin, size, root, cosigs } = note;
-  rep.check("checkpoint", same(size, at(proofs, "tree_size")), `${origin} at tree size ${size}, `
-    + (anchored ? "signed by its pinned log key" : "its signature not checked (no trust config)"));
+  const sized = same(size, at(proofs, "tree_size"));
+  rep.check("checkpoint", sized, `${origin} at tree size ${size}, `
+    + (anchored ? "signed by its pinned log key" : "its signature not checked (no trust config)")
+    + (sized ? "" : ", but the proofs are for another tree size"));
   if (note.unchecked) rep.unsupport("SLH-DSA-SHA2-128s checkpoint signature");
   if (anchored)
     rep.check("witness quorum", cosigs.length >= trust.witnesses_required,
@@ -439,8 +456,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     extend(keyProblems, retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
       .map(([seq]) => `seq ${seq}: key.retire withheld (the registry log has it)`));
   }
-  rep.check("keys", timeline.size > 0 && !keyProblems.length, `${timeline.size} record key(s) from ${keyRecords.length} key `
-    + "record(s)", keyProblems);
+  rep.check("keys", timeline.size > 0 && !keyProblems.length, found(keyProblems, timeline.size ? `${timeline.size} record `
+    + `key(s) from ${keyRecords.length} key record(s)` : "no key record declares a record key",
+  `${keyRecords.length} key record(s)`), keyProblems);
   const every = [...runs.values()].flat();
   const seqs = [...keyRecords, ...every].map((r) => num(at(at(r, "event"), "seq")));
   if (!seqs.length) throw new ValueError("the bundle holds no key or run records");
@@ -455,19 +473,22 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       + "its signer.pub to the reference verifier to check the format bridge");
   const inParts = [...names].filter(([n, ps]) => !(ps.length === 1 && ps[0] === n)).map(([, ps]) => ps.length);
   if (inParts.length)
-    rep.check("run parts", !layout.length, `${inParts.length} run(s) in ${inParts.reduce((a, b) => a + b, 0)} parts, `
-      + "each part continuing the one before it", layout);
-  rep.check("signatures", !problems.length, `${every.length} record(s), keys valid at their position`, problems);
+    rep.check("run parts", !layout.length, found(layout, `${inParts.length} run(s) in ${inParts.reduce((a, b) => a + b, 0)} `
+      + "parts, each part continuing the one before it", `the parts of ${inParts.length} run(s)`), layout);
+  rep.check("signatures", !problems.length, found(problems, `${every.length} record(s), keys valid at their position`,
+    `${every.length} record(s)`), problems);
   const only = runs.size === 1 ? [...runs.values()][0][0].event : null;
-  rep.check("run chain", !chain.length, only ? `run ${repr(cut(str(get(only, "run_id")), 200))} of tenant `
-    + `${repr(get(only, "tenant"))}, contiguous from run_seq 0` : `${runs.size} run(s), each contiguous from run_seq 0`, chain);
-  rep.check("inclusion", !outside.length, `first and last records of ${runs.size} run(s) are in the checkpointed tree of `
-    + `size ${size}`, outside);
+  rep.check("run chain", !chain.length, found(chain, only ? `run ${repr(cut(str(get(only, "run_id")), 200))} of tenant `
+    + `${repr(get(only, "tenant"))}, contiguous from run_seq 0` : `${runs.size} run(s), each contiguous from run_seq 0`,
+  `the chain of ${runs.size} run(s)`), chain);
+  rep.check("inclusion", !outside.length, found(outside, `first and last records of ${runs.size} run(s) are in the `
+    + `checkpointed tree of size ${size}`, `the first and last records of ${runs.size} run(s)`), outside);
   // policy_hash -> the bundled snapshot named by it: the one set checkIncidents and approvals check against
   const policies = new Map<string, Uint8Array>();
   for (const p of [...files.keys()].filter((n) => n.startsWith("policies/")).sort()) {
     const hex = await sha256hex(file(p));
-    rep.check("policy snapshot", p === `policies/${hex}.json`, p);
+    rep.check("policy snapshot", p === `policies/${hex}.json`,
+      p === `policies/${hex}.json` ? p : `${p} is not named by the SHA-256 of its bytes`);
     if (p === `policies/${hex}.json`) policies.set(`sha256:${hex}`, file(p));
   }
 
@@ -766,10 +787,10 @@ function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Ui
   }
   if (!agents) return;   // a bundle without agent approvals keeps the report it always had
   rep.check("approvals by people", true, `${people} approval(s) answered by people`);
-  rep.check("approvals by agents", !problems.length && !unchecked.length, `${agents} approval(s) answered by agents (model `
-      + "output); argument bounds are not checkable offline (salted commitments): audit one with `tracekit signer reveal`"
-      + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""),
-    (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
+  rep.check("approvals by agents", !problems.length && !unchecked.length, found(problems, `${agents} approval(s) answered `
+      + "by agents (model output); argument bounds are not checkable offline (salted commitments): audit one with "
+      + "`tracekit signer reveal`" + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""),
+    `${agents} approval(s) answered by agents`), (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
 }
 
 const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];
@@ -870,9 +891,9 @@ function checkReviews(rep: Report, runs: Map<string, J[]>, pinned: string[]) {
     extend(labels, Array(signed.length).fill(label));
   }
   if (total) {
-    rep.check("reviews", !problems.length && !selfs.length, `${total} review(s): `
-      + count(labels).map(([k, n]) => `${n} ${k}`).join(", "), (problems.length ? problems : selfs).slice(0, 20),
-    !problems.length);
+    const said = `${total} review(s): ` + count(labels).map(([k, n]) => `${n} ${k}`).join(", ");
+    rep.check("reviews", !problems.length && !selfs.length, found(problems, said, said),
+      (problems.length ? problems : selfs).slice(0, 20), !problems.length);
     const verdicts = [...runs.values()].flatMap((rs) => rs.map((r) => r.event))   // signed findings only
       .filter((e) => get(e, "type") === "review" && has(at(e, "data"), "cites")).map((e) => get(e.data, "verdict"));
     const sev = count(verdicts.filter((v) => isObj(v) && get(v, "kind") === "finding")
@@ -911,8 +932,8 @@ function checkConstraints(rep: Report, runs: Map<string, J[]>) {
     }
   }
   if (added || held)
-    rep.check("constraints", !problems.length, `${added} live constraint(s) added; ${held} call(s) held by them`,
-      problems.slice(0, 20));
+    rep.check("constraints", !problems.length, found(problems, `${added} live constraint(s) added; ${held} call(s) held `
+      + "by them", "the calls held by live constraints"), problems.slice(0, 20));
 }
 
 /** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
@@ -973,9 +994,9 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
     extend(problems, honoured(events, pointers));
   }
   const n = opened.size + [...pointers].filter((p) => !opened.has(p)).length;
-  rep.check("incidents", !problems.length, `${n} incident(s): ${checked} checked against the bundle, ${n - checked} `
-    + "signer-asserted (operator, cross-run, under several policies, or under a policy not in the bundle)",
-    problems.slice(0, 20));
+  rep.check("incidents", !problems.length, found(problems, `${n} incident(s): ${checked} checked against the bundle, `
+    + `${n - checked} signer-asserted (operator, cross-run, under several policies, or under a policy not in the bundle)`,
+  `${n} incident(s)`), problems.slice(0, 20));
   if (unbundled.size)
     rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
       + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
@@ -1244,6 +1265,10 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
  * the text around them, as the report prints bundle-derived strings. */
 export const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "");
 
+/** The Assurance line as the reports print it: an assurance level rates only evidence that verified. */
+export const assuranceLine = (rep: Report) =>
+  `Assurance: ${rep.integrity === "FAILED" ? "not rated (the bundle failed verification)" : clean(rep.assurance)}.`;
+
 /** The report as text, as the reference CLI prints it; `clean` drops characters from bundle-derived strings. */
 export function formatReport(rep: Report): string {
   let s = "";
@@ -1251,7 +1276,7 @@ export function formatReport(rep: Report): string {
     s += `[${c.status.toUpperCase()}] ${c.check}` + (c.detail ? ` — ${clean(c.detail)}` : "") + "\n";
     for (const p of c.problems) s += `        ${clean(p)}\n`;
   }
-  return s + `\nIntegrity: ${clean(rep.integrity)}.\nAssurance: ${clean(rep.assurance)}.\n`
+  return s + `\nIntegrity: ${clean(rep.integrity)}.\n${assuranceLine(rep)}\n`
     + (rep.findings ? `Findings: ${clean(rep.findings)}.\n` : "");
 }
 

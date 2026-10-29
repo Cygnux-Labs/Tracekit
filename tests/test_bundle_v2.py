@@ -1,6 +1,7 @@
 """Format v2: C2SP checkpoint notes, per-run bundle export and the v2 verifier (E1 mutation classes ported to v2)."""
 import base64
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -17,7 +18,7 @@ import zipfile
 from unittest import mock
 
 
-from factories import rewrite_bundle, unverified_bundles
+from factories import damage_crc, rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export, needs, run_name
 from tracekit.format import checkpoint
@@ -469,10 +470,10 @@ class TestVerifyV2(Case):
         with open(aliased, "w") as f:
             json.dump(t, f)
         rep, code = self.verify(out, aliased)
-        self.assertEqual((code, rep.integrity, rep.failures), (2, "UNUSABLE BUNDLE", ["trust config"]), rep.checks)
-        self.assertEqual(rep.checks[0]["detail"], f"NoteError: trust pins one witness key under two names ({WITNESS}, "
-                                                  f"{alias}); a key is one witness: keep it under the name it cosigns "
-                                                  "with")
+        self.assertEqual((code, rep.integrity, rep.failures),
+                         (2, "UNVERIFIABLE (the trust file can't be used)", ["trust config"]), rep.checks)
+        self.assertEqual(rep.checks[0]["detail"], f"trust pins one witness key under two names ({WITNESS}, {alias}); "
+                                                  "a key is one witness: keep it under the name it cosigns with")
         two = os.path.join(self.d, "two.tkb")
         export(log.store, "acme", "run-a", log.note(witnesses=((WITNESS, WIT_SECRET), (OPERATOR, OP_SECRET))), two)
         rep, code = self.verify(two, self.write_trust(2, name="t2.json"))
@@ -497,14 +498,12 @@ class TestVerifyV2(Case):
                     {"vkey": checkpoint.vkey(WITNESS, COSIGNATURE, pub(s)), "class": c} for s, c in witnesses]), f)
             return p
         for path, detail in (
-                (trust((WIT_SECRET, "customer"), (OP_SECRET, "customer")), f"NoteError: trust pins two witness keys "
-                 f"under one name ({WITNESS}); a name is one witness: keep only its current key"),
-                (trust((WIT_SECRET, "customer"), (WIT_SECRET, "operator")), f"ValueError: trust pins witness {WITNESS} "
-                 "with two classes (customer, operator); a witness has one class: list it once, with the class you "
-                 "give it"),
-                (trust((WIT_SECRET, "operator"), (WIT_SECRET, "customer")), f"ValueError: trust pins witness {WITNESS} "
-                 "with two classes (operator, customer); a witness has one class: list it once, with the class you "
-                 "give it")):
+                (trust((WIT_SECRET, "customer"), (OP_SECRET, "customer")), f"trust pins two witness keys under one "
+                 f"name ({WITNESS}); a name is one witness: keep only its current key"),
+                (trust((WIT_SECRET, "customer"), (WIT_SECRET, "operator")), f"trust pins witness {WITNESS} with two "
+                 "classes (customer, operator); a witness has one class: list it once, with the class you give it"),
+                (trust((WIT_SECRET, "operator"), (WIT_SECRET, "customer")), f"trust pins witness {WITNESS} with two "
+                 "classes (operator, customer); a witness has one class: list it once, with the class you give it")):
             rep, code = self.verify(out, path)
             self.assertEqual((code, rep.failures, rep.checks[0]["detail"]), (2, ["trust config"], detail), rep.checks)
         rep, code = self.verify(out, trust((WIT_SECRET, "customer"), (WIT_SECRET, "customer"), required=1))
@@ -512,6 +511,50 @@ class TestVerifyV2(Case):
         self.assertIn("1 pinned cosignature(s), 1 required", [c["detail"] for c in rep.checks])
         rep, code = self.verify(out, trust((WIT_SECRET, "customer"), (WIT_SECRET, "customer")))
         self.assertEqual((code, rep.failures), (1, ["witness quorum"]), rep.checks)
+
+    def test_a_trust_file_problem_is_said_to_be_the_trust_files_in_plain_words(self):
+        """A trust file that can't be used is the trust file's problem, not the bundle's: UNVERIFIABLE (exit 2, as
+        before), its line naming the problem in plain words, with no exception's name."""
+        _, out = self.honest()
+        missing = os.path.join(self.d, "missing.json")
+        for text, said in ((None, f"{missing}: {os.strerror(errno.ENOENT)}"), ("{", "not valid JSON (syntax: "),
+                           ("{}", f"{missing}: not a v2 trust config (logs, witnesses, algs, "),
+                           ('{"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}',
+                            "pinned key 'x+00000000+AA==' is not a vkey: not an Ed25519 log, cosignature or SLH-DSA")):
+            with self.subTest(text):
+                if text is not None:
+                    with open(missing, "w") as f:
+                        f.write(text)
+                rep, code = self.verify(out, missing)
+                self.assertEqual((code, rep.integrity, rep.failures),
+                                 (2, "UNVERIFIABLE (the trust file can't be used)", ["trust config"]))
+                self.assertTrue(rep.checks[0]["detail"].startswith(said), rep.checks[0]["detail"])
+                self.assertNotRegex(rep.checks[0]["detail"], r"[A-Za-z]*Error\b")
+
+    def test_a_damaged_bundle_file_is_said_in_plain_words(self):
+        """An entry whose bytes no longer match its CRC-32: UNUSABLE BUNDLE (exit 2, as before), saying the bundle file
+        is damaged rather than printing zipfile's exception name."""
+        _, out = self.honest()
+        bad = os.path.join(self.d, "damaged.tkb")
+        damage_crc(out, bad)
+        name = next(n for n in v2.read_zip(out) if n.startswith("runs/"))
+        rep, code = self.verify(bad)
+        self.assertEqual((code, rep.integrity, rep.checks[0]["detail"]), (2, "UNUSABLE BUNDLE", "cannot read bundle: "
+                         f"the bundle file is damaged: Bad CRC-32 for file {name!r}"))
+
+    def test_a_failed_line_says_what_failed_and_a_failed_bundle_is_not_rated(self):
+        """The failed line's headline counts its problems, never repeating the pass text; a failed bundle's printed
+        Assurance line is not rated (--json keeps the level the checkpoint has)."""
+        _, out = self.honest()
+        edited = self.mutate(out, lambda rs: rs[2]["event"]["data"].update(name="Write"))
+        code, stdout, _ = self.cli(edited, "--trust", self.trust)
+        self.assertEqual(code, 1)
+        self.assertRegex(stdout, r"\n\[FAIL\] signatures — 1 problem\(s\) in 5 record\(s\)\n        seq \d+: ")
+        self.assertNotIn("keys valid at their position", stdout)
+        self.assertTrue(stdout.endswith("\nIntegrity: FAILED.\nAssurance: not rated (the bundle failed verification).\n"),
+                        stdout)
+        self.assertTrue(json.loads(self.cli(edited, "--trust", self.trust, "--json")[1])["assurance"].startswith(
+            "witnessed;"))
 
     def test_e1_mutations_fail(self):
         log, out = self.honest()
@@ -687,9 +730,9 @@ class TestVerifyV2(Case):
     def test_report_drops_control_characters(self):
         rep, esc = v2.Report(), "a\x1b]0;x\x07\x1b[2J\x9bb\nc"
         rep.check("break-glass approvals", False, esc, [esc], warn=True)
-        rep.integrity, rep.assurance = "FAILED", esc
+        rep.integrity, rep.assurance = "VERIFIED", esc
         buf = io.StringIO()
-        v2.print_report(rep, 1, buf)
+        v2.print_report(rep, 0, buf)
         self.assertEqual(buf.getvalue().count("a]0;x[2Jbc"), 3)
         self.assertNotRegex(buf.getvalue(), r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 
@@ -842,8 +885,8 @@ class TestRunParts(Case):
         with zipfile.ZipFile(out) as z, zipfile.ZipFile(bad, "w", zipfile.ZIP_DEFLATED) as w:
             for i in z.infolist():
                 w.writestr(i.filename, bytes((64 << 20) + 1) if i.filename == p[1] else z.read(i))
-        self.assertEqual(self.verify(bad)[0].checks[0]["detail"], f"cannot read bundle: Unusable: {p[1]} is larger "
-                                                                   "than the bundle limits")   # as any file over it
+        self.assertEqual(self.verify(bad)[0].checks[0]["detail"], f"cannot read bundle: {p[1]} is larger than the "
+                                                                   "bundle limits")   # as any file over it
 
 
 class TestMalformedInput(Case):

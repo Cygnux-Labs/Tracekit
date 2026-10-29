@@ -723,7 +723,7 @@ func VerifyCheckpoint(note []byte, log VKey, witnesses []VKey, quorum int) (Chec
 	pins[log.Name+"/"+hex.EncodeToString(log.ID[:])+"/1"] = log
 	for _, k := range witnesses {
 		if k.Type != 4 {
-			return Checkpoint{}, errors.New("invalid witness type")
+			return Checkpoint{}, fmt.Errorf("pinned key %s has the wrong signature type", k.Name)
 		}
 		// checkWitnesses leaves one key per name, so a repeated id is the same key listed again
 		pins[k.Name+"/"+hex.EncodeToString(k.ID[:])+"/4"] = k

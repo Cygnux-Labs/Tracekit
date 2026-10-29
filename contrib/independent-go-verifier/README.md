@@ -33,9 +33,16 @@ The Go verifier rejects some inputs accepted by Python: a run with a findings co
 
 ```sh
 cd contrib/independent-go-verifier
-go run ./cmd/tkverify -bundle ../../tests/golden/v2/closed.tkb -trust ../../tests/golden/v2/trust.json -json
-go run ./cmd/tkverify -bundle ../../tests/golden/v1/demo-run.tkb -key ../../tests/golden/v1/signer.pub -json
+go build -o tkverify ./cmd/tkverify
+./tkverify -bundle ../../tests/golden/v2/closed.tkb -trust ../../tests/golden/v2/trust.json
+./tkverify -bundle ../../tests/golden/v1/demo-run.tkb -key ../../tests/golden/v1/signer.pub -json
 ```
+
+The exit code is the reference CLI's: 0 verified, 1 failed, 2 unusable or unverifiable. Run the built binary when the
+exit code matters: `go run` exits 1 for any non-zero exit of the program (it prints `exit status 2`).
+
+The text report prints the warning lines, then the reason a bundle failed or could not be checked, then the
+`Integrity:` and `Assurance:` lines, as the reference CLI does; a failed bundle's printed assurance reads `not rated`.
 
 Signed capture gaps, tampering, binding mismatches and policy violations are exposed as structured warning checks and as `[WARN]` lines in text output. They describe the recorded run while the integrity verdict describes whether its evidence is intact.
 

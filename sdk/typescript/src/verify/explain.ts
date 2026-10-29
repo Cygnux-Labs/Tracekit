@@ -7,7 +7,7 @@ import { type Check, EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatRepo
 
 type J = any;
 export type Names = { bundle: string; trust: string | null };
-export type Verdict = { word: "VERIFIED" | "FAILED" | "UNVERIFIABLE"; means: string; notMeans: string };
+export type Verdict = { word: "VERIFIED" | "FAILED" | "UNVERIFIABLE" | "UNUSABLE BUNDLE"; means: string; notMeans: string };
 /** A step: what to do, and the command to run for it, if any. */
 export type Step = { text: string; command?: string };
 
@@ -60,16 +60,17 @@ export function verdict(rep: Report, code: number): Verdict {
   }
   const readable = rep.checks.find((c) => c.check === "bundle readable");
   const nothing = "Nothing failed: it doesn't mean the bundle is bad.";
+  // the word the command-line verifiers print in the Integrity line
+  const word = rep.integrity === "UNUSABLE BUNDLE" ? "UNUSABLE BUNDLE" : "UNVERIFIABLE";
   if (failed(rep, "trust config"))
-    return { word: "UNVERIFIABLE", means: "The trust file couldn't be used, so nothing was checked.", notMeans: nothing };
+    return { word, means: "The trust file couldn't be used, so nothing in the bundle was checked.", notMeans: nothing };
   if (v1(rep))
-    return { word: "UNVERIFIABLE", means: "This is a format v1 bundle (from Tracekit's laptop signer); this page checks "
-      + "format v2 bundles, so nothing was checked.", notMeans: nothing };
+    return { word, means: "This is a format v1 bundle (from Tracekit's laptop signer); this page checks format v2 "
+      + "bundles, so nothing was checked.", notMeans: nothing };
   if (rep.integrity.startsWith("UNVERIFIABLE (needs"))
-    return { word: "UNVERIFIABLE", means: `This bundle needs a newer verifier than this page (Tracekit ${VERSION}).`,
-      notMeans: nothing };
+    return { word, means: `This bundle needs a newer verifier than this page (Tracekit ${VERSION}).`, notMeans: nothing };
   if (readable)
-    return { word: "UNVERIFIABLE", means: "This file couldn't be read as a Tracekit bundle, so nothing in it was checked.",
+    return { word, means: "This file couldn't be read as a Tracekit bundle, so nothing in it was checked.",
       notMeans: "Nothing in it can be relied on until a readable copy verifies." };
   if (!anchored(rep))
     return { word: "UNVERIFIABLE", means: "Signatures are intact, but you haven't said whose signer you trust.",
@@ -88,9 +89,10 @@ export function nextSteps(rep: Report, code: number, names: Names): Step[] {
   if (code === EXIT_OK)
     return rep.warnings.length ? [{ text: `Read the ${rep.warnings.length} warning(s) below: each says what to look at. `
       + "They don't change the verdict (with --strict the command line exits 3)." }] : [];
-  if (failed(rep, "trust config"))
-    return [{ text: `Choose the trust file again: it must be a Tracekit v2 trust config (a .json with "logs"). Ask for ${
-      TRUST_FILE}.` }];
+  const trustFile = failed(rep, "trust config");
+  if (trustFile)
+    return [{ text: `Fix the trust file, or choose the right one: ${clean(trustFile.detail)}. If it isn't the sender's, `
+      + `ask for ${TRUST_FILE}.` }];
   if (readable?.problems.length)
     return readable.problems.map((p) => {
       const at = p.search(/(npx|uvx) /);
@@ -125,8 +127,8 @@ export function nextSteps(rep: Report, code: number, names: Names): Step[] {
 export const MEANING: Record<string, Partial<Record<Check["status"], string>>> = {
   "trust config": {
     warn: "You chose no trust file, so no log key you trust checked the checkpoint: the bundle can't be VERIFIED.",
-    fail: "Your trust file isn't a Tracekit v2 trust config (the log key and witnesses you trust), so nothing was "
-      + "checked.",
+    fail: "Your trust file (the log key and witnesses you trust) can't be used, for the reason on this line, so nothing "
+      + "in the bundle was checked.",
   },
   "bundle readable": { fail: "This verifier can't read the file as a Tracekit v2 bundle: it isn't one, is damaged, or "
     + "needs a newer verifier. Nothing in it was checked." },
@@ -287,11 +289,13 @@ export function summarize(files: Map<string, Uint8Array>, rep: Report): [string,
   const cp = rep.checks.find((c) => c.check === "checkpoint")?.detail.split(" at tree size")[0];
   if (cp)
     out.push(["Signer", `log ${cp}` + (anchored(rep) ? ", the key your trust file pins" : ", not checked (no trust file)")]);
-  const level = rep.assurance.split(";")[0];
+  const level = rep.assurance.split(";")[0], self = rep.assurance.includes("; approvals: self");
+  const unwitnessed = "no independent witness vouches for the checkpoint";
   out.push(["Assurance", level === "witnessed" ? "witnessed: independent witnesses cosigned the checkpoint"
     : level === "local" ? "local: only witnesses the log's operator runs cosigned the checkpoint"
-      : level === "dev" ? "dev: no independent witness vouches for the checkpoint (or a run holds a self-approval)"
-        : level]);
+      : level === "dev" && self ? "dev: a run holds a self-approval (whoever asked for the call approved it)"
+        + (rep.assurance.includes("; no witness cosignature") ? `, and ${unwitnessed}` : "")
+        : level === "dev" ? `dev: ${unwitnessed}` : level]);
   const agents = runs.map((rs) => rs[0]).filter((e) => e?.type === "run.registered").map((e) => {
     const id = e.data?.identity;
     return `${JSON.stringify(String(e.data?.agent?.name ?? "agent"))}` + (id ? ` (${id.scheme}:${id.subject})` : "");
@@ -302,11 +306,13 @@ export function summarize(files: Map<string, Uint8Array>, rep: Report): [string,
   out.push(["Tool calls", `${decisions.length} decided` + (decisions.length ? ": " + ["allow", "deny", "ask"]
     .map((d) => `${decisions.filter((x) => x === d).length} ${d}`).join(", ") : "")]);
   const answers = new Map(of("approval").map((e) => [e.data?.approval_id, e.data]));
+  const expired = new Set(of("approval.expired").map((e) => e.data?.approval_id));
   const held = of("approval.request").map((e) => {
     const a = answers.get(e.data?.approval_id);
     const who = a ? `${a.decision === "approve" ? "approved" : a.decision === "reject" ? "rejected" : a.decision} by `
       + `${a.person ?? a.approver}` + (a.approver_kind === "agent" ? " (an agent)" : "")
-      + (a.self_approved ? " (self-approved)" : "") + (a.break_glass ? " (break-glass)" : "") : "no answer recorded";
+      + (a.self_approved ? " (self-approved)" : "") + (a.break_glass ? " (break-glass)" : "")
+      : expired.has(e.data?.approval_id) ? "expired before anyone answered" : "no answer recorded";
     const tool = e.data?.binding?.tool ?? e.tool_call_id;
     return `${tool == null ? "a call" : JSON.stringify(String(tool))}: ${who}`;
   });
