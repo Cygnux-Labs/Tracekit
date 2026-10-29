@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-41'
+version: '2026.10-v2-42'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -106,9 +106,12 @@ deny:
     # ~/.local/share; a home is ~, $HOME or an absolute /home/<u>, /Users/<u> or /root, so a project's .claude, or a
     # repo's build/home/u/.claude, isn't one). MAY_WRITE: any word, herestring or heredoc on a line whose writer gets
     # its files at run time (xargs rm, rm "$f") or in code it runs (docker exec c sh -c, perl -e, osascript, at from a
-    # pipe), or whose commands the parser can't read (| sh, fish -c) with a writer's name or > in it. Anchored and
-    # lazy, so the fallback engine stays linear
+    # pipe), or whose commands the parser can't read (| sh, fish -c) with a writer's name or > in it, and a link ln or
+    # cp -s/-l makes. Anchored and lazy, so the fallback engine stays linear
     pattern: '^(?:WRITE_TARGET|DELETE_TARGET|MAY_WRITE):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\]opencode[/\\](?:storage(?:[/\\]|$)|opencode[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\]opencode)?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\]opencode)?)[/\\]*\*?$'
+    # not Claude Code's memory notes beside its transcripts (a .md file directly in a project's memory/, as TK-D009
+    # reads them), which the agent writes and deletes; a link made there (MAY_WRITE) is still held
+    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     reason: modifying the agent harness's transcripts
     remedy: Leave the harness's transcripts as they are (reading them is fine); a person removes them once the run's evidence is exported.
     rationale: Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
@@ -669,6 +672,8 @@ flag:
     # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
     # AppData/Roaming/Block/goose/config).
     pattern: '(^|/)\.(claude|codex|gemini|opencode|qwen|factory)(/|$)|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|block/goose/config)(/|$)|\.cursor/hooks\.json|(^|/)opencode\.jsonc?$|managed-settings|\.mcp\.json'
+    # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
+    unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     label: harness_config
   - id: TK-F015
     class: shell
@@ -678,6 +683,8 @@ flag:
     # user config (its plugins, Tracekit's too) is ~/.config/opencode. The agy, goose and Droid paths are TK-F009's,
     # and a delete of a whole .agents folder (agy's hooks.json with it).
     pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose)|block[/\\]goose[/\\]config)(?:[/\\]|$)|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
+    # Claude Code's memory notes, as TK-D008 reads them
+    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config
   - id: TK-F016
     tool: Bash|Write|Edit|MultiEdit

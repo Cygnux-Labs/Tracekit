@@ -450,7 +450,8 @@ def _effects(parsed):
     parser can't read what one runs (its `opaque`: `| sh`, `fish -c`, a name an expansion builds) and a writer's name
     reaches it (_reaches_unread), every word on the line and each herestring and heredoc text is one it may write, as
     MAY_WRITE:word (only TK-D008 reads those); for one the parser can't read, each normalised line too (a name an
-    expansion builds may hold the path)."""
+    expansion builds may hold the path). A link ln or cp -s/-l makes is also MAY_WRITE: a later write through it
+    writes the file it points at."""
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
     unread = any(c["opaque"] for c in parsed[0])
     if any(_opaque(c) for c in parsed[0]) or unread and _reaches_unread(parsed):
@@ -595,6 +596,9 @@ def _command_effects(commands):
                     if directory is not None or len(sources) > 1 or dest.endswith("/") or dest in ("~", ".", "..")]
                 deleted = sources if exe == "mv" else []
             out.extend(["DELETE_TARGET:" + path for path in deleted] + ["WRITE_TARGET:" + path for path in written])
+            if exe == "ln" or exe == "cp" and any(a in ("--link", "--symbolic-link")
+                                                  or re.fullmatch(r"-[A-Za-z]*[ls]\w*", a) for a in args):
+                out.extend("MAY_WRITE:" + path for path in written)
         elif exe == "dd":
             out.extend("WRITE_TARGET:" + arg[3:] for arg in args if arg.startswith("of="))
         elif exe in ("sed", "perl") and any(re.match(r"-[nrsuzE]*i|--in-place" if exe == "sed" else r"-[0-9alnpw]*i", a)

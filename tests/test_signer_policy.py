@@ -740,6 +740,46 @@ class CodingPack(unittest.TestCase):
                        ({"file_path": "/Users/u/.claude/projects/p/memory/../abc.jsonl"}, "TK-D009"),
                        ({"file_path": "/Users/u/.claude/projects/p/memory/x/abc.jsonl"}, "TK-D009")], tool="Write")
 
+    def test_the_agents_memory_notes_are_writable_from_the_shell_too(self):
+        """TK-D008 denied a shell write to Claude Code's memory notes (`>> ~/.claude/projects/<p>/memory/MEMORY.md`),
+        and TK-F015 and TK-F009 flagged them as harness settings: every write in the project folder counted. A note is
+        allowed now from the shell and the file tools; each way of writing a transcript, or of moving or deleting
+        the folders that hold them, is still denied, and so is a link made in memory/ (writing through it writes
+        what it points at)."""
+        m = "/Users/u/.claude/projects/-Users-u-repo"
+        allowed = [("Write", {"file_path": m + "/memory/MEMORY.md", "content": "- note"}),
+                   ("Write", {"file_path": m + "/memory/foo.md", "content": "note"}),
+                   ("Edit", {"file_path": m + "/memory/MEMORY.md", "old_string": "a", "new_string": "b"}),
+                   ("Edit", {"file_path": m + "/memory/foo.md", "old_string": "a", "new_string": "b"})] + [
+            ("Bash", {"command": c}) for c in (
+                "echo '- [Note](foo.md)' >> " + m + "/memory/MEMORY.md", "cat >> ~/.claude/projects/p/memory/foo.md "
+                "<<'EOF'\nnote\nEOF", "printf x | tee -a " + m + "/memory/MEMORY.md", "rm " + m + "/memory/old.md",
+                "sed -i 's/a/b/' " + m + "/memory/foo.md", "mv " + m + "/memory/a.md " + m + "/memory/b.md",
+                r"echo x >> 'C:\Users\u\.claude\projects\p\memory\MEMORY.md'")]
+        held = [("Write", {"file_path": m + "/abc.jsonl", "content": "{}"}),
+                ("Edit", {"file_path": m + "/abc.jsonl", "old_string": "a", "new_string": "b"})] + [
+            ("Bash", {"command": c}) for c in (
+                "echo '{}' >> " + m + "/abc.jsonl", "rm " + m + "/abc.jsonl", "mv " + m + " /tmp/old",
+                "mv ~/.claude/projects /tmp/old", "mv ~/.claude /tmp/old", "truncate -s0 " + m + "/abc.jsonl",
+                ": > " + m + "/abc.jsonl", "echo x >> " + m + "/0b1c/subagents/agent-a.jsonl",
+                "echo x >> " + m + "/memory/../abc.jsonl", "mv " + m + "/memory/a.md " + m + "/abc.jsonl",
+                "rm -rf " + m + "/memory", "find " + m + "/memory/.. -name '*.jsonl' -delete",
+                "ln -sf /dev/null " + m + "/abc.jsonl", "ln -s ../abc.jsonl " + m + "/memory/x.md",
+                "ln " + m + "/abc.jsonl " + m + "/memory/x.md", "cp -s " + m + "/abc.jsonl " + m + "/memory/x.md",
+                "cp -al " + m + "/abc.jsonl " + m + "/memory/x.md",
+                "cp --link " + m + "/abc.jsonl " + m + "/memory/x.md")]
+        for pack, engine, e in self.every_pack():
+            for tool, args in allowed:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)   # rm and mv are flagged as destructive commands (TK-F003), as anywhere
+                    self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-F003"]) if d["rule_ids"] else
+                                     ("allow", []), d)
+            for tool, args in held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertEqual((d["verdict"], bool({"TK-D008", "TK-D009"} & set(d["rule_ids"]))), ("deny", True),
+                                     d)
+
     def test_transcript_rule_holds_writes_to_transcripts_not_reads_or_mentions(self):
         """TK-D008 matched a write word or `>` anywhere on the line before a transcript folder's name, so it denied
         listings, unrelated writes and text naming the folders (#421); it reads each command's write and delete
