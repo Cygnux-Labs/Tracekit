@@ -2418,21 +2418,21 @@ class LiveRuns(unittest.TestCase):
         self.assertEqual(self.checks[:10], list("jihgfedcba"))   # each in turn, the oldest too
 
     def test_on_start_each_runs_first_check_is_followed_by_a_pause_as_long_as_it_took(self):
-        """The first pass over a 430k-record store held a core at 100% for seven minutes. After each run's first check
-        the watcher pauses PACE times that check's CPU time (every record is still checked before its run reads
-        VERIFIED; until then /api/verify counts it as not checked yet); a check of what a run added has no pause."""
+        """The first pass over a 430k-record store held a core at 100% for seven minutes. After a run's first check no
+        other run's first check starts for PACE times its CPU time (every record is still checked before its run reads
+        VERIFIED; until then /api/verify counts it as not checked yet). The watcher is not paused: it reads the store
+        meanwhile (an edit shows), checks what runs added, and is due again when the pause ends."""
         for i, run in enumerate("abc"):
             self.recs[run] = [v2rec(10 + i, "run.registered", {"agent": {"name": run}}, run)]
         feed = self.feed(lambda run_id: VERIFIED)
-        paused = []
-        with mock.patch.object(view, "PACE", 1), \
-                mock.patch.object(feed._stop, "wait", side_effect=lambda s: paused.append(s) or False):
+        with mock.patch.object(view, "PACE", 1):
             self.refresh(feed)
-            self.assertEqual((self.checks, paused), (["c", "b", "a"], [2, 2, 2]))   # 2 s each: r1 left to the next
-            self.assertEqual(feed.checking(), 1)   # r1: not checked yet, so not counted as clear
+            self.assertEqual((self.checks, feed.due, feed.checking()), (["c"], 1004, 3))   # 2 s: b waits 2 s more
             self.recs["c"].append(v2rec(20, "policy.decision", {"tool": "Bash", "decision": "allow"}, "c"))
-            self.refresh(feed)
-        self.assertEqual((self.checks[3:], paused[3:]), (["c", "r1"], [2]))   # what c added: no pause
+            reads = self.fake.changed.call_count
+            self.refresh(feed)   # at 1002, in the pause
+        self.assertEqual(self.checks, ["c", "c", "b"])   # what c added at once; b once the pause ended (1004)
+        self.assertGreater(self.fake.changed.call_count, reads)   # the store's newest bytes hashed meanwhile
 
     def test_a_growing_runs_graph_is_imported_again_no_sooner_than_backoff_times_its_last_import(self):
         """A run's graph is imported whole each time it grows (4.7 s for 20k records, on a thread holding the CPU the

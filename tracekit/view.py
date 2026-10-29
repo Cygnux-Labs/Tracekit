@@ -946,6 +946,7 @@ class StoreFeed:
         self.reader, self.edit_due, self.bundles = None, 0, {}
         self.detected = 0   # store changes found (_again): a run waiting for a re-check holds the one it waits since
         self.before = None   # a file store's reader the next one is compared with (_open)
+        self.pace = 0   # no run's first check starts before then (PACE)
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
@@ -1001,7 +1002,7 @@ class StoreFeed:
                         print(f"tracekit view: cannot check {self.store}: {e!r}", file=sys.stderr, flush=True)
                         self.stopped = f"verification stopped: {self.store} can't be checked ({type(e).__name__}: " \
                                        f"{e}); no run is checked until it can be"
-                self._stop.wait(POLL_S)
+                self._stop.wait(min(POLL_S, max(0.05, self.due - time.monotonic())))   # a pause ending sooner
         except BaseException as e:   # whatever ends the watch but close(): the page stops saying LIVE
             self.stopped = f"verification stopped ({type(e).__name__}: {e}): no run is checked until tracekit view " \
                            "restarts"
@@ -1041,16 +1042,18 @@ class StoreFeed:
                 state = self.runs.get(key, {})
                 if covered and (covered != state.get("count") or state.get("again")):
                     grew = bool(state.get("count")) and not state.get("again")   # shown before: what it added
-                    if grew and self.idle > time.monotonic() or time.monotonic() - now > REFRESH_S:
-                        due.append(self.idle if grew else now)
+                    first = not (grew or state.get("again"))   # a run's first check: paced, a re-check never
+                    if grew and self.idle > time.monotonic() or first and self.pace > time.monotonic() \
+                            or time.monotonic() - now > REFRESH_S:
+                        due.append(self.idle if grew else self.pace if first else now)
                     else:
                         spent = time.thread_time()   # the check, its rows and findings: CPU, not waits
                         self._check(r, note[1], key, covered)
                         spent = time.thread_time() - spent
                         if grew:
                             self.idle = time.monotonic() + BACKOFF * spent
-                        elif not state.get("again") and self._stop.wait(PACE * spent):   # a run's first check: a
-                            return   # pause, so start takes half a core; a re-check waits for nothing
+                        elif first:   # the next first check waits as long: the store is still watched meanwhile
+                            self.pace = time.monotonic() + PACE * spent
                 elif covered and (self.pg or state.get("failed")):
                     due.append(state["checked"] + RECHECK_S)
                     if state["checked"] + RECHECK_S <= now and (stale is None or state["checked"] < stale[1]):
