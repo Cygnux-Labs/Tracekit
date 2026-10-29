@@ -2004,6 +2004,23 @@
       padding-bottom: 8px
     }
 
+    .hzw summary {
+      cursor: pointer;
+      list-style: none
+    }
+
+    .hzw summary::-webkit-details-marker {
+      display: none
+    }
+
+    .hzw summary span {
+      color: var(--amber)
+    }
+
+    .hzw[open] summary span {
+      display: none
+    }
+
     .hzcard h3 {
       margin: 0 8px;
       font-size: 13px;
@@ -3650,6 +3667,13 @@
       + `<div><span class="hzjet"></span> jet: data left the machine</div><div><span class="tag">SIGNED</span> the signer's record says so · <span class="tag flag">OBSERVED</span> a sensor outside the agent saw it · <span class="tag unv">UNVERIFIED</span> its run did not verify, or a why log wrote it (unsigned)</div>`
       + `<div class="dim">The rings are the project (the run's working directory; a run that records none: its relative paths), this machine and the outside world, around the event horizon every run starts from. Click a place to zoom to it and see who went there and how we know; click an agent to follow its route.</div>`
       + `<div class="dim">Scroll or pinch to zoom toward the pointer, drag to pan, double-click to fly in; + and − zoom, FIT, 0 or Esc shows it all. A folder opens into its files as you zoom in.</div>`;
+    // a move's what in the side card: its first 3 lines or 240 characters (to a word's end), the rest a click away; its
+    // OPEN gives the whole signed record
+    function hzWhat(w) {
+      const cut = Math.min(240, w.split("\n").slice(0, 3).join("\n").length), sp = w.slice(0, cut).search(/\s\S*$/), at = sp > cut - 40 ? sp : cut;
+      return cut >= w.length ? `<div class="dim">${esc(w)}</div>`
+        : `<details class="dim hzw"><summary>${esc(w.slice(0, at))}<span> … SHOW ALL</span></summary>${esc(w.slice(at))}</details>`;
+    }
     // the HUD's CHAIN: how many drawn moves no verified signed record backs
     const hzChain = ev => { const unv = ev.filter(e => e.gr === "unverified").length; return [!ev.length ? "–" : unv ? `${unv} UNVERIFIED` : STOPPED ? "✓ VERIFIED · CHECKS STOPPED" : "✓ VERIFIED", unv || STOPPED ? "warn" : "ok"]; };
     function renderHorizon() {
@@ -3686,7 +3710,7 @@
       document.querySelectorAll("[data-hzz=cam]").forEach(b => { b.classList.toggle("on", HZ.track); b.setAttribute("aria-pressed", String(HZ.track)); });
       // beside the stage: the counts, then the followed agent's route, the picked place's visitors or how to read it
       const pill = g => `<span class="tag${g === "unverified" ? " unv" : g === "observed" ? " flag" : ""}">${esc(g.toUpperCase())}</span>`;
-      const row = (e, n) => `<div class="hzev"><span class="hzs a-${esc(e.act)}">${esc(n || HZSYM[e.act])}</span><div><i class="hzsw" style="background:${esc(HZ.col[e.ag])}"></i><b>${esc(e.ag)}</b> ${esc(HZACT[e.act])} <b>${esc(P(e.at).label)}</b><div class="dim">${esc(e.w)}</div><div class="dim">${esc(`run ${String(e.run).slice(0, 8)} · seq ${e.seq}`)} `
+      const row = (e, n) => `<div class="hzev"><span class="hzs a-${esc(e.act)}">${esc(n || HZSYM[e.act])}</span><div><i class="hzsw" style="background:${esc(HZ.col[e.ag])}"></i><b>${esc(e.ag)}</b> ${esc(HZACT[e.act])} <b>${esc(P(e.at).label)}</b>` + hzWhat(e.w) + `<div class="dim">${esc(`run ${String(e.run).slice(0, 8)} · seq ${e.seq}`)} `
         + pill(e.gr) + ` <button type="button" class="cp" data-orun="${esc(e.run)}" data-oseq="${esc(e.seq)}">OPEN</button></div></div></div>`;
       // a picked place, or folder (its places together): its shield, who went there and what each did, then each move
       const fold = D.folds?.[HZ.pick], pick = HZ.pick && (P(HZ.pick) || fold), inPick = new Set(fold ? fold.leaves : [HZ.pick]), here = ev.filter(e => inPick.has(e.at));

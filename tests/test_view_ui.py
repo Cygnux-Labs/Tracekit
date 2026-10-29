@@ -1701,6 +1701,22 @@ class HorizonZoom(unittest.TestCase):
         self.assertEqual(out[:6], [[0, 2, 2], [0, 2, 2], 1, [0, None], 2, [4, 2]])
         self.assertEqual(out[6], [True, 1])
 
+    def test_a_long_command_shows_its_start_in_the_side_card_and_the_rest_on_request(self):
+        """A heredoc script beside the stage pushed the moves under it a screen down: each move's command in full."""
+        needs_node(self)
+        long = "Bash · python3 - <<'EOF'\n" + "\n".join(f"print('line {k} of a script <b>')" for k in range(12)) + "\nEOF"
+        out = json.loads(page_js(["esc", "hzWhat"], f"""
+            process.stdout.write(JSON.stringify([hzWhat("Bash · ls"), hzWhat({json.dumps(long)}), hzWhat({json.dumps("x " * 200)})]));"""))
+        short, script, wide = out
+        self.assertEqual(short, '<div class="dim">Bash · ls</div>')
+        head = re.search(r"<summary>(.*?)<span>", script, re.S)[1]
+        self.assertEqual(head.count("\n"), 2)                                    # its first 3 lines
+        self.assertIn("<span> … SHOW ALL</span></summary>", script)
+        self.assertEqual(html.unescape(re.sub(r"<span>.*?</span>|<[^>]+>", "", script)), long)   # the rest when opened
+        self.assertNotIn("<b>", script)
+        self.assertLessEqual(len(html.unescape(re.search(r"<summary>(.*?)<span>", wide)[1])), 240)
+        self.assertIn(".hzw[open] summary span {\n      display: none", PAGE)
+
     def test_a_new_record_reads_only_its_own_place(self):
         """On a live store a record arrives every second, and each time hzData read the place of every call in the
         live view again (50,000 records): 0.75 s of every 10 s idle went to parsing arguments it had read already."""
@@ -1737,7 +1753,7 @@ class HorizonZoom(unittest.TestCase):
             renderHorizon(); renderHorizon(); seen.push(draws);        // a second render, nothing changed: no frame
             HZ.pick = fold("~/T/src/"); renderHorizon(); seen.push(draws);
             seen.push(html.hzside.replace(/<[^>]+>/g, " ").replace(/\\s+/g, " "), (html.hzside.match(/data-oseq=/g) || []).length);
-            process.stdout.write(JSON.stringify(seen));""", ["esc", "plural", "hzSecs", "hzChain", "HZKEY", "renderHorizon"])
+            process.stdout.write(JSON.stringify(seen));""", ["esc", "plural", "hzSecs", "hzChain", "HZKEY", "hzWhat", "renderHorizon"])
         once, picked, card, opens = out
         self.assertEqual((once, picked), (1, 2))
         self.assertIn("RESTRICTED · ON THIS MACHINE · A FOLDER OF 61 PLACES ~/T/src/", card)
