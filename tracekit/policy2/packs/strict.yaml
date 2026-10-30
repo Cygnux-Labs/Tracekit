@@ -6,7 +6,7 @@
 # gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
-version: '2026.10-strict-5'
+version: '2026.10-strict-6'
 description: server-hosted agents where installs, pushes, network commands and environment changes wait for a person
 on_parse_error: deny
 

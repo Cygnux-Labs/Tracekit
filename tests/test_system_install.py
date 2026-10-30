@@ -172,12 +172,14 @@ class SystemModeUsesOpt(unittest.TestCase):
         init.assert_not_called()
         self.assertIn("--managed-only goes with --managed", err.getvalue())
 
-    def test_antigravity_is_refused_in_v1_system_mode(self):
-        """The v1 system signer installs Claude Code's hooks only: agy's would never be installed."""
-        with mock.patch.object(install, "init_system") as init, contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(cli.main(["init", "--user", "agent", "--agent", "antigravity"]), 2)
-        init.assert_not_called()
-        self.assertIn("--agent antigravity goes with --dev or --v2", err.getvalue())
+    def test_antigravity_and_crush_are_refused_in_v1_system_mode(self):
+        """The v1 system signer installs Claude Code's hooks only: agy's and Crush's would never be installed."""
+        for agent in ("antigravity", "crush"):
+            with self.subTest(agent=agent), mock.patch.object(install, "init_system") as init, \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(cli.main(["init", "--user", "agent", "--agent", agent]), 2)
+                init.assert_not_called()
+                self.assertIn(f"--agent {agent} goes with --dev or --v2", err.getvalue())
 
     def test_source_is_checked_before_any_system_change(self):
         d = tempfile.mkdtemp()

@@ -397,9 +397,12 @@ class CodingPack(unittest.TestCase):
         """Stripe's MCP tools that move money (send_money, transfer_money, convert_currency, its agent toolkit's
         create_refund) and its stripe_api_write when it names a refund or a money endpoint; reads and other writes
         aren't held."""
+        # Crush names an MCP tool mcp_<server>_<tool>, decided as mcp__<server>_<tool> (one `_` after the server)
         named = [(t, {"amount": 1000, "currency": "usd"}) for t in (
             "mcp__stripe__send_money", "mcp:stripe/send_money", "mcp__stripe__transfer_money", "mcp__stripe__convert_currency",
-            "mcp__plugin_stripe_stripe__send_money")] + [("mcp__stripe__create_refund", {"charge": "ch_FAKE"})]
+            "mcp__plugin_stripe_stripe__send_money", "mcp__stripe_send_money", "mcp__stripe_transfer_money",
+            "mcp__stripe-prod_convert_currency", "mcp__my_stripe_send_money")] + [
+            (t, {"charge": "ch_FAKE"}) for t in ("mcp__stripe__create_refund", "mcp__stripe_create_refund")]
         writes = [{"method": "POST", "path": "/v1/refunds", "params": {"charge": "ch_FAKE"}},
                   {"method": "POST", "path": "v1/payouts", "params": {"amount": 5, "currency": "usd"}},
                   {"path": "/v1/payment_intents/pi_FAKE/capture"}, {"url": "https://api.stripe.com/v1/invoices/in_FAKE/pay"},
@@ -409,14 +412,49 @@ class CodingPack(unittest.TestCase):
                     ("mcp__stripe__stripe_api_write", {"method": "POST", "path": "/v1/payouts/po_FAKE/cancel"}),
                     ("mcp__stripe__stripe_api_read", {"path": "/v1/refunds"}), ("mcp__stripe__get_balance_summary", {}),
                     ("mcp__stripe__setup_recipient", {"name": "Ada"}), ("mcp__stripe__list_refunds", {}),
-                    ("mcp__stripe__search_stripe_documentation", {"question": "how do refunds work"})]
+                    ("mcp__stripe__search_stripe_documentation", {"question": "how do refunds work"}),
+                    # Crush's form: reads, other writes and names that only contain a money word aren't held
+                    ("mcp__stripe_stripe_api_write", {"method": "POST", "path": "/v1/customers"}),
+                    ("mcp__stripe_stripe_api_read", {"path": "/v1/refunds"}), ("mcp__stripe_list_refunds", {}),
+                    ("mcp__stripe_get_balance_summary", {}), ("mcp__stripe_resend_money", {}),
+                    ("mcp__stripe_send_money_estimate", {}), ("mcp__stripe_create_refund_link", {}),
+                    ("mcp__send_money", {}), ("mcp__transfer_money_tools_list", {}), ("mcp__x_nonstripe_api_write", {})]
         for pack, engine, e in self.every_pack():
-            for tool, args in named + [("mcp__stripe__stripe_api_write", a) for a in writes] + not_held:
+            for tool, args in named + [(t, a) for a in writes for t in ("mcp__stripe__stripe_api_write",
+                                                                        "mcp__stripe_stripe_api_write")] + not_held:
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     d = e.decide(tool, args)
                     want = {"TK-A044"} if (tool, args) in named else set() if (tool, args) in not_held else {"TK-A045"}
                     self.assertEqual({r for r in d["rule_ids"] if r in ("TK-A044", "TK-A045")}, want, d)
                     if want:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_the_server_packs_mcp_rules_read_crushs_joined_names(self):
+        """Crush's MCP tool mcp_<server>_<tool> is decided as mcp__<server>_<tool>: the server packs hold its money,
+        delete, access and @channel calls as they hold mcp__<server>__<tool>; a name that only contains the word, or
+        a server named for it, isn't held."""
+        held = (("mcp__stripe_refund_payment", {}, "TK-M002"), ("mcp__stripe-prod_refund_payment", {}, "TK-M002"),
+                ("mcp__billing_issue_refund", {"order": "A-1"}, "TK-M002"), ("mcp__bank_transfer_funds", {}, "TK-M002"),
+                ("mcp__stripe_create_payout", {}, "TK-M002"),
+                ("mcp__slack_slack_post_message", {"channel": "C1", "text": "<!channel> hi"}, "TK-M004"),
+                ("mcp__aws_delete_bucket", {"bucket": "b"}, "TK-C011"), ("mcp__gh_repo-delete", {}, "TK-C011"),
+                ("mcp__fs__delete-file", {}, "TK-C011"), ("mcp__aws_delete-bucket", {}, "TK-C011"),
+                ("mcp:fs/delete-file", {}, "TK-C011"), ("mcp:gh/repo-delete", {}, "TK-C011"),
+                ("mcp__aws_attach_role_policy", {"role": "r"}, "TK-C002"), ("mcp__gcp_set_iam_policy", {}, "TK-C002"))
+        not_held = (("mcp__stripe_get_refund_status", {}, "TK-M002"), ("mcp__stripe__get_refund_status", {}, "TK-M002"),
+                    ("mcp__stripe_list_refunds", {}, "TK-M002"), ("mcp__refund_status", {}, "TK-M002"),
+                    ("mcp__slack_slack_post_message", {"channel": "C1", "text": "hi"}, "TK-M004"),
+                    ("mcp__delete-files_list", {}, "TK-C011"), ("mcp__aws_list_buckets", {}, "TK-C011"),
+                    ("mcp__x_dropdown_select", {}, "TK-C011"), ("mcp__grant_list", {}, "TK-C002"),
+                    ("mcp__aws_get_role_policy", {}, "TK-C002"))
+        for pack, engine, e in self.every_pack():
+            if pack not in ("server.yaml", "strict.yaml"):
+                continue
+            for tool, args, rule in held + not_held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertEqual(rule in d["rule_ids"], (tool, args, rule) in held, d)
+                    if (tool, args, rule) in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
 
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
@@ -1536,6 +1574,37 @@ class CodingPack(unittest.TestCase):
         e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex")
         self.assertEqual({r["id"]: r.get("label") for r in e.policy["flag"] if r["id"] in ("TK-F009", "TK-F015")},
                          {"TK-F009": "harness_config", "TK-F015": "harness_config"})
+
+    def test_crush_config_changes_are_harness_config_in_every_pack(self):
+        # #348: a write or delete of Crush's project or user config (crush.json, .crush.json, crushrc, .crushrc and
+        # ~/.config/crush/) could remove Tracekit's hook; near names and reads stay unflagged
+        paths = ("/repo/crush.json", "crush.json", "/repo/.crush.json", ".crush.json", "/repo/crushrc", "crushrc",
+                 "/repo/.crushrc", ".crushrc", "/home/u/.config/crush/crush.json", "/home/u/.config/crush/crushrc",
+                 r"C:\repo\crush.json", r"C:\repo\.crush.json", r"C:\repo\crushrc", r"C:\Users\u\.config\crush\crush.json")
+        commands = ("echo '{}' > crush.json", "sed -i s/600/1/ .crush.json", "tee crushrc", "echo x > .crushrc",
+                    "echo x > ~/.config/crush/crush.json", "rm ~/.crushrc", "rm -rf ~/.config/crush",
+                    r"cp x 'C:\repo\crush.json'", r"echo x > 'C:\Users\u\.config\crush\crushrc'")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat crush.json", "ls ~/.config/crush", "echo x > crush.json.bak", "echo x > .crush.json.bak",
+            "echo x > crushrc.bak", "echo x > mycrush.json", "echo x > crush-config.json",
+            "echo x > ~/.config/crush-old/x", "git commit -m 'add crush.json'")]
+        benign += [("Read", {"file_path": path}) for path in paths]
+        benign += [(tool, args) for tool, args in (
+            ("Write", {"file_path": "/repo/crush.json.bak", "content": "{}"}),
+            ("Write", {"file_path": "/repo/mycrush.json", "content": "{}"}),
+            ("Write", {"file_path": "/repo/.config/crush-old/x", "content": "{}"}),
+            ("Write", {"file_path": "notes.md", "content": " ".join(paths)}))]
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
     def test_harness_base_url_keeps_its_existing_raw_subjects(self):
         calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),
