@@ -353,6 +353,12 @@ def _release(version):
     return tuple(out)
 
 
+def _untested_warning(label, version, req):
+    """The warning a framework outside the version Tracekit is tested with gets. The wording is shared, so the
+    integrations built by hand and instrument() say the same thing about the same fact."""
+    return f"{label} {version} is wired but untested; Tracekit is tested with {req}"
+
+
 def _close(run):
     """Close the run at exit, unless approvals of it are still waiting (requested, or approved and not yet consumed):
     then it stays open for another process to resume (a durable checkpointer) until the signer's idle timeout."""
@@ -415,7 +421,6 @@ def instrument(agent=None):
                               f"({wiki_url(f'docs/{page}.md')})", stacklevel=2)
                 continue
             if not lo <= _release(version) < hi:
-                warnings.warn(f"tracekit.instrument(): {label} {version} is wired but untested; Tracekit is tested "
-                              f"with {req}", stacklevel=2)
+                warnings.warn(f"tracekit.instrument(): {_untested_warning(label, version, req)}", stacklevel=2)
         autotrace.instrument(run)
         return run
