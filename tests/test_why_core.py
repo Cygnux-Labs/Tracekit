@@ -267,10 +267,15 @@ class LongRuns(Tmp):
             runs.append((run, build_graph(run, infer=False)))
         [call] = [x for x, n in runs[0][1].nodes.items() if n["type"] == "action"]
         runs[0][1].nodes[call]["event"]["policy"] = {"decision": "deny"}   # the first run's Bash call was denied
+        [call] = [x for x, n in runs[1][1].nodes.items() if n["type"] == "action"]
+        runs[1][1].nodes[call]["event"]["policy"] = {"decision": "flag"}   # the second run's Read call was flagged
         g = influence_graph(runs)
         # how the calls each kind reached ended: one Bash call, blocked, whatever the number of sources upstream of it
-        self.assertEqual([x["ended"] for x in g["groups"]], 3 * [{"Bash": {"blocked": 1}}])
-        self.assertEqual(sorted((e["tool"], e["ended"]) for e in g["edges"]), 4 * [("Bash", {"blocked": 1})] + 3 * [("Read", {})])
+        self.assertEqual([x["ended"] for x in g["groups"]], 3 * [{"Bash": {"blocked": 1}, "Read": {"flagged": 1}}])
+        # and in how many runs a call of each tool was stopped (blocked or held; flagged ones ran)
+        self.assertEqual([x["stopped_runs"] for x in g["groups"]], 3 * [{"Bash": 1}])
+        self.assertEqual(sorted((e["tool"], e["ended"]) for e in g["edges"]),
+                         4 * [("Bash", {"blocked": 1})] + 3 * [("Read", {"flagged": 1})])
         # where each source was read: its run, agent and time (a why log of its own: no signed record to open)
         self.assertEqual({(s["seen"][0]["run"], s["seen"][0]["agent"], s["seen"][0]["seq"]) for s in g["sources"]},
                          {(runs[0][0].run_id, "a", None), (runs[1][0].run_id, "a", None)})

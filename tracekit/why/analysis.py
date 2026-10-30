@@ -457,9 +457,10 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     hash); outcomes are tools. An edge says: in k runs this content was upstream of this tool (cited), and tests
     measured effect e; `ended`: how many of the calls it reached ended blocked, held or flagged (_ended). `groups`: the
     sources of each kind and trust (a harness's "<agent>:<kind>" source by its kind), in how many runs, the tools they
-    reached in how many runs and the distinct calls of each that ended so, so hundreds of sources read at a glance. A
-    source's `seen`: where it was read (its run's signed run id and agent, the time, the record's seq, its event's
-    position in the why log), the first SEEN_KEPT."""
+    reached in how many runs and the distinct calls of each that ended so, so hundreds of sources read at a glance, and
+    in how many runs a call of each tool they reached ended blocked or held (`stopped_runs`). A source's `seen`: where
+    it was read (its run's signed run id and agent, the time, the record's seq, its event's position in the why log),
+    the first SEEN_KEPT."""
     sources: Dict[str, Dict[str, Any]] = {}
     groups: Dict[Tuple[str, Any], Dict[str, Any]] = {}
     outcomes: Dict[str, Dict[str, Any]] = {}
@@ -525,7 +526,9 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     return {"sources": src, "outcomes": sorted(outcomes.values(), key=lambda o: -o["runs"]),
             "edges": list(edges.values()),
             "groups": [{**g, "runs": len(g["runs"]), "reach": {t: len(r) for t, r in g["reach"].items()},
-                        "ended": {t: {how: len(c) for how, c in e.items()} for t, e in g["ended"].items()}}
+                        "ended": {t: {how: len(c) for how, c in e.items()} for t, e in g["ended"].items()},
+                        "stopped_runs": {t: n for t, e in g["ended"].items()
+                                         if (n := len({r for how in ("blocked", "held") for r, _ in e.get(how, ())}))}}
                        for g in groups.values()]}
 
 
