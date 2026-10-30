@@ -38,9 +38,11 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
             WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
-    Crush   bash, view, write, edit, multiedit, ls, grep, glob, fetch, download, mcp_<server>_<tool>
-            -> Bash, Read, Write, Edit, Edit, LS, Grep, Glob, WebFetch, WebFetch, unchanged (Crush's own names are
-            lower case; `path` becomes `file_path` for the file tools, and its payload is Claude Code's shape)
+    Crush   bash, view, write, edit, multiedit, lsp_replace_symbol, lsp_rename, ls, grep, glob, fetch, web_fetch,
+            agentic_fetch, web_search, download, mcp_<server>_<tool>
+            -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, WebFetch, WebFetch, WebSearch,
+            Write, unchanged (Crush's own names are lower case; `path` becomes `file_path` for the file tools, and
+            its payload is Claude Code's shape)
 
 What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
@@ -106,10 +108,13 @@ AGY_ARGS = {"run_command": {"command": "CommandLine", "dangerouslyDisableSandbox
 AGY_HOOK = "tracekit"   # the name Tracekit's hook has in agy's hooks.json, which maps each hook's name to its events
 AGY_EVENTS = ("PreToolUse", "PostToolUse")
 # Crush's built-in tools (internal/agent/tools/*.go): its payload and event names are Claude Code's, its tool names are
-# lower case, and its file tools already send `file_path`; ls, grep and glob send `path`.
-CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit", "multiedit": "Edit", "ls": "LS",
-               "grep": "Grep", "glob": "Glob", "fetch": "WebFetch", "download": "WebFetch"}
-CRUSH_PATH_ARG = ("path",)   # ls, grep and glob: the directory they read
+# lower case, and its file tools already send `file_path`; lsp_rename, ls, grep and glob send `path`. download writes
+# its `file_path`, so the file rules decide it as a Write, not as a fetch.
+CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit", "multiedit": "Edit",
+               "lsp_replace_symbol": "Edit", "lsp_rename": "Edit", "ls": "LS", "grep": "Grep", "glob": "Glob",
+               "fetch": "WebFetch", "web_fetch": "WebFetch", "agentic_fetch": "WebFetch", "web_search": "WebSearch",
+               "download": "Write"}
+CRUSH_PATH_ARG = ("path",)   # lsp_rename, ls, grep and glob: the directory they read
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)

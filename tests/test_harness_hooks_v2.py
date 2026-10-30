@@ -496,13 +496,16 @@ class Installer(unittest.TestCase):
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
                     hooks = [h for hs in (blob if harness == "droid" else blob[key]).values() for h in hs]
-                    cmds = [h["command"] if harness == "cursor" else h["hooks"][0]["command"] for h in hooks]
+                    # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
+                    cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
                     # Cursor: and what its model said; agy: its tool events only
                     self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
-                    if os.name == "nt" and harness not in ("cursor", "droid", "qwen"):   # PowerShell can't start a quoted first word
+                    # PowerShell can't start a quoted first word; Cursor, Droid, Qwen Code and Crush don't use it (Crush
+                    # runs hooks through its own POSIX shell)
+                    if os.name == "nt" and harness not in ("cursor", "droid", "qwen", "crush"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)

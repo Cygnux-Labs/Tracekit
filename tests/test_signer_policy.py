@@ -1120,6 +1120,37 @@ class CodingPack(unittest.TestCase):
         self.assertEqual({r["id"]: r.get("label") for r in e.policy["flag"] if r["id"] in ("TK-F009", "TK-F015")},
                          {"TK-F009": "harness_config", "TK-F015": "harness_config"})
 
+    def test_crush_config_changes_are_harness_config_in_every_pack(self):
+        # #348: a write or delete of Crush's project or user config (crush.json, .crush.json, crushrc, .crushrc and
+        # ~/.config/crush/) could remove Tracekit's hook; near names and reads stay unflagged
+        paths = ("/repo/crush.json", "crush.json", "/repo/.crush.json", ".crush.json", "/repo/crushrc", "crushrc",
+                 "/repo/.crushrc", ".crushrc", "/home/u/.config/crush/crush.json", "/home/u/.config/crush/crushrc",
+                 r"C:\repo\crush.json", r"C:\repo\.crush.json", r"C:\repo\crushrc", r"C:\Users\u\.config\crush\crush.json")
+        commands = ("echo '{}' > crush.json", "sed -i s/600/1/ .crush.json", "tee crushrc", "echo x > .crushrc",
+                    "echo x > ~/.config/crush/crush.json", "rm ~/.crushrc", "rm -rf ~/.config/crush",
+                    r"cp x 'C:\repo\crush.json'", r"echo x > 'C:\Users\u\.config\crush\crushrc'")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat crush.json", "ls ~/.config/crush", "echo x > crush.json.bak", "echo x > .crush.json.bak",
+            "echo x > crushrc.bak", "echo x > mycrush.json", "echo x > crush-config.json",
+            "echo x > ~/.config/crush-old/x", "git commit -m 'add crush.json'")]
+        benign += [("Read", {"file_path": path}) for path in paths]
+        benign += [(tool, args) for tool, args in (
+            ("Write", {"file_path": "/repo/crush.json.bak", "content": "{}"}),
+            ("Write", {"file_path": "/repo/mycrush.json", "content": "{}"}),
+            ("Write", {"file_path": "/repo/.config/crush-old/x", "content": "{}"}),
+            ("Write", {"file_path": "notes.md", "content": " ".join(paths)}))]
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+
     def test_harness_base_url_keeps_its_existing_raw_subjects(self):
         calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),
                  ("Write", {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"}),
