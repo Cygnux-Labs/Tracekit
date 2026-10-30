@@ -439,6 +439,15 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
         self.assertIn("TK-D005", err)
 
+    def test_a_cursor_call_is_decided_on_every_path_its_input_names(self):
+        # Cursor doesn't document which key its tools read: a decoy file_path beside the path a tool reads was decided
+        for i, key in enumerate(("path", "target_file", "filePath")):
+            code, out, err = self.hook("cursor", {"conversation_id": "c", "hook_event_name": "preToolUse",
+                                                  "tool_name": "Write", "tool_use_id": f"w{i}", "tool_input": {
+                                                      key: "/w/.env", "file_path": "/w/notes.txt", "content": "A=1"}})
+            self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), key)
+            self.assertIn("TK-D005", err)
+
     def test_a_gemini_sandbox_expansion_is_held_for_a_person(self):
         pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
                "tool_input": {"command": "npm install", "additional_permissions": {"network": True}}}
