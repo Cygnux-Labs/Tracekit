@@ -360,8 +360,10 @@ with an error). On Windows, dev mode has no such wrapper ([limits](limits.md#sig
 
 **What is recorded.** A conversation (`conversationId`) is one run. Each tool call is decided on the argument the tool
 itself reads, so a decoy key the model sends beside it never moves the decision. agy is a Go program, whose decoder may
-fill an argument from a key in another case (`commandline` for `CommandLine`): the hook denies a call that sends one of
-the arguments below in another case, twice in different cases or as null, or any key outside ASCII:
+fill an argument from a key in another case (`commandline` for `CommandLine`), and takes the last of keys that match
+ignoring case: the hook denies a call that sends any argument twice (in the same case or not), one of the arguments
+below in another case, or any key outside ASCII. An argument sent once as null counts as absent, for Tracekit as for a
+Go decoder:
 
 | agy tool | Decided as | On |
 |---|---|---|

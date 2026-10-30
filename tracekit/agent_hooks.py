@@ -183,7 +183,7 @@ def tool(harness, name, ti):
                 ti["file_path"] = ti[k]
         # Cursor doesn't document which of these its tools read: every path they name is decided, so a decoy
         # `file_path` beside the `path` a tool reads never replaces it
-        paths = ti["paths"] if isinstance(ti.get("paths"), list) else []
+        paths = [f for f in ti["paths"] if isinstance(f, str)] if isinstance(ti.get("paths"), list) else []
         files = [ti[k] for k in CURSOR_PATH_ARGS if isinstance(ti.get(k), str)]
         if any(f not in [ti["file_path"], *paths] for f in files):
             ti["paths"] = list(dict.fromkeys(files + paths))
@@ -512,19 +512,27 @@ def _blocked_tool(harness, tool_name, raw=""):
 
 
 def _blocked_agy_args(name, args):
-    """The reason an agy call is denied in the hook itself, else None. agy is a Go binary: a decoder like Go's
-    encoding/json fills a field from any key that folds to its name (the last one; a null keeps the value before it),
-    where tool() reads the exact name. So: a key outside ASCII, two keys one name apart in case, a field tool() reads
-    spelled in another case, or that field null."""
-    args = _input(args)
+    """The reason an agy call is denied in the hook itself, else None. args: its arguments read with _Pairs. agy is a
+    Go binary: a decoder like Go's encoding/json fills a field from any key that folds to its name (the last one; a
+    null, or a value of another type, keeps the value before it), where tool() reads the exact name and json.loads a
+    repeat's last value. So: a key outside ASCII, two keys with one name ignoring case (an exact repeat too), or a
+    field tool() reads spelled in another case. A lone null is read as absent by both."""
+    if isinstance(args, str):   # arguments sent as a JSON string, as _input reads them
+        try:
+            args = json.loads(args, object_pairs_hook=_Pairs)
+        except ValueError:
+            return None
     read = {f.casefold(): f for f in (*AGY_ARGS.get(name, {}).values(),
                                       *(("Action", "Input") if name == "manage_task" else ()))}
-    seen = {}
-    for k, v in args.items():
+    seen = set()
+    for k, _ in args if isinstance(args, _Pairs) else ():
         f = k.casefold()
-        if not k.isascii() or seen.setdefault(f, k) != k or read.get(f, k) != k or f in read and v is None:
-            return (f"Blocked by Tracekit: agy may read the argument {k[:64]!r} as {read.get(f) or seen.get(f, k)}, "
-                    "which Tracekit reads only as spelled; send each argument once, by its exact name, not null.")
+        why = ("isn't ASCII" if not k.isascii() else "repeats an earlier argument's name (case ignored)" if f in seen
+               else f"is {read[f]} in another case" if read.get(f, k) != k else None)
+        if why:
+            return (f"Blocked by Tracekit: the argument {k[:64]!r} of agy's {name[:64]} {why}, so agy may run the call "
+                    "with other arguments than Tracekit decides; send each argument once, by its exact name.")
+        seen.add(f)
     return None
 
 
@@ -532,7 +540,8 @@ def _blocked(harness, p, raw=""):
     """The reason a pre-tool call is denied in the hook itself, before it is mapped, else None. raw: the payload as
     received."""
     if harness == "antigravity":
-        call = p.get("toolCall") if isinstance(p.get("toolCall"), dict) else {}
+        call = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("toolCall") if raw.strip() else None
+        call = dict(call) if isinstance(call, _Pairs) else {}
         return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
     return _blocked_tool(harness, str(p.get("tool_name") or ""), raw)
 
@@ -551,18 +560,18 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         _reply(harness, stdout, True, "", is_pre)
         return 0
     reason = _blocked(harness, p, raw) if is_pre else None
-    if reason is not None:
-        print(reason, file=stderr)
-        _reply(harness, stdout, False, reason, is_pre)
-        return _exit(harness, 2, is_pre)
-    H.AGENT_NAME = AGENT_NAMES[harness]
     err = Tee(stderr)
-    real_stdin, real_stderr = sys.stdin, sys.stderr
-    sys.stdin, sys.stderr = io.StringIO(json.dumps(q)), err
-    try:
-        code = H.main(harness_reasoning=False)
-    finally:
-        sys.stdin, sys.stderr = real_stdin, real_stderr
+    if reason is not None:   # a call the hook can't decide as it runs: denied before the pipeline
+        print(reason, file=err)
+        code = 2
+    else:
+        H.AGENT_NAME = AGENT_NAMES[harness]
+        real_stdin, real_stderr = sys.stdin, sys.stderr
+        sys.stdin, sys.stderr = io.StringIO(json.dumps(q)), err
+        try:
+            code = H.main(harness_reasoning=False)
+        finally:
+            sys.stdin, sys.stderr = real_stdin, real_stderr
     if code and harness in PAIRED and is_pre and q.get("tool_use_id"):   # a blocked call gets no post-tool event
         with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
             _paired_ids(harness, q["session_id"], None, None, "pre", drop=q["tool_use_id"])
