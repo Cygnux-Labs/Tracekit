@@ -436,7 +436,7 @@ ask:
     reason: deleting a repository or project through a platform's API
     remedy: Wait for a person to approve the held call, or delete a single item (an issue, a comment) rather than the whole repository or project.
     rationale: Deleting a repository or project removes all of its code, issues and history in one step; a person confirms it.
-  - id: TK-A043
+  - id: TK-A047
     class: shell
     # taking a repository's protections apart through GitHub, as TK-A042 reads gh api and curl: gh secret or
     # variable delete (or remove), with up to four options before each word as TK-A042 reads them; a DELETE, PUT or

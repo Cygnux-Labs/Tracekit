@@ -524,9 +524,9 @@ and false positive: `eval/results/e21_policy_robustness.json`. The two engines d
 
 | Latency (µs) | p50 | p99 | max |
 |---|---|---|---|
-| default, RE2 / regex | 79 / 75 | 161 / 194 | 272 / 358 |
-| strict, RE2 / regex | 78 / 74 | 162 / 194 | 262 / 367 |
-| dev, RE2 / regex | 64 / 60 | 139 / 150 | 231 / 233 |
+| default, RE2 / regex | 77 / 74 | 161 / 188 | 264 / 361 |
+| strict, RE2 / regex | 77 / 73 | 162 / 197 | 261 / 360 |
+| dev, RE2 / regex | 63 / 60 | 138 / 145 | 234 / 217 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
