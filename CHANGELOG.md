@@ -26,8 +26,8 @@ policy.
 - **Antigravity CLI: an argument agy could read under another name** (1.5.0 and 1.5.1). agy is a Go binary, and a Go
   decoder fills a field from any key that matches it ignoring case (the last one; a null keeps the value before it),
   while the hook read the exact name: `{"CommandLine": "ls", "commandline": "rm -rf ~"}` was decided as `ls`. A call
-  that names a field the hook reads in another case, twice, as null or outside ASCII is now denied in the hook, before
-  the signer.
+  that repeats an argument name in any case, names a field the hook reads in another case, or uses a key outside ASCII
+  is now denied in the hook, before the signer.
 - **Hold and deny rules that missed ordinary spellings** (versions before 1.5.2). `TK-A042` (deleting a repository or
   project through an API) now reads the method in any case, at the end of a cluster of short options (`-iX`, `-sSX`) or
   set at run time (`-X "$M"`), and words between the URL and the method, empty ones too. Program names are read
