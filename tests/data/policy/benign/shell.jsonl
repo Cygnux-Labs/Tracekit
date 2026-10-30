@@ -217,3 +217,9 @@
 {"tool": "Bash", "args": {"command": "gh pr list --state open"}, "expect": "allow", "note": "listing open pull requests"}
 {"tool": "Bash", "args": {"command": "gh secret set DEPLOY_TOKEN --repo myorg/backend --body placeholder"}, "expect": "allow", "note": "setting a repository secret"}
 {"tool": "Bash", "args": {"command": "gh api -X DELETE /repos/myorg/backend/issues/comments/123"}, "expect": "allow", "note": "deleting an issue comment through gh api"}
+{"tool": "Bash", "args": {"command": "gh api -X PATCH /repos/myorg/backend -f security_and_analysis[secret_scanning][status]=enabled -f description='Secret scanning was disabled by mistake'"}, "expect": "allow", "note": "turn secret scanning on, with \"disabled\" in another field"}
+{"tool": "Bash", "args": {"command": "gh repo edit myorg/backend --enable-secret-scanning"}, "expect": "allow", "note": "turn a repository's secret scanning on"}
+{"tool": "Bash", "args": {"command": "gh api -X PUT /repos/myorg/backend/vulnerability-alerts"}, "expect": "allow", "note": "turn a repository's Dependabot alerts on"}
+{"tool": "Bash", "args": {"command": "gh api /repos/myorg/backend/environments/production"}, "expect": "allow", "note": "read a deployment environment"}
+{"tool": "Bash", "args": {"command": "gh api -iX GET /repos/myorg/backend/branches/main/protection"}, "expect": "allow", "note": "read a branch's protection, -X GET at the end of a cluster of short options"}
+{"tool": "Bash", "args": {"command": "gh repo edit myorg/backend --enable-wiki=false"}, "expect": "allow", "note": "turn a repository's wiki off"}
