@@ -453,6 +453,26 @@ class Restarted(unittest.TestCase):
         self.assertEqual(out[5:], [[ended, True], ["api/snapshot", "api/why/workspace", "api/verify"]])
         self.assertIn('if (matchMedia("(prefers-reduced-motion: reduce)").matches || HZ.ended) hzFrame(0);', PAGE)
 
+    def test_a_restart_after_checks_stopped_says_it_restarted(self):
+        """A tab whose viewer had stopped checking runs, then restarted, kept the STOPPED reason on its bar: the bar read
+        that no run is checked until tracekit view restarts, after it had. It says the viewer restarted."""
+        needs_node(self)
+        out = json.loads(page_js(["renderTop", "filterChips"], """
+            const el = {}, $ = id => el[id] ??= { classList: { toggle() {} } };
+            const document = { URL: "http://127.0.0.1/", body: { classList: { toggle() {} } } };
+            let mode = "live", liveOk = true, liveErr = "", SOURCE = "", ENDED = "";
+            let STOPPED = "verification stopped (OSError: disk): no run is checked until tracekit view restarts";
+            const BOOT = null, V2 = true, scope = null, RUNS = new Map(), F = {}, TZ = "UTC", nowTs = () => 0, put = () => {};
+            const chainState = { ok: false, n: 0, detail: "" }, esc = s => s;
+            renderTop();
+            const before = el.lost.textContent;
+            ENDED = liveErr = "This viewer was restarted or your session ended: open the link tracekit view printed.";
+            liveOk = false;   // as endLive leaves it
+            renderTop();
+            process.stdout.write(JSON.stringify([before, el.lost.hidden, el.lost.textContent]));"""))
+        self.assertEqual(out, ["verification stopped (OSError: disk): no run is checked until tracekit view restarts", False,
+                               "This viewer was restarted or your session ended: open the link tracekit view printed."])
+
     def test_an_ended_page_says_so_once_and_its_live_counters_go_quiet(self):
         """After a restart the bar and NEEDS YOU said the same sentence twice, while TO ANSWER, the green CHAIN count
         and the APPROVALS count stayed up on a page nothing updated any more."""

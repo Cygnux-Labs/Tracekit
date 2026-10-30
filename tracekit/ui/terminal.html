@@ -4333,7 +4333,7 @@
       m.title = mode === "live" && !live ? STOPPED || liveErr : "";
       // a page that lost its viewer, or whose viewer stopped checking, says so where it can't be missed
       $("lost").hidden = live || !!BOOT || document.URL.startsWith("file:");
-      $("lost").textContent = STOPPED || liveErr || "Connection to the viewer lost; reconnecting…";
+      $("lost").textContent = ENDED || STOPPED || liveErr || "Connection to the viewer lost; reconnecting…";
       document.body.classList.toggle("scoped", !!(V2 && scope));
       const c = $("chain");
       const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
