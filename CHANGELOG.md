@@ -224,6 +224,8 @@ protocol stays 20.
   replay state made before sending), with a test that runs it; the spec is linked where the docs cite it.
 - Flaky tests made deterministic: the pydantic_ai gateway hop, the detection ack-time test (medians), and the policy
   speed test (TK-A040's own fillers within a 0.25 s budget, instead of skipping them).
+- **The TypeScript OpenAI Agents adapter's `tk.mcp(server)` trimmed the server name in time quadratic in a run of `_`
+  or `-` inside it** (CodeQL `js/polynomial-redos`; the name is the app's own): it trims by index now.
 
 ### Security
 - **PCM: a replay sender is the public key that signed and its agent, and a trust.json pins each Ed25519 key under one
