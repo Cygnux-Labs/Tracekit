@@ -985,6 +985,20 @@ class Installer(unittest.TestCase):
         self.assertEqual(verdict("apply_patch", {"patchText": PATCH.format(".env:x")}), "deny")
         self.assertEqual(verdict("patch", {"patchText": patch.format(" ")}), "deny")   # OpenCode 1.0's patch tool
 
+    def test_cursor_decides_every_path_its_input_names(self):
+        # Cursor doesn't document which key its tools read a path from: a decoy file_path beside the path, target_file
+        # or filePath a tool reads, or the other way round, must not move the decision off the real file
+        from tracekit import policy
+        from tracekit.signer.service import load_policy
+        v1, v2 = policy.load(policy.DEFAULT_POLICY)[0], load_policy()
+        for key in ("path", "target_file", "filePath"):
+            for args in ({key: "/w/.env", "file_path": "/w/notes.txt"}, {"file_path": "/w/.env", key: "/w/notes.txt"}):
+                with self.subTest(args=args):
+                    tool, ti = agent_hooks.tool("cursor", "Write", {**args, "content": "A=1"})
+                    self.assertEqual(v2.decide(tool, ti)["verdict"], "deny")
+                    self.assertEqual(policy.evaluate(v1, tool, ti, "/w")["decision"], "deny")
+        self.assertNotIn("paths", agent_hooks.tool("cursor", "Read", {"path": "/w/a.py"})[1])
+
     def test_the_v1_policy_decides_every_file_a_patch_names(self):
         from tracekit import policy
         pol = policy.load(policy.DEFAULT_POLICY)[0]
