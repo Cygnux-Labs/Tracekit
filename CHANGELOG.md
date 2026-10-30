@@ -80,6 +80,9 @@ protocol stays 20.
   there; **CAM** makes a replay's camera follow each move. A shell move is named by the program it runs, a file it
   writes is its place, and a grep pattern, jq filter or commit message is no place
   ([Event Horizon](docs/horizon.md#zoom)).
+- **A warning when a hand-wired framework isn't the tested version (#474, by @AnnasMazhar).** The Microsoft Agent
+  Framework, Google ADK, Haystack, LlamaIndex and Strands integrations warn once per process when the installed
+  framework is outside the versions Tracekit is tested against; nothing is blocked ([limits](docs/limits.md)).
 - **CI for the independent Go verifier**: `go vet`, `go test` and its differential against the golden corpus.
 
 ### Changed
