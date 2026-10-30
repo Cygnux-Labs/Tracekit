@@ -51,8 +51,10 @@ class HarnessCase(unittest.TestCase):
         self.addCleanup(agent.stop)
 
     def hook(self, harness, payload, event=None):
+        """payload: a dict, or the raw JSON text the harness sends."""
         out, err = io.StringIO(), io.StringIO()
-        code = harness_hooks.run(harness, json.dumps(payload), out, err, event=event)
+        code = harness_hooks.run(harness, payload if isinstance(payload, str) else json.dumps(payload), out, err,
+                                 event=event)
         return code, out.getvalue(), err.getvalue()
 
 
@@ -154,6 +156,32 @@ class Mapping(HarnessCase):
                 self.assertIn(f"Crush's {name}", err)
                 self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
                 self.assertEqual(self.sent, [])
+
+    def test_crush_argument_names_crush_reads_otherwise_are_denied_before_the_signer(self):
+        # Crush decodes a built-in tool's input into a Go struct: a name matches its field ignoring case, a later repeat
+        # wins, and a null keeps the earlier value; each input here runs other arguments than json.loads reads
+        payload = ('{"event":"PreToolUse","hook_event_name":"PreToolUse","session_id":"cr-10","cwd":"/w",'
+                   '"tool_name":"%s","tool_input":%s,"tool_use_id":"call_%d"}')
+        odd = (("bash", '{"description":"x","command":"ls","Command":"rm -rf ~"}'),
+               ("bash", '{"command":"rm -rf ~","command":null}'),
+               ("view", '{"file_path":"/w/README.md","FILE_PATH":"/home/u/.ssh/id_rsa"}'),
+               ("grep", '{"pattern":"PRIVATE","Path":"/home/u/.ssh"}'),
+               ("multiedit", '{"file_path":"/w/a.py","edits":[{"old_string":"a","new_string":"b","new_string":"c"}]}'))
+        for i, (name, ti) in enumerate(odd):
+            with self.subTest(tool=name, input=ti):
+                code, out, err = self.hook("crush", payload % (name, ti, i), "PreToolUse")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"Crush's {name} input repeats an argument name", err)
+                self.assertEqual(self.sent, [])
+        # an MCP tool's arguments reach its server as a map, as json.loads reads them; Docker's code-mode is denied
+        self.assertEqual(self.hook("crush", payload % ("mcp_github_get_issue", '{"issue":1,"Issue":2}', 7),
+                                   "PreToolUse")[0], 0)
+        self.assertEqual([s["args"] for s in self.sent], [{"issue": 1, "Issue": 2}])
+        code, _, err = self.hook("crush", payload % ("mcp_docker_code-mode", '{"servers":["github"],"name":"gh"}', 8),
+                                 "PreToolUse")
+        self.assertEqual(code, 2)
+        self.assertIn("Docker MCP Gateway's code-mode", err)
+        self.assertEqual(len(self.sent), 1)
 
     def test_droid_pairs_results_and_drops_a_blocked_call_before_allowing_a_retry(self):
         pre = {"session_id": "s-droid", "hook_event_name": "PreToolUse", "tool_name": "Execute",

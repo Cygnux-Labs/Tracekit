@@ -65,10 +65,11 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         if q is not None or p.get("hook_event_name") in agent_hooks.CURSOR_SAID:
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]   # a run said() registers is the harness's
             said_since(harness, p, stderr)
-        reason = agent_hooks._blocked_tool(harness, str(p.get("tool_name") or "")) if q is not None and is_pre else None
+        reason = (agent_hooks._blocked_tool(harness, str(p.get("tool_name") or ""), raw)
+                  if q is not None and is_pre else None)
         if q is None:   # an event Tracekit does not record
             code = 0
-        elif reason is not None:   # a tool that runs calls the hook never sees: denied before the signer
+        elif reason is not None:   # a call the hook can't decide as it runs: denied before the signer
             print(reason, file=err)
             code = 2
         else:

@@ -42,7 +42,8 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             mcp_<server>_<tool>
             -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
             (lsp_rename, ls, grep and glob decided on the `path` they read; its payload is Claude Code's shape);
-            agent and agentic_fetch are denied in the hook: their sub-agents' calls run no hooks
+            agent, agentic_fetch and Docker MCP Gateway's code-mode tools are denied in the hook (the calls they make
+            run no hooks), and so is a built-in tool's input with argument names Crush may read otherwise
 
 What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
@@ -436,19 +437,64 @@ GOOSE_CODE_MODE = ("execute_javascript", "execute_typescript", "execute_bash")
 # Crush's sub-agent tools: a sub-agent's own calls (view, grep, sourcegraph, web_fetch, ...) run no hooks
 # (internal/agent/hooked_tool.go, wrapToolsWithHooks)
 CRUSH_SUBAGENTS = ("agent", "agentic_fetch")
+# Docker MCP Gateway's code-mode makes a tool, code-mode-<name>, whose script calls MCP tools inside the gateway, where
+# no hook sees them (docker/mcp-gateway pkg/gateway/codemode.go); Crush names them mcp_<server>_code-mode[-<name>]
+CRUSH_CODE_MODE = re.compile(r"mcp_.+_code-mode(-.+)?", re.S)
+# Crush decodes a built-in tool's input into a Go struct (encoding/json): a name matches its field ignoring case
+# (Unicode folding: U+017F is s), a later repeat wins, and a null keeps the earlier value, while json.loads keeps exact
+# names and a repeat's last value. Every built-in tool's argument names, nested ones too, are lower-case snake_case, so
+# an input with any other name or a repeat is denied. An MCP tool's input is decoded into a map (mcp/tools.go RunTool):
+# exact names, a repeat's last value, null kept, as json.loads reads it
+CRUSH_ARG_NAME = re.compile(r"[a-z0-9_]+")
 
 
-def _blocked_tool(harness, tool_name):
-    """The reason a tool is denied in the hook itself (it runs calls the hook never sees), else None.
-    tool_name: the harness's own name for the tool, before it is mapped."""
+class _Pairs(list):
+    """A JSON object as its (name, value) pairs, in order, repeats kept (json's object_pairs_hook)."""
+
+
+def _odd_arg_name(v):
+    """A name in v (a JSON value read with _Pairs), at any depth, that repeats in its object or isn't lower-case
+    snake_case, else None."""
+    todo = [v]
+    while todo:
+        v = todo.pop()
+        if isinstance(v, _Pairs):
+            seen = set()
+            for k, x in v:
+                if k in seen or not CRUSH_ARG_NAME.fullmatch(k):
+                    return k
+                seen.add(k)
+                todo.append(x)
+        elif isinstance(v, list):
+            todo.extend(v)
+    return None
+
+
+def _blocked_tool(harness, tool_name, raw=""):
+    """The reason a tool call is denied in the hook itself, else None: a tool that runs calls the hook never sees, or
+    a Crush input the tool may read otherwise than Tracekit. tool_name: the harness's own name for the tool, before it
+    is mapped; raw: the hook payload as received."""
     name = tool_name.removeprefix("code_execution__")
     if harness == "goose" and name in GOOSE_CODE_MODE:
         return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
-    if harness == "crush" and tool_name in CRUSH_SUBAGENTS:
+    if harness != "crush":
+        return None
+    if tool_name in CRUSH_SUBAGENTS:
         return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
                 "can't decide them; make each call itself instead. To stop Crush offering it, set "
                 '"options": {"disabled_tools": ["agent", "agentic_fetch"]} in crush.json.')
+    if CRUSH_CODE_MODE.fullmatch(tool_name):
+        return (f"Blocked by Tracekit: {tool_name} is Docker MCP Gateway's code-mode, whose script calls MCP tools "
+                "inside the gateway with no hook, so Tracekit can't decide them; make each call itself instead. "
+                "`docker mcp feature disable dynamic-tools` turns it off.")
+    if not tool_name.startswith("mcp_") and raw.strip():
+        odd = _odd_arg_name(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input"))
+        if odd is not None:
+            return (f"Blocked by Tracekit: Crush's {tool_name} input repeats an argument name or has one that isn't "
+                    f"lower-case snake_case ({odd!r}). Crush matches argument names ignoring case and lets a later "
+                    "repeat win unless it is null, so Tracekit can't be sure it decides the arguments the tool runs "
+                    "with; send each argument once, by its lower-case name.")
     return None
 
 
@@ -465,7 +511,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
-    reason = _blocked_tool(harness, str(p.get("tool_name") or "")) if is_pre else None
+    reason = _blocked_tool(harness, str(p.get("tool_name") or ""), raw) if is_pre else None
     if reason is not None:
         print(reason, file=stderr)
         _reply(harness, stdout, False, reason, is_pre)
