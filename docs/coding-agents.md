@@ -328,7 +328,9 @@ call, and the post-tool hook answers `{}` (before agy 1.4.7, a post-tool hook th
 with an error). On Windows, dev mode has no such wrapper ([limits](limits.md#signer-and-capture)).
 
 **What is recorded.** A conversation (`conversationId`) is one run. Each tool call is decided on the argument the tool
-itself reads, so a decoy key the model sends beside it never moves the decision:
+itself reads, so a decoy key the model sends beside it never moves the decision. agy is a Go program, whose decoder may
+fill an argument from a key in another case (`commandline` for `CommandLine`): the hook denies a call that sends one of
+the arguments below in another case, twice in different cases or as null, or any key outside ASCII:
 
 | agy tool | Decided as | On |
 |---|---|---|
