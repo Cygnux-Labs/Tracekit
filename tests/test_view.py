@@ -1050,11 +1050,14 @@ class View(unittest.TestCase):
         effects = {r["v2"]["run_seq"]: r for r in rows if r.get("tape") == "EFFECT"}
         self.assertEqual(sorted(r["title"] for r in effects.values()),
                          ["EFFECT · exec /bin/bash", "EFFECT · exec /usr/bin/curl", "EFFECT · exec /usr/bin/git"])
-        joined = next(r for r in rows if r.get("title", "").startswith("FINDINGS · "))["v2"]["effects"]
+        def findings():   # appended after the run's report: the analysis reads the run's content
+            return [r for r in self.rows(feed, run.run_id) if r.get("title", "").startswith("FINDINGS · ")]
+        self.assertTrue(wait_for(findings, 15))
+        joined = findings()[0]["v2"]["effects"]
         self.assertEqual({effects[s]["v2"]["effect"]["target"]: (j["call"], j["status"]) for s, j in joined.items()},
                          {"/bin/bash": ("c1", "explained"), "/usr/bin/git": ("c1", "explained"),
                           "/usr/bin/curl": (None, "found")})
-        [finding] = [r for r in rows if r.get("title", "").startswith("FINDING TK-X206")]
+        [finding] = [r for r in self.rows(feed, run.run_id) if r.get("title", "").startswith("FINDING TK-X206")]
         self.assertIn("/usr/bin/curl start", finding["text"])
 
     def test_dev_run_is_listed_with_its_counts_and_verified_while_the_signer_holds_the_lock(self):
