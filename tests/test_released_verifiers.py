@@ -31,7 +31,7 @@ from tracekit.signer import service as svc
 from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0", "v1.4.0", "v1.4.1", "v1.4.2"]   # add each release's tag
+RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0", "v1.4.0", "v1.4.1", "v1.4.2", "v1.5.0"]   # add each release's tag
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
 OPENSHELL = CallerIdentity("mtls", "spiffe://acme/openshell", True)   # a configured gateway
 VERIFY = ("import json, sys, tracekit\nfrom tracekit.verify import v2\nrep, code = v2.verify(sys.argv[1], sys.argv[2])\n"

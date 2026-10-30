@@ -181,6 +181,7 @@ jobs:
           python-version: "3.12"
       - name: Install core and every contrib package (not editable, so their metadata and entry points are tested)
         run: |
+          GLOBIGNORE=./contrib/independent-go-verifier/   # a Go module, not a Python package
           python -m pip install ".[dev]" ./contrib/*/
           python -m pip check
       - name: Entry points run from outside the checkout
