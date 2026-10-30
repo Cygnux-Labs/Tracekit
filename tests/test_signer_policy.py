@@ -438,6 +438,8 @@ class CodingPack(unittest.TestCase):
                 ("mcp__stripe_create_payout", {}, "TK-M002"),
                 ("mcp__slack_slack_post_message", {"channel": "C1", "text": "<!channel> hi"}, "TK-M004"),
                 ("mcp__aws_delete_bucket", {"bucket": "b"}, "TK-C011"), ("mcp__gh_repo-delete", {}, "TK-C011"),
+                ("mcp__fs__delete-file", {}, "TK-C011"), ("mcp__aws_delete-bucket", {}, "TK-C011"),
+                ("mcp:fs/delete-file", {}, "TK-C011"), ("mcp:gh/repo-delete", {}, "TK-C011"),
                 ("mcp__aws_attach_role_policy", {"role": "r"}, "TK-C002"), ("mcp__gcp_set_iam_policy", {}, "TK-C002"))
         not_held = (("mcp__stripe_get_refund_status", {}, "TK-M002"), ("mcp__stripe__get_refund_status", {}, "TK-M002"),
                     ("mcp__stripe_list_refunds", {}, "TK-M002"), ("mcp__refund_status", {}, "TK-M002"),
