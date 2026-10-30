@@ -6237,7 +6237,11 @@
     const INFL = new Set(), INFLMORE = new Set(), INFLMAX = 200, INFLCHIPS = 6;
     const KIND = { UserPromptSubmit: "the person's prompts", "session-message": "messages from another session", "agent-message": "sub-agents' messages",
                    "task-notification": "background tasks' notices", "system-reminder": "the harness's reminders", "fetched-web-content": "fetched web pages",
-                   "person-command": "commands the person ran", "bash-output": "command output", "teammate-message": "teammates' messages" };
+                   "person-command": "commands the person ran", "bash-output": "command output", "teammate-message": "teammates' messages",
+                   paste: "text pasted into the prompt", skill: "skill instructions", "referenced-file": "files the prompt referenced",
+                   "function-results": "tool results", "tool-use-error": "tool errors", "persisted-output": "saved tool output",
+                   "sandbox-violations": "sandbox violation notices", "slack-ping": "Slack messages", "slack-tag-message": "Slack messages",
+                   channel: "channel messages", tick: "scheduled check-ins" };
     // a kind of content in words (a tool's result recorded as untrusted is "tool:<its name>"), and a count of it (251,234)
     const kindName = k => KIND[k] || (String(k).startsWith("tool:") ? "output of " + String(k).slice(5) : String(k));
     const many = (n, w) => Number(n).toLocaleString("en-US") + " " + w + (n === 1 ? "" : "s");
@@ -6289,11 +6293,11 @@
       const at = dict(tools.map((t, j) => [t.tool, j]));
       const risky = groups.flatMap((g, k) => g.trust !== "untrusted" ? [] : g.reach.filter(stopped).map(t => ({ g, k, t, n: (t.ended.blocked || 0) + (t.ended.held || 0) })))
         .sort((a, b) => b.t.confirmed - a.t.confirmed || b.n - a.n || (b.t.stopped_runs || 0) - (a.t.stopped_runs || 0) || a.t.tool.localeCompare(b.t.tool));
-      const line = ({ g, k, t }) => {
+      const line = ({ g, k, t, n: stopped }) => {
         const name = kindName(g.kind), stops = ENDS.slice(0, 2).filter(([w]) => t.ended[w]).map(([w, c]) => `<b class="${esc(c)}">${esc(Number(t.ended[w]).toLocaleString("en-US") + " " + w)}</b>`).join(" and ");
         const n = g.mine.filter(s => (s.confirmed_tools || []).includes(t.tool)).length, cause = `a replay confirmed ${n > 1 ? n : "one"} of these caused ${t.tool} calls`;
         return `<div class="ans" role="button" tabindex="0" data-ifk="${esc(k)}" data-ift="${esc(at[t.tool])}"><b>${esc(name.charAt(0).toUpperCase() + name.slice(1))}</b> <span class="bad">(untrusted)</span>`
-          + (stops ? ` came before ${stops} ${esc(t.tool)} calls${t.stopped_runs ? esc(` in ${many(t.stopped_runs, "run")}`) : ""}` + (t.confirmed ? esc("; " + cause) : "") : esc(": " + cause))
+          + (stops ? ` came before ${stops} ${esc(t.tool)} ${stopped === 1 ? "call" : "calls"}${t.stopped_runs ? esc(` in ${many(t.stopped_runs, "run")}`) : ""}` + (t.confirmed ? esc("; " + cause) : "") : esc(": " + cause))
           + (t.confirmed ? ` <b class="blk">${esc(`(effect ${sgn(t.effect)})`)}</b>` : "") + `</div>`;
       };
       return `<div class="inans"><div class="q">DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL?</div>`
@@ -6406,7 +6410,7 @@
       const sw = cls => flow ? `<svg class="ifl" width="22" height="8"><g class="${esc(cls ? "ln " + cls : "ln")}"><path class="v" d="M0,4H22" stroke-width="${esc(cls === "deny" ? 3.5 : 2)}"/></g></svg>` : "";
       put("whyv", !S2.length ? `<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it, so there is nothing to show. Runs that record their model calls show here what the agents read before each tool call.</div>`
         : inflAnswer(groups, tools)
-          + `<p class="dim" style="padding:0 8px">${esc(`Across all ${many(WHY.runs.length, "run")}: what the agents read, and the tools they called after it. Content in front of an agent when it decided came before that call; only a replay can show it caused one.`)}</p>`
+          + `<p class="dim" style="padding:0 8px">${esc(`${WHY.runs.length === 1 ? "In this run" : `Across all ${many(WHY.runs.length, "run")}`}: what the agents read, and the tools they called after it. Content in front of an agent when it decided came before that call; only a replay can show it caused one.`)}</p>`
           + flow + `<div class="wbar glegend"><span>` + sw("") + `<span class="tag">tool N</span> came before its calls in N runs${flow ? ", the more the thicker" : ""}</span><span>` + sw("blk") + `<span class="tag blk">tool N blocked</span> calls blocked</span>`
           + `<span>` + sw("held") + `<span class="tag held">tool N held</span> held for a person</span><span>` + sw("flag") + `<span class="tag flag">tool N flagged</span> flagged</span>`
           + `<span>` + sw("deny") + `<span class="tag deny">tool +effect</span> a replay confirmed it caused them</span><span>` + sw("ruled") + `<span class="tag ruled">tool N</span> a replay ruled it out</span>`

@@ -2125,10 +2125,10 @@ class PlainPages(unittest.TestCase):
                  "tone", "endWords", "said", "chip", "order", "chips", "inflTools", "INFLSAY", "inflAnswer", "INFLTOOLS", "inflFlow",
                  "idLen", "influenceView"]
 
-    def influence(self, sources, edges, groups, opened=(), more=(), width=900, mark=None):
+    def influence(self, sources, edges, groups, opened=(), more=(), width=900, mark=None, runs=2):
         """INFLUENCE's HTML, its summary, and the content and tools its data-* indices name (IFL.keys, IFL.tools)."""
         return json.loads(page_js(self.INFLUENCE, f"""
-            const WHY = {{ runs: [{{}}, {{}}], influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
+            const WHY = {{ runs: Array.from({{ length: {runs} }}, () => ({{}})), influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
                           edges: {json.dumps(edges)}, groups: {json.dumps(groups)} }} }}, got = {{}}, $ = id => got[id] ??= {{}};
             const RUNS = new Map([["r1", {{}}]]), TZ = "UTC";
             for (const k of {json.dumps(list(opened))}) INFL.add(k);
@@ -2302,6 +2302,18 @@ class PlainPages(unittest.TestCase):
         page = self.influence(sources[:0] + [dict(sources[0], confirmed_tools=[])], [], groups)[0]
         self.assertEqual(html.unescape(text(page[:page.index("</div></div>") + 12])),
                          "DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL? Nothing untrusted came before a blocked or held call.")
+
+    def test_influence_says_one_call_one_run_and_names_pasted_text(self):
+        """The owner's preview read "Across all 1 run", "came before 1 blocked Bash calls", and "paste" where every other
+        kind of content has a name in words."""
+        needs_node(self)
+        groups = [{"kind": "paste", "trust": "untrusted", "runs": 1, "reach": {"Bash": 1}, "ended": {"Bash": {"blocked": 1}}}]
+        sources = [{"id": "s1", "labels": ["a:paste"], "trust": "untrusted", "runs": 1, "cited_by": 1, "kind": "paste",
+                    "preview": "x", "confirmed_tools": [], "seen": []}]
+        page = self.influence(sources, [{"source": "s1", "tool": "Bash", "reach_runs": 1}], groups, runs=1)[0]
+        self.assertIn('Text pasted into the prompt</b> <span class="bad">(untrusted)</span> came before <b class="blk">1 blocked'
+                      '</b> Bash call<', page)
+        self.assertIn("In this run: what the agents read", page)
 
     def test_influence_draws_each_kind_to_the_tools_after_it_only_the_lines_that_matter_coloured_as_their_chips(self):
         """Every grey "reached" line drawn made the middle a hairball (12 kinds, 40 tools): the flow draws the lines whose
