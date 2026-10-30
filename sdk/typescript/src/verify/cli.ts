@@ -3,8 +3,9 @@
  * CLI's report and exit codes (0 verified, 1 failed, 2 unusable or unverifiable, 3 a warning under --strict).
  */
 import { readFile } from "node:fs/promises";
+import { getSystemErrorMap } from "node:util";
 import { asJson } from "./explain.js";
-import { EXIT_BAD, EXIT_OK, EXIT_WARN, formatReport, verify } from "./index.js";
+import { EXIT_BAD, EXIT_OK, EXIT_WARN, Report, TRUST_UNUSABLE, formatReport, verify } from "./index.js";
 
 const USAGE = "usage: tracekit verify BUNDLE --trust TRUST.json [--json] [--strict]";
 
@@ -26,14 +27,16 @@ export async function main(argv: string[]): Promise<number> {
     console.error(USAGE);
     return EXIT_BAD;
   }
-  let data: [Uint8Array, Uint8Array];
-  try {
-    data = [await readFile(bundle), await readFile(trust)];
-  } catch (e) {
-    console.error(`tracekit verify: ${(e as Error).message}`);
-    return EXIT_BAD;
-  }
-  const { report, code: verdict } = await verify(...data, { bundle, trust });
+  // a file that can't be read: its path and the system's reason, in the report the reference CLI prints for it
+  const read = (path: string) => readFile(path).catch((e: NodeJS.ErrnoException) =>
+    `${path}: ${(getSystemErrorMap().get(e.errno ?? 0)?.[1] ?? e.message).replace(/^./, (c) => c.toUpperCase())}`);
+  const b = await read(bundle), t = await read(trust);
+  let report = new Report(), verdict = EXIT_BAD;
+  if (typeof t === "string") {
+    report.integrity = TRUST_UNUSABLE;
+    report.check("trust config", false, t);
+  } else if (typeof b === "string") report.check("bundle readable", false, `cannot read bundle: ${b}`);
+  else ({ report, code: verdict } = await verify(b, t, { bundle, trust }));
   const code = verdict === EXIT_OK && strict && report.warnings.length ? EXIT_WARN : verdict;
   if (json) console.log(JSON.stringify(asJson(report, code), null, 2));
   else process.stdout.write(formatReport(report));

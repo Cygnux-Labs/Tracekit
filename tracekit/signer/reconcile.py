@@ -8,14 +8,15 @@ of the run, just before run.final, and returns the coverage that run.final state
 
 For each L3 tool use the client runs: no decide with its id → hook_missing (written at once when a gateway request sends
 its result back, so a detector sees it mid-run); raw arguments that failed strict parsing → args_unparseable; another
-tool name, or (neither side coerced, both digests known) other arguments → args_mismatch. A decide's `coerced` is the
-agent's word: against a tool use the gateway recorded it excuses nothing, and the mismatch says the decide claimed it. Tool uses the provider ran
-itself (executed_by provider) are counted for run.final's `provider_executed`, never matched against a decide. Each
-decide with neither an L3 tool use nor a provider one → fabricated; each id in tool_results_sent with neither a decide
-nor an L3 tool use → result_without_call. A run with no L3 record gets none of these: its coverage says L3 is absent.
-A response recorded `said_only` (what the model said, without its calls: a harness whose hooks name no call) is no L3
-record, so it never makes a decide fabricated. The internal args
-digests live in the run's `digests`, which no snapshot holds.
+tool name, or (neither side coerced, both digests known) other arguments → args_mismatch; a Claude Code run's arguments
+are compared without what Claude Code drops or fills in itself (compared). A decide's `coerced` is the agent's word:
+against a tool use the gateway recorded it excuses nothing, and the mismatch says the decide claimed it. Tool uses the
+provider ran itself (executed_by provider) are counted for run.final's `provider_executed`, never matched against a
+decide. Each decide with neither an L3 tool use nor a provider one → fabricated; each id in tool_results_sent with
+neither a decide nor an L3 tool use → result_without_call. A run with no L3 record gets none of these: its coverage
+says L3 is absent. A response recorded `said_only` (what the model said, without its calls: a harness whose hooks name
+no call) is no L3 record, so it never makes a decide fabricated. The internal args digests live in the run's `digests`,
+which no snapshot holds.
 
 A framework that hands its hooks no tool-call id (CrewAI, an MCP session under mcp-agent) decides each call under an id
 of the adapter's own. A tool use with no decide of its id and a decide with no tool use of its id are paired when both
@@ -87,6 +88,8 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
         put(sub(put, rec, "mismatched"), e["tool_call_id"], True)
     if rec is not None and e["type"] == "capture.gap" and e["data"].get("kind") == "result_unchecked":   # once per call
         put(sub(put, rec, "unchecked"), e["tool_call_id"], True)
+    if rec is not None and e["type"] == "run.registered" and (e["data"].get("agent") or {}).get("name") == "claude-code":
+        put(rec, "claude_code", True)   # its decides are compared as Claude Code's hooks see a tool use (compared)
     if rec is None or layer is None or e["data"].get("said_only"):   # said_only: no call to read from it
         return []
     digests, now = digests or {}, []
@@ -152,10 +155,46 @@ def model_names(tool):
     return (tool,) + tuple(f.format(s=server, t=name) for f in forms)
 
 
+# What Claude Code changes in a tool use before its hooks see it (Claude Code 2.1: its transcripts' tool uses against its
+# hooks' tool_input): it drops a key the tool does not take (some a model sends are the tool's own in other Claude Code
+# builds), fills in a default, and gives a message the model sent with no summary its first line, cut to 200
+# characters. compared() leaves these out on both sides of a Claude Code run's comparison, the tailer's tool uses and the
+# signer's decides: none of them changes what a call runs or reaches, and any other difference is an args_mismatch.
+# lean: the changes seen on the maintainer's runs; another key a model makes up is an args_mismatch (a false gap, never
+# a hidden one) until it is added here
+DROPPED = {"Agent": ("run_in_background",), "Monitor": ("persistent", "timeout"), "Write": ("description",)}
+FILLED = {"Monitor": lambda args: {"timeout_ms": 300000}, "SendMessage": lambda args: {"summary": _label(args)}}
+
+
+def _label(args):
+    """The summary Claude Code gives a SendMessage whose model gave none."""
+    first = args.get("message").split("\n", 1)[0] if isinstance(args.get("message"), str) else None
+    return first if first is None or len(first) <= 200 else first[:199] + "…"
+
+
+def compared(tool, args):
+    """`args` of a Claude Code call to `tool` as reconciliation compares them: without what Claude Code drops or fills in
+    itself (DROPPED, FILLED). `args` itself when that leaves nothing out."""
+    if not isinstance(args, dict):
+        return args
+    filled = FILLED[tool](args) if tool in FILLED else {}
+    out = {k: v for k, v in args.items() if k not in DROPPED.get(tool, ()) and not (k in filled and filled[k] == v)}
+    return args if len(out) == len(args) else out
+
+
 def _hint(tool):
     """What a hook_missing detail adds for a tool that looks like a handoff the policy does not name."""
     return "; if it is a handoff to another agent, name it in the policy's handoffs:" if tool.startswith(
         "transfer_to_") else ""
+
+
+def _summary(tool):
+    """What a fabricated detail adds for Claude Code's SubagentHandback, which its progress summary of a background
+    agent calls outside any transcript (docs/limits.md)."""
+    return ("; SubagentHandback is Claude Code's own tool: its progress summary of a background agent can call it in a "
+            "request no transcript records, with a short line of what that agent was doing as the message, and each "
+            "such call seen never completed ok. A hand-back with no ok result is most likely that; one that completed "
+            "ok is not") if tool == "SubagentHandback" else ""
 
 
 def explained(rec, host, explains, labels):
@@ -264,7 +303,7 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
     for tcid, d in rec["l2"].items():
         if tcid not in l3 and tcid not in provider and tcid not in pairs.values() and not structured(d["name"]):
             out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"
-                        if tcid not in rec["l3"] else   # gateway_mandatory: only the agent reported the model asking
+                        f"{_summary(d['name'])}" if tcid not in rec["l3"] else   # gateway_mandatory: only the agent reported the model asking
                         f"a decide for {d['name'][:200]} that no gateway exchange asked for: the agent reported the "
                         "model asking for it, from a model call that went around the gateway"))
     for tcid in rec["sent"]:

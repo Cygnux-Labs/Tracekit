@@ -165,7 +165,8 @@ class FakeSigner:
                 raise RPCError("args_mismatch", tcid)
             run["decisions"][req["decision_id"]] = None
             a = self._approvals.get(self._index.get((req["run_id"], tcid, attempt)), {})
-            if d[3] == "deny" or (d[3] == "ask" and a.get("state") != "consumed"):
+            # an ask ran under an approval only if this call consumed it, not an earlier attempt a retry consumed
+            if d[3] == "deny" or (d[3] == "ask" and (a.get("state"), a.get("used_by")) != ("consumed", (tcid, attempt))):
                 return {"kind": "executed_against_policy", "tool_use_id": tcid,
                         "reason": f"{tcid} ran after a {d[3]} decision"}
             return None
@@ -193,6 +194,9 @@ class FakeSigner:
             call = run["calls"].get(req["tool_call_id"])
             if call is None or call["decision"] != "ask" or call["attempt"] != attempt:
                 raise RPCError("unknown_tool_call", f"{req['tool_call_id']} has no pending `ask` decision")
+            reuse = self._reusable(req["run_id"], call)
+            if reuse:
+                return {"approval_id": reuse, "state": "approved", "expires_at": self._approvals[reuse]["expires_at"]}
             approval_id = self._index[k] = self._id("apr")
             # lean: approvals never expire here; the real signer enforces expires_at
             expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
@@ -242,12 +246,28 @@ class FakeSigner:
             return {"approval_id": req["approval_id"], "state": self._approval(req["run_id"], req["approval_id"])["state"]}
         return self._call("approval_wait", req, handle)
 
+    def _reusable(self, run_id, call, prefer=None):
+        """The real signer's approve, then retry (SignerService._reusable): an approved approval of an earlier call of
+        run `run_id` with the tool, arguments and rules of `call`, an `ask`, whose own call has no result (it ran
+        anyway, so it used the approval up). Unlike the real one it checks no expiry (approvals here never expire),
+        policy hash (one fixed policy), gateway (`via`) or veto delay: this signer has none of them. Nor does it keep
+        the order of answers (the real one reuses no yes once a later no answered the same call) or which decision
+        consumed an approval (the real one has a call completed twice on one approval ran against the policy)."""
+        ran = {e["data"]["tool_call_id"] for e in self._runs[run_id]["events"] if e["type"] == "tool.result"}
+        found = [aid for aid, a in self._approvals.items() if a["run_id"] == run_id and a["state"] == "approved"
+                 and a["tool"] == call["tool"] and a["args_digest"] == call["args_digest"]
+                 and set(call["rule_ids"]) <= set(a["rule_ids"]) and a["tool_call_id"] not in ran]
+        return prefer if prefer in found else found[0] if found else None
+
     def approval_consume(self, req):
         def handle(req):
             run, attempt, hint = self._run(req), req.get("attempt", 0), req.get("approval_id_hint")
-            aid = self._index.get((req["run_id"], req["tool_call_id"], attempt))
-            a, call = self._approvals.get(aid), run["calls"].get(req["tool_call_id"])
-            digest = _digest(req)[1]
+            k = (req["run_id"], req["tool_call_id"], attempt)
+            aid, call, digest = self._index.get(k), run["calls"].get(req["tool_call_id"]), _digest(req)[1]
+            if aid is None and call and call["decision"] == "ask" and call["attempt"] == attempt \
+                    and call["args_digest"] == digest:
+                aid = self._reusable(req["run_id"], call, hint)
+            a = self._approvals.get(aid)
             if hint is not None and hint != aid:
                 code = "TK-APPROVAL-UNBOUND"
             elif digest is None:
@@ -262,7 +282,8 @@ class FakeSigner:
             elif a["state"] != "approved":
                 code = "TK-APPROVAL-" + a["state"].upper()
             else:
-                a["state"] = "consumed"
+                a["state"], a["used_by"] = "consumed", (req["tool_call_id"], attempt)
+                self._index[k] = aid   # the call that ran under it, an earlier attempt's or its own
                 self._append(run, "approval.consumed", {"approval_id": aid})
                 out = {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
                 if a["executor"] == "t2":   # the real arguments, never the approver's redacted copy

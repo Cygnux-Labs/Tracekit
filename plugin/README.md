@@ -14,7 +14,7 @@ Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-
 The plugin only carries the hooks. The signer and the verifier are the `tracekit` Python package:
 
 ```bash
-pip install tracekit-ai==1.5.0
+pip install tracekit-ai==1.5.1
 tracekit init --dev --v2 --no-hooks   # same-user dev signer (starts on the first hook); hooks come from the plugin
 # or, for tamper resistance against the agent's own user (Linux):
 sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks
@@ -37,7 +37,8 @@ plugin's hooks (`D-HOOKS-PRESENT`) and warns when both run. In system mode, run 
 ## When a hook can't run
 
 Each hook runs Tracekit's v2 Claude Code hook (`tracekit.integrations.claude_code`) for its event. The signer
-decides: deny blocks the call, and ask holds it until someone approves it from another terminal.
+decides: deny blocks the call, and ask blocks it with the approval's id and the command that approves it; once someone
+has approved it from another terminal, Claude's retry of the same call runs.
 
 - A tool call whose hook starts but can't finish is blocked.
 - Any other event (a prompt, Stop, a tool's result, a session or subagent event) is never blocked. Its error shows in

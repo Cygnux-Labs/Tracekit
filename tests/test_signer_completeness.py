@@ -109,6 +109,97 @@ class TestDecidedNotCompleted(Completeness):
                     self.restart()
                 self.assertEqual(self.gaps(self.final(run), "decided_not_completed"), [])
 
+    def test_after_approve_then_retry_the_retry_is_the_call_that_ran(self):
+        """Approve, then retry (docs/approvals.md#approve-then-retry): the retry that consumed the blocked attempt's
+        approval is the call that ran. Completed, after a replay from the records too, it is no gap and no call run
+        against the policy; never completed, it is the decided_not_completed gap, not the attempt the hook blocked."""
+        for restart in (False, True):
+            with self.subTest(restart=restart):
+                if self.closed:
+                    self.open()
+                runs, retried = {"done": self.register(), "lost": self.register()}, {}
+                for name, run in runs.items():
+                    self.decide(run, 0, "held", tool="pay")
+                    aid = self.call("approval_request", {**run, "tool_call_id": "held"})["approval_id"]
+                    self.call("approval_decide", {"approval_id": aid, "decision": "approve"}, OTHER)
+                    retried[name] = self.decide(run, 1, "retry", tool="pay")
+                    self.assertEqual(self.call("approval_request", {**run, "tool_call_id": "retry"})["approval_id"], aid)
+                    self.assertTrue(self.call("approval_consume", {**run, "tool_call_id": "retry", "tool": "pay",
+                                                                   "args_source": "parsed", "args": {},
+                                                                   "approval_id_hint": aid})["ok"])
+                if restart:
+                    self.restart()
+                self.call("complete", self.ev(runs["done"], 2, tool_call_id="retry", status="ok",
+                                              decision_id=retried["done"]["decision_id"],
+                                              args_digest=event_hash({"tool": "pay", "args": {}})))
+                for run in runs.values():
+                    self.call("close_run", run)
+                self.s.sweep(time.monotonic() + 61)
+                for name, want in (("done", []), ("lost", ["retry"])):
+                    events = self.events(runs[name]["run_id"])
+                    self.assertEqual([g["tool_call_id"] for g in self.gaps(events, "decided_not_completed")], want)
+                    self.assertEqual(self.gaps(events, "executed_against_policy"), [])
+                    [asked] = [e for e in events if e["type"] == "approval.request"]
+                    [used] = [e for e in events if e["type"] == "approval.consumed"]
+                    self.assertEqual((asked["tool_call_id"], used["tool_call_id"], used["data"]["approval_id"]),
+                                     ("held", "retry", asked["data"]["approval_id"]))
+
+    def test_after_approve_then_retry_the_blocked_attempt_that_ran_anyway_ran_against_the_policy(self):
+        """Approve, then retry, when the attempt that asked ran anyway (an SDK agent that ran it despite `ask`): the
+        retry consumed the approval, so only the retry ran under it. The attempt's result, before or after the retry's,
+        and after a replay from the records in between, is a signed executed_against_policy gap; the retry completes as
+        the approved call."""
+        pay = event_hash({"tool": "pay", "args": {}})
+        for first, restart in (("held", False), ("retry", False), ("held", True), ("retry", True)):
+            with self.subTest(first=first, restart=restart):
+                if self.closed:
+                    self.open()
+                run = self.register()
+                d = {"held": self.decide(run, 0, "held", tool="pay")}
+                aid = self.call("approval_request", {**run, "tool_call_id": "held"})["approval_id"]
+                self.call("approval_decide", {"approval_id": aid, "decision": "approve"}, OTHER)
+                d["retry"] = self.decide(run, 1, "retry", tool="pay")
+                self.assertTrue(self.call("approval_consume", {**run, "tool_call_id": "retry", "tool": "pay",
+                                                               "args_source": "parsed", "args": {},
+                                                               "approval_id_hint": aid})["ok"])
+                order = ("held", "retry") if first == "held" else ("retry", "held")
+                for seq, tcid in enumerate(order, 2):
+                    self.call("complete", self.ev(run, seq, tool_call_id=tcid, status="ok",
+                                                  decision_id=d[tcid]["decision_id"], args_digest=pay))
+                    if restart and seq == 2:
+                        self.restart()
+                events = self.final(run)
+                self.assertEqual([e["tool_call_id"] for e in events if e["type"] == "tool.result"], list(order))
+                [gap] = self.gaps(events, "executed_against_policy")
+                self.assertEqual((gap["tool_call_id"], gap["data"]["reason"]),
+                                 ("held", "held ran after a ask decision without consuming an approval of these "
+                                          "arguments"))
+                self.assertEqual(self.gaps(events, "decided_not_completed"), [])
+
+    def test_a_retry_completed_under_a_decide_after_its_consume_is_no_gap(self):
+        """Approve, then retry, when the retry is decided again after its consume: it completes under the later
+        decision as the call that ran under the approval, after a replay from the records too."""
+        for restart in (False, True):
+            with self.subTest(restart=restart):
+                if self.closed:
+                    self.open()
+                run = self.register()
+                self.decide(run, 0, "held", tool="pay")
+                aid = self.call("approval_request", {**run, "tool_call_id": "held"})["approval_id"]
+                self.call("approval_decide", {"approval_id": aid, "decision": "approve"}, OTHER)
+                self.decide(run, 1, "retry", tool="pay")
+                self.assertTrue(self.call("approval_consume", {**run, "tool_call_id": "retry", "tool": "pay",
+                                                               "args_source": "parsed", "args": {},
+                                                               "approval_id_hint": aid})["ok"])
+                d = self.decide(run, 2, "retry", tool="pay")
+                self.call("complete", self.ev(run, 3, tool_call_id="retry", decision_id=d["decision_id"], status="ok",
+                                              args_digest=event_hash({"tool": "pay", "args": {}})))
+                if restart:
+                    self.restart()
+                events = self.final(run)
+                self.assertEqual(self.gaps(events, "decided_not_completed"), [])
+                self.assertEqual(self.gaps(events, "executed_against_policy"), [])
+
     def test_capped_then_counted(self):
         run = self.register()
         with mock.patch.object(svc, "DECIDED_GAPS_MAX", 2):

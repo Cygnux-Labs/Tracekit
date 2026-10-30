@@ -512,7 +512,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                     return self._send(401, "<!doctype html><title>Tracekit view</title><p>This viewer needs its token: "
                                            "open the URL <code>tracekit view</code> printed (it ends in "
                                            "<code>?token=…</code>).", "text/html")
-                return self._send(401, '{"error":"missing or wrong token"}')
+                # a page whose session ended names where a person signs in again
+                return self._send(401, json.dumps({"error": "missing or wrong token", **({"login": "/login"} if login else {})}))
             if exchange:
                 return self._send(303, "", "text/plain", headers=[
                     ("Location", "/runs" if u.path == "/runs" else "/"),
@@ -542,7 +543,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                             "max": getattr(feed, "max_records", None),
                             "records": [r for r in itertools.chain(getattr(feed, "kept", {}).values(), feed.records)
                                         if r is not RETRACTED and (scope is ALL or r.get("tenant") == scope)],
-                            **({"source": feed.source} if getattr(feed, "source", None) else {})}
+                            **({"source": feed.source} if getattr(feed, "source", None) else {}),
+                            **({"signer": feed.signer} if getattr(feed, "signer", None) else {})}
                 return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/rows" and hasattr(feed, "rows"):   # a run of the store, verified again, in full
                 q = {k: v[0] for k, v in parse_qs(u.query).items()}

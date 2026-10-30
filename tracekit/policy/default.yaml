@@ -9,7 +9,7 @@
 # pattern (regex searched in the tool's main field, or `field` if given), reason (shown to the
 # agent and recorded), rationale (why the rule exists). Sections: deny, ask, flag.
 
-version: '2026.10-1'
+version: '2026.10-2'
 fail_mode: open            # open | closed   (closed: tool calls are blocked while the signer is down)
 content_capture: hashed    # hashed | full
 reasoning_capture: false   # record model text from the harness transcript (self-reported, lower trust)
@@ -66,13 +66,16 @@ deny:
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
   - id: TK-D008
     tool: Bash
-    pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
+    # not Claude Code's memory notes beside its transcripts (a .md file directly in a project's memory/), which the
+    # agent writes, unless `ln -f` makes one a link
+    pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects(?!/[^/\s]+/memory/[^/\s]+\.md([\s;&|)''"]|$))|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bln\s+-[a-zA-Z]*f[^\n]*\.claude/projects|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
     reason: modifying the agent harness's transcripts
     rationale: Qin et al. (2026, arXiv:2609.30266) show agents delete and rewrite their own session files when instructed or rewarded. Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
   - id: TK-D009
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: file_path
-    pattern: '(\.claude/projects/|\.codex/sessions/|\.gemini/tmp/|\.config/opencode/)'
+    # not Claude Code's memory notes (a .md file directly in a project's memory/)
+    pattern: '(\.claude/projects/(?![^/]+/memory/[^/]+\.md$)|\.codex/sessions/|\.gemini/tmp/|\.config/opencode/)'
     reason: writing to the agent harness's transcripts
     rationale: Same as TK-D008, for the file-editing tools.
 

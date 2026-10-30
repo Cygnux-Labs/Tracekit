@@ -110,7 +110,7 @@ run 72f1ea6c… (claude-code)
 Integrity: VERIFIED.
 $ tracekit doctor
 ok    v2 hooks in ~/.claude/settings.json  (D-HOOKS-PRESENT)
-ok    PreToolUse timeout 600 s, approval wait 540 s  (D-HOOKS-TIMEOUT)
+ok    PreToolUse timeout 600 s; the hook answers within 540 s (a held call waits up to about 480 s, only with TRACEKIT_APPROVAL_WAIT set)  (D-HOOKS-TIMEOUT)
 ok    every class fails closed  (D-FAIL-MODES)
 $ tracekit uninstall
 Tracekit v2 hooks removed from ~/.claude/settings.json

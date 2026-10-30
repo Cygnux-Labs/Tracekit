@@ -45,7 +45,8 @@ class Examples(unittest.TestCase):
         return p.stdout
 
     def test_custom(self):
-        self.run_example("custom")
+        out = self.run_example("custom")
+        self.assertLess(out.index("approved: apr-"), out.index(": ask -> (pretend) ran"), out)   # as it happened
 
     def test_langchain(self):
         self.run_example("langchain")

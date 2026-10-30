@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -107,6 +108,26 @@ class Completeness(unittest.TestCase):
         integ, code, chk, _ = self.verdict(self.export(run="r2"), [self.witness])
         self.assertEqual(code, 0)  # r1 is elided: a warning, never a failure
         self.assertIn("WITH GAPS (run completeness)", integ)
+
+    def test_the_cli_says_what_it_wrote_and_how_to_verify_it(self):
+        """`tracekit export` printed bundle.export's summary as raw JSON: it says what it wrote and the command that
+        verifies it against the signer's key, which runs as printed. --json keeps the JSON for scripts."""
+        self.two_runs()
+        out = self.path("cli.tkb")
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            self.assertEqual(cli.main(["export", "--home", self.home, "--since", "0", "-o", out]), 0)
+        wrote, then, command = said.getvalue().splitlines()
+        self.assertRegex(wrote, rf"^wrote {re.escape(out)}: runs r1, r2, \d+ records, \d+ checkpoint\(s\)$")
+        self.assertEqual((then, command), ("next, verify it against the signer's key:",
+                                           f"  tracekit verify {out} --key {self.key}"))
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            self.assertEqual(cli.main(command.split()[1:]), 0)
+        self.assertIn("Integrity: VERIFIED.", report.getvalue())
+        with contextlib.redirect_stdout(said):
+            cli.main(["export", "--home", self.home, "--run", "r1", "-o", out, "--json"])
+        self.assertEqual(json.loads(said.getvalue().split("\n", 3)[3])["runs"], ["r1"])
 
     def test_export_keeps_whole_selected_run(self):
         self.two_runs()

@@ -62,8 +62,8 @@ have written them. Findings are an opinion of the run, never part of its integri
 | `VERIFIED TO HEAD n (open)` | 0 | The run hasn't finished, or was cut back (records dropped from its end, which the bundle can't show): everything up to record n checks out. For audits require `VERIFIED` |
 | `VERIFIED (k run(s) open)` | 0 | A run-set bundle in which k runs haven't finished |
 | `FAILED` | 1 | A check failed: something was changed, removed, reordered or forged |
-| `UNUSABLE BUNDLE` | 2 | The trust config or the zip can't be read |
-| `UNVERIFIABLE (...)` | 2 | The verifier can't judge: it needs a newer version (the report prints the commands that verify it), a key was revoked, (TypeScript) a feature it doesn't check, or (the browser page) no trust file was given |
+| `UNUSABLE BUNDLE` | 2 | The zip can't be read (a damaged file says so) or isn't a v2 bundle |
+| `UNVERIFIABLE (...)` | 2 | The verifier can't judge: your trust file can't be used (its line says why), it needs a newer version (the report prints the commands that verify it), a key was revoked, (TypeScript) a feature it doesn't check, or (the browser page) no trust file was given |
 | any of the above with a warning, under `--strict` | 3 | Fail CI on gaps or other warnings |
 
 Line by line: [reading a verify report](../verdicts.md).

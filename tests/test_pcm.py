@@ -427,6 +427,20 @@ class Signature(unittest.TestCase):
         for trust in ({"logs": [VKEY, OTHER_VKEY]}, {"logs": [VKEY, hybrid]}):   # another log; the hybrid line
             self.assertEqual(pcm.verify(message(), trust, [DOC])["verdict"], "accept", trust)
 
+    def test_one_key_under_two_log_names_is_the_receivers_error(self):
+        """PCM 0.1 10.1: each Ed25519 key is pinned under one log name, so the key that signed a message, its grants
+        and its evidence names one log; the same key under a second name is bad input, refused before any check."""
+        second = checkpoint.vkey("pcm-second/log", checkpoint.ED25519, KEY.public)
+        ref = pcm.schema_ref(Grants.DOC)
+        msgs = [message(ref=ref, grants=[grant(intent=ref, vkey=second)]),
+                message(ref=ref, vkey=second, grants=[grant(intent=ref)])]
+        for trust in ({"logs": [VKEY, second]}, {"logs": [second, VKEY]}, {"logs": [OTHER_VKEY, second, VKEY]}):
+            for m in msgs:
+                with self.subTest(trust=trust, key=m["sig"]["key"]), self.assertRaisesRegex(
+                        ValueError, r"pins one Ed25519 key under 2 log names \((pcm-test/log, pcm-second/log|pcm-second"
+                                    r"/log, pcm-test/log)\); PCM reads one log from a key"):
+                    pcm.verify(m, trust, [Grants.DOC], replay=pcm.Replay(now=T0), now=T0)
+
 
 class ReplayTests(unittest.TestCase):
     def check(self, r, m, now=T0, me=None):
@@ -437,7 +451,7 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(self.check(r, m)["verdict"], "accept")
         out = self.check(r, m)
         self.assertEqual((out["verdict"], out["replay"]["ok"]), ("reject", False))
-        self.assertIn("replayed", out["replay"]["detail"])
+        self.assertEqual(out["reasons"], ["replay: already received: its nonce was seen before"])
 
     def test_same_nonce_from_another_sender(self):
         r, m = pcm.Replay(now=T0), message()
@@ -447,13 +461,31 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(self.check(r, other)["verdict"], "accept")
 
     def test_same_agent_under_another_log(self):
-        """PCM 0.1: a sender is its log key and agent, so one agent name under two logs shares no nonce."""
+        """PCM 0.1: a sender is its public key and agent, so one agent name under two keys shares no nonce."""
         r, m = pcm.Replay(now=T0), message()
         other = pcm.sign(OTHER, OTHER_VKEY, "pcm", {k: v for k, v in m.items() if k != "sig"})
         for x in (m, other):
             out = pcm.verify(x, {"logs": [VKEY, OTHER_VKEY]}, [DOC], replay=r, now=T0)
             self.assertEqual(out["verdict"], "accept", out["reasons"])
-        self.assertIn("replayed", self.check(r, m)["replay"]["detail"])
+        self.assertIn("already received", self.check(r, m)["replay"]["detail"])
+
+    def test_the_sender_is_the_key_that_verified(self):
+        """PCM 0.1 9: a sender is the public key that verified the message and its agent."""
+        r, m = pcm.Replay(now=T0), message()
+        self.assertEqual(r.check(m, T0, key=KEY.public), (True, "fresh"))
+        self.assertEqual(r.check(m, T0, key=OTHER.public), (True, "fresh"))
+        self.assertEqual(r.check(m, T0, key=KEY.public), (False, "already received: its nonce was seen before"))
+
+    def test_the_key_is_the_raw_public_key(self):
+        """A sig.key, a vkey or None is a caller's mistake, refused loudly, not a sender."""
+        r, m = pcm.Replay(now=T0), message()
+        for key in (m["sig"]["key"], VKEY, None, bytearray(KEY.public)):
+            with self.subTest(key=key), self.assertRaises(TypeError):
+                r.check(m, T0, key=key)
+        for key in (KEY.public[:31], b"\x01" + KEY.public):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                r.check(m, T0, key=key)
+        self.assertEqual((r.seen, r.floor), ({}, {}))
 
     def test_window_and_start(self):
         r = pcm.Replay(now=T0 - 1000)
@@ -470,11 +502,11 @@ class ReplayTests(unittest.TestCase):
         ms = [message(ts=T0 + i) for i in (1, 2, 3)]
         for m in ms:
             self.assertEqual(self.check(r, m, now=T0 + 3)["verdict"], "accept")
-        self.assertEqual(len(r.seen[ms[0]["sig"]["key"], A]), 2)
+        self.assertEqual(len(r.seen[KEY.public, A]), 2)
         for m in (ms[0], message(ts=T0 + 1)):   # the evicted nonce, and a fresh one as old
             out = self.check(r, m, now=T0 + 3)
             self.assertIn("older than", out["replay"]["detail"])
-        self.assertIn("replayed", self.check(r, ms[1], now=T0 + 3)["replay"]["detail"])
+        self.assertIn("already received", self.check(r, ms[1], now=T0 + 3)["replay"]["detail"])
 
     def test_recipient(self):
         out = self.check(pcm.Replay(now=T0), message(), me=C)
@@ -497,7 +529,7 @@ class ReplayTests(unittest.TestCase):
         with self.assertRaises(ValueError):   # a bad schema document: the receiver's own error
             pcm.verify(m, TRUST, [{"name": "x"}], replay=r, now=T0)
         self.assertEqual(self.check(r, m, me=B)["verdict"], "accept")
-        self.assertIn("replayed", self.check(r, m, me=B)["replay"]["detail"])
+        self.assertIn("already received", self.check(r, m, me=B)["replay"]["detail"])
 
     def test_a_ts_that_is_no_real_time(self):
         body = {k: v for k, v in message().items() if k != "sig"}
@@ -511,7 +543,7 @@ class ReplayTests(unittest.TestCase):
     def test_auditor_ignores_clocks(self):
         r, m = pcm.Replay(window_s=None, now=T0 + 10 ** 6), message()
         self.assertEqual(self.check(r, m, now=T0 + 10 ** 6)["verdict"], "accept")
-        self.assertIn("replayed", self.check(r, m, now=T0 + 10 ** 6)["replay"]["detail"])
+        self.assertIn("already received", self.check(r, m, now=T0 + 10 ** 6)["replay"]["detail"])
 
 
 class Verdicts(unittest.TestCase):

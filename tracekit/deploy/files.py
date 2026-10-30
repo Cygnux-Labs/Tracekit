@@ -11,6 +11,7 @@ import json
 import os
 import secrets
 import stat
+import sys
 import time
 
 _AT = os.open in os.supports_dir_fd and os.rename in os.supports_dir_fd
@@ -186,12 +187,21 @@ def write_json(path, obj, mode=0o600, uid=None, gid=None, owners=None, ensure_as
         close(d)
 
 
+def _flush():
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.flush()
+        except (AttributeError, OSError, ValueError):   # none, broken or closed: nothing there to keep
+            pass
+
+
 def as_user(pw, fn, *args, errors=()):
     """Run fn(*args) as user pw: in a forked child that dropped to pw's uid, gid and groups when we are root, inline
     otherwise. The child reports back as JSON (never pickle: a process running as pw could forge the reply).
     Returns fn's JSON-able result; an exception whose class is UnsafePath or in `errors` is re-raised by name."""
     if pw is None or not hasattr(os, "fork") or os.geteuid() != 0 or pw.pw_uid == 0:
         return fn(*args)
+    _flush()   # the child starts with empty buffers, so it prints nothing of ours twice
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:
@@ -207,7 +217,10 @@ def as_user(pw, fn, *args, errors=()):
             with os.fdopen(w, "wb") as f:
                 f.write(json.dumps(out).encode("utf-8"))
         finally:
-            os._exit(0)
+            try:
+                _flush()   # os._exit flushes nothing: what fn printed to a pipe would be lost
+            finally:
+                os._exit(0)
     os.close(w)
     with os.fdopen(r, "rb") as f:
         raw = f.read()

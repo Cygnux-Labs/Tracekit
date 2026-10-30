@@ -76,7 +76,8 @@ def claims():
         row("strict", strict),
         *(f"| {p}, RE2 / regex | {lat[p + '/re2']['p50_us']} / {lat[p + '/regex']['p50_us']} | "
           f"{lat[p + '/re2']['p99_us']} / {lat[p + '/regex']['p99_us']} | {lat[p + '/re2']['max_us']} / "
-          f"{lat[p + '/regex']['max_us']} |" for p in ("default", "strict", "dev")),
+          f"{lat[p + '/regex']['max_us']} | {lat[p + '/re2']['p99_ref']} / {lat[p + '/regex']['p99_ref']} |"
+          for p in ("default", "strict", "dev")),
         f"each of the {e21r['rewritten_cases']} shell",
         f"all {e21r['source_cases']} originals and all {rewrites:,} rewrites are",
         f"| F1c | **pool v3 (held out)** | {covers(ho['detection']['F1c'])} |",

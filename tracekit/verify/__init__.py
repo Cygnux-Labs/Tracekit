@@ -6,10 +6,12 @@ from tracekit.bundle_v2 import FORMAT
 
 
 def is_v2(path):
-    """True when `path` is a zip whose manifest names format v2. Standard library only, so checking a v1 bundle needs
-    nothing else installed. Never raises."""
+    """True when `path` is a zip whose manifest names format v2, False when it names another, None when the file can't
+    be read as a zip or has no readable manifest. Standard library only, so checking a v1 bundle needs nothing else
+    installed. Never raises."""
     try:
         with zipfile.ZipFile(path) as z, z.open("manifest.json") as f:
-            return json.loads(f.read(1 << 20)).get("format") == FORMAT
+            manifest = json.loads(f.read(1 << 20))
     except Exception:
-        return False
+        return None
+    return isinstance(manifest, dict) and manifest.get("format") == FORMAT

@@ -150,12 +150,13 @@ def parse(command):
     return analyse(command)[0]
 
 
-def analyse(command):
+def analyse(command, persistent_target=None):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code)."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
+           "cut": [], "steps": [], "redefined": set(),
            "command_names_mutable": False,
-           "pipes": 0, "depth": 0, "work": 0, "exp": 0}
+           "pipes": 0, "depth": 0, "work": 0, "exp": 0, "persistent_target": persistent_target}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -200,11 +201,22 @@ def analyse(command):
                         parser.backtick()
                     pos = parser.i
     _Parser(command, ctx, []).script()
+    ctx["cut"] += ctx["always_cut"]
     active = False
     for step in reversed(ctx["steps"]):
         if not ctx["command_names_mutable"] and not active:
             ctx["cut"] += step["marks"]
+            step["cut"] = bool(step["marks"])
         active |= not step["inert"]
+    for step, cmd, indexes in ctx.get("cut_data_words", []):
+        if step.get("cut"):
+            cmd["data_words"] = indexes
+    for step, cmd in ctx.get("cut_data_stdin", []):
+        if step.get("cut"):
+            cmd["data_stdin"] = True
+    for words, progs, data_steps in ctx["kept_batches"]:
+        blank = {i for indexes, step in data_steps if step.get("cut") for i in indexes}
+        ctx["kept"] += _lines(["" if i in blank else w for i, w in enumerate(words)], progs)
     code, at = [], 0
     for a, b in sorted(ctx["cut"]):   # each cut a space, so the text on either side doesn't join
         code += [command[at:a], " "]
@@ -215,7 +227,8 @@ def analyse(command):
 
 def analyse_argv(argv):
     """analyse() for a command given as an argv list, run without a shell."""
-    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "cut": [], "steps": [], "redefined": set(),
+    ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
+           "cut": [], "steps": [], "redefined": set(),
            "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": 0, "exp": 0}
     words = list(argv)
@@ -224,27 +237,76 @@ def analyse_argv(argv):
             [x for x in lines + ctx["kept"] if x])
 
 
+def _git_env_alias(word):
+    """The command of a git `!` alias that a `GIT_CONFIG_VALUE_<n>=!cmd` word sets through the environment, else None;
+    ParseError for GIT_CONFIG_PARAMETERS, whose aliases this parser doesn't read."""
+    if word.startswith("GIT_CONFIG_PARAMETERS="):
+        raise ParseError("git config from GIT_CONFIG_PARAMETERS is not read")
+    m = re.fullmatch(r"(?s)GIT_CONFIG_VALUE_\d+=\s*!(.*)", word)
+    return m and m.group(1)
+
+
+def _sed_prints(script):
+    """Whether a sed script only picks and prints lines: with its /pattern/ addresses left out, nothing but line
+    numbers, ranges, braces and the commands that read, write and run nothing."""
+    return bool(re.fullmatch(r"[\s\d,$~!;{}+pPlqQnNdDhHgGxz=]*", re.sub(r"/(?:[^/\\\n]|\\.)*/[IM]{0,2}", "", script)))
+
+
 def data_words(argv):
-    """Indexes of argv words that are data, not something the command acts on: a git commit or tag message and the
-    pattern a grep-family command searches for (unless -e or -f gives it)."""
+    """Indexes of argv words that are data, not something the command acts on: a git commit or tag message, a log's
+    --grep, the pattern a grep-family command searches for (unless -e, -f or --pre is given) and a `sed -n` script
+    that only picks and prints lines."""
     name, i = argv[0], 1
     if name == "git":   # the subcommand, after git's own options
         while i < len(argv) and argv[i].startswith("-"):
             i += 2 if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
                                   "--config-env") else 1
         name, i = (argv[i] if i < len(argv) else ""), i + 1
+        out = set()
+        for j, a in enumerate(argv[i:] if name in ("log", "rev-list", "shortlog", "whatchanged", "show", "reflog")
+                              else (), i):
+            if a == "--grep" and j + 1 < len(argv):
+                out.add(j + 1)
+            elif a.startswith("--grep="):
+                out.add(j)
         if name in ("commit", "tag", "merge", "stash", "notes"):
-            out = set()
             for j, a in enumerate(argv[i:], i):
                 if a in ("-m", "--message") or re.fullmatch(r"-[A-Za-z]*m", a):
                     out.add(j + 1)
                 elif a.startswith("--message=") or (re.match(r"-[A-Za-z]*m.", a) and not a.startswith("--")):
                     out.add(j)
             return out
+        if name not in ("grep", "egrep", "fgrep", "rg", "ag", "ack"):
+            return out
+    if name == "sed" and "-n" in argv[1:]:
+        # a script only once it is the script (after -e or -f the words are files) and only while it just picks and
+        # prints lines: s, w, r, e and the like write, read or run what they name
+        out, i, given = set(), 1, False
+        while i < len(argv):
+            a = argv[i]
+            if a in ("-e", "--expression", "-f", "--file"):
+                if a in ("-e", "--expression") and i + 1 < len(argv) and _sed_prints(argv[i + 1]):
+                    out.add(i + 1)
+                given = True
+                i += 2
+                continue
+            if a.startswith(("--expression=", "--file=")) or (a[:2] in ("-e", "-f") and len(a) > 2):
+                if a.startswith(("--expression=", "-e")) and _sed_prints(a.split("=", 1)[1] if a[1] == "-" else a[2:]):
+                    out.add(i)
+                given = True
+            elif a.startswith("-"):
+                pass
+            elif a:
+                if not given and _sed_prints(a):
+                    out.add(i)
+                break
+            i += 1
+        return out
     if name not in ("grep", "egrep", "fgrep", "rg", "ag", "ack"):
         return set()
     args = argv[i:]
-    if any(a.startswith(("--regexp", "--file")) or re.fullmatch(r"-[A-Za-z]*[ef][A-Za-z0-9]*", a) for a in args):
+    if any(a.startswith(("--regexp", "--file", "--pre")) or re.fullmatch(r"-[A-Za-z]*[ef][A-Za-z0-9]*", a)
+           for a in args):
         return set()
     for j, a in enumerate(args, i):
         if a == "--":
@@ -257,6 +319,20 @@ def data_words(argv):
 def _redefined(redefined, name):
     """Whether name may have been redefined."""
     return name in redefined
+
+
+def _git_stdin_message(argv):
+    if not argv or argv[0] != "git":
+        return False
+    i = 1
+    while i < len(argv) and argv[i].startswith("-"):
+        i += 2 if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+                              "--config-env") else 1
+    if i >= len(argv) or argv[i] != "commit":
+        return False
+    args = argv[i + 1:]
+    return any((args[j] == "-F" and j + 1 < len(args) and args[j + 1] == "-") or args[j] == "--file=-"
+               for j in range(len(args)))
 
 
 def _name_unreadable(text):
@@ -510,7 +586,8 @@ class _Parser:
     def __init__(self, src, ctx, via):
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
         self.cwd_changed = False
-        self.data = set()   # indexes in self.out of the words the code leaves out
+        self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
+        self.data_steps = []
         self.charge(len(src))
 
     def charge(self, n):
@@ -546,8 +623,7 @@ class _Parser:
             self.out.pop()
         lines = _lines(self.out, self.progs)
         self.ctx["lines"] += lines
-        self.ctx["kept"] += _lines(["" if i in self.data else w for i, w in enumerate(self.out)], self.progs) \
-            if self.data else lines
+        self.ctx["kept_batches"].append((self.out.copy(), self.progs.copy(), self.data_steps.copy()))
 
     def blank(self):
         s = self.s
@@ -662,7 +738,8 @@ class _Parser:
                         # stdout, the last one: into a file a literal names, not a descriptor, a device or a variable
                         to_file = writes and not target[2] and not target[3] and \
                             (target[0].startswith("/") or not self.cwd_changed) and \
-                            (target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0]))
+                            (target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0])) and \
+                            not (self.ctx.get("persistent_target") and self.ctx["persistent_target"](target[0]))
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
@@ -679,6 +756,8 @@ class _Parser:
             if not words and _ASSIGN.match(self.s, start, self.i):   # within the word, as bash reads it
                 self.ctx["refs"].append(text)
                 self.ctx["command_names_mutable"] |= bool(_COMMAND_NAME_ASSIGN.match(text))
+                if (alias := _git_env_alias(text)) is not None:
+                    self.nested(alias, self.via + ["git alias"])
                 continue
             words.append(text)
             dynamic |= bool(re.search(r"[$`]", raw))
@@ -688,6 +767,7 @@ class _Parser:
             names.append(g or (expanded and _name_unreadable(text)))
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         self.progs += [idx[k] for k in _programs(words, cmds)]
+        git_stdin_message = _git_stdin_message(words)
         # cat, tee, echo or printf into a file only copies text there: its herestring and echo's or printf's words
         # (and its heredoc, read_heredocs) are data, which the code leaves out.
         # lean: a later, separate call can still consume a file whose copied text this call cut; that later call is
@@ -697,15 +777,30 @@ class _Parser:
         marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
-            self.data.update(i for i, _, _ in marks)
+            data_indexes = [i for i, _, _ in marks]
+            self.data.update(data_indexes)
+        else:
+            data_indexes = []
         inert = bool(words) and words[0] in ("cd", "pushd", "popd", "pwd", "ls", "mkdir", "true", ":") or \
             bool(words) and words[0] in ("echo", "printf") and "-v" not in words[1:] and not stdout_redirect
         step = {"inert": (data and not dynamic) or
                          (inert and not (stdin_redirect or docs or strings or loop_header or dynamic)),
                 "marks": [(a, b) for _, a, b in marks] if not self.via else []}
+        if git_stdin_message:
+            step["inert"] = False
+            for cmd in cmds:
+                cmd["data_stdin"] = True
         self.ctx["steps"].append(step)
+        if data_indexes:
+            self.data_steps.append((data_indexes, step))
+        if data and cmds:
+            if words[0] in ("echo", "printf"):
+                self.ctx.setdefault("cut_data_words", []).append((step, cmds[0], list(range(1, len(words)))))
+            else:
+                self.ctx.setdefault("cut_data_stdin", []).append((step, cmds[0]))
         for d in docs:
-            d["cmds"], d["data"], d["step"] = cmds, data, step
+            d["cmds"], d["data"], d["step"] = cmds, data or git_stdin_message, step
+            d["always_data"] = git_stdin_message
         for c in cmds:
             c["stdin"] += strings
         shell = _stdin_shell(cmds)
@@ -760,6 +855,10 @@ class _Parser:
                    "opaque": unreadable[0] or tainted, "stdin": []}
             self.ctx["cmds"].append(cmd)
             cmds.append(cmd)
+            if name in ("export", "declare", "typeset", "readonly", "local", "env"):   # git config set in the environment
+                for a in args:
+                    if (alias := _git_env_alias(a)) is not None:
+                        self.nested(alias, via + ["git alias"])
             if name in DASH_C:
                 if _dash_c(args) is None:
                     cmd["opaque"] = True   # an interactive shell: it runs whatever its stdin holds
@@ -813,6 +912,17 @@ class _Parser:
                 cmd["opaque"] = True
             elif name == "eval":
                 self.nested(" ".join(args), via + ["eval"])
+            elif name == "git":
+                # a shell alias runs its command as sh -c does: set for this run (`git -c alias.x='!cmd' x`) or saved
+                # for a later one (`git config alias.x '!cmd'`); one from a variable or an included file isn't read
+                if any(re.match(r"(?i)--config-env=(alias|include)", a)
+                       or j and args[j - 1] == "-c" and re.match(r"(?i)include(if)?\.", a) for j, a in enumerate(args)):
+                    raise ParseError("git config from a variable or an included file is not read")
+                for j, a in enumerate(args):
+                    m = re.fullmatch(r"(?is)alias\.[^=\s]+(?:=\s*!(.*))?", a)
+                    nxt = args[j + 1].lstrip() if m and m.group(1) is None and j + 1 < len(args) else ""
+                    if m and (m.group(1) is not None or nxt.startswith("!")):
+                        self.nested(m.group(1) if m.group(1) is not None else nxt[1:], via + ["git alias"])
             elif name == "trap" and len(args) > 1 and not re.fullmatch(r"-[lpP]*", args[0]):
                 # its action runs on a signal or at exit (`trap 'rm -rf "$d"' EXIT`); `-` or a lone condition resets
                 self.nested(args[1] if args[0] == "--" else args[0], via + ["trap"])
@@ -886,7 +996,10 @@ class _Parser:
             # a data heredoc's body, unless a command substitution in it runs (what it runs may read a heredoc of its
             # own, which only this text holds)
             if d["data"] and not d["via"] and not (d["expand"] and re.search(r"\$\(|`", body)):
-                d["step"]["marks"].append((start, at))
+                if d.get("always_data"):
+                    self.ctx["always_cut"].append((start, at))
+                else:
+                    d["step"]["marks"].append((start, at))
             shell, interp = _stdin_shell(d["cmds"]), _stdin_interpreter(d["cmds"])
             if shell:
                 self.nested(body, shell["via"] + [shell["argv"][0] + " <<"])
@@ -939,11 +1052,11 @@ class _Parser:
         return "".join(buf), s[start:self.i], bool(glob), self.ctx["exp"] != exp
 
     def sub(self, label):
-        saved = self.via, self.out, self.progs, self.data
-        self.via, self.out, self.progs, self.data = self.via + [label], [], [], set()
+        saved = self.via, self.out, self.progs, self.data, self.data_steps
+        self.via, self.out, self.progs, self.data, self.data_steps = self.via + [label], [], [], set(), []
         self.list(")")
         self.flush()
-        self.via, self.out, self.progs, self.data = saved
+        self.via, self.out, self.progs, self.data, self.data_steps = saved
 
     def arith(self):
         """Read `$(( ))` from after its `$((`, running the substitutions in it; dollar() calls it only when the text
