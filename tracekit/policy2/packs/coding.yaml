@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-42'
+version: '2026.10-v2-43'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -481,9 +481,9 @@ ask:
   - id: TK-A044
     class: mcp
     # Stripe's MCP tools that move money (docs.stripe.com/mcp: send_money, transfer_money and convert_currency on a
-    # Treasury balance) and its agent toolkit's create_refund, from any server, as `mcp__<server>__<tool>` or
-    # `mcp:<server>/<tool>`
-    tool: 'mcp(:[^/]+/|__.*__)(send_money|transfer_money|convert_currency|create_refund)'
+    # Treasury balance) and its agent toolkit's create_refund, from any server, as `mcp__<server>__<tool>`,
+    # `mcp:<server>/<tool>` or Crush's joined `mcp__<server>_<tool>`
+    tool: 'mcp(:[^/]+/|__.*[_-])(send_money|transfer_money|convert_currency|create_refund)'
     pattern: '^'
     reason: moving money through an MCP tool (sending, transferring or converting money, or a refund)
     remedy: Check the amount, currency and recipient in the call's arguments before approving it; a refund with no amount refunds in full.
@@ -491,10 +491,10 @@ ask:
   - id: TK-A045
     class: mcp
     # Stripe's generic write tool, stripe_api_write, when its arguments name a refund (the money-moving write Stripe
-    # lists for it) or one of TK-A043's Stripe endpoints as a path
+    # lists for it) or one of TK-A043's Stripe endpoints as a path; Crush's joined name too, as TK-A044's
     # lean: Stripe doesn't document the tool's argument names, so the whole call is read and a refund named anywhere in
     # it is held (a product described as "no refunds" too); match the method and path once Stripe documents them
-    tool: 'mcp(:[^/]+/|__.*__)stripe_api_write'
+    tool: 'mcp(:[^/]+/|__.*[_-])stripe_api_write'
     pattern: '[Rr][Ee][Ff][Uu][Nn][Dd]|"(?:https://api\.stripe\.com)?/?(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#"]+/(?:capture|refunds?)|payment_intents/[^/ ?#"]+/(?:confirm|capture)|invoices/[^/ ?#"]+/pay|transfers/[^/ ?#"]+/reversals)|v2/money_management/outbound_(?:payments|transfers))/?(?:[?#][^"]*)?"'
     reason: moving money through Stripe's MCP write tool (a refund, charge, payout or transfer)
     remedy: Check the amount, currency and payee in the call's arguments before approving it; a refund with no amount refunds in full.
@@ -678,8 +678,9 @@ flag:
     # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
     # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
     # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
-    # AppData/Roaming/Block/goose/config).
-    pattern: '(^|/)\.(claude|codex|gemini|opencode|qwen|factory)(/|$)|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|block/goose/config)(/|$)|\.cursor/hooks\.json|(^|/)opencode\.jsonc?$|managed-settings|\.mcp\.json'
+    # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
+    # home, and ~/.config/crush/.
+    pattern: '(^|/)\.(claude|codex|gemini|opencode|qwen|factory)(/|$)|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|block/goose/config)(/|$)|\.cursor/hooks\.json|(^|/)opencode\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|managed-settings|\.mcp\.json'
     # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     label: harness_config
@@ -688,9 +689,10 @@ flag:
     field: effects
     # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
     # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
-    # user config (its plugins, Tracekit's too) is ~/.config/opencode. The agy, goose and Droid paths are TK-F009's,
-    # and a delete of a whole .agents folder (agy's hooks.json with it).
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose)|block[/\\]goose[/\\]config)(?:[/\\]|$)|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
+    # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
+    # home config is crush.json, .crush.json, crushrc or .crushrc. The agy, goose and Droid paths are TK-F009's, and
+    # a delete of a whole .agents folder (agy's hooks.json with it).
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose|crush)|block[/\\]goose[/\\]config)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config

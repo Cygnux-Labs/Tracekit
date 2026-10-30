@@ -1,5 +1,5 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid and Antigravity CLI, on the Claude
-Code pipeline.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid, Antigravity CLI and Crush, on the
+Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -9,6 +9,7 @@ Code pipeline.
     tracekit init --dev --agent qwen         # ~/.qwen/settings.json
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
     tracekit init --dev --agent antigravity  # ~/.gemini/config/hooks.json (project: .agents/hooks.json)
+    tracekit init --dev --agent crush        # ~/.config/crush/crush.json (project: crush.json)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -37,6 +38,12 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
             WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
+    Crush   bash, view, write, edit, multiedit, lsp_replace_symbol, lsp_rename, ls, grep, glob, fetch, download,
+            mcp_<server>_<tool>
+            -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
+            (lsp_rename, ls, grep and glob decided on the `path` they read; its payload is Claude Code's shape);
+            agent, agentic_fetch and Docker MCP Gateway's code-mode tools are denied in the hook (the calls they make
+            run no hooks), and so is a built-in tool's input with argument names Crush may read otherwise
 
 What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
@@ -57,9 +64,9 @@ from .core import canon
 from .locking import lock_file, unlock_file
 from .policy2.classes import PATH_KEYS, first
 
-HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid", "antigravity")
+HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid", "antigravity", "crush")
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
-               "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity"}
+               "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush"}
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
@@ -101,6 +108,14 @@ AGY_ARGS = {"run_command": {"command": "CommandLine", "dangerouslyDisableSandbox
             "grep_search": {"file_path": "SearchPath", "pattern": "Query"}, "read_url_content": {"url": "Url"}}
 AGY_HOOK = "tracekit"   # the name Tracekit's hook has in agy's hooks.json, which maps each hook's name to its events
 AGY_EVENTS = ("PreToolUse", "PostToolUse")
+# Crush's built-in tools (internal/agent/tools/*.go): its payload and event names are Claude Code's, its tool names are
+# lower case, and its file tools send `file_path`. download writes its `file_path`, so the file rules decide it as a
+# Write, not as a fetch
+# lean: a download's URL meets no fetch rule (TK-F002, TK-F012); decide it as a fetch too if a URL rule must see it
+CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit", "multiedit": "Edit",
+               "lsp_replace_symbol": "Edit", "lsp_rename": "Edit", "ls": "LS", "grep": "Grep", "glob": "Glob",
+               "fetch": "WebFetch", "download": "Write"}
+CRUSH_PATH_TOOLS = ("lsp_rename", "ls", "grep", "glob")   # they read `path`, the directory they search, not `file_path`
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -226,6 +241,14 @@ def tool(harness, name, ti):
             return "Bash", ti
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
         return AGY_TOOLS.get(name, name), ti
+    if harness == "crush":
+        if name.startswith("mcp_"):   # Crush names an MCP tool mcp_<server>_<tool> (internal/agent/tools/mcp-tools.go)
+            return "mcp__" + name[4:], ti
+        if name in CRUSH_PATH_TOOLS:   # the path the tool itself reads decides, never a decoy `file_path` beside it
+            ti.pop("file_path", None)
+            if "path" in ti:
+                ti["file_path"] = ti["path"]
+        return CRUSH_TOOLS.get(name, name), ti
     return name, ti
 
 
@@ -274,11 +297,12 @@ def normalise(harness, p):
     ev = p.get("hook_event_name") or ""
     out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
-    if harness in ("codex", "qwen", "droid"):   # Claude Code's payloads; Qwen Code adds PostToolUseFailure
+    if harness in ("codex", "qwen", "droid", "crush"):   # Claude Code's payloads; Qwen Code and Crush add
+        # PostToolUseFailure (Crush's payload is Claude Code's own: same field and event names)
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
              "SessionStart": "SessionStart", "SessionEnd": "SessionEnd"}
-        if harness == "qwen":
+        if harness in ("qwen", "crush"):
             m["PostToolUseFailure"] = "PostToolUseFailure"
         if ev not in m:
             return None
@@ -410,15 +434,73 @@ PAIRED = ("gemini", "droid", "antigravity")   # the harnesses whose call ids _pa
 # goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
 # as code_execution__<name>; each runs tool calls through dispatch_tool, which runs no hooks
 GOOSE_CODE_MODE = ("execute_javascript", "execute_typescript", "execute_bash")
+# Crush's sub-agent tools: a sub-agent's own calls (view, grep, sourcegraph, web_fetch, ...) run no hooks
+# (internal/agent/hooked_tool.go, wrapToolsWithHooks)
+CRUSH_SUBAGENTS = ("agent", "agentic_fetch")
+# Docker MCP Gateway's code-mode makes a tool, code-mode-<name>, whose script calls MCP tools inside the gateway, where
+# no hook sees them (docker/mcp-gateway pkg/gateway/codemode.go); Crush names them mcp_<server>_code-mode[-<name>]
+CRUSH_CODE_MODE = re.compile(r"mcp_.+_code-mode(-.+)?", re.S)
+# Crush decodes a built-in tool's input into a Go struct (encoding/json): a name matches its field ignoring case
+# (Unicode folding: U+017F is s), a later repeat wins, and a null keeps the earlier value, while json.loads keeps exact
+# names and a repeat's last value. Every built-in tool's argument names, nested ones too, are lower-case snake_case, so
+# an input with any other name or a repeat is denied. An MCP tool's input is decoded into a map (mcp/tools.go RunTool):
+# exact names, a repeat's last value, null kept, as json.loads reads it
+CRUSH_ARG_NAME = re.compile(r"[a-z0-9_]+")
 
 
-def _blocked_goose_tool(tool_name):
-    """The reason a goose tool is denied in the hook itself (it runs calls the hook never sees), else None.
-    tool_name: goose's own name for the tool, before it is mapped."""
+class _Pairs(list):
+    """A JSON object as its (name, value) pairs, in order, repeats kept (json's object_pairs_hook)."""
+
+
+def _odd_arg_name(v):
+    """A name in v (a JSON value read with _Pairs), at any depth, that repeats in its object or isn't lower-case
+    snake_case, else None."""
+    todo = [v]
+    while todo:
+        v = todo.pop()
+        if isinstance(v, _Pairs):
+            seen = set()
+            for k, x in v:
+                if k in seen or not CRUSH_ARG_NAME.fullmatch(k):
+                    return k
+                seen.add(k)
+                todo.append(x)
+        elif isinstance(v, list):
+            todo.extend(v)
+    return None
+
+
+def _blocked_tool(harness, tool_name, raw=""):
+    """The reason a tool call is denied in the hook itself, else None: a tool that runs calls the hook never sees, or
+    a Crush input the tool may read otherwise than Tracekit. tool_name: the harness's own name for the tool, before it
+    is mapped; raw: the hook payload as received."""
     name = tool_name.removeprefix("code_execution__")
-    if name in GOOSE_CODE_MODE:
+    if harness == "goose" and name in GOOSE_CODE_MODE:
         return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
+    if harness != "crush":
+        return None
+    if tool_name in CRUSH_SUBAGENTS:
+        return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
+                "can't decide them; make each call itself instead. To stop Crush offering it, set "
+                '"options": {"disabled_tools": ["agent", "agentic_fetch"]} in crush.json.')
+    if CRUSH_CODE_MODE.fullmatch(tool_name):
+        return (f"Blocked by Tracekit: {tool_name} is Docker MCP Gateway's code-mode, whose script calls MCP tools "
+                "inside the gateway with no hook, so Tracekit can't decide them; make each call itself instead. "
+                "`docker mcp feature disable dynamic-tools` turns it off.")
+    if not tool_name.startswith("mcp_") and raw.strip():
+        v = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")
+        if isinstance(v, str):   # an input sent as a JSON string, as _input reads it
+            try:
+                v = json.loads(v, object_pairs_hook=_Pairs)
+            except ValueError:
+                v = None
+        odd = _odd_arg_name(v)
+        if odd is not None:
+            return (f"Blocked by Tracekit: Crush's {tool_name} input repeats an argument name or has one that isn't "
+                    f"lower-case snake_case ({odd!r}). Crush matches argument names ignoring case and lets a later "
+                    "repeat win unless it is null, so Tracekit can't be sure it decides the arguments the tool runs "
+                    "with; send each argument once, by its lower-case name.")
     return None
 
 
@@ -439,14 +521,13 @@ def _blocked_agy_args(name, args):
     return None
 
 
-def _blocked(harness, p):
-    """The reason a pre-tool call is denied in the hook itself, before it is mapped, else None."""
-    if harness == "goose":
-        return _blocked_goose_tool(str(p.get("tool_name") or ""))
+def _blocked(harness, p, raw=""):
+    """The reason a pre-tool call is denied in the hook itself, before it is mapped, else None. raw: the payload as
+    received."""
     if harness == "antigravity":
         call = p.get("toolCall") if isinstance(p.get("toolCall"), dict) else {}
         return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
-    return None
+    return _blocked_tool(harness, str(p.get("tool_name") or ""), raw)
 
 
 def run(harness, raw, stdout=None, stderr=None, event=None):
@@ -462,7 +543,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
-    reason = _blocked(harness, p) if is_pre else None
+    reason = _blocked(harness, p, raw) if is_pre else None
     if reason is not None:
         print(reason, file=stderr)
         _reply(harness, stdout, False, reason, is_pre)
@@ -544,7 +625,13 @@ def config_path(harness, project=None, home=None):
                            os.path.join(base, ".gemini", "config", "hooks.json"),
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
                         os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
-                                     os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js")}[harness]
+                                     os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js"),
+            # Crush reads ./crush.json in a project, else its GlobalConfig(): $CRUSH_GLOBAL_CONFIG/crush.json, or
+            # $XDG_CONFIG_HOME (else ~/.config; Windows %USERPROFILE%\.config)/crush/crush.json
+            "crush": os.path.join(base, "crush.json") if project else
+                     os.path.join((None if home else os.environ.get("CRUSH_GLOBAL_CONFIG")) or
+                                  os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
+                                               os.path.join(base, ".config"), "crush"), "crush.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -850,6 +937,67 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
     return path
 
 
+CRUSH_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure", "SessionStart", "SessionEnd")
+
+
+def _install_crush(path, uninstall=False, v2=False, python=None):
+    """Install Tracekit's hooks in Crush's JSON config. Each event is a flat list of
+    {name, command, timeout} entries (no nested `hooks` array), and no matcher: it matches every tool, and Crush
+    rejects a matcher on an event that carries no tool name. A person's hooks are kept."""
+    from .install import SettingsError, _atomic_write_json, _backup_changed, _hook_command
+    path = os.path.abspath(path)
+    if uninstall and not os.path.exists(path):
+        return path
+    if not uninstall:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    s, txt = {}, None
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                txt = f.read()
+            s = json.loads(txt) if txt.strip() else {}
+        except (OSError, ValueError) as e:
+            raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
+        if not isinstance(s, dict):
+            raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
+    hooks = s.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
+    new, removed = "v2" if v2 else "v1", set()
+
+    def ours(cmds):
+        vs = {_version(c) for c in cmds} - {None}
+        removed.update(vs)
+        return bool(vs)
+
+    def cmd(ev):
+        return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
+                             ("crush", ev) if v2 else ("crush",), python, ev == "PreToolUse")
+    for ev in CRUSH_EVENTS:
+        lst = hooks.get(ev)
+        if lst is not None and not isinstance(lst, list):
+            raise SettingsError(f"hooks.{ev} in {path} must be a list; Tracekit did not change it.")
+        kept = [h for h in (lst or []) if not (isinstance(h, dict) and ours([h.get("command")]))]
+        if not uninstall:
+            # seconds; 600 leaves a person time to approve a held call (Crush's default is 30)
+            kept.append({"name": "tracekit", "command": cmd(ev), "timeout": 600 if ev == "PreToolUse" else 30})
+        if kept:
+            hooks[ev] = kept
+        else:
+            hooks.pop(ev, None)
+    if hooks:
+        s["hooks"] = hooks
+    else:
+        s.pop("hooks", None)
+    changed = _backup_changed(path, txt, s)
+    if changed:
+        _atomic_write_json(path, s)
+    old = " and ".join(sorted(removed if uninstall else removed - {new}))
+    if old:
+        print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")
+    return path
+
+
 def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
     """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
@@ -859,6 +1007,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         return _install_opencode(path, uninstall, v2, python)
     if harness == "goose":
         return _install_goose(path, uninstall, v2, python)
+    if harness == "crush":
+        return _install_crush(path, uninstall, v2, python)
     if harness == "droid" and uninstall and not os.path.exists(path):
         return path
     if harness == "droid" and not uninstall and not os.path.exists(path):

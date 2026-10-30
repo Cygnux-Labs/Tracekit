@@ -11,6 +11,7 @@ tracekit init --dev --v2 --agent droid      # ~/.factory/hooks.json
 tracekit init --dev --v2 --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
 tracekit init --dev --v2 --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.json (plus plugin.json beside it)
 tracekit init --dev --v2 --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
+tracekit init --dev --v2 --agent crush      # $CRUSH_GLOBAL_CONFIG, else $XDG_CONFIG_HOME (or ~/.config)/crush: crush.json; --project: ./crush.json
 # --project writes the project-level file instead; tracekit uninstall --agent X removes Tracekit's hooks and keeps your other settings
 sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent codex   # system mode: the signer as its own user
 ```
@@ -25,7 +26,7 @@ edit or turn off) is for Claude Code only, and init refuses it with these agents
 `--v2` and write the same files:
 
 ```bash
-tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, goose, antigravity
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, goose, antigravity, crush
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
@@ -52,6 +53,36 @@ a rule whose matcher is a bare `*`, which is an invalid regex); the PreToolUse a
 `on_failure: block`, the post-tool actions `timeout: 30`. For Antigravity CLI it adds a hook named `tracekit` to agy's `hooks.json` ([below](#antigravity-cli)). Every v1 hook calls `python -I -m tracekit.agent_hooks <agent>` (OpenCode's plugin and Antigravity CLI's commands add the event),
 which translates the harness's payload into the Claude Code hook shape and runs the same pipeline as the Claude Code
 hook ([v2 hooks](#on-the-v2-signer)).
+
+Crush (`crush.json` in a project; the user's is `$CRUSH_GLOBAL_CONFIG/crush.json`, else
+`$XDG_CONFIG_HOME/crush/crush.json`, or `~/.config/crush/crush.json`, on Windows `%USERPROFILE%\.config\crush`) keeps
+its hooks as a flat list of `{name, command, timeout}` entries per event, not Claude Code's nested matcher groups. Its
+payload and event names are already Claude Code's (`hook_event_name`, `session_id`, `tool_name`, `tool_input`,
+`tool_use_id`, `tool_response`, `error`), so the adapter only maps its lower-case tool names: `bash` -> `Bash`,
+`view` -> `Read`, `write` -> `Write`, `edit`, `multiedit`, `lsp_replace_symbol` and `lsp_rename` -> `Edit`, `ls` -> `LS`,
+`grep` -> `Grep`, `glob` -> `Glob` (`lsp_rename`, `ls`, `grep` and `glob` are decided on the `path` they read, never a
+`file_path` sent beside it), `fetch` -> `WebFetch`, `download` -> `Write` (the file it creates is what the file rules
+decide; its URL meets no fetch rule), and `mcp_<server>_<tool>` -> `mcp__<server>_<tool>`, whose results are
+untrusted. That joined name doesn't split the server from the tool: the shipped packs' MCP rules read it too, but a
+rule of your own written for `mcp__<server>__<tool>` doesn't match it ([limits](limits.md)). Crush runs no hooks
+inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself; set
+`"options": {"disabled_tools": ["agent", "agentic_fetch"]}` in `crush.json` so Crush doesn't offer them. It denies
+Docker MCP Gateway's `code-mode` tools too (`mcp_<server>_code-mode` and the `code-mode-<name>` tools it makes), whose
+scripts call MCP tools inside the gateway, where no hook sees them. Crush reads a built-in tool's argument names ignoring case and lets a later repeat win unless
+it is null, so the hook denies a built-in tool call whose input repeats a name or has one that isn't lower-case
+snake_case (`{"command":"ls","Command":"..."}`), at any depth: Tracekit would decide other arguments than the tool
+runs with. Crush hands an MCP tool's arguments to its server as Tracekit reads them; a server that reads them
+into a Go struct may still match names ignoring case.
+A `PreToolUse` hook blocks a call with exit 2 and its reason on stderr (or `{"decision":"deny"}` on stdout at exit
+0); Tracekit writes the exit-2 form, so a denied or held call does not run. Crush fires `PreToolUse` before its own
+permission prompt. On macOS and Linux `install._blocking` wraps the command `init` writes: a v2 hook that cannot run
+exits 2 and blocks the call, and a v1 hook does too with `TRACEKIT_FAIL_CLOSED=1`. Only Windows dev mode has no
+wrapper, so there a hook that cannot start lets the call through. What Crush itself lets through is a hook that
+outlives its timeout: the call proceeds (Tracekit's hook answers within 540 s, under the 600 s timeout). `TurnStart`
+carries no prompt, and Tracekit doesn't read `TurnEnd`'s `last_assistant_message` yet, so `init` installs
+`SessionStart`, `SessionEnd`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure` only; no prompt or model text is
+recorded (`SessionEnd` has a two-second budget). Tested through Crush's published hook payloads and Tracekit's
+installer, not yet in a live Crush session.
 
 | | Codex CLI | Cursor | Gemini CLI | OpenCode | goose | Qwen Code | Factory Droid |
 |---|---|---|---|---|---|---|---|
