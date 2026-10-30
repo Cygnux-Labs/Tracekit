@@ -376,6 +376,9 @@ def _package_indexes(commands, refs=()):
         while i < len(args):
             arg = args[i]
             name, value = (arg.split("=", 1) + [None])[:2] if "=" in arg else (arg, None)
+            # pip (optparse) takes a long option's unique prefix: --index-u is --index-url
+            if exe == "pip" and len(name) > 2 and name.startswith("--"):
+                name = next((o for o in options if o.startswith(name)), name)
             if name in options:
                 if value is None and i + 1 < len(args):
                     value = args[i + 1]

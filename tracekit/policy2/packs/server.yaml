@@ -10,7 +10,7 @@
 # grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-12'
+version: '2026.10-server-13'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -54,9 +54,10 @@ deny:
     rationale: Cloud, cluster, registry and database credentials and the service account token on a server are the keys to everything else; the agent's tools get access through the deployment, not these files.
   - id: TK-S006
     class: shell
-    # options that make a non-shell command run another command; git config keys in any case, and every alias (a
+    # options that make a non-shell command run another command (tar's long options also as a unique prefix, as GNU
+    # tar and bsdtar take them, and -I in a cluster); git config keys in any case, and every alias (a
     # `!` alias runs a shell command, any alias can rename a subcommand the shell rules stop)
-    pattern: '^tar .*?(--to-command|--checkpoint-action=exec|--use-compress-program|-I )|^git .*?(-c ([^ =]*?\.)?([Ss][Ss][Hh][Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Pp][Aa][Gg][Ee][Rr]|[Ee][Dd][Ii][Tt][Oo][Rr]|[Ff][Ss][Mm][Oo][Nn][Ii][Tt][Oo][Rr]|[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]|[Aa][Ss][Kk][Pp][Aa][Ss][Ss]|[Gg][Ii][Tt][Pp][Rr][Oo][Xx][Yy]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Ee][Xx][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Tt][Ee][Xx][Tt][Cc][Oo][Nn][Vv]|[Dd][Rr][Ii][Vv][Ee][Rr]|[Cc][Ll][Ee][Aa][Nn]|[Ss][Mm][Uu][Dd][Gg][Ee]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss]|[Hh][Ee][Ll][Pp][Ee][Rr]|[Rr][Ee][Cc][Ee][Ii][Vv][Ee][Pp][Aa][Cc][Kk]|[Uu][Pp][Ll][Oo][Aa][Dd][Pp][Aa][Cc][Kk]|[Pp][Aa][Cc][Kk][Oo][Bb][Jj][Ee][Cc][Tt][Ss][Hh][Oo][Oo][Kk]|[Dd][Ii][Ff][Ff][Ff][Ii][Ll][Tt][Ee][Rr])=|-c ([Aa][Ll][Ii][Aa][Ss]|[Pp][Aa][Gg][Ee][Rr])\.|--config-env|--upload-pack|--receive-pack|--exec=|ext::)|^ssh .*?(ProxyCommand|LocalCommand|PermitLocalCommand)|^scp .*?-S |^zip .*?(-TT|--unzip-command)|^rsync .*?--rsync-path|^(vim?|nvim|view|ex|less|man) .*?(-c ?|\+)[: ]*(([rw][a-z]* *)?!|call +system)'
+    pattern: '^tar( -?[A-Za-z]*I|.*? (--to-c[a-z]*|--checkpoint-a[a-z]*[= ]exec|--use(-[a-z-]*)?[= ]|-[A-Za-z]*I))|^git .*?(-c ([^ =]*?\.)?([Ss][Ss][Hh][Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Pp][Aa][Gg][Ee][Rr]|[Ee][Dd][Ii][Tt][Oo][Rr]|[Ff][Ss][Mm][Oo][Nn][Ii][Tt][Oo][Rr]|[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]|[Aa][Ss][Kk][Pp][Aa][Ss][Ss]|[Gg][Ii][Tt][Pp][Rr][Oo][Xx][Yy]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Ee][Xx][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Tt][Ee][Xx][Tt][Cc][Oo][Nn][Vv]|[Dd][Rr][Ii][Vv][Ee][Rr]|[Cc][Ll][Ee][Aa][Nn]|[Ss][Mm][Uu][Dd][Gg][Ee]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss]|[Hh][Ee][Ll][Pp][Ee][Rr]|[Rr][Ee][Cc][Ee][Ii][Vv][Ee][Pp][Aa][Cc][Kk]|[Uu][Pp][Ll][Oo][Aa][Dd][Pp][Aa][Cc][Kk]|[Pp][Aa][Cc][Kk][Oo][Bb][Jj][Ee][Cc][Tt][Ss][Hh][Oo][Oo][Kk]|[Dd][Ii][Ff][Ff][Ff][Ii][Ll][Tt][Ee][Rr])=|-c ([Aa][Ll][Ii][Aa][Ss]|[Pp][Aa][Gg][Ee][Rr])\.|--config-env|--upload-pack|--receive-pack|--exec=|ext::)|^ssh .*?(ProxyCommand|LocalCommand|PermitLocalCommand)|^scp .*?-S |^zip .*?(-TT|--unzip-command)|^rsync .*?--rsync-path|^(vim?|nvim|view|ex|less|man) .*?(-c ?|\+)[: ]*(([rw][a-z]* *)?!|call +system)'
     reason: running a command through another command's options
     remedy: Run the program directly, where the shell rules see it, not through a tar, git, ssh, zip, rsync or vim option that starts it.
     rationale: tar, git, ssh, zip, rsync and vim options that run a program are a way to run what the shell rules would stop.
