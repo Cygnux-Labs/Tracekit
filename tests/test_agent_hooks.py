@@ -595,6 +595,8 @@ class CrushTools(unittest.TestCase):
                 got, alone = pol.decide(*decoy), pol.decide(*agent_hooks.tool("crush", name, ti))
                 self.assertIn(rule, got["rule_ids"])
                 self.assertEqual((got["verdict"], got["rule_ids"]), (alone["verdict"], alone["rule_ids"]))
+        # with no `path` (the working directory) a decoy `file_path` goes, and none is made up
+        self.assertEqual(agent_hooks.tool("crush", "grep", {"pattern": "x", "file_path": "/w/.env"})[1], {"pattern": "x"})
         # Crush names MCP tools mcp_<server>_<tool>: decided as mcp__<server>_<tool>, so the MCP rules apply (the
         # server and tool aren't split apart) and the results are untrusted
         self.assertEqual(agent_hooks.tool("crush", "mcp_github_create_issue", {"title": "x"})[0],
