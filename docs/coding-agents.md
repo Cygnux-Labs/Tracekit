@@ -43,13 +43,17 @@ Crush (`crush.json`, project or `$XDG_CONFIG_HOME/crush`; on Windows `%USERPROFI
 as a flat list of `{name, command, timeout}` entries per event, not Claude Code's nested matcher groups. Its payload
 and event names are already Claude Code's (`hook_event_name`, `session_id`, `tool_name`, `tool_input`, `tool_use_id`,
 `tool_response`, `error`), so the adapter only maps its lower-case tool names: `bash` -> `Bash`, `view` -> `Read`,
-`write` -> `Write`, `edit` and `multiedit` -> `Edit`, `ls`, `grep`, `glob`, `fetch` -> `WebFetch` and `download` ->
-`WebFetch`; `mcp_<server>_<tool>` stays as Crush names it. A `PreToolUse` hook blocks a call with exit 2 and its
-reason on stderr (or `{"decision":"deny"}` on stdout at exit 0); Tracekit writes the exit-2 form, so a denied or held
-call does not run. Crush fires `PreToolUse` before its own permission prompt, and a hook that cannot run is a
-non-blocking error there: unlike goose or Cursor, Crush has no `on_failure`/`failClosed` setting, so a dev hook that
-cannot start lets the call through. Crush's turn events carry no typed prompt, so `init` installs `SessionStart`,
-`SessionEnd`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure` only; no prompt or model text is recorded
+`write` -> `Write`, `edit`, `multiedit`, `lsp_replace_symbol` and `lsp_rename` -> `Edit`, `ls` -> `LS`, `grep` ->
+`Grep`, `glob` -> `Glob`, `fetch`, `web_fetch` and `agentic_fetch` -> `WebFetch`, `web_search` -> `WebSearch`, and
+`download` -> `Write` (the file it creates is what the file rules decide); `mcp_<server>_<tool>` stays as Crush names
+it. A `PreToolUse` hook blocks a call with exit 2 and its reason on stderr (or `{"decision":"deny"}` on stdout at exit
+0); Tracekit writes the exit-2 form, so a denied or held call does not run. Crush fires `PreToolUse` before its own
+permission prompt. On macOS and Linux `install._blocking` wraps the command `init` writes: a v2 hook that cannot run
+exits 2 and blocks the call, and a v1 hook does too with `TRACEKIT_FAIL_CLOSED=1`. Only Windows dev mode has no
+wrapper, so there a hook that cannot start lets the call through. What Crush itself lets through is a hook that
+outlives its timeout: the call proceeds (Tracekit's hook answers within 540 s, under the 600 s timeout). Crush's turn
+events carry no typed prompt, so `init` installs `SessionStart`, `SessionEnd`, `PreToolUse`, `PostToolUse` and
+`PostToolUseFailure` only; no prompt or model text is recorded
 (`SessionEnd` has a two-second budget). Tested through Crush's published hook payloads and Tracekit's installer, not
 yet in a live Crush session.
 

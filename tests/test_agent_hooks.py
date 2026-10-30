@@ -557,10 +557,16 @@ class CrushTools(unittest.TestCase):
         for name, ti, want in (("bash", {"command": "ls"}, "Bash"), ("view", {"file_path": "/w/a"}, "Read"),
                                ("write", {"file_path": "/w/a"}, "Write"), ("edit", {"file_path": "/w/a"}, "Edit"),
                                ("multiedit", {"file_path": "/w/a", "edits": []}, "Edit"),
+                               ("lsp_replace_symbol", {"file_path": "/w/a"}, "Edit"),
+                               ("lsp_rename", {"symbol": "f", "new_name": "g", "path": "/w"}, "Edit"),
                                ("ls", {"path": "/w"}, "LS"), ("grep", {"pattern": "x", "path": "/w"}, "Grep"),
                                ("glob", {"pattern": "*.py", "path": "/w"}, "Glob"),
                                ("fetch", {"url": "https://x.example/a"}, "WebFetch"),
-                               ("download", {"url": "https://x.example/a", "file_path": "/w/a"}, "WebFetch")):
+                               ("web_fetch", {"url": "https://x.example/a"}, "WebFetch"),
+                               ("agentic_fetch", {"url": "https://x.example/a", "prompt": "p"}, "WebFetch"),
+                               ("web_search", {"query": "q"}, "WebSearch"),
+                               # download writes `file_path`: the file rules decide it, not the fetch rules
+                               ("download", {"url": "https://x.example/a", "file_path": "/w/a"}, "Write")):
             with self.subTest(tool=name):
                 tool, args = agent_hooks.tool("crush", name, ti)
                 self.assertEqual(tool, want)
@@ -570,10 +576,15 @@ class CrushTools(unittest.TestCase):
         # Crush names MCP tools mcp_<server>_<tool>: left as they are, as the policy treats unknown tools
         self.assertEqual(agent_hooks.tool("crush", "mcp_github_create_issue", {"title": "x"})[0],
                          "mcp_github_create_issue")
-        # the shipped policy decides a credential read as it does for the other harnesses
+        # the shipped policy decides a credential read and a download into authorized_keys as it does the same write
         pol = load_policy()
         self.assertNotEqual(pol.decide(*agent_hooks.tool("crush", "view", {"file_path": "/home/agent/.ssh/id_rsa"}))
                             ["verdict"], "allow")
+        download = pol.decide(*agent_hooks.tool("crush", "download", {
+            "url": "https://x.example/key", "file_path": "/home/agent/.ssh/authorized_keys"}))
+        write = pol.decide("Write", {"file_path": "/home/agent/.ssh/authorized_keys"})
+        self.assertEqual(download["verdict"], "deny")
+        self.assertEqual((download["verdict"], download["rule_ids"]), (write["verdict"], write["rule_ids"]))
 
 
 class GeminiQwenTargets(unittest.TestCase):
