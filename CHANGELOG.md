@@ -70,8 +70,8 @@ policy.
   options and deletes from a file, `TK-D004`'s roots reached through another directory, and the fallback engine's time
   on thousands of `pulumi` or `systemctl` options, `TK-A042`'s wholly variable paths and HTTPie's run-time method,
   `TK-A047`'s long quoted arguments, JSON padding and out-of-scope endpoints; Codex's hook doesn't carry the shell an
-  `exec_command` names, sends `write_stdin` no hook, and skips the hook for an `exec_command` whose
-  `additional_permissions` name a relative path (with `exec_permission_approvals` on); v1's rules match case as written,
+  `exec_command` names, sends `write_stdin` no hook, and, with its in-development
+  `exec_permission_approvals` on, can run some calls with no hook; v1's rules match case as written,
   so on macOS `.ENV` isn't `.env`; and a hook of another tool in Crush can change a call's input after Tracekit decided
   it.
 
