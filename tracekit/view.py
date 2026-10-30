@@ -1174,7 +1174,9 @@ class StoreFeed:
             kept = self.bundles.pop(key, {})
         rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, None, self.memo,
                                           **({} if self.pg else {"kept": kept}))
-        if kept:   # the runs checked last keep theirs, BUNDLES_MAX bytes in all: one past them is read whole next time
+        # the runs checked last keep theirs, BUNDLES_MAX bytes in all: one past them is read whole next time, and so is a
+        # run bigger than that alone, which keeping would only empty the others' (the signer's own run, never final)
+        if kept and len(kept["data"]) <= BUNDLES_MAX:
             with self.lock:
                 self.bundles[key] = kept
                 while sum(len(b["data"]) for b in self.bundles.values()) > BUNDLES_MAX:

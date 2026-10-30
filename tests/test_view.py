@@ -2483,6 +2483,21 @@ class LiveRuns(unittest.TestCase):
         self.assertEqual(given[3], ("c", {}))   # read whole
         self.assertEqual([k[1] for k in feed.bundles], ["a", "c"])
 
+    def test_a_run_bigger_than_the_cap_keeps_nothing_and_leaves_the_others_theirs(self):
+        """A run over BUNDLES_MAX alone was kept, then every other run's bytes went before its own: the signer's own run
+        (174 MB, never final) emptied the cache at each check."""
+        self.recs = {r: [v2rec(10 * i, "policy.decision", {"tool": "Bash", "decision": "allow"}, r)]
+                     for i, r in enumerate("ab")}   # b the newest: checked first, then a
+        feed, fake = self.feed(lambda run_id: VERIFIED), view.check
+
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+            got = fake(reader, tenant, run_id, note, trust, out, memo)
+            kept.update(data=b"x" * (400 if run_id == "a" else 40))   # a alone is past the cap
+            return got
+        with mock.patch.object(view, "check", side_effect=check), mock.patch.object(view, "BUNDLES_MAX", 100, create=True):
+            self.refresh(feed)
+        self.assertEqual([k[1] for k in feed.bundles], ["b"])
+
     def test_the_newest_runs_are_checked_first_and_a_refresh_leaves_the_rest_to_the_next(self):
         """On start the viewer checked every run of the store, oldest first, in one pass (minutes for a big store): the
         run being written showed last, and its new records waited for the whole pass. The newest run is checked first,
