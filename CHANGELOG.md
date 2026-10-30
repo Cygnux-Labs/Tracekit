@@ -168,9 +168,12 @@ protocol stays 20.
   (2.5 s and 1.2 GB each time), checked a growing run whole at each checkpoint and every run again every five minutes,
   and drew HORIZON every frame. It now keeps its reader and reads only what was appended, checks what runs added within
   1/41 of a core, takes about half a core for its first pass (the newest run on the page within 7 s), and draws DESK's
-  lanes and HORIZON only when they change. An edit of records already shown still turns their run FAILED: the runs
-  with records in changed bytes read RE-CHECKING until checked again ([limits](docs/limits.md#viewer)). Ctrl-C gives
-  the terminal back in about a second (it took 17 s and more).
+  lanes and HORIZON only when they change. A check verifies the very bytes the viewer hashed (8 bytes of a keyed hash
+  per line, about 4 MiB for 500k records), so an edit of records already shown still turns their run FAILED, however
+  it is timed: the runs with records in changed bytes, or under a changed checkpoint, read RE-CHECKING until checked
+  again, and CHAIN says how many. Re-checks take turns at half a core, and the bytes kept to check growing runs from
+  stay under 64 MiB ([limits](docs/limits.md#viewer)). Ctrl-C gives the terminal back in about a second (it took 17 s
+  and more).
 - **HORIZON stays responsive on large live runs (#473)**: the stage no longer grows with the side card, callouts
   aren't drawn over the readouts, and clicking an agent to follow it no longer freezes the page. A call to localhost,
   127.x, ::1 or 0.0.0.0 is on this machine, not a jet counted in EGRESS.
