@@ -338,7 +338,17 @@ class CodingPack(unittest.TestCase):
             "gh api -X DELETE repos/o/r/environments/production", "gh api -X DELETE repos/o/r/vulnerability-alerts",
             "gh api -X DELETE repos/o/r/automated-security-fixes", "gh api -X DELETE user/codespaces/secrets/X",
             "curl -X DELETE HTTPS://api.github.com/repos/o/r/branches/main/protection",
-            "curl --proto-default https -X DELETE api.github.com/repos/o/r/branches/main/protection"]
+            "curl --proto-default https -X DELETE api.github.com/repos/o/r/branches/main/protection",
+            # PR #468's fourth review, allowed or only flagged before: a method, or gh repo edit's value, set at run time
+            "gh api -X \"$M\" repos/o/r/branches/main/protection", "gh api -X ${M:-DELETE} repos/o/r/rulesets/1",
+            "gh api -X $(echo DELETE) repos/o/r/branches/main/protection", "gh api -X$M repos/o/r/actions/secrets/K",
+            "gh api -X `echo DELETE` repos/o/r/branches/main/protection", "hub api -X \"$M\" repos/o/r/environments/prod",
+            "gh api repos/o/r/branches/main/protection --method=\"DEL$E\"",
+            "curl -X \"$M\" https://api.github.com/repos/o/r/branches/main/protection",
+            "gh api -X \"$M\" repos/o/r/vulnerability-alerts",
+            "gh api repos/o/r -f security_and_analysis[secret_scanning][status]=disabled -X \"$M\"",
+            "gh repo edit --enable-secret-scanning=$OFF", "gh repo edit --enable-advanced-security=$(get_flag)",
+            "gh repo edit o/r --enable-secret-scanning-push-protection=\"${OFF}\""]
         routine = [
             # the #401 pool's benign lookalikes
             "gh secret list --repo myorg/production-app", "gh workflow list", "gh run view 849201938 --log",
@@ -360,7 +370,9 @@ class CodingPack(unittest.TestCase):
             "-f description='disabled-looking text'",
             "gh repo edit --enable-secret-scanning", "gh repo edit --enable-wiki=false",
             "gh api -X PUT repos/o/r/vulnerability-alerts", "gh api repos/o/r/environments/production",
-            "gh api -iX GET repos/o/r/branches/main/protection"]
+            "gh api -iX GET repos/o/r/branches/main/protection",
+            # a method set at run time on another path, and another gh repo edit flag from a variable
+            "gh api -X \"$M\" repos/o/r/issues/comments/1", "gh repo edit --enable-wiki=$W"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
