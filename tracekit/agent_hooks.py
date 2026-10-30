@@ -244,7 +244,9 @@ def tool(harness, name, ti):
         if name.startswith("mcp_"):   # Crush names an MCP tool mcp_<server>_<tool> (internal/agent/tools/mcp-tools.go)
             return "mcp__" + name[4:], ti
         if name in CRUSH_PATH_TOOLS:   # the path the tool itself reads decides, never a decoy `file_path` beside it
-            ti["file_path"] = ti.get("path")
+            ti.pop("file_path", None)
+            if "path" in ti:
+                ti["file_path"] = ti["path"]
         return CRUSH_TOOLS.get(name, name), ti
     return name, ti
 
