@@ -6,7 +6,7 @@
 # `cli_command`, `command` or `cmd` argument (the AWS API MCP server's call_aws takes `cli_command`). A web search for
 # the same words is not a command.
 
-version: '2026.10-server-cloud-4'
+version: '2026.10-server-cloud-5'
 description: server-hosted agents, cloud CLIs and cloud MCP tools
 unknown_tools: ask
 
@@ -16,7 +16,8 @@ deny:
     reason: changing cloud identity or access
     rationale: IAM policies, role bindings, access keys and public bucket policies decide who can reach every other resource; an agent must not grant access, least of all to itself.
   - id: TK-C002
-    tool: 'mcp(:[^/]+/|__.*__).*(attach_[a-z_]*policy|put_[a-z_]*policy|iam_policy_binding|set_iam_policy|create_access_key|create_service_account_key|role_assignment|create_role_binding|grant_[a-z_]*)'
+    # over MCP as TK-C011 names it
+    tool: 'mcp(:[^/]+/|__.*[_-]).*(attach_[a-z_]*policy|put_[a-z_]*policy|iam_policy_binding|set_iam_policy|create_access_key|create_service_account_key|role_assignment|create_role_binding|grant_[a-z_]*)'
     pattern: '^'
     reason: changing cloud identity or access through an MCP tool
     rationale: The MCP twin of TK-C001.
@@ -29,7 +30,10 @@ ask:
     reason: deleting cloud resources
     rationale: Deleting instances, databases, buckets, clusters or whole stacks is the kind of step a person confirms; reading and creating are allowed.
   - id: TK-C011
-    tool: 'mcp(:[^/]+/|__.*__)(.*_)?(delete|destroy|terminate|drop|purge|remove)(_.*)?'
+    # as `mcp:<server>/<tool>`, `mcp__<server>__<tool>` or Crush's joined `mcp__<server>_<tool>` (whose server and
+    # tool can't be told apart: the word counts after a `_` or `-`, never as the name's first word). One `.*` per
+    # branch, as TK-A037
+    tool: 'mcp(:[^/]+/(.*_)?|__.*[_-])(delete|destroy|terminate|drop|purge|remove)(_.*)?'
     pattern: '^'
     reason: deleting through an MCP tool
     rationale: The MCP twin of TK-C010, for any tool whose name says it deletes.
