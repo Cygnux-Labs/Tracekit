@@ -41,11 +41,12 @@ or `TK-D` rule about secrets, credentials, harness configuration or Tracekit's o
 on the shield means an agent was stopped there (blocked or held). A **jet**, a dashed line out to the outside world,
 marks each call to a host there.
 
-Over the map, **MISSION CLOCK** is the time since the first move and **MOVE** the move shown; **EGRESS** counts the hosts
-outside reached, **RESTRICTED** the moves at restricted places and how many ran, **FENCES HIT** the blocked calls,
-**HOLDS** the calls held for a person (DESK's HELD: the agent's retry of a held call counts with it), and **CHAIN**
-reads `✓ VERIFIED` when no move drawn is unverified, else how many are. Beside it: the agents, the places, the places
-outside the machine and the restricted tries, then how to read the marks.
+Over the map, **MISSION CLOCK** is the time since the first move and **MOVE** the move shown; **HOSTS OUTSIDE** counts
+the hosts outside the machine reached, **RESTRICTED** the moves at restricted places tried and how many ran,
+**BLOCKED** the blocked calls, **HELD** the calls held for a person (DESK's HELD: the agent's retry of a held call
+counts with it), and **CHAIN** reads `✓ VERIFIED` when no move drawn is unverified, else how many are. Beside it: the
+agents and the places, then how to read the marks. Each ring is named where it is on screen: zoomed in, on the part of
+it in view.
 
 ## How we know
 

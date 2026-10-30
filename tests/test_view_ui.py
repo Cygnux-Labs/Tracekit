@@ -1813,7 +1813,9 @@ class HorizonZoom(unittest.TestCase):
                 "cat <<EOF > notes.txt\nhello\nEOF": w("project", "notes.txt"),
                 "grep foo src/a.py 2>/dev/null": ["project", "src/a.py"], "pytest -q 2>&1 | tail -5": ["machine", "pytest", "command"],
                 "sort < data/in.txt": ["project", "data/in.txt"], "tr a b <<< /not/a/file": ["machine", "tr", "command"],
-                "curl -s https://x.example/a > out.json": ["outside", "x.example"]}   # data leaving the machine first
+                "curl -s https://x.example/a > out.json": ["outside", "x.example"],   # data leaving the machine first
+                # a PATH-style list is its first folder, not a place named bin:$PATH
+                "export PATH=/home/u/T/.venv/bin:$PATH && pytest -q": ["machine", "~/T/.venv/bin"]}
         self.assertEqual(self.places(list(cmds)), list(cmds.values()))
         out = self.run_stage("""process.stdout.write(JSON.stringify(HZ.d.ev.map(e => [e.at, e.act])));""",
                              recs=[hz_call(1, "Bash", {"command": "echo key >> ~/.ssh/authorized_keys"}, cwd="")])
@@ -2642,10 +2644,10 @@ class FinalQA(unittest.TestCase):
         self.assertIn('<span class="s-err">1 gap</span>', out)
         self.assertIn("<span>1 run</span>", out)
 
-    def test_horizon_says_how_many_restricted_tries_ran_on_a_line_of_its_own(self):
-        self.assertIn('[rest.length, "RESTRICTED TRIES", 1, ran ? ran + " RAN" : "NONE RAN"]', PAGE)
-        self.assertIn('${sub ? `<span>${esc(sub)}</span>` : ""}', PAGE)
-        self.assertRegex(PAGE, r"\.hzstats span \{\s*display: block")
+    def test_horizon_says_how_many_restricted_tries_ran(self):
+        # in the HUD's readouts (the side panel repeated them as OUTSIDE THE MACHINE and RESTRICTED TRIES)
+        self.assertIn('[`${rest.length} TRIED · ${ran} RAN`, rest.length ? "warn" : ""]', PAGE)
+        self.assertNotIn('"RESTRICTED TRIES"', PAGE)
 
     def test_an_answer_by_the_requester_reads_alike_approved_or_rejected(self):
         needs_node(self)

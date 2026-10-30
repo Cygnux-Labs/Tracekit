@@ -1979,24 +1979,12 @@
       border-right: 1px solid var(--line)
     }
 
-    .hzstats div:nth-child(-n+2) {
-      border-bottom: 1px solid var(--line)
-    }
-
     .hzstats b {
       display: block;
       color: var(--text);
       font-size: 18px;
       font-weight: 600;
       letter-spacing: 0
-    }
-
-    .hzstats .warn b {
-      color: var(--amber)
-    }
-
-    .hzstats span {
-      display: block
     }
 
     .hzcard {
@@ -2974,8 +2962,8 @@
                     aria-label="Zoom in">+</button><button type="button" data-hzz="out" aria-label="Zoom out">−</button><button
                     type="button" data-hzz="fit" title="The whole map (0 or Esc)">FIT</button><button type="button" data-hzz="cam"
                     aria-pressed="false" title="In a replay, the camera flies to each move">CAM</button></span>
-                <div class="hztel">EGRESS<b id="hzt0"></b><br>RESTRICTED<b id="hzt1"></b><br>FENCES HIT<b
-                    id="hzt2"></b><br>HOLDS<b id="hzt3"></b><br>CHAIN<b id="hzt4"></b></div>
+                <div class="hztel">HOSTS OUTSIDE<b id="hzt0"></b><br>RESTRICTED<b id="hzt1"></b><br>BLOCKED<b
+                    id="hzt2"></b><br>HELD<b id="hzt3"></b><br>CHAIN<b id="hzt4"></b></div>
               </div>
               <div class="hzhud bl">TRACEKIT // EVENT HORIZON</div>
             </div>
@@ -3654,19 +3642,18 @@
         .filter(f => !f.startsWith("/dev/") && !f.includes("$"));   // a variable's file is unknown: no place
       // a URL's host as curl reads it, from the whole word: its authority runs to the first / ? or #, the host after its
       // last @ (split at = , ; and the like first, `http://localhost=@evil.example` read as localhost)
-      for (const w of said) for (const m of w.matchAll(/\b[a-z][\w+.-]*:\/\/([^\/?#\s\\]*)/gi)) {
-        const host = /^(\[[^\]]*\]|[^:]+)/.exec(m[1].split("@").pop())?.[1];
-        if (host) return hzHost(host.toLowerCase());
-      }
+      const urlHost = w => { for (const m of w.matchAll(/\b[a-z][\w+.-]*:\/\/([^\/?#\s\\]*)/gi)) { const h = /^(\[[^\]]*\]|[^:]+)/.exec(m[1].split("@").pop())?.[1]; if (h) return h; } };
+      if (sh != null) for (const w of said) { const h = urlHost(w); if (h) return hzHost(h.toLowerCase()); }   // a command's host first
       let path = null;
-      for (const w of said.join(" ").split(/[\s"'`;|&<>()=,]+/)) {
-        const host = /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
+      for (const w of said.flatMap(v => sh == null && urlHost(v) ? [v] : v.split(/[\s"'`;|&<>()=,]+/))) {   // another tool's: in order
+        const host = (sh == null && urlHost(w)) || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
         if (host) return hzHost(host.toLowerCase());
         // lean: elsewhere a word with a slash is a path, so a ref like origin/main is a project place; the signer's parser knows better
         if (w.startsWith("/dev/")) continue;   // 2>/dev/null and the like: no place
         if (/^(~|\.{0,2}\/)|^\.\w/.test(w) || /^[\w.-]+\/[\w.-]/.test(w) && (sh == null || /\/[\w.-]*\.[a-z]\w*$/i.test(w))) {
-          if (sh == null) return hzPath(w, cwd);
-          path ??= w;
+          const first = w.split(":$")[0];   // a PATH-style list (PATH=/x/.venv/bin:$PATH) is its first folder
+          if (sh == null) return hzPath(first, cwd);
+          path ??= first;
         }
       }
       if (wrote.length) return [...hzPath(wrote[0], cwd), false, "write"];
@@ -3832,7 +3819,7 @@
       const s = hzSecs(D.ev, cur);
       $("hzclock").textContent = "T+ " + [s / 3600, s % 3600 / 60, s % 60].map(v => String(Math.floor(v)).padStart(2, "0")).join(":");
       $("hzmove").textContent = `${String(HZ.t).padStart(2, "0")} / ${N}`;
-      [[new Set(out.map(e => e.at)).size, out.length ? "warn" : ""], [`${rest.length} · ${ran} RAN`, rest.length ? "warn" : ""], [ev.filter(e => e.act === "blocked").length, ""],
+      [[new Set(out.map(e => e.at)).size, out.length ? "warn" : ""], [`${rest.length} TRIED · ${ran} RAN`, rest.length ? "warn" : ""], [ev.filter(e => e.act === "blocked").length, ""],
        [ev.filter(e => e.hold).length, ""], hzChain(ev)]
         .forEach(([v, c], k) => { $("hzt" + k).textContent = vis(v); $("hzt" + k).className = c; });
       document.querySelectorAll("[data-hzv]").forEach(b => b.classList.toggle("on", b.dataset.hzv === HZ.view));
@@ -3850,9 +3837,9 @@
           + (pick.rest ? `<div class="s-flag">${esc("SHIELD · " + (fold ? `${fold.leaves.filter(k => P(k).rest).length} restricted in it · ` : "") + pick.rest)}</div>` : "") + who
           + (here.map(e => row(e)).join("") || `<div class="dim">${esc(`No agent has been here${HZ.t < N ? " yet" : ""}.`)}</div>`)
         : HZKEY;
-      const stats = [[new Set(ev.map(e => e.ag)).size, "AGENTS"], [new Set(ev.map(e => e.at)).size, "PLACES"], [new Set(out.map(e => e.at)).size, "OUTSIDE THE MACHINE", 1],
-                     [rest.length, "RESTRICTED TRIES", 1, ran ? ran + " RAN" : "NONE RAN"]];   // how many ran: a line of its own, not a wrapped word
-      put("hzside", `<div class="hzstats">` + stats.map(([v, k, c, sub]) => `<div class="${c && v ? "warn" : ""}"><b>${esc(v)}</b>${esc(k)}${sub ? `<span>${esc(sub)}</span>` : ""}</div>`).join("") + `</div><div class="hzcard">` + card + `</div>`);
+      // the hosts outside and the restricted tries are the HUD's readouts, beside the map: here, who and where
+      const stats = [[new Set(ev.map(e => e.ag)).size, "AGENTS"], [new Set(ev.map(e => e.at)).size, "PLACES"]];
+      put("hzside", `<div class="hzstats">` + stats.map(([v, k]) => `<div><b>${esc(v)}</b>${esc(k)}</div>`).join("") + `</div><div class="hzcard">` + card + `</div>`);
       // the stage is drawn again only when what it shows changed (the live view renders every second)
       const cv = $("hzcv"), drawn = [D.sig, HZ.t, HZ.follow, HZ.pick, HZ.view, HZ.ended, cv.clientWidth, cv.clientHeight].join("\u0001");
       if (drawn !== HZ.drawn) { HZ.drawn = drawn; hzDraw(); }
@@ -3962,11 +3949,13 @@
       x.font = font(600, 9); x.textAlign = "left"; x.letterSpacing = "2.5px";
       const dots = nodes.concat(opened).map(k => [...pt(k), D.folds?.[k] ? D.folds[k].rho * R4 * K + 9 : D.places[k].rest ? 30 : 9]).filter(p => on(p, 0)), hits = a => 99 * placed.filter(b => box(a, b)).length
         + dots.filter(([mx, my, mr]) => mx > a[0] - mr && mx < a[2] + mr && my > a[1] - mr && my < a[3] + mr).length;
-      for (const [r, l, cl] of [[.47, D.cwd ? "PROJECT · " + D.cwd : "PROJECT", A(amber, .8)], [.66, "THIS MACHINE", A(ink, .5)], [1, "OUTSIDE WORLD", A(ink, .4)]]) {
+      for (const [r, l, cl] of [[.47, D.cwd ? "PROJECT · " + D.cwd : "PROJECT", A(amber, .9)], [.66, "THIS MACHINE", A(ink, .65)], [1, "OUTSIDE WORLD", A(ink, .55)]]) {
         const w = x.measureText(l).width, at = deg => { const [lx, ly] = P(r, hzRad(deg)); return [lx - 2, ly - 14, lx + 9 + w, ly + 2]; };
-        // upper left on its ring, where it covers no other ring's name or readout and the fewest places
-        const b = [-40, -48, -32, -56, -24, -64, -16, -72, -8].map(at).reduce((p, q) => hits(q) < hits(p) ? q : p);
-        if (!box(b, [0, 0, cw, ch])) continue;
+        // upper left on its ring, where it covers no other ring's name or readout and the fewest places; zoomed in, past
+        // that, wherever the ring is on screen, so each ring in view is named
+        const inside = q => q[0] >= 0 && q[1] >= 0 && q[2] <= cw && q[3] <= ch, best = qs => qs.filter(inside).reduce((p, q) => !p || hits(q) < hits(p) ? q : p, null);
+        const b = best([-40, -48, -32, -56, -24, -64, -16, -72, -8].map(at)) || best(Array.from({ length: 45 }, (_, k) => at(k * 8)));
+        if (!b) continue;
         x.fillStyle = cl; x.fillRect(b[0], b[3] - 4, 4, 4); x.fillText(l, b[0] + 9, b[3] - 7);
         placed.push(b);
       }
