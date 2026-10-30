@@ -994,7 +994,8 @@ class CodexHookTrust(unittest.TestCase):
                           f"records that in {self.toml})", line)
             self.trust(*self.EVENTS)
             self.assertEqual(self.row()["status"], "ok")
-        self.assertEqual(agent_hooks.codex_trust_store("/home/agent"), "/home/agent/.codex/config.toml")   # system mode
+        self.assertEqual(agent_hooks.codex_trust_store("/home/agent"),   # system mode
+                         os.path.join("/home/agent", ".codex", "config.toml"))
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     @unittest.skipIf(os.name == "nt", "a symlink needs a privilege on Windows")
