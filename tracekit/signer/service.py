@@ -5,8 +5,8 @@
     tracekit signer fsck  --config signer.yaml
     tracekit signer migrate --config signer.yaml     # create the Postgres store's tables (as the migration role)
     tracekit signer close-log --config signer.yaml   # shut the log down for good (log.closed), signer stopped
-    tracekit signer vkey  [--dev | --config signer.yaml]               # the log's verifier key
-    tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it and the witnesses
+    tracekit signer vkey  [--dev | --config signer.yaml | --data-dir DIR]               # the log's verifier key
+    tracekit signer trust [--dev | --config signer.yaml | --data-dir DIR] -o trust.json  # pins it and the witnesses
     tracekit signer reveal --record SEQ [--dev | --config signer.yaml]  # the salt of one record's commitments
     tracekit signer token add NAME [--ttl 30d] [--tenant T] --config signer.yaml   # prints a token once (http.tokens)
     tracekit signer token list|revoke [NAME] --config signer.yaml
@@ -199,7 +199,16 @@ approved arguments, and records every refusal. Approvals and the index are rebui
 signer's copy of a pending call's arguments (what the approver is shown) is kept encrypted under keys/approval_args.key
 and deleted once the approval is consumed, rejected or expired. An approval expires after APPROVAL_TTL_S, when its
 run ends, or at once when the adapter abandons it (`approval.abandoned`). An ask rule with `approval: {executor: t2}`
-makes the consume return the approved arguments from that copy: its caller runs exactly those.
+makes the consume return the approved arguments from that copy: its caller runs exactly those. Approve, then retry: a
+later call of the same run, tool and arguments (the agent's retry, under a new tool_call_id, of a call that was blocked
+before anyone answered) whose decision asks for no rule the approval did not, under the same policy, uses the earlier
+call's approval once a person approved it, instead of a new one (_reusable): approval_request returns it (`requested`
+while an agent's approval is within its veto delay, as approval_wait reads it), and the consume writes its
+approval.consumed under the retry's tool_call_id. Still once, and never a rejected, revoked or expired one, nor one
+whose blocked call ran anyway. The retry is then the call that ran under it (pipeline.ran): the blocked call, if it ran
+anyway, ran against the policy. A retry of a call whose latest answer was a no (rejected, or its agent approval
+revoked) asks for a new approval, and its decide's reason says first who said no (_said_no), so the agent asks before
+trying again.
 Who answers (design §5): with a config (`approvals`), only an approver of the run's tenant or a break-glass identity
 (any tenant, a reason required, recorded `break_glass`), never the requester or the run's owner unless
 `self_approval: allow`. Without one (the dev signer), any identity of the run's tenant, a self-approval labelled
@@ -319,7 +328,7 @@ from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, constraint_state,
-                                      cooldown_key, degrade, epoch, final_run, owner, person_only_keys, salt_label,
+                                      cooldown_key, degrade, epoch, final_run, owner, person_only_keys, ran, salt_label,
                                       skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -429,6 +438,12 @@ def load_policy(path=DEFAULT_POLICY, backend=None):
 
 def _iso(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _waiting(a, now):
+    """Whether approval `a` reads `requested` at `now` (a time.time()): unanswered, or an agent's approval within its
+    veto delay, which people may still revoke and no consume uses (TK-APPROVAL-VETO)."""
+    return a["state"] == "requested" or a["state"] == "approved" and a.get("not_before", "") > _iso(now)
 
 
 MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
@@ -1455,8 +1470,7 @@ class SignerService:
         """run.final for closing `run`, whose approvals are `aids`, after a gap for each call a gateway holds that has
         no result, one for each other call decided to run that never completed and one for each observer that went
         silent (`now`: a monotonic time); returns the ids of the approvals that expired with it."""
-        consumed = {(a["tool_call_id"], a["attempt"]): a["decision_id"] for a in map(self.log.approvals.get, aids)
-                    if a["state"] == "consumed"}
+        consumed = {ran(a)[:2]: ran(a)[2] for a in map(self.log.approvals.get, aids) if a["state"] == "consumed"}
         held = self._held_open(key, run)
         for c in held[:DECIDED_GAPS_MAX]:
             tx.emit(run, "capture.gap", {
@@ -1527,6 +1541,8 @@ class SignerService:
         for aid in aids:   # all ended now: nothing can use them
             a = self.log.approvals[aid]
             tx.pop(self.log.approval_index, (*key, a["tool_call_id"], a["attempt"]))
+            if a.get("used_by"):
+                tx.pop(self.log.approval_index, (*key, *ran(a)[:2]))
             tx.pop(self.log.approvals, aid)
         return expired
 
@@ -2154,9 +2170,9 @@ class SignerService:
 
     def _open_calls(self, key, run):
         """The calls of `run` (`key`) that may be running: allowed, or approved and consumed, and not completed."""
-        def consumed(c):   # this decision's own approval: a retry decided again after a consume never ran
-            a = self.log.approvals.get(self.log.approval_index.get((*key, c["tool_call_id"], c["attempt"])), {})
-            return a.get("state") == "consumed" and a.get("decision_id") == c["decision_id"]
+        def consumed(c):   # the approval it ran under: a retry decided again after a consume never ran
+            a = self.log.approvals.get(self.log.approval_index.get((*key, c["tool_call_id"], c["attempt"])))
+            return bool(a) and a["state"] == "consumed" and ran(a)[2] == c["decision_id"]
         return [c for c in run["decisions"].values() if c and (c["decision"] in ("allow", "flag") or consumed(c))]
 
     def _in_flight(self, key, run, skip=None):
@@ -2724,7 +2740,9 @@ class SignerService:
             if sums:
                 data["detect"] = {**data.get("detect", {}), **sums}
             names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
-            l2 = digest if digest is None or len(names) == 1 else {n: event_hash({"tool": n, "args": args}) for n in names}
+            seen = reconcile.compared(tool, args) if (run.get("rec") or {}).get("claude_code") else args
+            l2 = {n: event_hash({"tool": n, "args": args}) for n in names} if digest and len(names) > 1 else \
+                digest if seen is args else event_hash({"tool": tool, "args": seen})
 
             def record(did, verdict, rule_ids, again=False):
                 """Write decision `did`, as the run's hold or quarantine leaves it, and make it the call's; `again`: the
@@ -2768,8 +2786,10 @@ class SignerService:
             out = {"decision": "allow" if d["decision"] == "flag" else d["decision"], "decision_id": d["decision_id"],
                    "rule_ids": d["rule_ids"], "run_seq": seq, "expires_at": expires_at,
                    **({"reason": "; ".join(big["reasons"])[:1024]} if big else {})}
+            said_no = d["decision"] == "ask" and self._said_no(key, tool, holder[0], digest)
             if d["decision"] in ("deny", "ask") and not big and (why := "; ".join(x for x in (
-                    held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"])) if x)[:1024]):
+                    said_no, held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"]))
+                    if x)[:1024]):
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
@@ -2860,14 +2880,18 @@ class SignerService:
             if missing:
                 degrade(tx, run.get("prov"), "partial", f"{tcid} ({call['tool'][:64]}) completed with a digest, "
                                                           "not its result")
+            # approved: this call consumed the approval (pipeline.ran), not the attempt whose approval a retry consumed,
+            # and only once: under the decision that consumed it, or a later one while that is still open
             a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {})
-            approved = a.get("state") == "consumed" and self._opens(a["commitment"], a["label"], req["args_digest"])
-            if approved and a["decision_id"] in run["decisions"]:   # the approved call completed under a later decision
-                tx.pop(run["decisions"], a["decision_id"])
+            approved = a.get("state") == "consumed" and ran(a)[:2] == (tcid, attempt) \
+                and (ran(a)[2] == did or ran(a)[2] in run["decisions"]) \
+                and self._opens(a["commitment"], a["label"], req["args_digest"])
+            if approved and ran(a)[2] in run["decisions"]:   # the approved call completed under a later decision
+                tx.pop(run["decisions"], ran(a)[2])
             if call["decision"] == "deny" or (call["decision"] == "ask" and not approved):
                 tx.emit(run, "capture.gap", {"kind": "executed_against_policy", "tool_use_id": tcid,
                                              "reason": f"{tcid} ran after a {call['decision']} decision"
-                                                       + (" with no consumed approval of these arguments"
+                                                       + (" without consuming an approval of these arguments"
                                                           if call["decision"] == "ask" else "")},
                         source="signer", tool_call_id=tcid)
             return {"run_seq": seq}
@@ -3087,6 +3111,51 @@ class SignerService:
             self._unmatched.update((did, f["result_digest"]) for f in left)
         return False
 
+    def _reusable(self, key, call, digest, prefer=None):
+        """(on the writer) The approval of run `key` that `call`, decided `ask` for the args digest `digest`, consumes in
+        place of one of its own: the agent's retry of a call a person (or an agent approver) approved after its first
+        attempt was blocked. It is `approved` (never consumed, rejected, revoked or expired), within its expiry and
+        consume window, its own call has no result (one that ran anyway, against the policy, used it up), and was asked
+        for the same tool and arguments (its commitment opens with `digest`) under the same policy, for every rule the
+        call's decision names; and the call's latest answer is no no (_said_no: a yes before a later no is not reused).
+        `prefer` (the caller's hint) when it is one; else the oldest usable now (past an agent's veto delay); else the
+        oldest; None when none is."""
+        if not (call and call["decision"] == "ask" and digest and self._same(call, digest)) \
+                or self._said_no(key, call["tool"], call.get("via"), digest):
+            return None
+        now, ran = _iso(time.time()), self.log.runs[key]["results"]
+        # lean: scans the signer's live approvals, as the sweep does; index approved ones by run if a run holds many.
+        # `ran` is by tool call id: a later attempt's approval of an id that ran before (a LangChain retry) is not
+        # reused either, so its retry asks again; key results by attempt too if that gets in the way
+        found = [aid for aid, a in self.log.approvals.items()
+                 if a["run_key"] == key and a["state"] == "approved" and a["tool"] == call["tool"]
+                 and a.get("via") == call.get("via")   # a gateway's call by the same gateway, an agent's by the agent
+                 and a["policy_hash"] == self.policy.policy_hash and set(call["rule_ids"]) <= set(a["rule_ids"])
+                 and a["expires_at"] > now and a.get("consume_by", "~") > now and a["tool_call_id"] not in ran
+                 and self._opens(a["commitment"], a["label"], digest)]
+        found.sort(key=lambda aid: self.log.approvals[aid].get("not_before", "") > now)   # stable: oldest first
+        return prefer if prefer in found else found[0] if found else None
+
+    def _said_no(self, key, tool, via, digest):
+        """(on the writer) What an `ask` for `tool` with args digest `digest` in run `key` tells the agent and the
+        person when the latest answer to the same call (an approval of it, as _reusable matches it) was a no, rejected
+        or revoked, so the agent asks before trying again; None when there is none, or a later yes (approved, consumed
+        or expired since) cleared it. A new approval is still asked for: a person may change their mind."""
+        # lean: scans the signer's live approvals, as _reusable does
+        said = [(a.get("answer_seq", -1), aid) for aid, a in self.log.approvals.items()
+                if digest and a["run_key"] == key and a.get("answered") and a["tool"] == tool and a.get("via") == via
+                and a["policy_hash"] == self.policy.policy_hash and self._opens(a["commitment"], a["label"], digest)]
+        aid = max(said)[1] if said else None
+        a = self.log.approvals.get(aid)
+        if a is None or a["state"] != "rejected":
+            return None
+        revoked, answered = a.get("revoked"), a.get("answered") or {}
+        by = revoked or answered.get("by", "?")
+        who = ("the signer" if by == "signer" else
+               "an agent approver" if not revoked and answered.get("kind") == "agent" else "a person")
+        return (f"{who} {'revoked the approval of' if revoked else 'rejected'} this exact call ({aid}, by {by}); "
+                f"ask {'them' if who == 'a person' else 'a person'} before trying again")
+
     def _approval_request(self, identity, req):
         identity, gw = self._as_caller(identity, "approval_request", req)
         key, top, holder = self._authorize(identity, req, gw), T2 if gw else {}, _holder(gw, req)
@@ -3099,22 +3168,28 @@ class SignerService:
             call = run["calls"].get(tcid)
             self._hold(call, holder, tcid)
             had = self.log.approval_index.get((*key, tcid, attempt))
-            if had:   # one approval per call attempt: asking again returns it, whatever its state
+            if had:   # one approval per call attempt: asking again returns it, whatever its state (as approval_wait)
                 a = self.log.approvals[had]
-                return {"approval_id": had, "state": a["state"], "expires_at": a["expires_at"]}
+                return {"approval_id": had, "state": "requested" if _waiting(a, time.time()) else a["state"],
+                        "expires_at": a["expires_at"]}
             if call is None or call["attempt"] != attempt or not call.get("pending"):
                 raise RPCError("unknown_tool_call", f"{tcid} attempt {attempt} has no pending `ask` decision")
             if run.get("quarantined"):
                 raise RPCError("forbidden", self._why_contained(run))
+            p = call["pending"]
+            args, digest = self._args(p)
+            reuse = self._reusable(key, call, digest)
+            if reuse:   # the same call asked and approved before: this one consumes that approval (no new record), once
+                a = self.log.approvals[reuse]   # an agent's veto delay has passed (_waiting)
+                return {"approval_id": reuse, "state": "requested" if _waiting(a, time.time()) else "approved",
+                        "expires_at": a["expires_at"]}
             # a held run's approvals: answered by people only, on a budget of the run's own, not its owner's
             held = run.get("held") or []   # the hold a call was decided under, while it still holds the run
             iid = call.get("incident") if call.get("incident") in held else held[0] if held else None
             self.quotas.check_count("pending_approvals", sum(
                 a["state"] == "requested" and bool(a.get("incident_id")) == bool(iid)
                 and (a["run_key"] == key if iid else a["requester"] == sub) for a in self.log.approvals.values()))
-            p = call["pending"]
             expires_at = _iso(time.time() + self.ttl_s)
-            args, digest = self._args(p)
             binding = {"v": 1, "approval_id": aid, "tenant": key[0], "run_id": key[1], "tool_call_id": tcid,
                        "attempt": attempt, "tool": p["tool"], "args_commitment": self._commit("approval.request:" + sid, digest),
                        "args_source": p["args_source"],
@@ -3424,19 +3499,24 @@ class SignerService:
         # a held run's waits use a budget of the run's own, so they don't starve its owner's healthy runs
         slot = ("held", "/".join(a["run_key"])) if a.get("incident_id") else quota_key(identity, gw)
 
-        def waiting(a, now):   # an agent's approval waits out its veto delay: people may still revoke it
-            return a["state"] == "requested" or a["state"] == "approved" and a.get("not_before", "") > _iso(now)
         end = time.monotonic() + req.get("timeout_ms", 0) / 1000
-        with self.quotas.wait_slot(slot), self._cond:
-            while ((a := self.log.approvals.get(aid)) is not None and waiting(a, time.time())
+        with self.quotas.wait_slot(slot), self._cond:   # an agent's approval waits out its veto delay (_waiting)
+            while ((a := self.log.approvals.get(aid)) is not None and _waiting(a, time.time())
                    and end > time.monotonic()):
                 self._cond.wait(min(end - time.monotonic(), TICK_S))
 
-        # read on the writer, so only a committed state is answered; gone: its run went final, which expired it
+        # read on the writer, so only a committed state is answered; gone: its run went final, which expired it. An
+        # agent's approval within its veto delay reads requested, and its reason says it is approved and for how long;
+        # a rejected one's says who rejected or revoked it
         def state(tx):
-            a = self.log.approvals.get(aid, {"state": "expired"})
-            return {"state": "requested" if waiting(a, time.time()) else a["state"],
-                    **({"escalated": True} if a.get("escalated") else {})}
+            a, now = self.log.approvals.get(aid, {"state": "expired"}), time.time()
+            veto = a["state"] == "approved" and _waiting(a, now) and math.ceil(epoch(a["not_before"]) - epoch(_iso(now)))
+            no = a["state"] == "rejected" and (f"revoked by {a['revoked']}" if a.get("revoked") else
+                                               f"rejected by {(a.get('answered') or {}).get('by', '?')}")
+            return {"state": "requested" if _waiting(a, now) else a["state"],
+                    **({"escalated": True} if a.get("escalated") else {}),
+                    **({"reason": f"approved by an agent approver; people may still revoke it, so wait {veto} s"}
+                       if veto else {"reason": no} if no else {})}
         return {"approval_id": aid, **self.log.write(state)}
 
     def _approval_consume(self, identity, req):
@@ -3448,20 +3528,38 @@ class SignerService:
         if not (held and (held.get("via"), held.get("caller")) == holder):   # a gateway's consume of its own call:
             self.quotas.take_event(identity, gw)                           # its decide paid, as for its result
         args, digest = self._args(req)
-        bound = self.log.approval_index.get((*key, tcid, attempt))
+        bound = self.log.approval_index.get((*key, tcid, attempt)) or hint   # the hint: an earlier attempt's (_reusable)
+        b = self.log.approvals.get(bound) or {}
         # read before the writer runs: the copy is deleted once the approval is consumed
-        copy = self._unseal(bound) if bound and self.log.approvals.get(bound, {}).get("executor") == "t2" else None
+        copy = self._unseal(bound) if b.get("executor") == "t2" and b["run_key"] == key else None
 
         def fn(tx, run):
-            aid = self.log.approval_index.get((*key, tcid, attempt))
-            a, call, top = self.log.approvals.get(aid), run["calls"].get(tcid), {"tool_call_id": tcid, "attempt": attempt}
+            aid = own = self.log.approval_index.get((*key, tcid, attempt))
+            call, top = run["calls"].get(tcid), {"tool_call_id": tcid, "attempt": attempt}
             self._hold(call, holder, tcid)
+            if aid is None and call and call["attempt"] == attempt:
+                aid = self._reusable(key, call, digest, hint)
+                # a T2 approval runs its stored copy, read above only for the hint's approval
+                if aid != hint and (self.log.approvals.get(aid) or {}).get("executor") == "t2":
+                    aid = None
+            a = self.log.approvals.get(aid)
             if run.get("quarantined"):
                 why = "TK-QUARANTINE", self._why_contained(run)
             elif run.get("held") and not (a and a.get("incident_id") in run["held"]):   # expired by the holds
                 why = "TK-HOLD", self._why_contained(run)
             elif hint is not None and hint != aid:
-                why = "TK-APPROVAL-UNBOUND", "approval_id not bound to this call"
+                # the same call's approval (_reusable gave it to this retry): another retry raced for it and won, or it
+                # ended since; say which
+                h, now = self.log.approvals.get(hint) or {}, _iso(time.time())
+                same = h.get("run_key") == key and digest and self._opens(h["commitment"], h["label"], digest)
+                why = "TK-APPROVAL-UNBOUND", (
+                    "approval_id not bound to this call" if not same else
+                    f"approval {hint} was already used by another attempt of the same call" if h["state"] == "consumed"
+                    else f"approval {hint} was {'revoked' if h.get('revoked') else 'rejected'} before this call used it"
+                    if h["state"] == "rejected" else f"approval {hint} expired before this call used it"
+                    if h["state"] == "expired" or h["expires_at"] <= now or h.get("consume_by", "~") <= now
+                    else f"approval {hint} was used up: the call it was asked for ran anyway"
+                    if h["tool_call_id"] in run["results"] else "approval_id not bound to this call")
             elif digest is None:
                 why = "TK-ARGS-INVALID", "the arguments are not canonical JSON"
             elif a is None:
@@ -3491,6 +3589,10 @@ class SignerService:
                         raise RPCError("unavailable", f"the stored arguments of {aid} are gone")
                     out["args"] = None   # filled in below: the request_id cache keeps no arguments
                 tx.set(a, "state", "consumed")
+                if aid != own:   # an earlier attempt's (_reusable): this call ran under it (pipeline.ran)
+                    tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
+                    tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
+                # under this call's tool_call_id; the approval.request it names has the earlier attempt's
                 tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
                 rec = run.get("rec")
                 if rec is not None:   # an approved call explains what it was decided for (reconcile.explained)
@@ -4047,8 +4149,8 @@ class SignerService:
 
         def approved(run):
             aid = self.log.approval_index.get((*key, tcid, attempt))
-            a = self.log.approvals.get(aid)
-            if a is None or a["tool"] != "pcm.grant" or a["state"] != "consumed":
+            a = self.log.approvals.get(aid)   # consumed by this call (pipeline.ran), not by a retry of it
+            if a is None or a["tool"] != "pcm.grant" or a["state"] != "consumed" or ran(a)[:2] != (tcid, attempt):
                 raise RPCError("forbidden", "a root grant needs the pcm.grant call approved and consumed")
             if not self._opens(a["commitment"], a["label"], digest):
                 raise RPCError("args_mismatch", f"{tcid} was approved with other arguments")
@@ -4063,7 +4165,7 @@ class SignerService:
                                             f"approvals.persons names: {a['answered']['by'][:256]} maps to none")
             # lean: until the call completes, each pcm_grant mints another grant of this approval (the same but for
             # ts); record the grants per approval if that matters
-            if a["decision_id"] not in run["decisions"]:   # its tool.result is written
+            if ran(a)[2] not in run["decisions"]:   # its tool.result is written
                 raise RPCError("forbidden", "the pcm.grant call completed: this approval already issued its grant")
             return aid, a
         rid = (identity.scheme, identity.subject, req["request_id"])
@@ -4556,7 +4658,7 @@ def load_config(path):
         for k in table or ():
             if "*" in str(k) and not (str(k).endswith(PREFIX_ENDS) and str(k).count("*") == 1):
                 raise ValueError(f"{path}: {k!r}: a prefix key must end in :* or /*")
-    names = set()
+    names, keys = set(), {}
     if isinstance(cfg.get("witnesses"), list) and "public" in cfg["witnesses"]:
         try:
             cfg["witnesses"] = [public_witness.entry() if w == "public" else w for w in cfg["witnesses"]]
@@ -4571,6 +4673,10 @@ def load_config(path):
         if name in names:
             raise ValueError(f"{path}: two witnesses named {name}")
         names.add(name)
+        other = keys.setdefault(checkpoint.parse_vkey(w["vkey"])[3], name)   # verifiers count each witness key once
+        if other != name:
+            raise ValueError(f"{path}: witnesses {other} and {name} have one key: a key is one witness, so list it "
+                             "once, under the name it cosigns with")
     if "anchors" in cfg:
         r = cfg["anchors"].get("rekor") if isinstance(cfg["anchors"], dict) and set(cfg["anchors"]) == {"rekor"} else None
         if not (isinstance(r, dict) and {"signing_config", "trusted_root"} <= set(r) <= {"signing_config", "trusted_root",
@@ -4584,22 +4690,33 @@ def load_config(path):
     return cfg
 
 
-def signer_config(path=None):
-    """The config at `path`, or the same-user dev signer's (data_dir and socket)."""
+def signer_config(path=None, data_dir=None):
+    """The config at `path`, a bare signer data dir `data_dir` (as `tracekit view --data-dir` reads one: no socket,
+    witnesses or other settings), or the same-user dev signer's (data_dir and socket)."""
     if path:
         return load_config(path)
+    if data_dir:
+        return {"data_dir": data_dir_at(data_dir)}
     from tracekit.sdk.autospawn import SOCK, signer_dir
     return {"data_dir": dev_data_dir(), "socket": os.path.join(signer_dir(), SOCK)}
 
 
-def reader(cfg):
-    """A read-only view of the store of config `cfg`, safe while the signer writes it: a FileReader of data_dir/store,
-    or a PostgresReader on the DSN of its storage section. Close it when done."""
+def data_dir_at(path):
+    """`path`, absolute: a signer data dir to read. ValueError when no directory is there."""
+    if not os.path.isdir(path):
+        raise ValueError(f"no signer data dir at {os.path.abspath(path)}")
+    return os.path.abspath(path)
+
+
+def reader(cfg, against=None):
+    """A read-only view of the store of config `cfg`, safe while the signer writes it: a FileReader of data_dir/store
+    (compared with `against`, a FileReader of it opened before: FileReader.differs), or a PostgresReader on the DSN of
+    its storage section. Close it when done."""
     if cfg.get("storage"):
         from tracekit.storage import postgres
         return postgres.PostgresReader(postgres.read_dsn(cfg["storage"]["postgres"]))
     from tracekit.storage import file
-    return file.FileReader(os.path.join(cfg["data_dir"], "store"))
+    return file.FileReader(os.path.join(cfg["data_dir"], "store"), against)
 
 
 def read_vkeys(data_dir):
@@ -4935,6 +5052,8 @@ def main(argv=None):
         g = q.add_mutually_exclusive_group()
         g.add_argument("--config")
         g.add_argument("--dev", action="store_true", help="the same-user dev signer (the default)")
+        g.add_argument("--data-dir", help="a signer data dir (holds store/ and log.vkey), as tracekit view reads one: "
+                                          "its log key only, not a signer.yaml's witnesses")
         if name == "trust":
             q.add_argument("-o", "--out", required=True)
     q = sub.add_parser("reveal", help="print the salt of one record's commitments (the signer's owner only)")
@@ -5015,7 +5134,7 @@ def main(argv=None):
     if a.cmd in ("vkey", "trust"):
         from tracekit.sdk.client import SignerUnavailable
         try:
-            cfg = signer_config(a.config)
+            cfg = signer_config(a.config, a.data_dir)
             vkeys = read_vkeys(cfg["data_dir"])
             if a.cmd == "trust":
                 witnesses = [{"vkey": w["vkey"], "class": w["class"]} for w in cfg.get("witnesses") or ()]
@@ -5030,7 +5149,8 @@ def main(argv=None):
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
         print("\n".join(vkeys) if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkeys[0].split('+')[0]}"
-              f"{' (Ed25519 + SLH-DSA)' if len(vkeys) > 1 else ''} and {len(witnesses) or 'no'} witness(es)")
+              f"{' (Ed25519 + SLH-DSA)' if len(vkeys) > 1 else ''} and {len(witnesses) or 'no'} witness(es)"
+              + ("; a data dir names none: --config signer.yaml pins a signer's witnesses" if a.data_dir else ""))
         return 0
     from tracekit.signer import format_bridge
     try:

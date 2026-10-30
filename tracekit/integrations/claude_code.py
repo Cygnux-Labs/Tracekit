@@ -11,7 +11,12 @@ Without it (hooks installed before 1.2) the event comes from the payload alone.
 Each hook is a new process, so the run of a Claude Code session (id, token, fail modes, and the one event stream and
 next client_seq all its hooks share) and the decision binding of a tool call are kept in the runtime dir between hooks.
 Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr); only a PreToolUse is blocked: another event whose
-hook fails exits 1, an error the harness shows without blocking. An approval with a T2 executor runs the arguments the
+hook fails exits 1, an error the harness shows without blocking. A call the policy holds (`ask`) is blocked at once,
+with its approval's id and the command that approves it (Claude Code: also the deny reason the model reads and a
+systemMessage the person sees); once a person approves it, the agent's retry of the same call (the same tool and
+exactly the same arguments, Bash's free-text `description` too) runs under that approval, which approval_request returns
+for it. With $TRACEKIT_APPROVAL_WAIT the hook first waits that long for the answer
+(approval_wait_s). An approval with a T2 executor runs the
 consume returns: the hook prints them as `updatedInput` (Claude Code only; the other harnesses run the arguments the
 signer consumed, which it checked against the approved ones). The signer unreachable: the run's fail mode for the
 tool's class, from register_run (closed before a run is registered). A rate limit (quota_exceeded with retry_after_ms)
@@ -84,10 +89,24 @@ FRESH = ("startup", "clear")   # SessionStart sources of a new transcript
 FULL = ("[tracekit] the run has the most file constraints the signer takes: what this prompt says not to change was "
         "not added, so every write of the run is now held for your approval")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
+WAIT_ENV = "TRACEKIT_APPROVAL_WAIT"   # seconds a held call's hook waits for its answer (approval_wait_s)
 # lean: a session's state is kept this long after its last hook event (Claude Code's default cleanupPeriodDays, after
 # which it deletes the transcript); a session continued later starts without its constraints; keep the state while
 # its transcript exists if sessions are continued later than that
 SESSION_KEEP_S = 30 * 86400
+
+
+def approval_wait_s():
+    """How long a held call's hook waits for its answer before it blocks the call: $TRACEKIT_APPROVAL_WAIT seconds, at
+    most APPROVAL_WAIT_S; by default (unset, 0 or not a number) not at all. No harness shows a hook's output while it
+    runs (docs/coding-agents.md#held-calls-approve-then-retry), so the person learns of the hold only once the hook
+    returns: it returns at once, with the command that approves the call, and the agent's retry of the same call runs
+    once it is approved. Set it where someone answers without that notice (Slack, the viewer, an agent approver)."""
+    try:
+        w = float(os.environ.get(WAIT_ENV) or 0)
+    except ValueError:
+        return 0.0
+    return w if 0 < w <= APPROVAL_WAIT_S else APPROVAL_WAIT_S if w > APPROVAL_WAIT_S else 0.0
 
 
 class HookClient(Client):
@@ -336,9 +355,12 @@ def _pre(client, p, sid, tid):
     if d["decision"] == "ask":
         reason = d.get("reason") or ""   # a live constraint's says which and what to do
         why = f": {reason if reason.endswith('..') else reason.removesuffix('.')}" if reason else ""   # keeps a ...
+        waited = {}   # the last approval_wait's answer
         try:
             cap()
-            aid = run.call("approval_request", tool_call_id=tid)["approval_id"]
+            # the same call held earlier in the run (the agent's retry) gets that call's approval: approved, it runs
+            asked = run.call("approval_request", tool_call_id=tid)
+            aid, state = asked["approval_id"], asked["state"]
             # a named signer (system mode's, or $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside
             # system mode the agent may have set it. On Windows (cmd.exe reads no single quotes) in double quotes,
             # which cmd.exe and PowerShell both read as written but for a quote (PowerShell's curly ones too), $, a
@@ -348,20 +370,42 @@ def _pre(client, p, sid, tid):
                 "<TRACEKIT_SIGNER>" if re.search(r'["\u201c-\u201e$`%\x00-\x1f\x7f]', client.signer) else
                 f'"{client.signer}"')
             cmd = "tracekit approvals" + (f" --signer {named}" if named else "")
-            print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])}){why}; a person approves it "
-                  f"from another terminal with `{cmd} approve {aid}` or rejects it with `{cmd} reject {aid}`",
-                  file=sys.stderr, flush=True)
-            state, deadline = "requested", end - 2 * per_call   # time left for the last wait's answer and the consume
+            wait_s = approval_wait_s()
+            # the commands before the reasons, as in the held line: a harness that cuts the message keeps them
+            if state == "requested" and wait_s:
+                print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])}): a person approves it "
+                      f"from another terminal with `{cmd} approve {aid}` or rejects it with `{cmd} reject {aid}`"
+                      + (f". Why{why}" if why else ""), file=sys.stderr, flush=True)
+            # time left for the last wait's answer and the consume
+            deadline = min(end - 2 * per_call, time.monotonic() + wait_s)
             while state == "requested" and deadline > time.monotonic():
                 left_s = min(deadline - time.monotonic(), 300)
                 cap(left_s)
-                state = run.call("approval_wait", approval_id=aid, timeout_ms=int(left_s * 1000))["state"]
+                waited = run.call("approval_wait", approval_id=aid, timeout_ms=int(left_s * 1000))
+                state = waited["state"]
+            if state == "requested" and not waited:   # an agent's approval in its veto delay reads requested too:
+                cap()                                  # only approval_wait's reason says it is approved
+                waited = run.call("approval_wait", approval_id=aid, timeout_ms=0)
+                state = waited["state"]
             cap()
             c = run.approval_consume(tid, tool, args, approval_id_hint=aid) if state == "approved" else None
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
-        if c is None:
-            print(f"Held by tracekit policy ({'; '.join(d['rule_ids'])}{why}) and not approved: {state}",
+        if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
+            held = (f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is {waited['reason']}, then try the same "
+                    "call again, with exactly the same arguments" if waited.get("reason") else
+                    f"[tracekit] held for approval {aid} ({'; '.join(d['rule_ids'])}): to let it run, approve it with "
+                    f"`{cmd} approve {aid}`, then ask the agent to try the same call again, with exactly the same "
+                    "arguments (to refuse it: "
+                    f"`{cmd} reject {aid}`)") + (f". Why{why}" if why else "")
+            print(held, file=sys.stderr)
+            if AGENT == "claude-code":   # the reason goes to the model, the system message to the person
+                print(json.dumps({"systemMessage": held, "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": held}}))
+            return 2
+        if c is None:   # the outcome first (a rejected one's who), the reasons after: a cut keeps it
+            outcome = (state == "rejected" and waited.get("reason")) or state
+            print(f"[tracekit] not approved: {outcome} ({'; '.join(d['rule_ids'])})" + (f". Why{why}" if why else ""),
                   file=sys.stderr)
             return 2
     else:

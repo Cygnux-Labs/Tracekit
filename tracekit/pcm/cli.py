@@ -161,7 +161,7 @@ def demo():
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="tracekit pcm", description="PCM 0.1, proof-carrying messages (experimental)")
+    ap = argparse.ArgumentParser(prog="tracekit pcm", description="PCM 0.1, proof-carrying messages")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("verify", help="check a message offline: exit 0 accept, 3 accept-unproven, 1 reject")
     p.add_argument("msg", help="the message, a JSON file")

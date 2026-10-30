@@ -172,6 +172,94 @@ class Reader(unittest.TestCase):
             self.store.checkpoint_put(5, checkpoint.body("example.org/log", 5, self.store.tree.root()))
         self.assertEqual(calls, [("sync", self.store.log.fd), ("note", os.path.join(self.root, file_storage.NOTE))])
 
+    def test_update_reads_only_what_was_appended_and_holds_what_a_new_reader_would(self):
+        """tracekit view opened a new reader at every store change: 2.5 s and 1.2 GB for 400k records, every second
+        while an agent wrote. update() reads the bytes appended since, and the reader then holds what a new one does,
+        the key records (key_records, so an export reads no other record for them) and registry leaves included."""
+        chain = Chain()
+        chain.batch(5)   # the records setUp appended
+        r = FileReader(self.root)
+        self.store.append_batch([chain.next(type_="signer.epoch")] + chain.batch(3, runs=("run-2",)))
+        self.store.registry_append("acme", b"leaf")
+        with mock.patch.object(FileReader, "_index", autospec=True, side_effect=FileReader._index) as parsed:
+            self.assertFalse(r.update())   # appended to: not written in place
+        self.assertEqual([c.args[1]["event"]["seq"] for c in parsed.call_args_list], [5, 6, 7, 8])
+        fresh = FileReader(self.root)
+        self.assertEqual((r.tree.size, r.tree.root(), r.runs, r.key_seqs), (9, fresh.tree.root(), fresh.runs, [5]))
+        self.assertEqual(r.key_records(9), [next(fresh.iter_range(5, 6))])
+        self.assertEqual(r.key_records(5), [])
+        self.assertEqual(r.registry_merkle("acme").root(), fresh.registry_merkle("acme").root())
+        self.assertEqual(r.changed(), [])
+
+    def test_an_edit_or_a_replaced_file_is_told_never_read_as_new_records(self):
+        """A reader kept across store changes must not hold records the file no longer has: a file replaced, cut back
+        or with its last line rewritten is StorageCorrupt (open a new reader), and an edit in place that keeps every
+        line where it was is in changed(), the pieces of the file read again that differ (written to without growing:
+        update() True when nothing was appended)."""
+        path = os.path.join(self.root, "records.jsonl")
+        with open(path, "rb") as f:
+            orig = f.read()
+        for label, data in (("cut back", orig[:orig.rindex(b"\n", 0, -1) + 1]),
+                            ("its last line rewritten", orig[:-30] + b"x" * 29 + b"\n")):
+            with self.subTest(label):
+                r = FileReader(self.root)
+                with open(path, "wb") as f:
+                    f.write(data)
+                with self.assertRaises(file_storage.StorageCorrupt):
+                    r.update()
+                with open(path, "wb") as f:
+                    f.write(orig)
+        if os.name == "posix":   # Windows refuses to rename over a file a reader holds open
+            r = FileReader(self.root)
+            os.replace(path, path + ".old")
+            with open(path, "wb") as f:   # the same bytes in another file
+                f.write(orig)
+            with self.assertRaises(file_storage.StorageCorrupt):
+                r.update()
+        r = FileReader(self.root)
+        st = os.stat(path)
+        with open(path, "r+b") as f:   # a record's tool name, same length, in a line before the last
+            f.write(orig.replace(b'"name":"Bash"', b'"name":"Bosh"', 1))
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1000))
+        self.assertTrue(r.update())
+        self.assertEqual(r.changed(), [(0, len(orig))])
+        with mock.patch.object(file_storage, "PIECE", 64):   # pieces of 64 bytes: only the edited one differs
+            r = FileReader(self.root)
+            with open(path, "r+b") as f:
+                data = f.read()
+                pos = data.index(b'"name":"Bosh"') + len(b'"name":"B')
+                f.seek(pos)
+                f.write(b"u")
+            self.assertEqual(r.changed(), [(pos // 64 * 64, pos // 64 * 64 + 64)])
+            self.assertEqual(r.changed(pos + 64), [])   # from the piece after it on, as read
+
+    def test_a_reader_read_anew_says_which_pieces_the_reader_before_read_otherwise(self):
+        """A reader read anew took the file as it found it: bytes changed before it read them were what later readings
+        were compared with. Read against the reader before, it says which of that reader's pieces differ, a whole one
+        or the part of its last one that reader read, as it reads them; a file cut back differs from where it ends."""
+        path = os.path.join(self.root, "records.jsonl")
+        with mock.patch.object(file_storage, "PIECE", 256):
+            old = FileReader(self.root)
+            end = old.log.offsets[-1]
+            self.assertEqual(FileReader(self.root, against=old).differs, [])   # the same bytes
+
+            def poke(at):   # a letter of a signature
+                with open(path, "r+b") as f:
+                    f.seek(at)
+                    b = f.read(1)
+                    f.seek(at)
+                    f.write(b"x" if b != b"x" else b"y")
+            with open(path, "rb") as f:
+                first = f.read().index(b'"sig":"') + 10
+            poke(first)   # the first record's: a whole piece
+            poke(end - 5)   # the last record's: in the last piece the reader before read, before where it ended
+            self.assertEqual(FileReader(self.root, against=old).differs,
+                             [(first // 256 * 256, first // 256 * 256 + 256), ((end - 5) // 256 * 256, end)])
+            with open(path, "r+b") as f:
+                f.truncate(end - 300)
+            cut = FileReader(self.root, against=old)   # its last whole line is before end - 300
+            self.assertEqual(cut.differs[-1], (cut.log.offsets[-1] // 256 * 256, end))
+
     @unittest.skipUnless(os.name == "posix", "modes and owners are POSIX")
     def test_refuses_a_file_others_may_write(self):
         os.chmod(os.path.join(self.root, "records.jsonl"), 0o666)
@@ -198,8 +286,8 @@ class ExportWithoutSigner(unittest.TestCase):
         note()
         opened = []
 
-        def reader(root):
-            r = FileReader(root)
+        def reader(root, against=None):
+            r = FileReader(root, against)
             if not opened:   # the signer appends and writes a newer note after the first reader opened
                 opened.append(r)
                 store.append_batch(chain.batch(2, runs=("run-2",)))
@@ -207,7 +295,7 @@ class ExportWithoutSigner(unittest.TestCase):
             return r
         out = os.path.join(self.dir, "x.tkb")
         with mock.patch.object(file_storage, "FileReader", reader):
-            code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out)
+            code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out, "--json")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(stdout)["tree_size"], 5)
         # the summary says what verifier the bundle needs, which records made it need that one, and what verifier
@@ -228,6 +316,41 @@ class ExportWithoutSigner(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no checkpoint covers run 'run-1' yet and no signer answered", err)
         self.assertFalse(os.path.exists(out))
+        # a data dir names no socket: it says so, and never asks the dev signer, another signer, for a checkpoint
+        with mock.patch("tracekit.sdk.client.Client", side_effect=AssertionError("asked a signer")):
+            code, _, err = run_cli("export", "--v2", "--run", "run-1", "--tenant", "acme", "--data-dir", self.dir, "-o",
+                                   out)
+        self.assertEqual((code, err), (1, "tracekit export: no checkpoint covers run 'run-1' yet, and a data dir names no "
+                                          "signer to ask for one: export again after its signer's next checkpoint, or "
+                                          "with --config or --dev\n"))
+        self.assertEqual(run_cli("export", "--v2", "--run", "run-1", "--data-dir", self.dir, "--dev", "-o", out)[0], 2)
+
+    def test_export_says_where_a_v2_run_is(self):
+        """`export --data-dir DIR --run R` without --v2 read a v1 ledger instead and said only "ledger is empty", as a
+        plain `export` did on a v2-only setup; a data dir that doesn't exist got a raw [Errno 2]."""
+        store = FileStorage(os.path.join(self.dir, "store"))
+        store.append_batch(Chain().batch(3))
+        store.close()
+        out = os.path.join(self.dir, "x.tkb")
+        with mock.patch("tracekit.sdk.client.Client", side_effect=AssertionError("asked a signer")):   # the v2 export
+            code, _, err = run_cli("export", "--run", "run-1", "--tenant", "acme", "--data-dir", self.dir, "-o", out)
+        self.assertEqual((code, err), (1, "tracekit export: no checkpoint covers run 'run-1' yet, and a data dir names no "
+                                          "signer to ask for one: export again after its signer's next checkpoint, or "
+                                          "with --config or --dev\n"))
+        v1 = os.path.join(self.dir, "v1")
+        with self.assertRaises(SystemExit) as got:
+            run_cli("export", "--home", v1, "-o", out)
+        self.assertEqual(str(got.exception), f"no v1 records in {os.path.join(v1, 'ledger', 'ledger.jsonl')}: a v2 "
+                         "signer's runs export with tracekit export --v2 --run RUN_ID (tracekit last exports and verifies "
+                         "the newest)")
+        with mock.patch("tracekit.cli._export_v2", return_value=0) as v2:   # --dev names the dev signer's v2 store too
+            self.assertEqual(run_cli("export", "--dev", "--run", "run-1", "-o", out)[0], 0)
+        v2.assert_called_once()
+        nope = os.path.join(self.dir, "nope")
+        self.assertEqual(run_cli("export", "--v2", "--run", "run-1", "--data-dir", nope, "-o", out)[::2],
+                         (1, f"tracekit export: no signer data dir at {nope}\n"))
+        self.assertEqual(run_cli("signer", "trust", "--data-dir", nope, "-o", out)[::2],
+                         (2, f"tracekit signer: no signer data dir at {nope}\n"))
 
 
 if __name__ == "__main__":

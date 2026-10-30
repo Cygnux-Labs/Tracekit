@@ -1,7 +1,7 @@
 # Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
 # people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
 
-version: '2026.10-server-comms-3'
+version: '2026.10-server-comms-4'
 description: server-hosted agents, payments, email and chat
 unknown_tools: ask
 
@@ -30,10 +30,27 @@ ask:
     reason: sending money
     rationale: A payment tool call with an amount moves money; a person confirms the payee and the amount.
   - id: TK-M002
-    tool: '(mcp(:[^/]+/|__.*__))?(transfer_funds|send_(payment|money)|pay_invoice|create_(payment|payout|transfer|refund|charge|payment_intent)|(confirm|capture)_payment_intent|refund_.*)'
+    # TK-M005's names too, over MCP only: a deployment's own payment tool by one of them (issue_refund) is TK-M001's
+    # with an amount, so approval.agent bounds on TK-M001 still decide it
+    tool: '(mcp(:[^/]+/|__.*__))?(transfer_funds|send_(payment|money)|pay_invoice|create_(payment|payout|transfer|refund|charge|payment_intent)|(confirm|capture)_payment_intent|refund_.*)|mcp(:[^/]+/|__.*__)((issue|process|make|initiate)_(payment|payout|transfer|refund|charge)|transfer_money)'
     pattern: '^'
     reason: moving money
     rationale: Payouts, transfers, charges and refunds move money even without an amount argument (a full refund), and over MCP too.
+  - id: TK-M005
+    class: payment
+    # a payment tool named for issuing, processing, making or initiating a payment, payout, transfer, charge or refund
+    # (issue_refund), or transfer_money, called with no amount: a full refund, or the amount set earlier, which TK-M001
+    # can't read. With an amount TK-M001 holds it alone, so its approval.agent bounds still decide it
+    # (examples/v2/demos/agent_approvers.py); over MCP, TK-M002 holds these names. The unless reads the call as
+    # sorted-key JSON, as TK-M001 reads its amount (amount, else amount_cents): a top-level amount that is a number, or
+    # with no amount key a top-level amount_cents that is a number, each after only plain scalar arguments; any other
+    # amount (null, empty, nested, after an object) is held here too, so the call is never left to neither rule
+    tool: '(issue|process|make|initiate)_(payment|payout|transfer|refund|charge)|transfer_money'
+    pattern: '^'
+    unless: '^\{(?:"[^"\\]*":(?:"[^"\\]*"|[-0-9.eE+]+|true|false),)*"amount":-?[0-9]|^\{(?:"(?:[^"\\]{0,5}|[^"\\]{7,}|[^"\\a][^"\\]{5}|a[^"\\m][^"\\]{4}|am[^"\\o][^"\\]{3}|amo[^"\\u][^"\\]{2}|amou[^"\\n][^"\\]|amoun[^"\\t])":(?:"[^"\\]*"|[-0-9.eE+]+|true|false),)*"amount_cents":-?[0-9]'
+    reason: moving money with no amount in the call (a full refund, or an amount set earlier)
+    remedy: Check which payment the call refunds, pays or sends before approving it; with no amount it moves all of it, or the amount set earlier.
+    rationale: TK-M001 holds a payment with an amount; a refund or payment tool called without one moves money too.
   - id: TK-M003
     # ten or more recipients in to, cc or bcc (a list or a comma-separated string), or a whole-company address
     pattern: '"(to|cc|bcc|recipients)":(\[("[^"]*",){9}|"([^"@]*@){10})|"(to|cc|bcc|recipients)":(\[[^\]\[]*)?"(all|everyone|all-staff|allstaff|staff|all-hands|customers|users)@'

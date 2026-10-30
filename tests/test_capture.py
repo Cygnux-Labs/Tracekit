@@ -833,6 +833,43 @@ class PolicyYAML(unittest.TestCase):
             self.assertIn(label, policy.evaluate(pol, "Bash", {"command": cmd})["flags"], cmd)
         self.assertIn("background_spawn", policy.evaluate(pol, "Bash", {"command": "sleep 1", "run_in_background": True})["flags"])
 
+    def test_claude_codes_memory_notes_are_not_transcripts(self):
+        """The v1 TK-D008 and TK-D009 denied Claude Code's memory notes (~/.claude/projects/<p>/memory/*.md), which
+        the agent writes, as transcripts; a note is allowed now, and every write to a transcript, a session folder or
+        a folder that holds them is still denied, as is `ln -sf` making a note a link (TK-F009 still flags a shell
+        write under .claude/, as it does any mention)."""
+        pol = policy.load()[0]
+        m = "/Users/u/.claude/projects/-Users-u-repo"
+        allowed = [("Write", {"file_path": m + "/memory/MEMORY.md", "content": "- note"}),
+                   ("Edit", {"file_path": m + "/memory/foo.md", "old_string": "a", "new_string": "b"})] + [
+            ("Bash", {"command": c}) for c in (
+                "echo '- [Note](foo.md)' >> " + m + "/memory/MEMORY.md", "cat >> ~/.claude/projects/p/memory/foo.md "
+                "<<'EOF'\nnote\nEOF", "printf x | tee -a " + m + "/memory/MEMORY.md 2>&1",
+                "sed -i 's/a/b/' \"" + m + "/memory/foo.md\"", "rm " + m + "/memory/old.md",
+                "mv " + m + "/memory/a.md " + m + "/memory/b.md",
+                "cat " + m + "/abc.jsonl | head -1 > " + m + "/memory/first.md")]
+        held = [("Write", {"file_path": m + "/abc.jsonl", "content": "{}"}),
+                ("Write", {"file_path": m + "/memory/../abc.jsonl", "content": "{}"}),
+                ("Write", {"file_path": m + "/memory/x/abc.jsonl", "content": "{}"}),
+                ("Edit", {"file_path": m + "/0b1c/subagents/agent-a.jsonl", "old_string": "a", "new_string": "b"})] + [
+            ("Bash", {"command": c}) for c in (
+                "echo '{}' >> " + m + "/abc.jsonl", "rm " + m + "/abc.jsonl", "truncate -s0 " + m + "/abc.jsonl",
+                ": > " + m + "/abc.jsonl", "mv " + m + " /tmp/old", "mv ~/.claude/projects /tmp/old",
+                "echo x >> " + m + "/0b1c/subagents/agent-a.jsonl", "echo x >> " + m + "/memory/../abc.jsonl",
+                "echo x >> " + m + "/memory/x.md/../../abc.jsonl", "mv " + m + "/memory/a.md " + m + "/abc.jsonl",
+                "echo x >> " + m + "/memory/MEMORY.md; rm " + m + "/abc.jsonl", "rm -rf " + m + "/memory",
+                "find " + m + "/memory/.. -name '*.jsonl' -delete", "ln -sf /dev/null " + m + "/abc.jsonl",
+                "ln -sf ../abc.jsonl " + m + "/memory/x.md")]
+        for tool, ti in allowed:
+            with self.subTest(tool=tool, ti=ti):
+                d = policy.evaluate(pol, tool, ti)
+                self.assertEqual((d["decision"] in ("allow", "flag"), {"TK-D008", "TK-D009"} & set(d["rule_ids"])),
+                                 (True, set()), d)
+        for tool, ti in held:
+            with self.subTest(tool=tool, ti=ti):
+                d = policy.evaluate(pol, tool, ti)
+                self.assertEqual((d["decision"], bool({"TK-D008", "TK-D009"} & set(d["rule_ids"]))), ("deny", True), d)
+
     def test_ask_only_for_interceptable_tools(self):
         strict = policy.load(os.path.join(ROOT, "tracekit", "policy", "strict.yaml"))[0]
         self.assertEqual(strict["fail_mode"], "closed")

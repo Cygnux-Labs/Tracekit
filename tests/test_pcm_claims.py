@@ -383,6 +383,16 @@ class TestApprovedBy(Claims):
         self.assertClaim("failed", self.claim("approved_by", {"person": "alice", "call": "g1"}, ev, trust=trust, h=h),
                          "not the one that signed the message")
 
+    def test_no_trust_with_the_key_under_another_log_name(self):
+        """PCM 0.1 10.1: trust that pins the signer's key under a second log name too is refused before any evidence
+        is read, so the key names one log."""
+        ev = self.approval()
+        _, _, _, public = checkpoint.parse_vkey(self.s.vkey)
+        second = checkpoint.vkey("pcm-second/log", checkpoint.ED25519, public)
+        for logs in ([self.s.vkey, second], [second, self.s.vkey]):
+            with self.subTest(logs=logs), self.assertRaisesRegex(ValueError, "pins one Ed25519 key under 2 log names"):
+                self.claim("approved_by", {"person": "alice", "call": "g1"}, ev, trust={"logs": logs})
+
 
 class TestApprovedWithoutApprovals(Claims):
     approvals = None
@@ -552,6 +562,34 @@ class TestEvidence(Claims):
         text = self.ev["checkpoint"].partition("\n\n")[0] + "\n"
         cosigned = self.ev["checkpoint"] + checkpoint.cosign(text, "witness.example/w", secret, int(time.time()))
         self.assertClaim("proven", self.claim("approved_by", self.args_, dict(self.ev, checkpoint=cosigned), trust))
+
+    def test_a_witness_key_counts_once(self):
+        """PCM 0.1 10.1: trust.json that pins one witness key under two names, or two under one name, is refused before
+        any check, and so is the evidence (6.2 step 3 counts distinct witnesses); two witnesses with keys and names of
+        their own count two."""
+        secrets = os.urandom(32), os.urandom(32)
+        text, now = self.ev["checkpoint"].partition("\n\n")[0] + "\n", int(time.time())
+
+        def witnessed(*named):   # (name, secret) of each witness: the evidence they cosigned and the trust pinning them
+            note = self.ev["checkpoint"] + "".join(checkpoint.cosign(text, n, s, now) for n, s in named)
+            ws = [{"vkey": checkpoint.vkey(n, checkpoint.COSIGNATURE, crypto.public_from_secret(s)), "class": "public"}
+                  for n, s in named]
+            return dict(self.ev, checkpoint=note), dict(self.trust, witnesses=ws, witnesses_required=2)
+        ev, trust = witnessed(("witness.example/w", secrets[0]), ("witness.example/alias", secrets[0]))
+        with self.assertRaisesRegex(ValueError, r"^trust pins one witness key under two names \(witness.example/w, "
+                                                r"witness.example/alias\); a key is one witness"):
+            self.claim("approved_by", self.args_, ev, trust)
+        msg = self.h.pcm_send("uid:990102", REF, {"amount": 12000, "order": 81})
+        with self.assertRaisesRegex(claims.EvidenceError, "^checkpoint: trust pins one witness key under two names"):
+            claims.evidence(ev, msg, trust)
+        ev, trust = witnessed(("witness.example/w", secrets[0]), ("witness.example/w", secrets[1]))
+        with self.assertRaisesRegex(ValueError, r"^trust pins two witness keys under one name \(witness.example/w\); a "
+                                                r"name is one witness: keep only its current key$"):
+            self.claim("approved_by", self.args_, ev, trust)
+        with self.assertRaisesRegex(claims.EvidenceError, "^checkpoint: trust pins two witness keys under one name"):
+            claims.evidence(ev, msg, trust)
+        ev, trust = witnessed(("witness.example/w", secrets[0]), ("witness.example/v", secrets[1]))
+        self.assertClaim("proven", self.claim("approved_by", self.args_, ev, trust))
 
 
 class TestMalformedRecords(Claims):

@@ -300,6 +300,26 @@ class ReadAndDropPrivileges(unittest.TestCase):
         initgroups.assert_called_once_with("bob", 1001)
         setgroups.assert_not_called()
 
+    def test_as_user_output_reaches_a_piped_stdout_once(self):
+        """As root, the forked child ended with os._exit, which flushes nothing: with stdout a pipe (block-buffered),
+        what fn printed ("Tracekit v2 hooks removed from ...") was lost. Nor may the child print what the parent had
+        buffered before the fork a second time."""
+        child = "\n".join((
+            "from unittest import mock",
+            "from tracekit.deploy import files",
+            "pw = type('pw', (), {'pw_name': 'bob', 'pw_uid': 1001, 'pw_gid': 1001})",
+            "print('before')",
+            "with mock.patch.object(files.os, 'geteuid', return_value=0), "
+            "mock.patch.object(files.os, 'initgroups', create=True), mock.patch.object(files.os, 'setgid'), "
+            "mock.patch.object(files.os, 'setuid'):",
+            "    files.as_user(pw, lambda: print('Tracekit v2 hooks removed from settings.json'))",
+            "print('after')"))
+        root = os.path.dirname(os.path.dirname(os.path.abspath(files.__file__)))
+        p = subprocess.run([sys.executable, "-c", child], capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "PYTHONPATH": os.path.dirname(root)})
+        self.assertEqual((p.returncode, p.stdout), (0, "before\nTracekit v2 hooks removed from settings.json\nafter\n"),
+                         p.stderr)
+
 
 class DevTcpEndpoint(unittest.TestCase):
     def test_dev_socket_opens_no_socket(self):
@@ -385,6 +405,14 @@ class SystemV2Install(unittest.TestCase):
     venv build and the service are left out: E8 v2 runs those."""
 
     def test_install_then_purge(self):
+        self.install_then_purge(managed=False)
+
+    def test_managed_install_then_purge(self):
+        """--managed: root writes the hooks into the admin-managed settings, readable by every user; uninstall leaves
+        the admin's own settings."""
+        self.install_then_purge(managed=True)
+
+    def install_then_purge(self, managed):
         import pwd
         from tracekit import client
         from tracekit.signer import service
@@ -399,19 +427,27 @@ class SystemV2Install(unittest.TestCase):
         with open(policy, "w") as f:
             f.write("version: test\n")
         etc = os.path.join(base, "etc")
+        admin, path = {"permissions": {"deny": ["Read(./.env)"]}}, os.path.join(base, "claude-code", "managed-settings.json")
+        os.mkdir(os.path.dirname(path), 0o755)
+        with open(path, "w") as f:
+            json.dump(admin, f)
         patches = [mock.patch.object(install, k, v) for k, v in {
             "V2_DATA": os.path.join(base, "data"), "V2_CONFIG": os.path.join(etc, "signer.yaml"), "SYSTEMD_DIR": base,
             "OPT": os.path.join(base, "opt"), "V2_USER": "tk-test-signer", "V2_UNIT": "tk-test-signer",
             "V2_TAILER": "tk-test-tailer", "TAILER_SUDOERS": os.path.join(base, "sudoers"),
             "_install_source": mock.Mock(return_value=None), "_install_venv": mock.Mock()}.items()]
-        patches.append(mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(etc, "client.json")))
+        patches += [mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(etc, "client.json")),
+                    mock.patch.dict(install.MANAGED_SETTINGS, linux=path, darwin=path)]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
         self.addCleanup(subprocess.run, ["userdel", "tk-test-signer"], capture_output=True)
         self.addCleanup(subprocess.run, ["userdel", "tk-test-tailer"], capture_output=True)
-        sock, settings = install.init_system_v2("nobody", approver="root", policy=policy, project=project,
-                                                no_service=True)
+        sock, settings = install.init_system_v2("nobody", approver="root", policy=policy,
+                                                project=None if managed else project, no_service=True, managed=managed)
+        if managed:
+            self.assertEqual(settings, path)
+            self.assertFalse(os.path.exists(os.path.join(project, ".claude")))
         sig = pwd.getpwnam("tk-test-signer")
         st = os.stat(install.V2_DATA)
         self.assertEqual((st.st_uid, stat.S_IMODE(st.st_mode)), (sig.pw_uid, 0o700))
@@ -422,7 +458,8 @@ class SystemV2Install(unittest.TestCase):
         self.assertEqual(cfg["approvals"], {"self_approval": "deny", "approvers": ["uid:0"]})
         self.assertEqual(cfg["tenants"], {f"uid:{agent.pw_uid}": "nobody", "uid:0": "nobody"})
         self.assertEqual(client.system_config()["signer"], sock)
-        self.assertEqual(os.stat(settings).st_uid, agent.pw_uid)
+        st = os.stat(settings)
+        self.assertEqual((st.st_uid, stat.S_IMODE(st.st_mode)), (0, 0o644) if managed else (agent.pw_uid, 0o600))
         with open(settings) as f:
             s = json.load(f)
         self.assertEqual(s["env"], {"TRACEKIT_SIGNER": sock})
@@ -431,7 +468,9 @@ class SystemV2Install(unittest.TestCase):
         for p in (install.V2_DATA, install.V2_CONFIG, client.SYSTEM_CONFIG):
             self.assertFalse(os.path.exists(p), p)
         with open(settings) as f:
-            self.assertEqual(json.load(f), {})
+            self.assertEqual(json.load(f), admin if managed else {})
+        if managed:
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
         for user in ("tk-test-signer", "tk-test-tailer"):
             with self.assertRaises(KeyError):
                 pwd.getpwnam(user)

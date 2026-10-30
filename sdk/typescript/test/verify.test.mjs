@@ -4,19 +4,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { deflateRawSync } from "node:zlib";
+import ts from "typescript";
 import {
   MAX_ENTRY, StrictJSONError, Unusable, canonicalize, readZip, strictParse, strictParseBytes, verify, verifyRecord,
 } from "../dist/verify/index.js";
 import { MEANING, asJson, asText, cliExit, nextSteps, summarize, verdict } from "../dist/verify/explain.js";
 import {
   COSIGNATURE, ED25519, b64decode, bytes, ed25519Verify, hex, keyId, leafHash, openNote, parseVkey, registryOrigin,
-  runHash, sha256, spkiOf, unhex,
+  runHash, sha256, spkiOf, unhex, vkey,
 } from "../dist/verify/primitives.js";
 
 const ROOT = resolve(import.meta.dirname, "../../..");
@@ -86,6 +87,56 @@ test("checkpoints: the C2SP note, its cosignature and the hybrid line (§6)", as
   await assert.rejects(openNote(bytes(v.note), [v.log_vkey, h.slh_vkey], []), /no SLH-DSA signature/);
   assert.equal(hex(await keyId("witness.example.org/w1", COSIGNATURE, (await parseVkey(v.wit_vkey)).pub)), "257cc7f1");
   assert.equal((await parseVkey(v.log_vkey)).type, ED25519);
+});
+
+test("checkpoints and trust: a witness is one key under one name with one class, and counts once (§10)", async () => {
+  const v = JSON.parse(readFileSync(join(ROOT, "tests/vectors/c2sp_checkpoint.json"), "utf8"));
+  const text = v.note.slice(0, v.note.indexOf("\n\n") + 1);
+  const witness = () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    return { privateKey, pub: new Uint8Array(publicKey.export({ type: "spki", format: "der" }).subarray(12)) };
+  };
+  const cosign = async (name, w) => {
+    const ts = Buffer.alloc(8);
+    ts.writeBigUInt64BE(1760000000n);
+    const sig = sign(null, Buffer.from(`cosignature/v1\ntime 1760000000\n${text}`), w.privateKey);
+    return `— ${name} ${Buffer.concat([await keyId(name, COSIGNATURE, w.pub), ts, sig]).toString("base64")}\n`;
+  };
+  const [a, b] = [witness(), witness()];
+  const pins = [await vkey("witness.example/a", COSIGNATURE, a.pub), await vkey("witness.example/alias", COSIGNATURE, a.pub)];
+  const note = bytes(v.note + await cosign("witness.example/a", a) + await cosign("witness.example/alias", a));
+  const refused = (names) => `trust pins one witness key under two names (${names}); a key is one witness: keep it under `
+    + "the name it cosigns with";
+  await assert.rejects(openNote(note, [v.log_vkey], pins), { message: refused("witness.example/a, witness.example/alias") });
+  await assert.rejects(openNote(note, [v.log_vkey], [...pins].reverse()),
+    { message: refused("witness.example/alias, witness.example/a") });
+  const two = bytes(v.note + await cosign("witness.example/a", a) + await cosign("witness.example/b", b));
+  const pinned = [pins[0], await vkey("witness.example/b", COSIGNATURE, b.pub)];
+  assert.equal((await openNote(two, [v.log_vkey], pinned)).cosigs.length, 2);
+  // a trust config that pins one key under two names is refused before the bundle is read
+  const sampleDir = join(ROOT, "sdk/typescript/src/verify/sample");
+  const trust = JSON.parse(readFileSync(join(sampleDir, "sample.trust.json"), "utf8"));
+  const out = await verify(new Uint8Array(readFileSync(join(sampleDir, "sample.tkb"))), bytes(JSON.stringify({ ...trust,
+    witnesses: pins.map((k) => ({ vkey: k, class: "customer" })), witnesses_required: 2 })));
+  assert.deepEqual([out.code, out.report.failures, out.report.integrity, out.report.checks[0].detail],
+    [2, ["trust config"], "UNVERIFIABLE (the trust file can't be used)", refused("witness.example/a, witness.example/alias")]);
+  // two keys under one name, whichever comes first, are refused too; one vkey listed twice counts once
+  const named = [pins[0], await vkey("witness.example/a", COSIGNATURE, b.pub)];
+  const twice = bytes(v.note + await cosign("witness.example/a", a) + await cosign("witness.example/a", b));
+  const twoKeys = "trust pins two witness keys under one name (witness.example/a); a name is one witness: keep only its "
+    + "current key";
+  for (const keys of [named, [...named].reverse()])
+    await assert.rejects(openNote(twice, [v.log_vkey], keys), { message: twoKeys });
+  assert.equal((await openNote(twice, [v.log_vkey], [pins[0], pins[0]])).cosigs.length, 1);
+  // in a trust config: two keys under one name, or one witness with two classes, are refused; one class is accepted
+  const sample = new Uint8Array(readFileSync(join(sampleDir, "sample.tkb")));
+  const under = (ws) => verify(sample, bytes(JSON.stringify({ ...trust, witnesses: ws, witnesses_required: 0 })));
+  const as = (k, c) => ({ vkey: k, class: c });
+  assert.equal((await under(named.map((k) => as(k, "customer")))).report.checks[0].detail, twoKeys);
+  assert.equal((await under([as(pins[0], "customer"), as(pins[0], "operator")])).report.checks[0].detail,
+    "trust pins witness witness.example/a with two classes (customer, operator); a witness has one class: "
+    + "list it once, with the class you give it");
+  assert.equal((await under([as(pins[0], "customer"), as(pins[0], "customer")])).code, 0);
 });
 
 test("commitments and registry leaves: the worked examples of §2 and §7", async () => {
@@ -273,6 +324,16 @@ test("the page's samples: the clean one verifies, the tampered copy fails; witho
     assert.deepEqual([other.code, other.report.failures], [1, ["checkpoint"]]);
   });
 
+test("a trust config's analyzer identity reads as Python's does: anything after the scheme but a line feed", async () => {
+  const trust = JSON.parse(new TextDecoder().decode(sample("sample.trust.json")));
+  const withAnalyzer = (a) => new TextEncoder().encode(JSON.stringify({ ...trust, analyzers: [a] }));
+  for (const a of ["uid:990102\r x", "uid:a b", "uid:a b"]) {
+    assert.equal((await verify(sample("sample.tkb"), withAnalyzer(a))).code, 0, JSON.stringify(a));
+  }
+  const lf = await verify(sample("sample.tkb"), withAnalyzer("uid:a\nb"));
+  assert.match(lf.report.checks[0].detail, /not a v2 trust config/);
+});
+
 test("the page's words: the verdict, what to do next, and a meaning for every line the verifier writes", async () => {
   const trust = sample("sample.trust.json"), names = { bundle: "my run.tkb", trust: "trust.json" };
   const words = async (bundle, t = trust, n = names) => {
@@ -302,7 +363,7 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.deepEqual([rekor.code, cliExit(rekor.report)], [2, " The TypeScript command-line verifier exits with the same "
     + "code; the Python one checks what this page doesn't."]);
   const v1 = await words(file("tests/golden/v1/demo-run.tkb"), trust, { bundle: "demo-run.tkb", trust: "t.json" });
-  assert.deepEqual([v1.code, v1.v.word], [2, "UNVERIFIABLE"]);
+  assert.deepEqual([v1.code, v1.v.word, v1.report.integrity], [2, "UNUSABLE BUNDLE", "UNUSABLE BUNDLE"]);   // the CLIs' word
   assert.match(v1.v.means, /format v1 bundle/);
   assert.equal(cliExit(v1.report), "");
   assert.deepEqual(v1.steps.map((s) => s.command), ["uvx --from tracekit-ai tracekit verify demo-run.tkb --key signer.pub"]);
@@ -312,13 +373,52 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.deepEqual(newer.steps.map((s) => s.text.split(",")[0]),
     ["With Node.js:", "Or with Python", "Open the latest page"]);
   assert.match(v1.steps[0].text, /^A format v1 bundle: verify it with the signer.s public key/);
-  assert.match((await words(Uint8Array.of(1, 2, 3))).v.means, /couldn't be read as a Tracekit bundle/);
+  const unreadable = await words(Uint8Array.of(1, 2, 3));
+  assert.deepEqual([unreadable.v.word, unreadable.report.integrity], ["UNUSABLE BUNDLE", "UNUSABLE BUNDLE"]);
+  assert.match(unreadable.v.means, /couldn't be read as a Tracekit bundle/);
+  // a trust file that can't be used: said so, with its problem in plain words and no exception name, in the line, the
+  // verdict and the step
   const untrusted = await words(sample("sample.tkb"), bytes("{}"));
+  assert.deepEqual([untrusted.code, untrusted.v.word, untrusted.report.integrity],
+    [2, "UNVERIFIABLE", "UNVERIFIABLE (the trust file can't be used)"]);
   assert.match(untrusted.v.means, /trust file couldn't be used/);
-  assert.equal(untrusted.report.checks[0].detail, "ValueError: trust.json: not a v2 trust config (logs, witnesses, algs, "
-    + "witnesses_required, rekor, monitors, issuers, analyzers)");
-  const src = readFileSync(join(ROOT, "sdk/typescript/src/verify/index.ts"), "utf8");
-  for (const [, name] of src.matchAll(/(?:check|unsupport)\("([^"]+)"/g)) assert.ok(MEANING[name], name);
+  const config = "trust.json: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers, "
+    + "analyzers)";
+  assert.equal(untrusted.report.checks[0].detail, config);
+  assert.equal(untrusted.steps[0].text, `Fix the trust file, or choose the right one: ${config}. If it isn't the `
+    + "sender's, ask for the sender's trust file: a small .json that names their signer's log key (tracekit last writes "
+    + "it next to the bundle, as <name>.trust.json).");
+  for (const [t, said] of [["{", /^not valid JSON \(syntax: /], ['{"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}',
+    /^pinned key 'x\+00000000\+AA==' is not a vkey: /]]) {
+    const { report, steps } = await words(sample("sample.tkb"), bytes(t));
+    assert.match(report.checks[0].detail, said, t);
+    assert.doesNotMatch(report.checks[0].detail + steps[0].text, /Error\b/, t);
+  }
+  // a failed bundle: the line that failed says so, and its assurance isn't rated
+  const tampered = bad.report.checks.find((c) => c.check === "signatures");
+  assert.equal(tampered.detail, `${tampered.problems.length} problem(s) in 12 record(s)`);
+  assert.ok(asText(bad.report, bad.code).endsWith("\nIntegrity: FAILED.\nAssurance: not rated (the bundle failed "
+    + "verification).\n\nExit code 1.\n"));
+  // a meaning for exactly the outcomes each line can have, each its own: rep.check(name, ok, detail, problems, warn)
+  // passes when ok, else warns when warn, else fails; rep.unsupport(name) warns
+  const can = {}, yes = (n) => n?.kind === ts.SyntaxKind.TrueKeyword;
+  const no = (n) => n?.kind === ts.SyntaxKind.FalseKeyword;
+  (function visit(n) {
+    const f = ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) ? n.expression.name.text : null;
+    const [name, ok, , , warn] = n.arguments ?? [];
+    if (["check", "unsupport"].includes(f) && ts.isStringLiteral(name)) {
+      const not = f === "unsupport" || yes(warn) ? ["warn"] : !warn || no(warn) ? ["fail"] : ["warn", "fail"];
+      for (const s of yes(ok) ? ["pass"] : !ok || no(ok) ? not : ["pass", ...not])
+        (can[name.text] ??= new Set()).add(s);
+    }
+    ts.forEachChild(n, visit);
+  })(ts.createSourceFile("index.ts", readFileSync(join(ROOT, "sdk/typescript/src/verify/index.ts"), "utf8"),
+    ts.ScriptTarget.Latest));
+  assert.deepEqual(Object.keys(MEANING).sort(), Object.keys(can).sort());
+  for (const [name, outcomes] of Object.entries(can)) {
+    assert.deepEqual(Object.keys(MEANING[name]).sort(), [...outcomes].sort(), name);
+    assert.equal(new Set(Object.values(MEANING[name])).size, outcomes.size, `${name}: one text for two outcomes`);
+  }
   assert.deepEqual(Object.keys(asJson(ok.report, ok.code)),
     ["exit_code", "checks", "failures", "warnings", "integrity", "assurance", "notes"]);
   // the Findings line, when a bundle has one, as the CLIs' --json carry it
@@ -330,6 +430,78 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.match(facts.Records, /^12 signed record\(s\) in 1 run\(s\), 2026-/);
   assert.deepEqual([facts["Tool calls"], facts["Held for approval"], facts.Gaps, facts.Agents],
     ["3 decided: 2 allow, 0 deny, 1 ask", '"pay": approved by alice', "none recorded", '"support-bot" (uid:1000)']);
+});
+
+test("the summary says an approval expired, and why the assurance is dev", () => {
+  const run = (...events) => new Map([["runs/r.jsonl", bytes(events.map((e) => JSON.stringify({ event: e }) + "\n")
+    .join(""))]]);
+  const files = run({ type: "approval.request", ts: "2026-10-29T00:00:00.000000Z", data: { approval_id: "a1",
+    binding: { tool: "pay" } } }, { type: "approval.expired", ts: "2026-10-29T00:00:01.000000Z",
+    data: { approval_id: "a1" } }, { type: "approval.request", ts: "2026-10-29T00:00:02.000000Z",
+    data: { approval_id: "a2", binding: { tool: "send" } } });
+  const said = (assurance) => Object.fromEntries(summarize(files, { assurance, checks: [] }));
+  assert.equal(said("dev")["Held for approval"], '"pay": expired before anyone answered; "send": no answer recorded');
+  const witnessed = "dev; records ed25519; checkpoint Ed25519 only (o); cosigned ed25519 by w (customer) at "
+    + "2026-10-10T00:19:23Z; earliest independent anchor 2026-10-10T00:19:23Z; approvals: self";
+  assert.equal(said(witnessed).Assurance, "dev: a run holds a self-approval (whoever asked for the call approved it)");
+  assert.equal(said("dev; records ed25519; checkpoint Ed25519 only (o); no witness cosignature; approvals: self").Assurance,
+    "dev: a run holds a self-approval (whoever asked for the call approved it), and no independent witness vouches for "
+    + "the checkpoint");
+  assert.equal(said("dev; records ed25519; checkpoint Ed25519 only (o); no witness cosignature").Assurance,
+    "dev: no independent witness vouches for the checkpoint");
+});
+
+test("a failed line's meaning says what the failure means, never that the check passed", async () => {
+  const { report } = await verify(sample("sample-tampered.tkb"), sample("sample.trust.json"));
+  const sig = report.checks.find((c) => c.check === "signatures"), said = MEANING[sig.check][sig.status];
+  assert.equal(sig.status, "fail");
+  assert.match(said, /edited after signing/);
+  assert.doesNotMatch(said, /no record was edited/);
+});
+
+test("a witness quorum failure says too few pinned witnesses cosigned, not that the bundle was changed", async () => {
+  const trust = (p, o) => bytes(JSON.stringify({ ...JSON.parse(readFileSync(join(ROOT, p), "utf8")), ...o }));
+  const names = { bundle: "closed.tkb", trust: "trust.json" };
+  const { report, code } = await verify(file("tests/golden/v2/closed.tkb"),
+    trust("tests/golden/v2/trust.json", { witnesses_required: 2 }), names);
+  assert.deepEqual([code, report.failures], [1, ["witness quorum"]]);
+  const v = verdict(report, code), steps = nextSteps(report, code, names);
+  assert.deepEqual([v.word, v.means], ["FAILED", "Too few of the witnesses your trust file pins cosigned this bundle's "
+    + "checkpoint (1 pinned cosignature(s), 2 required). Nothing else failed."]);
+  assert.match(v.notMeans, /^It doesn't mean the contents were changed: a witness name or key in your trust file/);
+  assert.match(steps[0].text, /^Check the witness names and keys in your trust file/);
+  assert.doesNotMatch(JSON.stringify([v, steps]), /changed, removed or added|Don't rely on this bundle's contents/);
+  // a changed record as well: the bundle doesn't match what was signed
+  const both = await verify(file("tests/golden/negative/record-edited.tkb"),
+    trust("tests/golden/negative/trust.json", { witnesses_required: 2 }));
+  assert.deepEqual(both.report.failures.sort(), ["signatures", "witness quorum"]);
+  assert.match(verdict(both.report, both.code).means, /^This bundle doesn't match what was signed/);
+});
+
+test("a damaged bundle says so, and the CLI reports a file it can't read as the reference verifier does", async () => {
+  const trust = file("tests/golden/v2/trust.json"), closed = file("tests/golden/v2/closed.tkb");
+  const uninflatable = zip([{ name: "manifest.json", data: "{}", method: 8 }]);
+  uninflatable[30 + "manifest.json".length] = 0xff;   // a reserved deflate block type
+  for (const [bundle, said] of [[Uint8Array.of(1, 2, 3), "not a zip file, or bytes after its end record"],
+    [closed.subarray(0, closed.length >> 1), "not a zip file, or bytes after its end record"],
+    [zip([{ name: "a", data: "x" }]), "no manifest.json"]]) {
+    const { report, code } = await verify(bundle, trust);
+    assert.deepEqual([code, report.integrity, report.checks[0].detail],
+      [2, "UNUSABLE BUNDLE", `cannot read bundle: the bundle file is damaged: ${said}`]);
+  }
+  assert.match((await verify(uninflatable, trust)).report.checks[0].detail,
+    /^cannot read bundle: the bundle file is damaged: manifest\.json does not inflate(: .+)?$/);
+  const missing = join(mkdtempSync(join(tmpdir(), "tk-verify-")), "missing.json");
+  const cli = (...args) => spawnSync(process.execPath, [join(ROOT, "sdk/typescript/bin/tracekit.mjs"), "verify", ...args],
+    { encoding: "utf8" });
+  for (const [args, out] of [
+    [[join(ROOT, "tests/golden/v2/closed.tkb"), "--trust", missing], `[FAIL] trust config — ${missing}: No such file or `
+      + "directory\n\nIntegrity: UNVERIFIABLE (the trust file can't be used).\nAssurance: none.\n"],
+    [[missing, "--trust", join(ROOT, "tests/golden/v2/trust.json")], `[FAIL] bundle readable — cannot read bundle: `
+      + `${missing}: No such file or directory\n\nIntegrity: UNUSABLE BUNDLE.\nAssurance: none.\n`]]) {
+    const r = cli(...args);
+    assert.deepEqual([r.status, r.stdout, r.stderr], [2, out, ""]);
+  }
 });
 
 test("the CLI sends what it doesn't support to the reference verifier by its PyPI name, tracekit-ai", async () => {

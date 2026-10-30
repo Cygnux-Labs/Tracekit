@@ -16,7 +16,8 @@ from storage_contract import Chain, StorageContract, leaves
 from tracekit.format import checkpoint
 from tracekit.merkle import leaf_hash, root
 from tracekit.storage import file as file_storage
-from tracekit.storage.base import ACK_ON_FSYNC, ACK_ON_WRITE, StorageCorrupt, StorageUnavailable, registry_tree
+from tracekit.storage.base import (ACK_ON_FSYNC, ACK_ON_WRITE, StorageChanged, StorageCorrupt, StorageUnavailable,
+                                   registry_tree)
 from tracekit.storage.file import FileStorage, fsck
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -107,6 +108,30 @@ class TestFileStorage(FileCase):
         self.assertIsNotNone(s.snapshot)
         self.assertEqual((s.checkpoint_at(tree, 1), s.checkpoint_at(tree, 4), s.checkpoint_latest(tree)),
                          (notes[0], None, (3, notes[2])))
+
+    def test_a_reader_reads_again_only_the_bytes_it_hashed(self):
+        """tracekit view hashed records.jsonl as its reader read it, then each check read the run's records again by
+        path: the honest bytes put back only while a check read them verified, and the edit put back after it matched
+        the hashes, so the run stayed VERIFIED in that viewer for good. A record read again that is not the line the
+        reader indexed raises StorageChanged, with the line's byte range."""
+        s = self.open()
+        s.append_batch(Chain().batch(4, runs=("a", "b")))
+        s.close()
+        with open(self.log, "rb") as f:
+            honest = f.read()
+        edited = honest.replace(b'"t1"', b'"x1"')   # run b's first record, in place
+        with open(self.log, "r+b") as f:
+            f.write(edited)
+        reader = file_storage.FileReader(self.root)   # reads and hashes the edit
+        with open(self.log, "r+b") as f:
+            f.write(honest)   # the honest bytes, only while the record is read again
+        with self.assertRaises(StorageChanged) as got:
+            list(reader.iter_run("acme", "b"))
+        self.assertEqual(got.exception.at, tuple(reader.log.offsets[1:3]))
+        self.assertEqual(len(list(reader.iter_run("acme", "a"))), 2)   # run a's lines are as it read them
+        with open(self.log, "r+b") as f:
+            f.write(edited)
+        self.assertEqual(next(reader.iter_run("acme", "b"))["event"]["data"]["tool_use_id"], "x1")   # what it hashed
 
     def test_a_snapshot_past_the_logs_end_is_removed_and_two_good_ones_kept(self):
         s = FileStorage(self.root, snapshot_key=b"k" * 32)

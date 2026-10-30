@@ -184,21 +184,28 @@ def sign(key, vkey, purpose, body):
     return {**body, "sig": {"key": f"{name}+{kid.hex()}", "sig": base64.b64encode(sig).decode("ascii")}}
 
 
+def _pinned(trust, key):
+    """The public key of the Ed25519 log key trust.json pins as `key` (a sig.key), or None."""
+    for vk in trust.get("logs", []):
+        name, kid, type_, public = checkpoint.parse_vkey(vk)
+        if type_ == checkpoint.ED25519 and f"{name}+{kid.hex()}" == key:
+            return public
+    return None
+
+
 def check_sig(obj, purpose, trust):
     """None when `obj` holds a valid `purpose` signature by an Ed25519 log key trust.json pins, else the problem."""
     # lean: Ed25519 only, even where trust pins a hybrid SLH-DSA key; add the hybrid line when agents need it
+    public = _pinned(trust, obj["sig"]["key"])
+    if public is None:
+        return f"signed by {obj['sig']['key']}, a key trust.json does not pin"
     body = {k: v for k, v in obj.items() if k != "sig"}
-    for vk in trust.get("logs", []):
-        name, kid, type_, public = checkpoint.parse_vkey(vk)
-        if type_ != checkpoint.ED25519 or f"{name}+{kid.hex()}" != obj["sig"]["key"]:
-            continue
-        try:   # canonical base64 only (PCM 0.1), so a signature has one text form
-            ok = crypto.verify_v2("ed25519", crypto.spki(public), sigmsg.message(purpose, body),
-                                  checkpoint._unb64(obj["sig"]["sig"]))
-        except ValueError:
-            ok = False
-        return None if ok else "bad signature"
-    return f"signed by {obj['sig']['key']}, a key trust.json does not pin"
+    try:   # canonical base64 only (PCM 0.1), so a signature has one text form
+        ok = crypto.verify_v2("ed25519", crypto.spki(public), sigmsg.message(purpose, body),
+                              checkpoint._unb64(obj["sig"]["sig"]))
+    except ValueError:
+        ok = False
+    return None if ok else "bad signature"
 
 
 def verify_grants(msg, doc, trust):
@@ -259,7 +266,7 @@ def _epoch(ts):
 class Replay:
     """One receiver's replay state, in memory. A message passes once: within `window_s` of this receiver's clock, not
     sent before it started (so a restart needs no saved state), newer than the sender's floor and with a new nonce.
-    A sender is the log key that signed and the agent (PCM 0.1): one agent name under two logs is two senders.
+    A sender is the public key that signed and the agent (PCM 0.1 9): one agent name under two logs is two senders.
     Past `per_sender` nonces the oldest is forgotten and raises the floor. `window_s=None` (an auditor over a saved
     conversation) skips the clocks and checks nonces only."""
     # lean: per process, so replicas behind one address don't share it; share it through the signer's store when the
@@ -272,11 +279,16 @@ class Replay:
         self.started = int((time.time() if now is None else now) * 1e6) / 1e6
         self.seen, self.floor = {}, {}
 
-    def check(self, msg, now=None, record=True):
-        """(ok, detail) for a message whose signature passed; a passing one is remembered when `record`."""
+    def check(self, msg, now=None, record=True, *, key):
+        """(ok, detail) for a message whose signature passed under the public key `key` (its raw bytes); a passing one
+        is remembered when `record`."""
+        if not isinstance(key, bytes):
+            raise TypeError(f"key is a {type(key).__name__}: pass the public key that verified the message")
+        if len(key) != 32:
+            raise ValueError(f"key is {len(key)} bytes: pass the raw 32-byte Ed25519 public key")
         now = time.time() if now is None else now
         try:
-            t, sender = _epoch(msg["ts"]), (msg["sig"]["key"], msg["from"]["agent"])
+            t, sender = _epoch(msg["ts"]), (key, msg["from"]["agent"])
         except ValueError:   # the TS pattern passes a month 13 or a year 0
             return False, f"sent at {msg['ts']}, which is no real time"
         if self.window_s is not None:
@@ -287,7 +299,7 @@ class Replay:
         if t <= self.floor.get(sender, float("-inf")):
             return False, "older than the messages this receiver remembers from the sender"
         if msg["nonce"] in self.seen.get(sender, ()):
-            return False, "replayed: this nonce was seen before"
+            return False, "already received: its nonce was seen before"
         if not record:
             return True, "fresh"
         seen = self.seen.setdefault(sender, collections.OrderedDict())
@@ -326,11 +338,19 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     logs = [checkpoint.parse_vkey(vk) for vk in trust.get("logs", [])]
     for w in trust.get("witnesses", []):
         checkpoint.parse_vkey(w["vkey"])   # a bad pin is the receiver's own error (NoteError), wherever it sits
-    for name, n in collections.Counter(x for x, _, type_, _ in logs if type_ == checkpoint.ED25519).items():
+    ed = [(name, public) for name, _, type_, public in logs if type_ == checkpoint.ED25519]
+    for name, n in collections.Counter(x for x, _ in ed).items():
         if n > 1:
             raise ValueError(f"trust.json pins {n} Ed25519 keys for log {name}; PCM verifies with one: pass a trust "
                              "file with only the current key (`tracekit signer trust --config <signer.yaml> -o "
                              "pcm-trust.json` writes one)")
+    for public, n in collections.Counter(p for _, p in ed).items():
+        if n > 1:   # by the raw key, so each key names one log
+            raise ValueError(f"trust.json pins one Ed25519 key under {n} log names "
+                             f"({', '.join(x for x, p in ed if p == public)}); PCM reads one log from a key: keep "
+                             "it under the name its log's checkpoints carry (`tracekit signer trust --config "
+                             "<signer.yaml> -o pcm-trust.json` writes one); two logs can't share a key")
+    checkpoint.check_witnesses([w["vkey"] for w in trust.get("witnesses", [])])   # each witness counts once
     out = {"signature": None, "replay": None, "schema": None, "grants": None, "claims": None, "verdict": "reject",
            "reasons": [], "skipped": ["replay"] * (replay is None) + ["recipient"] * (me is None)}
     errs = _errors(PCM_MESSAGE, msg)
@@ -353,7 +373,8 @@ def verify(msg, trust, schemas, replay=None, me=None, strict=False, now=None):
     if me is not None and msg["to"]["agent"] != me:   # for another receiver, or failing its schema: no nonce spent
         ok, detail = False, f"addressed to {msg['to']['agent']}, not {me}"
     else:
-        ok, detail = replay.check(msg, now, record=not errs) if replay is not None else (None, "not checked")
+        ok, detail = (replay.check(msg, now, record=not errs, key=_pinned(trust, msg["sig"]["key"]))
+                      if replay is not None else (None, "not checked"))
     out["replay"] = {"ok": ok, "detail": detail}
     out["schema"] = {"ok": not errs, "ref": ref, "errors": errs}
     if doc is not None:

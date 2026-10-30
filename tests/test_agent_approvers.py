@@ -2,18 +2,22 @@
 the signer's guarantees against a reviewer agent that approves anything: eligibility, budgets, anti-shopping, escalation,
 revocation, the kill switch, shadow mode, the reviewer's view and the records, across a restart."""
 import collections
+import contextlib
 import hashlib
+import io
 import itertools
 import json
 import os
 import time
 import unittest
+from unittest import mock
 
 import pytest
 
 import test_signer_service as ts
 from tracekit import schema
 from tracekit.bundle_v2 import export
+from tracekit.integrations import claude_code
 from tracekit.format.canon import canonical, loads_strict
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as policy_compile
@@ -233,6 +237,75 @@ class TestAgentApprovals(Case):
         self.assertEqual((rec["data"]["approver_kind"], rec["data"]["asserted"]),
                          ("agent", {"model": "m-1", "version": "7", "attested": False}))
         self.assertNotIn("spent", rec["data"])   # no sum budget
+
+    def test_a_retry_runs_once_under_an_agents_approval_never_a_revoked_one(self):
+        """Approve, then retry with an agent approver: the retry of the same call runs under its approval once, with
+        the hint (executor t2: the consume returns the signer's copy); one a person revoked is never used."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        self.decide(OK, "tc-2")
+        again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-2"})
+        self.assertEqual((again["approval_id"], again["state"]), (aid, "approved"))
+        self.assertEqual(self.consume(tcid="tc-2")["rule_ids"], ["TK-APPROVAL-REQUIRED"])   # its copy: by the hint
+        out = self.s.approval_consume({"request_id": rid(), **self.run, "tool_call_id": "tc-2", "tool": "pay",
+                                       "args_source": "parsed", "args": OK, "approval_id_hint": aid})
+        self.assertEqual((out["ok"], out["approval_id"], out["args"]), (True, aid, OK))
+        revoked, _ = self.ask(dict(OK, amount=41), "tc-3")
+        self.answer(AGENT, revoked)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": revoked})
+        self.decide(dict(OK, amount=41), "tc-4")
+        own = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-4"})
+        self.assertNotEqual(own["approval_id"], revoked)
+        self.assertEqual(own["state"], "requested")
+
+    def test_a_retry_whose_agent_approval_a_person_revoked_meanwhile_is_told_so(self):
+        """The retry was given the agent's approval, then a person revoked it before the retry's consume: that read
+        "approval_id not bound to this call". It says the approval was revoked."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        self.decide(OK, "tc-2")
+        again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-2"})
+        self.assertEqual(again["approval_id"], aid)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid})
+        out = self.s.approval_consume({"request_id": rid(), **self.run, "tool_call_id": "tc-2", "tool": "pay",
+                                       "args_source": "parsed", "args": OK, "approval_id_hint": aid})
+        self.assertEqual((out["ok"], out["rule_ids"], out["reason"]),
+                         (False, ["TK-APPROVAL-UNBOUND"], f"approval {aid} was revoked before this call used it"))
+
+    def test_a_retry_after_a_no_is_told_who_said_it(self):
+        """The retry of a call someone said no to was held with a new approval and no word of the no, so the agent
+        kept retrying: the decision's reason now says it first (which approval, by whom), so the agent asks before
+        trying again. It still gets a new approval: a person may change their mind. Across a restart too."""
+        def no(args, end):
+            aid, _ = self.ask(args, f"tc-{args['amount']}")
+            end(aid)
+            return aid
+
+        def told(args):
+            return self.decide(args, f"tc-{args['amount']}-again")["reason"]
+
+        cases = [(dict(OK, amount=1), lambda aid: self.answer(ALICE, aid, "reject"),
+                  "a person rejected this exact call ({}, by uid:990001); ask them before trying again"),
+                 (dict(OK, amount=2), lambda aid: self.answer(AGENT, aid, "reject"),
+                  "an agent approver rejected this exact call ({}, by token:reviewer); ask a person before trying "
+                  "again"),
+                 (dict(OK, amount=3), lambda aid: (self.answer(AGENT, aid), self.s.call(ALICE, "approval_revoke", {
+                     "request_id": rid(), "approval_id": aid})),
+                  "a person revoked the approval of this exact call ({}, by uid:990001); ask them before trying again"),
+                 (dict(OK, amount=4), lambda aid: (self.answer(AGENT, aid), self.s.call(OPS, "approval_agents", {
+                     "request_id": rid(), "enabled": False})),
+                  "the signer revoked the approval of this exact call ({}, by signer); ask a person before trying "
+                  "again")]
+        said = [(args, text.format(no(args, end))) for args, end, text in cases]
+        self.assertEqual(told(dict(OK, amount=5)), "money moves")   # nobody said no to this one
+        for restarted in (False, True):
+            for args, text in said:
+                with self.subTest(text, restarted=restarted):
+                    self.assertEqual(told(args), f"{text}; money moves")
+            self.restart()
+        self.decide(dict(OK, amount=1), "tc-again")
+        again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-again"})
+        self.assertEqual(again["state"], "requested")   # a new approval: a person may still say yes
 
     def test_an_agent_calls_nothing_else(self):
         aid, _ = self.ask()
@@ -470,6 +543,73 @@ class TestVetoAndRevoke(Case):
         self.assertEqual(self.consume()["rule_ids"], ["TK-APPROVAL-REJECTED"])
         self.assertIn("approval.revoked", [e["type"] for e in self.events()])
 
+    def test_a_wait_in_the_veto_delay_says_it_is_approved_and_for_how_long(self):
+        """It reads `requested` there, so the hook told the person to approve an approval that was approved: the wait's
+        reason says it is, and how long until it can run."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        out = self.s.approval_wait({**self.run, "approval_id": aid})
+        self.assertEqual((out["state"], out["reason"]),
+                         ("requested", "approved by an agent approver; people may still revoke it, so wait 60 s"))
+        self.assertEqual(validate(RESPONSES["approval_wait"], out), [], out)
+        self.s.log.approvals[aid]["not_before"] = svc._iso(time.time() - 1)
+        self.assertEqual(self.s.approval_wait({**self.run, "approval_id": aid}), {"approval_id": aid, "state": "approved"})
+
+    def test_a_wait_read_at_the_answers_own_instant_says_the_veto_delay_not_a_second_more(self):
+        """Windows' clock can read the same instant at the answer and the wait: not_before is kept to the microsecond,
+        here rounded up, and the wait said 61 s for a 60 s veto delay."""
+        aid, _ = self.ask()
+        with mock.patch.object(svc.time, "time", return_value=float(int(time.time())) + 0.1234567):
+            self.answer(AGENT, aid)
+            out = self.s.approval_wait({**self.run, "approval_id": aid})
+        self.assertEqual(out["reason"], "approved by an agent approver; people may still revoke it, so wait 60 s")
+
+    def test_the_claude_code_hook_tells_a_retry_in_the_veto_delay_to_wait_not_to_approve(self):
+        """Through the hook, against this signer: the agent's retry inside the veto delay was told to approve it with
+        `tracekit approvals approve`, an approval an agent approver had approved."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        s, run = self.s, self.run
+
+        class Run:   # the hook's RunHandle, over this signer in process
+            run_id = run["run_id"]
+
+            def call(self, method, **fields):
+                return getattr(s, method)({**run, **fields, **({} if method == "approval_wait" else {"request_id": rid()})})
+
+            def approval_consume(self, *a, **kw):
+                raise AssertionError("consumed inside the veto delay")
+        d = self.decide(OK, "tc-2")
+        err = io.StringIO()
+        with mock.patch.object(claude_code, "_run", lambda *a, **kw: (Run(), d)), contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: ""}):
+            code = claude_code._pre(mock.Mock(timeout=30.0, signer=None), {"tool_name": "pay", "tool_input": OK}, "s1",
+                                    "tc-2")
+        self.assertEqual((code, err.getvalue()), (2, f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is "
+                                                     "approved by an agent approver; people may still revoke it, so wait "
+                                                     "60 s, then try the same call again, with exactly the same "
+                                                     f"arguments. Why: {d['reason']}\n"))
+
+    def test_a_retry_is_held_until_the_veto_delay_passed(self):
+        """Approve, then retry with an agent approver: asking for the call, again or in a retry, reads `requested`
+        while people may still revoke the agent's approval, as approval_wait does; once the delay passed, the retry
+        runs under it."""
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        self.decide(OK, "tc-2")
+        for tcid in ("tc-1", "tc-2"):
+            with self.subTest(tcid=tcid):
+                again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": tcid})
+                self.assertEqual((again["approval_id"], again["state"]), (aid, "requested"))
+        hinted = {"request_id": rid(), **self.run, "tool_call_id": "tc-2", "tool": "pay", "args_source": "parsed",
+                  "args": OK, "approval_id_hint": aid}
+        self.assertEqual(self.s.approval_consume(hinted)["rule_ids"], ["TK-APPROVAL-VETO"])
+        self.s.log.approvals[aid]["not_before"] = svc._iso(time.time() - 1)
+        again = self.s.approval_request({"request_id": rid(), **self.run, "tool_call_id": "tc-2"})
+        self.assertEqual((again["approval_id"], again["state"]), (aid, "approved"))
+        out = self.s.approval_consume(dict(hinted, request_id=rid()))
+        self.assertEqual((out["ok"], out["approval_id"], out["args"]), (True, aid, OK))
+
     def test_unconsumed_agent_approvals_expire(self):
         aid, _ = self.ask()
         self.answer(AGENT, aid)
@@ -482,7 +622,7 @@ class TestKillSwitch(Case):
     def test_switching_off_revokes_and_routes_to_people(self):
         aid, _ = self.ask()
         self.answer(AGENT, aid)
-        pending, _ = self.ask(tcid="tc-2")
+        pending, _ = self.ask(dict(OK, amount=41), tcid="tc-2")   # other args: its own approval (not a retry of tc-1)
         self.refused("forbidden", ts.ME, "approval_agents", {"request_id": rid(), "enabled": False})
         out = self.s.call(OPS, "approval_agents", {"request_id": rid(), "enabled": False, "reason": "incident"})
         self.assertEqual(out, {"enabled": False, "revoked": [aid]})

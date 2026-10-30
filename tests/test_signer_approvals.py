@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from unittest import mock
 
 import test_bundle_v2 as tb
@@ -20,7 +21,8 @@ import test_rpc_contract as rc
 import test_signer_service as ts
 from tracekit import cli, schema
 from tracekit.bundle_v2 import export
-from tracekit.format.canon import canonical
+from tracekit.format.canon import canonical, event_hash
+from tracekit.identity.base import CallerIdentity
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
@@ -152,6 +154,136 @@ class Scenarios(rc.Harness):
         self.assertEqual([(e["data"]["kind"], e["data"]["tool_use_id"]) for e in self.read() if e["type"] == "capture.gap"],
                          [("executed_against_policy", "tc-1")])
 
+    # approve, then retry: the first attempt was blocked before anyone answered (the Claude Code hook doesn't wait); a
+    # person approves it, and the agent sends the same call again under a new tool_call_id
+
+    def retry(self, args=PAY, tcid="tc-2"):
+        """The agent's call `tcid` of pay(`args`), decided and asked for: (decide request, decision, approval)."""
+        req, d = self.decide(tool="pay", args=args, tcid=tcid)
+        self.assertEqual(d["decision"], "ask")
+        return req, d, self.call("approval_request", self.run_req(tool_call_id=tcid))
+
+    def test_approve_then_retry_runs_the_same_call_once(self):
+        aid = self.ask(PAY)
+        _, _, early = self.retry(tcid="tc-2")   # sent again before anyone answered: asks on its own
+        self.assertNotEqual(early["approval_id"], aid)
+        self.assertEqual(early["state"], "requested")
+        self.approve(aid)
+        req, d, again = self.retry(tcid="tc-3")
+        self.assertEqual((again["approval_id"], again["state"]), (aid, "approved"))
+        out = self.consume(tcid="tc-3", hint=aid)
+        self.assertEqual((out["ok"], out["rule_ids"], out["approval_id"]), (True, ["TK-APPROVED"], aid))
+        self.complete(req, d)
+        self.assertEqual(self.wait(aid), "consumed")
+        _, _, third = self.retry(tcid="tc-4")   # used up: the next one asks a person again
+        self.assertNotIn(third["approval_id"], (aid, early["approval_id"]))
+        self.assertEqual(third["state"], "requested")
+        self.refused_with("TK-APPROVAL-REQUESTED", self.consume(tcid="tc-4"))
+        self.refused_with("TK-APPROVAL-CONSUMED", self.consume(hint=aid))   # nor does the first attempt run now
+        self.refused_with("TK-APPROVAL-CONSUMED", self.consume(tcid="tc-3", hint=aid))   # nor the retry twice
+        types = self.types()
+        self.assertEqual((types.count("approval.consumed"), types.count("approval.request")), (1, 3))
+        self.assertNotIn("capture.gap", types)   # tc-3 ran under a consumed approval
+
+    def test_the_first_attempt_run_anyway_after_its_retry_used_the_approval_ran_against_the_policy(self):
+        """A retry consumed the approval and ran; the blocked first attempt's own result (an agent that ran it in spite
+        of the ask) is a signed gap on every signer, the test double included: only the consuming call ran under it."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        req, d, _ = self.retry(tcid="tc-3")
+        self.assertTrue(self.consume(tcid="tc-3", hint=aid)["ok"])
+        self.complete(req, d)
+        first = next(e["data"] for e in self.read() if e["type"] == "policy.decision"   # the fake names it tool_call_id
+                     and "tc-1" in (e["data"].get("tool_use_id"), e["data"].get("tool_call_id")))
+        self.complete({"tool_call_id": "tc-1", "tool": "pay", "args": PAY}, {"decision_id": first["decision_id"]})
+        self.assertEqual([(e["data"]["kind"], e["data"]["tool_use_id"]) for e in self.read() if e["type"] == "capture.gap"],
+                         [("executed_against_policy", "tc-1")])
+
+    def test_an_approval_whose_blocked_call_ran_anyway_lets_no_retry_run(self):
+        """The blocked call ran without consuming its approval (executed_against_policy), so the approval already let
+        one call run: the agent's retry of it asks a person again, and naming it in a consume runs nothing."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        first = next(e["data"] for e in self.read() if e["type"] == "policy.decision")
+        self.complete({"tool_call_id": "tc-1", "tool": "pay", "args": PAY}, {"decision_id": first["decision_id"]})
+        _, _, again = self.retry(tcid="tc-2")
+        self.assertNotEqual(again["approval_id"], aid)
+        self.assertEqual(again["state"], "requested")
+        self.refused_with("TK-APPROVAL-UNBOUND", self.consume(tcid="tc-2", hint=aid))
+        self.assertNotIn("approval.consumed", self.types())
+
+    def test_a_retry_with_other_args_needs_its_own_approval(self):
+        """An approval covers its tool and arguments: the agent can't carry it over to a changed call."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        edited = dict(PAY, cents=1500000)
+        _, _, own = self.retry(edited)
+        self.assertNotEqual(own["approval_id"], aid)
+        self.assertEqual(own["state"], "requested")
+        self.refused_with("TK-APPROVAL-UNBOUND", self.consume(edited, tcid="tc-2", hint=aid))
+        self.refused_with("TK-APPROVAL-REQUESTED", self.consume(edited, tcid="tc-2"))
+        self.decide(tool="pay", args=edited, tcid="tc-3")   # without asking: still no approval for these args
+        self.refused_with("TK-APPROVAL-UNBOUND", self.consume(edited, tcid="tc-3", hint=aid))
+        self.refused_with("TK-APPROVAL-REQUIRED", self.consume(edited, tcid="tc-3"))
+        self.decide(tool="read_file", args=PAY, tcid="tc-4")   # another tool: allowed, and aid not used for it
+        self.assertEqual(self.wait(aid), "approved")
+        self.assertTrue(self.consume(hint=aid)["ok"])   # the approved call itself still runs, once
+
+    def test_one_approval_runs_one_call(self):
+        """Two retries of the same call both see the approval; only the first consume runs."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        for tcid in ("tc-2", "tc-3"):
+            self.assertEqual(self.retry(tcid=tcid)[2]["approval_id"], aid)
+        self.assertTrue(self.consume(tcid="tc-2", hint=aid)["ok"])
+        self.refused_with("TK-APPROVAL-UNBOUND", self.consume(tcid="tc-3", hint=aid))
+        self.refused_with("TK-APPROVAL-REQUIRED", self.consume(tcid="tc-3"))
+        self.assertEqual(self.types().count("approval.consumed"), 1)
+
+    def test_a_rejected_or_abandoned_approval_is_never_used_by_a_retry(self):
+        for end in ("reject", "abandon"):
+            with self.subTest(end):
+                aid = self.ask(PAY)
+                if end == "reject":
+                    self.approve(aid, "reject")
+                else:
+                    self.call("approval_abandon", self.run_req(approval_id=aid))
+                _, _, own = self.retry()
+                self.assertNotEqual(own["approval_id"], aid)
+                self.assertEqual(own["state"], "requested")
+                self.refused_with("TK-APPROVAL-UNBOUND", self.consume(tcid="tc-2", hint=aid))
+
+    def test_another_runs_approval_is_never_used(self):
+        aid = self.ask(PAY)
+        self.approve(aid)
+        self.ask(PAY)   # a new run's call of the same arguments: its own approval
+        self.assertNotEqual(self.call("approval_request", self.run_req(tool_call_id="tc-1"))["approval_id"], aid)
+        self.refused_with("TK-APPROVAL-UNBOUND", self.consume(hint=aid))
+
+    def test_a_call_that_ran_has_its_own_approval_or_needs_none_uses_no_other(self):
+        """A call that ran under the approval never runs under it again; one with an approval of its own keeps it; an
+        allowed call asks for none; and the approval stays for the call it was asked for."""
+        aid = self.ask(PAY)
+        _, _, own = self.retry(tcid="tc-5")   # asked before the approval: its own, still waiting
+        self.approve(aid)
+        self.refused_with("TK-APPROVAL-REQUESTED", self.consume(tcid="tc-5"))
+        self.refused_with("TK-APPROVAL-UNBOUND", self.consume(tcid="tc-5", hint=aid))
+        self.assertEqual(self.call("approval_request", self.run_req(tool_call_id="tc-5"))["approval_id"],
+                         own["approval_id"])
+        self.retry(tcid="tc-2")
+        self.assertTrue(self.consume(tcid="tc-2", hint=aid)["ok"])
+        self.refused_with("TK-APPROVAL-CONSUMED", self.consume(tcid="tc-2", hint=aid))
+        self.refused_with("TK-APPROVAL-CONSUMED", self.consume(tcid="tc-2"))
+        other = self.ask(PAY)   # a new run: tc-1 asks, a person approves it
+        self.approve(other)
+        req, d = self.decide(tool="read_file", args={"path": "a.txt"}, tcid="tc-3")
+        self.assertEqual(d["decision"], "allow")
+        self.refused("unknown_tool_call", "approval_request", self.run_req(tool_call_id="tc-3"))
+        out = self.call("approval_consume", self.run_req(tool_call_id="tc-3", tool="read_file", args_source="parsed",
+                                                         args={"path": "a.txt"}))
+        self.assertEqual((out["ok"], out["rule_ids"]), (True, []))
+        self.assertEqual(self.wait(other), "approved")
+
 
 class TestFakeApprovals(Scenarios, unittest.TestCase):
     make_signer = rc.TestFakeSigner.make_signer
@@ -200,7 +332,7 @@ class TestRealSigner(unittest.TestCase):
         return self.s.approval_request(req)["approval_id"]
 
     def consume(self, **kw):
-        return self.s.approval_consume({"request_id": f"c{time.monotonic_ns()}", **self.run, "tool_call_id": "tc-1",
+        return self.s.approval_consume({"request_id": f"c{uuid.uuid4().hex}", **self.run, "tool_call_id": "tc-1",
                                         "tool": "pay", "args_source": "parsed", "args": PAY, **kw})
 
     def events(self):
@@ -255,6 +387,183 @@ class TestRealSigner(unittest.TestCase):
         self.assertNotIn("args_digest", req["binding"])
         self.assertTrue(es["approval"]["data"]["self_approved"])
         self.assertEqual(es["approval.binding_mismatch"]["data"]["approved_commitment"], req["binding"]["args_commitment"])
+
+    def retry(self, tcid, seq):
+        """The agent's call `tcid` of the same pay as tc-1, decided (client_seq `seq`) and asked for: its approval."""
+        self.s.decide({"request_id": f"d{tcid}", **self.run, "stream": "s", "client_seq": seq, "tool_call_id": tcid,
+                       "tool": "pay", "args_source": "parsed", "args": PAY})
+        return self.s.approval_request({"request_id": f"a{tcid}", **self.run, "tool_call_id": tcid})
+
+    def test_a_yes_before_a_later_no_to_the_same_call_lets_no_retry_run(self):
+        """A person approved the call (tc-1), then rejected the agent's early retry of it (tc-2): the next retry was told
+        "a person rejected this exact call" and ran on the earlier yes. The latest answer is the no, so it asks again."""
+        aid = self.pending()
+        early = self.retry("tc-2", 1)["approval_id"]
+        self.assertNotEqual(early, aid)
+        self.s.approval_decide({"request_id": "h1", "approval_id": aid, "decision": "approve"})
+        self.s.approval_decide({"request_id": "h2", "approval_id": early, "decision": "reject"})
+        got = self.retry("tc-3", 2)["approval_id"]
+        self.assertNotIn(got, (aid, early))
+        self.assertEqual(self.consume(tool_call_id="tc-3", approval_id_hint=got)["rule_ids"], ["TK-APPROVAL-REQUESTED"])
+
+    def test_a_retry_takes_an_approval_usable_now_over_one_in_an_agents_veto_delay(self):
+        aid = self.pending()
+        later = self.retry("tc-2", 1)["approval_id"]
+        for h, a in (("h1", aid), ("h2", later)):
+            self.s.approval_decide({"request_id": h, "approval_id": a, "decision": "approve"})
+        self.s.log.approvals[aid]["not_before"] = svc._iso(time.time() + 60)   # as an agent approver's veto delay
+        self.assertEqual(self.retry("tc-3", 2)["approval_id"], later)
+
+    def test_a_call_completed_twice_on_one_approval_has_a_gap_the_second_time(self):
+        """A call that consumed its approval, decided again with the same arguments and completed under both decisions,
+        ran twice on one approval with no executed_against_policy gap."""
+        run = self.s.register_run({"request_id": "reg", "agent": {"name": "a"}})
+        self.run = {"run_id": run["run_id"], "run_token": run["run_token"]}
+        call = {**self.run, "stream": "s", "tool_call_id": "tc-1", "attempt": 0, "tool": "pay", "args_source": "parsed",
+                "args": PAY}
+        first = self.s.decide({"request_id": "d1", "client_seq": 0, **call})["decision_id"]
+        aid = self.s.approval_request({"request_id": "a", **self.run, "tool_call_id": "tc-1"})["approval_id"]
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.assertTrue(self.consume(approval_id_hint=aid)["ok"])
+        again = self.s.decide({"request_id": "d2", "client_seq": 1, **call})["decision_id"]
+        for seq, did in ((2, first), (3, again)):
+            self.s.complete({"request_id": f"r{seq}", **self.run, "stream": "s", "client_seq": seq, "tool_call_id": "tc-1",
+                             "attempt": 0, "decision_id": did, "args_digest": event_hash({"tool": "pay", "args": PAY}),
+                             "status": "ok"})
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.events() if e["type"] == "capture.gap"
+                          and e["data"]["kind"] == "executed_against_policy"], ["tc-1"])
+
+    def test_the_retry_that_lost_the_race_for_an_approval_is_told_so(self):
+        """Two retries of one approved call: the one whose consume came second read "approval_id not bound to this
+        call", as if it had named another call's approval. It says the approval was used by another attempt."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        for tcid, seq in (("tc-2", 1), ("tc-3", 2)):
+            self.assertEqual(self.retry(tcid, seq)["approval_id"], aid)
+        self.assertTrue(self.consume(tool_call_id="tc-2", approval_id_hint=aid)["ok"])
+        lost = self.consume(tool_call_id="tc-3", approval_id_hint=aid)
+        self.assertEqual((lost["ok"], lost["rule_ids"], lost["reason"]), (
+            False, ["TK-APPROVAL-UNBOUND"], f"approval {aid} was already used by another attempt of the same call"))
+        other = self.retry("tc-4", 3)["approval_id"]   # another approval of the same call, never answered: not that
+        self.assertNotEqual(other, aid)
+        self.assertEqual(self.consume(tool_call_id="tc-4", approval_id_hint=other)["rule_ids"],
+                         ["TK-APPROVAL-REQUESTED"])
+        self.s.decide({"request_id": "d5", **self.run, "stream": "s", "client_seq": 4, "tool_call_id": "tc-5",
+                       "tool": "pay", "args_source": "parsed", "args": dict(PAY, cents=1)})
+        self.assertEqual(self.consume(tool_call_id="tc-5", args=dict(PAY, cents=1), approval_id_hint=aid)["reason"],
+                         "approval_id not bound to this call")   # used, but by a call of other arguments
+
+    def test_a_retry_whose_approval_ended_after_it_was_given_it_is_told_what_happened(self):
+        """The retry's approval_request returned the approved approval, which then expired, or whose blocked call ran
+        anyway, before the retry's consume: that read "approval_id not bound to this call". It says what happened."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.assertEqual(self.retry("tc-2", 1)["approval_id"], aid)
+        first = self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-1"]["decision_id"]
+        self.s.complete({"request_id": "c1", **self.run, "stream": "s", "client_seq": 2, "tool_call_id": "tc-1",
+                         "decision_id": first, "args_digest": event_hash({"tool": "pay", "args": PAY}), "status": "ok"})
+        out = self.consume(tool_call_id="tc-2", approval_id_hint=aid)
+        with self.subTest("ran anyway"):
+            self.assertEqual((out["ok"], out["rule_ids"], out["reason"]), (
+                False, ["TK-APPROVAL-UNBOUND"], f"approval {aid} was used up: the call it was asked for ran anyway"))
+        other = dict(PAY, cents=1)
+        for tcid, seq in (("tc-3", 3), ("tc-4", 4)):
+            self.s.decide({"request_id": f"d{tcid}", **self.run, "stream": "s", "client_seq": seq, "tool_call_id": tcid,
+                           "tool": "pay", "args_source": "parsed", "args": other})
+            later = self.s.approval_request({"request_id": f"a{tcid}", **self.run, "tool_call_id": tcid})["approval_id"]
+            if tcid == "tc-3":
+                self.s.approval_decide({"request_id": "h3", "approval_id": later, "decision": "approve"})
+        self.s.log.approvals[later]["expires_at"] = svc._iso(time.time() - 1)
+        out = self.consume(tool_call_id="tc-4", args=other, approval_id_hint=later)
+        self.assertEqual((out["ok"], out["reason"]), (False, f"approval {later} expired before this call used it"))
+
+    def test_only_a_calls_latest_answer_is_told_as_a_no(self):
+        """A held call's reason named the latest no to the same call even after a person approved it later and it ran:
+        "ask them before trying again" to someone who had said yes. Only a no that is the call's latest answer is
+        told: reject, approve, run, and the next hold says nothing of the reject; then a reject is told again. Across a
+        restart too."""
+        seq = iter(range(1, 100))
+
+        def decide(tcid):
+            return self.s.decide({"request_id": f"d{tcid}", **self.run, "stream": "s", "client_seq": next(seq),
+                                  "tool_call_id": tcid, "tool": "pay", "args_source": "parsed", "args": PAY})
+
+        def ask(tcid):
+            return self.s.approval_request({"request_id": f"a{tcid}", **self.run, "tool_call_id": tcid})["approval_id"]
+
+        def answer(aid, decision):
+            self.s.approval_decide({"request_id": f"h{aid}", "approval_id": aid, "decision": decision})
+
+        def told(tcid):
+            reason = decide(tcid).get("reason", "")
+            return reason[:reason.index(")") + 1] if "rejected this exact call" in reason else None
+        no = self.pending()
+        answer(no, "reject")
+        self.assertEqual(told("tc-2"), f"a person rejected this exact call ({no}, by uid:{ts.ME.subject})")
+        yes = ask("tc-2")
+        answer(yes, "approve")
+        d = decide("tc-3")
+        self.assertEqual(ask("tc-3"), yes)
+        self.assertTrue(self.consume(tool_call_id="tc-3", approval_id_hint=yes)["ok"])
+        self.s.complete({"request_id": "c3", **self.run, "stream": "s", "client_seq": next(seq), "tool_call_id": "tc-3",
+                         "decision_id": d["decision_id"], "args_digest": event_hash({"tool": "pay", "args": PAY}),
+                         "status": "ok"})
+        self.assertIsNone(told("tc-4"))   # the person's latest answer was yes
+        self.restart()
+        self.assertIsNone(told("tc-5"))   # the order of the answers is rebuilt from the records
+        again = ask("tc-5")
+        answer(again, "reject")
+        rejected = f"a person rejected this exact call ({again}, by uid:{ts.ME.subject})"
+        self.assertEqual(told("tc-6"), rejected)
+        self.restart()
+        self.assertEqual(told("tc-7"), rejected)
+
+    def test_a_retry_after_a_restart_runs_under_the_approval_and_completes(self):
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.restart()
+        self.assertEqual(self.retry("tc-2", 1)["approval_id"], aid)
+        self.assertTrue(self.consume(tool_call_id="tc-2", approval_id_hint=aid)["ok"])
+        self.restart()   # the snapshot keeps which call ran under it
+        self.s.complete({"request_id": "c2", **self.run, "stream": "s", "client_seq": 2, "tool_call_id": "tc-2",
+                         "decision_id": self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-2"]["decision_id"],
+                         "args_digest": event_hash({"tool": "pay", "args": PAY}), "status": "ok"})
+        es = self.events()
+        self.assertNotIn("capture.gap", [e["type"] for e in es])
+        used = next(e for e in es if e["type"] == "approval.consumed")
+        self.assertEqual((used["tool_call_id"], used["data"]), ("tc-2", {"approval_id": aid}))
+
+    def test_an_expired_approval_is_never_used_by_a_retry(self):
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.s.log.approvals[aid]["expires_at"] = svc._iso(time.time() - 1)
+        again = self.retry("tc-2", 1)
+        self.assertNotEqual(again["approval_id"], aid)
+        self.assertEqual(again["state"], "requested")
+        self.assertEqual(self.consume(tool_call_id="tc-2")["rule_ids"], ["TK-APPROVAL-REQUESTED"])
+
+    def test_only_a_person_approves_so_the_agents_retry_stays_held(self):
+        """System mode: signer.yaml names the approvers, so the agent's own uid (the requester and the run's owner)
+        and any other non-approver are refused; nothing is approved, and the retry asks again. A person's approval
+        lets the next retry run, once."""
+        self.s.close()
+        self.s = svc.SignerService(self.dir, policy=ts.PAY_ASKS, approvals={"approvers": ["uid:990001"]})
+        self.addCleanup(self.s.close)
+        aid = self.pending()
+        for who, code in ((ts.ME, "forbidden"), (ts.OTHER, "unknown_approval")):   # not an approver: not shown it
+            with self.subTest(who=who.subject), self.assertRaises(RPCError) as cm:
+                self.s.call(who, "approval_decide", {"request_id": f"h{who.subject}", "approval_id": aid,
+                                                     "decision": "approve"})
+            self.assertEqual(cm.exception.code, code)
+        held = self.retry("tc-2", 1)
+        self.assertNotEqual(held["approval_id"], aid)
+        self.assertEqual(self.consume(tool_call_id="tc-2", approval_id_hint=aid)["rule_ids"], ["TK-APPROVAL-UNBOUND"])
+        person = CallerIdentity("uid", "990001", True)
+        self.assertFalse(self.s.call(person, "approval_decide", {"request_id": "p", "approval_id": aid,
+                                                                 "decision": "approve"})["self_approved"])
+        self.assertEqual(self.retry("tc-3", 2)["approval_id"], aid)
+        self.assertTrue(self.consume(tool_call_id="tc-3", approval_id_hint=aid)["ok"])
+        self.assertNotEqual(self.retry("tc-4", 3)["approval_id"], aid)
 
     def test_another_tenant_does_not_see_the_approval(self):
         aid = self.pending()
@@ -391,8 +700,10 @@ class TestCli(unittest.TestCase):
             self.addCleanup(srv.server_close)
             self.addCleanup(srv.shutdown)
         listed = tracekit("approvals", "--signer", cfg["socket"], "list")
-        self.assertIn(f"no approvals uid:{os.getuid()} may see", listed.stdout)
-        self.assertIn("approvals.approvers", listed.stdout)
+        first, note = listed.stdout.splitlines()   # that it lists none, then who may see one
+        self.assertEqual(first, "no approvals to show")   # it said "nothing is waiting": nothing waits on a held call
+        self.assertIn(f"you are uid:{os.getuid()}", note)
+        self.assertIn("approvals.approvers", note)
         listed = tracekit("approvals", "--signer", cfg["socket"], "list", "--json")
         self.assertEqual((listed.returncode, listed.stdout.strip()), (0, "[]"))
         client = Client(cfg["socket"])

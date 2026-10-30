@@ -29,6 +29,7 @@ PERSON = ["approval_list", "approval_get", "approval_decide", "approval_revoke",
 NOISE = {"policy_hash", "engine", "expires_at", "decision_id", "nonce", "args_commitment", "binding", "binding_digest",
          "redaction", "output", "detect", "conditions_hash", "args_key", "salt_id", "approver_identity", "channel",
          "not_before", "consume_by"}   # hashes and ids `show` leaves out
+ANSWERING = threading.Lock()   # held while approver() answers and prints, so wait() returns after its line
 
 
 def tracekit(*argv, check=True):
@@ -113,7 +114,8 @@ def approver(client, run_id):
                     continue
                 seen.add(a["approval_id"])
                 if SCRIPTED:
-                    print(tracekit("approvals", "approve", a["approval_id"]).stdout.strip(), flush=True)
+                    with ANSWERING:
+                        print(tracekit("approvals", "approve", a["approval_id"]).stdout.strip(), flush=True)
                 else:
                     print(f"{a['tool']} waits for a person. In another terminal:\n"
                           f"  tracekit approvals show {a['approval_id']}\n"
@@ -128,11 +130,13 @@ def approver(client, run_id):
 
 
 def wait(run, approval_id):
-    """The approval's final state: approved, rejected or expired."""
+    """The approval's final state: approved, rejected or expired; once approver() has printed its answer, so the
+    lines read in the order things happened."""
     state = "requested"
     while state == "requested":
         state = run.call("approval_wait", approval_id=approval_id, timeout_ms=60000)["state"]
-    return state
+    with ANSWERING:
+        return state
 
 
 def export_and_verify(run_id, config=None):
