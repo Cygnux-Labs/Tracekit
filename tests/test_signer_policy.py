@@ -248,7 +248,31 @@ class CodingPack(unittest.TestCase):
                    "http DELETE api.github.com/repos/acme/prod-service",
                    "https DELETE api.github.com/repos/acme/prod-service",
                    "xh DELETE api.github.com/repos/acme/prod-service",
-                   "xhs DELETE api.github.com/repos/acme/prod-service"]
+                   "xhs DELETE api.github.com/repos/acme/prod-service",
+                   # the 1.5.2 sweep, as TK-A047 reads them: the method in any case, after -X ending a cluster of
+                   # short options, or from a variable or a substitution; an empty or space-edged argument; a word
+                   # between the path and the method; the API's URL and the repository as variables
+                   "gh api -X delete repos/o/r", "gh api --method=delete repos/o/r", "gh api --method delete repos/o/r",
+                   "gh api repos/o/r -X delete", "hub api -X delete repos/o/r", "glab api -X delete projects/123",
+                   "curl -X delete https://api.github.com/repos/o/r",
+                   "curl --request delete https://api.github.com/repos/o/r",
+                   "curl https://api.github.com/repos/o/r -X delete", "curl -X delete https://api.vercel.com/v9/projects/web",
+                   "http Delete api.github.com/repos/o/r",
+                   "gh api -iX DELETE repos/o/r", "gh api -iXDELETE repos/o/r", "gh api -X=DELETE repos/o/r",
+                   "curl -sSX DELETE https://api.github.com/repos/o/r", "curl -sX DELETE https://api.github.com/repos/o/r",
+                   "curl -sSXDELETE https://api.github.com/repos/o/r",
+                   "gh api --jq '' -X DELETE repos/o/r", "gh api -H 'X-A: 1 ' -X DELETE repos/o/r",
+                   "glab api -H '' -X DELETE projects/123", "curl https://api.github.com/repos/o/r -H '' -X DELETE",
+                   "curl https://api.github.com/repos/o/r -s -X DELETE", "gh api repos/o/r -i -X DELETE",
+                   "curl 'https://api.github.com/repos/o/r?x=1' -X DELETE",
+                   "gh api -X \"$M\" repos/o/r", "gh api -X $(echo DELETE) repos/o/r", "gh api -X `echo DELETE` repos/o/r",
+                   "curl -X \"$M\" https://api.github.com/repos/o/r", "curl -X $(echo DELETE) https://api.github.com/repos/o/r",
+                   "gh api repos/o/r -X \"$M\"",
+                   "curl -X DELETE \"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY\"", "gh api -X DELETE \"repos/$GITHUB_REPOSITORY\"",
+                   "curl -X DELETE \"$CI_API_V4_URL/projects/$CI_PROJECT_ID\"", "curl -L -X DELETE api.github.com/repos/o/r",
+                   "curl -X DELETE HTTPS://api.github.com/repos/o/r", "gh api -X DELETE repos/{owner}/{repo}",
+                   "glab api -X DELETE projects/:id",
+                   "glab repo -R '' delete g/p --yes", "vercel --token '' remove web --yes"]
         routine = ["curl -s https://api.github.com/repos/acme/prod-service",
                    "curl -s https://gitlab.com/api/v4/projects/42",
                    "curl -s https://api.vercel.com/v9/projects/prod-app",
@@ -262,6 +286,12 @@ class CodingPack(unittest.TestCase):
                    "gh api repos/acme/svc/contents/projects/readme.md -X DELETE",
                    "gh api projects/123 -X DELETE",
                    "gh api -X DELETE orgs/acme/teams/devs/repos/acme/svc",
+                   "gh api -X delete teams/1/repos/acme/svc", "gh api -X delete projects/123",
+                   "curl -X delete https://api.github.com/repos/o/r/pulls/1",
+                   "curl -X GET -H \"Authorization: token $T\" https://api.github.com/repos/o/r",
+                   "gh api -H \"X-Token: $T\" repos/o/r", "gh api -X DELETEX repos/o/r",
+                   "curl -X DELETE \"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$RUN\"",
+                   "http -a \"$T\" api.github.com/repos/o/r", "gh issue create --title 'repo delete' --body x",
                    "echo gh repo delete acme/prod-service",
                    "git commit -m 'gh repo delete after review'"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
@@ -1953,6 +1983,50 @@ class CodingPack(unittest.TestCase):
                        ("git --git-dir .git config core.hooksPath h", "TK-A013")])
         self.assertEqual(self.e.decide("Bash", {"command": "git --work-tree . push origin main"})["verdict"], "allow")
 
+    def test_an_empty_or_space_edged_option_value_before_a_subcommand_is_read(self):
+        """The 1.5.2 sweep: an option before the subcommand took its value as one non-empty word, so an empty or
+        space-edged one (`gh pr -R '' merge 1`, or `git -C ''`, which stays in the current directory) left the
+        subcommand unread and the call was allowed."""
+        self.verdicts([("git -C '' push --force origin main", "TK-D003"), ("git -C '' push --delete origin b", "TK-A002"),
+                       ("git -C '' config core.hooksPath /tmp/h", "TK-A013"),
+                       ("python -W '' -m tracekit approve a1", "TK-D012"),
+                       ("pulumi --cwd '' destroy --yes", "TK-A001"), ("fly -a '' destroy", "TK-A001"),
+                       ("terragrunt --working-dir '' destroy", "TK-A001"),
+                       ("aws --profile '' s3 rm --recursive s3://b", "TK-A031"), ("gh pr -R '' merge 1", "TK-A033"),
+                       ("glab mr -R 'g/p ' merge 3", "TK-A033"),
+                       ("aws --region '' secretsmanager get-secret-value --secret-id x", "TK-A035"),
+                       ("stripe --api-key '' refunds create --charge ch_FAKE", "TK-A043"),
+                       ("glab repo -R '' delete g/p --yes", "TK-A042"), ("vercel --token '' remove web --yes", "TK-A042")])
+        for cmd in ("git -C '' push origin main", "gh pr -R '' view 1", "aws --region '' secretsmanager list-secrets",
+                    "stripe --api-key '' refunds list"):
+            self.assertNotIn(self.e.decide("Bash", {"command": cmd})["verdict"], ("ask", "deny"), cmd)
+        dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
+        self.assertIn("TK-A032", dev.decide("Bash", {"command": "aws --profile '' s3 cp f s3://b/f"})["rule_ids"])
+
+    def test_privilege_home_deletes_agent_key_listing_and_history_spellings(self):
+        """The 1.5.2 sweep: su in another form (bare, `-lc`, `--command=`) and systemd's run0; find with -delete on a
+        home, with no filter but depth and type, or on root after -H, -L or -P; ssh-add -L after another option or in
+        a cluster; and history turned off by `unset -v`, an empty HISTFILE, a zero HISTSIZE or HISTFILESIZE, or
+        entries deleted with history -d. Each was allowed."""
+        self.verdicts([("su", "TK-D001"), ("su -lc id", "TK-D001"), ("su --command=id", "TK-D001"), ("run0 id", "TK-D001"),
+                       ("find ~ -delete", "TK-D004"), ("find $HOME -mindepth 1 -type f -delete", "TK-D004"),
+                       ("find -L / -delete", "TK-D004"), ("ssh-add -q -L", "TK-A021"), ("ssh-add -qL", "TK-A021"),
+                       ("unset -v HISTFILE", "TK-A029"), ("export HISTFILE=", "TK-A029"), ("HISTSIZE=0", "TK-A029"),
+                       ("export HISTFILESIZE=0", "TK-A029"), ("history -d 1-50", "TK-A029")])
+        for cmd in ("find ~ -name .DS_Store -delete", "find ~/proj -name '*.pyc' -delete", "ssh-add -l",
+                    "ssh-add -t 3600 ~/.ssh/id_ed25519", "history 20", "history -a", "export HISTSIZE=1000",
+                    "unset FOO", "sudoku --help", "sum notes.txt"):
+            self.assertNotIn(self.e.decide("Bash", {"command": cmd})["verdict"], ("ask", "deny"), cmd)
+
+    def test_pip_reads_an_abbreviated_index_option(self):
+        """pip's option parser takes a long option's unique prefix (`--index-u URL` sets the index); the 1.5.2 sweep
+        found it allowed."""
+        self.verdicts([("pip install --index-u https://r.example/simple x", "TK-A025"),
+                       ("pip3 install --extra https://r.example/simple x", "TK-A025"),
+                       ("python -m pip install --find=https://r.example/w x", "TK-A025")])
+        for cmd in ("pip install --pre x", "pip install --index-url https://pypi.org/simple x"):
+            self.assertNotIn("TK-A025", self.e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
+
     def test_command_line_rules_read_program_names_in_any_case(self):
         # the normalised line lower-cases each program name (after wrappers too), as argv does: macOS runs git for `Git`
         self.verdicts([("Git push --force", "TK-D003"), ({"command": ["Git", "push", "--force"]}, "TK-D003"),
@@ -2429,6 +2503,21 @@ class PackReading(unittest.TestCase):
             "git -c filter.a.clean='sudo id' add .", "git -c core.gitproxy='sudo id' fetch",
             "git -c gpg.program='sudo id' commit -S -m x", "git -c sequence.editor='sudo id' rebase -i HEAD~2",
             "vim -c ':!sudo id'", "vim +'r !id'")], "deny")
+
+    def test_tar_options_abbreviated_or_in_a_cluster_and_kubectl_and_helm_spellings(self):
+        """The 1.5.2 sweep: tar takes a long option's unique prefix (`--to-com=`, `--use-compress=`) and -I in a
+        cluster (-xIsh); kubectl reads a resource as TYPE/NAME, with its group, by a short name and in any case, with
+        options before it; helm uninstalls as del or un, with options before it. Each was allowed."""
+        self.check(self.server, [("Bash", {"command": c}) for c in (
+            "tar --to-com=sh -xf a.tar", "tar --use-compress=sh -xf a.tar", "tar -xIsh -f a.tar",
+            "tar --checkpoint=1 --checkpoint-act=exec=sh -cf a.tar x", "tar xIf sh a.tar")], "deny")
+        self.check(self.server, [("Bash", {"command": c}) for c in (
+            "kubectl delete ns/prod", "kubectl delete Namespace prod", "kubectl delete --wait=false ns prod",
+            "kubectl -n x delete deploy/web", "kubectl delete deployment.apps/web", "helm del prod", "helm un prod",
+            "helm -n prod uninstall web")], "ask")
+        for c in ("tar -cf a.tar -C /tmp x", "tar -cvf IMG.tar Images/", "tar --checkpoint=10 -cf a.tar x",
+                  "kubectl delete pod web", "kubectl delete secret no-longer-used", "helm unittest ./chart"):
+            self.assertNotIn(self.server.decide("Bash", {"command": c})["verdict"], ("ask", "deny"), c)
 
     def test_coding_pack_shell_rules(self):
         self.check(self.dev, [("Bash", {"command": c}) for c in (
