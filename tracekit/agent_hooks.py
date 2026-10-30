@@ -86,6 +86,7 @@ GEMINI_PATH_ARGS = ("file_path", "absolute_path", "notebook_path", "dir_path", "
 WEB_FETCH_URL = re.compile(r"https?://[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+", re.I)
 # a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
+CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath")
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
                   "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
                   "task": "Task", "todowrite": "TodoWrite"}
@@ -177,9 +178,15 @@ def tool(harness, name, ti):
     if harness == "cursor":
         if name.startswith("MCP:"):
             return "mcp__cursor__" + re.sub(r"[^A-Za-z0-9_-]+", "_", name[4:]), ti
-        for k in ("path", "target_file", "filePath"):
+        for k in CURSOR_PATH_ARGS[1:]:
             if k in ti and "file_path" not in ti:
                 ti["file_path"] = ti[k]
+        # Cursor doesn't document which of these its tools read: every path they name is decided, so a decoy
+        # `file_path` beside the `path` a tool reads never replaces it
+        paths = ti["paths"] if isinstance(ti.get("paths"), list) else []
+        files = [ti[k] for k in CURSOR_PATH_ARGS if isinstance(ti.get(k), str)]
+        if any(f not in [ti["file_path"], *paths] for f in files):
+            ti["paths"] = list(dict.fromkeys(files + paths))
         return CURSOR_TOOLS.get(name, name), ti
     if harness in ("gemini", "qwen"):
         mapped = (QWEN_TOOLS if harness == "qwen" else GEMINI_TOOLS).get(name, name)
