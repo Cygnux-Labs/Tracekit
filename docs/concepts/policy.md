@@ -170,8 +170,8 @@ Rules are tripwires, not a sandbox. A determined agent can phrase a command so n
 shell. On the shipped packs' own test corpus (737 harmful and 822 benign calls across 11 classes, written by the
 project) every harmful call is denied or held, with one false alarm. On E21's held-out pool (420 harmful and 432
 benign calls, written blind to the rules), the only blind run caught 211 harmful calls (50.2%) with the server pack and
-246 (58.6%) with the strict pack. With rules added since, written while the misses were known, they catch 245 (58.3%)
-and 274 (65.2%), while holding 4.2% and 10.9% of the benign ones ([evaluation](../evaluation.md#e21-policy-robustness)).
+246 (58.6%) with the strict pack. With rules added since, written while the misses were known, they catch 247 (58.8%)
+and 275 (65.5%), while holding 4.2% and 10.9% of the benign ones ([evaluation](../evaluation.md#e21-policy-robustness)).
 The protection
 that doesn't depend on wording is the signer's isolation and the witnesses: a call that slips past the rules is still
 recorded, and the record can't be hidden.
