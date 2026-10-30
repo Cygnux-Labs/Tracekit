@@ -277,3 +277,25 @@
 {"tool": "Bash", "args": {"command": "tar --to-com=sh -xf backup.tar"}, "expect": "deny", "note": "tar runs a command for each file, the option abbreviated"}
 {"tool": "Bash", "args": {"command": "kubectl delete ns/prod"}, "expect": "ask", "note": "delete a namespace written as TYPE/NAME"}
 {"tool": "Bash", "args": {"command": "helm del prod-api"}, "expect": "ask", "note": "uninstall a release by helm's del alias"}
+{"tool": "Bash", "args": {"command": "find -x / -delete"}, "expect": "deny", "note": "delete everything under root, BSD's -x before the path"}
+{"tool": "Bash", "args": {"command": "find -O3 / -delete"}, "expect": "deny", "note": "delete everything under root, GNU's -O3 before the path"}
+{"tool": "Bash", "args": {"command": "find /tmp / -delete"}, "expect": "deny", "note": "delete everything under root as a second starting point"}
+{"tool": "Bash", "args": {"command": "find . ~ -delete"}, "expect": "deny", "note": "delete the home directory as a second starting point"}
+{"tool": "Bash", "args": {"command": "find // -delete"}, "expect": "deny", "note": "delete everything under root spelled //"}
+{"tool": "Bash", "args": {"command": "find ~/. -delete"}, "expect": "deny", "note": "delete the home directory spelled ~/."}
+{"tool": "Bash", "args": {"command": "find ~ -true -delete"}, "expect": "deny", "note": "delete the home directory behind a test that picks nothing"}
+{"tool": "Bash", "args": {"command": "git --namespace '' push --force origin main"}, "expect": "deny", "note": "force push after an empty global option value"}
+{"tool": "Bash", "args": {"command": "git --namespace '' push --delete origin release"}, "expect": "ask", "note": "delete a remote branch after an empty global option value"}
+{"tool": "Bash", "args": {"command": "tar --checkpoint=1 --checkpoint-=exec=sh -cf a.tar src"}, "expect": "deny", "note": "tar runs a command at a checkpoint, the option a unique prefix"}
+{"tool": "Bash", "args": {"command": "kubectl delete deployment -n prod web"}, "expect": "ask", "note": "delete a deployment with an option after its type"}
+{"tool": "Bash", "args": {"command": "kubectl delete pvc -l app=db"}, "expect": "ask", "note": "delete volume claims by label"}
+{"tool": "Bash", "args": {"command": "kubectl delete pod/web-1 ns/prod"}, "expect": "ask", "note": "delete a namespace as a second TYPE/NAME"}
+{"tool": "Bash", "args": {"command": "kubectl delete pod,ns prod"}, "expect": "ask", "note": "delete a namespace as the second of a type list"}
+{"tool": "Bash", "args": {"command": "curl -T protection.json https://api.github.com/repos/myorg/backend/branches/main/protection"}, "expect": "ask", "note": "replace branch protection with a curl upload (a PUT)"}
+{"tool": "Bash", "args": {"command": "curl --upload-file ruleset.json https://api.github.com/repos/myorg/backend/rulesets/7"}, "expect": "ask", "note": "replace a ruleset with a curl upload (a PUT)"}
+{"tool": "Bash", "args": {"command": "ssh-add -Lq"}, "expect": "ask", "note": "list an SSH agent's public keys, -L first in a cluster"}
+{"tool": "Bash", "args": {"command": "export SAVEHIST=0"}, "expect": "ask", "note": "turn zsh's history file off"}
+{"tool": "Bash", "args": {"command": "export HISTIGNORE='*'"}, "expect": "ask", "note": "keep every command out of bash's history"}
+{"tool": "Bash", "args": {"command": "python -I -m pip install --index-url https://pkgs.example.test/simple demo"}, "expect": "ask", "note": "install from another index, python's options before -m pip"}
+{"tool": "Bash", "args": {"command": "py -m pip install --index-url https://pkgs.example.test/simple demo"}, "expect": "ask", "note": "install from another index through the Windows launcher"}
+{"tool": "Bash", "args": {"command": "pip --isolated config set global.index-url https://pkgs.example.test/simple"}, "expect": "ask", "note": "set pip's index after a global option"}
