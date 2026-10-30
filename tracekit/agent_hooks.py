@@ -422,6 +422,33 @@ def _blocked_goose_tool(tool_name):
     return None
 
 
+def _blocked_agy_args(name, args):
+    """The reason an agy call is denied in the hook itself, else None. agy is a Go binary: a decoder like Go's
+    encoding/json fills a field from any key that folds to its name (the last one; a null keeps the value before it),
+    where tool() reads the exact name. So: a key outside ASCII, two keys one name apart in case, a field tool() reads
+    spelled in another case, or that field null."""
+    args = _input(args)
+    read = {f.casefold(): f for f in (*AGY_ARGS.get(name, {}).values(),
+                                      *(("Action", "Input") if name == "manage_task" else ()))}
+    seen = {}
+    for k, v in args.items():
+        f = k.casefold()
+        if not k.isascii() or seen.setdefault(f, k) != k or read.get(f, k) != k or f in read and v is None:
+            return (f"Blocked by Tracekit: agy may read the argument {k[:64]!r} as {read.get(f) or seen.get(f, k)}, "
+                    "which Tracekit reads only as spelled; send each argument once, by its exact name, not null.")
+    return None
+
+
+def _blocked(harness, p):
+    """The reason a pre-tool call is denied in the hook itself, before it is mapped, else None."""
+    if harness == "goose":
+        return _blocked_goose_tool(str(p.get("tool_name") or ""))
+    if harness == "antigravity":
+        call = p.get("toolCall") if isinstance(p.get("toolCall"), dict) else {}
+        return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
+    return None
+
+
 def run(harness, raw, stdout=None, stderr=None, event=None):
     """Handle one hook invocation (`event`: the hook event from the command line, or None). -> exit code. Writes the
     harness's expected stdout. A payload that is not a JSON object raises: entry answers it."""
@@ -435,7 +462,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
-    reason = _blocked_goose_tool(str(p.get("tool_name") or "")) if harness == "goose" and is_pre else None
+    reason = _blocked(harness, p) if is_pre else None
     if reason is not None:
         print(reason, file=stderr)
         _reply(harness, stdout, False, reason, is_pre)
