@@ -53,7 +53,7 @@ SECTIONS = [
                               "review-packet.md", "privacy.md", "limits.md", "support.md"]),
     ("Compliance", ["compliance/README.md", "compliance/*.md"]),
     ("Evaluation", ["evaluation.md", "case-study-oss-agents.md"]),
-    ("Demos", ["demos/README.md", "demos/*/README.md"]),
+    ("Use cases and demos", ["use-cases.md", "demos/README.md", "demos/*/README.md"]),
     ("Help", ["faq.md"]),
 ]
 HOME = """# Tracekit
@@ -67,6 +67,7 @@ Each run exports as one `.tkb` bundle that anyone can verify offline, against ke
 
 """
 START = [
+    ("use-cases.md", "the problems teams bring to Tracekit, and how to see each one"),
     ("quickstart-v2.md", "a signed, verified run in a few minutes"),
     ("coding-agents.md", "Codex, Cursor and Gemini CLI; Claude Code is in the quickstart"),
     ("concepts/README.md", "the design, one concept per page, in reading order"),

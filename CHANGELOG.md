@@ -245,6 +245,9 @@ protocol stays 20.
 - The 1.4 viewer page is kept beside 1.5's; 1.5 viewer screenshots; `docs/deploy.md` names the `tracekit-central`
   chart and what it authenticates; AGENTS.md asks agents to test like a user; the Event Horizon page covers zoom and
   where a shell move is placed.
+- **Use cases**: the problems teams bring to Tracekit (a support agent told to delete orders, a coding agent that
+  deletes production, wrong refunds, a security review, a health assistant, sandboxes, investigations, agent-to-agent
+  requests), each with what Tracekit does and a video or a run to check, in the docs and the wiki.
 
 ## 1.5.0 (2026-10-28) — A2A gateway, proof-carrying messages, a new viewer and four more coding agents
 
