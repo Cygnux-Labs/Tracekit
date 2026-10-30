@@ -231,6 +231,28 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
     (format.registry.tenant_salt) adds the run-set a..b; `run_id` may then be None. `with_runs`: also these runs of the
     tenant (`about`: the run's findings and replay runs). `policy_dir`: where the signer keeps its compiled policies
     (<data_dir>/policies), to bundle those cited_policies names."""
+    files, info = bundle(storage, tenant, run_id, note, run_set, tenant_salt, with_runs, policy_dir)
+    tmp = out_path + ".tmp"
+    try:
+        with open(tmp, "wb") as f:
+            with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
+                for n, b in files.items():
+                    z.writestr(n, b)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, out_path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return {"bundle": out_path, **info}
+
+
+def bundle(storage, tenant, run_id, note, run_set=None, tenant_salt=None, with_runs=(), policy_dir=None, kept=None):
+    """({name: bytes}, summary) of the bundle export() writes, manifest.json first, unzipped: what a verifier reads of
+    it. `kept`, for one run with no run-set, other runs or policy_dir (tracekit view, as a run grows): the summary's
+    `kept` of an earlier call ({count, first, last, data, need}), from a reader that still holds those records, so only
+    the run's records after them are read; a `kept` of records the note does not cover is not used."""
     origin, size = note.split("\n", 2)[:2]
     size = int(size)
     if not 0 < size <= storage.tree.size or not note.startswith(
@@ -245,22 +267,28 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
         raise ValueError("export needs a run or a run-set")
     else:
         run_ids += with_runs
-    runs = {}
+    prior = kept if kept and run_ids == [run_id] and not (run_set or policy_dir) and kept["last"] < size else None
+    runs, ends, data = {}, {}, {}   # run file -> its records read now; (first, last) of its seqs; its bytes
     for rid in run_ids:
-        records = list(storage.iter_run(tenant, rid))
-        if not records:
+        count = prior["count"] if prior else 0
+        records = storage.run_records(tenant, rid, range(count, (storage.get_run(tenant, rid) or {}).get("count", 0))) \
+            if prior else list(storage.iter_run(tenant, rid))
+        if not (records or count):
             raise ValueError(f"no run {rid!r} for tenant {tenant!r}")
         # a run still being written: its records up to the checkpoint
         records = runs[run_name(tenant, rid)] = [r for r in records if r["event"]["seq"] < size]
-        if not records:
+        if not (records or count):
             raise ValueError("the checkpoint does not cover the run yet; export after the next checkpoint")
-    # lean: scans the whole log for key records; index them in storage once logs reach millions of records
-    keys = [r for r in storage.iter_range(0, size) if r["event"]["type"] in KEY_TYPES]
-    seqs = {r["event"]["seq"] for rs in runs.values() for r in (rs[0], rs[-1])} | {
-        r["event"]["seq"] for r in keys + pointed}
+        ends[run_name(tenant, rid)] = (prior["first"] if prior else records[0]["event"]["seq"],
+                                       records[-1]["event"]["seq"] if records else prior["last"])
+        data[run_name(tenant, rid)] = (prior["data"] if prior else b"") + _jsonl(records)
+    # a reader that indexes the key records (FileReader) reads only those, else the whole log is read for them
+    keys = storage.key_records(size) if hasattr(storage, "key_records") else [
+        r for r in storage.iter_range(0, size) if r["event"]["type"] in KEY_TYPES]
+    seqs = {s for e in ends.values() for s in e} | {r["event"]["seq"] for r in keys + pointed}
     from tracekit.verify.v2 import MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL   # here: that module imports this one
     files.update({
-        **{p: b for n, rs in runs.items() for p, b in _parts(n, _jsonl(rs), MAX_ENTRY).items()},
+        **{p: b for n, d in data.items() for p, b in _parts(n, d, MAX_ENTRY).items()},
         "keys/records.jsonl": _jsonl(keys),
         f"checkpoints/{size}.note": note.encode("utf-8"),
         "proofs/records.json": json.dumps({
@@ -271,7 +299,7 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
     if anchor:
         files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
-    # every record the verifier reads (its schema, ext names), the key records too
+    # every record the verifier reads (its schema, ext names), the key records too (with `kept`, those read now)
     events = [r["event"] for r in [*keys, *pointed, *(r for rs in runs.values() for r in rs)]]
     for h in sorted(cited_policies(events) if policy_dir else ()):
         try:
@@ -281,6 +309,9 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
             pass
     layout = ["run parts"] if any(PART.fullmatch(n) for n in files) else []
     need, full = needs(events, layout)
+    if prior:   # each version is the newest any record needs: the records read before need theirs
+        order = [VERIFIER_MIN_VERSION, *VERSIONS]
+        need, full = (max(a, b, key=order.index) for a, b in zip((need, full), prior["need"]))
     manifest = json.dumps({"format": FORMAT, "verifier_min_version": need, "verifier_version": full,
                            "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}, indent=1)
     sizes = {"manifest.json": len(manifest), **{n: len(b) for n, b in files.items()}}
@@ -293,20 +324,13 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
                          f"into parts that fit; {MAX_ENTRIES:,} files; {MAX_TOTAL >> 20} MiB in all; "
                          f"docs/format-v2.md#9-bundle-layout): {over}, so no verifier could read it. Start a new run for "
                          "each task or session so each stays under the limits")
-    tmp = out_path + ".tmp"
-    try:
-        with open(tmp, "wb") as f:
-            with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
-                z.writestr("manifest.json", manifest)
-                for n, b in files.items():
-                    z.writestr(n, b)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, out_path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-    return {"bundle": out_path, "records": sum(map(len, runs.values())), "tree_size": size,
+    count = (prior["count"] if prior else 0) + sum(map(len, runs.values()))
+    info = {"records": count, "tree_size": size,
             **({"runs": len(runs), "registry_leaves": run_set[1] - run_set[0]} if run_set else {}),
-            "verifier_min_version": need, "raised_by": raised_by(events, need, layout), "verifier_min_version_full": full}
+            "verifier_min_version": need, "raised_by": [] if prior else raised_by(events, need, layout),
+            "verifier_min_version_full": full}
+    if kept is not None and run_ids == [run_id] and not (run_set or policy_dir):
+        first, last = ends[run_name(tenant, run_id)]
+        info["kept"] = {"count": count, "first": first, "last": last, "data": data[run_name(tenant, run_id)],
+                        "need": (need, full)}
+    return {"manifest.json": manifest.encode("utf-8"), **files}, info

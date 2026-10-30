@@ -330,8 +330,7 @@ def agree(page, bundle, trust, errors):
     py = cli([PY, "-m", "tracekit.cli", *argv], cwd)
     t2 = time.monotonic()
     if not page:
-        rep, shown, word, secs, longest = ts, lines(ts), {0: "VERIFIED", 1: "FAILED", 2: "UNVERIFIABLE"}.get(
-            ts["exit_code"]), None, None
+        rep, shown, word, secs, longest = ts, lines(ts), _word(ts), None, None
     # a CLI that printed no report crashed, unless it refused the files (exit 2: no --trust, or --trust for a file that
     # is no v2 bundle)
     problems = [f"{name} CLI printed no report (exit {out['exit_code']}): {out['stderr'][-300:]}"
@@ -343,8 +342,8 @@ def agree(page, bundle, trust, errors):
             problems.append(f"page JSON != TypeScript CLI: {_diff(rep, ts)}")
         if shown != lines(ts):
             problems.append(f"page lines != TypeScript CLI: {_diff(shown, lines(ts))}")
-        # Python checks what TypeScript lacks (UNVERIFIABLE here, never VERIFIED), and its CLI hands a zip without a
-        # v2 manifest to the v1 verifier
+        # Python checks what TypeScript lacks (UNVERIFIABLE here, never VERIFIED), and its CLI hands a zip whose
+        # manifest names another format to the v1 verifier
         if "stderr" not in py and not lacks and _py_order(rep) != py:
             problems.append(f"page JSON != Python CLI: {_diff(_py_order(rep), py)}")
     elif v1:   # the Python CLI verifies v1 bundles; the page names the command that does
@@ -353,7 +352,7 @@ def agree(page, bundle, trust, errors):
     elif rep["exit_code"] not in (1, 2) or py["exit_code"] != 2:
         # no trust config: the CLIs refuse (exit 2); the page checks what needs no pinned key, never VERIFIED
         problems.append(f"no trust config: page {rep['exit_code']}, Python CLI {py['exit_code']}")
-    want = {0: "VERIFIED", 1: "FAILED", 2: "UNVERIFIABLE"}.get(rep["exit_code"])
+    want = _word(rep)
     if word != want:
         problems.append(f"banner {word!r} for exit {rep['exit_code']}")
     if errors:
@@ -452,6 +451,12 @@ def _browse(sync_playwright, cases, tmp, shots):
         print(f"MISMATCH {how} {name}:", *problems, sep="\n    ")
     print(f"{len(rows)} page runs, {len(bad)} mismatched")
     return 1 if bad else 0
+
+
+def _word(rep):
+    """The banner a report gets: its exit code's word, or the CLIs' UNUSABLE BUNDLE."""
+    return "UNUSABLE BUNDLE" if rep.get("integrity") == "UNUSABLE BUNDLE" else \
+        {0: "VERIFIED", 1: "FAILED", 2: "UNVERIFIABLE"}.get(rep.get("exit_code"))
 
 
 def _py_order(rep):

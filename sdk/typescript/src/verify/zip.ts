@@ -11,8 +11,9 @@ export const MAX_TOTAL = 512 << 20;
 const NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9._-]+)*$/;
 
 export class Unusable extends Error {}
-/** An entry whose bytes don't match its CRC-32: Python's zipfile names it so, and the reports print the name. */
-class BadZipFile extends Unusable {}
+/** A file that isn't a zip, has no manifest, or an entry whose bytes don't inflate or don't match its CRC-32: the
+ * reports say the bundle file is damaged. */
+export class BadZipFile extends Unusable {}
 
 let CRC: Uint32Array | undefined;
 
@@ -60,7 +61,7 @@ export async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>
     if (at < 0 || at + n > data.length) throw new Unusable("truncated zip");
   };
   const eocd = data.length - 22;
-  if (eocd < 0 || v.getUint32(eocd, true) !== 0x06054b50) throw new Unusable("not a zip file, or bytes after its end record");
+  if (eocd < 0 || v.getUint32(eocd, true) !== 0x06054b50) throw new BadZipFile("not a zip file, or bytes after its end record");
   const count = v.getUint16(eocd + 10, true), cdSize = v.getUint32(eocd + 12, true), cdOffset = v.getUint32(eocd + 16, true);
   if (v.getUint16(eocd + 4, true) || v.getUint16(eocd + 6, true) || v.getUint16(eocd + 8, true) !== count
       || v.getUint16(eocd + 20, true) || cdOffset + cdSize !== eocd)
@@ -119,7 +120,7 @@ export async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>
         out = await inflate(body, limit);
       } catch (x) {
         // lean: the decompressor's own message, which differs from zlib's in the reference verifier's report
-        throw new Unusable(`${n}: ${(x as Error).message}`);
+        throw new BadZipFile(`${n} does not inflate` + ((x as Error).message ? `: ${(x as Error).message}` : ""));
       }
     }
     if (out.length > cap) throw new Unusable(`${n} is larger than the bundle limits`);

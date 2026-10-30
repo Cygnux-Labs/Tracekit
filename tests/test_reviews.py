@@ -241,9 +241,9 @@ class TestVerify(Signed):
                 "same-user": ("warn", "1 review(s): 1 self-asserted"),
                 "alone": ("pass", "1 review(s): 1 author not checked"),
                 "imported": ("pass", "1 review(s): 1 imported"),
-                "mismatch": ("fail", "1 review(s): 1 unpinned author uid:999002"),
+                "mismatch": ("fail", "2 problem(s) in 1 review(s): 1 unpinned author uid:999002"),
                 "reviewer": ("pass", "2 review(s): 2 independent"),
-                "shape": ("fail", "2 review(s): 2 self-asserted")}
+                "shape": ("fail", "2 problem(s) in 2 review(s): 2 self-asserted")}
         for name, (bundle, trust) in b.items():
             with self.subTest(name):
                 rep, code = v2.verify(bundle, trust)

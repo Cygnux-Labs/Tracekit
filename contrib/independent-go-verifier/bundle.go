@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,7 +44,7 @@ func array(v any) ([]any, error) {
 // rather than relying on ZIP's permissive default reader behavior.
 func ReadBundle(input []byte) (map[string][]byte, error) {
 	if len(input) < 22 || binary.LittleEndian.Uint32(input[len(input)-22:]) != 0x06054b50 {
-		return nil, errors.New("missing final ZIP EOCD")
+		return nil, errors.New("the bundle file is damaged: not a zip file, or bytes after its end record")
 	}
 	eocd := input[len(input)-22:]
 	if binary.LittleEndian.Uint16(eocd[4:]) != 0 || binary.LittleEndian.Uint16(eocd[6:]) != 0 || binary.LittleEndian.Uint16(eocd[20:]) != 0 {
@@ -116,7 +117,7 @@ func ReadBundle(input []byte) (map[string][]byte, error) {
 		data, readErr := io.ReadAll(io.LimitReader(file, int64(f.UncompressedSize64)+1))
 		closeErr := file.Close()
 		if readErr != nil || closeErr != nil || uint64(len(data)) != f.UncompressedSize64 {
-			return nil, errors.New("ZIP content/CRC failure")
+			return nil, fmt.Errorf("the bundle file is damaged: %s does not match its CRC-32 or size", f.Name)
 		}
 		content[f.Name] = data
 		pos = end
@@ -332,10 +333,14 @@ func loadTrust(raw []byte) (VKey, []VKey, int, error) {
 		return VKey{}, nil, 0, errors.New("non-string log key")
 	}
 	log, err := ParseVKey(str)
-	if err != nil || log.Type != 1 {
-		return VKey{}, nil, 0, errors.New("invalid log vkey")
+	if err == nil && log.Type != 1 {
+		err = errors.New("not an Ed25519 log vkey")
+	}
+	if err != nil {
+		return VKey{}, nil, 0, notVKey(str, err)
 	}
 	var witnesses []VKey
+	var classes, vkeys []string
 	if value, ok := trust["witnesses"]; ok {
 		arr, err := array(value)
 		if err != nil {
@@ -362,25 +367,43 @@ func loadTrust(raw []byte) (VKey, []VKey, int, error) {
 			if err != nil {
 				return VKey{}, nil, 0, err
 			}
+			// a vkey of another type is no trust error: the checkpoint fails it (exit 1), as in the reference
 			vkey, err := ParseVKey(name)
-			if err != nil || vkey.Type != 4 {
-				return VKey{}, nil, 0, errors.New("invalid witness vkey")
+			if err != nil {
+				return VKey{}, nil, 0, notVKey(name, err)
 			}
 			witnesses = append(witnesses, vkey)
+			classes = append(classes, class)
+			vkeys = append(vkeys, name)
+		}
+		if err := checkWitnesses(witnesses); err != nil {
+			return VKey{}, nil, 0, err
+		}
+		seen := make(map[string]string) // by the vkey as written, as the reference keys a witness's class
+		for i, k := range witnesses {
+			if c, ok := seen[vkeys[i]]; !ok {
+				seen[vkeys[i]] = classes[i]
+			} else if c != classes[i] {
+				return VKey{}, nil, 0, fmt.Errorf("witness %s with two classes (%s, %s); a witness has one class: list it once, with the class you give it", k.Name, c, classes[i])
+			}
 		}
 	}
+	// a quorum above the pinned witnesses is no trust error: the checkpoint fails it (exit 1)
 	quorum := 0
 	if _, ok := trust["witnesses_required"]; ok {
 		n, err := fieldInt(trust, "witnesses_required")
 		if err != nil {
 			return VKey{}, nil, 0, err
 		}
-		if n > uint64(len(witnesses)) {
-			return VKey{}, nil, 0, errors.New("impossible witness quorum")
-		}
-		quorum = int(n)
+		// int is 32 bits on some builds: past any number of witnesses, every larger quorum fails alike
+		quorum = int(min(n, math.MaxInt32))
 	}
 	return log, witnesses, quorum, nil
+}
+
+// notVKey says which pinned key is not a vkey, and why, as the reference verifier does.
+func notVKey(key string, err error) error {
+	return fmt.Errorf("pinned key %q is not a vkey: %v", key[:min(len(key), 80)], err)
 }
 
 // InspectBundle checks signatures, schemas, chains and tree membership. Use
@@ -415,7 +438,9 @@ func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 		return result, errors.New("invalid checkpoint path")
 	}
 	cp, err := VerifyCheckpoint(files[noteName], log, witnesses, quorum)
-	if err != nil {
+	if errors.Is(err, errQuorum) {
+		return result, err
+	} else if err != nil {
 		return result, fmt.Errorf("checkpoint: %w", err)
 	}
 	n, err := fieldInt(proofs, "tree_size")

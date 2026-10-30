@@ -102,6 +102,15 @@ class StorageCorrupt(Exception):
     """A log can't be read as written: a damaged line before the tail, or a seq out of order."""
 
 
+class StorageChanged(StorageCorrupt):
+    """A line a reader read again no longer holds the bytes it read first (an edit in place): `at`, its byte range
+    (from, to). Open a new reader."""
+
+    def __init__(self, message, at):
+        super().__init__(message)
+        self.at = at
+
+
 class Storage:
     torn = ()  # torn last lines (a write cut short by a crash) set aside on open: [{"log", "offset", "length", "path"}]
     snapshot = None  # the snapshot the store opened from: {"size", "hash" of record size-1, "state"}, or None

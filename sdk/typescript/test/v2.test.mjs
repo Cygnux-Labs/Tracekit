@@ -398,6 +398,12 @@ test("the validator refuses schema keywords it does not implement", () => {
   assert.throws(() => validate({ allOf: [] }, "x"), /unsupported schema keywords at \$: allOf/);
 });
 
+test("an identity takes every character the signer's Python takes: a line feed is the only one refused", () => {
+  const caller = REQUESTS.decide.properties.caller;
+  for (const id of ["uid:990102\r x", "uid:a b", "uid:a b"]) assert.deepEqual(validate(caller, id), [], id);
+  assert.notDeepEqual(validate(caller, "uid:a\nb"), []);
+});
+
 test("HTTPS: an id with a central replica's route goes to that replica, others to the signer", async () => {
   const { routeUrl } = await import("../dist/v2/client.js");
   const base = new URL("https://tracekit-signer.tk.svc:8443/v2/rpc");

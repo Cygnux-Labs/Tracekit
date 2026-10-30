@@ -104,7 +104,7 @@ func checkRunEvidence(files map[string][]byte, keys map[string]recordedKey, logI
 				return nil, 0, fmt.Errorf("run record: %w", err)
 			}
 			if err := checkRecord(rec, line, keys); err != nil {
-				return nil, 0, fmt.Errorf("run record %d: %w", i, err)
+				return nil, 0, fmt.Errorf("seq %d: %w", rec.seq, err)
 			}
 			tenant, err := fieldString(rec.ev, "tenant")
 			if err != nil {
@@ -138,7 +138,7 @@ func checkRunEvidence(files map[string][]byte, keys map[string]recordedKey, logI
 				return nil, 0, errors.New("run seq out of order")
 			}
 			if isFinal || rec.runSeq != uint64(i) || tenant != run.tenant || id != run.id || chain != prevHash {
-				return nil, 0, fmt.Errorf("run chain mismatch at record %d", i)
+				return nil, 0, fmt.Errorf("run_seq %d (seq %d) does not continue the run", i, rec.seq)
 			}
 			if i > 0 && rec.seq == prevSeq+1 && rec.ev["prev_hash"] != prevHash {
 				return nil, 0, errors.New("contiguous log chain mismatch")
