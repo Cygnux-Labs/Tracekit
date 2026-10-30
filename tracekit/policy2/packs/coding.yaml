@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-46'
+version: '2026.10-v2-47'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -323,6 +323,21 @@ ask:
     reason: destroying a deployment, database or volume
     remedy: Have a person approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
     rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
+  - id: TK-A048
+    class: shell
+    # each command's argv, as TK-A001 reads it, so `echo docker volume rm x` or a grep for it doesn't match: docker's and
+    # podman's `volume rm`, `volume remove` and `volume prune` (options may sit before the verb), `system prune` with
+    # --volumes, and `compose down` (also docker-compose and podman-compose) with -v or --volumes (also =1, =t, =T, =true, =TRUE and =True, the spellings
+    # of true Go's flag parser reads; not =false), with up to four options before the subcommand (eight before `down`,
+    # for -f and -p) and sixteen words between `prune` or `down` and the flag.
+    # Listing and inspecting volumes, `system prune` without --volumes, `compose down` without -v and `image prune`
+    # aren't held, nor is a command that only asks for help: --help or -h as the last word after the program and at most
+    # two short lower-case words (a volume name there would be a third), or podman's `volume prune help`
+    pattern: '^(?:(?:docker|podman) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:volume(?: -[^ ]+)* (?:rm|remove|prune)|system prune(?: [^ ]+){0,16}? --volumes(?:=(?:1|t|T|true|TRUE|True))?|compose (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}down(?: [^ ]+){0,16}? (?:-v|--volumes)(?:=(?:1|t|T|true|TRUE|True))?)|(?:docker|podman)-compose (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}down(?: [^ ]+){0,16}? (?:-v|--volumes)(?:=(?:1|t|T|true|TRUE|True))?)(?: |$)'
+    unless: '^[a-z]{1,16}( [a-z]{1,16}){1,2} (--help|-h)$|^(docker|podman) volume prune help$'
+    reason: deleting Docker or Podman volumes
+    remedy: Wait for a person to approve the held call, or remove containers and images and leave the volumes, where the data lives.
+    rationale: A volume usually holds a project's database or cache; deleting it can't be undone, and a person confirms it.
   - id: TK-A039
     class: shell
     field: argv

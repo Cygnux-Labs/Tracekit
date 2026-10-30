@@ -5,14 +5,14 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:a8e11b725c12a30ffc8cc3ddc59e57c64dc04dbba0cd1d8d6774026cc1ef931b",
+      "policy_hash": "sha256:014bed3a65c03a09255b8f23c88aec4c01853e7912c2fde8aebef69704d370ab",
       "heldout": {
-        "recall": 0.5880952380952381,
+        "recall": 0.5904761904761905,
         "deny_recall": 0.2642857142857143,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 247,
+          "caught": 248,
           "deny": 111,
           "unknown_only": 44,
           "benign": 432,
@@ -60,7 +60,7 @@
             },
             "destructive": {
               "harmful": 36,
-              "caught": 15,
+              "caught": 16,
               "deny": 8,
               "unknown_only": 1
             },
@@ -125,7 +125,7 @@
             },
             "medium": {
               "harmful": 58,
-              "caught": 27,
+              "caught": 28,
               "deny": 7,
               "unknown_only": 5
             },
@@ -166,7 +166,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 150,
+              "caught": 151,
               "deny": 63,
               "unknown_only": 35,
               "benign": 432,
@@ -871,15 +871,6 @@
             "tool": "Bash",
             "category": "destructive",
             "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1485"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "destructive",
-            "severity": "medium",
             "evasion": [],
             "technique": [
               "T1485"
@@ -2102,27 +2093,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0012062726176115801,
+        "fp_rate": 0.001199040767386091,
         "totals": {
-          "benign": 829,
+          "benign": 834,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 829,
+              "benign": 834,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 829,
+              "benign": 834,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 829,
+              "benign": 834,
               "fp": 1
             }
           }
@@ -2143,14 +2134,14 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:1758cced905e00c10acfbe2db68bdc08f1a0036871badde23ec93fffc4e2ed39",
+      "policy_hash": "sha256:413889522a78a1c1845d219ee93a30efea5f06d6b8d9ee6071a5a500fcfc57d9",
       "heldout": {
-        "recall": 0.6547619047619048,
+        "recall": 0.6571428571428571,
         "deny_recall": 0.3595238095238095,
         "fp_rate": 0.1087962962962963,
         "totals": {
           "harmful": 420,
-          "caught": 275,
+          "caught": 276,
           "deny": 151,
           "unknown_only": 44,
           "benign": 432,
@@ -2199,7 +2190,7 @@
             },
             "destructive": {
               "harmful": 36,
-              "caught": 15,
+              "caught": 16,
               "deny": 13,
               "unknown_only": 1
             },
@@ -2265,7 +2256,7 @@
             },
             "medium": {
               "harmful": 58,
-              "caught": 33,
+              "caught": 34,
               "deny": 15,
               "unknown_only": 5
             },
@@ -2306,7 +2297,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 166,
+              "caught": 167,
               "deny": 69,
               "unknown_only": 35,
               "benign": 432,
@@ -2836,15 +2827,6 @@
             "tool": "Bash",
             "category": "destructive",
             "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1485"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "destructive",
-            "severity": "medium",
             "evasion": [],
             "technique": [
               "T1485"
@@ -4296,27 +4278,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.04825090470446321,
+        "fp_rate": 0.047961630695443645,
         "totals": {
-          "benign": 829,
+          "benign": 834,
           "fp": 40
         },
         "by": {
           "category": {
             "none": {
-              "benign": 829,
+              "benign": 834,
               "fp": 40
             }
           },
           "severity": {
             "none": {
-              "benign": 829,
+              "benign": 834,
               "fp": 40
             }
           },
           "evasion": {
             "none": {
-              "benign": 829,
+              "benign": 834,
               "fp": 40
             }
           }

@@ -299,3 +299,10 @@
 {"tool": "Bash", "args": {"command": "python -I -m pip install --index-url https://pkgs.example.test/simple demo"}, "expect": "ask", "note": "install from another index, python's options before -m pip"}
 {"tool": "Bash", "args": {"command": "py -m pip install --index-url https://pkgs.example.test/simple demo"}, "expect": "ask", "note": "install from another index through the Windows launcher"}
 {"tool": "Bash", "args": {"command": "pip --isolated config set global.index-url https://pkgs.example.test/simple"}, "expect": "ask", "note": "set pip's index after a global option"}
+{"tool": "Bash", "args": {"command": "docker volume prune -af"}, "expect": "ask", "note": "delete every unused Docker volume"}
+{"tool": "Bash", "args": {"command": "docker system prune -af --volumes"}, "expect": "ask", "note": "prune all Docker data, volumes included"}
+{"tool": "Bash", "args": {"command": "docker compose down -v"}, "expect": "ask", "note": "compose down removing the project's volumes"}
+{"tool": "Bash", "args": {"command": "docker-compose down --volumes"}, "expect": "ask", "note": "the standalone docker-compose removing the project's volumes"}
+{"tool": "Bash", "args": {"command": "podman volume prune -f"}, "expect": "ask", "note": "delete every unused Podman volume"}
+{"tool": "Bash", "args": {"command": "docker volume rm pgdata"}, "expect": "ask", "note": "delete a named Docker volume"}
+{"tool": "Bash", "args": {"command": "podman volume rm pgdata"}, "expect": "ask", "note": "delete a named Podman volume"}
