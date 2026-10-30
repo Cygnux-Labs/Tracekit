@@ -212,7 +212,7 @@
       "expected": {
         "exit_code": 1,
         "integrity": "Integrity: VERIFICATION FAILED.",
-        "assurance": "Assurance: dev (signer ran as the agent's own user: the agent could have rewritten the ledger).",
+        "assurance": "Assurance: not rated (the bundle failed verification).",
         "checks": [
           [
             "files match manifest",

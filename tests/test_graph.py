@@ -886,15 +886,12 @@ class EndToEnd(unittest.TestCase):
         assert cls.hook("PreToolUse", tool_name="Bash", tool_input={"command": "pkill tracekitd"},
                         tool_use_id="b1")[0] == 2
         held = {"command": 'echo "open'}   # the dev pack can't parse it: a person must approve
-        p = cls.hook("PreToolUse", wait=False, tool_name="Bash", tool_input=held, tool_use_id="b2")
-        line = p.stderr.readline()
-        assert "waiting for approval" in line, line
+        code, line = cls.hook("PreToolUse", tool_name="Bash", tool_input=held, tool_use_id="b2")
+        assert code == 2 and "held for approval" in line, line
         cls.client.approval_decide({"approval_id": line.split()[4], "decision": "approve"})
-        p.stderr.read()
-        assert p.wait(60) == 0
-        p.stdout.close()
-        p.stderr.close()
-        assert cls.hook("PostToolUse", tool_name="Bash", tool_input=held, tool_use_id="b2",
+        # the agent sends the same call again: it runs under the approval
+        assert cls.hook("PreToolUse", tool_name="Bash", tool_input=held, tool_use_id="b3") == (0, "")
+        assert cls.hook("PostToolUse", tool_name="Bash", tool_input=held, tool_use_id="b3",
                         tool_response={"stdout": "open"}) == (0, "")
         with open(claude_code._state("s1")) as f:
             st = json.load(f)
@@ -1008,7 +1005,8 @@ class EndToEnd(unittest.TestCase):
         self.one(src="rule:TK-SHELL-PARSE", dst=held, kind="ask", grade="SIGNED")
         approval = self.one(src=held, kind="held for approval")["dst"]
         self.assertEqual(nodes[approval]["kind"], "approval")
-        self.one(src=approval, dst=held, kind="consumed", grade="SIGNED")
+        [ran] = [n for n, v in nodes.items() if n.startswith(f"call:{self.session}:") and v["tool_use_id"] == "b3"]
+        self.one(src=approval, dst=ran, kind="consumed", grade="SIGNED")   # the call that ran under it: the retry
         self.assertTrue(self.one(src="person:" + me, dst=held, kind="approve", grade="SIGNED")["self_approved"])
         labels = sorted(nodes[e["dst"]]["label"].split(":")[0]
                         for e in self.edges(src=run, kind="recorded", grade="SIGNED"))
@@ -1339,10 +1337,10 @@ class EndToEnd(unittest.TestCase):
     def test_without_content_the_report_says_what_was_not_read(self):
         doc = graph.build([self.hook_tkb], self.trust)
         self.assertFalse(doc["content"] or self.edges(doc, kind="wrote") or self.edges(doc, kind="reached"))
-        self.assertIn("4 calls in 1 run: their arguments were not read, so the files and hosts they "
+        self.assertIn("5 calls in 1 run: their arguments were not read, so the files and hosts they "
                       "named are not in the graph \\(build with --content, against the signer that recorded them\\)",
                       graph.report(doc))
-        self.assertIn("4 calls' arguments not read (pass --content)",
+        self.assertIn("5 calls' arguments not read (pass --content)",
                       run("build", self.hook_tkb, "--trust", self.trust, "--graphify", "", "-o",
                           os.path.join(self.dir, "g4"))[1])
 
@@ -1354,7 +1352,7 @@ class EndToEnd(unittest.TestCase):
         first = graph.report(doc).split("\n## ")[1]
         self.assertIn(f"hook.tkb: run {self.session}: EvidenceAlert: the content the vault returned does not "
                       "open the record's commitment", first)
-        self.assertIn("4 calls in 1 run: their arguments were not read", first)
+        self.assertIn("5 calls in 1 run: their arguments were not read", first)
 
     def test_a_forged_bundle_is_unreadable_and_queries_of_what_it_shares_still_answer(self):
         rid = self.session.encode()

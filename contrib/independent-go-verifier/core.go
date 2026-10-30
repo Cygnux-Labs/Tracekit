@@ -595,7 +595,7 @@ func ParseVKey(input string) (VKey, error) {
 		}
 	}
 	if prev < 0 {
-		return VKey{}, errors.New("invalid vkey")
+		return VKey{}, errors.New("a vkey is name+id+key")
 	}
 	name := input[:prev]
 	if !validNoteName(name) {
@@ -612,7 +612,7 @@ func ParseVKey(input string) (VKey, error) {
 	}
 	sum := sha256.Sum256(append(append([]byte(name+"\n"), raw[0]), raw[1:]...))
 	if !bytes.Equal(sum[:4], idRaw) {
-		return VKey{}, errors.New("incorrect vkey id")
+		return VKey{}, errors.New("vkey id does not match the key")
 	}
 	if !validEd25519PublicKey(raw[1:]) {
 		return VKey{}, errors.New("invalid vkey public key")
@@ -647,11 +647,41 @@ func validNoteName(name string) bool {
 	return true
 }
 
+// checkWitnesses refuses one cosignature key pinned under two names, or two
+// under one name: a cosignature signs no key name and a witness has one key
+// (C2SP tlog-cosignature), so each witness counts once.
+func checkWitnesses(witnesses []VKey) error {
+	names := make(map[string]string)
+	pubs := make(map[string]string)
+	for _, k := range witnesses {
+		if k.Type != 4 {
+			continue
+		}
+		if name, ok := names[string(k.Pub)]; !ok {
+			names[string(k.Pub)] = k.Name
+		} else if name != k.Name {
+			return fmt.Errorf("one witness key under two names (%s, %s); a key is one witness: keep it under the name it cosigns with", name, k.Name)
+		}
+		if pub, ok := pubs[k.Name]; !ok {
+			pubs[k.Name] = string(k.Pub)
+		} else if pub != string(k.Pub) {
+			return fmt.Errorf("two witness keys under one name (%s); a name is one witness: keep only its current key", k.Name)
+		}
+	}
+	return nil
+}
+
+// errQuorum: too few pinned witnesses cosigned a checkpoint whose log signature verified.
+var errQuorum = errors.New("witness quorum")
+
 // VerifyCheckpoint checks C2SP signed-note and tlog-cosignature/v1 signatures.
 // Pins must come from the auditor's own trust config, never from the bundle.
 func VerifyCheckpoint(note []byte, log VKey, witnesses []VKey, quorum int) (Checkpoint, error) {
 	if len(note) > 1<<20 || quorum < 0 {
 		return Checkpoint{}, errors.New("invalid checkpoint size/quorum")
+	}
+	if err := checkWitnesses(witnesses); err != nil {
+		return Checkpoint{}, err
 	}
 	if !utf8.Valid(note) {
 		return Checkpoint{}, errors.New("checkpoint is not UTF-8")
@@ -696,13 +726,10 @@ func VerifyCheckpoint(note []byte, log VKey, witnesses []VKey, quorum int) (Chec
 	pins[log.Name+"/"+hex.EncodeToString(log.ID[:])+"/1"] = log
 	for _, k := range witnesses {
 		if k.Type != 4 {
-			return Checkpoint{}, errors.New("invalid witness type")
+			return Checkpoint{}, fmt.Errorf("pinned key %s has the wrong signature type", k.Name)
 		}
-		id := k.Name + "/" + hex.EncodeToString(k.ID[:]) + "/4"
-		if _, ok := pins[id]; ok {
-			return Checkpoint{}, errors.New("duplicate trust pin")
-		}
-		pins[id] = k
+		// checkWitnesses leaves one key per name, so a repeated id is the same key listed again
+		pins[k.Name+"/"+hex.EncodeToString(k.ID[:])+"/4"] = k
 	}
 	seen := make(map[string]bool)
 	seenLines := make(map[string]bool)
@@ -767,7 +794,7 @@ func VerifyCheckpoint(note []byte, log VKey, witnesses []VKey, quorum int) (Chec
 		return Checkpoint{}, errors.New("missing pinned log signature")
 	}
 	if cp.Witnesses < quorum {
-		return Checkpoint{}, errors.New("witness quorum not met")
+		return Checkpoint{}, fmt.Errorf("%w: %d pinned cosignature(s), %d required", errQuorum, cp.Witnesses, quorum)
 	}
 	return cp, nil
 }

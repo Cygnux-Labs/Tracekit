@@ -11,6 +11,7 @@ import io
 import json
 import os
 import random
+import re
 import threading
 import time
 import unittest
@@ -35,8 +36,11 @@ class Driver:
 
     def __init__(self, case, signer_path):
         self.case, d = case, ac.tmpdir(case)
+        # the contract's person answers while the hook holds the call (Slack, the viewer): the waiting setting;
+        # RetryDriver plays the default
         env = mock.patch.dict(os.environ, {"TRACEKIT_SIGNER": signer_path, "TRACEKIT_RUNTIME_DIR": os.path.join(d, "run"),
-                                           "HOME": os.path.join(d, "home")})
+                                           "HOME": os.path.join(d, "home"),
+                                           claude_code.WAIT_ENV: str(claude_code.APPROVAL_WAIT_S)})
         env.start()
         case.addCleanup(env.stop)
         for k in ("TRACEKIT_FAIL_CLOSED", "TRACEKIT_POLICY"):
@@ -107,6 +111,75 @@ class TestOnFakeSigner(ac.Contract, ac.OnFake, unittest.TestCase):
 
 class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
     driver = Driver
+
+
+class RetryDriver(Driver):
+    """Claude Code by default (no TRACEKIT_APPROVAL_WAIT): the hook blocks a held call at once, naming its approval;
+    once a person has approved it, the model sends the same call again under a new tool_use_id (`resume`)."""
+
+    def __init__(self, case, signer_path):
+        super().__init__(case, signer_path)
+        os.environ.pop(claude_code.WAIT_ENV)
+        self.tries = 0
+
+    def pre_tool_use(self, tool, args, tcid):
+        ac.RAN.clear()
+        self.pending = (tool, args, tcid)
+        self.pre = {"out": self.hook("PreToolUse", tcid, tool, args), "said": self.stdout.getvalue()}
+        held = re.match(r"\[tracekit\] held for approval (\S+) ", self.pre["out"][1])
+        return dict(self.finish(), approval_id=held and held[1])
+
+    def call(self, tool, args, tcid="call-1", mode="sync"):
+        return self.pre_tool_use(tool, args, tcid)
+
+    def resume(self, hint=ac.HINT, replay=False):
+        self.tries += 1
+        tool, args, tcid = self.pending
+        return self.pre_tool_use(tool, args, f"{tcid.split('.')[0]}.{self.tries}")
+
+
+class ApproveThenRetry:
+    """Approve, then retry (docs/approvals.md#approve-then-retry), with the contract's tools and signers."""
+    driver = RetryDriver
+    setUp, approve, paused, recorded, assert_bound = (ac.Contract.setUp, ac.Contract.approve, ac.Contract.paused,
+                                                      ac.Contract.recorded, ac.Contract.assert_bound)
+
+    def held_again(self, out, aid):
+        self.assertEqual(out["ran"], [])
+        self.assertTrue(out["approval_id"], out)
+        self.assertNotEqual(out["approval_id"], aid)
+
+    def test_the_approved_call_runs_once_when_the_agent_sends_it_again(self):
+        aid = self.paused()
+        self.held_again(self.d.resume(), aid)   # sent again before the person answered: held, with its own approval
+        self.approve(aid)
+        out = self.d.resume()
+        self.assertEqual((out["ran"], out["seen"], out["is_error"]), (["pay"], "paid 1500", False))
+        self.assertEqual([e["data"]["approval_id"] for e in self.events(self.d.run())
+                          if e["type"] == "approval.consumed"], [aid])
+        self.assert_bound()
+        self.held_again(self.d.resume(), aid)   # once: sent a third time, it waits for a person again
+
+    def test_the_signers_copy_runs_on_the_retry(self):
+        self.approved = dict(ac.PAY, cents=7)   # T2: the approved arguments, not the framework's
+        self.approve(self.paused())
+        out = self.d.resume()
+        self.assertEqual((out["ran"], out["seen"], out["is_error"]), (["pay"], "paid 7", False))
+        self.assert_bound()
+
+    def test_a_rejected_call_never_runs_when_sent_again(self):
+        aid = self.paused()
+        self.approve(aid, "reject")
+        self.held_again(self.d.resume(), aid)
+        self.assertEqual(self.recorded("tool.result"), [])
+
+
+class TestApproveThenRetryOnFakeSigner(ApproveThenRetry, ac.OnFake, unittest.TestCase):
+    pass
+
+
+class TestApproveThenRetryOnRealSigner(ApproveThenRetry, ac.OnReal, unittest.TestCase):
+    pass
 
 
 def failing(method, exc):

@@ -193,6 +193,25 @@ export async function parseVkey(text: string): Promise<VKey> {
   return { name, id, type: raw[0], pub: raw.subarray(1) };
 }
 
+/** A cosignature signs no key name and a witness has one key (C2SP tlog-cosignature): refuse pins of one cosignature
+ * key under two names, or of two under one name, so each witness counts once. */
+export async function checkWitnesses(keys: string[]) {
+  const names = new Map<string, string>(), pubs = new Map<string, string>();
+  for (const k of keys) {
+    const p = await parseVkey(k);
+    if (p.type !== COSIGNATURE) continue;
+    const pub = hex(p.pub), name = names.get(pub) ?? p.name, other = pubs.get(p.name) ?? pub;
+    if (name !== p.name)
+      throw new NoteError(`trust pins one witness key under two names (${name}, ${p.name}); a key is one witness: `
+        + "keep it under the name it cosigns with");
+    if (other !== pub)
+      throw new NoteError(`trust pins two witness keys under one name (${p.name}); a name is one witness: keep only `
+        + "its current key");
+    names.set(pub, name);
+    pubs.set(p.name, pub);
+  }
+}
+
 export type Note = { origin: string; size: number; root: Uint8Array; cosigs: [string, bigint][];
   unchecked: boolean };
 
@@ -226,6 +245,7 @@ export async function openNote(data: Uint8Array, logKeys: string[], witnessKeys:
     throw new NoteError((e as Error).message);
   }
   if (root.length !== 32) throw new NoteError("bad root hash");
+  await checkWitnesses(witnessKeys);
   const pinned = new Map<string, [string, VKey]>();
   for (const [keys, want] of [[logKeys, [ED25519, HYBRID]], [witnessKeys, [COSIGNATURE]]] as const)
     for (const k of keys) {

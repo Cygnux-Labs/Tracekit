@@ -266,12 +266,12 @@ class Store:
         self._watcher = threading.Thread(target=loop, daemon=True)
         self._watcher.start()
 
-    def stop(self) -> None:
-        """Ends the watcher (the server is shutting down)."""
+    def stop(self, wait: float = 5) -> None:
+        """Ends the watcher (the server is shutting down), waiting at most `wait` seconds for it."""
         self._stop.set()
         self._wake.set()
         if self._watcher is not None:
-            self._watcher.join(5)
+            self._watcher.join(wait)
 
     def paths(self) -> List[str]:
         return list_runs(self.root) if os.path.isdir(self.root) and os.listdir(self.root) else []

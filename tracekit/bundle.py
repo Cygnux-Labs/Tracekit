@@ -12,6 +12,7 @@ A .tkb is a zip:
 """
 import json
 import os
+import re
 import zipfile
 
 from .core import read_json
@@ -29,6 +30,8 @@ TRUST = {"hook": "reported by a hook process (any process running as the agent's
          "transcript": "harness-reported, lower trust", "sdk": "reported by an instrumented app",
          "migrated": "converted from a v0.1 ledger (hash chain only, unsigned origin)", "signer": "written by tracekitd"}
 EXIT_OK, EXIT_FAIL, EXIT_BAD, EXIT_WARN = 0, 1, 2, 3
+# the printed Assurance line of a bundle that failed: an assurance level rates only evidence that verified
+NOT_RATED = "not rated (the bundle failed verification)"
 # companion runs (signed findings, causeway anchors) have no run.start/run.end of their own
 COMPANION_PREFIXES = ("findings:", "anchors:")
 
@@ -55,7 +58,8 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     ledger_path = os.path.join(signer_home, "ledger", "ledger.jsonl")
     recs = [r for _, r, _ in read_records(ledger_path) if r]
     if not recs:
-        raise SystemExit("ledger is empty")
+        raise SystemExit(f"no v1 records in {ledger_path}: a v2 signer's runs export with tracekit export --v2 --run "
+                         "RUN_ID (tracekit last exports and verifies the newest)")
     runs = select(recs, run, last, since)
     if not runs:
         raise SystemExit("no run matches the selection")
@@ -186,10 +190,18 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
             "checkpoints": len(cps_in), "end_seq": end, **({"otel_push": {"status": pushed[0]}} if pushed else {})}
 
 
+def _lines(text):
+    """str.splitlines, except at U+0085, U+2028 and U+2029: a record's JSON keeps those three unescaped (the exporter
+    writes it with ensure_ascii=False), so splitting there broke the record. Every other line boundary is splitlines'
+    own, so no other bundle reads differently."""
+    parts = re.split("\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e]", text)
+    return parts[:-1] if parts[-1] == "" else parts
+
+
 def _replay(manifest, blobs):
     """replay.html rendered from the bundle files alone, so the verifier can regenerate it and compare."""
     from .replay import render
-    jl = lambda n: [json.loads(l) for l in blobs.get(n, b"").decode("utf-8").splitlines() if l.strip()]
+    jl = lambda n: [json.loads(l) for l in _lines(blobs.get(n, b"").decode("utf-8")) if l.strip()]
     pols = {k: v.decode("utf-8") for k, v in blobs.items() if k.startswith("policies/")}
     files = {k: v for k, v in (manifest.get("files") or {}).items() if k != "replay.html"}
     return render({**manifest, "files": files}, jl("records.jsonl"), jl("checkpoints.jsonl"),
@@ -310,7 +322,7 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     pub = blobs.get("signer.pub", b"")
     kid = crypto.kid(pub) if len(pub) == 32 else None
     recs = []
-    for i, line in enumerate(blobs.get("records.jsonl", b"").decode("utf-8", "replace").splitlines(), 1):
+    for i, line in enumerate(_lines(blobs.get("records.jsonl", b"").decode("utf-8", "replace")), 1):
         try:
             rec = json.loads(line)
         except ValueError:
@@ -412,7 +424,7 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
 
     # 4. head matches a witness checkpoint
     cps, cp_probs = [], []
-    for l in blobs.get("checkpoints.jsonl", b"").decode("utf-8", "replace").splitlines():
+    for l in _lines(blobs.get("checkpoints.jsonl", b"").decode("utf-8", "replace")):
         if not l.strip():
             continue
         try:
@@ -693,6 +705,7 @@ def print_report(rep, code, stream=None):
             s.write(f"        {p}\n")
     for n in getattr(rep, "notes", ()):
         s.write(f"warning: {n}\n")
-    s.write(f"\nIntegrity: {integrity(rep, code)}.\nAssurance: {assurance(rep)}.\n"
+    s.write(f"\nIntegrity: {integrity(rep, code)}.\n"
+            f"Assurance: {NOT_RATED if code == EXIT_FAIL else assurance(rep)}.\n"
             f"Tracekit proves what its capture path recorded and that it has not changed since it was "
             f"signed and checkpointed. It does not prove intent, complete coverage, or that reported results are real.\n")

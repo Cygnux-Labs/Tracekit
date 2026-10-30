@@ -30,6 +30,24 @@ const (
 
 func main() { os.Exit(run()) }
 
+// writeReport prints the report in the reference CLI's order: the check lines and the reason, then the verdict. A
+// failed bundle's assurance is not rated: a level rates only evidence that verified.
+func writeReport(w io.Writer, r report) {
+	for _, check := range r.Checks {
+		fmt.Fprintf(w, "[%s] %s — %s\n", strings.ToUpper(check.Status), check.Check, check.Detail)
+	}
+	if r.Detail != "" && r.ExitCode == 1 {
+		fmt.Fprintln(w, "[FAIL]", r.Detail)
+	} else if r.Detail != "" {
+		fmt.Fprintln(w, r.Detail)
+	}
+	assurance := r.Assurance
+	if r.ExitCode == 1 {
+		assurance = "not rated (the bundle failed verification)"
+	}
+	fmt.Fprintf(w, "\nIntegrity: %s.\nAssurance: %s.\n", r.Integrity, assurance)
+}
+
 func readLimited(path string, limit int64) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -62,19 +80,12 @@ func run() int {
 				return 2
 			}
 		} else {
-			for _, check := range r.Checks {
-				fmt.Fprintf(os.Stdout, "[%s] %s: %s\n", strings.ToUpper(check.Status), check.Check, check.Detail)
-			}
-			fmt.Fprintln(os.Stdout, "Integrity:", r.Integrity)
-			fmt.Fprintln(os.Stdout, "Assurance:", r.Assurance)
-			if r.Detail != "" {
-				fmt.Fprintln(os.Stdout, r.Detail)
-			}
+			writeReport(os.Stdout, r)
 		}
 		return r.ExitCode
 	}
 	fail := func(integrity, detail string) int {
-		return finish(report{ExitCode: 2, Integrity: integrity, Assurance: "not checked", Checks: []verifier.VerificationCheck{}, Detail: detail})
+		return finish(report{ExitCode: 2, Integrity: integrity, Assurance: "none", Checks: []verifier.VerificationCheck{}, Detail: detail})
 	}
 	if *bundle == "" {
 		return fail("UNVERIFIABLE", "usage: tkverify -bundle file.tkb [-trust trust.json | -key signer.pub]")
@@ -93,7 +104,7 @@ func run() int {
 		}
 		config, err := readLimited(*trust, trustReadLimit)
 		if err != nil {
-			return fail("UNUSABLE BUNDLE", "trust: "+err.Error())
+			return fail(verifier.TrustUnusable, "trust config: "+err.Error())
 		}
 		result = verifier.VerifyBundle(data, config)
 	} else {

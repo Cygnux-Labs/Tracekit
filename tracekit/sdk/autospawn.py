@@ -32,7 +32,7 @@ import warnings
 from tracekit import __version__
 from tracekit.client import SYSTEM_CONFIG
 from tracekit.locking import lock_file, unlock_file
-from tracekit.sdk.client import Incompatible, SignerUnavailable, connect
+from tracekit.sdk.client import Incompatible, SignerUnavailable, _default_signer, connect
 from tracekit.signer.rpc_schema import RPC_VERSION
 
 SOCK, LOCK, SPAWN_LOCK, ENDPOINT, LOG = "signer.sock", "signer.lock", "spawn.lock", "endpoint.json", "signer.log"
@@ -52,10 +52,19 @@ class _Theirs(Exception):
     """The runtime dir's dev signer serves another data dir: another HOME of this user's."""
 
 
+def _short(d):
+    """`d`, or when its socket path is too long to bind (macOS caps socket paths at 104 bytes) a short dir of its own,
+    /tmp/tk-<uid>.<12 hex of its path>: the same for every client and signer given `d`, and never another dir's (a
+    side dir is `<dir>-<hex>`)."""
+    if not hasattr(socket, "AF_UNIX") or len(os.path.join(d, SOCK).encode()) <= 103:
+        return d
+    return f"/tmp/tk-{os.getuid()}.{hashlib.sha256(os.path.realpath(d).encode()).hexdigest()[:12]}"
+
+
 def runtime_dir(create=True):
-    """The per-user runtime dir ($TRACEKIT_RUNTIME_DIR overrides), created 0700 (with create=False, OSError while it
-    does not exist); refused unless it is ours and private (on POSIX; Windows has no uid, so it relies on the user-only
-    profile ACL as S3 decides)."""
+    """The per-user runtime dir ($TRACEKIT_RUNTIME_DIR overrides; one too long for a socket path gives way to a short
+    one of its own, _short), created 0700 (with create=False, OSError while it does not exist); refused unless it is
+    ours and private (on POSIX; Windows has no uid, so it relies on the user-only profile ACL as S3 decides)."""
     d = os.environ.get("TRACEKIT_RUNTIME_DIR")
     if not d and os.name == "nt":
         d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"), "tracekit", "run")
@@ -66,7 +75,7 @@ def runtime_dir(create=True):
     elif not d:
         xdg = os.environ.get("XDG_RUNTIME_DIR")
         d = os.path.join(xdg, "tracekit") if xdg else f"/tmp/tracekit-{os.getuid()}"
-    return _private(d, create)
+    return _private(_short(d), create)
 
 
 def _private(d, create):
@@ -90,7 +99,7 @@ def data_dir():
 
 def _side(d):
     """This data dir's own sibling of runtime dir `d`: short, as macOS caps socket paths."""
-    return f"{d}-{hashlib.sha256(os.path.realpath(data_dir()).encode()).hexdigest()[:12]}"
+    return _short(f"{d}-{hashlib.sha256(os.path.realpath(data_dir()).encode()).hexdigest()[:12]}")
 
 
 def _ours(published):
@@ -303,15 +312,24 @@ def down(timeout=10, d=None):
 
 
 def status():
-    """The v2 signer section of `tracekit status`. Starts and creates nothing."""
-    path, token = os.environ.get("TRACEKIT_SIGNER"), None
+    """The v2 signer section of `tracekit status`: of the signer a client here uses ($TRACEKIT_SIGNER, in system mode
+    the one the root-owned config names, else the dev signer). Starts and creates nothing."""
+    path, token, dev = None, None, False
     try:
+        path = _default_signer()
         if not path:
+            dev = True
             d = signer_dir(create=False)
             path = os.path.join(d, SOCK if hasattr(socket, "AF_UNIX") else ENDPOINT)
             path, token = address(d)
         sock, _, hello = connect(path, token=token)
     except (SignerUnavailable, Incompatible, OSError, ValueError) as e:
-        return {"socket": path, "running": isinstance(e, Incompatible), "error": str(e)}
+        # a dev signer not started yet has no runtime dir or no socket in it: say how it starts, not the missing file
+        # (a runtime dir refused for its owner or mode keeps that error)
+        unstarted = dev and not isinstance(e, Incompatible) and (
+            isinstance(e, FileNotFoundError) or path is not None and not os.path.exists(path))
+        return {"socket": path, "running": isinstance(e, Incompatible),
+                "error": "not started: the dev signer starts at an agent's first call, or with `tracekit up`"
+                if unstarted else str(e)}
     sock.close()
     return {"socket": path, "running": True, **hello}

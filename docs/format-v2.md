@@ -87,7 +87,7 @@ its record hash is that of `"seq": 1`. It adds to v1:
 | `run_seq`, `run_prev_hash` | signer | position in the run and the run's previous record hash (zeros at run_seq 0) |
 | `tenant_attested`, `principal`, `principal_attested` | signer | whether tenant and principal came from the caller's verified identity |
 | `request_id`, `stream`, `client_seq` | client | idempotency key and per-stream counter; a skipped `client_seq` becomes a signer gap |
-| `tool_call_id`, `attempt` | client | the call a record is about |
+| `tool_call_id`, `attempt` | client | the call a record is about; an `approval.consumed`'s is the call that ran under the approval, its own or a later call of the same run, tool and arguments ([approve, then retry](approvals.md#approve-then-retry)) |
 | `tier` | signer | `T1`/`T2`/`T3` evidence tier, when known; OTLP imports are `T3` |
 | `step`, `capture_layer` | — | defined by the schema; the signer does not write them yet |
 | `args_commitment`, `args_source` | signer | the commitment (§2) and whether arguments were `raw`, `parsed` or `coerced` |
@@ -556,9 +556,9 @@ reports it `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
 critical entries a bundled record uses, else `1.0.0`, and at least 1.4.0 when a record has an `ext` field or is of type
 `ext`. `verifier_version` (from 1.4.0; advisory, like the whole manifest) is the newest version whose entries, ext names
 among them, the records use: the oldest verifier that checks everything in the bundle, not the version that exported it.
-`tracekit export --v2` prints both, `verifier_version` as `verifier_min_version_full`, and which records raised
-`verifier_min_version` (`raised_by`). A row is frozen once its version's first release candidate
-ships (`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists what it added:
+`tracekit export --v2` says the first; with `--json` it prints both, `verifier_version` as
+`verifier_min_version_full`, and which records raised `verifier_min_version` (`raised_by`). A row is frozen once its
+version's first release candidate ships (`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists what it added:
 record types, data fields per record type, and enum values per (record type, field), gap and tamper `kind`s among
 them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layout`; `raised_by` names them); and from
 1.4.0 the ext names it interprets, which are not:
@@ -632,15 +632,21 @@ The verifier pins its own trust, never the bundle's (`verify.v2.load_trust`):
 `rekor`, `monitors` ([monitor](monitor.md) reports the verifier is given), `issuers` (record-key issuers,
 [issuer.md](issuer.md)) and `analyzers` (the identities, `scheme:subject` as `run.registered` records them, whose
 signed findings you take as independent: your operator's `tracekit analyze --v2`, never the agent's) are optional. No
-other key is allowed. `tracekit signer trust -o trust.json` writes one for a signer; an auditor should build theirs
-from independent sources ([auditor guide](auditor-guide.md)).
+other key is allowed. A witness is one key under one name, with one class: a cosignature signs no key name and a
+witness cosigns with one key (C2SP tlog-cosignature), so each witness counts once, and a trust config that pins one
+cosignature key under two names, two cosignature keys under one name, or one witness vkey with two classes is
+refused. The same entry listed twice is one witness. `witnesses_required` above the number of pinned witnesses is no
+trust config error: the checkpoint fails `witness quorum` (exit 1). `tracekit signer trust -o trust.json` writes one
+for a signer; an auditor should build theirs from independent sources ([auditor guide](auditor-guide.md)).
 
 ## 11. Verification algorithm
 
 `tracekit verify bundle.tkb --trust trust.json` (`verify.v2.verify`). Each step adds report lines; the meaning of each
 line and verdict is in [verdicts](verdicts.md).
 
-1. **Trust config.** Parse strictly; check the keys and types of §10; parse every vkey. Failure: exit 2.
+1. **Trust config.** Parse strictly; check the keys and types of §10; parse every vkey; each witness key under one
+   name, one witness key per name and one class per witness. Failure: `UNVERIFIABLE (the trust file can't be used)`,
+   exit 2. A witness vkey's type is not checked here: a key of another type pinned as a witness fails step 4.
 2. **Read the zip** under the limits of §9. Parse `manifest.json`; `format` must be `tracekit.bundle.v2` and
    `verifier_min_version` a version number (one to three dot-separated runs of ASCII digits) not above the version of
    the format the verifier implements, else `UNVERIFIABLE (needs tracekit >= x)`, exit 2, the `bundle readable` line

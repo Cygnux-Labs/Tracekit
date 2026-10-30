@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:bd2dc34b37442bb1dffc1a2545de2387988fec77d3bdd7a947a775e0479de2b1",
+  "policy_hash": "sha256:e2e40b73c400c70c591864229486c5d902acf26db8f749b0d84affba1dd71aa6",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -425,7 +425,7 @@
     "deny/payment:8": "ask TK-M001 TK-M002",
     "deny/payment:9": "ask TK-M001 TK-M002",
     "deny/payment:10": "ask TK-M001 TK-M002",
-    "deny/payment:11": "ask TK-M002 TK-F006",
+    "deny/payment:11": "ask TK-A044 TK-M002 TK-F006",
     "deny/payment:12": "ask TK-M002 TK-F006",
     "deny/payment:13": "ask TK-M002 TK-F006",
     "deny/payment:14": "ask TK-M002 TK-F006",
@@ -433,7 +433,7 @@
     "deny/payment:16": "ask TK-M002 TK-F006",
     "deny/payment:17": "ask TK-M002 TK-F006",
     "deny/payment:18": "ask TK-M002 TK-F006",
-    "deny/payment:19": "ask TK-M002 TK-F006",
+    "deny/payment:19": "ask TK-A044 TK-M002 TK-F006",
     "deny/payment:20": "ask TK-M001 TK-M002",
     "deny/payment:21": "ask TK-M001 TK-M002",
     "deny/payment:22": "ask TK-M001 TK-M002",
@@ -559,7 +559,7 @@
     "deny/shell:75": "deny TK-D001",
     "deny/shell:76": "ask TK-SHELL-PARSE",
     "deny/shell:77": "deny TK-S006",
-    "deny/shell:78": "deny TK-S006",
+    "deny/shell:78": "deny TK-D001 TK-S006",
     "deny/shell:79": "deny TK-S006",
     "deny/shell:80": "deny TK-S006",
     "deny/shell:81": "deny TK-S006",

@@ -35,8 +35,8 @@ witness verifies as `Assurance: dev` with `isolation: separate-user`: the agent 
 outside the host shows the log wasn't rolled back. Add a witness the operator doesn't run to reach `witnessed`: your own or a partner's
 ([witnesses](witnesses.md)); the free [public witness](witnesses.md#the-public-witness) is not deployed yet.
 
-Every mode is checked the same way: `tracekit doctor` ([doctor](doctor.md)) lists each check with its fix and exits 0
-(all ok), 1 (a check failed) or 2 (warnings only). Doctor output is advice about the host, not evidence.
+Every mode is checked the same way: `tracekit doctor` ([doctor](doctor.md)) lists each check with its fix and exits 1
+when a check failed, else 0 (warnings are advice). Doctor output is advice about the host, not evidence.
 
 ## Laptop dev
 
@@ -103,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.5.0 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.5.0 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.5.0
-cd /usr/local/src/tracekit-1.5.0
+# v1.5.1 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.5.1 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.5.1
+cd /usr/local/src/tracekit-1.5.1
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -180,11 +180,50 @@ Running export as root leaves no root-owned files in the store: it opens the sto
   its own approvals, or pointing the hook at a decoy signer (A1, A2; `eval/e8_insider_v2.py` checks these as real
   users).
 - **Doesn't protect against:** root on the machine (A4: a witness on another host is the defence), the agent removing
-  the hook from its own settings (`~/.claude/settings.json` for Claude Code) or acting outside the hook or the SDK (no
-  record, no gap), or a same-user process that starts the registered harness itself
+  the hook from its own settings (`~/.claude/settings.json` for Claude Code; without
+  [`--managed`](#admin-managed-hooks-claude-code)) or acting outside the hook or the SDK (no record, no gap), or a
+  same-user process that starts the registered harness itself
   ([what binding does not stop](faq.md#what-does-harness-binding-not-stop)).
 - **Bundles reach:** `isolation: separate-user`, approvals by another user; `Assurance: dev` without a witness,
   `local` with your own, `witnessed` with an independent one.
+
+### Admin-managed hooks (Claude Code)
+
+Without `--managed`, init puts Claude Code's hook in AGENT's own `~/.claude/settings.json`, which AGENT can edit:
+removing the hook leaves no record and no gap. With `--managed`, init puts it in Claude Code's admin-managed settings
+instead: `/etc/claude-code/managed-settings.json` (macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`),
+root-owned and readable by every user (Claude Code starts without a managed file it can't read).
+
+```bash
+sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --approver ADMIN --managed [--managed-only]
+sudo /opt/tracekit/bin/python -I -m tracekit doctor
+```
+
+Init merges into an existing managed file and keeps the admin's other settings and hooks. Once the hooks are in place,
+it records the file in `/etc/tracekit/client.json`, so `uninstall --v2` takes out only Tracekit's hooks, its `env`
+entries and the settings it turned on, and doctor checks it: `D-HOOKS-MANAGED` (root-owned and writable by root only;
+run as root, doctor also checks AGENT can read it) and the hook checks, which warn when Tracekit's v2 hooks are in
+AGENT's own `~/.claude/settings.json` too (unless `allowManagedHooksOnly` stops them running). Each init takes its v2
+hooks out of every file but the one it writes: the managed file, the file the last init recorded (whichever user or
+coding agent it was for) and, with `--managed`, AGENT's own `~/.claude/settings.json`, so they never run from two
+files. `uninstall --v2` takes Tracekit's hooks out of the managed file even when `client.json` no longer records it.
+`--managed-only` also sets `allowManagedHooksOnly`, which stops every user's own Claude Code hooks (user, project,
+local and plugin ones); init without it, and uninstall, turn it off again only if init turned it on.
+
+What Claude Code's documentation says (October 2026):
+
+- "Nothing in your own settings files or `--settings` overrides a managed key"
+  ([settings precedence](https://code.claude.com/docs/en/settings#settings-precedence)).
+- "If an administrator has configured hooks through managed policy settings, `disableAllHooks` set in user, project,
+  or local settings can't disable those managed hooks. Only `disableAllHooks` set at the managed settings level can
+  disable managed hooks" ([hooks](https://code.claude.com/docs/en/hooks#disable-or-remove-hooks)).
+- `--safe-mode`: "Managed settings policy still applies, including policy-configured hooks"; `--setting-sources`
+  takes only `user`, `project` and `local` ([CLI reference](https://code.claude.com/docs/en/cli-reference)).
+
+The rest is in [limits](limits.md#dev-mode-vs-system-mode): the hooks run in every user's Claude Code on the machine
+(use a host or VM where AGENT is the only one running Claude Code); a server-managed or MDM Claude Code policy replaces
+the file, so `/status` in AGENT's Claude Code must list `Enterprise managed settings (file)`; the docs don't say
+whether `claude --bare` runs managed hooks; and Claude Code is the only coding agent init does this for.
 
 ## Container and Kubernetes sidecar
 
@@ -218,9 +257,10 @@ anywhere else.
 
 ## Central
 
-One signer serves many agents over HTTPS; agents set `TRACEKIT_SIGNER=https://signer.example:8443`. The chart in
-`deploy/helm` renders the sidecar only: run the same image as your own Deployment (one replica per data volume; the
-signer holds its storage lock) with the central config below. Prerequisites: a TLS certificate, an identity source
+One signer serves many agents over HTTPS; agents set `TRACEKIT_SIGNER=https://signer.example:8443`. The
+`deploy/helm/tracekit-central` chart runs it for callers with Kubernetes service-account identities
+([Kubernetes](deploy-kubernetes.md)). For callers outside the cluster (named tokens, mTLS), run the same image as your
+own Deployment (one replica per data volume; the signer holds its storage lock) with the central config below. Prerequisites: a TLS certificate, an identity source
 (Kubernetes TokenReview, a SPIFFE CA for mTLS, or named tokens), and optionally Postgres
 (`storage: {postgres: {dsn_file}}`), an AWS KMS log key (`log_key: {aws_kms: {key_id, region}}`) and a
 [record-key issuer](issuer.md).

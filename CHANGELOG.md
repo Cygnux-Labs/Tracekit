@@ -2,6 +2,263 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.5.1 (2026-10-30) — held calls you can answer, holds on moving money, hooks the agent can't remove, a viewer that stays cool
+
+A patch release from a week of running Tracekit on its own maintainer's laptop and a hands-on QA pass. That week, the
+coding-agent hooks held 208 calls; each waited about 8 minutes for an answer nobody could see and was then blocked, and
+none was approved. A held call now returns at once with the command that approves it, and once a person approves,
+the agent's retry of the same call runs. Calls that move money through Stripe, PayPal or Square are held for a person,
+whatever API key the agent holds. Claude Code's v2 hooks can go in its admin-managed settings, where the
+agent's user can't remove or turn them off;
+`tracekit report` summarizes a week of a signer's store on one page. `tracekit view` held a core at 100% on a large
+store and now takes a few percent once it has checked it, and HORIZON zooms into folders and files. The policy reads
+what a shell command does, not text it only writes, so fewer calls are stopped for nothing, and none of 9,924
+decisions is weaker than 1.5.0's. The viewer, the verifiers, the CLI's messages, Codex's hooks and the Claude Code
+transcript reader are fixed where a person using them ran into problems. Bundles are unchanged, and the signer
+protocol stays 20.
+
+### Upgrade notes
+- **Held calls don't wait.** The coding-agent hooks block a held call at once (they waited about 8 minutes). Approve it
+  (`tracekit approvals approve <id>`, the viewer's APPROVALS page or Slack), then ask the agent to try the same call
+  again, with exactly the same arguments (a reworded Bash `description` is another call). Where a person answers during the wait (Slack approvals, an agent approver), set `TRACEKIT_APPROVAL_WAIT` to
+  the seconds to wait (capped at 540; the hook also stops short of its own timeout) to keep the old behaviour.
+- **Policy packs.** Coding `2026.10-v2-42` (from `2026.10-v2-39`), server `2026.10-server-11` (from `-9`),
+  server-comms `2026.10-server-comms-4` (from `-3`) and strict `2026.10-strict-5` (from `-3`). New holds on calls that
+  move money and on a download piped into an interpreter given code (Added); a file tool writing a login script or
+  cron file is held, and `TK-A014` no longer holds WebSearch (Changed); `TK-D002` and `TK-D007` no longer fire on text
+  a command only writes or searches for, and Claude Code's memory notes are no longer treated as transcripts (Fixed); a
+  held call's remedy reads "Have a person approve the held call" (it said "Wait for…", which a hook that blocks at once
+  no longer does). No verdict changes on the E17 corpus; on E21's held-out pool the default pack stops or holds 247 of
+  420 (245 in 1.5.0), with no new false alarm.
+- **Codex users: trust the hooks again.** Codex runs a hook only once its user trusts it in `/hooks`, and asks again
+  whenever the hook changes, as it does after `tracekit init`. Until then Codex runs without Tracekit, and nothing is
+  recorded or decided. Open `/hooks` in Codex after upgrading; `tracekit doctor` says whether the hooks are trusted.
+- **PCM's `Replay.check` takes `key=`** (experimental API, released the day before): the raw 32-byte Ed25519 public key
+  that verified the message. `pcm.verify(replay=...)` passes it for you; a direct caller gets a `TypeError` until it
+  passes one.
+- **Trust files.** A trust.json is now refused as a configuration error (exit 2) when it pins one witness key under two
+  or more names, two keys under one witness name (such as a witness's old and new key during a rotation: keep only its
+  current key), or one witness with two classes, and by PCM's verifier also when it pins one Ed25519 log key under two
+  or more log names; and a signer.yaml
+  that lists one witness key twice doesn't load. No trust file Tracekit writes has any of these. The same witness entry
+  listed twice is still accepted and counts once.
+- **`tracekit report`** is the new weekly summary. The old proof-pack report moved to `contrib/proofpack` in 1.0 as
+  `tracekit-report`; its help points there.
+
+### Added
+- **Admin-managed hooks for Claude Code (`tracekit init --v2 --user AGENT --managed [--managed-only]`).** System mode
+  writes the v2 hooks into Claude Code's managed settings (merged with an admin's own, kept readable at 0644) instead
+  of the agent user's `~/.claude/settings.json`. Claude Code's docs say user, project and local settings,
+  `--settings` and `disableAllHooks` outside managed settings can't remove or disable them; `--managed-only` also sets
+  `allowManagedHooksOnly`. `tracekit doctor` checks the file and its folders (`D-HOOKS-MANAGED`); `uninstall --v2`
+  removes only Tracekit's entries. Managed settings apply to every Claude Code user on the machine, and a
+  server-managed or MDM policy replaces the file ([limits](docs/limits.md#dev-mode-vs-system-mode)).
+- **`tracekit report` (experimental).** One page on a signer's store for a window (`--since 7d` by default): runs by
+  agent, calls by outcome, holds and who answered them, denies and flags by rule with examples, gaps by kind, and
+  whether each run's chain verifies (it checks every record of the store first: a run holding an edited record is
+  FAILED, and the command exits 1). It reads the store as the viewer does, never starts a signer, prints arguments
+  only from a running dev signer's content vault, and says it is an operator summary, not evidence
+  ([viewer](docs/viewer.md#weekly-report)).
+- **Holds on moving money (`TK-A043` to `TK-A045`; server-comms `TK-M005`).** In the coding packs, these are held for a person:
+  - the Stripe CLI's refunds, payouts, transfers, charges, payment intents and invoice payments;
+  - `stripe post` to those endpoints;
+  - a curl, wget, HTTPie or xh POST to Stripe's, PayPal's or Square's money endpoints;
+  - Stripe's MCP tools that move money.
+
+  Listing, retrieving, `stripe listen`, `trigger` and help aren't held. The hold says what to check: the amount,
+  currency and payee, in the command or the file it sends. Stripe holds such calls itself only for agent-tagged API
+  keys; these hold them whatever the key. On the server packs, a refund or payment tool called without an amount (a
+  full refund) is held, over MCP too. What they don't see, such as SDK calls inside a script or other providers, is in
+  [coding agents](docs/coding-agents.md#calls-that-move-money) and [limits](docs/limits.md#policy).
+- **A download piped into an interpreter given code is held (`TK-A046`)**: `curl … | python -c '…'` or
+  `wget -qO- … | node script.js`, where what the code does with the download can't be read from the command. 1.5.0
+  denied these, harmless JSON parsing with `python3 -c` included; a person now reads the code. A bare pipe into a shell
+  or interpreter, or one told to run stdin (`sh -`, `bash /dev/stdin`), stays denied (`TK-D002`).
+- **HORIZON zooms and pans.** The wheel or a pinch zooms toward the pointer (up to 64x), a drag pans and a double-click
+  flies in; **+**, **−** and **FIT** sit under ORBIT/TOP, with the keys `+`, `-`, `0` and Esc. Places nest by their
+  folders, and a folder opens into its files once they have room. Clicking a place flies to it and lists who did what
+  there; **CAM** makes a replay's camera follow each move. A shell move is named by the program it runs, a file it
+  writes is its place, and a grep pattern, jq filter or commit message is no place
+  ([Event Horizon](docs/horizon.md#zoom)).
+- **A warning when a hand-wired framework isn't the tested version (#474, by @AnnasMazhar).** The Microsoft Agent
+  Framework, Google ADK, Haystack, LlamaIndex and Strands integrations warn once per process when the installed
+  framework is outside the versions Tracekit is tested against; nothing is blocked ([limits](docs/limits.md)).
+- **CI for the independent Go verifier**: `go vet`, `go test` and its differential against the golden corpus.
+
+### Changed
+- **Held calls: block at once, then approve and retry.** The hook answers a held call in about 0.1 s with the rule,
+  the reason and the exact approve and reject commands (in Claude Code, also where the person sees it). An approved
+  approval that nothing has used lets the agent's next call in the same run, with the same tool and exactly the same
+  arguments, under the same policy, run once before it expires; a rejected, revoked, expired or used one never does.
+  The signer decides this, so who may approve is unchanged (in system mode never the agent's user), and the record
+  names the approval and the blocked attempt. Bundles and the RPC protocol are unchanged
+  ([approvals](docs/approvals.md), [limits](docs/limits.md#approvals)).
+- **What a held call's agent is told:**
+  - a retry of a call a person said no to says so, while that no is the call's latest answer ("a person rejected this
+    exact call (apr-…, by uid:501); ask them before trying again"); with the old default it got a new hold and kept
+    retrying;
+  - a retry whose approval is gone says why: revoked, expired, or used up by the blocked call that ran anyway (it read
+    "approval_id not bound to this call");
+  - a retry inside an agent approver's veto window is told to wait, and the losing one of two retries that the
+    approval was already used;
+  - with `TRACEKIT_APPROVAL_WAIT`, the outcome comes first ("not approved: rejected by uid:501"), then the commands,
+    then the reasons. Cursor, Gemini CLI, Antigravity CLI, Codex and Droid keep 500 characters of a block message, and
+    the outcome was cut off; a cut message now ends with "…" ([limits](docs/limits.md#approvals)).
+- **`TK-A010` also holds a file tool writing a login script or cron file**: `.zshrc`, `.bashrc`, `.profile` and the
+  like (by file name), `/etc/profile`, `/etc/profile.d/`, `/etc/cron*` and `/var/spool/cron/`. A shell command writing
+  one is flagged or passes, as in 1.5.0, unless what it writes runs a download ([limits](docs/limits.md#policy)).
+- **`TK-A014` holds only Bash, PowerShell and Monitor calls** whose `allowed_domains` widens Claude Code's sandbox, not
+  WebSearch's `allowed_domains`, which only narrows its results.
+- **The verifiers say the same thing, in plain words** (Python, TypeScript, the browser and Go):
+  - a failed check's headline says what failed (it read like a pass: "keys valid at their position");
+  - a trust-file problem says it is the trust file ("UNVERIFIABLE (the trust file can't be used)", still exit 2),
+    without internal exception names;
+  - a damaged bundle file says so, with `--trust` too;
+  - a failed bundle's assurance reads "not rated";
+  - Go numbers records by `seq`, as the others do, and gives the reason before the verdict.
+
+  The browser page explains each line by its outcome (a failed line said what the check means when it passes), shows
+  each file once, has plain styling, gives the real reason for dev assurance (a self-approval), and says "expired"
+  for an expired approval. `--json` output and every verdict are unchanged.
+- **CLI messages:**
+  - `tracekit approvals list` says when there is nothing to show;
+  - `tracekit verify` without `--trust` says where to get a trust file;
+  - `tracekit status` reports no v1 signer or v1 policy on a v2-only setup, and the system signer in system mode;
+  - `tracekit export` says what it wrote and the commands that verify it (`--json` keeps the JSON), and with
+    `--data-dir`, `--config`, `--run-set` or `--tenant` it reads the v2 store;
+  - `tracekit export --v2` and the signer's trust command take `--data-dir`, and a `--data-dir` that isn't there is
+    named (view and report too) instead of a raw `[Errno 2]`;
+  - experimental commands say so at the end of their help, not in a banner above it;
+  - `tracekit doctor` no longer fails on warnings alone, and after `init --no-hooks` (dev or system mode) it says
+    the hooks were declined instead of telling you to install them; its fix for managed hooks keeps `--managed-only`,
+    and its fixes say `chown 0:0` (macOS has no root group);
+  - `uninstall --v2` without root says a dev setup needs none: `tracekit uninstall` and `tracekit down`;
+  - `tracekit status` says a dev signer that hasn't started yet starts at an agent's first call or with `tracekit up`
+    (it printed a raw `[Errno 2]`), and `export --dev` reads the dev signer's v2 store as its help says;
+  - the `--managed` notice says the thinking summaries init turns on apply to every user too.
+- **The viewer:**
+  - every run has a lane on DESK's timeline (busy ones first; the panel scrolls), and DESK's APPROVED counts held calls
+    whose last answer is an approval, as APPROVALS does;
+  - an approved call and the agent's retry that ran it read as one held call, APPROVED · RETRY RAN, on every page and
+    in `tracekit report`; NEEDS YOU and APPROVALS say a call is held, not that its agent waits (the agent moved on);
+  - APPROVALS lists each held call that is no longer waiting once, with its agent, run, call and outcome, counted by
+    outcome, in local time, and as cards on a phone; PERMISSIONS shows each decision as a card on a phone;
+  - INFLUENCE shows one row per kind of content and its trust (the person's prompts, messages from another session,
+    sub-agents' messages) beside the tools it reached, the calls it led to that were blocked or held first; a row opens
+    to its sources, each with its run, record, time and OPEN;
+  - HORIZON names a Bash move by its program and verb with the command beside it, a long command by its first lines
+    with SHOW ALL, and draws callouts busiest first, only where they fit, long paths by their last parts; on a phone it
+    shows its readouts, and a followed agent's move numbers never cover each other;
+  - GRAPH wraps a run with few or no links between calls into lines the panel holds, and draws run order apart from
+    recorded links; a PCM message or grant is a row, not an alert; a row of content read by one reader for one purpose
+    folds into one line (in `tracekit report` too);
+  - each run's EXPORT, TRUST and VERIFY commands name the signer the viewer reads and write the trust.json VERIFY uses;
+    run IDs match across pages.
+- **The TypeScript client and verifier take any character but a line feed in an identity's subject**, as Python does
+  (`\r`, U+2028 and U+2029 were refused).
+
+### Fixed
+- **Gap noise from Claude Code runs (#471).** The transcript reader follows Workflow agents' transcripts, and a session
+  that goes on after a SessionEnd is read from where its transcripts end, so their calls are no longer reported as
+  `reconcile.fabricated` or `reconcile.hook_missing`. DESK's NEEDS YOU counts holds outside the live view and says
+  while runs are still being read, and SPAN spans the runs, not the rows loaded first.
+- **More false gaps from Claude Code runs.** What Claude Code drops or fills in before its hooks (a key the tool
+  doesn't take, Monitor's default timeout, the summary SendMessage gives) was a `reconcile.args_mismatch`: 96 of 10,231
+  calls on the maintainer's laptop, none now. Only claude-code runs leave these out, and any other difference is still
+  a gap. A fabricated `SubagentHandback`, from Claude Code's progress summary of a background agent, says that is what
+  it most likely is.
+- **`tracekit view` held a core at 100% on a large store** (414k records): it opened the store again at every change
+  (2.5 s and 1.2 GB each time), checked a growing run whole at each checkpoint and every run again every five minutes,
+  and drew HORIZON every frame. It now keeps its reader and reads only what was appended, checks what runs added within
+  1/41 of a core, takes about half a core for its first pass (the newest run on the page within 7 s; more while the page
+  is in use: 50-100% for 14 minutes on a 520,000-record store, then 0-4%), and draws DESK's
+  lanes and HORIZON only when they change. A check verifies the very bytes the viewer hashed (8 bytes of a keyed hash
+  per line, about 4 MiB for 500k records), so an edit of records already shown still turns their run FAILED, however
+  it is timed: the runs with records in changed bytes, or under a changed checkpoint, read RE-CHECKING until checked
+  again, and CHAIN says how many. Re-checks take turns at half a core, and the bytes kept to check growing runs from
+  stay under 64 MiB ([limits](docs/limits.md#viewer)). Ctrl-C gives the terminal back in about a second (it took 17 s
+  and more).
+- **HORIZON stays responsive on large live runs (#473)**: the stage no longer grows with the side card, callouts
+  aren't drawn over the readouts, and clicking an agent to follow it no longer freezes the page. A call to localhost,
+  127.x, ::1 or 0.0.0.0 is on this machine, not a jet counted in EGRESS.
+- **A tab left open across a viewer restart** kept its old tape, NEEDS YOU and toasts with no word of why; it now says
+  the viewer was restarted (open the link it printed, or sign in again) and stops its live parts. A HORIZON stage the
+  browser can't back no longer turns white.
+- **`TK-D002` and `TK-D007` fired on text a command only writes or searches for**: an `echo` or heredoc into a file, a
+  `grep` or `rg` pattern, a `sed -n` script or a commit message naming a download pipe or Tracekit's files. They now
+  read the parsed command: what it runs and the files it acts on, and `tracekit … --help` and `--version` pass. Text
+  written into a place that runs it later (cron, a login script, a heredoc run in the same call) is still read as
+  code, as are a `sed` script that writes, reads or runs something and a git alias's shell command (set with `-c`,
+  `git config` or `GIT_CONFIG_VALUE_<n>`; one from `--config-env`, an included file or `GIT_CONFIG_PARAMETERS` is held,
+  as unreadable). Over 9,924
+  decisions (E17, E21 and the developer sessions, four packs, both regex engines), none is weaker than in 1.5.0; a
+  752-case sweep of attack shapes found only the interpreter-given-code holds of `TK-A046` above
+  ([limits](docs/limits.md#policy)).
+- **Codex skipped Tracekit's hooks without a word.** Codex runs a hook only after its user trusts it in `/hooks`, and
+  asks again whenever the hook changes, as after `tracekit init`; until then nothing was recorded or decided.
+  `tracekit init --agent codex` now ends with that step, `tracekit doctor` checks whether the hooks are trusted
+  (`D-CODEX-HOOK-TRUST`, v1 and v2, with Codex's own hash), and init and doctor use `$CODEX_HOME` when it is set.
+- **Claude Code's memory notes were treated as transcripts.** A write to `.claude/projects/<project>/memory/*.md` was
+  denied (`TK-D008`) or flagged (`TK-F009`, `TK-F015`), in the v1 rules too; transcripts and session folders stay
+  protected, links into them included.
+- **A v1 run with U+2028, U+2029 or U+0085 in a string couldn't be exported**, and the verifier read such a record as
+  broken. v1 files are now split into lines as before except at those three characters, which a record's JSON keeps
+  unescaped; no other bundle reads differently.
+- **`init --v2 --managed` under a hardened root umask** (027) made the managed-settings folder 0750, so the agent's
+  Claude Code started without Tracekit's hooks, while init said they were in place. The folder it makes is 0755.
+- **`init --dev --v2 --no-hooks` after an init with hooks** said the hooks weren't installed while they stayed in
+  settings.json and ran; it now takes them out, as system mode's `--no-hooks` does.
+- **As root, a message from a forked child was lost when stdout was piped** (`init` and `uninstall` editing another
+  user's files).
+- **The E21 latency gate failed at random on a busy machine.** It now gates a decision's time against a reference
+  timed beside it, so a busy machine moves the microseconds but not the result, and a slower policy still fails.
+- **Go verifier:** a huge `witnesses_required` is clamped before converting on 32-bit builds, and a non-witness key
+  pinned as a witness fails at the checkpoint (exit 1), as in Python and TypeScript.
+- **A held call's outcome in the viewer and `tracekit report`.** A use the signer refused before anyone answered read
+  as a refusal, and one after the approval ended replaced that end (an abandoned hold read expired). Each held call
+  now comes to one outcome, the one its approval's records say: waiting, approved, rejected, revoked, expired,
+  abandoned or not answered.
+- **A `TRACEKIT_RUNTIME_DIR` too long for a Unix socket path** gets a short private directory of its own instead of
+  failing every call closed.
+- **docs/pcm.md's Python example runs as written** (the signer.yaml and approver it needs, the trust file, and the
+  replay state made before sending), with a test that runs it; the spec is linked where the docs cite it.
+- Flaky tests made deterministic: the pydantic_ai gateway hop, the detection ack-time test (medians), and the policy
+  speed test (TK-A040's own fillers within a 0.25 s budget, instead of skipping them).
+- **The TypeScript OpenAI Agents adapter's `tk.mcp(server)` trimmed the server name in time quadratic in a run of `_`
+  or `-` inside it** (CodeQL `js/polynomial-redos`; the name is the app's own): it trims by index now.
+- **A signed run's graph read "being built…" forever in a viewer started with why logs** (`--why`, or a data dir's
+  `why/`), which imports no signed run: its views now say so and name what shows the graph (`tracekit view`
+  without `--why`, or `tracekit why import` into a new folder).
+- **A wait in an agent approver's veto delay could say a second too many** ("wait 61 s" for a 60 s delay, read at
+  the answer's own instant on Windows' coarse clock).
+
+### Security
+- **PCM: a replay sender is the public key that signed and its agent, and a trust.json pins each Ed25519 key under one
+  log name** (PCM 0.1 9 and 10.1), in `tracekit.pcm` and the standalone verifier.
+- **A witness key counts once toward `witnesses_required`.** A cosignature names no witness, so one key is one witness
+  (C2SP tlog-cosignature), and one witness is one key under one name with one class: every verifier (Python,
+  TypeScript, Go, PCM) refuses a trust config that pins one witness key under two names, two keys under one name, or
+  one witness with two classes. The independent Go verifier now also agrees with Python and TypeScript on a duplicate
+  witness entry (counted once), on a quorum above the pinned witnesses (exit 1), and on a key pinned as a witness
+  vkey and as another type's (another entry, failed at the checkpoint).
+- **A path written with `.` or `..` parts, or an empty one, no longer gets past the shell rules** (in 1.5.0 too):
+  `/etc/./tracekit`, `/var/lib//tracekit` and `/var/lib/x/../tracekit` are matched as the paths they name, so
+  `TK-D007` stops them as it stops `/etc/tracekit`.
+- **One approval, one run.** A held call that ran without using its approval (an `executed_against_policy` gap: the
+  harness ran it anyway) left the approval approved, so the agent's retry of the same call ran too. An approval whose
+  own call has a result is no longer given to a retry. A call decided again after it used its approval and completed
+  under both decisions ran twice with no gap (in 1.5.0 too); the second result is now an `executed_against_policy`
+  gap. And a yes is not reused once a later no answered the same call: a person who approved the call and then
+  rejected the agent's early retry of it saw the next retry told "a person rejected this exact call" and run anyway.
+
+### Docs
+- The 1.4 viewer page is kept beside 1.5's; 1.5 viewer screenshots; `docs/deploy.md` names the `tracekit-central`
+  chart and what it authenticates; AGENTS.md asks agents to test like a user; the Event Horizon page covers zoom and
+  where a shell move is placed.
+- **Use cases**: the problems teams bring to Tracekit (a support agent told to delete orders, a coding agent that
+  deletes production, wrong refunds, a security review, a health assistant, sandboxes, investigations, agent-to-agent
+  requests), each with what Tracekit does and a video or a run to check, in the docs and the wiki.
+
 ## 1.5.0 (2026-10-28) — A2A gateway, proof-carrying messages, a new viewer and four more coding agents
 
 Calls between agents can now be gated and recorded: the A2A gateway decides each message one agent sends another,

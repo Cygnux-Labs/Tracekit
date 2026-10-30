@@ -39,14 +39,15 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
+from tracekit.bundle_v2 import KEY_TYPES
 from tracekit.deploy.files import replace_retrying
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.locking import lock_file
 from tracekit.merkle import leaf_hash
 from tracekit.merkle.tiles import MemoryTileStore, Tree
 
-from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageCorrupt, StorageUnavailable,
-                   check_records, check_trees, registry_tree)
+from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageChanged, StorageCorrupt,
+                   StorageUnavailable, check_records, check_trees, registry_tree)
 
 SYNC_INTERVAL = 0.005  # ack-on-write: the longest a written record waits for the background sync
 _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
@@ -56,6 +57,7 @@ QUEUE = "witness-queue.json"
 ANCHORS = "anchors.jsonl"
 LOGS = ("records.jsonl", "registry.jsonl", "registry-notes.jsonl")
 SNAPSHOTS = "snapshots"
+PIECE = 1 << 20   # a FileReader hashes records.jsonl in pieces of this many bytes, to say which bytes changed
 CONTENT = "content"
 
 
@@ -149,6 +151,26 @@ class _Lines:
                 yield f.read(self.offsets[i + 1] - self.offsets[i])
 
 
+class _Hashed(_Lines):
+    """A reader's records.jsonl: `digests` holds 8 bytes of BLAKE2b, keyed per reader, of each line it indexed, and a
+    line read again that no longer holds those bytes raises StorageChanged, so what is checked is what was read and
+    hashed, never bytes put back only while it is read again."""
+
+    def __init__(self, path):
+        super().__init__(path, b"")
+        self.key, self.digests = os.urandom(16), bytearray()
+
+    def digest(self, line):
+        return hashlib.blake2b(line, digest_size=8, key=self.key).digest()
+
+    def read(self, indices):
+        for i, line in zip(indices, super().read(indices)):
+            if line[-1:] != b"\n" or self.digest(line[:-1]) != self.digests[8 * i:8 * i + 8]:
+                raise StorageChanged(f"{self.path} line {i + 1} no longer holds what this reader read",
+                                     (self.offsets[i], self.offsets[i + 1]))
+            yield line
+
+
 class _Log(_Lines):
     """An append-only file of lines, open for writing."""
 
@@ -198,9 +220,14 @@ class _Log(_Lines):
             self.on_sync(time.monotonic() - start)
 
 
-def _parse_note(data):
-    note = data.decode("utf-8")
-    return int(note.split("\n", 2)[1]), note
+def _parse_note(data, path):
+    """(tree size, note) of the checkpoint note `data` read from `path`; StorageCorrupt when it is no note."""
+    try:
+        note = data.decode("utf-8")
+        return int(note.split("\n", 2)[1]), note
+    except (UnicodeDecodeError, IndexError, ValueError):
+        raise StorageCorrupt(f"{path} is not a checkpoint note (an origin, a tree size and a root, then signatures): "
+                             "the store was edited or damaged") from None
 
 
 def _take(lock, timeout_s):
@@ -426,7 +453,7 @@ class FileStorage(_Records, Storage):
                 self._index_registry()
                 try:
                     with open(os.path.join(root, NOTE), "rb") as f:
-                        self._note = _parse_note(f.read())
+                        self._note = _parse_note(f.read(), f.name)
                 except FileNotFoundError:
                     self._note = None
         except BaseException:
@@ -672,22 +699,121 @@ class FileReader(_Records):
     so it stops before it) and sees every checkpoint note written since. On POSIX it refuses a store whose directory or
     files are symlinks, writable by group or others, or owned by another user than the directory.
 
-    Offers what `bundle_v2.export` reads: iter_run, iter_range, get_run, `runs`, `tree` (size, root_at, inclusion
-    proofs), checkpoint_latest(), anchors(), and the registry: registry_iter, registry_merkle and checkpoint_at.
-    Registry leaves, notes and anchors are those written when it was opened; open it after reading the record note an
-    export uses."""
+    Offers what `bundle_v2.export` reads: iter_run, iter_range, key_records, get_run, `runs`, `tree` (size, root_at,
+    inclusion proofs), checkpoint_latest(), anchors(), and the registry: registry_iter, registry_merkle and
+    checkpoint_at.
+    Records, registry leaves, notes and anchors are those written when it was opened or last updated (update()); open
+    or update it after reading the record note an export uses. A record read again that no longer holds the bytes
+    update() indexed raises StorageChanged."""
 
-    def __init__(self, root):
-        self.root, self.runs, self.prev, self.registry, self.notes, self.latest_notes = root, {}, ZERO_HASH, {}, {}, {}
+    def __init__(self, root, against=None):
+        """`against`: a reader of the same store opened before. The pieces of what it read that hold other bytes here,
+        compared as this reader reads them, are in `differs` [(from, to)]: a byte changed before this reader read it
+        shows there, one changed after in changed()."""
+        self.root, self.runs, self.prev = root, {}, ZERO_HASH
+        self.key_seqs = []   # the seqs of its signer.epoch and key.retire records (key_records)
         st = os.lstat(root)
         self._owner = st.st_uid
         self._check(root, st, stat.S_ISDIR)
         # lean: rebuilds the trees in memory from every leaf, O(records) per open; read the tiles once views stay open
         self.tree = Tree(MemoryTileStore())
-        self.log, self.reg_log, self.note_log, self.anchor_log = (self._lines(n) for n in (
-            "records.jsonl", "registry.jsonl", "registry-notes.jsonl", ANCHORS))
-        self._index_log()
+        self.log = _Hashed(os.path.join(root, "records.jsonl"))
+        # what update() read: the file (device, inode), the last line, the file's size and modification time then; the
+        # SHA-256 of each whole PIECE of the lines read (sums) and the hash of the rest (_piece); and `tail`, where the
+        # piece holding the end read before the last update() starts
+        self._file, self._last, self._stamp, self.tail = None, b"", None, 0
+        self.sums, self._piece, self._piece_len = [], hashlib.sha256(), 0
+        # what the reader before read: its pieces' hashes, its last piece's and where it ended
+        self._against = against and (list(against.sums), against._piece.digest(), against.log.offsets[-1])
+        self.differs = []
+        self.update()
+        if self._against and self.log.offsets[-1] < self._against[2]:   # less than the reader before read: cut back
+            self.differs.append((self.log.offsets[-1] // PIECE * PIECE, self._against[2]))
+        self._against = None
+
+    def update(self):
+        """Index the records appended to records.jsonl since this reader read it (all of them on open) and read the
+        registry logs again, as a reader opened now would, at the cost of the new bytes only: the file is append-only.
+        StorageCorrupt when it is no longer the file read before or no longer ends with the line read last (replaced,
+        cut back or rewritten): open a new reader then. Returns whether the file was written to without growing since
+        (its bytes may have been rewritten in place: changed() says)."""
+        log = self.log
+        self.tail = log.offsets[-1] // PIECE * PIECE
+        fd = os.open(log.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY)
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(fd)
+            self._check(log.path, st, stat.S_ISREG)
+            f.seek(log.offsets[-1] - len(self._last))
+            if self._file not in (None, (st.st_dev, st.st_ino)) or f.read(len(self._last)) != self._last:
+                raise StorageCorrupt(f"{log.path} is not the file this reader read (replaced, cut back or rewritten)")
+            stamp, rest = (st.st_size, st.st_mtime_ns), b""
+            rewritten = self._stamp is not None and stamp[0] == self._stamp[0] and stamp != self._stamp
+            self._file, self._stamp = (st.st_dev, st.st_ino), stamp
+            while chunk := f.read(1 << 24):   # a chunk at a time: opening a large store never holds it all
+                data = rest + chunk
+                end = data.rfind(b"\n") + 1   # a partial last line is the writer mid-append: read again next time
+                for line in data[:end].split(b"\n")[:-1]:
+                    try:
+                        self._index(json.loads(line))
+                    except (ValueError, KeyError, TypeError) as e:
+                        raise StorageCorrupt(f"records.jsonl line {len(log.offsets) - 1}: {e}; run fsck") from None
+                    log.offsets.append(log.offsets[-1] + len(line) + 1)
+                    log.digests += log.digest(line)
+                    self._last = line + b"\n"
+                self._hash(memoryview(data)[:end])
+                rest = data[end:]
+        self.registry, self.notes, self.latest_notes = {}, {}, {}
+        self.reg_log, self.note_log, self.anchor_log = (self._lines(n) for n in (
+            "registry.jsonl", "registry-notes.jsonl", ANCHORS))
         self._index_registry()
+        return rewritten
+
+    def _hash(self, data):
+        """Fold `data`, the next bytes of the lines read, into the pieces' hashes, each piece the reader before read
+        (`_against`) compared as it is done here: a whole one, and the last one at the very byte that reader ended."""
+        while data:
+            at, step = len(self.sums) * PIECE + self._piece_len, PIECE - self._piece_len
+            end = self._against and self._against[2]
+            if end and at < end:
+                step = min(step, end - at)
+            take, data = data[:step], data[step:]
+            self._piece.update(take)
+            self._piece_len += len(take)
+            if end and at < end == at + len(take) and end % PIECE and self._piece.digest() != self._against[1]:
+                self.differs.append((end // PIECE * PIECE, end))
+            if self._piece_len == PIECE:
+                i, digest = len(self.sums), self._piece.digest()
+                if self._against and i < len(self._against[0]) and digest != self._against[0][i]:
+                    self.differs.append((i * PIECE, (i + 1) * PIECE))
+                self.sums.append(digest)
+                self._piece, self._piece_len = hashlib.sha256(), 0
+
+    def changed(self, start=0):
+        """The byte ranges [from, to) of records.jsonl, from the piece holding byte `start` to the end of the lines
+        read, that no longer hold what this reader read: those pieces are read and hashed again (all of the file from
+        0, the piece the last update() began in from `tail`)."""
+        out, at, end = [], start // PIECE * PIECE, self.log.offsets[-1]
+        fd = os.open(self.log.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY)
+        with os.fdopen(fd, "rb") as f:
+            f.seek(at)
+            while at < end:
+                data = f.read(min(PIECE, end - at))
+                i = at // PIECE
+                want = self.sums[i] if i < len(self.sums) else self._piece.digest()
+                if len(data) != min(PIECE, end - at) or hashlib.sha256(data).digest() != want:
+                    out.append((at, min(at + PIECE, end)))
+                at += PIECE
+        return out
+
+    def _index(self, record):
+        super()._index(record)
+        if record["event"]["type"] in KEY_TYPES:
+            self.key_seqs.append(record["event"]["seq"])
+
+    def key_records(self, size):
+        """The signer.epoch and key.retire records before seq `size`, read from the file: what an export bundles,
+        without a scan of every record."""
+        return [json.loads(line) for line in self.log.read([s for s in self.key_seqs if s < size])]
 
     def _lines(self, name):
         path = os.path.join(self.root, name)
@@ -721,7 +847,8 @@ class FileReader(_Records):
             return self._registry_note(tree)
         for i in range(20):
             try:
-                return _parse_note(self._read(os.path.join(self.root, NOTE)))
+                path = os.path.join(self.root, NOTE)
+                return _parse_note(self._read(path), path)
             except FileNotFoundError:
                 return None
             except PermissionError:   # Windows: the writer is replacing the note this instant

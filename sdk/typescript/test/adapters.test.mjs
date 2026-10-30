@@ -566,6 +566,15 @@ describe("local MCP servers (OpenAI Agents)", () => {
       ["m3", "mcp:file_system/read_text_file"]]);
     assert.deepEqual(sent("complete").map(([id]) => id), ["m1"]);
   });
+
+  it("a server name is made safe in time linear in its length", async (t) => {
+    // a run of _ or - inside the name made trimming its ends quadratic (CodeQL js/polynomial-redos)
+    const signer = await fakeSigner(), client = new Client({ signer: signer.path });
+    t.after(() => (client.close(), signer.stop()));
+    const tk = new TracekitAgents(await client.registerRun("a")), start = Date.now();
+    tk.mcp(`a${"_".repeat(150_000)}a`);
+    assert.ok(Date.now() - start < 500, `${Date.now() - start} ms`);
+  });
 });
 
 describe("Vercel AI: MCP tools and the app's own toolApproval", () => {

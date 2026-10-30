@@ -48,6 +48,26 @@ class Experimental(unittest.TestCase):
             self.assertEqual(err.count("is experimental: it works and is tested, but may change "
                                        f"({wiki_url('docs/support.md')})"), int(says), cmd)
 
+    def test_every_experimental_commands_help_says_so_once_at_its_end(self):
+        """`tracekit pcm --help` printed the experimental banner above a help that said (experimental) itself; without
+        the banner, 21 experimental commands' help said it nowhere. Each one's help ends with the line, drawn from the
+        list the banner uses, once; a run still starts with the banner."""
+        line = "is experimental: it works and is tested, but may change ("
+        for cmd, what in sorted(cli._EXPERIMENTAL.items()):
+            for argv in ([cmd, "--help"], *([[cmd, "verify", "-h"]] if cmd == "pcm" else [])):
+                with self.subTest(argv=argv):
+                    err = io.StringIO()
+                    with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err), \
+                            self.assertRaises(SystemExit) as cm:
+                        cli.main(argv)
+                    self.assertEqual((cm.exception.code, err.getvalue()), (0, ""))
+                    help_text = out.getvalue()
+                    self.assertIn("usage: ", help_text)
+                    self.assertEqual(help_text.count(line), 1, help_text)
+                    self.assertTrue(help_text.endswith(f"\n{what} {line}{wiki_url('docs/support.md')})\n"), help_text)
+        with mock.patch("tracekit.pcm.cli.main", return_value=0):
+            self.assertEqual(self.run_cli(["pcm", "demo"])[1].count("tracekit pcm is experimental"), 1)
+
     def test_the_signer_names_the_experimental_settings_it_was_given(self):
         from tracekit.signer import service as svc
         for cfg, want in (({"data_dir": "/nonexistent"}, None),

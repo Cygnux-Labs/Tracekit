@@ -9,18 +9,22 @@ Two profiles: `default` (server.yaml, what E17 measures) and `strict` (strict.ya
     denied or held. Broken down by category, severity and evasion.
 (c) eval/e21_benign_sessions.jsonl: calls of ordinary developer sessions, written by the pack's builder (so tuned),
     for false positives only; E17's benign calls are scored the same way on both profiles.
-(d) Latency per decision (the fastest of three per call), p50/p99/max, on both engines, for dev.yaml and both
-    profiles, over E17's corpus and both E21 sets.
+(d) Latency per decision (the fastest of five per call), p50/p99/max, on both engines, for dev.yaml and both
+    profiles, over E17's corpus and both E21 sets; and p99_ref, the p99 of each decision over a fixed reference
+    workload timed right after each try (`reference`: no Tracekit code), which a busy or throttled machine slows alike.
 (e) No-regression gates against the first run, recorded in eval/results/e21_policy_robustness.json and kept by later
     runs: per profile, held-out recall doesn't drop and the false-positive rate of each benign set (held-out, sessions,
-    E17) doesn't rise; p99 stays within 25% of the first run's on the same machine (re-measured once before failing;
-    another machine is not compared). False positives over 2% (default) or 5% (strict) are reported as over target.
+    E17) doesn't rise; p99_ref stays within 25% of the first run's on the same machine (re-measured once before
+    failing; another machine is not compared). False positives over 2% (default) or 5% (strict) are reported as over
+    target.
 Exit 0 only when every gate holds and both engines decide every call the same. `--record` writes the gates anew."""
 import collections
 import glob
 import json
 import os
 import platform
+import re
+import shlex
 import sys
 import time
 
@@ -84,18 +88,39 @@ def rates(total):
             "fp_rate": total.get("fp", 0) / b if b else None}
 
 
+# The reference's work is fixed: changing it changes every p99_ref, so record the gates again (--record) with it
+REF_COMMAND = ("cd /repo && git -C . log --oneline -5 | grep -v 'wip' > /tmp/log.txt; "
+               "python3 -m pytest -q tests/test_x.py -k 'not slow' 2>&1 | tail -3")
+REF_PATTERNS = [re.compile(p) for p in (r"\bsudo\b", r"\brm\s+-[a-z]*r", r"curl[^|]*\|\s*sh", r"(^|/)\.env$",
+                                        r"git\s+push\s+.*--force", r"\.ssh/", r">\s*/etc/", r"\bchmod\s+777",
+                                        r"\bnc\s+-l", r"base64\s+-d")]
+
+
+def reference():
+    """A decision's kind of work, in the standard library only: JSON, a shell split and regular expressions."""
+    words = shlex.split(REF_COMMAND) + [json.dumps({"command": REF_COMMAND, "timeout": 120000}, sort_keys=True)]
+    return [rx.search(w) for rx in REF_PATTERNS for w in words]
+
+
 def latency(engine, calls):
-    took = []
+    """Each call's fastest of five decisions, and that over the fastest of the five runs of `reference` timed right
+    after each: a busy or throttled machine (other processes, a slower core, a lower clock) slows both alike, a slower
+    engine or pack only the decision."""
+    took, ratios = [], []
     for tool, args in calls:
-        best = float("inf")
-        for _ in range(3):
+        best = ref = float("inf")
+        for _ in range(5):
             start = time.perf_counter()
             engine.decide(tool, args)
-            best = min(best, time.perf_counter() - start)
+            mid = time.perf_counter()
+            reference()
+            best, ref = min(best, mid - start), min(ref, time.perf_counter() - mid)
         took.append(best * 1e6)
+        ratios.append(best / ref)
     took.sort()
+    ratios.sort()
     return {"p50_us": round(took[len(took) // 2]), "p99_us": round(took[len(took) * 99 // 100]),
-            "max_us": round(took[-1]), "calls": len(took)}
+            "max_us": round(took[-1]), "calls": len(took), "p99_ref": round(ratios[len(ratios) * 99 // 100], 2)}
 
 
 def machine():
@@ -131,7 +156,7 @@ def run(record=False):
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
         "max_fp_rate": {n: {k: p[k]["fp_rate"] for k in SETS if k in p} for n, p in out["profiles"].items()},
-        "max_p99_us": {k: round(v["p99_us"] * 1.25) for k, v in out["latency"].items()}})
+        "max_p99_ref": {k: round(v["p99_ref"] * 1.25, 2) for k, v in out["latency"].items()}})
     out["over_target"] = [f"{n} {k} false positives {p[k]['fp_rate']:.2%} over the {TARGET_FP[n]:.0%} target"
                           for n, p in out["profiles"].items() for k in SETS
                           if k in p and p[k]["fp_rate"] > TARGET_FP[n]]
@@ -158,14 +183,16 @@ def gate(out, calls):
         if want is not None and "heldout" in p and p["heldout"]["recall"] < want:
             failed.append(f"{name} held-out recall {p['heldout']['recall']:.2%} < {want:.2%}")
     if g["machine"] == out["machine"]:
-        for key, cap in g["max_p99_us"].items():
-            if out["latency"].get(key, {}).get("p99_us", 0) > cap:
+        for key, cap in g["max_p99_ref"].items():
+            if out["latency"].get(key, {}).get("p99_ref", 0) > cap:
                 prof, engine = key.split("/")
                 pol = pc.build(os.path.join(PACKS, PROFILES.get(prof, prof + ".yaml")))[0]
                 again = latency(Engine(pol, engine), calls)   # best of two before it fails
-                out["latency"][key] = min(out["latency"][key], again, key=lambda x: x["p99_us"])
-                if out["latency"][key]["p99_us"] > cap:
-                    failed.append(f"{key} p99 {out['latency'][key]['p99_us']} us > {cap} us")
+                out["latency"][key] = min(out["latency"][key], again, key=lambda x: x["p99_ref"])
+                if out["latency"][key]["p99_ref"] > cap:
+                    failed.append(f"{key} p99 {out['latency'][key]['p99_ref']} times the reference > {cap}: "
+                                  "decisions got slower; make them faster, or record the gates again (--record) if "
+                                  "that is intended")
     return failed
 
 
@@ -189,7 +216,8 @@ def main():
                         print(f"    {dim:9s} {t:24s} caught {n.get('caught', 0)}/{n.get('harmful', 0)} "
                               f"deny {n.get('deny', 0)}  FP {n.get('fp', 0)}/{n.get('benign', 0)}")
     for key, v in out["latency"].items():
-        print(f"latency {key:14s} p50 {v['p50_us']} us  p99 {v['p99_us']} us  max {v['max_us']} us ({v['calls']} calls)")
+        print(f"latency {key:14s} p50 {v['p50_us']} us  p99 {v['p99_us']} us  max {v['max_us']} us "
+              f"({v['calls']} calls), p99 {v['p99_ref']} times the reference")
     for f in out["over_target"]:
         print("over target:", f)
     for f in out["failed"]:

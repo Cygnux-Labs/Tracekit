@@ -18,6 +18,7 @@ AGENT_ARGS_MAX = 16 * 1024  # bytes of a call's arguments (as canonical JSON) an
 ALIASES = (classes.SHELL_KEYS, classes.PATH_KEYS, classes.PAYEE_KEYS, classes.RECIPIENT_KEYS,
            ("amount", "amount_cents"), ("sql", "query", "statement"), ("db", "database"))
 _URL = re.compile(r"(?i)\b(?:https?|wss?|ftp):[^\s'\"<>`]*")
+_DOTTED = re.compile(r"(?:^|/)\.\.?(?:/|$)|(?<!:)//")   # a path with . or .. parts, or an empty one (not a URL's)
 _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 2852039166/latest
 # ...when it reads as an IPv4 address outside 0.0.0.0/8, which no call reaches: not 1.txt, 2fa/ or head -n 50's 50.
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
@@ -63,6 +64,8 @@ class Engine:
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
                        rx(r, "unless") if "unless" in r else None, literals(r["pattern"]))
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
+        # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
+        self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._of = {}
         # an ask rule's approval.agent patterns: (rule id, argument name) -> compiled
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
@@ -158,7 +161,11 @@ class Engine:
             else:
                 unreadable = hits[self.policy.get("on_parse_error", "ask")]   # TK-SHELL-PARSE's section
                 try:
-                    parsed = _shell(args)
+                    if self._persistent_targets:
+                        parsed = _shell(args, lambda target: any(p.search(target.casefold())
+                                                                  for p in self._persistent_targets))
+                    else:
+                        parsed = _shell(args)
                 except shell.ParseError:
                     unreadable.append("TK-SHELL-PARSE")
                     # its own target and code
@@ -267,13 +274,18 @@ class Engine:
         mcp, app and unknown tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
         decimal, hex, octal or IPv6 form reads as the address it is."""
         if cls == "shell":
-            words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in parsed[0]
-                     for data in [shell.data_words(c["argv"])]]
-            found = [a for ws in words for a in ws] + parsed[2]
+            commands = parsed[0]
+            words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in commands
+                     for data in [shell.data_words(c["argv"]) | set(c.get("data_words", ()))]]
+            stdin = [s for c in commands if not c.get("data_stdin") for s in c["stdin"]]
+            found = [a for ws in words for a in ws] + parsed[2] + stdin
             urls = [t for t in map(classes.url_target, (u for w in found for u in _URL.findall(w))) if t]
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
-            targets = [" ".join(w) for w in words] + parsed[2]
+            targets = [" ".join(w) for w in words] + parsed[2] + stdin
+            # a path also as plainly written: /etc/./x, /etc//x and /etc/y/../x name /etc/x
+            targets += [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
+                                    for t in targets) if n not in targets]
             have = set(targets)
             return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
         if cls == "fs":
@@ -294,7 +306,7 @@ class Engine:
         return [canonical(args)] if cls in ("mcp", "app", "unknown") else []
 
 
-def _shell(args):
+def _shell(args, persistent_target=None):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
     a list of command lines. Anything else, or more than one of them, raises ParseError."""
@@ -304,9 +316,9 @@ def _shell(args):
     value = args[present[0]] if present else ""
     strings = isinstance(value, list) and value and all(isinstance(a, str) for a in value)
     if isinstance(value, str):
-        return shell.analyse(value)
+        return shell.analyse(value, persistent_target)
     if strings and present == ["commands"]:
-        return shell.analyse("\n".join(value))
+        return shell.analyse("\n".join(value), persistent_target)
     if strings:
         return shell.analyse_argv(value)
     raise shell.ParseError("the command is neither a string nor a list of strings")
@@ -450,7 +462,8 @@ def _effects(parsed):
     parser can't read what one runs (its `opaque`: `| sh`, `fish -c`, a name an expansion builds) and a writer's name
     reaches it (_reaches_unread), every word on the line and each herestring and heredoc text is one it may write, as
     MAY_WRITE:word (only TK-D008 reads those); for one the parser can't read, each normalised line too (a name an
-    expansion builds may hold the path)."""
+    expansion builds may hold the path). A link ln or cp -s/-l makes is also MAY_WRITE: a later write through it
+    writes the file it points at."""
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
     unread = any(c["opaque"] for c in parsed[0])
     if any(_opaque(c) for c in parsed[0]) or unread and _reaches_unread(parsed):
@@ -595,6 +608,9 @@ def _command_effects(commands):
                     if directory is not None or len(sources) > 1 or dest.endswith("/") or dest in ("~", ".", "..")]
                 deleted = sources if exe == "mv" else []
             out.extend(["DELETE_TARGET:" + path for path in deleted] + ["WRITE_TARGET:" + path for path in written])
+            if exe == "ln" or exe == "cp" and any(a in ("--link", "--symbolic-link")
+                                                  or re.fullmatch(r"-[A-Za-z]*[ls]\w*", a) for a in args):
+                out.extend("MAY_WRITE:" + path for path in written)
         elif exe == "dd":
             out.extend("WRITE_TARGET:" + arg[3:] for arg in args if arg.startswith("of="))
         elif exe in ("sed", "perl") and any(re.match(r"-[nrsuzE]*i|--in-place" if exe == "sed" else r"-[0-9alnpw]*i", a)

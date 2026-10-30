@@ -3,7 +3,7 @@
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
 
 ```bash
-tracekit init --dev --v2 --agent codex      # ~/.codex/hooks.json
+tracekit init --dev --v2 --agent codex      # ~/.codex/hooks.json ($CODEX_HOME/hooks.json when it is set)
 tracekit init --dev --v2 --agent cursor     # ~/.cursor/hooks.json
 tracekit init --dev --v2 --agent gemini     # ~/.gemini/settings.json
 tracekit init --dev --v2 --agent qwen       # ~/.qwen/settings.json
@@ -17,7 +17,10 @@ sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent code
 ```
 
 These hooks record to the v2 signer ([below](#on-the-v2-signer)), and a v2 hook replaces a v1 one. System mode's init
-runs as root from a root-owned Python and puts no `tracekit` command on root's `PATH`. The system-mode line is for Python
+runs as root from a root-owned Python and puts no `tracekit` command on root's `PATH`. It writes these agents' hooks
+into the agent user's own config, which that user can edit: `--managed` (hooks in admin-managed settings the agent can't
+edit or turn off) is for Claude Code only, and init refuses it with these agents
+([limits](limits.md#dev-mode-vs-system-mode)). The system-mode line is for Python
 3.11 or later, after [laptop system mode](deploy.md#laptop-system-mode)'s install; that page also gives the commands for
 3.9 and 3.10. The v1 hooks, for the older laptop path (the `tracekitd` signer), are the same dev commands without
 `--v2` and write the same files:
@@ -26,6 +29,18 @@ runs as root from a root-owned Python and puts no `tracekit` command on root's `
 tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, goose, antigravity, crush
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
+
+**Codex runs these hooks only once you trust them.** Codex skips a hook that isn't managed until a person has reviewed
+and trusted it as it is, so until then no Codex call is recorded or decided. Interactive `codex` asks at startup when a
+hook is new or changed; `codex exec`, or choosing to continue without trusting, skips it without a word. After init,
+run `codex` in a terminal and trust Tracekit's hooks (at its startup prompt, or type `/hooks`); Codex asks again
+whenever they change, as after another init. Codex keeps that trust in your `~/.codex/config.toml`
+(`$CODEX_HOME/config.toml` when it is set; then init writes the hooks there too, and you run Codex with the same
+`CODEX_HOME`) as `[hooks.state."<hooks.json path>:<event>:<group>:<handler>"]` with a `trusted_hash`
+([Codex hooks](https://learn.chatgpt.com/docs/hooks)). Init ends by saying so, v1 and v2, and `tracekit doctor` checks
+that each of Tracekit's Codex hooks, v1 or v2, is trusted as it is now and not turned off (`D-CODEX-HOOK-TRUST`): it
+recomputes Codex's hash of each hook. For a hook with a setting Tracekit doesn't write, and with Python 3.9 or 3.10,
+which can't read the file, it says it can't confirm ([limits](limits.md#signer-and-capture)).
 
 For Codex, Cursor, Gemini CLI and Qwen Code the installer merges into existing settings: other hooks and settings are kept, a
 backup is written first, and running it twice changes nothing. For Droid it writes a standalone `.factory/hooks.json`; if
@@ -69,9 +84,10 @@ installer, not yet in a live Crush session.
 | Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` | `tool_call_id`, from the harness | `tool_use_id`, from the harness | none in documented stdin: paired by tool and arguments, first in first out |
 | Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` and `read_many_files` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `list_directory`, `web_fetch`, `google_web_search`; every path a file tool reads is decided, under each release's name for it (`file_path`, `absolute_path`, `dir_path`, `path`, and `read_many_files`' `paths` and `include`); `web_fetch` is decided on every URL its prompt names (`urls`) and on a `url` beside it | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental; OpenCode 1.x before 1.4 only: later releases and OpenCode 2 have none) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools | `shell` → `Bash`; `write` → `Write` (path: `path`); `edit` → `Edit` (path: `path`); `tree` → `LS` (path: `path`); `read_image` → `Read` (path: `source`, not `path`); `<extension>__<tool>` → `mcp__<extension>__<tool>`; other names pass through unchanged, which the policy treats as unknown tools | `run_shell_command` and `monitor` → `Bash`; `read_file` → `Read` (path: `file_path`, `absolute_path` before 0.13); `write_file` → `Write`; `edit` (and Gemini's `replace`) → `Edit`; `notebook_edit` → `NotebookEdit` (path: `notebook_path`); `grep_search` → `Grep`; `glob`, `list_directory`, `web_fetch`, `web_search`, `todo_write`; `agent` → `Task`; any other tool, MCP tools included, under its own name; file paths as for Gemini CLI; `web_fetch` is decided on its `url` and also on every URL its prompt names (Qwen Code fetches only the `url`) | `Execute` → `Bash`; `Create` → `Write`; `ApplyPatch` → `Edit` (`input`: complete patch; `paths`: all file headers); `FetchUrl` → `WebFetch`; other names, including `mcp__server__tool`, pass through |
 
-What is the same as Claude Code: the policy gate runs before the tool (deny blocks; ask holds the call until someone
-approves it from another terminal), events are signed by the same signer, and the harness's transcript is hashed at
-every hook when the harness passes `transcript_path`, so edits and truncation are detected.
+What is the same as Claude Code: the policy gate runs before the tool (deny blocks; ask blocks the call until someone
+approves it from another terminal, then the agent's retry runs: [held calls](#held-calls-approve-then-retry)), events
+are signed by the same signer, and the harness's transcript is hashed at every hook when the harness passes
+`transcript_path`, so edits and truncation are detected.
 
 What is different: reasoning capture reads Claude Code's transcript format and is off for these harnesses; the model
 proxy fronts the Anthropic API only, so model-side cross-checks need `tracekit_sdk.init()` or OpenTelemetry instead.
@@ -112,7 +128,7 @@ system mode). Unlike v1, a payload without a session or tool call id blocks the 
 On any other event (a prompt, a tool result, a session event) a hook that fails exits 1, not 2, which
 would block a prompt, and the event isn't recorded.
 
-OpenCode (1.x) sends no session or prompt events to plugins: its run closes at the signer's idle timeout, and no prompts, live constraints or model text are recorded. A call that fails, that you decline in OpenCode's own permission prompt, or that you abort runs no `tool.execute.after`, so it stays a `decided_not_completed` gap. While a call waits for a person, OpenCode waits too: list the held call with `tracekit approvals list` ([limits](limits.md#signer-and-capture)).
+OpenCode (1.x) sends no session or prompt events to plugins: its run closes at the signer's idle timeout, and no prompts, live constraints or model text are recorded. A call that fails, that you decline in OpenCode's own permission prompt, or that you abort runs no `tool.execute.after`, so it stays a `decided_not_completed` gap. With `TRACEKIT_APPROVAL_WAIT` set, while a call waits for a person OpenCode waits too: list the held call with `tracekit approvals list` ([limits](limits.md#signer-and-capture)).
 
 goose support is experimental: tested through goose's hook payloads and Tracekit's installer, not yet in a live goose
 session. It needs goose 1.48.0 or later (when `on_failure` arrived). goose runs hooks with `sh -c` on every platform,
@@ -123,6 +139,81 @@ goose's installed hooks likewise carry no session or prompt events (only PreTool
 
 A session is one run, open until the session ends. To watch it, `tracekit view --dev` (each call with what it ran);
 to verify it as it stands, `tracekit last --open`.
+
+### Held calls: approve, then retry
+
+A call the policy holds (`ask`) is blocked at once, in Claude Code and every harness above, with the approval's id and
+the command that approves it, as the harness's block message (in Claude Code also a `systemMessage`, which it shows
+you, and the deny reason, which the model reads):
+
+```text
+[tracekit] held for approval apr-… (TK-A032): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: uploading to cloud storage. Have a person approve the held call, or write the files locally and let a person upload them.
+```
+
+Run the command from another terminal, then tell the agent to make the same call again, with exactly the same
+arguments: the signer lets that call run under your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
+The same call a third time, or one with other arguments, is held again, with a new approval. A call you rejected is
+held again if the agent tries it again, and the block says so first among its reasons (`Why: a person rejected this
+exact call (apr-…, by uid:501); ask them before trying again; …`), so the agent asks you. In Claude Code a Bash
+call's arguments include its free-text `description`: a retry that rewords it is another call, held with a new
+approval. The agent can't approve its own call: the policy denies the command when the agent runs it (`TK-D012`), and in
+system mode the signer refuses its user.
+
+Until 1.5.1 the hook waited 8 minutes for an answer before it blocked the call. No harness shows a hook's output
+while the hook runs, so you saw the approval id only once the wait was over, and the call was blocked anyway. Where
+someone answers without seeing that message (Slack approvals, the viewer's approval pages, an agent approver, or you
+watching `tracekit approvals list`), set `TRACEKIT_APPROVAL_WAIT` (seconds) in the agent's environment, and the hook
+waits that long for the answer before it blocks the call, up to about 480 s: it answers within 540 s and keeps two
+signer calls' time (60 s) for the answer and the approval's use, so a longer setting waits no longer. Export it before
+you start the agent (a hook inherits the harness's environment), or in Claude Code put it in `settings.json`:
+`"env": {"TRACEKIT_APPROVAL_WAIT": "480"}`. The hook can't tell whether a bridge or an agent approver will answer, so
+this is your setting. What each harness shows while a hook runs, from its documentation or source (October 2026), and
+so why none waits by default:
+
+| Harness | While the hook runs | The block's message, once it returns |
+|---|---|---|
+| Claude Code | a spinner; the hook's output is read when it exits | the deny reason to the model, the `systemMessage` to you |
+| Codex CLI | "Running hook" (stderr is read when the hook exits) | to the model, and a "Blocked" cell to you |
+| Cursor | not documented (closed source; a Hooks output channel for debugging) | `user_message` to you, `agent_message` to the model |
+| Gemini CLI | "Executing Hook: <name>" (stderr is collected and read on exit) | "Tool execution blocked: …" to both |
+| Qwen Code | a fixed `statusMessage`, if configured (stderr is read on exit) | to the model, and shown to you |
+| OpenCode 1.x | nothing: the plugin runs the hook synchronously | the error the plugin throws |
+| goose | nothing (stdout and stderr are read on exit) | to the model |
+| Factory Droid | not documented | to Droid (the model) |
+| Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |
+
+### Calls that move money
+
+Stripe holds an agent's refunds, payouts and outbound payments for a person only when the agent uses an agent-tagged
+API key ([approval rules](https://docs.stripe.com/account/approvals)); a coding agent with your own key gets no hold.
+The v2 coding pack holds these calls for a person whatever the key:
+
+- the Stripe CLI's money commands: `stripe refunds create`, `payouts create`, `transfers create`, `topups create`,
+  `transfer_reversals create`, `charges create` or `capture`, `payment_intents create`, `confirm` or `capture`, `invoices pay`, `treasury
+  outbound_payments create` or `outbound_transfers create`, and `stripe post` to those endpoints (`TK-A043`);
+- a POST to those endpoints on `api.stripe.com`, to PayPal's payouts, captures and refunds on `api-m.paypal.com` or
+  `api.paypal.com`, or to Square's payments and refunds on `connect.squareup.com`, through `curl`, `wget`, HTTPie or
+  `xh` (`TK-A043`);
+- Stripe's MCP money tools, `send_money`, `transfer_money`, `convert_currency` and `create_refund` (`TK-A044`), and its
+  `stripe_api_write` tool when the call names a refund or one of those endpoints (`TK-A045`).
+
+The hold says what to check:
+
+```text
+[tracekit] held for approval apr-… (TK-A043): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
+```
+
+Read the command before you approve it, and the file it sends (`-d @body.json`): the approval covers that exact
+command, so its amount and payee can't change afterwards, but a file's content can. A call with no amount moves what was set earlier: a refund with no amount refunds the whole charge, and a
+confirm, capture or invoice pay takes the amount the payment intent or invoice was created with, so look that up
+first. A Stripe test-mode call is held too: the command doesn't show whether the key is live. Not held: `stripe
+listen`, `stripe trigger`, `stripe logs tail`, `stripe login`, listing, retrieving and cancelling, `stripe refunds
+create --help`, a GET (Stripe's documented `curl -G … -d limit=3` list form too), and PayPal's and Square's sandbox
+hosts.
+
+Turn on Stripe's approval rules with an agent-tagged key as well: Stripe enforces them on its side, outside anything
+the agent runs, and Tracekit adds a signed record of who approved which exact call, for PayPal and Square too. What
+these rules don't see (a script that calls a payment SDK, another provider): [limits](limits.md#policy).
 
 ### What was asked and said
 
@@ -163,15 +254,15 @@ own. Hooks before this release record no prompt, and TK-X208 says `no_hook`.
 The hook also sends what the typed text says not to do ("don't touch billing.py", "read-only", "don't push", "no
 network") to the signer as [live constraints](policy-v2.md#live-constraints) (one stated only in text you pasted or the
 harness added is recorded but not made live, and Claude Code shows a notice naming it; one typed after a wrapper's name
-in a sentence is live, though the text from that name on is recorded as untrusted): a later call that breaks one waits
-for your approval, and the agent reads why on stderr:
+in a sentence is live, though the text from that name on is recorded as untrusted): a later call that breaks one is
+held for your approval ([held calls](#held-calls-approve-then-retry)), and you and the agent read why:
 
 ```text
-[tracekit] waiting for approval apr-… (TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the person; a person approves it from another terminal with `tracekit approvals approve apr-…` or rejects it with `tracekit approvals reject apr-…`
+[tracekit] held for approval apr-… (TK-CONSTRAINT): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: the person's request in this run said not to modify billing.py; ask the person
 ```
 
-Answer it from another terminal with the command the line names (`tracekit approvals list` shows every held call); the
-agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one (system mode,
+Answer it from another terminal with the command the line names (`tracekit approvals list` shows every held call), then
+ask the agent to make the call again; the agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one (system mode,
 `tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode, run it from
 the approver's account as `/opt/tracekit/bin/python -I -m tracekit approvals …` (init puts no `tracekit` command on the
 PATH). On your default signer,
@@ -196,8 +287,8 @@ Hooks installed before 1.2 have no event argument and keep working as before: an
 unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code, Codex, Cursor, Gemini CLI, goose, Qwen Code,
 Factory Droid and Antigravity CLI when a command doesn't name its configured event or, on any event but the pre-tool
 one, blocks that event when the hook can't run (a command init wrote before 1.3, or a Cursor hook written up to 1.4.2), and
-`D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s approval
-wait (milliseconds for Gemini CLI and Qwen Code). Re-run init for the active mode to repair the other coding agents' hooks
+`D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s the hook may take to answer (milliseconds for
+Gemini CLI and Qwen Code; a held call waits, up to about 480 s, only with `TRACEKIT_APPROVAL_WAIT` set). Re-run init for the active mode to repair the other coding agents' hooks
 (`tracekit init --dev --v2 --agent NAME` in dev, or `sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT
 --agent NAME` in system mode; with Python 3.9 or 3.10, [laptop system mode](deploy.md#laptop-system-mode)'s command). `tracekit doctor` also checks Droid's and Antigravity CLI's hook presence and timeout, and warns when agy would
 load its hooks and run none (`D-AGY-HOOKS-RUN`, [below](#antigravity-cli)). OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.

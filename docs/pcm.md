@@ -5,7 +5,7 @@
 Agent A asks agent B to refund $120 on order 81. It says alice approved refunds up to $200 for that order. B has only
 A's word for it. If A was prompt-injected, or another process sends the message in A's name, B pays out anyway.
 
-A proof-carrying message (PCM 0.1, an open protocol Tracekit implements) lets B check the request before it acts. The message carries:
+A proof-carrying message (PCM 0.1, an [open protocol](https://github.com/Cygnux-Labs/PCM-protocol/blob/main/SPEC.md) Tracekit implements) lets B check the request before it acts. The message carries:
 
 - who sent it, signed by the v2 signer, which signs only as the calling run's own agent;
 - what it asks for, as a typed intent (`refund.request`, `amount`, `order`) checked against a schema both sides agreed on;
@@ -199,11 +199,11 @@ another class; an HTTP action called `Bash` would prove `tests_passed`.
 
 ### Test commands
 
-`suite` is one line of plain words. It may not hold any of `` ; & | ( ) < > $ ` \ # { } * ? [ ] `` or a control
-character other than tab, so it has no operator, redirection, background `&`, expansion, escape, comment or glob, and
-its quotes must balance. Its words (split at spaces and tabs, `'…'` and `"…"` grouping) must begin with one of these,
-compared exactly, so the program is a bare name looked up on `PATH` (`./pytest` and `.venv/bin/pytest` are not
-`pytest`):
+`suite` is one line of plain words. It may not hold any of `` ; & | ( ) < > $ ` \ # { } * ? [ ] ``, a control
+character other than tab (below U+0020) or DEL (U+007F), so it has no operator, redirection, background `&`,
+expansion, escape, comment or glob, and its quotes must balance. Its words (split at spaces and tabs, `'…'` and `"…"`
+grouping) must begin with one of these, compared exactly, so the program is a bare name looked up on `PATH`
+(`./pytest` and `.venv/bin/pytest` are not `pytest`):
 
 ```text
 pytest  py.test  python -m pytest  python3 -m pytest  python -m unittest  python3 -m unittest  tox  nox  nose2
@@ -340,8 +340,9 @@ Opening a decision shows its args to the receiver. The SDK opens only the decisi
 A claim says a call happened, not that nothing happened after it. The sender picks the records it sends, so none of
 the run's later ones need be there. A suite passed, the code changed and the suite failed: the record of the pass
 still proves `tests_passed`. A file was written, then overwritten: the first write still proves `file_written`. Both
-are `proven`: PCM 0.1 can't show what came later (its specification, section 14.13). If you act on the current
-state, check:
+are `proven`: PCM 0.1 can't show what came later (its
+[specification](https://github.com/Cygnux-Labs/PCM-protocol/blob/main/SPEC.md#14-security-considerations), section
+14.13). If you act on the current state, check:
 
 - **Age.** Take the oldest `ts` among a claim's evidence records (the sender can add records, but not to make the
   evidence look newer; for `tests_passed` it's no later than the decision, made before the runner ran) and refuse
@@ -377,8 +378,9 @@ def same_file(claim, data):
 ```
 
 As a sender, send the claim right after the call. A later PCM version could carry every record of the run since the
-call, and bind `tests_passed` to the git tree it ran on and `file_written` to the bytes the executor wrote (the PCM
-0.1 specification, Appendix B question 5).
+call, and bind `tests_passed` to the git tree it ran on and `file_written` to the bytes the executor wrote (the
+[PCM 0.1 specification](https://github.com/Cygnux-Labs/PCM-protocol/blob/main/SPEC.md#appendix-b-open-issues),
+Appendix B question 5).
 
 ## Grants
 
@@ -519,7 +521,7 @@ A forged message stops at the signature; no claim work is done for it.
 
 **Replay.** A receiver keeps one `pcm.Replay()` for its whole life and passes it to every call. A message passes once:
 within 300 s of the receiver's clock, not signed before the receiver started, and with a nonce not seen before from
-that sender. A sender is the log key that signed the message and its `from.agent`: the same agent name under two
+that sender. A sender is the public key that signed the message and its `from.agent`: the same agent name under two
 pinned logs is two senders. A message signed before the receiver started is refused:
 
 ```text
@@ -539,11 +541,11 @@ ACCEPT  signature ok · schema ok · grant ok (alice, 1 step) · approved_by pro
 ```
 
 It exits 0 for accept, 3 for accept-unproven, 1 for reject and 2 when it can't read its inputs (trust.json with two
-keys of one log too: [Trust and keys](#trust-and-keys)). `--strict` rejects when a claim type the schema lists is not
-proven; `--json` prints the whole result. It does not check replay: it reads one message, and a new process remembers
-no nonces. So its line ends `not checked: replay`, and `not checked: replay, recipient` without `--me`. The sender
-chose parts of the line, so it prints a character a terminal would act on, and `\`, as JSON escapes it (`\u001b`,
-`\\`): a `\u001b` the sender wrote shows as `\\u001b`.
+keys of one log, or one key under two log names, too: [Trust and keys](#trust-and-keys)). `--strict` rejects when a
+claim type the schema lists is not proven; `--json` prints the whole result. It does not check replay: it reads one
+message, and a new process remembers no nonces. So its line ends `not checked: replay`, and `not checked: replay,
+recipient` without `--me`. The sender chose parts of the line, so it prints a character a terminal would act on, and
+`\`, as JSON escapes it (`\u001b`, `\\`): a `\u001b` the sender wrote shows as `\\u001b`.
 
 ## Signer calls
 
@@ -562,22 +564,65 @@ while a person looks at it; `pcm_evidence` still reads. All four count against t
 
 ## Python SDK
 
+The script below is agent A and receiver B in one process, as in `tracekit pcm demo`. It needs a signer started from
+its own signer.yaml. The dev signer (`tracekit up`) won't do: its policy has no rule for `pcm.grant`, so it flags the
+call as a tool it doesn't map (`unknown_tools: flag`) and doesn't ask, and `RunHandle.pcm_grant` raises `Refused`
+before any person is asked. A policy that asks isn't enough on its own: a signer without an `approvals` section refuses
+the `pcm_grant` call itself (`RPCError` `forbidden`): without it any identity of the run's tenant may answer, and
+none is a person. The
+signer's policy must ask for `pcm.grant`, and its `approvals` section must name the person who answers, an identity
+other than the agent's:
+
+```yaml
+# signer.yaml
+data_dir: data
+socket: signer.sock
+socket_mode: "0666"                  # A and alice connect as their own users; the signer tells them apart by uid
+policy: policy.yaml
+approvals:
+  approvers: ["uid:990001"]          # alice's login: she answers the pcm.grant call
+  persons: {"uid:990001": alice}     # the name the grant and the approved_by claim carry
+```
+
+```yaml
+# policy.yaml
+tools:
+  pcm.grant: app
+ask:
+  - {id: PCM-GRANT, tool: pcm.grant, pattern: "^"}
+```
+
+1. Start the signer: `tracekit signer serve --config signer.yaml`.
+2. Pin its log key for B: `tracekit signer trust --config signer.yaml -o pcm-trust.json` ([Trust and keys](#trust-and-keys)).
+3. Run the script as agent A's user, not alice, with `TRACEKIT_SIGNER` set to the signer's socket.
+4. When it waits for the grant, alice approves it from her own login: `tracekit approvals list`, then
+   `tracekit approvals approve <id>`.
+
 ```python
 import datetime
 
 import tracekit.pcm as pcm
 from tracekit.sdk.client import Client
+from tracekit.verify.v2 import load_trust
 
 DOC = {"pcm_schema": 0, "name": "refund.request",
        "fields": {"amount": {"type": "money", "currency": "USD", "max": 1000000},
                   "order": {"type": "int", "min": 1, "max": 999999999}},
        "claims": ["approved_by"], "grant": True}
 REF = pcm.schema_ref(DOC)
-in_an_hour = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
 
-with Client().run("agent-a") as run:
-    # blocks until a person answers the pcm.grant approval (the policy must ask for it)
-    grant = run.pcm_grant("uid:990101", REF, in_an_hour.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+# B, the receiver: the trust file of step 2, and one Replay for its whole life, made before A sends anything (a
+# message signed before the receiver started is refused)
+trust = load_trust("pcm-trust.json")
+replay = pcm.Replay()
+
+# A, the sender: a run as its own identity, on the signer in $TRACEKIT_SIGNER
+client = Client()
+me = "{scheme}:{subject}".format(**client.status({})["identity"])
+in_an_hour = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+with client.run("agent-a") as run:
+    # waits until alice answers the pcm.grant approval (step 4)
+    grant = run.pcm_grant(me, REF, in_an_hour.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                           caveats=[{"field": "amount", "op": "<=", "value": 20000},
                                    {"field": "order", "op": "==", "value": 81}])
     # the approval, the approval.request it answers and the decision that request names
@@ -592,11 +637,19 @@ with Client().run("agent-a") as run:
     msg = run.pcm_send("uid:990102", REF, {"amount": 12000, "order": 81}, grants=[grant], claims=[
         {"type": "approved_by", "args": {"person": "alice", "call": a["data"]["tool_use_id"], "covers": True},
          "evidence": ev}])
+client.close()
 
-# on B's side: one Replay for the receiver's life
-replay = pcm.Replay()
 out = pcm.verify(msg, trust, [DOC], replay=replay, me="uid:990102")
+print(out["verdict"], out["skipped"])
+print(out["claims"][0]["detail"])
 ```
+
+```text
+accept []
+approval seq 4 by alice of "pcm.grant" call pcm-grant-e779619bb373434abe51b5365ed52e2c, which issued this message's root grant
+```
+
+`skipped` is empty: B checked replay and the recipient as well. The call id is the SDK's own, new for each grant.
 
 - `pcm_grant(subject, intent, expires_at, caveats=(), delegable=False, parent=None, timeout_s=300.0)`: with `parent`,
   a child grant (`pcm_delegate`); else the `pcm.grant` call, its approval, the root grant and the call's result.
@@ -625,6 +678,18 @@ leaked would sign grants for as long as it stays pinned. For bundles, [signing](
 keys pinned after a rotation, so old bundles still verify; that trust.json is not one for PCM. Give PCM its own
 trust.json that pins only each log's current key. To rotate, replace the key in it: messages, grants and evidence the
 old key signed then don't verify, so senders ask for new grants and send again.
+
+Each key is pinned under one log name, too. A message names its log by the key that signed it, and its grants and
+evidence must be of that log, so a trust.json that pins one Ed25519 key under two or more log names is the receiver's
+own error as well: `pcm.verify` raises and `tracekit pcm verify` exits 2 (`trust.json pins one Ed25519 key under 2 log
+names (…); PCM reads one log from a key: keep it under the name its log's checkpoints carry …`). Two logs can't share
+a key.
+
+Each witness key is pinned under one name as well, and each witness name pins one key. A cosignature signs no key
+name and a witness cosigns with one key, so `witnesses_required` counts distinct witnesses: a trust.json that pins one
+witness key under two names, or two witness keys under one name, is the receiver's own error, and `pcm.verify` raises
+(`trust pins one witness key under two names (…); a key is one witness: keep it under the name it cosigns with`, or
+`trust pins two witness keys under one name (…); a name is one witness: keep only its current key`).
 
 There is no revocation and no key validity period. A leaked log key signs any message, grant or evidence checkpoint,
 with any time and expiry, until every receiver removes it from trust.json: the 24-hour grant cap binds only an honest

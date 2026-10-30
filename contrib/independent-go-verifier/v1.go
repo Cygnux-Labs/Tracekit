@@ -314,7 +314,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 			ph = ev["prev_hash"]
 			events = append(events, ev)
 			if v1Hash(ev) != r["hash"] {
-				fail("event hash mismatch")
+				fail(fmt.Sprintf("record seq %v: event hash mismatch", ev["seq"]))
 			}
 			if err := validateSchema(ev, v1Schema, v1Schema, "event", 0); err != nil {
 				fail(err.Error())

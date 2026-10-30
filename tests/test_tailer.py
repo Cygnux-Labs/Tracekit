@@ -42,6 +42,15 @@ def line(e):
     return (json.dumps(e) + "\n").encode()
 
 
+def use_line(tcid, tool, args, wire=None):
+    """A tool_use line as Claude Code writes it: `args` its transcript input, `wire` what the model sent (the same
+    but for SendMessage, whose input Claude Code fills in with content, recipient and type)."""
+    return {"type": "assistant", "uuid": "u-" + tcid, "message": {
+        "id": "msg_" + tcid, "model": "claude-opus-5-5", "role": "assistant", "stop_reason": "tool_use",
+        "content": [{"type": "tool_use", "id": tcid, "name": tool, "input": args, "caller": {"type": "direct"}}]},
+        "wireToolInputs": {tcid: args if wire is None else wire}, "isSidechain": False}
+
+
 class Run:
     """The run handle the tailer calls, answered in process for `identity`."""
 
@@ -152,6 +161,73 @@ class Tailer(unittest.TestCase):
         self.assertEqual([(e["type"], e.get("tool_call_id")) for e in events if e["type"].startswith("reconcile.")],
                          [("reconcile.fabricated", "toolu_9")])
         self.assertEqual(self.lost(), [])
+
+    def reconciled(self, calls, *lines):
+        """The run's reconcile records (type, tool_call_id), sorted, once the hook decided `calls` ((tool_call_id, tool,
+        args as Claude Code's PreToolUse hook gets them) each) and the tailer read `lines` in the session's
+        transcript."""
+        hook = Run(self.signer, self.out)
+        for tcid, tool, args in calls:
+            hook.call("decide", tool_call_id=tcid, tool=tool, args=args, args_source="parsed")
+        self.write(*lines)
+        self.tail()
+        hook.call("close_run")
+        self.signer.sweep(time.monotonic() + 3600)
+        with open(os.path.join(self.d, "data", "store", "records.jsonl"), "rb") as f:
+            events = [json.loads(x)["event"] for x in f.read().splitlines()]
+        return sorted((e["type"], e.get("tool_call_id")) for e in events if e["type"].startswith("reconcile."))
+
+    def test_what_claude_code_drops_or_fills_in_before_its_hooks_is_no_args_mismatch(self):
+        """Claude Code hands its PreToolUse hook a tool use's input without the keys the tool does not take (a model
+        sends run_in_background to an Agent tool that runs every agent in the background, persistent and timeout to
+        Monitor, description to Write), with Monitor's default timeout_ms, and with the summary a SendMessage the model
+        gave none gets: its message's first line, cut to 200 characters. The transcript keeps the input as the model
+        sent it, so each of these calls was a reconcile.args_mismatch (50 in one run of the maintainer's)."""
+        agent = {"description": "Fix HORIZON freeze on large runs", "subagent_type": "general-purpose",
+                 "prompt": "Fix a real performance bug in the viewer's HORIZON page.\n\nWork in a worktree."}
+        message = ("One change of scope from the owner: HORIZON gets its own docs page. In the same PR:\n\n"
+                   "1. Create docs/horizon.md.")
+        send = {"to": "a1ee34a4514e05472", "message": message, "content": message[:49] + "…",
+                "recipient": "a1ee34a4514e05472", "type": "message"}
+        long = "From the owner: " + "the demo map must look as rich as a real heavy session " * 5 + "\nBuild it."
+        long_send = {**send, "message": long, "content": long[:49] + "…"}
+        monitor = {"command": "tail -f /tmp/tkhz/hq3.log | grep --line-buffered -E 'place:|Traceback'",
+                   "description": "orbit/place capture: completion, errors, or stalls"}
+        write = {"file_path": "/work/proj/notes.md", "content": "# Notes\n"}
+        calls = [("toolu_a", "Agent", agent), ("toolu_s", "SendMessage", {**send, "summary": message.split("\n")[0]}),
+                 ("toolu_l", "SendMessage", {**long_send, "summary": long.split("\n")[0][:199] + "…"}),
+                 ("toolu_m", "Monitor", {**monitor, "timeout_ms": 300000}),
+                 ("toolu_p", "Monitor", {**monitor, "timeout_ms": 1800000}), ("toolu_w", "Write", write)]
+        found = self.reconciled(calls, use_line("toolu_a", "Agent", {**agent, "run_in_background": "true"}),
+                                use_line("toolu_s", "SendMessage", send, wire={"to": send["to"], "message": message}),
+                                use_line("toolu_l", "SendMessage", long_send, wire={"to": send["to"], "message": long}),
+                                use_line("toolu_m", "Monitor", {**monitor, "timeout": "1500000"}),
+                                use_line("toolu_p", "Monitor", {**monitor, "persistent": "true", "timeout_ms": 1800000}),
+                                use_line("toolu_w", "Write", {**write, "description": "x"}))
+        self.assertEqual(found, [])
+        self.assertEqual(self.lost(), [])
+
+    def test_other_arguments_a_missing_decide_and_a_decide_no_transcript_asks_for_are_still_gaps(self):
+        """What compared() leaves out is Claude Code's own: arguments the hook saw that the model did not ask for, a
+        call with no decide and a decide no transcript holds a tool use for are still reconcile gaps."""
+        agent = {"description": "Review the release", "subagent_type": "general-purpose", "prompt": "Review #466."}
+        send = {"to": "tracekit-25", "message": "The release is merged.\nClean up your worktree."}
+        monitor = {"command": "tail -f ci.log", "description": "CI errors"}
+        write = {"file_path": "/work/proj/notes.md", "content": "# Notes\n"}
+        calls = [("toolu_a", "Agent", {**agent, "prompt": "Push the release branch to main."}),
+                 ("toolu_s", "SendMessage", {**send, "summary": "Push to main now"}),   # not the message's first line
+                 ("toolu_m", "Monitor", {**monitor, "timeout_ms": 1800000}),   # not the default the model left out
+                 ("toolu_b", "Bash", {**ARGS, "dangerouslyDisableSandbox": True}),
+                 ("toolu_w", "Write", {**write, "content": "# Other notes\n"}),
+                 ("toolu_f", "SubagentHandback", {"message": "Reading view.check in view.py"})]
+        found = self.reconciled(calls, use_line("toolu_a", "Agent", {**agent, "run_in_background": "true"}),
+                                use_line("toolu_s", "SendMessage", send), use_line("toolu_m", "Monitor", monitor),
+                                use_line("toolu_b", "Bash", ARGS), use_line("toolu_w", "Write", write),
+                                use_line("toolu_e", "Edit", {"file_path": "a.txt", "old_string": "a",
+                                                             "new_string": "b", "replace_all": False}))
+        self.assertEqual(found, sorted([("reconcile.args_mismatch", t) for t in ("toolu_a", "toolu_s", "toolu_m",
+                                                                                 "toolu_b", "toolu_w")]
+                                       + [("reconcile.hook_missing", "toolu_e"), ("reconcile.fabricated", "toolu_f")]))
 
     def test_a_symlink_among_a_workflows_transcripts_is_lost(self):
         """A workflow's directories are checked as the subagents' one is: a symlink in place of `workflows` or of one

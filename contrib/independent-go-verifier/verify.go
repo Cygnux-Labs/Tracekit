@@ -27,6 +27,9 @@ type VerificationCheck struct {
 
 var versionPattern = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,9}){0,2}$`)
 
+// TrustUnusable is the integrity of a trust config that can't be used: nothing in the bundle was checked (exit 2).
+const TrustUnusable = "UNVERIFIABLE (the trust file can't be used)"
+
 func registryOrigin(origin string, salt []byte) string {
 	digest := sha256.Sum256(append([]byte("registry "), salt...))
 	return origin + "/registry/" + hex.EncodeToString(digest[:])[:32]
@@ -38,12 +41,16 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 	rep := Verification{ExitCode: 2, Integrity: "UNUSABLE BUNDLE", Assurance: "none", Checks: []VerificationCheck{}}
 	log, witnesses, quorum, err := loadTrust(trustBytes)
 	if err != nil {
-		rep.Detail = "trust: " + err.Error()
+		rep.Integrity, rep.Detail = TrustUnusable, "trust config: "+err.Error()
 		return rep
 	}
 	files, err := ReadBundle(bundle)
 	if err != nil {
 		rep.Detail = err.Error()
+		return rep
+	}
+	if _, ok := files["manifest.json"]; !ok {
+		rep.Detail = "the bundle file is damaged: no manifest.json"
 		return rep
 	}
 	manifest, err := parseFileObject(files, "manifest.json")

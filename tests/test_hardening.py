@@ -6,6 +6,7 @@ import http.server
 import io
 import json
 import os
+import random
 import shutil
 import signal
 import socket
@@ -251,6 +252,33 @@ class VerifierNeverCrashes(unittest.TestCase):
             bundle.export(home, out, run="a")
         self.assertEqual(open(out, "rb").read(), b"previous good bundle")
         self.assertEqual([n for n in os.listdir(d) if ".tmp-" in n], [])
+
+
+class LineSeparators(unittest.TestCase):
+    def test_a_record_holding_unicode_line_separators_exports_and_verifies(self):
+        """A record's JSON keeps U+0085, U+2028 and U+2029 unescaped, and str.splitlines also splits there: exporting
+        such a run raised while rendering replay.html, and the verifier read the record as two lines of bad JSON."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        home = os.path.join(d, "s")
+        s = make_signer(home, witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100)
+        s.handle({"op": "append", "cseq": 0, "event": run_start("a"), "attach": {"policy": policy.load()[1]}})
+        s.handle({"op": "append", "cseq": 1, "event": ev("run.end", {"reason": "a\u2028b\u2029c\x85d"}, "a")})
+        out = os.path.join(d, "a.tkb")
+        bundle.export(home, out, run="a")
+        with zipfile.ZipFile(out) as z:
+            self.assertIn("a\u2028b\u2029c\x85d", z.read("records.jsonl").decode("utf-8"))
+        self.assertEqual(bundle.verify(out, [f"file:{d}/w.jsonl"])[1], 0)
+
+    def test_every_other_text_splits_as_splitlines_did(self):
+        """v1 is frozen: a .jsonl without U+0085, U+2028 or U+2029 reads into exactly the lines it did, whatever its
+        other line boundaries (a hand-made bundle may use \\r, \\x0b or \\x1c between records)."""
+        rnd = random.Random(7)
+        alphabet = ["a", "{", "}", '"', " ", "\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\u00e9"]
+        for _ in range(5000):
+            text = "".join(rnd.choice(alphabet) for _ in range(rnd.randrange(12)))
+            self.assertEqual(bundle._lines(text), text.splitlines(), repr(text))
+        self.assertEqual(bundle._lines("a\u2028b\u2029c\x85d\n"), ["a\u2028b\u2029c\x85d"])
 
 
 class Witnesses(unittest.TestCase):

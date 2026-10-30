@@ -138,7 +138,7 @@ class TestService(unittest.TestCase):
         return s.log.storage.tail_state(), json.dumps(sorted(s.log.runs.items()), sort_keys=True)
 
     def register(self, s, identity=ME, **kw):
-        return s.call(identity, "register_run", {"request_id": f"reg-{time.monotonic_ns()}", "agent": {"name": "a"}, **kw})
+        return s.call(identity, "register_run", {"request_id": f"reg-{uuid.uuid4().hex}", "agent": {"name": "a"}, **kw})
 
     def ev(self, run, seq, rid=None, **kw):
         return {"request_id": rid or uuid.uuid4().hex, "run_id": run["run_id"], "run_token": run["run_token"],

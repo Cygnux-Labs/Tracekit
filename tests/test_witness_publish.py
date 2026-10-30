@@ -29,6 +29,8 @@ from tracekit.verify import v2
 NAME = "witness.example.org/fake"
 SECRET = hashlib.sha256(b"fake witness").digest()
 VKEY = checkpoint.vkey(NAME, checkpoint.COSIGNATURE, pub(SECRET))
+ALIAS = checkpoint.vkey("witness.example.org/alias", checkpoint.COSIGNATURE, pub(SECRET))   # VKEY's key, another name
+OTHER = checkpoint.vkey("witness.example.org/other", checkpoint.COSIGNATURE, pub(hashlib.sha256(b"other").digest()))
 ORIGIN = "tracekit.example.org/log/publish"
 
 
@@ -364,13 +366,19 @@ class Publisher(unittest.TestCase):
                               ([{"url": self.w.url, "vkey": VKEY}], False),
                               ([{"url": self.w.url, "vkey": VKEY, "class": "friend"}], False),
                               ([{"url": self.w.url, "vkey": self.s.vkey, "class": "customer"}], False),
-                              ([{"url": self.w.url, "vkey": VKEY, "class": "customer"}] * 2, False)):
+                              ([{"url": self.w.url, "vkey": VKEY, "class": "customer"}] * 2, False),
+                              ([{"url": self.w.url, "vkey": VKEY, "class": "customer"},
+                                {"url": self.w.url, "vkey": ALIAS, "class": "public"}],
+                               f"witnesses {NAME} and witness.example.org/alias have one key: a key is one witness, so "
+                               "list it once, under the name it cosigns with"),
+                              ([{"url": self.w.url, "vkey": VKEY, "class": "customer"},
+                                {"url": self.w.url, "vkey": OTHER, "class": "public"}], True)):
             with open(cfg, "w") as f:
                 json.dump({"data_dir": "d", "witnesses": witnesses}, f)
-            if ok:
+            if ok is True:
                 self.assertEqual(svc.load_config(cfg)["witnesses"], witnesses)
             else:
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, ok or ""):
                     svc.load_config(cfg)
         with open(cfg, "w") as f:
             json.dump({"data_dir": ".", "witnesses": [{"url": self.w.url, "vkey": VKEY, "class": "customer"}]}, f)
