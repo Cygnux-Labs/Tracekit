@@ -14,8 +14,9 @@ pip install tracekit-ai "agent-framework-core>=1.22,<1.23" agent-framework-opena
 ```
 
 Tested with Agent Framework 1.22 (`agent-framework-core`), which needs Python 3.10+; other minors may change how
-middleware runs and get no warning. Pick the package for your model provider (`agent-framework-openai`,
-`agent-framework-anthropic`, `agent-framework-foundry`, ...); the middleware itself needs only the core.
+middleware runs, and building `Tracekit(run)` with one warns. Pick the package for your model provider
+(`agent-framework-openai`, `agent-framework-anthropic`, `agent-framework-foundry`, ...); the middleware itself needs
+only the core.
 
 ## Setup
 
@@ -124,4 +125,5 @@ The message itself is kept only when the signer's content vault is on; without i
 - With the gateway's [verified tool results](../gateway.md#verified-tool-results), a result of several content items is
   recorded as its items, which the gateway doesn't match to what the model is sent (joined with newlines for OpenAI,
   separate blocks for Anthropic): such a call reads as `result_mismatch`.
-- Not wired by `tracekit.instrument()`, and tested with 1.22 only: other versions get no warning.
+- Not wired by `tracekit.instrument()`, and tested with 1.22 only: another version warns when you build
+  `Tracekit(run)`.

@@ -25,7 +25,7 @@ from haystack.components.agents.state import replace_values
 from haystack.dataclasses import ChatMessage
 
 from tracekit.format.canon import event_hash, loads_strict
-from tracekit.integrations import said
+from tracekit.integrations import said, version_check
 from tracekit.integrations.gate import gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -35,6 +35,7 @@ class Tracekit:
     list it last at both. `run` is a RunHandle (`Client().run(...)`); an AsyncRunHandle works too."""
 
     def __init__(self, run):
+        version_check.warn_untested("Haystack", "haystack-ai", (3, 4), (3, 5), "haystack-ai>=3.4,<3.5")
         self.handle = run_handle(run, instrument=True)
         self.said = said.Said(lambda **f: self.handle.call("model_event", **f), lambda: self.handle.client.status({}))
         # lean: one entry per call id for the hook's life; prune them at run end if agents run for days
