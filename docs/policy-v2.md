@@ -202,9 +202,9 @@ a file a command only reads or copies. The tags are not in `target`, so a target
 
 | Rule | Subject |
 |---|---|
-| `class: shell`, no `field` or `field: argv` | each simple command the line runs, as its argv joined by spaces, argv[0] a basename in lower case (the agent's file system may ignore case) |
+| `class: shell`, no `field` or `field: argv` | each simple command the line runs, as its argv joined by spaces, argv[0] a basename casefolded (the agent's file system may ignore case: macOS runs `/bin/sh` for `ſh`) |
 | `class: shell`, `field: command` | the raw command line |
-| `class: shell`, `field: line` | the raw command line and each line the parser normalised (quotes and escapes resolved, redirections kept), as typed and again with its program names in lower case |
+| `class: shell`, `field: line` | the raw command line and each line the parser normalised (quotes and escapes resolved, redirections kept), as typed and again with its program names casefolded |
 | `class: shell`, `field: code` | the `line` subjects without the text a command only copies into a file: the words of an `echo` or `printf`, and the heredoc or herestring a `cat` or `tee` copies, when its standard output is redirected to a file a literal names (not a pipe, a descriptor, a variable, or a path with a `dev/` or `proc/` folder in it, such as `/dev/…`, `/proc/…` or `docs/dev/notes.md`, other than `/dev/null`; a relative name only before any `cd`, `pushd` or `popd`). A `tee` that only writes its file argument also prints the text, so it is kept (`tee notes.md <<< '…'`; `tee notes.md > /dev/null <<< '…'` cuts it). The text is cut only in plain cases: every later command of the call is another such copy or only lists, prints or changes folder (`ls`, `pwd`, `cd`, `mkdir`, `true`, an `echo` or `printf` to the terminal), with no `$` or backtick in its words, and no command of the call can change what a command name runs (`alias`, `source`, `export`, `declare`, `eval`, `unset`, a `PATH=` assignment, …). A word with an expansion is kept, and so is a heredoc whose command substitutions run (an unquoted delimiter); in a nested script (`bash -c '…'`) the raw command keeps the text |
 | `class: fs`, `field: path` | the normalised path, and with a `..` also the lexically normalised one; each also casefolded |
 | `class: sql`, `field: code` | each dialect's reading of the statement (`code` above) |
@@ -224,7 +224,7 @@ is a class field in every class, so a rule can't name a raw argument called `tar
 `torsocks`, `firejail`, `gosu`, `tini`, …) and runners (`uv run`, `uv tool run`, `poetry run`, `pipenv run`, `pdm run`,
 `pipx run`, `hatch run`, `conda run`, `direnv exec DIR`, `mise exec … --`, `op run`, `doppler run`, `npm exec`,
 `pnpm dlx`, `yarn dlx`, `bun x`) are resolved, a program
-name is read in lower case and without `.exe`, and the parser follows what a shell or interpreter runs: `bash -c`,
+name is read casefolded and without `.exe`, and the parser follows what a shell or interpreter runs: `bash -c`,
 `nix-shell --run`, a heredoc into a shell, `eval`, `ssh host '…'`, `find -exec`,
 `watch` and `parallel`, `env -S` (also in a cluster, `env -iS`), `npx -c` and `npm exec -c`/`--call`, `python -c` /
 `node -e` / `perl -e` / `ruby -e` / `php -r` / `lua -e` (also with the code attached to its flag, or a program from a

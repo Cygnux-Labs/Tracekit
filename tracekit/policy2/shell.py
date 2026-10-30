@@ -3,7 +3,7 @@
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
 strings, substitutions, heredocs into a shell, at or batch, trap's action and interpreter one-liners:
 `{"argv": [...], "word": str, "via": [...], "pipeline": n, "glob": bool, "opaque": bool, "stdin": [...]}`. argv[0] is
-a basename, the part after any `\\` in lower case and without a `.exe` (the agent's file system may ignore case: macOS
+a basename, the part after any `\\` casefolded and without a `.exe` (the agent's file system may ignore case: macOS
 runs git for `Git`; Windows runs git.exe for git); `word` is that first word as written (a path, or the text of a name
 an expansion builds); `via` says how the command was reached (empty at top level); commands with the same `pipeline`
 are stages of one pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or
@@ -12,7 +12,7 @@ a stream). `stdin`: the herestring and heredoc text the command reads (the names
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
-redirections kept, and again with its program names in lower case when that differs, for rules that match a whole
+redirections kept, and again with its program names casefolded when that differs, for rules that match a whole
 command line; the words that name something besides the commands' argv: redirection targets, `VAR=` assignments
 and the program an interpreter reads from a heredoc or herestring; the targets of the redirections that write a
 file (`>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&` to a name rather than a descriptor); and the code: the command and the
@@ -1215,10 +1215,10 @@ class _Parser:
 
 
 def _lower_name(word):
-    """`word` with the name after its last / or \\ in lower case and without a `.exe` (Windows runs git.exe for git):
-    the directories keep their case."""
+    """`word` with the name after its last / or \\ casefolded and without a `.exe` (Windows runs git.exe for git; macOS
+    runs /bin/sh for `ſh`, its file system folding case as casefold does): the directories keep their case."""
     i = max(word.rfind("/"), word.rfind("\\")) + 1
-    name = word[i:].lower()
+    name = word[i:].casefold()
     return word[:i] + (name[:-4] if name.endswith(".exe") and len(name) > 4 else name)
 
 
@@ -1236,7 +1236,7 @@ def _programs(words, cmds):
 
 
 def _lines(words, progs):
-    """The line `words` make, and again with the program names at indexes `progs` in lower case when that differs."""
+    """The line `words` make, and again with the program names at indexes `progs` casefolded when that differs."""
     low = list(words)
     for i in progs:
         low[i] = _lower_name(low[i])
