@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -121,6 +122,28 @@ class DevSignerEndToEnd(unittest.TestCase):
             self.assertEqual(autospawn.down(), pid_b)   # `tracekit down` in HOME B stops B's alone
         self.assertTrue(self.held())
 
+    def test_a_runtime_dir_too_long_for_a_socket_path_gets_a_short_one_of_its_own(self):
+        """macOS caps socket paths at 104 bytes: a TRACEKIT_RUNTIME_DIR too long for one serves its signer from
+        /tmp/tk-<uid>.<hex of its path>, which every client given that dir finds and `tracekit status` names."""
+        long = {"TRACEKIT_RUNTIME_DIR": os.path.join(self.dir, "r" * 100)}
+        with mock.patch.dict(os.environ, long):
+            short = autospawn.runtime_dir()
+            self.addCleanup(shutil.rmtree, short, True)
+            self.addCleanup(lambda: mock.patch.dict(os.environ, long)(autospawn.down)())
+            self.assertTrue(short.startswith(f"/tmp/tk-{os.getuid()}."), short)
+            self.assertEqual(os.stat(short).st_mode & 0o777, 0o700)
+            first = Client()
+            self.addCleanup(first.close)
+            pid = self.one_run(first)
+            again = Client()
+            self.addCleanup(again.close)
+            self.assertEqual(self.one_run(again), pid)
+            self.assertEqual(json.loads(self.cli("status"))["signer_v2"]["socket"], os.path.join(short, autospawn.SOCK))
+        self.assertNotEqual(autospawn.runtime_dir(), short)   # another dir's is never this one
+        near = "/tmp/" + "s" * (103 - len("/tmp/") - len("/" + autospawn.SOCK))   # its socket path fits, a side dir's not
+        self.assertEqual(autospawn._short(near), near)
+        self.assertLessEqual(len(os.path.join(autospawn._side(near), autospawn.SOCK).encode()), 103)
+
     def test_a_signer_from_before_1_4_is_this_homes_when_this_data_dirs_store_is_held(self):
         os.makedirs(self.run_dir, 0o700)
         with open(self.path(autospawn.ENDPOINT), "w") as f:   # as a 1.3 dev signer published it: no data_dir
@@ -188,6 +211,30 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", out)
         self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust))
         self.assertTrue(self.held())   # the signer kept running throughout
+
+    def test_export_says_what_it_wrote_and_the_commands_it_gives_verify_it(self):
+        """`tracekit export --v2` printed bundle_v2.export's summary as raw JSON: it says what it wrote and where, then
+        the commands that verify the bundle, which run as printed. --json keeps the JSON for scripts."""
+        c = Client()
+        self.addCleanup(c.close)
+        with c.run("e2e") as run:
+            run.decide("c1", "Bash", '{"command": "ls"}')
+            run.complete("c1")
+        store = os.path.join(service.dev_data_dir(), "store")
+        self.assertTrue(wait_for(lambda: list(FileReader(store).iter_run("default", run.run_id))[-1]["event"]["type"]
+                                 == "run.final", 20), "no run.final after the grace window")
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.dir)
+        said = self.cli("export", "--v2", "--run", run.run_id, "-o", "run.tkb")
+        self.assertRegex(said, rf"^wrote run\.tkb: run {run.run_id}, \d+ records; a verifier needs tracekit "
+                               r"\d+\.\d+\.\d+ or newer\nnext, pin the signer's log key and verify the bundle against "
+                               r"it:\n  tracekit signer trust -o trust\.json\n  tracekit verify run\.tkb --trust "
+                               r"trust\.json\n$")
+        trust, verify = [shlex.split(x)[1:] for x in said.splitlines() if x.startswith("  tracekit ")]
+        self.cli(*trust)
+        self.assertIn("Integrity: VERIFIED.", self.cli(*verify))
+        info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "-o", "again.tkb", "--json"))
+        self.assertEqual((info["bundle"], info["verifier_min_version"] in said), ("again.tkb", True))
 
     def test_the_dev_user_signs_findings_about_its_runs_and_they_read_self_asserted(self):
         """The dev signer lists its user in analyzers (#309): a findings run about the user's own run signs a finding,
@@ -310,6 +357,46 @@ class SpawnAndStatus(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.main(["status"]), 0)
         self.assertFalse(json.loads(out.getvalue())["signer_v2"]["running"])
+        self.assertFalse(os.path.exists(self.run_dir))
+
+    def test_status_says_how_a_dev_signer_not_started_starts(self):
+        # right after `init --dev --v2` status said "[Errno 2] No such file or directory: '/tmp/tk-501.…'"
+        self.assertIn("not started", autospawn.status()["error"])
+        os.makedirs(self.run_dir, 0o700)
+        self.assertIn("tracekit up", autospawn.status()["error"])
+        if os.name == "posix":   # Windows has no permission bits
+            os.chmod(self.run_dir, 0o755)   # a dir someone else could have made: refused, and status says why
+            self.assertIn("mode 0700", autospawn.status()["error"])
+            os.chmod(self.run_dir, 0o700)   # a signer of another protocol over TCP (no Unix sockets): not "not started"
+        with mock.patch.object(autospawn, "address", return_value=("tcp://127.0.0.1:1", "t")), \
+                mock.patch.object(autospawn, "connect", side_effect=autospawn.Incompatible("protocol 15")):
+            self.assertEqual(autospawn.status()["error"], "protocol 15")
+
+    def test_status_shows_no_v1_signer_or_policy_on_a_v2_only_setup(self):
+        """`signer` and `policy` are the v1 signer's and the v1 hooks' (whose fail mode v2 hooks don't follow): null
+        when no config or TRACEKIT_SOCKET names a v1 signer and none answers at the default socket."""
+        from tracekit import client, install
+        os.environ.pop("TRACEKIT_SOCKET", None)   # setUp's patch.dict puts it back
+        down = client.SignerUnavailable("[Errno 2] No such file or directory")
+        cases = (({"hooks_settings": "/h/.claude/settings.json"}, down, None),   # init --dev --v2 writes only this
+                 ({"socket": "/srv/v1.sock"}, down, {"ok": False, "error": f"unreachable at /srv/v1.sock: {down}"}),
+                 ({}, None, {"ok": True}))   # a v1 signer from before 0.2.1's config, at the default socket
+        for cfg, err, signer in cases:
+            with self.subTest(cfg=cfg, reachable=err is None), \
+                    mock.patch.object(client, "system_config", return_value=None), \
+                    mock.patch.object(client, "client_config", return_value=cfg), \
+                    mock.patch.object(client, "status", side_effect=err, return_value={"ok": True}), \
+                    mock.patch.object(install, "_installed_hooks", return_value=[]):
+                out = install.status()
+                self.assertEqual(out["signer"], signer)
+                self.assertEqual(out["policy"] and out["policy"]["fail_mode"], signer and "open")
+
+    def test_status_names_the_system_signer_in_system_mode(self):
+        from tracekit import client
+        sock = os.path.join(self.dir, "system.sock")
+        with mock.patch.object(client, "system_config", return_value={"signer": sock}):
+            got = autospawn.status()
+        self.assertEqual((got["socket"], got["running"]), (sock, False))
         self.assertFalse(os.path.exists(self.run_dir))
 
 

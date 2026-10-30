@@ -502,23 +502,29 @@ def _exit(harness, code, is_pre):
 
 
 def _reply(harness, stdout, allowed, msg, is_pre):
+    # a block message in at most 500 characters. Its last line is the hook's outcome (after a waiting line): it goes
+    # first. A held call's names its rule ids and the approve and reject commands before its reasons, so a longer one
+    # loses the end of its reasons, marked
+    *before, last = msg.split("\n")
+    msg = "\n".join([last, *before])
+    msg = msg if len(msg) <= 500 else msg[:499] + "…"
     if harness == "cursor":
         if is_pre:
             stdout.write(json.dumps({"permission": "allow"} if allowed else
-                                    {"permission": "deny", "user_message": msg[:500], "agent_message": msg[:500]}))
+                                    {"permission": "deny", "user_message": msg, "agent_message": msg}))
         else:
             stdout.write("{}")
     elif harness == "gemini":
         # stdout must be JSON only; a deny only for a tool call
-        stdout.write(json.dumps({} if allowed or not is_pre else {"decision": "deny", "reason": msg[:500]}))
+        stdout.write(json.dumps({} if allowed or not is_pre else {"decision": "deny", "reason": msg}))
     elif harness == "antigravity":
         # agy reads stdout as its hook result message: only documented fields (another fails the hook), on every event.
         # `allow` leaves the call to agy's own permissions, as the other hooks' exit 0 does
         stdout.write(json.dumps({} if not is_pre else {"decision": "allow"} if allowed else
-                                {"decision": "deny", "reason": msg[:500] or "Blocked by Tracekit"}))
+                                {"decision": "deny", "reason": msg or "Blocked by Tracekit"}))
     elif harness in ("codex", "droid") and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                                        "permissionDecisionReason": msg[:500] or "Blocked by tracekit"}}))
+                                                        "permissionDecisionReason": msg or "Blocked by tracekit"}}))
     stdout.flush()
 
 
@@ -526,9 +532,13 @@ def _reply(harness, stdout, allowed, msg, is_pre):
 
 def config_path(harness, project=None, home=None):
     """The hook config of `harness`: a project's (project) or a user's (home, default ~), which differ for OpenCode,
-    whose 1.0 releases load plugins from plugin/ only (plugins/ from 1.1.1)."""
+    whose 1.0 releases load plugins from plugin/ only (plugins/ from 1.1.1). This user's Codex reads $CODEX_HOME in place
+    of ~/.codex, by its real path (codex-rs find_codex_home_from_env), which keys the hooks' trust; ~/.codex as it is.
+    lean: another user's (home) is ~/.codex: their CODEX_HOME isn't known here"""
     base = project or home or os.path.expanduser("~")
-    return {"codex": os.path.join(base, ".codex", "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
+    codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
+        else os.path.join(base, ".codex")
+    return {"codex": os.path.join(codex, "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
             "qwen": os.path.join(base, ".qwen", "settings.json"),
@@ -632,6 +642,28 @@ def reasoning_line(path, value, changed):
                 "init --no-thinking-summaries leaves the setting alone")
     return (f"Codex reasoning summaries: off ({path} sets {CODEX_SUMMARY} to \"none\"): `tracekit analyze --v2` can't read "
             "the model's reasoning; set it to \"auto\" to check it")
+
+
+def codex_trust_store(home=None):
+    """The config.toml where Codex records which hooks a person trusted (in /hooks): this user's Codex home's
+    ($CODEX_HOME, else ~/.codex), or that of the user whose home is `home`."""
+    return os.path.join(os.path.dirname(config_path("codex", home=home)), "config.toml")
+
+
+def codex_trust_line(user=None, home=None):
+    """What init says last for Codex: it runs a hook only once a person trusted it as it is now, and skips it until
+    then; interactive codex asks at startup, `codex exec` says nothing (learn.chatgpt.com/docs/hooks; codex-rs tui
+    startup_hooks_review.rs); doctor's D-CODEX-HOOK-TRUST checks. user, home: system mode's agent user."""
+    run = f"As {user}, run" if user else "Run"
+    if not user and os.environ.get("CODEX_HOME"):   # the Codex that reads it, not one that reads ~/.codex
+        run += f" codex with CODEX_HOME={os.environ['CODEX_HOME']}"
+    else:
+        run += " codex"
+    return ("next, trust these hooks in Codex: it runs none of them until a person has, so until then no Codex call is "
+            f"recorded or decided. {run} in a terminal, type /hooks and trust Tracekit's hooks (Codex records that in "
+            f"{codex_trust_store(home)}). Interactive codex also asks at startup whenever they are new or changed (as "
+            "after tracekit init); `codex exec` never asks and skips them without a word. `tracekit doctor` says "
+            "whether they are trusted")
 
 
 def _version(cmd):

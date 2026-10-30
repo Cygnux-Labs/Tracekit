@@ -22,9 +22,11 @@ def experimental_gate(enabled, what):
     return True
 
 
-def experimental(what):
-    """The one line each experimental command or server prints when it starts (docs/support.md)."""
-    print(f"tracekit: {what} is experimental: it works and is tested, but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
+def experimental(what, help=False):
+    """The one line each experimental command or server prints when it starts (docs/support.md); with `help`, the line
+    its --help ends with, on stdout."""
+    text = f"{what} is experimental: it works and is tested, but may change ({wiki_url('docs/support.md')})"
+    print(f"\n{text}" if help else f"tracekit: {text}", file=sys.stdout if help else sys.stderr)
 
 
 def _signer_home(a):
@@ -40,7 +42,8 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "a2a-gateway": "a2a_gateway", "ext-mcp": "ext_mcp",
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
-              "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli"}  # subcommands with their own parsers
+              "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli",
+              "report": "report"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
@@ -51,8 +54,9 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
-                 "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm"}
-_MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
+                 "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm",
+                 "report": "tracekit report"}
+_MOVED = {"sql": "query", "proofpack": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
 def main(argv=None):
@@ -79,9 +83,16 @@ def main(argv=None):
         return 2
     if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
         import importlib
-        if args[0] in _EXPERIMENTAL:
+        run = importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main
+        if args[0] not in _EXPERIMENTAL:
+            return run(args[1:])
+        if not {"-h", "--help"} & set(args[1:]):
             experimental(_EXPERIMENTAL[args[0]])
-        return importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main(args[1:])
+            return run(args[1:])
+        try:   # its help ends with it, once, rather than a banner over the help
+            return run(args[1:])
+        finally:
+            experimental(_EXPERIMENTAL[args[0]], help=True)
     ap = argparse.ArgumentParser(prog="tracekit", description="Tamper-evident records of what AI agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
@@ -119,8 +130,12 @@ def main(argv=None):
     p.add_argument("--experimental", action="store_true", help="allow experimental surfaces (--proxy)")
     p.add_argument("--proxy-port", type=int, default=8787)
     p.add_argument("--fail-closed", action="store_true", help="proxy: refuse to forward when the signer can't record")
-    p.add_argument("--managed", action="store_true", help="system mode: install hooks in Claude Code's admin-managed settings")
-    p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly")
+    p.add_argument("--managed", action="store_true", help="system mode, Claude Code: hooks in its admin-managed "
+                   "settings (managed-settings.json), which the agent's user can't edit or turn off; they run in "
+                   "every user's Claude Code on this machine (limits: a server-managed or MDM policy replaces the "
+                   f"file, claude --bare may skip it; {wiki_url('docs/limits.md', 'dev-mode-vs-system-mode')})")
+    p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly, which "
+                   "stops every user's own Claude Code hooks on this machine (user, project, local and plugin ones)")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
                                        "antigravity", "crush"), default="claude",
                    help="which coding agent's hooks to install (default: Claude Code)")
@@ -227,6 +242,9 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("graph", help="what agents did across verified bundles: `graph build|query|verify`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("report", help="what the agents did this week, on one page, from the v2 signer's store: runs, "
+                       "calls, holds, denies and flags by rule, gaps, integrity (--since, --json)", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -275,8 +293,12 @@ def main(argv=None):
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
     p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
+    p.add_argument("--data-dir", help="with --v2: a signer data dir (holds store/ and log.vkey), as tracekit view "
+                   "reads one; it names no socket, so a run no checkpoint covers yet can't be exported from it")
     p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's findings runs "
                    "(`tracekit analyze --v2`, `tracekit why`) and replay runs, which the verifier checks")
+    p.add_argument("--json", action="store_true", help="print what was written as one JSON object, for scripts (with "
+                   "--v2: the verifier version the bundle needs, verifier_min_version, and the records that raised it)")
 
     p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
                                     "and verify it")
@@ -414,6 +436,13 @@ def _run(a):
         if a.managed_only and not a.managed:   # alone, the hooks would go to settings the agent's user can edit
             print("tracekit: --managed-only goes with --managed", file=sys.stderr)
             return 2
+        if a.managed and (a.dev or a.project or a.agent != "claude"):
+            print("tracekit: " + ("--managed is for system mode: a --dev setup belongs to its user" if a.dev else
+                                  "--managed and --project name different settings files: use one" if a.project else
+                                  f"--managed is for Claude Code only: Tracekit wires no admin-managed settings for "
+                                  f"{a.agent}, so its hooks go in the agent user's own config "
+                                  f"({wiki_url('docs/limits.md')})"), file=sys.stderr)
+            return 2
         signer = None
         if a.key_attestation and not a.signer_cmd:
             print("tracekit: --key-attestation goes with --signer-cmd (an attestation is about an external key)", file=sys.stderr)
@@ -431,8 +460,8 @@ def _run(a):
                       "assurance": a.key_assurance}
             if a.key_attestation:
                 signer["attestation"] = os.path.abspath(a.key_attestation)
-        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer or a.managed):
-            print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd and --managed are v1 "
+        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer):
+            print("tracekit: --home, --witness, --proxy, --fail-closed and --signer-cmd are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
         if (a.approver or a.policy or a.public_witness or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
@@ -447,7 +476,7 @@ def _run(a):
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
                                                         a.allow_privileged, a.agent, a.harness, a.public_witness,
-                                                        a.egress, not a.no_thinking_summaries)
+                                                        a.egress, not a.no_thinking_summaries, a.managed, a.managed_only)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -456,6 +485,11 @@ def _run(a):
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
+            if settings and a.agent == "codex":
+                import pwd
+
+                from .agent_hooks import codex_trust_line
+                print(codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
             return 0
         if a.dev and a.v2 and a.agent != "claude":
             from . import agent_hooks
@@ -470,6 +504,8 @@ def _run(a):
             print(f"v2 {a.agent} hooks:", path or "not installed")
             if summary:
                 print(agent_hooks.reasoning_line(*summary))
+            if path and a.agent == "codex":
+                print(agent_hooks.codex_trust_line())
             return 0
         if a.dev and a.agent != "claude":
             from . import agent_hooks
@@ -482,6 +518,8 @@ def _run(a):
                 return 1
             print(f"dev signer running (same-user): {cfg['socket']}")
             print(f"{a.agent} hooks:", path or "not installed")
+            if path and a.agent == "codex":
+                print(agent_hooks.codex_trust_line())
             return 0
         if a.dev:
             home = a.home or os.path.expanduser("~/.tracekit-signer")
@@ -509,7 +547,11 @@ def _run(a):
                 try:
                     on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
                                                          thinking=not a.no_thinking_summaries)
-                    if hooks and not a.project:
+                    if not a.project:   # None: --no-hooks, which doctor then reports as chosen
+                        # --no-hooks takes an earlier init's hooks out, as system mode's does
+                        for p in [] if hooks else install.user_settings_all():
+                            if install._v2_hooks_in(p):
+                                install.install_hooks(p, uninstall=True)
                         install.record_hooks_settings(hooks)
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
@@ -646,27 +688,40 @@ def _run(a):
         return 0 if r.get("ok") else 1
     if a.cmd == "approvals":
         return _approvals(a)
-    if a.cmd == "export" and a.v2:
+    if a.cmd == "export" and (a.v2 or a.dev or a.data_dir or a.config or a.run_set or a.tenant):   # each names a v2 store
         return _export_v2(a)
     if a.cmd == "last":
         return _last(a)
     if a.cmd == "export":
         from . import bundle
         from .otel import parse_headers
-        info = bundle.export(_signer_home(a), a.out, run=a.run, last=not (a.run or a.since), since=a.since, otel=a.otel,
+        home = _signer_home(a)
+        info = bundle.export(home, a.out, run=a.run, last=not (a.run or a.since), since=a.since, otel=a.otel,
                              otel_endpoint=a.otel_endpoint, otel_headers=parse_headers(a.otel_header))
-        print(json.dumps(info, indent=2))
+        print(json.dumps(info, indent=2) if a.json else
+              f"wrote {info['path']}: {'run' if len(info['runs']) == 1 else 'runs'} {', '.join(info['runs'])}, "
+              f"{info['records']} records, {info['checkpoints']} checkpoint(s)"
+              + (f"; spans sent to {a.otel_endpoint}: {info['otel_push']['status']}" if "otel_push" in info else "")
+              + f"\nnext, verify it against the signer's key:\n  tracekit verify {_quote(info['path'])} --key "
+              + _quote(os.path.join(home, "ledger", "signer.pub")))
         return 0
     if a.cmd == "verify":
         from .verify import is_v2
-        if is_v2(a.bundle):
+        v2_flags = a.trust or a.v1_ledger or a.v1_key or a.monitor_report or a.revocations
+        v2 = is_v2(a.bundle)
+        if v2 or v2 is None and v2_flags:   # an unreadable file given v2's flags: the v2 verifier says what's wrong
             from .verify import v2 as mod
             if a.key or a.witness:
                 print("tracekit verify: --key and --witness are for v1 bundles; a v2 bundle is checked against --trust",
                       file=sys.stderr)
                 return 2
             if not a.trust:
-                print("tracekit verify: a v2 bundle needs --trust (the verifier's pinned trust config)", file=sys.stderr)
+                print("tracekit verify: a v2 bundle needs --trust: the trust file of the signer that made it, a small "
+                      ".json that pins its log key\n"
+                      "  your own run: tracekit last writes <run>.trust.json next to the bundle; tracekit signer trust "
+                      "-o trust.json writes the dev signer's (--config <signer.yaml> for a configured one)\n"
+                      "  someone else's run: get theirs from the sender directly, not from beside or inside the bundle",
+                      file=sys.stderr)
                 return 2
             if bool(a.v1_ledger) != bool(a.v1_key):
                 print("tracekit verify: --v1-ledger and --v1-key go together", file=sys.stderr)
@@ -677,7 +732,7 @@ def _run(a):
             integrity, assurance = rep.integrity, rep.assurance
         else:
             from .verify import v1 as mod
-            if a.trust or a.v1_ledger or a.v1_key or a.monitor_report or a.revocations:
+            if v2_flags:
                 print("tracekit verify: --trust, --v1-ledger, --v1-key, --monitor-report and --revocations are for v2 "
                       "bundles; this is not a v2 bundle", file=sys.stderr)
                 return 2
@@ -758,8 +813,8 @@ def _signer_extra():
 
 def _export_v2(a, show=print):
     """`tracekit export --v2`: read the store without its lock, with the newest checkpoint note. When none covers the
-    run's last record yet, nudge the running signer and wait up to NUDGE_WAIT_S for one. `show` gets the export's
-    summary (JSON)."""
+    run's last record yet, nudge the running signer and wait up to NUDGE_WAIT_S for one. `show` gets what it says
+    it wrote (_exported)."""
     import time
 
     from .bundle_v2 import about as about_run
@@ -770,8 +825,9 @@ def _export_v2(a, show=print):
     from .signer.service import reader as open_reader
     from .signer.service import signer_config
     from .storage.base import StorageCorrupt, StorageUnavailable, registry_tree
-    if not (a.run or a.run_set) or a.dev and a.config:
-        print("tracekit export --v2: needs --run RUN_ID or --run-set, and --dev or --config (not both)", file=sys.stderr)
+    if not (a.run or a.run_set) or (a.dev, bool(a.config), bool(a.data_dir)).count(True) > 1:
+        print("tracekit export --v2: needs --run RUN_ID or --run-set, and one of --dev, --config or --data-dir at most",
+              file=sys.stderr)
         return 2
     reader = None
 
@@ -781,7 +837,7 @@ def _export_v2(a, show=print):
             reader.close()
         reader = open_reader(cfg)
     try:
-        cfg = signer_config(a.config)
+        cfg = signer_config(a.config, a.data_dir)
         tenant = a.tenant or cfg.get("tenant", "default")
         reopen()
         if a.run_set:
@@ -795,8 +851,10 @@ def _export_v2(a, show=print):
             reg = reader.checkpoint_latest(registry_tree(tenant))
             if note is None or reg is None:
                 raise ValueError(f"no registry checkpoint of tenant {tenant!r} in the store yet")
-            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt,
-                                    policy_dir=os.path.join(cfg["data_dir"], "policies")), indent=2))
+            info = export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt,
+                          policy_dir=os.path.join(cfg["data_dir"], "policies"))
+            show(_exported(a, info, f"the run-set of tenant {tenant}: {info['runs']} runs, "
+                                    f"{info['registry_leaves']} registry leaves"))
             return 0
         run = reader.runs.get((tenant, a.run))
         if run is None:
@@ -815,6 +873,9 @@ def _export_v2(a, show=print):
             return note if note and note[0] > last else None
         note = covering()
         if note is None:
+            if a.data_dir:
+                raise ValueError(f"no checkpoint covers run {a.run!r} yet, and a data dir names no signer to ask for "
+                                 "one: export again after its signer's next checkpoint, or with --config or --dev")
             try:
                 if a.config and not cfg.get("socket"):
                     raise SignerUnavailable("the config names no socket")
@@ -843,8 +904,21 @@ def _export_v2(a, show=print):
     finally:
         if reader:
             reader.close()
-    show(json.dumps(info, indent=2))
+    show(_exported(a, info, f"run {a.run}" + (f" and {len(about)} findings or replay run(s) about it" if about else "")))
     return 0
+
+
+def _exported(a, info, what):
+    """What `tracekit export --v2` says it wrote (info: bundle_v2.export's summary): the bundle, `what` it holds and
+    the commands that verify it; with --json, info itself, for scripts."""
+    if a.json:
+        return json.dumps(info, indent=2)
+    where = f" --config {_quote(a.config)}" if a.config else f" --data-dir {_quote(a.data_dir)}" if a.data_dir else ""
+    out = _quote(info["bundle"])
+    return (f"wrote {info['bundle']}: {what}, {info['records']} records; a verifier needs tracekit "
+            f"{info['verifier_min_version']} or newer\n" + (f"spans: {info['otel']}\n" if info.get("otel") else "")
+            + "next, pin the signer's log key and verify the bundle against it:\n"
+              f"  tracekit signer trust{where} -o trust.json\n  tracekit verify {out} --trust trust.json")
 
 
 def _quote(path):
@@ -910,7 +984,7 @@ def _last(a):
     (tenant, run_id), _, agent = pick[0]
     out = os.path.abspath(a.out or f"{run_id}.tkb")
     ns = argparse.Namespace(run=run_id, run_set=False, dev=True, config=None, tenant=tenant, out=out, otel=False,
-                            otel_endpoint=None, with_findings=False)
+                            otel_endpoint=None, with_findings=False, json=False, data_dir=None)
     if _export_v2(ns, show=lambda s: None):
         return 1
     try:
@@ -982,9 +1056,9 @@ def _approvals(a):
                     me = "{scheme}:{subject}".format(**c.status({})["identity"])
                 except (RPCError, SignerUnavailable):
                     me = "this identity"
-                print(f"no approvals {me} may see: the signer lists an approval only to its run's owner and to those "
-                      "who may answer it (with an approvals section in signer.yaml, the identities approvals.approvers "
-                      "lists)")
+                print(f"no approvals to show\n(you are {me}: the signer lists an approval only to its run's "
+                      "owner and to those who may answer it, which with an approvals section in signer.yaml are the "
+                      "identities approvals.approvers lists)")
         elif a.action == "show":
             x = c.approval_get({"approval_id": a.approval_id})
             args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]

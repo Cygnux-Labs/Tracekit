@@ -139,6 +139,27 @@ class SignedRuntime(unittest.TestCase):
         [e] = action(self.records()[run.run_id])
         self.assertEqual((e["status"], e["mode"]), ("error", "unrecorded"))
 
+    def test_a_held_call_and_the_retry_that_ran_under_its_approval_are_both_approved(self):
+        """GRAPH labelled the agent's retry, which ran, HELD, and the call the hook blocked at once APPROVED with "the
+        signer recorded no outcome: the call may have run"."""
+        run, cmd = self.client.run("retry"), {"command": 'echo "retried'}
+        self.assertEqual(run.decide("c1", "Bash", cmd)["decision"], "ask")
+        aid = run.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        self.assertEqual(run.decide("c2", "Bash", cmd)["decision"], "ask")
+        hint = run.call("approval_request", tool_call_id="c2")["approval_id"]
+        self.assertTrue(run.approval_consume("c2", "Bash", cmd, approval_id_hint=hint)["ok"])
+        run.complete("c2")
+        run.close()
+        self.assertTrue(wait_for(lambda: self.records()[run.run_id][-1]["event"]["type"] == "run.final"))
+        why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+        acts = {e["tracekit"]["tool_call_id"]: e for e in why.of_type("action")}
+        self.assertEqual((acts["c1"]["status"], acts["c1"]["policy"]["approval"]["decision"],
+                          acts["c1"]["policy"]["approval"]["ran_by"]), ("blocked", "approve", "c2"))
+        self.assertEqual((acts["c2"]["status"], acts["c2"]["policy"]["approval"]["decision"],
+                          acts["c2"]["policy"]["approval"]["retry_of"]), ("ok", "approve", "c1"))
+        self.assertEqual([a["title"] for a in alerts(why, build_graph(why)) if "held" in a["title"]], [])
+
     def test_a_deny_comes_back_as_the_blocked_result_and_the_tool_does_not_run(self):
         e = self.actions()["sudo rm -rf /"]
         self.assertEqual((e["status"], e["mode"], e["policy"]["decision"]), ("blocked", "blocked", "deny"))

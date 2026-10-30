@@ -101,7 +101,11 @@ export class TracekitAgents {
   mcp(server: string, { waitMs = 300_000 } = {}) {
     // with the Agent's mcpConfig.includeServerInToolNames the model sees mcp_<server>__<tool>, the server name made
     // safe as agents-core makes it; `server` must then be the MCP server's own `name`
-    const shown = `mcp_${server.replace(/[^A-Za-z0-9_-]/g, "_").replace(/^[_-]+|[_-]+$/g, "") || "server"}__`;
+    const safe = server.replace(/[^A-Za-z0-9_-]/g, "_");
+    let a = 0, b = safe.length;   // its ends trimmed of _ and - by index: /[_-]+$/ is quadratic in a run of them
+    while (a < b && "_-".includes(safe[a])) a++;
+    while (b > a && "_-".includes(safe[b - 1])) b--;
+    const shown = `mcp_${safe.slice(a, b) || "server"}__`;
     const name = (tool: string) => `mcp:${server.replace(/[^A-Za-z0-9_.-]+/g, "_") || "unknown"}/${
       tool.startsWith(shown) ? tool.slice(shown.length) : tool}`;
     return {

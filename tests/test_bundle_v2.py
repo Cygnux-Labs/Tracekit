@@ -1,6 +1,7 @@
 """Format v2: C2SP checkpoint notes, per-run bundle export and the v2 verifier (E1 mutation classes ported to v2)."""
 import base64
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -17,15 +18,15 @@ import zipfile
 from unittest import mock
 
 
-from factories import rewrite_bundle, unverified_bundles
+from factories import damage_crc, rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
-from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export, needs, run_name
+from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, bundle, export, needs, run_name
 from tracekit.format import checkpoint
 from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
 from tracekit.format.records import make_record
 from tracekit.storage.base import ZERO_HASH
-from tracekit.storage.file import FileStorage
+from tracekit.storage.file import FileReader, FileStorage
 from tracekit.verify import v2
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -284,6 +285,39 @@ class TestCheckpointNotes(unittest.TestCase):
             with self.subTest(why), self.assertRaises(NoteError):
                 checkpoint.open_note(n, lk, wk)
 
+    def test_a_witness_key_counts_once(self):
+        """A cosignature signs no key name (C2SP tlog-cosignature), so one key pinned under two names is one witness:
+        open_note refuses the pins, whichever comes first. Two witnesses with keys of their own count two."""
+        text = checkpoint.body(ORIGIN, 1, b"\0" * 32)
+        signed = text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET)
+        log = [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))]
+        alias = "alias.example.org/w"
+        note = signed + cosign(text, WITNESS, WIT_SECRET, 1760000000) + cosign(text, alias, WIT_SECRET, 1760000000)
+        pins = [checkpoint.vkey(n, COSIGNATURE, pub(WIT_SECRET)) for n in (WITNESS, alias)]
+        for keys, names in ((pins, (WITNESS, alias)), (pins[::-1], (alias, WITNESS))):
+            with self.subTest(keys=keys), self.assertRaisesRegex(
+                    NoteError, rf"^trust pins one witness key under two names \({names[0]}, {names[1]}\); a key is "
+                               r"one witness: keep it under the name it cosigns with$"):
+                checkpoint.open_note(note, log, keys)
+        two = signed + cosign(text, WITNESS, WIT_SECRET, 1760000000) + cosign(text, OPERATOR, OP_SECRET, 1760000000)
+        self.assertEqual(len(checkpoint.open_note(two, log, [pins[0], checkpoint.vkey(OPERATOR, COSIGNATURE,
+                                                                                      pub(OP_SECRET))])[3]), 2)
+
+    def test_a_witness_name_has_one_key(self):
+        """A witness cosigns with one key, so two keys pinned under one name are refused, whichever comes first; one
+        vkey listed twice is one key, and counts once."""
+        text = checkpoint.body(ORIGIN, 1, b"\0" * 32)
+        log = [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))]
+        note = (text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET) + cosign(text, WITNESS, WIT_SECRET, 1760000000)
+                + cosign(text, WITNESS, OP_SECRET, 1760000000))   # two keys' cosignatures under one name
+        pins = [checkpoint.vkey(WITNESS, COSIGNATURE, pub(s)) for s in (WIT_SECRET, OP_SECRET)]
+        for keys in (pins, pins[::-1]):
+            with self.subTest(keys=keys), self.assertRaisesRegex(
+                    NoteError, rf"^trust pins two witness keys under one name \({WITNESS}\); a name is one witness: "
+                               r"keep only its current key$"):
+                checkpoint.open_note(note, log, keys)
+        self.assertEqual(len(checkpoint.open_note(note, log, pins[:1] * 2)[3]), 1)
+
     def test_wrong_origin(self):
         other = "other.example.org/log"
         text = checkpoint.body(other, 1, b"\0" * 32)
@@ -418,6 +452,110 @@ class TestVerifyV2(Case):
         # the default trust config requires one pinned cosignature
         self.assert_fails(os.path.join(self.d, "dev.tkb"), "witness quorum")
 
+    def test_a_witness_key_counts_once_toward_the_quorum(self):
+        """A trust config that pins one witness key under two names is refused (exit 2) before the bundle is read,
+        saying what to do; two witnesses with keys of their own count two."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.final()
+        alias = "alias.example.org/w"
+        note = log.note()   # the witness's one cosignature
+        text = note.partition("\n\n")[0] + "\n"
+        out = os.path.join(self.d, "w.tkb")
+        export(log.store, "acme", "run-a", note + cosign(text, alias, WIT_SECRET, 1760000000), out)
+        t = trust_config(2)
+        t["witnesses"][1] = {"vkey": checkpoint.vkey(alias, COSIGNATURE, pub(WIT_SECRET)), "class": "customer"}
+        aliased = os.path.join(self.d, "aliased.json")
+        with open(aliased, "w") as f:
+            json.dump(t, f)
+        rep, code = self.verify(out, aliased)
+        self.assertEqual((code, rep.integrity, rep.failures),
+                         (2, "UNVERIFIABLE (the trust file can't be used)", ["trust config"]), rep.checks)
+        self.assertEqual(rep.checks[0]["detail"], f"trust pins one witness key under two names ({WITNESS}, {alias}); "
+                                                  "a key is one witness: keep it under the name it cosigns with")
+        two = os.path.join(self.d, "two.tkb")
+        export(log.store, "acme", "run-a", log.note(witnesses=((WITNESS, WIT_SECRET), (OPERATOR, OP_SECRET))), two)
+        rep, code = self.verify(two, self.write_trust(2, name="t2.json"))
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+        self.assertIn({"check": "witness quorum", "status": "pass", "detail": "2 pinned cosignature(s), 2 required",
+                       "problems": []}, rep.checks)
+
+    def test_a_witness_is_one_key_under_one_name_with_one_class(self):
+        """A trust config that pins two keys under one witness name, or one witness with two classes, is refused (exit
+        2) before the bundle is read, saying what to do; one witness listed twice with one class counts once."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.final()
+        out = os.path.join(self.d, "w.tkb")   # cosigned by two keys under the witness's one name
+        export(log.store, "acme", "run-a", log.note(witnesses=((WITNESS, WIT_SECRET), (WITNESS, OP_SECRET))), out)
+
+        def trust(*witnesses, required=2):   # (secret, class) of each witness pinned under WITNESS
+            p = os.path.join(self.d, f"trust-{len(os.listdir(self.d))}.json")
+            with open(p, "w") as f:
+                json.dump(dict(trust_config(required), witnesses=[
+                    {"vkey": checkpoint.vkey(WITNESS, COSIGNATURE, pub(s)), "class": c} for s, c in witnesses]), f)
+            return p
+        for path, detail in (
+                (trust((WIT_SECRET, "customer"), (OP_SECRET, "customer")), f"trust pins two witness keys under one "
+                 f"name ({WITNESS}); a name is one witness: keep only its current key"),
+                (trust((WIT_SECRET, "customer"), (WIT_SECRET, "operator")), f"trust pins witness {WITNESS} with two "
+                 "classes (customer, operator); a witness has one class: list it once, with the class you give it"),
+                (trust((WIT_SECRET, "operator"), (WIT_SECRET, "customer")), f"trust pins witness {WITNESS} with two "
+                 "classes (operator, customer); a witness has one class: list it once, with the class you give it")):
+            rep, code = self.verify(out, path)
+            self.assertEqual((code, rep.failures, rep.checks[0]["detail"]), (2, ["trust config"], detail), rep.checks)
+        rep, code = self.verify(out, trust((WIT_SECRET, "customer"), (WIT_SECRET, "customer"), required=1))
+        self.assertEqual((code, rep.integrity, rep.assurance.split(";")[0]), (0, "VERIFIED", "witnessed"), rep.checks)
+        self.assertIn("1 pinned cosignature(s), 1 required", [c["detail"] for c in rep.checks])
+        rep, code = self.verify(out, trust((WIT_SECRET, "customer"), (WIT_SECRET, "customer")))
+        self.assertEqual((code, rep.failures), (1, ["witness quorum"]), rep.checks)
+
+    def test_a_trust_file_problem_is_said_to_be_the_trust_files_in_plain_words(self):
+        """A trust file that can't be used is the trust file's problem, not the bundle's: UNVERIFIABLE (exit 2, as
+        before), its line naming the problem in plain words, with no exception's name."""
+        _, out = self.honest()
+        missing = os.path.join(self.d, "missing.json")
+        for text, said in ((None, f"{missing}: {os.strerror(errno.ENOENT)}"), ("{", "not valid JSON (syntax: "),
+                           ("{}", f"{missing}: not a v2 trust config (logs, witnesses, algs, "),
+                           ('{"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}',
+                            "pinned key 'x+00000000+AA==' is not a vkey: not an Ed25519 log, cosignature or SLH-DSA")):
+            with self.subTest(text):
+                if text is not None:
+                    with open(missing, "w") as f:
+                        f.write(text)
+                rep, code = self.verify(out, missing)
+                self.assertEqual((code, rep.integrity, rep.failures),
+                                 (2, "UNVERIFIABLE (the trust file can't be used)", ["trust config"]))
+                self.assertTrue(rep.checks[0]["detail"].startswith(said), rep.checks[0]["detail"])
+                self.assertNotRegex(rep.checks[0]["detail"], r"[A-Za-z]*Error\b")
+
+    def test_a_damaged_bundle_file_is_said_in_plain_words(self):
+        """An entry whose bytes no longer match its CRC-32: UNUSABLE BUNDLE (exit 2, as before), saying the bundle file
+        is damaged rather than printing zipfile's exception name."""
+        _, out = self.honest()
+        bad = os.path.join(self.d, "damaged.tkb")
+        damage_crc(out, bad)
+        name = next(n for n in v2.read_zip(out) if n.startswith("runs/"))
+        rep, code = self.verify(bad)
+        self.assertEqual((code, rep.integrity, rep.checks[0]["detail"]), (2, "UNUSABLE BUNDLE", "cannot read bundle: "
+                         f"the bundle file is damaged: Bad CRC-32 for file {name!r}"))
+
+    def test_a_failed_line_says_what_failed_and_a_failed_bundle_is_not_rated(self):
+        """The failed line's headline counts its problems, never repeating the pass text; a failed bundle's printed
+        Assurance line is not rated (--json keeps the level the checkpoint has)."""
+        _, out = self.honest()
+        edited = self.mutate(out, lambda rs: rs[2]["event"]["data"].update(name="Write"))
+        code, stdout, _ = self.cli(edited, "--trust", self.trust)
+        self.assertEqual(code, 1)
+        self.assertRegex(stdout, r"\n\[FAIL\] signatures — 1 problem\(s\) in 5 record\(s\)\n        seq \d+: ")
+        self.assertNotIn("keys valid at their position", stdout)
+        self.assertTrue(stdout.endswith("\nIntegrity: FAILED.\nAssurance: not rated (the bundle failed verification).\n"),
+                        stdout)
+        self.assertTrue(json.loads(self.cli(edited, "--trust", self.trust, "--json")[1])["assurance"].startswith(
+            "witnessed;"))
+
     def test_e1_mutations_fail(self):
         log, out = self.honest()
         other = next(r for r in log.store.iter_range(0, 100) if r["event"]["run_id"] == "run-b"
@@ -477,6 +615,78 @@ class TestVerifyV2(Case):
                 rep, code = v2.verify(self.mutate(out, fn), self.trust, memo=memo)
                 self.assertEqual((code, rep.integrity), (1, "FAILED"))
                 self.assertIn("signatures", rep.failures)
+
+    def test_a_growing_run_is_read_and_checked_from_where_it_was_and_checked_as_a_whole_again(self):
+        """tracekit view exported and checked a growing run whole at each checkpoint: 6 s for 48k records, a core
+        pinned while an agent worked. bundle() with the `kept` of its last bundle reads only the records after it,
+        into the same bytes; verify() with a Memo parses and checks only the records after the run file it checked
+        before (byte for byte, under the same keys), and every check of the run as a whole runs again: the report is
+        a fresh verify's. Records before them that changed, other key records, a problem, or a final run: all of it."""
+        log, _ = self.honest(close=False)
+        trust, memo, seen = self.trust, v2.Memo(), []
+        files, info = bundle(log.store, "acme", "run-a", log.note(), kept={})
+        self.assertEqual(v2.verify(files, trust, memo=memo)[1], 0)
+
+        def checked(files):   # the seqs whose records verify() checked, its report and a fresh verify's
+            with mock.patch.object(v2, "verify_record", wraps=v2.verify_record) as calls:
+                rep, code = v2.verify(files, trust, memo=memo)
+            seen.append([c.args[0]["event"]["seq"] for c in calls.call_args_list])
+            fresh = v2.verify(files, trust)
+            self.assertEqual((rep.checks, rep.integrity, code), (fresh[0].checks, fresh[0].integrity, fresh[1]))
+            return rep
+        added = [log.call()["event"]["seq"], log.call("run-b"), log.call()["event"]["seq"]][::2]
+        note = log.note()
+        files, info = bundle(log.store, "acme", "run-a", note, kept=info["kept"])
+        self.assertEqual(files, bundle(log.store, "acme", "run-a", note)[0])   # what reading it all builds
+        self.assertEqual(checked(files).integrity, "VERIFIED TO HEAD 5 (open)")
+        self.assertEqual(seen[-1], [0] + added)   # the key record, then the two it added
+        name = run_name("acme", "run-a")
+
+        def edited(files, old, new):   # an edit before the records it added, the manifest made to match
+            out = dict(files, **{name: files[name].replace(old, new, 1)})
+            manifest = json.loads(out["manifest.json"])
+            manifest["files"][name] = hashlib.sha256(out[name]).hexdigest()
+            return dict(out, **{"manifest.json": json.dumps(manifest).encode()})
+        self.assertIn("signatures", checked(edited(files, b'"name":"Bash"', b'"name":"Bosh"')).failures)
+        self.assertEqual(len(set(seen[-1])), 1 + 6)   # all of it (the edited one twice: against a retired key too)
+        checked(files)   # its bytes as they were, after it failed: all of it again, then from there
+        checked(files)
+        self.assertEqual((len(seen[-2]), seen[-1]), (1 + 6, [0]))
+        log.epoch(KEY2)   # another key record: what the run's records are checked against changed
+        log.final()
+        files, info = bundle(log.store, "acme", "run-a", log.note(), kept=info["kept"])
+        self.assertEqual(checked(files).integrity, "VERIFIED")
+        self.assertEqual(len(seen[-1]), 2 + 7)   # both key records and every record of the run
+        self.assertNotIn(name, memo.runs)   # final: never checked again as it grows
+
+    def test_a_memo_checks_every_record_again_under_another_trust_or_revocations(self):
+        """What a run's records were checked against besides them, the trust config and the revocations as the key
+        records, is part of what a Memo keeps: under another, every record is checked again."""
+        log, _ = self.honest(close=False)
+        files, _ = bundle(log.store, "acme", "run-a", log.note(), kept={})
+        memo, seen = v2.Memo(), []
+
+        def checked(trust, revocations=None):
+            with mock.patch.object(v2, "verify_record", wraps=v2.verify_record) as calls, \
+                    mock.patch.object(v2, "_revocations", wraps=v2._revocations,
+                                      **({"return_value": revocations} if revocations is not None else {})):
+                self.assertEqual(v2.verify(files, trust, memo=memo)[1], 0)
+            seen.append(len({c.args[0]["event"]["seq"] for c in calls.call_args_list}))
+        checked(self.trust)
+        checked(self.trust)
+        checked(self.write_trust(witnesses_required=0, name="other.json"))   # another trust config
+        checked(self.trust, {("issuer", "serial"): 3})   # a revocation known now
+        self.assertEqual(seen, [5, 1, 5, 5])   # the key record and the run's 4, or the key record alone
+
+    def test_an_export_from_a_reader_reads_no_record_but_the_key_records_for_them(self):
+        """Each export read every record of the log for the key records (1.75 s of 3.5 s for a run of a 400k-record
+        store); a FileReader indexes them, and the bundle is the same."""
+        log, out = self.honest()
+        reader = FileReader(log.store.root)
+        mine = os.path.join(self.d, "reader.tkb")
+        with mock.patch.object(FileReader, "iter_range", side_effect=AssertionError("read every record")):
+            export(reader, "acme", "run-a", log.note(), mine)
+        self.assertEqual(v2.read_zip(mine), v2.read_zip(out))
 
     def test_rebuilt_chain_with_the_real_key_fails(self):
         _, out = self.honest()
@@ -592,9 +802,9 @@ class TestVerifyV2(Case):
     def test_report_drops_control_characters(self):
         rep, esc = v2.Report(), "a\x1b]0;x\x07\x1b[2J\x9bb\nc"
         rep.check("break-glass approvals", False, esc, [esc], warn=True)
-        rep.integrity, rep.assurance = "FAILED", esc
+        rep.integrity, rep.assurance = "VERIFIED", esc
         buf = io.StringIO()
-        v2.print_report(rep, 1, buf)
+        v2.print_report(rep, 0, buf)
         self.assertEqual(buf.getvalue().count("a]0;x[2Jbc"), 3)
         self.assertNotRegex(buf.getvalue(), r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 
@@ -608,7 +818,11 @@ class TestVerifyV2(Case):
         code, stdout, _ = self.cli(out, "--trust", self.trust)
         self.assertEqual(code, 0)
         self.assertIn("Integrity: VERIFIED.\nAssurance: witnessed;", stdout)
-        self.assertEqual(self.cli(out)[0], 2)
+        code, stdout, err = self.cli(out)
+        self.assertEqual((code, stdout), (2, ""))
+        for where in ("tracekit last writes <run>.trust.json", "tracekit signer trust -o trust.json",
+                      "from the sender directly"):   # where to get one
+            self.assertIn(where, err)
         self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 0)   # no warning
 
     def test_cli_refuses_flags_of_the_other_format(self):
@@ -629,6 +843,43 @@ class TestVerifyV2(Case):
             code, stdout, _ = self.cli(self.mutate(out, edit=lambda f, m: m.update(format="tracekit.bundle.v1")),
                                        "--trust", self.trust)
             self.assertEqual((code, stdout), (2, ""))
+
+    def test_cli_says_a_damaged_bundle_is_damaged(self):
+        """A file given --trust that can't be read as a zip, or has no readable manifest, gets the v2 report the other
+        verifiers print: `the bundle file is damaged: ...`, UNUSABLE BUNDLE, exit 2; not "this is not a v2 bundle"."""
+        golden = os.path.join(TESTS, "golden")
+        closed, trust = os.path.join(golden, "v2", "closed.tkb"), os.path.join(golden, "v2", "trust.json")
+        with open(closed, "rb") as f:
+            data = f.read()
+        with zipfile.ZipFile(closed) as z:
+            m = z.getinfo("manifest.json")
+        self.assertEqual(m.compress_type, zipfile.ZIP_DEFLATED)
+        at = m.header_offset + 30 + len(m.filename) + len(m.extra)
+        cases = {"cut short": (data[:len(data) // 2], "the bundle file is damaged: not a zip file, or bytes after its "
+                                                      "end record"),
+                 "empty": (b"", "the bundle file is damaged: not a zip file"),
+                 "not a zip": (b"hello\n" * 4, "the bundle file is damaged: not a zip file, or bytes after its end "
+                                               "record"),
+                 "manifest won't inflate": (data[:at] + b"\xff" + data[at + 1:],   # a reserved deflate block type
+                                            "the bundle file is damaged: Error -3 while decompressing data: invalid "
+                                            "block type")}
+        files = [(os.path.join(golden, "negative", "zip-no-manifest.tkb"), os.path.join(golden, "negative",
+                                                                                         "trust.json"),
+                  "the bundle file is damaged: no manifest.json")]
+        missing = os.path.join(self.d, "missing.tkb")
+        files.append((missing, trust, f"{missing}: No such file or directory"))
+        for why, (content, said) in cases.items():
+            path = os.path.join(self.d, why.replace(" ", "-") + ".tkb")
+            with open(path, "wb") as f:
+                f.write(content)
+            files.append((path, trust, said))
+        for path, t, said in files:
+            with self.subTest(os.path.basename(path)):
+                self.assertEqual(self.cli(path, "--trust", t), (2, f"[FAIL] bundle readable — cannot read bundle: {said}"
+                                                                   "\n\nIntegrity: UNUSABLE BUNDLE.\nAssurance: none.\n",
+                                                                ""))
+                code, stdout, _ = self.cli(path, "--trust", t, "--json")
+                self.assertEqual((code, json.loads(stdout)["integrity"]), (2, "UNUSABLE BUNDLE"))
 
     @unittest.skipIf(sys.version_info < (3, 10), "sys.stdlib_module_names is 3.10+")
     def test_verifiers_need_only_the_standard_library(self):
@@ -699,6 +950,38 @@ class TestRunParts(Case):
         self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
         self.assertEqual(needs([], ["run parts"]), ("1.4.0", "1.4.0"))
 
+    def test_a_growing_run_in_parts_is_checked_from_where_it_was_too(self):
+        """A run past the file limit is bundled in parts (the dev signer's own run passed 64 MiB): verify() with a Memo
+        checked it whole at every checkpoint. Its parts read as one file: only the records after the bytes it checked
+        before are checked, whichever part they are in, and the report is a fresh verify's."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        for _ in range(12):
+            log.call()
+        memo = v2.Memo()
+        with mock.patch.object(v2, "MAX_ENTRY", 4096):
+            files, info = bundle(log.store, "acme", "run-a", log.note(), kept={})
+            self.assertEqual(v2.verify(files, self.trust, memo=memo)[1], 0)
+            added = [log.call()["event"]["seq"] for _ in range(8)]
+            files, info = bundle(log.store, "acme", "run-a", log.note(), kept=info["kept"])
+            self.assertGreater(len([n for n in files if ".part-" in n]), 2)
+            with mock.patch.object(v2, "verify_record", wraps=v2.verify_record) as calls:
+                rep, code = v2.verify(files, self.trust, memo=memo)
+            fresh = v2.verify(files, self.trust)
+        self.assertEqual((rep.checks, rep.integrity, code), (fresh[0].checks, fresh[0].integrity, fresh[1]))
+        self.assertEqual([c.args[0]["event"]["seq"] for c in calls.call_args_list], [0] + added)
+        first = sorted(n for n in files if ".part-" in n)[0]   # a record edited inside a part it checked before
+        edited = dict(files, **{first: files[first].replace(b'"name":"Bash"', b'"name":"Bosh"', 1)})
+        manifest = json.loads(edited["manifest.json"])
+        manifest["files"][first] = hashlib.sha256(edited[first]).hexdigest()
+        edited["manifest.json"] = json.dumps(manifest).encode()
+        self.assertNotEqual(edited[first], files[first])
+        with mock.patch.object(v2, "MAX_ENTRY", 4096):
+            rep, code = v2.verify(edited, self.trust, memo=memo)
+        self.assertEqual((code, rep.integrity), (1, "FAILED"))
+        self.assertIn("signatures", rep.failures)
+
     def test_a_run_that_fits_is_one_file_as_before(self):
         log, out = self.parted(cap=64 << 20)
         self.assertEqual([n for n in v2.read_zip(out) if n.startswith("runs/")], [run_name("acme", "run-a")])
@@ -743,8 +1026,8 @@ class TestRunParts(Case):
         with zipfile.ZipFile(out) as z, zipfile.ZipFile(bad, "w", zipfile.ZIP_DEFLATED) as w:
             for i in z.infolist():
                 w.writestr(i.filename, bytes((64 << 20) + 1) if i.filename == p[1] else z.read(i))
-        self.assertEqual(self.verify(bad)[0].checks[0]["detail"], f"cannot read bundle: Unusable: {p[1]} is larger "
-                                                                   "than the bundle limits")   # as any file over it
+        self.assertEqual(self.verify(bad)[0].checks[0]["detail"], f"cannot read bundle: {p[1]} is larger than the "
+                                                                   "bundle limits")   # as any file over it
 
 
 class TestMalformedInput(Case):

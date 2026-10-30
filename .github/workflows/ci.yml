@@ -16,7 +16,7 @@ jobs:
     name: py${{ matrix.python }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # a hung test must fail the job, not hold a runner for six hours
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       PYTHONFAULTHANDLER: "1"
       PYTHONUNBUFFERED: "1"
@@ -194,6 +194,38 @@ jobs:
         run: python -m pyflakes contrib
       - name: Test
         run: make test-contrib PY=python
+
+  go-verifier:
+    # contrib/independent-go-verifier: its own tests, then the same verdicts as the Python verifier on every golden bundle
+    name: Independent Go verifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: contrib/independent-go-verifier/go.mod
+          cache: false   # no dependencies
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: Vet and test (a skipped test fails the job; the upstream vectors and golden corpus are in the checkout)
+        working-directory: contrib/independent-go-verifier
+        run: |
+          set -o pipefail
+          go vet ./...
+          go test -v ./... | tee "$RUNNER_TEMP/go-test.log"
+          if grep -q -- '--- SKIP' "$RUNNER_TEMP/go-test.log"; then echo "::error::Go tests were skipped"; exit 1; fi
+      - name: Differential runner's own tests
+        run: python -m unittest discover -s contrib/independent-go-verifier/scripts
+      - name: Same verdicts as the Python verifier on the golden corpus
+        run: python contrib/independent-go-verifier/scripts/differential_golden.py --report golden-parity.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: go-verifier-parity
+          path: golden-parity.json
 
   strands:
     name: "Strands integration (own environment: needs mcp<2.2)"

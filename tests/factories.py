@@ -72,6 +72,21 @@ def rewrite_bundle(src, dst, edit):
             z.writestr(k, v)
 
 
+def damage_crc(src, dst):
+    """Copy a bundle with the CRC-32 of its first runs/ entry changed in both its headers: the layout holds, the entry's
+    bytes no longer match it (a damaged copy)."""
+    with open(src, "rb") as f:
+        data = bytearray(f.read())
+    with zipfile.ZipFile(src) as z:
+        entry = next(i for i in z.infolist() if i.filename.startswith("runs/"))
+    directory = int.from_bytes(data[data.rindex(b"PK\x05\x06") + 16:][:4], "little")   # the end record's offset field
+    central = data.index(entry.filename.encode(), directory) - 46   # its name follows its 46-byte central header
+    for at in (entry.header_offset + 14, central + 16):
+        data[at] ^= 1
+    with open(dst, "wb") as f:
+        f.write(data)
+
+
 def patch_env(case, **env):
     """Set env vars for one test (or, given the class, for the whole TestCase class); the whole environment is restored
     on cleanup. A None value unsets the var."""

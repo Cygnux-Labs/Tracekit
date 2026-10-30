@@ -204,7 +204,7 @@ def tamper_copy(src, dst):
     import hashlib
     with zipfile.ZipFile(src) as z:
         files = {n: z.read(n) for n in z.namelist()}
-    lines = files["records.jsonl"].decode().splitlines()
+    lines = bundle._lines(files["records.jsonl"].decode())
     for i, l in enumerate(lines):
         r = json.loads(l)
         cmd = (((r.get("event") or {}).get("data") or {}).get("input") or {}).get("command")

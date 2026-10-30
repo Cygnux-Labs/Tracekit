@@ -3,8 +3,9 @@
 > **Experimental:** agent approvers, the reference reviewer, Slack approvals and passkey approvals work and are tested, but may change and get less hardening than the [stable core](support.md), which includes approvals from the command line.
 
 An `ask` rule ([policy](policy-v2.md)) holds a tool call until a person answers it. The approval lives in the signer,
-is bound to the exact arguments of one call attempt, and is consumed once. The v1 daemon's `tracekit pending` /
-`approve` / `reject` and their v2 equivalents are listed in [migrating](migration.md#what-changes).
+is bound to the exact tool and arguments of one call in one run, and is consumed once: by that call, or by the agent's
+retry of the same call after a person approved it ([approve, then retry](#approve-then-retry)). The v1 daemon's
+`tracekit pending` / `approve` / `reject` and their v2 equivalents are listed in [migrating](migration.md#what-changes).
 
 ## Flow
 
@@ -20,7 +21,8 @@ is bound to the exact arguments of one call attempt, and is consumed once. The v
 
    The arguments are bound through `args_commitment` ([format v2](format-v2.md#2-hashes-over-agent-content)). The
    signer keeps its own copy of them, redacted for display and encrypted at rest under `keys/approval_args.key`. Asking
-   again for the same call attempt returns the same approval, whatever its state.
+   again for the same call attempt returns the same approval, whatever its state. A new call of the same tool and
+   arguments in the run gets an earlier call's approval once a person has approved it ([below](#approve-then-retry)).
 3. An approver answers from another terminal:
 
    ```sh
@@ -42,7 +44,8 @@ is bound to the exact arguments of one call attempt, and is consumed once. The v
 
 Refusals are signed too: `approval.binding_mismatch` when the arguments differ from the approved ones
 (`TK-APPROVAL-MISMATCH`), and `approval.refused` for everything else: `TK-APPROVAL-UNBOUND` (the adapter's
-`approval_id_hint` names another approval), `TK-APPROVAL-REQUIRED` (none was requested), `TK-APPROVAL-REQUESTED` /
+`approval_id_hint` names another approval; when another attempt of the same call already used it, as when two retries
+race for one approval, the reason says so), `TK-APPROVAL-REQUIRED` (none was requested), `TK-APPROVAL-REQUESTED` /
 `-REJECTED` / `-CONSUMED` / `-EXPIRED` (its state), `TK-ARGS-INVALID` (arguments that are not strict JSON). A call
 that `decide` allowed or flagged needs no approval and consumes nothing.
 
@@ -51,12 +54,57 @@ States: `requested → approved | rejected | expired`, `approved → consumed | 
 ## Consume once, per attempt
 
 - One approval per `(tenant, run, tool_call_id, attempt)`. A consumed approval is never consumed again; a retry with
-  `attempt + 1` needs a new `decide` and a new approval.
+  `attempt + 1` needs a new `decide` and, unless a person approved an earlier attempt that nothing consumed yet
+  ([approve, then retry](#approve-then-retry)), a new approval.
 - The signer's index is the authority. A framework's saved state (LangGraph `interrupt()`, OpenAI `RunState`) may
   carry the `approval_id` as a hint, but an adapter must call `approval_consume` on every gated execution; the
   signer resolves the approval from its own index and refuses a hint that names a different one.
 - A tool call that ran without a consumed approval (or against a deny) is signed by the signer as
   `capture.gap{executed_against_policy}` and shows as a `policy` warning in the verify report.
+
+## Approve, then retry
+
+A held call is often blocked before anyone has answered: the coding-agent hooks block it at once by default, since no
+harness shows a hook's output while the hook runs ([held calls](coding-agents.md#held-calls-approve-then-retry)), and
+other adapters stop waiting at their deadline. The approval stays `requested` until it expires. When a person approves
+it, the agent sends the same call again, under a new tool call id, and that call runs:
+
+1. The retry is decided like any call: a `policy.decision`, `ask`.
+2. Its `approval_request` returns the earlier call's approval, `approved`, instead of a new one, when that approval:
+   - is of the same run, the same tool and exactly the same arguments (its `args_commitment` opens with the retry's
+     args digest), asked through the same gateway or none;
+   - was asked under the same policy, for every rule the retry's decision names: a live constraint or a hold added
+     since asks again;
+   - is not older than a no: when the latest answer to the same call was a reject or a revoke (of another of its
+     approvals), an earlier yes isn't used by a retry (a call decided again under its own id and attempt, as an SDK may
+     do, still uses its own approval once);
+   - is `approved`, by a person or an agent approver under [who may answer](#who-may-answer), and not yet consumed. A
+     `requested`, `rejected`, revoked, `expired` or abandoned approval is never used, nor one past its `expires_at`
+     (or an agent approval past its `consume_by`), nor one whose blocked call ran anyway (its result is recorded: the
+     approval let one call run already). An agent's approval reads `requested` until its veto delay has
+     passed, as `approval_wait` reads it: the retry is held until then, and the hook says it is approved and how many
+     seconds to wait before trying again.
+
+   Otherwise it asks as before, with a new approval. The signer decides this; nothing the agent sends can name an
+   approval into use. If the latest answer to the same call in the run was a no (a person or an agent approver
+   rejected it, or its agent approval was revoked; a later approval clears it), the decision's reason says so first,
+   with the approval and who said no
+   (`a person rejected this exact call (apr-…, by uid:501); ask them before trying again`), so the agent asks before
+   it tries again; the new approval lets a person change their mind.
+3. Its `approval_consume` consumes that approval, once: the signer signs `approval.consumed` with the approval's id
+   under the retry's `tool_call_id`, and the approval's `approval.request` and `approval` records name the blocked
+   attempt's. A T2 approval is consumed with the `approval_id_hint` that `approval_request` returned, and the consume
+   returns the signer's copy of the arguments as for any T2 call.
+4. The retry completes as an approved call (no `executed_against_policy` gap), once: a second result on the same
+   approval, under another decision of the same call, is signed with that gap. If it never completes, the retry, not
+   the blocked attempt, is the run's `decided_not_completed` gap. The blocked attempt never ran under the approval: if
+   it ran anyway (an SDK agent that ran it despite `ask`), its result, before or after the retry's, is signed with an
+   `executed_against_policy` gap.
+
+Sent again before anyone answered, the call asks on its own, with a new approval each time; approving any of them lets
+the next retry run. After a retry ran, the same call is held again: one approval runs one call. The records are the
+ones every approval writes, so a bundle with a retry needs no newer verifier, Python or TypeScript, than one without.
+A held or quarantined run follows [its own rules](incidents.md).
 
 ## Tiers: T1 and T2 executors
 
@@ -298,7 +346,8 @@ answer (shadow mode included), `person` what an agent's answer can't decide.
 **Answers.** `approval_decide` with `approve`, `reject` or `escalate` (agents only), optionally `asserted: {model,
 version, prompt_hash}` (recorded `attested: false`). The `approval` record carries `approver_kind: agent`; an approval
 carries `not_before` (after `veto_s`) and `consume_by` (`agent_consume_s` later): `approval_wait` answers `requested`
-until `not_before`, a consume before it is refused `TK-APPROVAL-VETO`, and one after `consume_by` expires
+until `not_before`, with a `reason` that says it is approved and how many seconds are left, a consume before it is
+refused `TK-APPROVAL-VETO`, and one after `consume_by` expires
 (`approval.expired{reason: consume_window}`). `escalate` writes `approval.escalated`; the approval stays `requested`
 (`approval_wait` adds `escalated: true`) and only people answer it, across restarts. The signer escalates on its own
 after `agent_timeout_s` and when a budget is used up. In **shadow** mode an agent's answer is an `approval.suggested`
@@ -387,14 +436,19 @@ An approval expires, with a signed `approval.expired` (on an approval agents may
 - an agent's approval, `agent_consume_s` after it may be consumed (`consume_window`).
 
 The adapter can give up on one at once with `approval_abandon` (for example, when the user cancelled the run): the
-signer signs `approval.abandoned` and the approval can never be consumed. While an approval is pending, the run's idle
+signer signs `approval.abandoned` and the approval can never be consumed. The coding-agent hooks don't: a call they
+blocked keeps its approval `requested`, for the agent's [retry](#approve-then-retry). While an approval is pending, the run's idle
 timeout is paused. The signer's copy of the arguments is deleted once the approval is consumed, rejected, expired or
 abandoned.
 
 ## Where this is tested
 
 `tests/test_signer_approvals.py` (replay, edited arguments, another run's approval, resume without a human, retries,
-abandon, expiry, restart, encryption at rest, self-approval, tenant visibility), `tests/test_e13_approvals.py`
+abandon, expiry, restart, encryption at rest, self-approval, tenant visibility; approve, then retry: once, the same
+arguments only, never a rejected, abandoned, expired or another run's approval, only a person's in system mode),
+`tests/test_signer_completeness.py` (a retry's gaps, after a replay too), `tests/test_hook_v2.py` and
+`tests/test_contract_claude_code.py` (the Claude Code hook: blocked at once, then the retry; the agent's own approve
+denied; the waiting setting), `tests/test_e13_approvals.py`
 (a signer with an approver config, answered from the CLI and from the viewer's approval pages: arguments changed after
 approval, a replayed assertion, expiry, self-approval by person id, another tenant, a passkey rule without a passkey,
 break-glass without a reason), `tests/test_webauthn.py` (the assertion checks, with a software authenticator),
@@ -404,5 +458,6 @@ self-approval, message updates), `eval/e8_insider_v2.py` case E8v2.5 (the agent 
 restart, revocation, the kill switch, shadow mode, the reviewer's view), `tests/test_reviewer.py` (the reference
 reviewer with fake models that always approve, answer garbage, refuse or time out; the gateway run; eval; what the
 Slack bridge posts; the desk's revoke; the timeline labels and shadow agreement), `tests/test_bundle_v2.py` and
-`tests/test_ts_verifier.py` (the verifiers' agent-approval checks, with and without the policy snapshot) and `eval/e18_agent_approvers.py` (a reviewer
+`tests/test_ts_verifier.py` (the verifiers' agent-approval checks, with and without the policy snapshot),
+`tests/test_ts_verifier.py` (a retry's bundle in both verifiers) and `eval/e18_agent_approvers.py` (a reviewer
 that approves anything, against every guarantee above).

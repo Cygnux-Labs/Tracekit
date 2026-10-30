@@ -56,12 +56,12 @@ The coding pack's `TK-A003` (an `ask` rule) adds what that prompt doesn't: it ho
 the decision:
 
 ```text
-[tracekit] waiting for approval apr-… (TK-A003): running a command outside Claude Code's sandbox. Wait for a person to approve the held call, …; a person approves it from another terminal with `tracekit approvals approve apr-…` or rejects it with `tracekit approvals reject apr-…`
-tracekit approvals approve apr-…            # from another terminal
+[tracekit] held for approval apr-… (TK-A003): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: running a command outside Claude Code's sandbox. Have a person approve the held call, …
+tracekit approvals approve apr-…            # from another terminal; then ask Claude to run the same command again
 ```
 
-The approval is bound to the exact command, used once, and recorded with who approved it, like every Tracekit approval
-([approvals](../approvals.md)). The signed decision names `TK-A003`, so a bundle shows which calls were unsandboxed
+The approval is bound to the exact command, used once (by Claude's retry of it), and recorded with who approved it,
+like every Tracekit approval ([approve, then retry](../approvals.md#approve-then-retry)). The signed decision names `TK-A003`, so a bundle shows which calls were unsandboxed
 retries and who approved each; the command itself is committed to, not stored in the bundle
 ([format v2](../format-v2.md#2-hashes-over-agent-content)). To allow retries without asking, override `TK-A003` in your
 own policy ([policy](../policy-v2.md)).
@@ -74,7 +74,8 @@ to re-run a command with a denied host listed there, and auto mode's classifier,
 
 The coding pack's `TK-A014` (an `ask` rule, next to `TK-A003`) holds every call whose `allowed_domains` names a host
 until a person approves it, the same way: bound to the exact command and list, used once, signed with who approved it.
-An empty list opens nothing and isn't held, and neither is `blocked_domains`, which only narrows. To allow a host for
+An empty list opens nothing and isn't held, and neither is `blocked_domains`, which only narrows, or WebSearch's own
+`allowed_domains`, which only narrows which results come back. To allow a host for
 good, add it to the sandbox's own `network.allowedDomains` in your settings rather than approving each command.
 
 ## What Tracekit sees and doesn't

@@ -172,6 +172,21 @@ class CodingAgentHooks(unittest.TestCase):
                 self.assertIn(path, got["D-HOOKS-TIMEOUT"]["detail"])
                 self.assertEqual(got["D-HOOKS-TIMEOUT"]["fix"], f"tracekit init --dev --v2 --agent {harness}")
 
+    def test_the_timeout_check_says_a_held_call_waits_only_when_asked_to(self):
+        """D-HOOKS-TIMEOUT gave a 540 s approval wait, though a held call's hook returns at once unless
+        TRACEKIT_APPROVAL_WAIT is set, and then waits about 480 s at most."""
+        run = "the hook answers within {} {} (a held call waits up to about {} {}, only with TRACEKIT_APPROVAL_WAIT set)"
+        path, settings = self.installed("gemini")
+        got = self.check("gemini", path, settings)["D-HOOKS-TIMEOUT"]
+        self.assertEqual(got["detail"], f"gemini pre-tool timeout 600000 ms in {path}; "
+                         + run.format(540000, "ms", 480000, "ms"))
+        claude = os.path.join(self.d, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(claude, module=install.V2_HOOK)
+        got = next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=claude)
+                   if r["id"] == "D-HOOKS-TIMEOUT")
+        self.assertEqual(got["detail"], "PreToolUse timeout 600 s; " + run.format(540, "s", 480, "s"))
+
     def test_only_v2_tracekit_commands_are_checked_even_in_a_shared_group(self):
         from tracekit import agent_hooks
         for harness in ("codex", "cursor", "gemini", "goose", "qwen"):
@@ -379,6 +394,115 @@ class ClaudeHooksDecideEveryCall(unittest.TestCase):
         self.assertEqual(self.row()["status"], "ok")
 
 
+class ManagedHooks(unittest.TestCase):
+    """init --v2 --managed: the hooks in Claude Code's admin-managed settings, which the agent's user can't edit and
+    whose hooks only a managed disableAllHooks turns off."""
+    agent = types.SimpleNamespace(pw_name="agent", pw_uid=64101, pw_gid=64101, pw_dir="/home/agent")
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.managed, self.user = os.path.join(self.d, "managed-settings.json"), os.path.join(self.d, "user.json")
+        for p in (mock.patch.dict(install.MANAGED_SETTINGS, linux=self.managed, darwin=self.managed),
+                  mock.patch.object(install, "_privileges", return_value=[])):
+            p.start()
+            self.addCleanup(p.stop)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, False, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
+                                    signer="/run/s.sock")
+
+    def rows(self, trusted=None, readable=True, user=None, managed=None):
+        """Doctor's rows; `trusted`: what trusted_file says of the managed file, `readable`: whether the agent's user
+        can read it (None: not probed), `user`/`managed`: settings to add."""
+        for path, extra in ((self.user, user or {}), (self.managed, managed or {})):
+            s = {}
+            if os.path.exists(path):
+                with open(path) as f:
+                    s = json.load(f)
+            with open(path, "w") as f:
+                json.dump({**s, **extra}, f)
+        with mock.patch.object(doctor, "trusted_file", return_value=trusted), \
+                mock.patch.object(doctor, "agent_access",
+                                  return_value={True: [[self.managed, "read"]], False: []}.get(readable)):
+            return {r["id"]: r for r in doctor.v2_checks(
+                {"data_dir": self.d}, "production", agent=self.agent, settings=self.managed, opt=install.OPT,
+                signer="/run/s.sock", sandbox_settings=[self.user, self.managed, self.managed])}
+
+    def test_managed_hooks_are_inits_and_only_root_can_change_them(self):
+        got = self.rows()
+        for check in ("D-HOOKS-MANAGED", "D-HOOKS-PRESENT", "D-HOOKS-EVENT", "D-HOOKS-VENV", "D-SIGNER-ENV"):
+            self.assertEqual(got[check]["status"], "ok", got[check])
+        self.assertEqual(got["D-HOOKS-PRESENT"]["detail"], f"v2 hooks in {self.managed}")
+        bad = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]
+        self.assertEqual((bad["status"], bad["detail"]), ("fail", "/etc/claude-code is group- or world-writable"))
+        self.assertTrue(bad["fix"].endswith(" --managed"), bad["fix"])
+        bad = self.rows(readable=False)["D-HOOKS-MANAGED"]
+        self.assertEqual(bad["status"], "fail")
+        self.assertIn(f"agent can't read {self.managed}, so its Claude Code starts without it", bad["detail"])
+
+    def test_the_fix_keeps_managed_only_and_runs_on_macos(self):
+        """Following the fix after init --managed-only turned allowManagedHooksOnly off: init without --managed-only
+        removes the setting an earlier init turned on. And `chown root:root` fails on macOS, which has no root group."""
+        for only, want in ((True, " --managed --managed-only"), (False, " --managed")):
+            with self.subTest(managed_only=only), contextlib.redirect_stdout(io.StringIO()):
+                install.install_managed(None, only, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
+                                        signer="/run/s.sock")
+                fix = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]["fix"]
+                self.assertTrue(fix.endswith(want), fix)
+                self.assertTrue(fix.startswith(f"sudo chown 0:0 and sudo chmod 644 {self.managed}, "), fix)
+
+    def test_managed_file_check_claims_only_what_it_checked(self):
+        """D-HOOKS-MANAGED said the file was readable by every user, though doctor probes only the agent's user, and
+        only as root."""
+        for readable, says in ((True, ", and agent can read it"), (None, "")):
+            with self.subTest(probed=readable):
+                got = self.rows(readable=readable)["D-HOOKS-MANAGED"]
+                self.assertEqual((got["status"], got["detail"]),
+                                 ("ok", f"{self.managed} is root-owned and writable by root only{says}"))
+
+    def test_only_a_managed_disable_all_hooks_turns_managed_hooks_off(self):
+        """A disableAllHooks in the agent's own settings failed doctor, though Claude Code still runs managed hooks."""
+        self.assertEqual(self.rows(user={"disableAllHooks": True})["D-HOOKS-EVENT"]["status"], "ok")
+        got = self.rows(managed={"disableAllHooks": True})["D-HOOKS-EVENT"]
+        self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {self.managed}'))
+
+    def test_inits_hooks_also_in_the_agents_own_settings_are_decided_twice(self):
+        """With the managed file in use, init's v2 hooks left in the agent's own settings ran too, deciding every call
+        twice, and doctor said nothing."""
+        self.agent = types.SimpleNamespace(**dict(vars(self.agent), pw_dir=self.d))
+        own = os.path.join(self.d, ".claude", "settings.json")
+        self.assertEqual(self.rows()["D-HOOKS-PRESENT"]["status"], "ok")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(own, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        got = self.rows()["D-HOOKS-PRESENT"]
+        self.assertEqual(got["status"], "warn")
+        self.assertEqual(got["detail"], f"v2 hooks in {self.managed}, and in {own} too: Claude Code runs both, so "
+                         "every call is decided twice")
+        self.assertTrue(got["fix"].endswith(" --managed"), got["fix"])
+
+    def test_own_hooks_allow_managed_hooks_only_stops_are_not_decided_twice(self):
+        """With allowManagedHooksOnly on, Claude Code runs none of the agent's own hooks, yet doctor warned that init's
+        v2 hooks left in its own settings decided every call twice."""
+        self.agent = types.SimpleNamespace(**dict(vars(self.agent), pw_dir=self.d))
+        own = os.path.join(self.d, ".claude", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(own, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        for only, want in ((False, ("warn", f"v2 hooks in {self.managed}, and in {own} too: Claude Code runs both, so "
+                                            "every call is decided twice")),
+                           (True, ("ok", f"v2 hooks in {self.managed}; those in {own} don't run "
+                                         "(allowManagedHooksOnly)"))):
+            with self.subTest(allowManagedHooksOnly=only):
+                got = self.rows(managed={"allowManagedHooksOnly": only})["D-HOOKS-PRESENT"]
+                self.assertEqual((got["status"], got["detail"]), want)
+
+    def test_the_fix_for_missing_managed_hooks_keeps_them_managed(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, False, self.managed, uninstall=True)
+        got = self.rows()["D-HOOKS-PRESENT"]
+        self.assertEqual(got["status"], "fail")
+        self.assertTrue(got["fix"].endswith(" --managed"), got["fix"])
+
+
 class DroidHooks(unittest.TestCase):
     def test_droid_flat_configs_are_discovered_and_checked_without_reading_metadata_as_hooks(self):
         from tracekit import agent_hooks
@@ -523,6 +647,81 @@ class DevFresh(unittest.TestCase):
         for cfg, level in (({}, "dev"), ({"anchors": {"rekor": {"url": "https://rekor.example"}}}, "local")):
             got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d, **cfg})}
             self.assertIn(f"assurance stays {level}", got["D-WITNESS-CONFIGURED"]["detail"])
+
+
+class NoHooksChosen(unittest.TestCase):
+    def test_after_init_no_hooks_doctor_says_what_is_still_recorded_and_exits_0(self):
+        """After `tracekit init --dev --v2 --no-hooks` doctor warned that Claude Code's hooks were missing, gave
+        installing them as the fix, and exited 2 on that and the dev warnings alone. Init records the choice; a later
+        init with hooks undoes it."""
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(home)   # no project settings or other agents' hooks from the checkout
+
+        def run(*argv):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = cli.main(list(argv))
+            return code, out.getvalue()
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}), \
+                mock.patch.object(client, "system_config", return_value=None):
+            self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, "v2 hooks: not installed\n"))
+            code, out = run("doctor", "--json")
+            rows = {r["id"]: r for r in json.loads(out)}
+            self.assertEqual((code, rows["D-HOOKS-PRESENT"]), (0, {
+                "id": "D-HOOKS-PRESENT", "status": "ok", "fix": "",
+                "detail": "no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send "
+                          "(tracekit.instrument()) are still recorded; to record Claude Code's calls too, run "
+                          "tracekit init --dev --v2"}))
+            self.assertIn("warn", {r["status"] for r in rows.values()})   # the dev signer's own warnings
+            self.assertEqual(run("init", "--dev", "--v2", "--no-thinking-summaries")[0], 0)
+            rows = {r["id"]: r for r in json.loads(run("doctor", "--json")[1])}
+            self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
+            self.assertTrue(rows["D-HOOKS-PRESENT"]["detail"].startswith("v2 hooks in "), rows["D-HOOKS-PRESENT"])
+            self.assertEqual(run("uninstall")[0], 0)   # hooks removed, no choice recorded: missing, and how to add them
+            rows = {r["id"]: r for r in json.loads(run("doctor", "--json")[1])}
+            self.assertEqual((rows["D-HOOKS-PRESENT"]["status"], rows["D-HOOKS-PRESENT"]["fix"]),
+                             ("warn", "tracekit init --dev --v2"))
+
+    def test_no_hooks_after_a_hooked_init_takes_the_hooks_out(self):
+        """`init --dev --v2 --no-hooks` after an init with hooks said "v2 hooks: not installed" while they stayed in
+        settings.json and ran, and client.json recorded both the hooks file and no_hooks. System mode's takes them
+        out; dev mode's now does too."""
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(home)
+        settings = os.path.join(home, ".claude", "settings.json")
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}), \
+                mock.patch.object(client, "system_config", return_value=None), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["init", "--dev", "--v2"]), 0)
+            self.assertTrue(install._v2_hooks_in(settings))
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks"]), 0)
+            self.assertEqual(out.getvalue(), f"Tracekit v2 hooks removed from {settings}\nv2 hooks: not installed\n")
+            self.assertFalse(install._v2_hooks_in(settings))
+            self.assertEqual(client.client_config(), {"no_hooks": True})
+
+    def test_system_mode_reads_the_choice_from_client_json(self):
+        """System mode said "no hooks recorded in client.json", fix: reinstall, after `init --v2 --no-hooks`."""
+        sc = {"signer": "/run/s.sock", "hooks": {"user": "nobody-e16", "settings": None, "agent": "claude",
+                                                 "no_hooks": True}}
+        with mock.patch.object(doctor.client, "system_config", return_value=sc), \
+                mock.patch.object(doctor, "v2_checks", return_value=[]) as v2:
+            doctor.collect()
+        self.assertIs(v2.call_args.kwargs["no_hooks"], True)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for chosen, want in ((True, ("ok", "no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send "
+                                           "(tracekit.instrument()) are still recorded; to record Claude Code's calls too, "
+                                           "run " + doctor.REINIT)),
+                             (False, ("warn", "no hooks recorded in client.json"))):
+            got = next(r for r in doctor.v2_checks({"data_dir": d}, no_hooks=chosen) if r["id"] == "D-HOOKS-PRESENT")
+            self.assertEqual((got["status"], got["detail"]), want)
 
 
 class Reinit(unittest.TestCase):
@@ -722,8 +921,9 @@ class Report(unittest.TestCase):
         return code, out.getvalue()
 
     def test_exit_codes(self):
+        """Warnings alone exited 2, so a dev setup, which warns that it is one, always looked broken."""
         self.assertEqual(self.run_report(["ok", "ok"])[0], 0)
-        self.assertEqual(self.run_report(["ok", "warn"])[0], 2)
+        self.assertEqual(self.run_report(["ok", "warn"])[0], 0)
         self.assertEqual(self.run_report(["warn", "fail"])[0], 1)
 
     def test_json_lists_id_status_detail_fix(self):

@@ -31,6 +31,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/integrations/` | v2 framework integrations (OpenAI Agents, LangChain/LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent Framework, Strands Agents, Hermes Agent, Claude Code and harness hooks) | [HIGH CONFIDENCE] |
 | `tracekit/gateway.py`, `tracekit/executor.py`, `tracekit/mcp_gateway.py`, `tracekit/a2a_gateway.py`, `tracekit/egress.py` | LLM gateway, T2 tool executor, MCP gateway, A2A gateway (experimental), egress observer | [HIGH CONFIDENCE] |
 | `tracekit/graph.py` | `tracekit graph`: a graded graph of what agents did across verified bundles (experimental) | [HIGH CONFIDENCE] |
+| `tracekit/report.py` | `tracekit report`: a window of a signer's store on one page, built on the viewer's reader, check and review (experimental) | [HIGH CONFIDENCE] |
 | `tracekit/why/` | `tracekit why`: causal investigation and replay | [HIGH CONFIDENCE] |
 | `tracekit/pcm/` | PCM 0.1, proof-carrying messages (experimental): `__init__.py` (message, schema and grant checks, replay, `verify`), `claims.py` (claim evidence), `cli.py` (`tracekit pcm verify`, `tracekit pcm demo`), `tools.json` (the frozen tool placement table, part of the protocol); its signer RPCs (`pcm_*`, contract version 20) are in `tracekit/signer/` | [HIGH CONFIDENCE] |
 | `tracekit/findings_v2.py`, `tracekit/findings_text.py`, `tracekit/findings_effects.py`, `tracekit/parsers.py`, `tracekit/review_model.py` | `tracekit analyze --v2`: intent, reasoning and action checks (TK-X200..X204, X208) over a v2 run and its content vault, the text checks (TK-X205 and v1's say-vs-do checks) and the effect checks (TK-X206, TK-X207: kernel sensor effects joined to calls); `parsers.said()` reads what a model said before each tool use; `--review`: the reviewer model (TK-X210, warn only) | [HIGH CONFIDENCE] |
@@ -101,6 +102,9 @@ There is no typecheck step.
 - Apply the `ponytail` skill (full intensity) to every coding task: the smallest correct change, stdlib and existing
   code before new code, no speculative abstraction, no dead code or unused fixtures. Mark deliberate shortcuts `lean:`.
 - Don't edit `CHANGELOG.md` in feature PRs; release notes are written once per release.
+- Test like a user, not only by reading code: run what you changed the way a person would (the CLI, `tracekit view`
+  in a browser, a verifier on a real bundle, an agent through its hook), look at what they'd see, and act on what you
+  observe. Passing tests and a careful read don't replace it.
 - Security invariants (the product's promise): the agent never holds a signing key or assigns sequence numbers; nothing
   an agent-controlled process supplies (isolation level, fail mode, gap/tamper records, approval identity) is trusted by
   the signer or verifier; gaps are signed, never silent; never ship verification code inside a bundle.

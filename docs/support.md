@@ -5,7 +5,7 @@ Tracekit has a small stable core and a larger set of experimental surfaces. Both
 **Stable** means it is tested end to end on every push to main and every pull request, and hardened first.
 
 **Experimental** means it works and is tested, but it may change between releases and gets less hardening. Each
-experimental command or server prints one line to stderr when it starts. Anything not listed as stable is
+experimental command or server prints one line to stderr when it starts, and its `--help` ends with that line. Anything not listed as stable is
 experimental.
 
 ## Stable core
@@ -29,6 +29,7 @@ experimental.
 |---|---|
 | `tracekit why`: investigation, replay, signed findings | [why](why.md) |
 | `tracekit graph`: graph and report built from v2 bundles | [graph](graph.md) |
+| `tracekit report`: a week of a signer's store on one page, as text or JSON | [viewer](viewer.md#weekly-report) |
 | Detection and containment: sequences and limits, holds, quarantine, suspensions, incidents, the webhook outbox | [incidents](incidents.md), [webhooks](webhooks.md) |
 | Argument provenance (`untrusted`, `from_untrusted`) | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 | Readable reasoning: what the model said, recorded by the transcript tailer, the coding-agent hooks, the framework integrations and the LLM gateway | [reasoning](reasoning.md) |
