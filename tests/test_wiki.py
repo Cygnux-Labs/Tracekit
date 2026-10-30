@@ -143,3 +143,16 @@ class Wiki(unittest.TestCase):
         self.assertIn("docs/faq.md: (gone.md) resolves to nothing", str(e.exception))
         self.assertIn("docs/faq.md: (#nowhere): docs/faq.md has no heading #nowhere", str(e.exception))
         self.assertNotIn("faq.md#faq", str(e.exception))
+
+    def test_an_image_inside_a_link_is_copied(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        os.makedirs(os.path.join(root, "docs", "shots"))
+        open(os.path.join(root, "docs", "shots", "a.jpg"), "wb").close()
+        with open(os.path.join(root, "docs", "faq.md"), "w", encoding="utf-8") as f:
+            f.write("# FAQ\n\n[![a still](shots/a.jpg)](https://example.com/a.mp4)\n")
+        with mock.patch.object(wiki, "SECTIONS", [("Help", ["faq.md"])]), mock.patch.object(wiki, "START", []):
+            out = wiki.build("main", root)
+        page = next(v for k, v in out.items() if k.endswith(".md") and "a still" in v)
+        self.assertIn("[![a still](images/shots/a.jpg)](https://example.com/a.mp4)", page)
+        self.assertEqual(out["images/shots/a.jpg"], os.path.join(root, "docs", "shots", "a.jpg"))

@@ -179,8 +179,9 @@ def build(ref, root=ROOT):
 
     def relink(page, m):
         bang, label, target = m.groups()
+        label = LINK.sub(lambda inner: relink(page, inner), label)   # an image inside a link: [![a](b.png)](url)
         if SCHEME.match(target):
-            return m.group(0)
+            return f"{bang}[{label}]({target})"
         path, _, anchor = target.partition("#")
         dest = posixpath.normpath(posixpath.join(posixpath.dirname("docs/" + page), path)) if path else "docs/" + page
         doc = dest[len("docs/"):] if dest.startswith("docs/") else None
