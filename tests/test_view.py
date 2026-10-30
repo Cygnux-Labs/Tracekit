@@ -598,8 +598,8 @@ class View(unittest.TestCase):
         return run.run_id
 
     def rows(self, feed, run_id):
-        with feed.lock:
-            return [r for r in feed.records if r["session_id"] == run_id]
+        with feed.lock:   # a run taken back to check again holds RETRACTED ({}) in its rows' place
+            return [r for r in feed.records if r is not observe.RETRACTED and r["session_id"] == run_id]
 
     def report(self, feed, run_id):
         wait_for(lambda: any(r.get("title", "").startswith(f"RUN {run_id}") for r in self.rows(feed, run_id)), 15)
@@ -825,13 +825,14 @@ class View(unittest.TestCase):
         # last records were rows()'s to check: flaky under load)
         n = len(list(self.service.log.storage.iter_run("default", run_id)))
         self.assertTrue(wait_for(lambda: (feed.runs.get(("default", run_id)) or {}).get("count") == n, 15))
-        me, inside, schema = threading.get_ident(), [], []
+        me, inside, schema, entered = threading.get_ident(), [], [], []
         real_check, real_validate = import_v2.bundle_records, view.v2.validate
 
         def check(*a, **k):   # rows()'s own check: not the test harness's check of each bundle exported
             mine = threading.get_ident() == me   # the watcher checks too, while rows()'s export runs the harness's check
             if mine:
                 inside.append(1)
+                entered.append(1)
             try:
                 return real_check(*a, **k)
             finally:
@@ -845,7 +846,7 @@ class View(unittest.TestCase):
         with mock.patch.object(import_v2, "bundle_records", side_effect=check), \
                 mock.patch.object(view.v2, "validate", side_effect=validate):
             self.assertIsNotNone(feed.rows(observe.ALL, "default", run_id))
-        self.assertEqual(schema, [])
+        self.assertEqual((entered, schema), ([1], []))   # rows() checked the run, with nothing checked again
 
     def test_the_tape_shows_the_records_the_check_verified_not_a_second_read_of_the_store(self):
         """The watcher read a run again from the store after verify.v2 passed: an edit in place between the two (same
