@@ -821,6 +821,10 @@ class View(unittest.TestCase):
         run_id = self.finished_run()
         feed = store_feed(self, {"data_dir": self.d})
         self.report(feed, run_id)
+        # the watcher's own check of every record (its review row can come from a check at an earlier checkpoint, so the
+        # last records were rows()'s to check: flaky under load)
+        n = len(list(self.service.log.storage.iter_run("default", run_id)))
+        self.assertTrue(wait_for(lambda: (feed.runs.get(("default", run_id)) or {}).get("count") == n, 15))
         me, inside, schema = threading.get_ident(), [], []
         real_check, real_validate = import_v2.bundle_records, view.v2.validate
 

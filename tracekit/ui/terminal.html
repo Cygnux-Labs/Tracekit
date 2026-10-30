@@ -3652,9 +3652,15 @@
         : cmds.flatMap(([c, p]) => { if (c[0] === ">") return []; const data = hzDataWords(c.slice(p)); return c.filter((_, i) => !data.has(i - p)); });
       const wrote = cmds.flatMap(([c, p]) => c[0] === ">" ? [c[1]] : (c[p] || "").split("/").pop() === "tee" ? c.slice(p + 1).filter(a => !a.startsWith("-")) : [])
         .filter(f => !f.startsWith("/dev/") && !f.includes("$"));   // a variable's file is unknown: no place
+      // a URL's host as curl reads it, from the whole word: its authority runs to the first / ? or #, the host after its
+      // last @ (split at = , ; and the like first, `http://localhost=@evil.example` read as localhost)
+      for (const w of said) for (const m of w.matchAll(/\b[a-z][\w+.-]*:\/\/([^\/?#\s\\]*)/gi)) {
+        const host = /^(\[[^\]]*\]|[^:]+)/.exec(m[1].split("@").pop())?.[1];
+        if (host) return hzHost(host.toLowerCase());
+      }
       let path = null;
       for (const w of said.join(" ").split(/[\s"'`;|&<>()=,]+/)) {
-        const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/?#\\]*@)?(\[[^\]\/]*\]|[^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
+        const host = /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
         if (host) return hzHost(host.toLowerCase());
         // lean: elsewhere a word with a slash is a path, so a ref like origin/main is a project place; the signer's parser knows better
         if (w.startsWith("/dev/")) continue;   // 2>/dev/null and the like: no place
@@ -3965,19 +3971,21 @@
         placed.push(b);
       }
       HZ.hits = [];
-      const names = [];   // the open folders' names: placed once the places' marks and shields are known
-      for (const k of opened) {
-        const f = D.folds[k], [px, py] = pt(k), rs = f.rho * R4 * K;
-        if (px + rs < 0 || px - rs > cw || py + rs * i < 0 || py - rs * i > ch) continue;
-        HZ.hits.push({ k, x: px, y: py, r: rs, ry: rs * i, open: true });
-        x.fillStyle = A(ink, .03); x.strokeStyle = A(f.rest ? red : gold, HZ.pick === k ? .75 : .3); x.lineWidth = HZ.pick === k ? 1.6 : 1;
-        x.beginPath(); x.ellipse(px, py, rs, rs * i, 0, 0, 6.2832); x.fill(); x.stroke();
-        names.push([f, px, Math.min(py + rs * i + 14, ch - 34)]);
-      }
-      // what happened, up to the move shown: jets where data left the machine (one per agent and host), the routes,
-      // then the places
+      // what happened, up to the move shown; a folder nothing has happened in yet is drawn quiet, a hairline with no name
       const ev = D.ev.slice(0, HZ.t), mine = e => !HZ.follow || e.ag === HZ.follow, seen = dict(), jet = dict(), jets = [];
       for (const e of ev) if (mine(e)) (seen[e.at] ||= []).push(e);
+      const quiet = (f, k) => HZ.pick !== k && !f.rest && !f.leaves.some(l => seen[l]);
+      const names = [];   // the open folders' names: placed once the places' marks and shields are known
+      for (const k of opened) {
+        const f = D.folds[k], [px, py] = pt(k), rs = f.rho * R4 * K, q = quiet(f, k);
+        if (px + rs < 0 || px - rs > cw || py + rs * i < 0 || py - rs * i > ch) continue;
+        HZ.hits.push({ k, x: px, y: py, r: rs, ry: rs * i, open: true });
+        x.fillStyle = A(ink, q ? 0 : .03); x.strokeStyle = A(f.rest ? red : gold, HZ.pick === k ? .75 : q ? .07 : .3);
+        x.lineWidth = HZ.pick === k ? 1.6 : q ? .6 : 1;
+        x.beginPath(); x.ellipse(px, py, rs, rs * i, 0, 0, 6.2832); x.fill(); x.stroke();
+        if (!q) names.push([f, px, Math.min(py + rs * i + 14, ch - 34)]);
+      }
+      // then jets where data left the machine (one per agent and host), the routes, then the places
       x.lineWidth = 1.6;
       for (const e of ev) if (mine(e) && D.places[e.at].kind === "outside" && !jet[e.ag + "\u0000" + e.at]) {
         jet[e.ag + "\u0000" + e.at] = 1;
@@ -4029,10 +4037,11 @@
         // a folder's reach: its circle, and its shield's when a place in it is restricted
         const sr = f ? rs + (q.rest ? 12 : 2) : 24;
         marks.push(f ? [px, py, sr, sr * i] : [px, py, q.rest ? sr + 6 : 9]);
-        if (f) {   // a closed folder: its circle, a dot for each of its places; a dashed red shield round it
-          x.fillStyle = A(space, .6); x.strokeStyle = A(ink, HZ.pick === k ? .8 : .34); x.lineWidth = 1;
+        if (f) {   // a closed folder: its circle, a dot for each of its places; a dashed red shield round it; quiet, a hairline
+          const qt = quiet(f, k);
+          x.fillStyle = A(space, qt ? .25 : .6); x.strokeStyle = A(ink, HZ.pick === k ? .8 : qt ? .07 : .34); x.lineWidth = qt ? .6 : 1;
           x.beginPath(); x.ellipse(px, py, rs, rs * i, 0, 0, 6.2832); x.fill(); x.stroke();
-          if (rs > 9) { x.fillStyle = A(ink, .5); for (const l of f.leaves) { const [lx, ly] = pt(l); x.fillRect(lx - .75, ly - .75, 1.5, 1.5); } }
+          if (rs > 9 && !qt) { x.fillStyle = A(ink, .5); for (const l of f.leaves) { const [lx, ly] = pt(l); x.fillRect(lx - .75, ly - .75, 1.5, 1.5); } }
           if (q.rest) for (const [d, a, dash] of [[6, .85, [2, 4]], [11, .35, []]]) { x.strokeStyle = A(red, a); x.setLineDash(dash); x.beginPath(); x.ellipse(px, py, rs + d, (rs + d) * i, 0, 0, 6.2832); x.stroke(); }
           x.setLineDash([]);
         }
@@ -4387,7 +4396,9 @@
       // (one approved that expired unused is expired)
       const held = S.actList.filter(heldCall).length, approved = S.actList.filter(a => heldCall(a) && lastAnswer(a) === "approve").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = highCount();
       // signed records: the run's own count (its review), else every record the viewer verified (the chain badge's)
-      const signed = scope ? RUNS.get(scope)?.records ?? (RUNS.get(scope)?.verdict === "failed" ? "–" : null) : chainState.n;
+      // (a run being checked again since the store's bytes changed counts none until it is: "…")
+      const sel = scope && RUNS.get(scope), again = sel?.verdict === "pending" && /^RE-CHECKING/.test(sel.integrity || "");
+      const signed = scope ? (again ? null : sel?.records ?? (sel?.verdict === "failed" ? "–" : null)) : chainState.n;
       const items = V2 ? [
         // a v2 agent is keyed per run (its session): count the agents by name, as the runs list names them
         ["RUNS", scope ? 1 : [...RUNS.values()].length, ""], ["AGENTS", new Set(agents.map(a => a.name || a.type)).size, ""], ["CALLS", S.actList.length, "am"],
