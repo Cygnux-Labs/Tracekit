@@ -1870,6 +1870,25 @@ class LiveRuns(unittest.TestCase):
         c.close()
         return snap, rows
 
+    def test_it_says_how_many_runs_it_has_not_read_yet_while_it_reads_them_on_start(self):
+        """The viewer reads a store's runs one at a time on start (minutes for a big one) and the page said ALL CLEAR
+        meanwhile: /api/verify now says how many are not read yet, per tenant, the signer's own run aside."""
+        seen = []
+        feed = self.feed(lambda run_id: (seen.append((feed.checking(), feed.checking("other"))), VERIFIED)[1])
+        self.recs["r2"] = list(self.recs["r1"])
+        self.recs[view.SIGNER_RUN[1]] = [v2rec(0, "signer.epoch", {"keys": []}, view.SIGNER_RUN[1])]
+        self.assertEqual(feed.checking(), 0)   # nothing listed before the first read
+        self.refresh(feed)
+        self.assertEqual(seen, [(2, 0), (1, 0), (0, 0)])   # r1, r2, the signer's run: each counted until it is read
+        srv = view.server(feed, "127.0.0.1", 0, "t0k")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+        c.request("GET", "/api/verify", headers={"Authorization": "Bearer t0k"})
+        self.assertEqual(json.loads(c.getresponse().read())["checking"], 0)
+        c.close()
+
     def test_a_run_that_fails_at_a_later_checkpoint_takes_back_every_record_it_showed(self):
         """A run that verified at one checkpoint and failed at the next kept its earlier rows on the tape as SIGNED,
         next to a review saying none of its records are shown, and its VERIFIED report and FINDING alerts (counted in

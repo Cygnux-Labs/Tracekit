@@ -219,7 +219,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self.post({"op": "status"}, self.token), (200, {"ok": True}))   # no seq, head or hash
         try:  # the server refuses an oversize body before reading it, so the client may see 413 or a closed connection
             self.assertEqual(self.post(b"x" * (ingest.MAX_BODY + 1), self.token)[0], 413)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):   # Windows: WinError 10053
             pass
 
     def test_rate_limit(self):

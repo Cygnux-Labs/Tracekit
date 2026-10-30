@@ -20,11 +20,13 @@ approval, or any other error: blocked. A call allowed here that gets no PostTool
 permission prompt, interrupted, or an unreadable payload) is completed as an error at SessionEnd; one that is never
 completed is the signer's decided_not_completed gap.
 
-Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript SessionStart names: it records the
-model's tool uses, thinking and text, and the user's prompts (as commitments, with their content when the signer keeps
-content) from the transcript, which no hook payload carries. A later run of the session (after an idle close) has its
-tailer start where the hook last saw the transcripts while the earlier run was open (_seen), and a resumed session's
-first run where its transcript ended at SessionStart: the lines before are an earlier run's.
+Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript the hook payloads name, from the
+run's first event: it records the model's tool uses, thinking and text, and the user's prompts (as commitments, with
+their content when the signer keeps content) from the transcript, which no hook payload carries. A new session's run
+reads it from its first line; a later run of the session (after an idle close) has its tailer start where the hook last
+saw the transcripts while the earlier run was open (_seen), and a resumed session's first run, or one a session with no
+state left starts (Claude Code went on after a SessionEnd with no SessionStart), where its transcript ended then: the
+lines before are an earlier run's.
 
 At UserPromptSubmit, the typed part of the harness's prompt is recorded (`observe`, source <agent>:UserPromptSubmit,
 trusted); harness-wrapped parts are separate untrusted observations, and so is the whole of a turn Claude Code's payload
@@ -78,6 +80,7 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 NO_POST = ("no PostToolUse came by the end of the session: declined (the harness's permission prompt, another hook), "
            "interrupted, or its payload was unreadable")
 RESUMED = ("resume", "fork")   # SessionStart sources whose transcript already holds the session's earlier history
+FRESH = ("startup", "clear")   # SessionStart sources of a new transcript
 FULL = ("[tracekit] the run has the most file constraints the signer takes: what this prompt says not to change was "
         "not added, so every write of the run is now held for your approval")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
@@ -110,6 +113,11 @@ def _state(*ids):
     return os.path.join(autospawn.runtime_dir(), "claude-code-" + ".".join(names) + ".json")
 
 
+def _transcript(p):
+    """The session's transcript, which every Claude Code hook payload names (a subagent's too: the session's own)."""
+    return p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
+
+
 def _load(path):
     for i in range(20):
         try:
@@ -123,13 +131,15 @@ def _load(path):
             time.sleep(0.05)
 
 
-def _run(client, sid, register=True, send=None, transcript=None, resumed=False, stated=(), skip=0, **fields):
+def _run(client, sid, register=True, send=None, transcript=None, start=None, stated=(), skip=0, **fields):
     """(the session's run, registered on its first event; with `send`, the signer's reply to that event call, sent with
     the session's stream and next client_seq under the session lock so parallel hooks reach the signer in client_seq
     order, and sent again on a new run when the signer has closed the stored one (idle); without `register`, the stored
-    run is marked ended instead, and the session's next event that registers starts the new one). `transcript`
-    (SessionStart): kept in the session state; each run of the session gets a tailer on it, which starts where the
-    session's earlier run was last seen open (_seen; `resumed`: a resumed session's transcript as it is now).
+    run is marked ended instead, and the session's next event that registers starts the new one). `transcript` (the
+    payload's): kept in the session state; each run of the session gets a tailer on it, which starts at the first line
+    of a new session's (`start`, the SessionStart source: startup or clear), at where it ends at registration for a
+    resumed or forked session or one with no state left, else where the session's earlier run was last seen open
+    (_seen; _tail for a run registered before its transcript was known).
     `stated`: the constraints a prompt states, kept in the session state; each run gets the session's (_constrain).
     `skip`: client_seq values left unsent before `send` (_send)."""
     path = _state(sid)
@@ -137,7 +147,9 @@ def _run(client, sid, register=True, send=None, transcript=None, resumed=False, 
         lock_file(lk)
         st = _load(path)
         if register and (st is None or st.get("ended")):
-            st = _register(client, path, st, _seen(transcript) if resumed else None)
+            # where its tailer starts, kept in the state so a retried start (_tail) reads from the same place
+            st = _register(client, path, st, {transcript: 0} if transcript and st is None and start in FRESH else
+                           _seen(transcript) if st is None or start in RESUMED else None)
         if st and transcript:
             st["transcript"] = transcript
         if st and stated:
@@ -242,24 +254,33 @@ def _end(path):
 
 
 def _seen(transcript):
-    """{path: _end(path)} of the session's transcript and its subagents' as they are now, which the tailer of the
-    session's next run (after an idle close) starts from: their lines so far are the earlier run's. None for a harness
-    without a tailer."""
+    """{path: _end(path)} of the session's transcript and its subagents' (a workflow's agents' too) as they are now,
+    which the tailer of the session's next run (after an idle close) starts from: their lines so far are the earlier
+    run's. None for a harness without a tailer."""
     if AGENT != "claude-code" or not transcript or os.name == "nt":
         return None
-    subs = os.path.join(glob.escape(os.path.splitext(transcript)[0]), "subagents", "agent-*.jsonl")
-    return {p: _end(p) for p in [transcript, *sorted(glob.glob(subs))]}
+    subs = os.path.join(glob.escape(os.path.splitext(transcript)[0]), "subagents")
+    return {p: _end(p) for p in [transcript, *sorted(glob.glob(os.path.join(subs, "agent-*.jsonl"))),
+                                 *sorted(glob.glob(os.path.join(subs, "workflows", "*", "agent-*.jsonl")))]}
 
 
 def _tail(client, path, st):
     """Start tracekit.tailer for the run, detached, unless it has one. System mode: through sudo as the tailer's own
     user (the root-owned system config names it), with a token the signer issued to that user's uid for this run; with
-    no tailer installed, the signer records a tailer_lost gap for the run instead."""
+    no tailer installed, the signer records a tailer_lost gap for the run instead. A run whose state names no offsets
+    (registered before its transcript was known, by an earlier hook) starts where the transcripts end the first time
+    this runs, kept in the state so a retry after a failed start reads from the same place."""
     if (AGENT != "claude-code" or not (st and st.get("transcript")) or st.get("tailer") == st["run_id"]
             or os.name == "nt"):   # Claude Code transcripts only; POSIX only
         return
-    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"],
-              **({"offsets": st["offsets"]} if st.get("offsets") else {})}
+    # lean: a run a session goes on with after a SessionEnd (no SessionStart: a message to the session, a usage limit's
+    # reset) starts where the transcripts end at its first event; what Claude Code wrote between the SessionEnd and
+    # then (the new prompt, the first call's tool use: then a fabricated gap) is read by no run, as the earlier run's
+    # tailer stopped at the SessionEnd; keep the transcript's end in the state at SessionEnd if sessions often go on
+    if not st.get("offsets"):
+        st["offsets"] = _seen(st["transcript"])
+        files.write_json(path, st)
+    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"], "offsets": st["offsets"]}
     sc = system_config() or {}
     t = sc.get("tailer")
     argv = None   # a tailer that dies or is killed stops its heartbeats: the signer writes the tailer_lost gap
@@ -306,7 +327,8 @@ def _pre(client, p, sid, tid):
 
     tool, args = p.get("tool_name") or "?", p.get("tool_input")
     cap()
-    run, d = _run(client, sid, send="decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed")
+    run, d = _run(client, sid, send="decide", transcript=_transcript(p), tool_call_id=tid, tool=tool, args=args,
+                  args_source="parsed")
     if d["decision"] == "deny":
         print("Blocked by tracekit policy: " + named_rules(d["rule_ids"]) + (f": {d['reason']}" if d.get("reason") else ""),
               file=sys.stderr)
@@ -693,10 +715,9 @@ def _handle(client, p, event, sid, tid):
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
             os.remove(f)
         return 0
-    transcript, prompt = None, p.get("prompt") if event == "UserPromptSubmit" else None
+    transcript, prompt = _transcript(p), p.get("prompt") if event == "UserPromptSubmit" else None
     if event == "SessionStart":
         _prune()
-        transcript = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
     if isinstance(prompt, str) and prompt:   # the harness's submitted prompt, including harness wrappers
         source = p.get("source") if AGENT == "claude-code" else None
         if source in (None, "user", "sdk"):
@@ -714,11 +735,12 @@ def _handle(client, p, event, sid, tid):
                         if constraint not in live:
                             unexpected.setdefault(constraint, source)
         try:   # its constraints first: a prompt too large for one observe frame still adds them
-            refused = _run(client, sid, stated=stated)[1]
+            refused = _run(client, sid, transcript=transcript, stated=stated)[1]
         finally:
             errors = []
             try:
-                _run(client, sid, send="observe", source=f"{AGENT}:UserPromptSubmit", trust="trusted", value=typed)
+                _run(client, sid, send="observe", transcript=transcript, source=f"{AGENT}:UserPromptSubmit",
+                     trust="trusted", value=typed)
             except Exception as e:
                 errors.append(e)
             grouped = {}
@@ -731,7 +753,8 @@ def _handle(client, p, event, sid, tid):
                 recorded = min(text_size, share + (index < extra))
                 for value in _observe_values(values, recorded):
                     try:
-                        _run(client, sid, send="observe", source=f"{AGENT}:{source}", trust="untrusted", value=value)
+                        _run(client, sid, send="observe", transcript=transcript, source=f"{AGENT}:{source}",
+                             trust="untrusted", value=value)
                     except Exception as e:
                         errors.append(e)
                 if recorded < text_size:
@@ -749,7 +772,8 @@ def _handle(client, p, event, sid, tid):
             messages.append(f"[tracekit] {len(unexpected)} constraint(s) in text you pasted or the harness added "
                             f"({sources}: {detail}) were recorded, not made live")
         if cut:   # the cut text is an observation the signer never gets: one client_seq skipped says so (_send)
-            _run(client, sid, send="observe", skip=1, source=f"{AGENT}:harness-cut", trust="untrusted",
+            _run(client, sid, send="observe", skip=1, transcript=transcript, source=f"{AGENT}:harness-cut",
+                 trust="untrusted",
                  value=f"Harness text was cut after {MAX_HARNESS_TEXT} characters ({', '.join(cut)}).")
             messages.append(f"[tracekit] oversized untrusted text was cut after {MAX_HARNESS_TEXT} characters "
                             f"({', '.join(cut)}); for the rest of the run a from: untrusted rule applies to every "
@@ -759,7 +783,7 @@ def _handle(client, p, event, sid, tid):
         return 1 if refused else 0   # shown to the person (FULL, on stderr), never blocking the prompt
     # SessionStart, or any other first event of the session, registers the run; a resumed (or forked) session's
     # transcript holds its earlier history, which earlier runs recorded
-    _run(client, sid, transcript=transcript, resumed=event == "SessionStart" and p.get("source") in RESUMED)
+    _run(client, sid, transcript=transcript, start=p.get("source") if event == "SessionStart" else None)
     return 0
 
 
