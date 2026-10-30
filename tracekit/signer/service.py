@@ -3510,7 +3510,7 @@ class SignerService:
         # a rejected one's says who rejected or revoked it
         def state(tx):
             a, now = self.log.approvals.get(aid, {"state": "expired"}), time.time()
-            veto = a["state"] == "approved" and _waiting(a, now) and math.ceil(epoch(a["not_before"]) - now)
+            veto = a["state"] == "approved" and _waiting(a, now) and math.ceil(epoch(a["not_before"]) - epoch(_iso(now)))
             no = a["state"] == "rejected" and (f"revoked by {a['revoked']}" if a.get("revoked") else
                                                f"rejected by {(a.get('answered') or {}).get('by', '?')}")
             return {"state": "requested" if _waiting(a, now) else a["state"],

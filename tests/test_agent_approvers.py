@@ -555,6 +555,15 @@ class TestVetoAndRevoke(Case):
         self.s.log.approvals[aid]["not_before"] = svc._iso(time.time() - 1)
         self.assertEqual(self.s.approval_wait({**self.run, "approval_id": aid}), {"approval_id": aid, "state": "approved"})
 
+    def test_a_wait_read_at_the_answers_own_instant_says_the_veto_delay_not_a_second_more(self):
+        """Windows' clock can read the same instant at the answer and the wait: not_before is kept to the microsecond,
+        here rounded up, and the wait said 61 s for a 60 s veto delay."""
+        aid, _ = self.ask()
+        with mock.patch.object(svc.time, "time", return_value=float(int(time.time())) + 0.1234567):
+            self.answer(AGENT, aid)
+            out = self.s.approval_wait({**self.run, "approval_id": aid})
+        self.assertEqual(out["reason"], "approved by an agent approver; people may still revoke it, so wait 60 s")
+
     def test_the_claude_code_hook_tells_a_retry_in_the_veto_delay_to_wait_not_to_approve(self):
         """Through the hook, against this signer: the agent's retry inside the veto delay was told to approve it with
         `tracekit approvals approve`, an approval an agent approver had approved."""
