@@ -302,13 +302,27 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 ![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/1.5/influence.png)
 
-Across every why run, as a citation index: one row per kind of content and its trust (the person's prompts, messages
-from another session, sub-agents' messages, background tasks' notices, ...; untrusted red), with how many sources of
-that kind, in how many runs, the decisions that cited them, and beside them the tools they reached: first those whose
-reached calls were blocked, held or a confirmed cause (with its effect), marked as such, then six more (flagged
-first, then the most runs; **+N more** shows the rest; struck through where a replay ruled a link out). Click a row
-for its sources one by one (the 200 that matter most: a confirmed cause, then those whose reached calls were stopped,
-then the most cited), each named by where it was read: its run, record and time, with **OPEN** for that record.
+Across every why run, INFLUENCE answers one question: did something your agents read come before a blocked or held
+call? It says "came before": the content was in front of the agent when it decided on the call. Only a replay that
+confirmed it says "caused".
+
+- **The answer, first.** In words, the untrusted content that came before the most blocked or held calls (for
+  example "Sub-agents' messages (untrusted) came before 48 blocked Bash calls in 3 runs"), the three worst. A
+  replay-confirmed cause comes first, with its effect. Click a line for its row below. When nothing untrusted came
+  before a blocked or held call, it says exactly that.
+- **The flow.** Each kind of content on the left (its trust, untrusted framed red, and its sources) and the tools
+  called after it on the right. Only the lines that matter are drawn, coloured as the table's chips: red where calls
+  were blocked, amber where held, blue where flagged, bold red with its effect for a confirmed cause, dashed where a
+  replay ruled the link out. A line is thicker the more runs it came before (log scale). The plain lines (calls that
+  ran with no flag) are hidden; a note says how many. Point at content or a tool to see all its lines and dim the
+  rest. Click a line or content to open its row and mark the tool's chip; click a tool to mark it in every row;
+  click empty space to clear. The tools with a marked line come first, then four quiet ones; the rest are one
+  **+N more**. Panels narrower than 600 px leave the flow out: the answer and the cards say the same.
+- **The table, the detail.** One row per kind of content and its trust, with how many sources, in how many runs,
+  in front of the agent for how many decisions, and the tools it led to. Blocked, held and confirmed first, then six
+  more (flagged first, then the most runs; **+N more** shows the rest). Click a row for its sources one by one (the
+  200 that matter most: a confirmed cause, then those before stopped calls, then the most cited). Each is named by
+  where it was read: its run, record and time, with **OPEN** for that record.
 
 ### A v1 bundle
 
@@ -525,8 +539,8 @@ that citation joins the two.
 - **Views** (a run's page, keys `1` to `7`; the tape's **WHY LOG EVENTS**; the **INFLUENCE** page): **OVERVIEW**,
   **WHY** and the why log's **TIMELINE** (as below), **GRAPH**, the run's data flow (observed edges; tested causes
   in red; inferred links and ruled-out tests hidden until ticked; click a node for what it came from and led to),
-  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: each kind of
-  content and the tools it reached, with tested effects). **DESK** shows every panel at once.
+  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: whether untrusted
+  content came before blocked or held calls, each kind of content and the tools called after it, with tested effects). **DESK** shows every panel at once.
 - **Alerts**: the why alerts (a sensitive call using a value only untrusted content supplied, a call downstream of
   untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`.
 

@@ -2121,20 +2121,26 @@ class PlainPages(unittest.TestCase):
         self.assertLess(html_.index('data-gfit=""'), html_.index('<div id="gscroll"><svg id="gsvg"'))
         self.assertEqual((scroll_room, fit_height), ("504px", None))   # ACTUAL SIZE: the room below the bars scrolls
 
-    def influence(self, sources, edges, groups, opened=(), more=()):
-        return json.loads(page_js(["dict", "esc", "plural", "pct", "fmtT", "fmtD", "INFL", "KIND", "ENDS", "stopped", "chip", "chips",
-                                   "idLen", "influenceView"], f"""
+    INFLUENCE = ["dict", "esc", "plural", "pct", "fmtT", "fmtD", "fit", "put", "INFL", "KIND", "kindName", "many", "ENDS", "stopped",
+                 "tone", "endWords", "said", "chip", "order", "chips", "inflTools", "INFLSAY", "inflAnswer", "INFLTOOLS", "inflFlow",
+                 "idLen", "influenceView"]
+
+    def influence(self, sources, edges, groups, opened=(), more=(), width=900, mark=None):
+        """INFLUENCE's HTML, its summary, and the content and tools its data-* indices name (IFL.keys, IFL.tools)."""
+        return json.loads(page_js(self.INFLUENCE, f"""
             const WHY = {{ runs: [{{}}, {{}}], influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
                           edges: {json.dumps(edges)}, groups: {json.dumps(groups)} }} }}, got = {{}}, $ = id => got[id] ??= {{}};
             const RUNS = new Map([["r1", {{}}]]), TZ = "UTC";
             for (const k of {json.dumps(list(opened))}) INFL.add(k);
             for (const k of {json.dumps(list(more))}) INFLMORE.add(k);
-            const el = {{ clientWidth: 900 }}; influenceView(el); process.stdout.write(JSON.stringify([el.innerHTML, got.wvsum.textContent]));"""))
+            IFL.mark = {json.dumps(mark)};
+            const el = got.whyv = {{ clientWidth: {width} }}; influenceView(el);
+            process.stdout.write(JSON.stringify([el.innerHTML, got.wvsum.textContent, IFL.keys, IFL.tools]));"""))
 
     def test_influence_with_no_sources_says_nothing_yet_and_draws_no_empty_chart(self):
         needs_node(self)
         empty = self.influence([], [], [])[0]
-        self.assertIn('<div class="empty">Nothing yet: no model call in these runs cites content the agents read', empty)
+        self.assertIn('<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it', empty)
         self.assertNotIn("<svg", empty)
         self.assertNotIn("SOURCES", empty)
         full = self.influence([{"id": "s1", "labels": ["task"], "trust": "trusted", "runs": 1, "cited_by": 2, "kind": "x",
@@ -2164,14 +2170,18 @@ class PlainPages(unittest.TestCase):
                   {"kind": "session-message", "trust": "untrusted", "runs": 2, "reach": {"Bash": 2, "Edit": 1, "Deploy": 1},
                    "ended": {"Deploy": {"held": 1}}},
                   {"kind": "task-notification", "trust": "untrusted", "runs": 1, "reach": {"Read": 1}}]
-        page, summary = self.influence(sources, edges, groups)
+        page, summary = self.influence(sources, edges, groups)[:2]
         rows = [html.unescape(text(r)) for r in re.findall(r'<tr class="row ingrp"[^>]*>(.*?)</tr>', page)]
         # a confirmed cause first, then untrusted content, then the rest; each kind in words, the tools beside it: the
-        # confirmed cause and the calls stopped first, marked as such
+        # confirmed cause and the calls stopped first, marked as such; in plain words, not "cited by" and "reaches"
         self.assertEqual(rows, [
-            "▸ messages from another session (session-message) untrusted 4 sources 2 runs 17 decisions Bash +0.62 Deploy 1 held Edit 1",
-            "▸ background tasks' notices (task-notification) untrusted 1 source 1 run 1 decisions Read 1",
-            "▸ the person's prompts (UserPromptSubmit) trusted 1 source 3 runs 9 decisions Edit 2"])
+            "▸ messages from another session (session-message) untrusted 4 sources 2 runs in front of the agent for 17 decisions "
+            "Bash +0.62 Deploy 1 held Edit 1",
+            "▸ background tasks' notices (task-notification) untrusted 1 source 1 run in front of the agent for 1 decision Read 1",
+            "▸ the person's prompts (UserPromptSubmit) trusted 1 source 3 runs in front of the agent for 9 decisions Edit 2"])
+        self.assertIn("<th>IN FRONT OF THE AGENT</th><th>LED TO</th>", page)
+        self.assertNotIn("CITED BY", page)
+        self.assertNotIn("REACHES", page)
         # the word is a phone card's, shown there only (a phone said "1 sources")
         self.assertIn('<td>1<span class="ph"> source</span></td>', page)
         self.assertNotIn('content: " sources"', PAGE)
@@ -2179,12 +2189,17 @@ class PlainPages(unittest.TestCase):
         key = page[page.index('class="wbar glegend"'):page.index("<table")]
         self.assertEqual(re.findall(r'<span class="tag[^"]*">([^<]*)</span>', key),
                          ["tool N", "tool N blocked", "tool N held", "tool N flagged", "tool +effect", "tool N"])
-        self.assertIn('<span class="tag deny" title="reached in 2 runs · a replay confirmed it a cause: effect +0.62">Bash +0.62</span>', page)
-        self.assertIn('<span class="tag held" title="reached in 1 run · of the calls it reached, 1 held">Deploy 1 held</span>', page)
-        self.assertIn('<span class="tag ruled" title="reached in 1 run · a replay tested it and ruled it out">Read 1</span>', page)
-        self.assertNotIn("<svg", page)
+        # "came before", never "caused" unless a replay confirmed it
+        self.assertIn('<span class="tag deny" title="came before Bash calls in 2 runs · a replay confirmed it caused them: '
+                      'effect +0.62">Bash +0.62</span>', page)
+        self.assertIn('<span class="tag held" title="came before Deploy calls in 1 run · of those calls, 1 held">Deploy 1 held</span>', page)
+        self.assertIn('<span class="tag ruled" title="came before Read calls in 1 run · a replay tested it and ruled it out">Read 1</span>', page)
+        # the answer first, then the flow, its key, and the table as the detail
+        self.assertLess(page.index('<div class="inans">'), page.index('<svg id="ifl"'))
+        self.assertLess(page.index('<svg id="ifl"'), page.index('class="wbar glegend"'))
+        self.assertLess(page.index('class="wbar glegend"'), page.index("<table"))
         self.assertNotIn('class="insrc"', page)   # one row per kind until it is opened
-        self.assertEqual(summary, "3 kinds · 6 sources · 1 tool")
+        self.assertEqual(summary, "3 kinds of content · 6 sources · 1 tool")
         # opened, its rows were alike ("claude-code:session-message · its content is not in the log…"): each names its
         # run, its record and when it was read, with OPEN for that record; a cause first, then stops, then the most cited
         opened = self.influence(sources, edges, groups, opened=["session-message|untrusted"])[0]
@@ -2227,6 +2242,180 @@ class PlainPages(unittest.TestCase):
         page = self.influence(sources, [], groups, more=["k|untrusted"])[0]
         self.assertEqual(len(re.findall(r'<span class="tag[^"]*" title=', page.split("<tbody>")[1])), 12)
         self.assertIn('data-inmore="k|untrusted">fewer</button>', page)
+
+    # a store in miniature: messages from another session came before 4,812 blocked Bash calls (a replay confirmed one
+    # of them caused Bash calls) and 15 held Deploy calls; sub-agents' messages before flagged WebFetch calls and Read
+    # calls a replay ruled out; the person's prompts before blocked Bash calls; Edit and Grep calls nothing stopped
+    STORE = {
+        "sources": [{"id": "s1", "labels": ["a:session-message"], "trust": "untrusted", "runs": 9, "cited_by": 247045,
+                     "kind": "session-message", "preview": "x", "confirmed_tools": ["Bash"], "seen": []},
+                    {"id": "s2", "labels": ["a:agent-message"], "trust": "untrusted", "runs": 4, "cited_by": 3,
+                     "kind": "agent-message", "preview": "x", "confirmed_tools": [], "seen": []},
+                    {"id": "s3", "labels": ["a:UserPromptSubmit"], "trust": "trusted", "runs": 9, "cited_by": 9,
+                     "kind": "UserPromptSubmit", "preview": "x", "confirmed_tools": [], "seen": []}],
+        "edges": [{"source": "s1", "tool": "Bash", "reach_runs": 8, "confirmed": True, "max_effect": 0.62, "ended": {"blocked": 4812}},
+                  {"source": "s2", "tool": "Read", "reach_runs": 1, "ruled_out": True, "max_effect": 0.01}],
+        "groups": [{"kind": "session-message", "trust": "untrusted", "runs": 9, "reach": {"Bash": 8, "Deploy": 2, "Edit": 1},
+                    "ended": {"Bash": {"blocked": 4812}, "Deploy": {"held": 15}}, "stopped_runs": {"Bash": 3, "Deploy": 1}},
+                   {"kind": "agent-message", "trust": "untrusted", "runs": 4, "reach": {"WebFetch": 2, "Read": 1, "Edit": 4},
+                    "ended": {"WebFetch": {"flagged": 2}}},
+                   {"kind": "UserPromptSubmit", "trust": "trusted", "runs": 9, "reach": {"Bash": 9, "Edit": 9, "Grep": 3},
+                    "ended": {"Bash": {"blocked": 50}}, "stopped_runs": {"Bash": 4}}]}
+
+    @staticmethod
+    def flow(page, keys, tools):
+        """The flow's content nodes, tool nodes ([name, class]) and lines ({(content key, tool or "+"): [class, width]})."""
+        svg = page[page.index('<svg id="ifl"'):page.index("</svg>", page.index('<svg id="ifl"'))]
+        kinds = [html.unescape(n) for n in re.findall(r'<g class="nd kd[^"]*" data-ifk="\d+"[^>]*><rect[^>]*/><rect[^>]*/><text[^>]*>([^<]*)</text>', svg)]
+        tls = [[html.unescape(n), c] for c, n in re.findall(r'<g class="(nd tl[^"]*)" data-ift="[^"]+"[^>]*><rect[^>]*/>(?:<rect[^>]*/>)?<text x="14" y="15">([^<]*)</text>', svg)]
+        lines = {(keys[int(k)], "+" if t == "+" else tools[int(t)]): [c, float(w)] for c, k, t, w in re.findall(
+            r'<g class="(ln[^"]*)" data-ifk="(\d+)" data-ift="([^"]+)"><path class="hit" d="[^"]*"/><path class="v" d="[^"]*" stroke-width="([\d.]+)"/>', svg)}
+        return kinds, tls, lines
+
+    def test_influence_answers_first_in_plain_words_what_untrusted_content_came_before_stopped_calls(self):
+        """The page answers a supervisor's question, "did something my agent read push it into a risky call?", before
+        any chart: the untrusted content that came before calls blocked or held, the worst first, each opening its row.
+        It says "came before"; only a replay's confirmation says "caused"."""
+        needs_node(self)
+        S = self.STORE
+        page, _, keys, tools = self.influence(S["sources"], S["edges"], S["groups"])
+        self.assertTrue(page.startswith('<div class="inans"><div class="q">DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL?</div>'))
+        lines = re.findall(r'<div class="ans" role="button" tabindex="0" data-ifk="(\d+)" data-ift="(\d+)">(.*?)</div>', page)
+        self.assertEqual([html.unescape(text(x)) for *_, x in lines], [
+            "Messages from another session (untrusted) came before 4,812 blocked Bash calls in 3 runs; a replay confirmed one "
+            "of these caused Bash calls (effect +0.62)",
+            "Messages from another session (untrusted) came before 15 held Deploy calls in 1 run"])
+        # each opens its own row and marks its tool, as its line in the flow does; the person's own prompts are not in it
+        self.assertEqual([(keys[int(k)], tools[int(t)]) for k, t, _ in lines],
+                         [("session-message|untrusted", "Bash"), ("session-message|untrusted", "Deploy")])
+        self.assertNotIn("Nothing untrusted", page)
+        self.assertIn("for 247,045 decisions", page)   # the owner's store: one kind in front of a quarter million
+        # nothing untrusted before a stopped call says exactly that; a replay's confirmation is still said, as "caused"
+        groups = [{"kind": "UserPromptSubmit", "trust": "trusted", "runs": 2, "reach": {"Bash": 2}, "ended": {"Bash": {"blocked": 5}}},
+                  {"kind": "task-notification", "trust": "untrusted", "runs": 1, "reach": {"Read": 1}}]
+        sources = [{"id": "s4", "labels": ["a:task-notification"], "trust": "untrusted", "runs": 1, "cited_by": 1, "kind": "task-notification",
+                    "preview": "x", "confirmed_tools": ["Read"], "seen": []}]
+        page = self.influence(sources, [{"source": "s4", "tool": "Read", "reach_runs": 1, "confirmed": True, "max_effect": 0.4}], groups)[0]
+        answer = page[:page.index("</div></div>") + 6]
+        self.assertEqual(re.findall(r'<div class="(?:ans|none)"[^>]*>(.*?)</div>', answer)[0], "Nothing untrusted came before a blocked or held call.")
+        self.assertIn("Background tasks&#39; notices</b> <span class=\"bad\">(untrusted)</span>: a replay confirmed one of these caused Read calls", answer)
+        page = self.influence(sources[:0] + [dict(sources[0], confirmed_tools=[])], [], groups)[0]
+        self.assertEqual(html.unescape(text(page[:page.index("</div></div>") + 12])),
+                         "DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL? Nothing untrusted came before a blocked or held call.")
+
+    def test_influence_draws_each_kind_to_the_tools_after_it_only_the_lines_that_matter_coloured_as_their_chips(self):
+        """Every grey "reached" line drawn made the middle a hairball (12 kinds, 40 tools): the flow draws the lines whose
+        calls were blocked, held or flagged, a confirmed cause and one ruled out; the plain ones show on pointing."""
+        needs_node(self)
+        S = self.STORE
+        page, _, keys, tools = self.influence(S["sources"], S["edges"], S["groups"])
+        kinds, tls, lines = self.flow(page, keys, tools)
+        self.assertEqual(kinds, ["messages from another session", "sub-agents' messages", "the person's prompts"])
+        # the tools with a marked line first, worst first, then the quiet ones
+        self.assertEqual(tls, [["Bash", "nd tl deny"], ["Deploy", "nd tl held"], ["WebFetch", "nd tl flag"], ["Read", "nd tl"],
+                               ["Edit", "nd tl q"], ["Grep", "nd tl q"]])
+        sm, am, up = keys
+        self.assertEqual({k: c for k, (c, _) in lines.items()}, {
+            (sm, "Bash"): "ln deny", (sm, "Deploy"): "ln held", (sm, "Edit"): "ln pl", (am, "WebFetch"): "ln flag",
+            (am, "Read"): "ln ruled", (am, "Edit"): "ln pl", (up, "Bash"): "ln blk", (up, "Edit"): "ln pl", (up, "Grep"): "ln pl"})
+        self.assertIn("ln.pl {\n      visibility: hidden", PAGE)
+        self.assertIn('<p class="dim iflnote">4 grey lines hidden: content before calls that ran with no flag. Point at content or '
+                      'a tool to see all its lines; click it to keep them.</p>', page)
+        # as thick as the runs, on a log scale: a line in 1 run of 9 is still 1.7 px, not 1.1; a confirmed cause 4 at least
+        self.assertEqual([lines[k][1] for k in [(up, "Edit"), (sm, "Edit"), (am, "Read"), (sm, "Bash")]], [3.8, 1.7, 1.7, 4.0])
+        self.assertEqual(re.findall(r'<text class="fx"[^>]*>([^<]*)</text>', page), ["+0.62"])   # the cause, with its effect
+        # a phone has no flow: the answer, then each kind as a card
+        narrow = self.influence(S["sources"], S["edges"], S["groups"], width=500)[0]
+        self.assertNotIn("<svg", narrow)
+        self.assertTrue(narrow.startswith('<div class="inans">'))
+
+    def test_influence_flow_shows_the_marked_tools_then_a_few_quiet_ones_and_the_rest_as_one_more(self):
+        needs_node(self)
+        src = [{"id": "s1", "labels": ["a:k"], "trust": "untrusted", "runs": 1, "cited_by": 1, "kind": "k", "preview": "x",
+                "confirmed_tools": [], "seen": []}]
+        group = lambda reach, ended: [{"kind": "k", "trust": "untrusted", "runs": 30, "reach": reach, "ended": ended}]  # noqa: E731
+        # 3 tools with a call stopped or flagged (however rarely called), then 4 quiet ones, the other 23 one node
+        reach = {f"T{i:02d}": 30 - i for i in range(30)}
+        page, _, keys, tools = self.influence(src, [], group(reach, {"T29": {"blocked": 1}, "T28": {"held": 1}, "T27": {"flagged": 1}}))
+        _, tls, lines = self.flow(page, keys, tools)
+        self.assertEqual(tls, [["T29", "nd tl blk"], ["T28", "nd tl held"], ["T27", "nd tl flag"], ["T00", "nd tl q"],
+                               ["T01", "nd tl q"], ["T02", "nd tl q"], ["T03", "nd tl q"], ["+23 more", "nd tl more"]])
+        self.assertEqual(lines[("k|untrusted", "+")][0], "ln pl")
+        # 20 tools with a call stopped: 16 of them, the rest one node whose line is as bad as the worst it holds
+        page, _, keys, tools = self.influence(src, [], group({f"T{i:02d}": 1 for i in range(20)}, {f"T{i:02d}": {"blocked": 1} for i in range(20)}))
+        _, tls, lines = self.flow(page, keys, tools)
+        self.assertEqual([n for n, _ in tls], [f"T{i:02d}" for i in range(16)] + ["+4 more"])
+        self.assertEqual(lines[("k|untrusted", "+")][0], "ln blk")
+        # never "+1 more" in place of the tool itself
+        page, _, keys, tools = self.influence(src, [], group({f"T{i}": 1 for i in range(7)}, {"T0": {"blocked": 1}, "T1": {"held": 1}}))
+        self.assertEqual(len(self.flow(page, keys, tools)[1]), 7)
+        self.assertNotIn("more</text>", page)
+
+    def test_influence_flow_names_agent_strings_only_escaped_and_never_in_its_attributes(self):
+        needs_node(self)
+        tool, kind = '<img src=x onerror=alert(1)>"', '"><script>alert(1)</script>'
+        src = [{"id": "s1", "labels": ["a:k"], "trust": "untrusted", "runs": 1, "cited_by": 1, "kind": kind, "preview": "x",
+                "confirmed_tools": [tool], "seen": []}]
+        groups = [{"kind": kind, "trust": "untrusted", "runs": 1, "reach": {tool: 1, "constructor": 1},
+                   "ended": {tool: {"blocked": 1}}, "stopped_runs": {tool: 1}}]
+        page, _, keys, tools = self.influence(src, [{"source": "s1", "tool": tool, "reach_runs": 1, "confirmed": True, "max_effect": 0.5}], groups)
+        self.assertNotIn("<img", page)
+        self.assertNotIn("<script", page)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;&quot;", page)
+        self.assertIn("&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertEqual(set(re.findall(r'data-if[kt]="([^"]*)"', page)), {"0", "1"})   # indices only
+        self.assertEqual((keys, tools), ([kind + "|untrusted"], [tool, "constructor"]))
+
+    def test_influence_is_not_drawn_again_when_its_data_has_not_changed(self):
+        """A why log changing reloads the workspace: the page rewrote INFLUENCE each time, the flow and the table both,
+        losing the line pointed at."""
+        needs_node(self)
+        S = self.STORE
+        out = json.loads(page_js(self.INFLUENCE + ["NEEDWHY", "renderWhyView"], f"""
+            let VIEW = "influence", WRUN = "w1", WPICK = null, WBUSY = null, WMSG = "", wvKey = "", scope = null, selected = null, writes = 0;
+            const V2 = false, GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, WD = new Map(), RUNS = new Map(), TZ = "UTC";
+            const document = {{ body: {{ classList: {{ toggle() {{}} }} }}, activeElement: null }};
+            const WHY = {{ runs: [{{ run_id: "w1", agents: [] }}], influence: {{ sources: {json.dumps(S["sources"])}, outcomes: [],
+                          edges: {json.dumps(S["edges"])}, groups: {json.dumps(S["groups"])} }} }};
+            const el = {{ clientWidth: 900, clientHeight: 600, set innerHTML(h) {{ writes++; }} }}, got = {{ whyv: el }}, $ = id => got[id] ??= {{}};
+            renderWhyView(); wvKey = ""; renderWhyView();   // the workspace loaded again, the same
+            const same = writes;
+            IFL.mark = {{ key: "agent-message|untrusted", tool: null }}; wvKey = ""; renderWhyView();
+            process.stdout.write(JSON.stringify([same, writes]));"""))
+        self.assertEqual(out, [1, 2])
+
+    def test_influence_flow_and_answer_open_a_row_mark_its_tool_and_scroll_to_it(self):
+        needs_node(self)
+        S = self.STORE
+        out = json.loads(page_js(self.INFLUENCE, page_click() + f"""
+            let wvKey = "", VIEW = "influence"; const schedule = () => {{}}, scrolled = [];
+            const WHY = {{ runs: [{{}}], influence: {{ sources: {json.dumps(S["sources"])}, outcomes: [], edges: {json.dumps(S["edges"])},
+                          groups: {json.dumps(S["groups"])} }} }}, got = {{}}, $ = id => got[id] ??= {{}};
+            const RUNS = new Map(), TZ = "UTC";
+            const el = got.whyv = {{ clientWidth: 900, querySelectorAll: () => [0, 1, 2].map(i => ({{ scrollIntoView: o => scrolled.push([i, o.block]) }})) }};
+            const click = ds => {{ onClick({{ target: {{ closest: () => ({{ dataset: ds }}) }}, preventDefault() {{}} }}); influenceView(el); }};
+            const out = [];
+            influenceView(el);
+            click({{ ifk: "0", ift: "1" }});   // the held Deploy line of messages from another session, or its answer
+            out.push([IFL.mark, [...INFL], scrolled.splice(0), el.innerHTML]);
+            click({{ ift: "0" }});   // the Bash node: marked in every row, no row opened or scrolled to
+            out.push([IFL.mark, [...INFL], scrolled.splice(0), el.innerHTML]);
+            click({{ ifk: "1", ift: "+" }});   // a line to "+N more": every tool in that row
+            out.push([IFL.mark, [...INFLMORE], scrolled.splice(0)]);
+            click({{ ifl: "" }});   // empty space
+            out.push([IFL.mark, /class="[^"]* (on|lit)"/.test(el.innerHTML)]);
+            process.stdout.write(JSON.stringify(out));"""))
+        (mark, opened, scrolled, page), (mark2, opened2, scrolled2, page2), more, cleared = out
+        self.assertEqual((mark, opened, scrolled), ({"key": "session-message|untrusted", "tool": "Deploy"}, ["session-message|untrusted"],
+                                                     [[0, "start"]]))
+        self.assertIn('<tr class="row ingrp on" data-ingrp="session-message|untrusted" tabindex="0"><td>▾ ', page)
+        self.assertIn('<span class="tag held on" title="came before Deploy calls in 2 runs · of those calls, 15 held">Deploy 15 held</span>', page)
+        self.assertIn('<svg id="ifl" class="ifl lit"', page)
+        self.assertIn('<g class="ln held on" data-ifk="0" data-ift="1">', page)
+        self.assertEqual((mark2, opened2, scrolled2), ({"key": None, "tool": "Bash"}, ["session-message|untrusted"], []))
+        self.assertEqual(len(re.findall(r'<span class="tag [a-z]+ on"[^>]*>Bash ', page2)), 3)   # each of its rows' Bash chips
+        self.assertEqual(more, [{"key": "agent-message|untrusted", "tool": None}, ["agent-message|untrusted"], [[1, "start"]]])
+        self.assertEqual(cleared, [None, False])
 
     def test_an_approval_expires_in_local_time_and_each_held_call_names_its_agent_and_run(self):
         needs_node(self)

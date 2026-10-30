@@ -2205,6 +2205,242 @@
       background: var(--panel2)
     }
 
+    /* the kind, tool or link clicked in the flow: its row and the tool's chip */
+    .infl tr.on>td {
+      background: var(--amber-bg)
+    }
+
+    .infl .tag.on {
+      outline: 2px solid var(--amber);
+      outline-offset: 1px
+    }
+
+    /* a row scrolled to sits below the table's sticky header */
+    .infl tr.ingrp {
+      scroll-margin-top: 26px
+    }
+
+    /* INFLUENCE's answer, first: the untrusted content that came before calls blocked or held, each opening its row */
+    .inans {
+      margin: 8px 8px 4px;
+      padding: 6px 10px 8px;
+      border-left: 3px solid var(--amber);
+      background: var(--panel2);
+      line-height: 1.7
+    }
+
+    .inans .q {
+      color: var(--amber);
+      font-size: 10px;
+      letter-spacing: .08em
+    }
+
+    .inans .ans,
+    .inans .none {
+      font-size: 13px
+    }
+
+    .inans .ans {
+      cursor: pointer
+    }
+
+    .inans .ans:hover,
+    .inans .ans:focus-visible {
+      text-decoration: underline;
+      outline: none
+    }
+
+    .inans .blk,
+    .inans .bad {
+      color: var(--red)
+    }
+
+    .inans .held {
+      color: var(--amber)
+    }
+
+    .iflnote {
+      margin: -4px 8px 2px
+    }
+
+    /* INFLUENCE's flow: each kind of content (left) to the tools called after it (right), as GRAPH draws inputs and
+       tool calls; a line is coloured as its chip, a hovered or clicked one stays bright and the rest dim; a plain line
+       shows only for the content or tool pointed at or clicked */
+    #ifl {
+      display: block;
+      margin: 8px 8px 10px
+    }
+
+    .ifl text {
+      fill: var(--text);
+      font-size: 11px
+    }
+
+    .ifl .hd {
+      fill: var(--muted);
+      font-size: 10px;
+      letter-spacing: .08em
+    }
+
+    .ifl .sub {
+      fill: var(--muted);
+      font-size: 10px
+    }
+
+    .ifl .bad {
+      fill: var(--red)
+    }
+
+    .ifl .ok {
+      fill: var(--green)
+    }
+
+    .ifl .box {
+      fill: var(--panel2);
+      stroke: var(--line2)
+    }
+
+    .ifl .kd .bar {
+      fill: var(--cyan)
+    }
+
+    .ifl .kd.unt .box {
+      stroke: var(--red);
+      stroke-width: 1.5
+    }
+
+    .ifl .tl .bar {
+      fill: var(--green)
+    }
+
+    .ifl .tl.deny .box,
+    .ifl .tl.blk .box {
+      stroke: var(--red)
+    }
+
+    .ifl .tl.deny .bar,
+    .ifl .tl.blk .bar {
+      fill: var(--red)
+    }
+
+    .ifl .tl.held .box {
+      stroke: var(--amber)
+    }
+
+    .ifl .tl.held .bar {
+      fill: var(--amber)
+    }
+
+    .ifl .tl.flag .box {
+      stroke: var(--cyan)
+    }
+
+    .ifl .tl.flag .bar {
+      fill: var(--cyan)
+    }
+
+    .ifl .more .box {
+      fill: none;
+      stroke-dasharray: 3 3
+    }
+
+    /* a tool no marked line goes to: quieter, below the others */
+    .ifl .tl.q .box {
+      stroke: var(--line)
+    }
+
+    .ifl .tl.q .bar {
+      fill: var(--faint)
+    }
+
+    .ifl .more text,
+    .ifl .tl.q text {
+      fill: var(--muted)
+    }
+
+    .ifl .nd.sel .box {
+      stroke: var(--amber);
+      stroke-width: 2
+    }
+
+    .ifl .ln path {
+      fill: none
+    }
+
+    .ifl .ln .v {
+      stroke: var(--muted);
+      stroke-opacity: .25
+    }
+
+    #ifl .ln.pl {
+      visibility: hidden
+    }
+
+    #ifl.hov .ln.pl.hv,
+    #ifl.lit:not(.hov) .ln.pl.on {
+      visibility: visible
+    }
+
+    .ifl .ln.ruled .v {
+      stroke-opacity: .6;
+      stroke-dasharray: 3 4
+    }
+
+    .ifl .ln.flag .v {
+      stroke: var(--cyan);
+      stroke-opacity: .4
+    }
+
+    .ifl .ln.held .v {
+      stroke: var(--amber);
+      stroke-opacity: .5
+    }
+
+    .ifl .ln.blk .v {
+      stroke: var(--red);
+      stroke-opacity: .5
+    }
+
+    .ifl .ln.deny .v {
+      stroke: var(--red);
+      stroke-opacity: 1
+    }
+
+    /* a link is easier to point at than its line is wide */
+    .ifl .ln .hit {
+      stroke: transparent;
+      stroke-width: 9
+    }
+
+    .ifl .fx {
+      fill: var(--red);
+      font-weight: 700;
+      paint-order: stroke;
+      stroke: var(--panel);
+      stroke-width: 3px
+    }
+
+    #ifl .ln,
+    #ifl .nd {
+      cursor: pointer;
+      transition: opacity .15s
+    }
+
+    .ifl.hov .ln:not(.hv),
+    .ifl.lit:not(.hov) .ln:not(.on) {
+      opacity: .08
+    }
+
+    .ifl.hov .nd:not(.hv),
+    .ifl.lit:not(.hov) .nd:not(.on) {
+      opacity: .35
+    }
+
+    .ifl.hov .ln.hv .v,
+    .ifl.lit:not(.hov) .ln.on .v {
+      stroke-opacity: 1
+    }
+
     /* APPROVALS: each hold waiting, its arguments, its rule and the commands that answer it */
     .hold {
       border: 1px solid var(--line2);
@@ -5766,7 +6002,7 @@
         wvKey = ""; $("wvtitle").textContent = VIEW.toUpperCase(); $("wrun").hidden = true;
         return { permissions: permissionsView, evidence: evidenceView }[VIEW](el);
       }
-      el._h = null;   // the why views set their HTML themselves
+      if (VIEW !== "influence") el._h = null;   // the why views set their HTML themselves; INFLUENCE puts it: the same view is not drawn again
       if (!WHY) { el.innerHTML = `<div class="empty">This view needs why logs: none are loaded (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).</div>`; return; }
       const runs = WHY.runs.map(r => r.run_id), run = V2 && scope ? RUNS.get(scope) : null;
       // a selected signed run shows its own why run (or says why it has none), never another run's
@@ -5992,34 +6228,137 @@
         + `<div class="sec">CRITICAL PATH</div><div class="wflow">${esc(d.critical_path.join(" → ") || "–")}</div>`;
       $("wvsum").textContent = `${plural(d.agents.length, "agent")} · ${plural(d.channels.length, "channel")}`;
     }
-    // INFLUENCE: Causeway's citation index across every run, read at a glance: the sources of each kind and trust (the
-    // server's groups), each with the tools it reached beside it, the calls that ended blocked, held or flagged and the
-    // confirmed causes first, opening to its sources one by one, each where it was read. INFL: the groups opened;
-    // INFLMORE: the rows whose every tool is shown
+    // INFLUENCE: did something the agents read come before a risky call? First the answer in words: the untrusted
+    // content that came before calls blocked or held for a person, or that a replay confirmed caused calls; then a flow
+    // from each kind of content to the tools called after it; then the detail, one row per kind and trust (the server's
+    // groups) with the tools it led to beside it (stopped calls and confirmed causes first), opening to its sources one
+    // by one, each where it was read. Content in front of an agent when it decided came before, or led to, that call;
+    // only a replay's confirmation says it caused one. INFL: the rows opened; INFLMORE: the rows whose every tool is shown
     const INFL = new Set(), INFLMORE = new Set(), INFLMAX = 200, INFLCHIPS = 6;
     const KIND = { UserPromptSubmit: "the person's prompts", "session-message": "messages from another session", "agent-message": "sub-agents' messages",
                    "task-notification": "background tasks' notices", "system-reminder": "the harness's reminders", "fetched-web-content": "fetched web pages",
                    "person-command": "commands the person ran", "bash-output": "command output", "teammate-message": "teammates' messages" };
-    // how a reached call ended, worst first, and its chip's class
+    // a kind of content in words (a tool's result recorded as untrusted is "tool:<its name>"), and a count of it (251,234)
+    const kindName = k => KIND[k] || (String(k).startsWith("tool:") ? "output of " + String(k).slice(5) : String(k));
+    const many = (n, w) => Number(n).toLocaleString("en-US") + " " + w + (n === 1 ? "" : "s");
+    // how a call content led to ended, worst first, and its chip's class
     const ENDS = [["blocked", "blk"], ["held", "held"], ["flagged", "flag"]];
-    // a tool a row reached: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, held, flagged}}; a
-    // confirmed cause, or a call it reached that was blocked or held, is always shown (flagged ones are common: they
-    // come first among the rest)
+    // a tool a row led to: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, held, flagged},
+    // stopped_runs}; a confirmed cause, or a call it led to that was blocked or held, is always shown (flagged ones are
+    // common: they come first among the rest)
     const stopped = t => t.confirmed || t.ended.blocked || t.ended.held;
-    function chip(t) {
-      const ends = ENDS.filter(([k]) => t.ended[k]), cls = t.confirmed ? " deny" : ends.length ? " " + ends[0][1] : t.tested && t.ruled_out ? " ruled" : "";
-      const words = ends.map(([k]) => `${t.ended[k]} ${k}`).join(" · ");
-      return `<span class="tag${esc(cls)}" title="${esc(`reached in ${plural(t.runs, "run")}` + (words ? ` · of the calls it reached, ${words}` : "") + (t.confirmed ? ` · a replay confirmed it a cause: effect ${sgn(t.effect)}` : t.tested && t.ruled_out ? " · a replay tested it and ruled it out" : ""))}">`
+    // a tool's class (its chip's, and its line's in the flow), how the calls ended, and all it says
+    const tone = t => t.confirmed ? "deny" : ENDS.find(([k]) => t.ended[k])?.[1] || (t.tested && t.ruled_out ? "ruled" : "");
+    const endWords = t => ENDS.filter(([k]) => t.ended[k]).map(([k]) => `${Number(t.ended[k]).toLocaleString("en-US")} ${k}`).join(" · ");
+    const said = t => `came before ${t.tool} calls in ${many(t.runs, "run")}` + (endWords(t) ? ` · of those calls, ${endWords(t)}` : "") + (t.confirmed ? ` · a replay confirmed it caused them: effect ${sgn(t.effect)}` : t.tested && t.ruled_out ? " · a replay tested it and ruled it out" : "");
+    // on: the tool clicked in the flow or the answer, marked
+    function chip(t, on) {
+      const cls = tone(t), words = endWords(t);
+      return `<span class="tag${esc((cls && " " + cls) + (on ? " on" : ""))}" title="${esc(said(t))}">`
         + esc(t.tool + " " + (t.confirmed ? sgn(t.effect) + (words ? " · " + words : "") : words || t.runs)) + `</span>`;
     }
+    // worst first: a confirmed cause, the most calls blocked, held, flagged, then the most runs
+    const order = (a, b) => b.confirmed - a.confirmed || ENDS.reduce((d, [k]) => d || (b.ended[k] || 0) - (a.ended[k] || 0), 0) || b.runs - a.runs || a.tool.localeCompare(b.tool);
     // a row's tools: the confirmed causes and the calls stopped (the most blocked, then held), then INFLCHIPS more
-    // (flagged first, then those reached in the most runs), and a button for the rest
-    function chips(list, key) {
-      const order = (a, b) => b.confirmed - a.confirmed || ENDS.reduce((d, [k]) => d || (b.ended[k] || 0) - (a.ended[k] || 0), 0) || b.runs - a.runs || a.tool.localeCompare(b.tool);
+    // (flagged first, then those in the most runs) and the tool marked, and a button for the rest
+    function chips(list, key, mark) {
       const top = list.filter(stopped).sort(order), rest = list.filter(t => !stopped(t)).sort(order), all = INFLMORE.has(key);
-      return [...top, ...(all ? rest : rest.slice(0, INFLCHIPS))].map(chip).join(" ")
-        + (rest.length > INFLCHIPS ? ` <button type="button" class="cp" data-inmore="${esc(key)}">${esc(all ? "fewer" : `+${rest.length - INFLCHIPS} more`)}</button>` : "")
+      const pick = all ? rest : rest.slice(0, INFLCHIPS).concat(rest.slice(INFLCHIPS).filter(t => t.tool === mark));
+      return [...top, ...pick].map(t => chip(t, t.tool === mark)).join(" ")
+        + (rest.length > pick.length || all && rest.length > INFLCHIPS ? ` <button type="button" class="cp" data-inmore="${esc(key)}">${esc(all ? "fewer" : `+${rest.length - pick.length} more`)}</button>` : "")
         || `<span class="dim">no tool</span>`;
+    }
+    // every tool content led to, across the kinds: its runs added up, its stops counted (an order, not a count shown);
+    // marked: a line to it the flow draws (a call stopped or flagged, a confirmed cause, one ruled out). The marked ones
+    // first, worst first, then the quiet ones, the most runs first
+    function inflTools(groups) {
+      const T = dict();
+      for (const g of groups) for (const t of g.reach) {
+        const a = T[t.tool] ||= { tool: t.tool, runs: 0, confirmed: false, ended: {}, kinds: 0, marked: false };
+        a.runs += t.runs; a.confirmed ||= t.confirmed; a.marked ||= !!tone(t); a.kinds++;
+        for (const [k] of ENDS) a.ended[k] = (a.ended[k] || 0) + (t.ended[k] || 0);
+      }
+      const all = Object.values(T);
+      return all.filter(t => t.marked).sort(order).concat(all.filter(t => !t.marked).sort((a, b) => b.runs - a.runs || a.tool.localeCompare(b.tool)));
+    }
+    // The answer, first: the untrusted content that came before calls blocked or held, or that a replay confirmed caused
+    // calls, the worst INFLSAY (a confirmed cause, then the most calls stopped, the most runs), each opening its row as
+    // its line in the flow does (its data-* are indices into IFL.keys and IFL.tools, as the flow's)
+    const INFLSAY = 3;
+    function inflAnswer(groups, tools) {
+      const at = dict(tools.map((t, j) => [t.tool, j]));
+      const risky = groups.flatMap((g, k) => g.trust !== "untrusted" ? [] : g.reach.filter(stopped).map(t => ({ g, k, t, n: (t.ended.blocked || 0) + (t.ended.held || 0) })))
+        .sort((a, b) => b.t.confirmed - a.t.confirmed || b.n - a.n || (b.t.stopped_runs || 0) - (a.t.stopped_runs || 0) || a.t.tool.localeCompare(b.t.tool));
+      const line = ({ g, k, t }) => {
+        const name = kindName(g.kind), stops = ENDS.slice(0, 2).filter(([w]) => t.ended[w]).map(([w, c]) => `<b class="${esc(c)}">${esc(Number(t.ended[w]).toLocaleString("en-US") + " " + w)}</b>`).join(" and ");
+        const n = g.mine.filter(s => (s.confirmed_tools || []).includes(t.tool)).length, cause = `a replay confirmed ${n > 1 ? n : "one"} of these caused ${t.tool} calls`;
+        return `<div class="ans" role="button" tabindex="0" data-ifk="${esc(k)}" data-ift="${esc(at[t.tool])}"><b>${esc(name.charAt(0).toUpperCase() + name.slice(1))}</b> <span class="bad">(untrusted)</span>`
+          + (stops ? ` came before ${stops} ${esc(t.tool)} calls${t.stopped_runs ? esc(` in ${many(t.stopped_runs, "run")}`) : ""}` + (t.confirmed ? esc("; " + cause) : "") : esc(": " + cause))
+          + (t.confirmed ? ` <b class="blk">${esc(`(effect ${sgn(t.effect)})`)}</b>` : "") + `</div>`;
+      };
+      return `<div class="inans"><div class="q">DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL?</div>`
+        + (risky.some(x => x.n) ? "" : `<div class="none">Nothing untrusted came before a blocked or held call.</div>`) + risky.slice(0, INFLSAY).map(line).join("")
+        + (risky.length > INFLSAY ? `<div class="dim">${esc(`and ${risky.length - INFLSAY} more in the rows below`)}</div>` : "") + `</div>`;
+    }
+    // INFLUENCE's flow: a node per kind of content (the table's rows, in its order) and per tool, a line per kind and
+    // tool it came before, as thick as its runs (log scale: one busy line leaves the rest readable), coloured as its
+    // chip, the worst drawn on top. Only the marked lines show; a plain one (calls that ran, unflagged, untested) shows
+    // for the content or tool pointed at or clicked. The marked tools first (INFLTOOLS at most), then INFLQUIET quiet
+    // ones, the rest one "+N more" node. Its data-* are indices into IFL.keys and IFL.tools ("+" for the rest), never a
+    // name an agent chose. IFL.mark: the content, tool or line clicked ({key, tool}); IFL.go: the row to scroll to once
+    // drawn; IFL.hov: the node or line under the pointer
+    const INFLTOOLS = 16, INFLQUIET = 4, IFL = { keys: [], tools: [], mark: null, go: null, hov: null };
+    // lean: every kind is a node (12 read well, past about 30 the flow grows tall); gather the rest as the tools are if a store has that many kinds
+    function inflFlow(groups, tools, W) {
+      const name = g => kindName(g.kind), cl = (...c) => c.filter(Boolean).join(" "), nm = tools.filter(t => t.marked).length;
+      let n = nm > INFLTOOLS ? INFLTOOLS : nm + INFLQUIET;
+      if (tools.length - n <= 1) n = tools.length;   // never "+1 more" in place of the tool itself
+      const shown = tools.slice(0, n), rest = tools.slice(n), at = dict(shown.map((t, j) => [t.tool, j]));
+      // the lines; a kind's lines to the tools not shown are one line to "+N more", as its worst and busiest
+      const L = [];
+      groups.forEach((g, k) => {
+        const hid = g.reach.filter(t => !(t.tool in at));
+        for (const t of g.reach) if (t.tool in at) L.push({ k, j: at[t.tool], t });
+        if (hid.length) L.push({ k, j: shown.length, hid, t: { tool: null, runs: Math.max(...hid.map(t => t.runs)), confirmed: hid.some(t => t.confirmed), ended: dict(ENDS.map(([e]) => [e, hid.reduce((n, t) => n + (t.ended[e] || 0), 0)])) } });
+      });
+      if (!L.length) return "";
+      const nk = groups.length, nt = shown.length + (rest.length ? 1 : 0), HEAD = 22, KH = 34, TH = 22;
+      const KW = Math.round(Math.min(260, Math.max(170, 30 + 6.8 * Math.max(...groups.map(g => name(g).length))))), TW = Math.round(Math.min(240, Math.max(120, 30 + 6.6 * Math.max(...shown.map(t => String(t.tool).length))))), X2 = W - TW;
+      const H = HEAD + Math.max(nk * 44, nt * 28), ky = k => HEAD + (k + .5) * (H - HEAD) / nk, ty = j => HEAD + (j + .5) * (H - HEAD) / nt;
+      // where each link meets its nodes: spread down the node, in the order of the other ends, so few links cross there
+      for (const [end, other, y, h] of [["k", "j", ky, KH - 12], ["j", "k", ty, TH - 8]]) {
+        const by = dict();
+        for (const l of L) (by[l[end]] ||= []).push(l);
+        for (const [c, ls] of Object.entries(by)) ls.sort((a, b) => a[other] - b[other]).forEach((l, i) => l[end + "y"] = y(+c) - h / 2 + h * (i + .5) / ls.length);
+      }
+      const m = IFL.mark, lit = l => !!m && (m.key == null || m.key === groups[l.k].key) && (m.tool == null || m.tool === l.t.tool), onK = new Set(), onJ = new Set();
+      for (const l of L) if (lit(l)) { onK.add(l.k); onJ.add(l.j); }
+      groups.forEach((g, k) => m && m.tool == null && m.key === g.key && onK.add(k));
+      if (m && m.key == null && m.tool != null && m.tool in at) onJ.add(at[m.tool]);
+      const big = Math.log1p(Math.max(1, ...L.map(l => l.t.runs))), RANK = ["", "ruled", "flag", "held", "blk", "deny"], f = x => x.toFixed(1);
+      let s = `<svg id="ifl" class="${esc(onK.size || onJ.size ? "ifl lit" : "ifl")}" data-ifl="" viewBox="${esc(`0 0 ${W} ${H}`)}" width="${esc(W)}" height="${esc(H)}">`
+        + `<text class="hd" x="0" y="11">WHAT THE AGENTS READ</text><text class="hd" x="${esc(W)}" y="11" text-anchor="end">TOOLS CALLED AFTER IT</text>`;
+      for (const l of [...L].sort((a, b) => RANK.indexOf(tone(a.t)) - RANK.indexOf(tone(b.t)))) {
+        const mx = (KW + X2) / 2, d = `M${KW},${f(l.ky)} C${mx},${f(l.ky)} ${mx},${f(l.jy)} ${X2},${f(l.jy)}`, w = .8 + 3 * Math.log1p(l.t.runs) / big, g = groups[l.k];
+        s += `<g class="${esc(cl("ln", tone(l.t) || "pl", lit(l) && "on"))}" data-ifk="${esc(l.k)}" data-ift="${esc(l.hid ? "+" : l.j)}"><path class="hit" d="${esc(d)}"/><path class="v" d="${esc(d)}" stroke-width="${esc(f(l.t.confirmed ? Math.max(4, w) : w))}"/>`
+          + (l.t.confirmed ? `<text class="fx" x="${esc(f(mx))}" y="${esc(f((l.ky + l.jy) / 2 - 5))}" text-anchor="middle">${esc(sgn(l.t.effect))}</text>` : "")
+          + `<title>${esc(`${name(g)}: ` + (l.hid ? `came before calls to ${plural(l.hid.length, "tool")} not shown: ${l.hid.map(t => t.tool).join(", ")}` : said(l.t)))}</title></g>`;
+      }
+      groups.forEach((g, k) => {
+        const unt = g.trust === "untrusted", sel = m && m.tool == null && m.key === g.key;
+        s += `<g class="${esc(cl("nd kd", unt && "unt", onK.has(k) && "on", sel && "sel"))}" data-ifk="${esc(k)}" transform="${esc(`translate(0,${f(ky(k) - KH / 2)})`)}"><rect class="box" width="${esc(KW)}" height="${esc(KH)}" rx="8"/><rect class="bar" x="6" y="6" width="4" height="${esc(KH - 12)}" rx="2"/>`
+          + `<text x="16" y="15" font-weight="600">${esc(fit(name(g), Math.floor((KW - 24) / 6.8)))}</text><text class="sub" x="16" y="28">${g.trust ? `<tspan class="${unt ? "bad" : "ok"}">${esc(g.trust)}</tspan> · ` : ""}${esc(many(g.mine.length, "source"))}</text>`
+          + `<title>${esc([name(g) + (name(g) !== g.kind ? ` (${g.kind})` : ""), g.trust, many(g.mine.length, "source"), many(g.runs, "run"), `in front of the agent for ${many(g.cited, "decision")}`, `came before calls to ${plural(g.reach.length, "tool")}`].filter(Boolean).join(" · "))}</title></g>`;
+      });
+      shown.forEach((t, j) => {
+        const sel = m && m.key == null && m.tool === t.tool;
+        s += `<g class="${esc(cl("nd tl", tone(t), !t.marked && "q", onJ.has(j) && "on", sel && "sel"))}" data-ift="${esc(j)}" transform="${esc(`translate(${X2},${f(ty(j) - TH / 2)})`)}"><rect class="box" width="${esc(TW)}" height="${esc(TH)}" rx="6"/><rect class="bar" x="5" y="5" width="3" height="${esc(TH - 10)}" rx="1.5"/>`
+          + `<text x="14" y="15">${esc(fit(t.tool, Math.floor((TW - 22) / 6.6)))}</text><title>${esc([t.tool, `called after ${plural(t.kinds, "kind")} of content`, t.confirmed && "a replay confirmed content caused calls to it", ...ENDS.filter(([k]) => t.ended[k]).map(([k]) => `calls ${k}`)].filter(Boolean).join(" · "))}</title></g>`;
+      });
+      if (rest.length) s += `<g class="${esc(cl("nd tl more", onJ.has(shown.length) && "on"))}" data-ift="+" transform="${esc(`translate(${X2},${f(ty(shown.length) - TH / 2)})`)}"><rect class="box" width="${esc(TW)}" height="${esc(TH)}" rx="6"/>`
+        + `<text x="14" y="15">${esc(`+${rest.length} more`)}</text><title>${esc(`${plural(rest.length, "tool")} not shown: ${rest.map(t => t.tool).join(", ")}`)}</title></g>`;
+      const plain = L.filter(l => !tone(l.t)).length;
+      return s + `</svg>` + (plain ? `<p class="dim iflnote">${esc(`${many(plain, "grey line")} hidden: content before calls that ran with no flag. Point at content or a tool to see all its lines; click it to keep them.`)}</p>` : "");
     }
     // how many characters of each run id tell the ids apart: 8 at least ("demo-seed0" and "demo-seed1" need all 10)
     function idLen(ids) {
@@ -6034,13 +6373,13 @@
       const link = e => ({ tool: e.tool, runs: e.reach_runs, confirmed: !!e.confirmed, tested: e.max_effect != null || !!e.ruled_out, ruled_out: !!e.ruled_out, effect: e.max_effect, ended: e.ended || {} });
       const groups = (I.groups || []).map(g => {
         const key = g.kind + "|" + g.trust, tools = dict();
-        // its sources: a confirmed cause first, then those whose reached calls were blocked or held, then the most cited
+        // its sources: a confirmed cause first, then those that came before calls blocked or held, then the most cited
         const stops = x => (bySrc.get(x.id) || []).reduce((n, e) => n + ((e.ended || {}).blocked || 0) + ((e.ended || {}).held || 0), 0);
         const mine = S2.filter(s => s.kind === g.kind && s.trust === g.trust)
           .sort((a, b) => b.confirmed_tools.length - a.confirmed_tools.length || (stops(b) > 0) - (stops(a) > 0) || b.cited_by - a.cited_by);
-        for (const t of Object.keys(g.reach)) tools[t] = { tool: t, runs: g.reach[t], confirmed: false, tested: false, ruled_out: true, effect: null, ended: (g.ended || {})[t] || {} };
+        for (const t of Object.keys(g.reach)) tools[t] = { tool: t, runs: g.reach[t], confirmed: false, tested: false, ruled_out: true, effect: null, ended: (g.ended || {})[t] || {}, stopped_runs: (g.stopped_runs || {})[t] || 0 };
         for (const e of mine.flatMap(x => bySrc.get(x.id) || [])) {
-          const t = tools[e.tool] ||= { tool: e.tool, runs: 0, confirmed: false, tested: false, ruled_out: true, effect: null, ended: {} };
+          const t = tools[e.tool] ||= { tool: e.tool, runs: 0, confirmed: false, tested: false, ruled_out: true, effect: null, ended: {}, stopped_runs: 0 };
           t.confirmed ||= !!e.confirmed; t.tested ||= e.max_effect != null || !!e.ruled_out || !!e.confirmed;
           t.ruled_out &&= !!e.ruled_out || e.max_effect == null && !e.confirmed;
           if (e.max_effect != null) t.effect = Math.max(t.effect ?? -Infinity, e.max_effect);
@@ -6048,29 +6387,51 @@
         return { ...g, key, mine, reach: Object.values(tools), cited: mine.reduce((n, s) => n + s.cited_by, 0), confirmed: Object.values(tools).some(t => t.confirmed),
                  idn: idLen(mine.slice(0, INFLMAX).flatMap(x => (x.seen || []).map(o => String(o.run)))) };
       }).sort((a, b) => b.confirmed - a.confirmed || (b.trust === "untrusted") - (a.trust === "untrusted") || b.mine.length - a.mine.length);
+      const tools = inflTools(groups);
+      IFL.keys = groups.map(g => g.key); IFL.tools = tools.map(t => t.tool);
       // where a source was read: its run (agent, short id), the time, and OPEN for its record on the run's page (a why
       // log's own run: its overview)
       const where = (o, n) => `<div>${esc(`${o.agent || "agent"} · run ${String(o.run).slice(0, n)}` + (o.seq != null ? ` · record ${o.seq}` : o.pos != null ? ` · event ${o.pos}` : ""))}`
         + `<br><span class="dim">${esc(Date.parse(o.ts) ? `read ${fmtD(Date.parse(o.ts) / 1000)} ${fmtT(Date.parse(o.ts) / 1000)} ${TZ}` : "")}</span> `
         + (o.seq != null && RUNS.has(o.run) ? `<button type="button" class="cp" data-orun="${esc(o.run)}" data-oseq="${esc(o.seq)}">OPEN</button>` : `<button type="button" class="cp" data-wgo="${esc(o.run)}">OPEN</button>`) + `</div>`;
-      const src = (x, n) => `<tr class="insrc"><td>` + (x.seen || []).map(o => where(o, n)).join("") + (x.runs > (x.seen || []).length ? `<div class="dim">${esc(`and ${x.runs - x.seen.length} more`)}</div>` : "")
-        + (x.preview ? `<div class="dim">${esc(String(x.preview).slice(0, 110))}</div>` : "") + `</td><td class="${x.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(x.trust)}</td><td></td><td>${esc(plural(x.runs, "run"))}</td><td>${esc(x.cited_by + " decisions")}</td>`
-        + `<td class="reach">` + chips((bySrc.get(x.id) || []).map(link), x.id) + `</td></tr>`;
-      el.innerHTML = `<p class="dim" style="padding:0 8px">Across all ${esc(WHY.runs.length)} runs: which content agent decisions used (cited), what it reached, and which of those links a replay confirmed. A citation index where some citations are proven to matter.</p>`
-        + (!S2.length ? `<div class="empty">Nothing yet: no model call in these runs cites content the agents read, so there is nothing to draw. Runs that record their model calls show here which content reached which tools.</div>`
-          : `<div class="wbar glegend"><span><span class="tag">tool N</span> reached, in N runs</span><span><span class="tag blk">tool N blocked</span> N calls it reached were blocked</span><span><span class="tag held">tool N held</span> held for a person</span><span><span class="tag flag">tool N flagged</span> flagged</span>`
-            + `<span><span class="tag deny">tool +effect</span> confirmed cause, its tested effect</span><span><span class="tag ruled">tool N</span> tested, ruled out</span><span><span class="s-deny">untrusted</span> content, by the harness's word</span><span>click a row for its sources</span></div>`
-          + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>CITED BY</th><th>REACHES</th></tr></thead><tbody>`
-          + groups.map(g => `<tr class="row ingrp" data-ingrp="${esc(g.key)}" tabindex="0"><td>${esc(INFL.has(g.key) ? "▾ " : "▸ ")}<b>${esc(KIND[g.kind] || g.kind)}</b>${KIND[g.kind] ? ` <span class="dim">(${esc(g.kind)})</span>` : ""}</td>`
-            + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(g.mine.length)}<span class="ph">${esc(g.mine.length === 1 ? " source" : " sources")}</span></td><td>${esc(plural(g.runs, "run"))}</td><td>${esc(g.cited + " decisions")}</td><td class="reach">` + chips(g.reach, g.key) + `</td></tr>`
+      // in front of the agent for how many decisions (a phone's card, which has no column names, says what the number is)
+      const front = n => `<span class="ph">in front of the agent </span>${esc("for " + many(n, "decision"))}`;
+      const src = (x, n, mark) => `<tr class="insrc"><td>` + (x.seen || []).map(o => where(o, n)).join("") + (x.runs > (x.seen || []).length ? `<div class="dim">${esc(`and ${x.runs - x.seen.length} more`)}</div>` : "")
+        + (x.preview ? `<div class="dim">${esc(String(x.preview).slice(0, 110))}</div>` : "") + `</td><td class="${x.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(x.trust)}</td><td></td><td>${esc(many(x.runs, "run"))}</td><td>` + front(x.cited_by) + `</td>`
+        + `<td class="reach">` + chips((bySrc.get(x.id) || []).map(link), x.id, mark) + `</td></tr>`;
+      // the tool marked in a row's chips: the one clicked in the flow or the answer, in its kind's row (a tool: in every row)
+      const M = IFL.mark, markOf = key => M && (M.key == null || M.key === key) ? M.tool : null;
+      // the flow, from a panel 600 px wide (a phone has the answer and each kind as a card); its line in each item of the key
+      const flow = S2.length && el.clientWidth >= 600 ? inflFlow(groups, tools, el.clientWidth - 16) : "";
+      const sw = cls => flow ? `<svg class="ifl" width="22" height="8"><g class="${esc(cls ? "ln " + cls : "ln")}"><path class="v" d="M0,4H22" stroke-width="${esc(cls === "deny" ? 3.5 : 2)}"/></g></svg>` : "";
+      put("whyv", !S2.length ? `<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it, so there is nothing to show. Runs that record their model calls show here what the agents read before each tool call.</div>`
+        : inflAnswer(groups, tools)
+          + `<p class="dim" style="padding:0 8px">${esc(`Across all ${many(WHY.runs.length, "run")}: what the agents read, and the tools they called after it. Content in front of an agent when it decided came before that call; only a replay can show it caused one.`)}</p>`
+          + flow + `<div class="wbar glegend"><span>` + sw("") + `<span class="tag">tool N</span> came before its calls in N runs${flow ? ", the more the thicker" : ""}</span><span>` + sw("blk") + `<span class="tag blk">tool N blocked</span> calls blocked</span>`
+          + `<span>` + sw("held") + `<span class="tag held">tool N held</span> held for a person</span><span>` + sw("flag") + `<span class="tag flag">tool N flagged</span> flagged</span>`
+          + `<span>` + sw("deny") + `<span class="tag deny">tool +effect</span> a replay confirmed it caused them</span><span>` + sw("ruled") + `<span class="tag ruled">tool N</span> a replay ruled it out</span>`
+          + `<span><span class="s-deny">untrusted</span> by the harness's word</span><span>a row opens to its sources</span></div>`
+          + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>IN FRONT OF THE AGENT</th><th>LED TO</th></tr></thead><tbody>`
+          + groups.map(g => `<tr class="row ingrp${M && M.key === g.key ? " on" : ""}" data-ingrp="${esc(g.key)}" tabindex="0"><td>${esc(INFL.has(g.key) ? "▾ " : "▸ ")}<b>${esc(kindName(g.kind))}</b>${kindName(g.kind) !== g.kind ? ` <span class="dim">(${esc(g.kind)})</span>` : ""}</td>`
+            + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(Number(g.mine.length).toLocaleString("en-US"))}<span class="ph">${esc(g.mine.length === 1 ? " source" : " sources")}</span></td><td>${esc(many(g.runs, "run"))}</td><td>` + front(g.cited) + `</td><td class="reach">` + chips(g.reach, g.key, markOf(g.key)) + `</td></tr>`
             + (INFL.has(g.key) ? (g.mine.some(x => !x.preview) ? `<tr class="insrc"><td colspan="6" class="dim">${esc("Content not in the log: a signed run's record holds only its hash, so each source is named by where it was read.")}</td></tr>` : "")
-              + g.mine.slice(0, INFLMAX).map(x => src(x, g.idn)).join("") + (g.mine.length > INFLMAX ? `<tr class="insrc"><td colspan="6" class="dim">${esc(`the first ${INFLMAX} of ${g.mine.length}`)}</td></tr>` : "") : "")).join("")
+              + g.mine.slice(0, INFLMAX).map(x => src(x, g.idn, markOf(g.key))).join("") + (g.mine.length > INFLMAX ? `<tr class="insrc"><td colspan="6" class="dim">${esc(`the first ${INFLMAX} of ${g.mine.length}`)}</td></tr>` : "") : "")).join("")
           + `</tbody></table>`);
-      $("wvsum").textContent = [plural(groups.length, "kind"), plural(S2.length, "source"), plural(T.length, "tool")].join(" · ");
+      // content, a line or an answer clicked: its row at the top of the panel, once
+      if (IFL.go != null) { const k = groups.findIndex(g => g.key === IFL.go); IFL.go = null; el.querySelectorAll("tr.ingrp")[k]?.scrollIntoView({ block: "start" }); }
+      $("wvsum").textContent = [many(groups.length, "kind") + " of content", many(S2.length, "source"), many(T.length, "tool")].join(" · ");
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-ifk],[data-ift],[data-ifl]"); if (!t) return;
       e.preventDefault();
+      // INFLUENCE's flow and answer: content, a line or an answer opens its row and marks it (a line to "+N more": every
+      // tool in the row), a tool is marked in every row, and empty space clears the mark
+      if (t.dataset.ifk !== undefined || t.dataset.ift !== undefined || t.dataset.ifl !== undefined) {
+        const key = IFL.keys[t.dataset.ifk], tool = IFL.tools[t.dataset.ift];
+        IFL.mark = key != null || tool != null ? { key: key ?? null, tool: tool ?? null } : null;
+        if (key != null) { INFL.add(key); IFL.go = key; if (t.dataset.ift === "+") INFLMORE.add(key); }
+        wvKey = ""; return schedule();
+      }
       if (t.dataset.inmore) { INFLMORE.has(t.dataset.inmore) ? INFLMORE.delete(t.dataset.inmore) : INFLMORE.add(t.dataset.inmore); wvKey = ""; return schedule(); }
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
@@ -6113,6 +6474,21 @@
       const ref = { run: box.dataset.wr, node: box.dataset.wn }, target = box.querySelector(".wtarget").value;
       if (t.dataset.wtest !== undefined) whyReplay(ref, "tests", { intervention: t.dataset.wtest, target, n: 20, n_max: 160 });
       else whyReplay(ref, "attribute", { target, n: 10, n_max: 80 });
+    });
+    // INFLUENCE's flow under the pointer: a kind, tool or link brightens its links and their ends and the rest dims, by
+    // classes, not a redraw
+    document.addEventListener("mouseover", e => {
+      const svg = $("ifl"), h = svg?.contains(e.target) ? e.target.closest("[data-ifk],[data-ift]") : null;
+      if (!svg || h === IFL.hov) return;
+      IFL.hov = h;
+      const k = h?.dataset.ifk, t = h?.dataset.ift, ends = new Set();
+      svg.classList.toggle("hov", !!h);
+      for (const x of svg.querySelectorAll(".ln")) {
+        const on = !!h && (k === undefined || x.dataset.ifk === k) && (t === undefined || x.dataset.ift === t);
+        x.classList.toggle("hv", on);
+        if (on) ends.add("k" + x.dataset.ifk).add("t" + x.dataset.ift);
+      }
+      for (const x of svg.querySelectorAll(".nd")) x.classList.toggle("hv", x === h || ends.has(x.dataset.ifk !== undefined ? "k" + x.dataset.ifk : "t" + x.dataset.ift));
     });
     document.addEventListener("input", e => {
       const box = e.target.classList.contains("wtarget") && e.target.closest(".wcause");
