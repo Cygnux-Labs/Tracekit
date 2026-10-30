@@ -2052,6 +2052,14 @@
       border-radius: 50%
     }
 
+    .hzfold {
+      display: inline-block;
+      width: 16px;
+      height: 10px;
+      border: 1px solid var(--muted);
+      border-radius: 50%
+    }
+
     .hzjet {
       display: inline-block;
       width: 14px;
@@ -3500,7 +3508,7 @@
     // a call's arguments (the signer's copy), else its tool. Each mark is a call, or an effect a sensor saw, graded signed,
     // observed or unverified (its run did not verify)
     const HZMAX = 500;   // lean: the newest 500 calls are drawn; past that a run's own views have every call
-    const HZ = { t: 0, n: 0, play: null, pick: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: Object.create(null), ended: false, cam: { k: 1, x: 0, y: 0 }, fly: null, track: false, drawn: "", geo: null, hole: null };
+    const HZ = { t: 0, n: 0, play: null, pick: null, hover: null, follow: null, view: "orbit", i: .6, raf: 0, comet: null, hits: [], d: null, col: Object.create(null), ended: false, cam: { k: 1, x: 0, y: 0 }, fly: null, track: false, drawn: "", geo: null, hole: null };
     const HZACT = { read: "read", run: "ran", write: "wrote", net: "reached", seen: "was seen at", blocked: "was blocked at", held: "was held at", flag: "was flagged at", approved: "was approved at" };
     const HZSYM = { read: "●", run: "●", net: "●", seen: "●", write: "■", approved: "■", blocked: "✕", held: "◯", flag: "◆" };
     const HZWORST = ["blocked", "held", "flag", "write", "approved", "net", "seen", "run", "read"];
@@ -3780,7 +3788,7 @@
     const HZKEY = `<div class="sec">HOW TO READ IT</div><div><span class="hzs">●</span> read, ran or reached</div><div><span class="hzs a-write">■</span> wrote, or a person approved it</div>`
       + `<div><span class="hzs a-blocked">✕</span> blocked by policy</div><div><span class="hzs a-held">◯</span> held for a person</div><div><span class="hzs">◆</span> flagged</div>`
       + `<div><span class="hzshield"></span> shield: a restricted place (a rule about secrets, harness configuration or Tracekit's own files); a flare where an agent was stopped</div>`
-      + `<div><span class="hzjet"></span> jet: data left the machine</div><div><span class="tag">SIGNED</span> the signer's record says so · <span class="tag flag">OBSERVED</span> a sensor outside the agent saw it · <span class="tag unv">UNVERIFIED</span> its run did not verify, or a why log wrote it (unsigned)</div>`
+      + `<div><span class="hzjet"></span> jet: data left the machine</div><div><span class="hzfold"></span> folder: hover a place to see its folder, or zoom in to see them all</div><div><span class="tag">SIGNED</span> the signer's record says so · <span class="tag flag">OBSERVED</span> a sensor outside the agent saw it · <span class="tag unv">UNVERIFIED</span> its run did not verify, or a why log wrote it (unsigned)</div>`
       + `<div class="dim">The rings are the project (the run's working directory; a run that records none: its relative paths), this machine and the outside world, around the event horizon every run starts from. Click a place to zoom to it and see who went there and how we know; click an agent to follow its route.</div>`
       + `<div class="dim">Scroll or pinch to zoom toward the pointer, drag to pan, double-click to fly in; + and − zoom, FIT, 0 or Esc shows it all. A folder opens into its files as you zoom in.</div>`;
     // a move's what in the side card: its first 3 lines or 240 characters (to a word's end), the rest a click away; its
@@ -3963,12 +3971,15 @@
       // what happened, up to the move shown; a folder nothing has happened in yet is drawn quiet, a hairline with no name
       const ev = D.ev.slice(0, HZ.t), mine = e => !HZ.follow || e.ag === HZ.follow, seen = dict(), jet = dict(), jets = [];
       for (const e of ev) if (mine(e)) (seen[e.at] ||= []).push(e);
-      const quiet = (f, k) => HZ.pick !== k && !f.rest && !f.leaves.some(l => seen[l]);
+      const quiet = (f, k) => HZ.pick !== k && HZ.hover !== k && !f.rest && !f.leaves.some(l => seen[l]);
+      // a folder's circle shows zoomed in, restricted (its shield), picked or hovered: at the normal zoom only places
+      const shownF = (f, k) => K >= 1.6 || f.rest || HZ.pick === k || HZ.hover === k;
       const names = [];   // the open folders' names: placed once the places' marks and shields are known
       for (const k of opened) {
         const f = D.folds[k], [px, py] = pt(k), rs = f.rho * R4 * K, q = quiet(f, k);
         if (px + rs < 0 || px - rs > cw || py + rs * i < 0 || py - rs * i > ch) continue;
         HZ.hits.push({ k, x: px, y: py, r: rs, ry: rs * i, open: true });
+        if (!shownF(f, k)) continue;
         x.fillStyle = A(ink, q ? 0 : .03); x.strokeStyle = A(f.rest ? red : gold, HZ.pick === k ? .75 : q ? .07 : .3);
         x.lineWidth = HZ.pick === k ? 1.6 : q ? .6 : 1;
         x.beginPath(); x.ellipse(px, py, rs, rs * i, 0, 0, 6.2832); x.fill(); x.stroke();
@@ -4026,7 +4037,7 @@
         // a folder's reach: its circle, and its shield's when a place in it is restricted
         const sr = f ? rs + (q.rest ? 12 : 2) : 24;
         marks.push(f ? [px, py, sr, sr * i] : [px, py, q.rest ? sr + 6 : 9]);
-        if (f) {   // a closed folder: its circle, a dot for each of its places; a dashed red shield round it; quiet, a hairline
+        if (f && shownF(f, k)) {   // a closed folder: its circle, a dot for each of its places; a dashed red shield round it; quiet, a hairline
           const qt = quiet(f, k);
           x.fillStyle = A(space, qt ? .25 : .6); x.strokeStyle = A(ink, HZ.pick === k ? .8 : qt ? .07 : .34); x.lineWidth = qt ? .6 : 1;
           x.beginPath(); x.ellipse(px, py, rs, rs * i, 0, 0, 6.2832); x.fill(); x.stroke();
@@ -4048,7 +4059,7 @@
         }
         if (worst) { const gr = 16 + Math.min(es.length, 8) * 4, gl = x.createRadialGradient(px, py, 0, px, py, gr); gl.addColorStop(0, A(AC(worst), .4)); gl.addColorStop(1, A(AC(worst), 0)); x.fillStyle = gl; x.beginPath(); x.arc(px, py, gr, 0, 6.2832); x.fill(); }
         x.textAlign = "center"; x.font = font(700, 12); x.fillStyle = worst ? AC(worst) : A(ink, .28);
-        if (worst) x.fillText(HZSYM[worst], px, py + 4); else if (!f) x.fillRect(px - 1, py - 1, 2, 2);
+        if (worst) x.fillText(HZSYM[worst], px, py + 4); else if (!f || !shownF(f, k)) x.fillRect(px - 1, py - 1, 2, 2);
         // labels by the zoom: at FIT only places something happened at (all of them in the top view); zoomed in, any
         if (!(worst || HZ.pick === k || i > .7 || K >= 1.6)) continue;
         const pairs = [...new Map(es.map(e => [e.ag + "|" + e.act, e])).values()], rows = [], label = f ? `${hzShort(f.name)}/ · ${f.leaves.length} places` : hzShort(q.name ?? q.label);
@@ -4251,7 +4262,11 @@
       }
       // hover names any place or folder, its callout drawn or not, in full
       const k = hzHit(HZ.hits, ...hzAt(e)); hzcv.style.cursor = k ? "pointer" : HZ.cam.k > 1 ? "grab" : "default"; hzcv.title = k ? HZ.d.places[k]?.label ?? HZ.d.folds[k].label : "";
+      // and shows the circle of the folder it's in (or is)
+      const fk = k ? (HZ.d.folds?.[k] ? k : HZ.d.places[k]?.up ?? null) : null;
+      if (fk !== HZ.hover) { HZ.hover = fk; hzDraw(); }
     });
+    hzcv.addEventListener("pointerleave", () => { if (HZ.hover) { HZ.hover = null; hzDraw(); } });
     for (const t of ["pointerup", "pointercancel"]) hzcv.addEventListener(t, () => { HZ.dragged = HZ.drag?.moved; HZ.drag = null; });
     hzcv.addEventListener("click", e => {
       if (HZ.dragged) { HZ.dragged = false; return; }   // the end of a drag, not a click

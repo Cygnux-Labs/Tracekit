@@ -1929,6 +1929,23 @@ class HorizonZoom(unittest.TestCase):
             process.stdout.write(JSON.stringify([at(1), at(2)]));"""))
         self.assertEqual(out, [{"name": False, "thin": 1}, {"name": True, "thin": 0}])   # quiet, then reached
 
+    def test_at_the_normal_zoom_a_folder_has_no_circle_until_a_place_in_it_is_hovered(self):
+        """Every folder's circle at FIT made the map messy and hard to read: at the normal zoom only the places show; a
+        folder's circle shows when the pointer is on it or a place in it, when picked, restricted or zoomed in."""
+        needs_node(self)
+        out = json.loads(page_js(["dict", "HZ", "HZACT", "HZSYM", "HZWORST", "hzRad", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW,
+                                  "hzAim", "HZBAND", "hzPack", "hzNest"], self.STAGE + """
+            let n = 0; ctx.ellipse = function () { n++; };
+            const places = dict(["src/a.py", "src/b.py", "README.md", "Makefile", "setup.py", "NOTES.md", "a.txt", "b.txt", "c.txt"]
+                                .map(l => [l, { kind: "project", label: l, rest: null }]));
+            const { folds, top } = hzNest(places), mv = (t, at) => ({ t, seq: t, ag: "coder", at, act: "read", gr: "signed", run: "r1", w: "" });
+            HZ.d = { ev: [mv(1, "README.md"), mv(2, "src/a.py")], places, folds, top, agents: [["coder", 0]], cwd: "" }; HZ.col = dict([["coder", "#d98bff"]]);
+            HZ.t = 2;
+            const at = hover => { HZ.hover = hover; HZ.drawn = ""; n = 0; draw(1200); return n; };
+            const src = Object.keys(folds)[0], fit = at(null), hovered = at(src);
+            process.stdout.write(JSON.stringify({ src: folds[src].label, up: places["src/a.py"].up === src, extra: hovered - fit }));"""))
+        self.assertEqual(out, {"src": "src/", "up": True, "extra": 1})   # hovering a place in src/ shows src/'s circle
+
     def test_a_place_under_the_huds_readouts_can_be_clicked_and_its_buttons_still_can(self):
         """Zoomed in, a place under the top-right readouts (EGRESS ... CHAIN) could not be clicked: the whole block took
         the click for its buttons."""

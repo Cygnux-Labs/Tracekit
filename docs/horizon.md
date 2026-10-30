@@ -66,7 +66,8 @@ The wheel or a pinch zooms toward the pointer, up to 64 times the fitted map; dr
 **+**, **−** and **FIT** under ORBIT/TOP do the same, as do the keys `+`, `-` and `0` or Esc for FIT (with Cmd, Ctrl or
 Alt held they stay the browser's own zoom). On a touch screen, two fingers pinch and pan. Places nest by their folders,
 circles in circles: a folder opens into its files once its smallest one has room on screen, and a name shows once it
-has room. Clicking a place or folder flies to it, lights the routes through it and lists who did what there. The map is
+has room. At the normal zoom only the places show: a folder's circle appears when the pointer is on it or on a place
+in it, when it's picked or restricted, and for every folder from 1.6x. Clicking a place or folder flies to it, lights the routes through it and lists who did what there. The map is
 drawn only when something on it changes or moves.
 
 ## Replay, follow, orbit
