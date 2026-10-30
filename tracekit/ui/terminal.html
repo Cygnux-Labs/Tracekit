@@ -5106,6 +5106,7 @@
     // one sentence a person reads first: the verdict, what the run's calls came to, its findings
     function runSentence(r) {
       if (r.verdict === "failed") return "Failed verification: " + (failLines(r.report).join(" · ").replace(/^\[FAIL\]\s*/, "") || "see the verifier report") + ". None of its records are shown.";
+      if (r.verdict === "pending" && /^RE-CHECKING/.test(r.integrity || "")) return "Being checked again: the store's bytes changed after the viewer read them, so its last verdict no longer stands.";
       if (r.verdict !== "verified") return "Pending: no checkpoint covers this run's last record yet.";
       const acts = S.actList, held = acts.filter(heldCall), by = new Map();
       for (const a of held) { const w = (ANSWER[lastAnswer(a)] || (ended(a) ? "not answered" : OPENHOLD)).toLowerCase(); by.set(w, (by.get(w) || 0) + 1); }

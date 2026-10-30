@@ -2632,6 +2632,17 @@ class RunChip(unittest.TestCase):
                                ["chain", "RUN \u2713 VERIFIED \u00b7 CHECKS STOPPED",
                                 "VERIFIED \u00b7 operator-side \u00b7 verification stopped: the store can't be checked"]])
 
+    def test_a_run_being_checked_again_says_so_in_its_review_not_that_no_checkpoint_covers_it(self):
+        """A run waiting for its re-check after the store's bytes changed read "Pending: no checkpoint covers this run's
+        last record yet", as a run no checkpoint covers does."""
+        needs_node(self)
+        out = json.loads(page_js(["runSentence"], """
+            process.stdout.write(JSON.stringify([
+              runSentence({ verdict: "pending", integrity: "RE-CHECKING: the store's bytes changed after they were read" }),
+              runSentence({ verdict: "pending" })]));"""))
+        self.assertEqual(out, ["Being checked again: the store's bytes changed after the viewer read them, so its last "
+                               "verdict no longer stands.", "Pending: no checkpoint covers this run's last record yet."])
+
     def test_every_verified_indicator_reads_checks_stopped_while_the_viewer_checks_nothing(self):
         """The run chip said checks stopped, but the verdict chips (run header, RUNS, panel 1, a call's detail, the run
         review), EVIDENCE's stamp, HORIZON's HUD, ALL RUNS' count and the review's summary still read VERIFIED."""
