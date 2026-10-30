@@ -316,7 +316,29 @@ class CodingPack(unittest.TestCase):
             "gh api -f 'security_and_analysis[secret_scanning][status]=disabled' -X PATCH repos/o/r",
             # a DELETE whose path is built at run time
             "gh api -X DELETE $P", "gh api -X DELETE \"/repos/$OWNER/$REPO/hooks/1\"", "gh api `cat p` -X DELETE",
-            "gh api \"${BASE}/protection\" --method DELETE"]
+            "gh api \"${BASE}/protection\" --method DELETE",
+            # PR #468's second review, each allowed or only flagged before: the method in any case and after a cluster
+            # of short options, an empty or space-edged argument, the owner and repository as one variable, the API's
+            # URL as a variable, gh repo edit turning a security feature off, an environment, Dependabot alerts and
+            # security fixes turned off, the user's Codespaces secrets, and a URL in capitals or without its scheme
+            "gh api -X delete repos/o/r/branches/main/protection", "gh api --method=delete repos/o/r/actions/secrets/K",
+            "gh api -iX DELETE repos/o/r/branches/main/protection", "gh api -iXPUT repos/o/r/branches/main/protection",
+            "curl -sSX DELETE https://api.github.com/repos/o/r/branches/main/protection",
+            "curl -sX DELETE https://api.github.com/repos/o/r/actions/secrets/KEY",
+            "gh api --jq '' -X DELETE repos/o/r/branches/main/protection", "gh secret -e '' delete NAME",
+            "curl -H '' -X DELETE https://api.github.com/repos/o/r/branches/main/protection",
+            "gh api -H 'X-A: 1 ' -X DELETE repos/o/r/branches/main/protection",
+            "gh api -X PUT \"repos/$GITHUB_REPOSITORY/branches/main/protection\" --input p.json",
+            "gh api -X PATCH \"repos/$GITHUB_REPOSITORY/branches/main/protection/required_pull_request_reviews\" "
+            "-F required_approving_review_count=0",
+            "curl -X DELETE \"https://api.github.com/repos/$GITHUB_REPOSITORY/branches/main/protection\"",
+            "curl -X DELETE \"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/branches/main/protection\"",
+            "gh repo edit o/r --enable-secret-scanning=false", "gh repo edit --enable-advanced-security=false",
+            "gh repo edit --enable-secret-scanning-push-protection=false",
+            "gh api -X DELETE repos/o/r/environments/production", "gh api -X DELETE repos/o/r/vulnerability-alerts",
+            "gh api -X DELETE repos/o/r/automated-security-fixes", "gh api -X DELETE user/codespaces/secrets/X",
+            "curl -X DELETE HTTPS://api.github.com/repos/o/r/branches/main/protection",
+            "curl --proto-default https -X DELETE api.github.com/repos/o/r/branches/main/protection"]
         routine = [
             # the #401 pool's benign lookalikes
             "gh secret list --repo myorg/production-app", "gh workflow list", "gh run view 849201938 --log",
@@ -331,7 +353,14 @@ class CodingPack(unittest.TestCase):
             "gh api -X PATCH repos/o/r -f security_and_analysis[secret_scanning][status]=enabled",
             "curl -s https://api.github.com/repos/o/r/branches/main/protection -H 'Authorization: Bearer <redacted>'",
             "curl -X DELETE https://api.github.com/repos/o/r/issues/comments/1 -H \"Authorization: Bearer $TOKEN\"",
-            "echo gh secret delete KEY", "git commit -m 'gh secret delete after review'"]
+            "echo gh secret delete KEY", "git commit -m 'gh secret delete after review'",
+            # a feature turned on with "disabled" elsewhere in the call, turning one on, Dependabot alerts turned on,
+            # reading an environment, and a GET after a cluster of short options
+            "gh api -X PATCH repos/o/r -f security_and_analysis[secret_scanning][status]=enabled "
+            "-f description='disabled-looking text'",
+            "gh repo edit --enable-secret-scanning", "gh repo edit --enable-wiki=false",
+            "gh api -X PUT repos/o/r/vulnerability-alerts", "gh api repos/o/r/environments/production",
+            "gh api -iX GET repos/o/r/branches/main/protection"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
                 e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
