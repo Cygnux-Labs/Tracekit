@@ -447,6 +447,13 @@ class OnTheDevPolicy(HarnessCase):
                                                       key: "/w/.env", "file_path": "/w/notes.txt", "content": "A=1"}})
             self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), key)
             self.assertIn("TK-D005", err)
+        # a `paths` entry that isn't a string is left out, not a hook error: the paths are decided
+        code, out, err = self.hook("cursor", {"conversation_id": "c", "hook_event_name": "preToolUse",
+                                              "tool_name": "Write", "tool_use_id": "w3", "tool_input": {
+                                                  "path": "/w/.env", "file_path": "/w/notes.txt", "paths": [{}],
+                                                  "content": "A=1"}})
+        self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
+        self.assertIn("TK-D005", err)
 
     def test_a_gemini_sandbox_expansion_is_held_for_a_person(self):
         pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
@@ -496,16 +503,25 @@ class OnTheDevPolicy(HarnessCase):
             with self.subTest(name=name, args=args):
                 code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
                 self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
-                self.assertIn("agy may read the argument", json.loads(out)["reason"])
-        raw = ('{"toolCall": {"name": "run_command", "args": {"CommandLine": "rm -rf ~", "CommandLine": null}},'
-               ' "stepIdx": 7, "conversationId": "ag-case", "workspacePaths": ["/w"]}')
-        out = io.StringIO()
-        self.assertEqual(harness_hooks.run("antigravity", raw, out, io.StringIO(), event="PreToolUse"), 0)
-        self.assertIn("agy may read the argument", json.loads(out.getvalue())["reason"])
-        for step, name, args in ((8, "run_command", {"CommandLine": "npm test", "Cwd": "/w", "WaitMsBeforeAsync": 5000,
-                                                     "toolSummary": "tests"}),
-                                 (9, "view_file", {"AbsolutePath": "/w/a.py", "StartLine": 1, "EndLine": 4}),
-                                 (10, "search_web", {"query": "x", "domain": "y"})):
+                self.assertIn("so agy may run the call with other arguments", json.loads(out)["reason"])
+        # a repeated name, exact too, is read from the payload as sent: json.loads keeps the last value (null, or a
+        # list Go can't put in a string field), a Go decoder the one before it
+        for step, args in ((7, '{"CommandLine": "rm -rf ~", "CommandLine": null}'),
+                           (8, '{"CommandLine": "rm -rf ~", "CommandLine": ["ls"]}'),
+                           (9, json.dumps('{"CommandLine": "rm -rf ~", "CommandLine": "ls"}'))):
+            with self.subTest(args=args):
+                raw = ('{"toolCall": {"name": "run_command", "args": %s}, "stepIdx": %d, "conversationId": "ag-case",'
+                       ' "workspacePaths": ["/w"]}') % (args, step)
+                out = io.StringIO()
+                self.assertEqual(harness_hooks.run("antigravity", raw, out, io.StringIO(), event="PreToolUse"), 0)
+                self.assertIn("'CommandLine' of agy's run_command repeats an earlier argument's name",
+                              json.loads(out.getvalue())["reason"])
+        for step, name, args in ((10, "run_command", {"CommandLine": "npm test", "Cwd": "/w", "WaitMsBeforeAsync": 5000,
+                                                      "toolSummary": "tests"}),
+                                 (11, "view_file", {"AbsolutePath": "/w/a.py", "StartLine": 1, "EndLine": 4}),
+                                 (12, "search_web", {"query": "x", "domain": "y"}),
+                                 # a lone null is absent to a Go decoder too
+                                 (13, "run_command", {"CommandLine": "ls", "BypassSandbox": None, "Cwd": None})):
             with self.subTest(name=name):   # agy's own spellings decide as before
                 self.assertEqual(self.hook("antigravity", pre(step, name, args), "PreToolUse")[:2],
                                  (0, '{"decision": "allow"}'))

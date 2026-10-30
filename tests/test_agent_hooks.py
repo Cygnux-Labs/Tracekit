@@ -422,6 +422,38 @@ class Harnesses(DaemonCase):
         self.assertEqual((agent_hooks.config_path("antigravity", home=self.d), agent_hooks.config_path("antigravity", self.d)),
                          (os.path.join(self.d, ".gemini", "config", "hooks.json"), os.path.join(self.d, ".agents", "hooks.json")))
 
+    def test_antigravity_denies_an_argument_agy_may_read_otherwise_and_leaves_no_pending_pair(self):
+        # agy is a Go binary: a decoder like encoding/json fills CommandLine from `commandline` too, and from the last
+        # of repeated keys whatever json.loads keeps: the v1 hook denies such a call before the pipeline, and the call
+        # it paired at normalise leaves the queue, as one the policy blocks does
+        raw = ('{"toolCall": {"name": "run_command", "args": %s}, "stepIdx": %d, "conversationId": "ag-odd",'
+               ' "workspacePaths": [%s]}')
+        for step, args in ((1, '{"CommandLine": "ls", "commandline": "rm -rf ~"}'),
+                           (2, '{"CommandLine": "rm -rf ~", "CommandLine": ["ls"]}')):
+            with self.subTest(args=args):
+                code, out, err = self.hook("antigravity", raw % (args, step, json.dumps(self.d)), "PreToolUse")
+                self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
+                self.assertIn("Blocked by Tracekit: the argument", json.loads(out)["reason"])
+                self.assertIn("of agy's run_command", err)
+        self.assertEqual(self.events("ag-odd"), [])   # nothing reached the signer
+        path = os.path.join(client.client_dir(), "runs", "antigravity-" + hashlib.sha256(b"ag-odd").hexdigest()[:16]
+                            + ".json")
+        with open(path) as f:
+            self.assertEqual(json.load(f)["pending"], {})
+
+    def test_a_cursor_path_list_with_other_values_is_decided_on_its_paths(self):
+        # a `paths` entry that isn't a string made the v1 hook raise, which under the default fail mode let the call
+        # run unrecorded: the other entries and path keys are decided
+        base = {"conversation_id": "cu-paths", "hook_event_name": "preToolUse", "tool_name": "Write", "cwd": self.d}
+        for i, paths in enumerate(([{}], [["x"]])):
+            with self.subTest(paths=paths):
+                code, out, err = self.hook("cursor", {**base, "tool_use_id": f"w{i}", "tool_input": {
+                    "file_path": "/w/notes.txt", "path": "/w/.env", "paths": paths, "content": "A=1"}})
+                self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), err)
+                self.assertIn("Blocked by tracekit policy", err)
+        self.assertEqual([e["data"]["decision"] for e in self.events("cu-paths") if e["type"] == "policy.decision"],
+                         ["deny"] * 2)
+
     def test_broken_input_never_blocks(self):
         for h in agent_hooks.HARNESSES:
             code, out, _ = self.hook(h, "not json at all")
