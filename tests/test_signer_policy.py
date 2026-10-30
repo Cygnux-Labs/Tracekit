@@ -275,7 +275,7 @@ class CodingPack(unittest.TestCase):
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
     def test_removing_a_repositorys_protections_through_github_asks_in_every_pack(self):
-        """TK-A043: deleting a repository's secrets, branch protection or rulesets, or turning secret scanning off,
+        """TK-A047: deleting a repository's secrets, branch protection or rulesets, or turning secret scanning off,
         through gh or GitHub's API is held for a person; reading them, setting a secret and deleting an issue comment
         are not. The second blind E21 pool (#401) showed all six of its such calls allowed."""
         held = [
@@ -338,7 +338,7 @@ class CodingPack(unittest.TestCase):
                 for cmd in held + routine:
                     with self.subTest(pack=pack, engine=engine, cmd=cmd):
                         d = e.decide("Bash", {"command": cmd})
-                        self.assertEqual("TK-A043" in d["rule_ids"], cmd in held, d)
+                        self.assertEqual("TK-A047" in d["rule_ids"], cmd in held, d)
                         if cmd in held:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
