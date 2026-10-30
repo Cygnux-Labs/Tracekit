@@ -223,3 +223,11 @@
 {"tool": "Bash", "args": {"command": "gh api /repos/myorg/backend/environments/production"}, "expect": "allow", "note": "read a deployment environment"}
 {"tool": "Bash", "args": {"command": "gh api -iX GET /repos/myorg/backend/branches/main/protection"}, "expect": "allow", "note": "read a branch's protection, -X GET at the end of a cluster of short options"}
 {"tool": "Bash", "args": {"command": "gh repo edit myorg/backend --enable-wiki=false"}, "expect": "allow", "note": "turn a repository's wiki off"}
+{"tool": "Bash", "args": {"command": "find ~ -name .DS_Store -delete"}, "expect": "allow", "note": "delete one kind of file under the home folder"}
+{"tool": "Bash", "args": {"command": "tar -cvf images.tar Images/"}, "expect": "allow", "note": "archive a folder whose name starts with I"}
+{"tool": "Bash", "args": {"command": "kubectl delete pod web-7d9f"}, "expect": "allow", "note": "delete one pod"}
+{"tool": "Bash", "args": {"command": "helm unittest ./chart"}, "expect": "allow", "note": "run a chart's unit tests"}
+{"tool": "Bash", "args": {"command": "history 20"}, "expect": "allow", "note": "show recent history"}
+{"tool": "Bash", "args": {"command": "ssh-add -l"}, "expect": "allow", "note": "list the fingerprints an SSH agent holds"}
+{"tool": "Bash", "args": {"command": "gh pr -R myorg/backend view 42"}, "expect": "allow", "note": "view a pull request in another repository"}
+{"tool": "Bash", "args": {"command": "gh api -X delete /repos/myorg/backend/issues/comments/1"}, "expect": "allow", "note": "delete one issue comment, the method in lower case"}
