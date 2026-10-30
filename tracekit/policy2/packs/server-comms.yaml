@@ -1,7 +1,7 @@
 # Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
 # people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
 
-version: '2026.10-server-comms-4'
+version: '2026.10-server-comms-5'
 description: server-hosted agents, payments, email and chat
 unknown_tools: ask
 
@@ -31,8 +31,10 @@ ask:
     rationale: A payment tool call with an amount moves money; a person confirms the payee and the amount.
   - id: TK-M002
     # TK-M005's names too, over MCP only: a deployment's own payment tool by one of them (issue_refund) is TK-M001's
-    # with an amount, so approval.agent bounds on TK-M001 still decide it
-    tool: '(mcp(:[^/]+/|__.*__))?(transfer_funds|send_(payment|money)|pay_invoice|create_(payment|payout|transfer|refund|charge|payment_intent)|(confirm|capture)_payment_intent|refund_.*)|mcp(:[^/]+/|__.*__)((issue|process|make|initiate)_(payment|payout|transfer|refund|charge)|transfer_money)'
+    # with an amount, so approval.agent bounds on TK-M001 still decide it. Over MCP as `mcp:<server>/<tool>`,
+    # `mcp__<server>__<tool>` or Crush's joined `mcp__<server>_<tool>`; a refund_ name only at the tool's start, as
+    # without a server (get_refund_status moves no money), so in Crush's form only after a server named without `_`
+    tool: '(mcp(:[^/]+/|__.*[_-]))?(transfer_funds|send_(payment|money)|pay_invoice|create_(payment|payout|transfer|refund|charge|payment_intent)|(confirm|capture)_payment_intent)|(mcp(:[^/]+/|__.*__|__[^_]+_))?refund_.*|mcp(:[^/]+/|__.*[_-])((issue|process|make|initiate)_(payment|payout|transfer|refund|charge)|transfer_money)'
     pattern: '^'
     reason: moving money
     rationale: Payouts, transfers, charges and refunds move money even without an amount argument (a full refund), and over MCP too.
@@ -57,7 +59,8 @@ ask:
     reason: mass email
     rationale: One message to many people (or to a list address) cannot be recalled; a person checks the audience and the text.
   - id: TK-M004
-    tool: 'mcp(:[^/]+/|__.*__)(slack_post_message|slack_reply_to_thread|send_slack_message|chat_post_message|post_message)'
+    # as `mcp:<server>/<tool>`, `mcp__<server>__<tool>` or Crush's joined `mcp__<server>_<tool>`
+    tool: 'mcp(:[^/]+/|__.*[_-])(slack_post_message|slack_reply_to_thread|send_slack_message|chat_post_message|post_message)'
     pattern: '<!(channel|everyone|here)(\|[^<>]*)?>'
     reason: notifying a whole channel or workspace
     rationale: '@channel, @here and @everyone page everyone in the channel or workspace.'
