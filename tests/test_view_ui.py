@@ -2799,7 +2799,7 @@ class FinalQA(unittest.TestCase):
 
     def test_the_commands_write_the_trust_file_they_verify_against_and_name_the_signer_read(self):
         needs_node(self)
-        out = json.loads(page_js(["esc", "shq", "word", "cp", "runCmds", "cmdLines"], """
+        out = json.loads(page_js(["esc", "shq", "word", "cp", "signerArg", "runCmds", "cmdLines"], """
             const r = { id: "72c9631d2ab83ca8cc88feaee340293c", tenant: "acme" }, seen = [];
             for (const s of [{ dev: true }, { config: "/etc/tracekit/my signer.yaml" }, { data_dir: "/srv/tk/data" }, null]) {
               SIGNER = s; seen.push(runCmds(r));
@@ -2818,6 +2818,33 @@ class FinalQA(unittest.TestCase):
             [exp.format(""), "tracekit signer trust -o trust.json", ver]])   # a server that names no signer
         self.assertEqual(re.findall(r"<dt>(\w+)<button", out[4]), ["EXPORT", "TRUST", "VERIFY"])
         self.assertNotIn("signer.yaml", out[4])
+
+    def test_a_signed_runs_graph_says_being_built_only_when_the_viewer_imports_signed_runs(self):
+        """Started with --why (or on a data dir with a why/ folder) the viewer imports no signed run, and OVERVIEW,
+        GRAPH, WHY and AGENTS of a verified run without a why log said "This run's graph is being built…" forever.
+        Now they say why it has none and what shows it."""
+        needs_node(self)
+        rid = "72c9631d2ab83ca8cc88feaee340293c"
+        out = json.loads(page_js(["esc", "shq", "word", "signerArg", "NEEDWHY", "renderWhyView"], f"""
+            let VIEW = "graph", WRUN = null, WPICK = null, WBUSY = null, WMSG = "", wvKey = "", SIGNER = null;
+            const V2 = true, scope = "{rid}", GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, S = {{ effects: new Map() }}, WD = new Map();
+            const RUNS = new Map([[scope, {{ id: scope, verdict: "verified", decisions: {{ allow: 2, deny: 1 }} }}]]);
+            const WHY = {{ runs: [{{ run_id: "demo-seed0", agents: ["planner"] }}], calls: {{}} }};   // why logs, none of the run
+            const document = {{ body: {{ classList: {{ toggle() {{}} }} }}, activeElement: null }};
+            const got = {{ whyv: {{ clientWidth: 900, clientHeight: 600 }} }}, $ = id => got[id] ??= {{}}, seen = [];
+            for (const s of [{{ dev: true }}, {{ dev: true, why: "--why" }}, {{ config: "/etc/tk/signer.yaml", why: "/srv/tk/data" }}]) {{
+              SIGNER = s; wvKey = ""; renderWhyView(); seen.push(got.whyv.innerHTML);
+            }}
+            process.stdout.write(JSON.stringify(seen));"""))
+        said = [html.unescape(re.fullmatch(r'<div class="empty">(.*)</div>', h).group(1)) for h in out]
+        self.assertEqual(said[0], "This run's graph is being built…")   # the viewer imports each verified run
+        self.assertEqual(said[1], "This viewer was started with why logs (--why), so it draws graphs from those only, "
+                                  "and none is this run's. To see this run's graph, start the viewer without --why: "
+                                  "tracekit view --dev")
+        self.assertEqual(said[2], "This viewer reads the why logs in the signer's data dir (its why/ folder), so it "
+                                  "draws graphs from those only, and none is this run's. To see this run's graph, import "
+                                  "it into a new folder and open that: tracekit why import --store /srv/tk/data --run "
+                                  f"{rid} --out NEWDIR, then tracekit view --config /etc/tk/signer.yaml --why NEWDIR")
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
     def test_a_runs_copied_commands_run_as_they_are_for_a_viewer_of_a_data_dir(self):
@@ -2841,7 +2868,7 @@ class FinalQA(unittest.TestCase):
         store = service.log.storage
         self.assertTrue(wait_for(lambda: list(store.iter_run("default", run.run_id))[-1]["event"]["type"] == "run.final"
                                  and (store.checkpoint_latest() or (0,))[0] == store.tree.size, 20))
-        cmds = json.loads(page_js(["shq", "word", "runCmds"], f"""
+        cmds = json.loads(page_js(["shq", "word", "signerArg", "runCmds"], f"""
             const SIGNER = {json.dumps({"data_dir": cfg["data_dir"]})};
             process.stdout.write(JSON.stringify(runCmds({json.dumps({"id": run.run_id, "tenant": "default"})})));"""))
         self.addCleanup(os.chdir, os.getcwd())

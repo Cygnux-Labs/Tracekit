@@ -5427,9 +5427,10 @@
     }
     // the commands that make a run's review evidence, as tracekit report gives them: export its bundle, write a trust file
     // that pins the signer's log key (tracekit export writes none), verify the bundle against it; [export, trust, verify].
-    // Both name the signer this viewer reads (SIGNER) as it was started: --dev, --config or --data-dir
+    // Both name the signer this viewer reads (SIGNER) as it was started: --dev, --config or --data-dir (signerArg)
+    const signerArg = () => SIGNER?.config ? ` --config ${word(SIGNER.config)}` : SIGNER?.data_dir ? ` --data-dir ${word(SIGNER.data_dir)}` : SIGNER?.dev ? " --dev" : "";
     function runCmds(r) {
-      const file = r.id + ".tkb", where = SIGNER?.config ? ` --config ${word(SIGNER.config)}` : SIGNER?.data_dir ? ` --data-dir ${word(SIGNER.data_dir)}` : SIGNER?.dev ? " --dev" : "";
+      const file = r.id + ".tkb", where = signerArg();
       return [`tracekit export --v2${where} --run ${word(r.id)}` + (r.tenant && r.tenant !== "default" ? ` --tenant ${word(r.tenant)}` : "") + ` --with-findings -o ${word(file)}`,
               `tracekit signer trust${where} -o trust.json`, `tracekit verify ${word(file)} --trust trust.json`];
     }
@@ -6019,10 +6020,14 @@
       if (VIEW === "influence") return influenceView(el);
       const d = WRUN && whyDetail(WRUN);
       if (!d || d.error) {
+        // SIGNER.why: the viewer reads why logs, so it imports no signed run ("--why", else the data dir whose why/ it reads)
         const calls = run && Object.values(run.decisions || {}).reduce((x, y) => x + y, 0);
         el.innerHTML = `<div class="empty">${esc(d ? d.error : WRUN ? "loading…" : !run ? "No why logs yet."
           : run.verdict === "failed" ? "This run failed verification: no graph or why view is built from records that don't verify. Its review in DETAIL says which check failed."
-          : run.verdict !== "verified" ? "This run's graph is built once a checkpoint covers its records." : calls ? "This run's graph is being built…" : "This run has no tool calls, so it has no graph.")}</div>`;
+          : run.verdict !== "verified" ? "This run's graph is built once a checkpoint covers its records." : !calls ? "This run has no tool calls, so it has no graph."
+          : !SIGNER?.why ? "This run's graph is being built…"
+          : SIGNER.why === "--why" ? `This viewer was started with why logs (--why), so it draws graphs from those only, and none is this run's. To see this run's graph, start the viewer without --why: tracekit view${signerArg()}`
+          : `This viewer reads the why logs in the signer's data dir (its why/ folder), so it draws graphs from those only, and none is this run's. To see this run's graph, import it into a new folder and open that: tracekit why import --store ${word(SIGNER.why)} --run ${word(run.id)} --out NEWDIR, then tracekit view${signerArg()} --why NEWDIR`)}</div>`;
         $("wvsum").textContent = ""; return;
       }
       ({ graph: graphView, agents: agentsView, overview: overviewView, timeline: timelineView, why: whyView }[VIEW] || graphView)(el, d);

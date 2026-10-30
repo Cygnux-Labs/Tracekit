@@ -42,7 +42,8 @@ WHY, NODE) on the right, under a header with the run's verdict, counts and the *
 views, keys `1` to `7`: **OVERVIEW**, **CALLS** (the run's tape), **TIMELINE** (by call on one time axis, or one lane per agent), **GRAPH**,
 **WHY**, **AGENTS** and **EVIDENCE** (the run's signed records in order, the viewer's checks and their result, and
 the export and verify commands; [below](#a-runs-timeline-evidence-and-the-inspector)). OVERVIEW, GRAPH, WHY and
-AGENTS need the run's why log, which the viewer builds for each verified run.
+AGENTS need the run's why log, which the viewer builds for each verified run when it has no why logs of its own
+([below](#a-signed-runs-graph)).
 
 ![LIVE: the release agent's run, still open, its tape with a git push held and waiting, and the run review](viewer/1.5/live.png)
 
@@ -289,6 +290,11 @@ at full size with FIT too (`scroll ↓` when it is taller). With ACTUAL SIZE ano
 scrolls sideways (`scroll →` in the panel's title), and a clicked node is scrolled into view. A held call's node says how its approval ended
 (**APPROVED**, **REJECTED**, **EXPIRED**). The why views follow the run whose page is open; a run that failed
 verification has no graph, and GRAPH says why.
+
+With why logs (`--why DIR`, or a `why/` folder in the data dir) the viewer imports no signed run, so a run without a
+why log has no graph. GRAPH says so and names what shows it: `tracekit view` without `--why`, or, when the data dir
+has a `why/` folder, `tracekit why import --store DIR --run ID --out NEWDIR`, then `tracekit view --why NEWDIR`
+with the same `--dev`, `--config` or `--data-dir`.
 
 ### AGENTS
 

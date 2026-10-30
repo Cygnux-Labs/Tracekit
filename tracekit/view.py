@@ -927,7 +927,7 @@ class StoreFeed:
 
     def __init__(self, cfg, log_vkey=None, on_run=None, content=None, analyze=None, signer=None):
         # `signer`: how a person's commands name this store's signer ({"dev": True}, {"config": path} or {"data_dir":
-        # path}), which the snapshot gives the page for a run's export and trust commands
+        # path}), which the snapshot gives the page for a run's export and trust commands; `why` with why logs (main)
         self.cfg, self.pg, self.signer = cfg, bool(cfg.get("storage")), signer
         self.store = store_name(cfg)
         self.vkeys, self.note = store_trust(cfg, log_vkey)
@@ -1849,6 +1849,13 @@ def main(argv=None):
             dev = not (a.config or a.data_dir)
             signer = {"dev": True} if dev else {"config": os.path.abspath(a.config)} if a.config else \
                 {"data_dir": os.path.abspath(a.data_dir)}
+            if not (mirror or runs or alone):   # why logs, so no signed run is imported: the page says what shows its
+                # graph, `tracekit view` without --why ("--why") or, when the data dir's why/ is read anyway, an import
+                # from this data dir
+                # lean: a Postgres store's data dir has no store/ to import from (its limits row says to import the
+                # exported bundle); name the bundle route on the page if Postgres signers keep why logs there
+                signer["why"] = os.path.abspath(cfg["data_dir"]) \
+                    if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,

@@ -2389,6 +2389,31 @@ class LiveRuns(unittest.TestCase):
                 view.main(argv)
             self.assertEqual(got.exception.args[0], want)
 
+    def test_the_snapshot_says_what_shows_a_signed_runs_graph_when_why_logs_keep_it_from_being_imported(self):
+        """With --why (or a why/ folder in the data dir) the viewer imports no signed run, and the page said "being
+        built" for each run without a why log forever: the signer the page gets now says what shows its graph."""
+        class Built(Exception):
+            pass
+
+        def feed(*a, **k):
+            raise Built(a[2], a[5])
+
+        def started(argv):
+            """The signer the page gets from `tracekit view --dev ARGV`, and whether the viewer imports signed runs."""
+            with mock.patch.object(view, "StoreFeed", side_effect=feed), \
+                    mock.patch.object(view, "dev_data_dir", return_value=self.d), \
+                    mock.patch.object(view, "dev_content_source"), mock.patch.object(view, "dev_analysis"), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Built) as got:
+                view.main(["--dev", *argv])
+            on_run, signer = got.exception.args
+            return signer, on_run is not None
+        logs = os.path.join(self.d, "logs")
+        self.assertEqual(started([]), ({"dev": True}, True))   # no why logs: each signed run is imported
+        self.assertEqual(started(["--why", logs]), ({"dev": True, "why": "--why"}, False))   # only --why: start without it
+        os.mkdir(os.path.join(self.d, view.WHY_DIR))   # the data dir's why/, read with --why or without: import from it
+        for argv in ([], ["--why", logs]):
+            self.assertEqual(started(argv), ({"dev": True, "why": os.path.abspath(self.d)}, False))
+
     def test_a_run_that_fails_at_a_later_checkpoint_takes_back_every_record_it_showed(self):
         """A run that verified at one checkpoint and failed at the next kept its earlier rows on the tape as SIGNED,
         next to a review saying none of its records are shown, and its VERIFIED report and FINDING alerts (counted in
