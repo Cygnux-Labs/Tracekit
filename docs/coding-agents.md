@@ -71,7 +71,8 @@ Docker MCP Gateway's `code-mode` tools too (`mcp_<server>_code-mode` and the `co
 scripts call MCP tools inside the gateway, where no hook sees them. Crush reads a built-in tool's argument names ignoring case and lets a later repeat win unless
 it is null, so the hook denies a built-in tool call whose input repeats a name or has one that isn't lower-case
 snake_case (`{"command":"ls","Command":"..."}`), at any depth: Tracekit would decide other arguments than the tool
-runs with. An MCP tool's arguments reach its server as Tracekit reads them.
+runs with. Crush hands an MCP tool's arguments to its server as Tracekit reads them; a server that reads them
+into a Go struct may still match names ignoring case.
 A `PreToolUse` hook blocks a call with exit 2 and its reason on stderr (or `{"decision":"deny"}` on stdout at exit
 0); Tracekit writes the exit-2 form, so a denied or held call does not run. Crush fires `PreToolUse` before its own
 permission prompt. On macOS and Linux `install._blocking` wraps the command `init` writes: a v2 hook that cannot run

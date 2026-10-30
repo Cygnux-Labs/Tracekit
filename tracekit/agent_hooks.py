@@ -489,7 +489,13 @@ def _blocked_tool(harness, tool_name, raw=""):
                 "inside the gateway with no hook, so Tracekit can't decide them; make each call itself instead. "
                 "`docker mcp feature disable dynamic-tools` turns it off.")
     if not tool_name.startswith("mcp_") and raw.strip():
-        odd = _odd_arg_name(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input"))
+        v = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")
+        if isinstance(v, str):   # an input sent as a JSON string, as _input reads it
+            try:
+                v = json.loads(v, object_pairs_hook=_Pairs)
+            except ValueError:
+                v = None
+        odd = _odd_arg_name(v)
         if odd is not None:
             return (f"Blocked by Tracekit: Crush's {tool_name} input repeats an argument name or has one that isn't "
                     f"lower-case snake_case ({odd!r}). Crush matches argument names ignoring case and lets a later "
