@@ -124,7 +124,9 @@ run's signed findings (`tracekit analyze --v2`) are `FINDING` rows of that run: 
 signer measured for the findings run) and the reviewer the analyzer names (its own claim); `tracekit verify` says
 whether that author is independent of the analysed run or self-asserted. The tape renders the newest 600 rows; **SHOW
 OLDER** at its end renders more. Times are your browser's local time; the clock names the zone. The header's `CHAIN ✓ N
-SIGNED RECORDS` and `RECORDS` count the records shown from runs that verified. Click a run to scope the whole page to
+SIGNED RECORDS` and `RECORDS` count the records shown from runs that verified; a run being checked again after the
+store's bytes changed is out of both until it is checked, and while one is the badge reads `CHAIN … N OF M RUNS
+RE-CHECKING`. Click a run to scope the whole page to
 it; **All runs** goes back. A red bar under the header says when the page lost its viewer: it reconnects on its own and
 reloads the records. When the viewer refuses the page's session after it had worked (the viewer restarted, with a new
 token, or the session ended), the bar and NEEDS YOU say so, and the page stops its live parts (the stream, the checks,

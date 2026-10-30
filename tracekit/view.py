@@ -1442,12 +1442,15 @@ class StoreFeed:
                        for k in self.listed)
 
     def verify(self, tenant=None):
-        """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""
+        """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all); a run
+        waiting for a re-check after a store change is in neither count, and while one waits the badge is not ok."""
         with self.lock:
             runs = {k: s for k, s in self.runs.items() if tenant is None or k[0] == tenant}
-            return (sum(s["shown"] for s in runs.values() if not s["failed"]),
+            again = sum(bool(s.get("again")) for s in runs.values())
+            return (sum(s["shown"] for s in runs.values() if not s["failed"] and not s.get("again")),
                     [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]]
-                    + [self.stopped] * bool(self.stopped), None)
+                    + [f"{again} run(s) being checked again: the store's bytes changed after the viewer read them"]
+                    * bool(again) + [self.stopped] * bool(self.stopped), None)
 
 
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):

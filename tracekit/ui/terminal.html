@@ -4338,12 +4338,18 @@
       const c = $("chain");
       const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
       const failed = V2 && !run ? [...RUNS.values()].filter(r => r.verdict === "failed").length : 0;
+      // runs the viewer checks again since the store's bytes changed: not a broken chain, nor a whole one, until checked
+      const again = V2 && !run ? [...RUNS.values()].filter(r => r.verdict === "pending" && /^RE-CHECKING/.test(r.integrity || "")).length : 0;
       if (run) {
         // a run that verified while checks have stopped since: its last check passed, no later edit would show
         const stale = run.verdict === "verified" && !!STOPPED;
         c.className = "chain" + (stale || run.verdict === "pending" ? "" : run.verdict === "verified" ? " ok" : " bad");
         c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" + (stale ? " · CHECKS STOPPED" : "") : run.verdict === "failed" ? "RUN ✗ FAILED" : run.verdict === "error" ? "RUN ✗ NOT CHECKED" : "RUN … PENDING";
         c.title = (run.integrity || "") + " · " + (run.label || "") + (stale ? " · " + STOPPED : "");
+      } else if (again && !failed && !STOPPED) {
+        c.className = "chain";
+        c.textContent = `CHAIN … ${again} OF ${RUNS.size} RUNS RE-CHECKING`;
+        c.title = "the store's bytes changed after the viewer read them: these runs are checked again";
       } else {
         c.className = "chain" + (chainState.ok === true && chainState.n ? " ok" : chainState.ok === false ? " bad" : "");
         // why logs alone have no signed records: nothing to check, which is not a passed check

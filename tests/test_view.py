@@ -2556,6 +2556,33 @@ class LiveRuns(unittest.TestCase):
             self.refresh(feed)
         self.assertEqual(self.checks, ["c", "b"])
 
+    def test_runs_waiting_for_a_re_check_are_out_of_the_chain_count_and_the_badge_says_so(self):
+        """/api/verify counted a run waiting for its re-check (its bytes changed after they were read) among the
+        records verified and said ok, so the page showed a green CHAIN ✓ while it read RE-CHECKING. Such runs are out
+        of the count, the badge is not ok while one waits, and the page says the runs are being checked again."""
+        feed = self.feed(lambda run_id: VERIFIED)
+        self.refresh(feed)
+        self.assertEqual(feed.verify(), (2, [], None))
+        self.fake.update.return_value, self.fake.changed.return_value = True, [(0, 2)]   # r1's lines rewritten in place
+        with mock.patch.object(view, "REFRESH_S", -1):   # no check starts in this refresh
+            self.refresh(feed)
+        self.assertEqual(feed.verify(), (0, ["1 run(s) being checked again: the store's bytes changed after the viewer "
+                                             "read them"], None))
+        if not shutil.which("node"):
+            self.skipTest("needs node to run the page's renderTop()")
+        with feed.lock:
+            review = feed.latest[("default", "r1")]["review"]
+        chain = json.loads(page_js(["renderTop", "filterChips"], f"""
+            const el = {{}}, $ = id => el[id] ??= {{ classList: {{ toggle() {{}} }} }};
+            const document = {{ URL: "http://127.0.0.1/", body: {{ classList: {{ toggle() {{}} }} }} }};
+            let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = "", ENDED = "";
+            const BOOT = null, V2 = true, scope = null, F = {{}}, TZ = "UTC", nowTs = () => 0, esc = s => s, put = () => {{}};
+            const RUNS = new Map([["r1", {json.dumps(review)}], ["r2", {{ verdict: "verified" }}]]);
+            const chainState = {{ ok: false, n: 0, detail: "" }};
+            renderTop();
+            process.stdout.write(JSON.stringify([el.chain.textContent, el.chain.className]));"""))
+        self.assertEqual(chain, ["CHAIN … 1 OF 2 RUNS RE-CHECKING", "chain"])
+
     def test_on_start_each_runs_first_check_is_followed_by_a_pause_as_long_as_it_took(self):
         """The first pass over a 430k-record store held a core at 100% for seven minutes. After a run's first check no
         other run's first check starts for PACE times its CPU time (every record is still checked before its run reads
