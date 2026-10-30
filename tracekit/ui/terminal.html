@@ -6024,10 +6024,10 @@
         const calls = run && Object.values(run.decisions || {}).reduce((x, y) => x + y, 0);
         el.innerHTML = `<div class="empty">${esc(d ? d.error : WRUN ? "loading…" : !run ? "No why logs yet."
           : run.verdict === "failed" ? "This run failed verification: no graph or why view is built from records that don't verify. Its review in DETAIL says which check failed."
-          : run.verdict !== "verified" ? "This run's graph is built once a checkpoint covers its records." : !calls ? "This run has no tool calls, so it has no graph."
+          : run.verdict !== "verified" && !SIGNER?.why ? "This run's graph is built once a checkpoint covers its records." : !calls ? "This run has no tool calls, so it has no graph."
           : !SIGNER?.why ? "This run's graph is being built…"
-          : SIGNER.why === "--why" ? `This viewer was started with why logs (--why), so it draws graphs from those only, and none is this run's. To see this run's graph, start the viewer without --why: tracekit view${signerArg()}`
-          : `This viewer reads the why logs in the signer's data dir (its why/ folder), so it draws graphs from those only, and none is this run's. To see this run's graph, import it into a new folder and open that: tracekit why import --store ${word(SIGNER.why)} --run ${word(run.id)} --out NEWDIR, then tracekit view${signerArg()} --why NEWDIR`)}</div>`;
+          : SIGNER.why === "--why" ? `This viewer was started with why logs (--why), so it draws graphs from those only, and none is this run's. To see this run's graph, start the viewer without --why, keeping its other options: tracekit view${signerArg()}`
+          : `This viewer reads why logs, so it draws graphs from those only, and none is this run's. To see this run's graph, import it into a new folder and open that, keeping the viewer's other options: tracekit why import --store ${word(SIGNER.why)} --run ${word(run.id)} --out NEWDIR, then tracekit view${signerArg()} --why NEWDIR`)}</div>`;
         $("wvsum").textContent = ""; return;
       }
       ({ graph: graphView, agents: agentsView, overview: overviewView, timeline: timelineView, why: whyView }[VIEW] || graphView)(el, d);

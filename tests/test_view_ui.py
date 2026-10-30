@@ -2835,16 +2835,23 @@ class FinalQA(unittest.TestCase):
             for (const s of [{{ dev: true }}, {{ dev: true, why: "--why" }}, {{ config: "/etc/tk/signer.yaml", why: "/srv/tk/data" }}]) {{
               SIGNER = s; wvKey = ""; renderWhyView(); seen.push(got.whyv.innerHTML);
             }}
+            RUNS.get(scope).verdict = "pending";   // no checkpoint covers it yet: with why logs, that doesn't bring a graph
+            for (const s of [{{ dev: true }}, {{ dev: true, why: "--why" }}]) {{
+              SIGNER = s; wvKey = ""; renderWhyView(); seen.push(got.whyv.innerHTML);
+            }}
             process.stdout.write(JSON.stringify(seen));"""))
         said = [html.unescape(re.fullmatch(r'<div class="empty">(.*)</div>', h).group(1)) for h in out]
         self.assertEqual(said[0], "This run's graph is being built…")   # the viewer imports each verified run
         self.assertEqual(said[1], "This viewer was started with why logs (--why), so it draws graphs from those only, "
-                                  "and none is this run's. To see this run's graph, start the viewer without --why: "
-                                  "tracekit view --dev")
-        self.assertEqual(said[2], "This viewer reads the why logs in the signer's data dir (its why/ folder), so it "
-                                  "draws graphs from those only, and none is this run's. To see this run's graph, import "
-                                  "it into a new folder and open that: tracekit why import --store /srv/tk/data --run "
+                                  "and none is this run's. To see this run's graph, start the viewer without --why, "
+                                  "keeping its other options: tracekit view --dev")
+        # its why/ is read even when --why names another folder: what shows the run's graph is the same, an import
+        self.assertEqual(said[2], "This viewer reads why logs, so it draws graphs from those only, and none is this "
+                                  "run's. To see this run's graph, import it into a new folder and open that, keeping "
+                                  "the viewer's other options: tracekit why import --store /srv/tk/data --run "
                                   f"{rid} --out NEWDIR, then tracekit view --config /etc/tk/signer.yaml --why NEWDIR")
+        self.assertEqual(said[3], "This run's graph is built once a checkpoint covers its records.")
+        self.assertEqual(said[4], said[1])   # never "once a checkpoint covers it" when no checkpoint brings one
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
     def test_a_runs_copied_commands_run_as_they_are_for_a_viewer_of_a_data_dir(self):
