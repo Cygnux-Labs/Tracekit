@@ -359,6 +359,18 @@ class SpawnAndStatus(unittest.TestCase):
         self.assertFalse(json.loads(out.getvalue())["signer_v2"]["running"])
         self.assertFalse(os.path.exists(self.run_dir))
 
+    def test_status_says_how_a_dev_signer_not_started_starts(self):
+        # right after `init --dev --v2` status said "[Errno 2] No such file or directory: '/tmp/tk-501.…'"
+        self.assertIn("not started", autospawn.status()["error"])
+        os.makedirs(self.run_dir, 0o700)
+        self.assertIn("tracekit up", autospawn.status()["error"])
+        os.chmod(self.run_dir, 0o755)   # a dir someone else could have made: refused, and status says why
+        self.assertIn("mode 0700", autospawn.status()["error"])
+        os.chmod(self.run_dir, 0o700)   # a signer of another protocol over TCP (no Unix sockets): not "not started"
+        with mock.patch.object(autospawn, "address", return_value=("tcp://127.0.0.1:1", "t")), \
+                mock.patch.object(autospawn, "connect", side_effect=autospawn.Incompatible("protocol 15")):
+            self.assertEqual(autospawn.status()["error"], "protocol 15")
+
     def test_status_shows_no_v1_signer_or_policy_on_a_v2_only_setup(self):
         """`signer` and `policy` are the v1 signer's and the v1 hooks' (whose fail mode v2 hooks don't follow): null
         when no config or TRACEKIT_SOCKET names a v1 signer and none answers at the default socket."""

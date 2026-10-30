@@ -314,15 +314,22 @@ def down(timeout=10, d=None):
 def status():
     """The v2 signer section of `tracekit status`: of the signer a client here uses ($TRACEKIT_SIGNER, in system mode
     the one the root-owned config names, else the dev signer). Starts and creates nothing."""
-    path, token = None, None
+    path, token, dev = None, None, False
     try:
         path = _default_signer()
         if not path:
+            dev = True
             d = signer_dir(create=False)
             path = os.path.join(d, SOCK if hasattr(socket, "AF_UNIX") else ENDPOINT)
             path, token = address(d)
         sock, _, hello = connect(path, token=token)
     except (SignerUnavailable, Incompatible, OSError, ValueError) as e:
-        return {"socket": path, "running": isinstance(e, Incompatible), "error": str(e)}
+        # a dev signer not started yet has no runtime dir or no socket in it: say how it starts, not the missing file
+        # (a runtime dir refused for its owner or mode keeps that error)
+        unstarted = dev and not isinstance(e, Incompatible) and (
+            isinstance(e, FileNotFoundError) or path is not None and not os.path.exists(path))
+        return {"socket": path, "running": isinstance(e, Incompatible),
+                "error": "not started: the dev signer starts at an agent's first call, or with `tracekit up`"
+                if unstarted else str(e)}
     sock.close()
     return {"socket": path, "running": True, **hello}
