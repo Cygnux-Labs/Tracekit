@@ -427,6 +427,36 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
                          (0, '{"decision": "allow"}'))
 
+    def test_antigravity_denies_an_argument_agy_may_read_in_another_case(self):
+        # agy is a Go binary: a decoder like encoding/json fills CommandLine from `commandline` too (the last such key;
+        # a null keeps the value before it), while the hook reads the exact name: `ls` was decided, `rm -rf ~` ran
+        def pre(step, name, args):
+            return {"toolCall": {"name": name, "args": args}, "stepIdx": step, "conversationId": "ag-case",
+                    "workspacePaths": ["/w"]}
+        for step, name, args in ((1, "run_command", {"CommandLine": "ls", "commandline": "rm -rf ~"}),
+                                 (2, "run_command", {"commandline": "rm -rf ~"}),
+                                 (3, "run_command", {"CommandLine": "mkdir -p /tmp/x", "bypassSandbox": True}),
+                                 (4, "run_command", {"CommandLine": "mkdir -p /tmp/x", "BypaſsSandbox": True}),
+                                 (5, "write_to_file", {"TargetFile": "/w/notes.txt", "targetFile": "/w/.env",
+                                                       "CodeContent": "A=1"}),
+                                 (6, "manage_task", {"action": "send_input", "TaskId": "t", "Input": "rm -rf ~\n"})):
+            with self.subTest(name=name, args=args):
+                code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
+                self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
+                self.assertIn("agy may read the argument", json.loads(out)["reason"])
+        raw = ('{"toolCall": {"name": "run_command", "args": {"CommandLine": "rm -rf ~", "CommandLine": null}},'
+               ' "stepIdx": 7, "conversationId": "ag-case", "workspacePaths": ["/w"]}')
+        out = io.StringIO()
+        self.assertEqual(harness_hooks.run("antigravity", raw, out, io.StringIO(), event="PreToolUse"), 0)
+        self.assertIn("agy may read the argument", json.loads(out.getvalue())["reason"])
+        for step, name, args in ((8, "run_command", {"CommandLine": "npm test", "Cwd": "/w", "WaitMsBeforeAsync": 5000,
+                                                     "toolSummary": "tests"}),
+                                 (9, "view_file", {"AbsolutePath": "/w/a.py", "StartLine": 1, "EndLine": 4}),
+                                 (10, "search_web", {"query": "x", "domain": "y"})):
+            with self.subTest(name=name):   # agy's own spellings decide as before
+                self.assertEqual(self.hook("antigravity", pre(step, name, args), "PreToolUse")[:2],
+                                 (0, '{"decision": "allow"}'))
+
 
 class Installer(unittest.TestCase):
     def setUp(self):
