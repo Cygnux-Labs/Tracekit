@@ -606,7 +606,7 @@ class Translator(observe.Translator):
             text = {"approval.consumed": f"the agent's retry of {asked} ran with the approved arguments" if retry
                     else "the approved call ran with the approved arguments",
                     "approval.expired": f"approved by {self.approvers.get(aid, '?')}, not used before it expired"
-                    if was == "approved" else "expired before anyone answered",
+                    if aid in self.approvers else "expired before anyone answered",
                     "approval.abandoned": "withdrawn by the agent's adapter before anyone answered: the call did not "
                     "run" + (f" · {d['reason']}" if d.get("reason") else ""),
                     "approval.binding_mismatch": "the call's arguments differ from the approved ones: refused"}.get(

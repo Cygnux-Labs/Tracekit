@@ -471,10 +471,15 @@ class Translate(unittest.TestCase):
              "call did not run", "veto")])
 
     def test_an_approval_that_expired_unused_names_who_approved_it(self):
-        """It read "expired before anyone answered", and PERMISSIONS named its approver "?"."""
-        [row] = self.feed(*self.HELD, self.approved(4), v2rec(5, "approval.expired", {"approval_id": "apr-1"}))[-1:]
-        self.assertEqual((row["title"], row["text"]),
-                         ("APPROVAL EXPIRED · Bash", "approved by uid:501 (attested), not used before it expired"))
+        """It read "expired before anyone answered", and PERMISSIONS named its approver "?"; so it did when the call's
+        use, after the approval expired, was refused before the expiry was recorded."""
+        late = v2rec(5, "approval.refused", {"tool_use_id": "c1", "approval_id": "apr-1",
+                                             "rule_ids": ["TK-APPROVAL-EXPIRED"], "reason": "TK-APPROVAL-EXPIRED"})
+        for used in ([], [late]):
+            [row] = self.feed(*self.HELD, self.approved(4), *used,
+                              v2rec(6, "approval.expired", {"approval_id": "apr-1"}))[-1:]
+            self.assertEqual((row["title"], row["text"]),
+                             ("APPROVAL EXPIRED · Bash", "approved by uid:501 (attested), not used before it expired"))
 
     def test_a_use_refused_because_a_person_rejected_it_reads_rejected(self):
         """A person rejected the hold, the agent tried the call anyway and the signer refused it: the hold read
