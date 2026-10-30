@@ -108,6 +108,30 @@ class Verdicts(unittest.TestCase):
                         (c["check"] for c in rep.checks if c["status"] == "fail"), None)}, case["expected"])
                     self.assertFalse(code == 0 and rep.integrity == "VERIFIED", rep.checks)
 
+    def test_a_failed_line_says_what_failed(self):
+        """Across the negative corpus, a failed line's headline never repeats its pass text: a line that counts problems
+        says how many and in what (keys with none: that no record key is declared), a checkpoint says why, a misnamed
+        policy says so."""
+        lines = {"keys", "run parts", "signatures", "run chain", "inclusion", "checkpoint", "policy snapshot"}
+        seen = set()
+        for d, cases in (("negative", NEGATIVE["cases"]), ("parts", PARTS["cases"][1:])):
+            for case in cases:
+                rep, _ = v2.verify(os.path.join(GOLDEN, d, case["bundle"]), os.path.join(GOLDEN, d, "trust.json"))
+                for c in rep.checks:
+                    if c["status"] != "fail" or c["check"] not in lines:
+                        continue
+                    with self.subTest(case=case["bundle"], check=c["check"]):
+                        seen.add(c["check"])
+                        if c["check"] == "checkpoint":
+                            self.assertNotRegex(c["detail"], r"signed by its pinned log key$")
+                        elif c["check"] == "policy snapshot":
+                            self.assertTrue(c["detail"].endswith(" is not named by the SHA-256 of its bytes"), c)
+                        elif c["problems"] or c["check"] != "keys":
+                            self.assertTrue(c["detail"].startswith(f"{len(c['problems'])} problem(s) in "), c)
+                        else:
+                            self.assertEqual(c["detail"], "no key record declares a record key")
+        self.assertEqual(seen, lines)
+
     def test_a_run_in_parts_verifies(self):
         rep, code = v2.verify(os.path.join(GOLDEN, "parts", "parts.tkb"), os.path.join(GOLDEN, "parts", "trust.json"))
         self.assertEqual((code, rep.integrity, PARTS["cases"][0]["expected"]["integrity"]), (0, "VERIFIED", "VERIFIED"))

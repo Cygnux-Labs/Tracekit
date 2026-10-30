@@ -532,8 +532,10 @@ class VerifiedToolResults(test_gateway.Gateway):
         self.client = Client(ac._serve(self, lambda identity, frame: self.s.handle_frame(test_gateway.AGENT, frame)))
 
     def model(self, r):
+        # 60 s, not openai's 5 s connect: the test asserts nothing about time, and a CI runner that stalls the event
+        # loop past the deadline fails a loopback connect the kernel finished long before
         c = AsyncOpenAI(base_url=f"http://127.0.0.1:{self.port}/v1", api_key=test_gateway.SECRET, max_retries=0,
-                        default_headers={"X-Tracekit-Run": f"{r.run_id}.{r.run_token}"})
+                        timeout=60, default_headers={"X-Tracekit-Run": f"{r.run_id}.{r.run_token}"})
         return OpenAIChatModel("gpt-x", provider=OpenAIProvider(openai_client=c))
 
     def replies(self, *turns):

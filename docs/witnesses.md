@@ -96,6 +96,9 @@ metrics: {listen: 0.0.0.0:9464, allow_remote: true}   # serves GET /logs/v0 to t
 
 - `vkey` is the witness's cosignature (type 0x04) verifier key; its name names the witness in metrics and gaps.
   `class` (`public`, `customer`, `tracekit` or `operator`) is copied into the trust config by `tracekit signer trust`.
+  List each witness once: two entries with one name, or with one key under two names, are refused, as verifiers
+  count each witness once. A trust config you build yourself follows the same rule: one key under one name, with one
+  class ([format v2](format-v2.md#10-the-trust-config)).
 - Witnesses get the note text and the log's Ed25519 signature only, in at most 10 KiB. A `409` makes the signer resend
   from the witness's size. Failures are retried with backoff, and the retry state is kept in the store
   (`witness-queue.json`), so a restart resumes it. A log a witness has not cosigned for 5 minutes gets one signed

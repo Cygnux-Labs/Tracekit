@@ -27,7 +27,13 @@ Every run's calls sit around a black hole, the event horizon every run starts fr
 | **OUTSIDE WORLD** | hosts: of a URL, or of an email address |
 
 A call's place is the first host or path among its arguments (the signer's copy), its subject first. A call that names
-neither is placed by its tool: on this machine, or outside for a network tool.
+neither is placed by its tool: on this machine, or outside for a network tool. A Bash call reads its command alone,
+past a leading `cd`, as the shell splits it, leaving out the words that are data (a commit message, a grep pattern,
+jq's filter, a sed or awk script, what `echo` or `printf` prints). Its place is a host first, then a file it writes (a
+redirection's target, `tee`'s files: the move **wrote** there), then a path that can't be a branch or ref (`~/`, `/`,
+`./`, `../`, a dotfile, or a `dir/file.ext`). A command with none of them is named by its first program past shell
+keywords and builtins, and its verb (`git checkout -b feature/x` is **git checkout**), on this machine, and its rows
+show the command.
 
 Each mark is a call, or a file or network effect a kernel sensor saw: `●` read, ran or reached; `■` wrote, or a person
 approved it; `✕` blocked by policy; `◯` held for a person; `◆` flagged. A **shield** marks a restricted place: a `TK-F`
@@ -35,10 +41,12 @@ or `TK-D` rule about secrets, credentials, harness configuration or Tracekit's o
 on the shield means an agent was stopped there (blocked or held). A **jet**, a dashed line out to the outside world,
 marks each call to a host there.
 
-Over the map, **MISSION CLOCK** is the time since the first move and **MOVE** the move shown; **EGRESS** counts the hosts
-outside reached, **RESTRICTED** the moves at restricted places and how many ran, **FENCES HIT** the blocked calls,
-**HOLDS** the held ones, and **CHAIN** reads `✓ VERIFIED` when no move drawn is unverified, else how many are. Beside
-it: the agents, the places, the places outside the machine and the restricted tries, then how to read the marks.
+Over the map, **MISSION CLOCK** is the time since the first move and **MOVE** the move shown; **HOSTS OUTSIDE** counts
+the hosts outside the machine reached, **RESTRICTED** the moves at restricted places tried and how many ran,
+**BLOCKED** the blocked calls, **HELD** the calls held for a person (DESK's HELD: the agent's retry of a held call
+counts with it), and **CHAIN** reads `✓ VERIFIED` when no move drawn is unverified, else how many are. Beside it: the
+agents and the places, then how to read the marks. Each ring is named where it is on screen: zoomed in, on the part of
+it in view.
 
 ## How we know
 
@@ -52,10 +60,21 @@ Each move carries one grade:
 
 The grades are the viewer's check, operator-side: the run's bundle, checked with `tracekit verify`, is the evidence.
 
+## Zoom
+
+The wheel or a pinch zooms toward the pointer, up to 64 times the fitted map; drag to pan, and double-click to fly in.
+**+**, **−** and **FIT** under ORBIT/TOP do the same, as do the keys `+`, `-` and `0` or Esc for FIT (with Cmd, Ctrl or
+Alt held they stay the browser's own zoom). On a touch screen, two fingers pinch and pan. Places nest by their folders,
+circles in circles: a folder opens into its files once its smallest one has room on screen, and a name shows once it
+has room. At the normal zoom only the places show: a folder's circle appears when the pointer is on it or on a place
+in it, when it's picked or restricted, and for every folder from 1.6x. Clicking a place or folder flies to it, lights the routes through it and lists who did what there. The map is
+drawn only when something on it changes or moves.
+
 ## Replay, follow, orbit
 
-**REPLAY** plays the moves in order, one a second, and **PAUSE** stops. The line beside it has a point per move, with
-its BLOCK, HOLD, APPROVED and FLAG milestones named; click any point to show the map as of that move.
+**REPLAY** plays the moves in order, one a second, and **PAUSE** stops; with **CAM** on, the camera flies to each move.
+The line beside it has a point per move, with its BLOCK, HOLD, APPROVED and FLAG milestones named; click any point to
+show the map as of that move.
 **FOLLOW AN AGENT**: click an agent to draw only its route, numbered, and list it beside the map; click it again for
 every agent. **ORBIT** (the default) tilts the map; **TOP** shows it from above. With reduced motion (your system's
 setting) the map draws still frames, one for each change.
@@ -63,9 +82,11 @@ setting) the map draws still frames, one for each change.
 ## Click a place
 
 Click a place to see who went there and how we know: each move there with its agent, what it did, the tool and
-the rules that matched, its run and seq, its grade, and **OPEN**, which opens the record on its run's page. The heading
-names the ring, and says **RESTRICTED** with the rule that made it so, or **A TOOL, NO FILE OR HOST RECORDED** for a
-place named after a tool. Click the place again for the key.
+the rules that matched, its run and seq, its grade, and **OPEN**, which opens the record on its run's page. A long
+command shows its first 3 lines and **SHOW ALL** for the rest. The heading
+names the ring, and says **RESTRICTED** with the rule that made it so, **A TOOL, NO FILE OR HOST RECORDED** for a
+place named after a tool, or **A COMMAND, NO FILE OR HOST IN IT** for one named after a command's program. Click the
+place again for the key.
 
 ![HORIZON with the Bash place clicked: a tool place, no file or host recorded; each agent that ran Bash there, approved, held or ran, with its run, seq, SIGNED and OPEN](viewer/1.5/horizon-place.png)
 
@@ -86,8 +107,15 @@ placed that way.
   machine ([limits](limits.md#investigation-tracekit-why)).
 - A call whose arguments the viewer has only as a commitment is placed by its tool, not at a file or host
   ([limits](limits.md#investigation-tracekit-why)).
-- A word with a slash in a call's arguments is read as a path, so a git ref such as `origin/main` is drawn as a project
-  place.
+- Outside a Bash command, a word with a slash in a call's arguments is read as a path, so a git ref such as
+  `origin/main` is drawn as a project place; in a Bash command, a `dir/name` with no file extension is not, and a
+  program is named with its verb only for some (git, npm, docker, kubectl and the like; gh with its noun and verb, as
+  `gh pr merge`)
+  ([limits](limits.md#investigation-tracekit-why)).
+- On a phone it draws callouts only for restricted places and places where an agent was stopped. At any width it draws
+  them restricted places and stops first, then the busiest, and leaves out each that would cover one already drawn; a
+  long path's callout names its last two parts, and hovering a place gives its whole path. A move's number that would cover another's is left out
+  ([limits](limits.md#investigation-tracekit-why)).
 - It shows the network effects a kernel sensor saw, not the egress observer's records
   ([limits](limits.md#investigation-tracekit-why)).
 - A why log time it can't read is drawn as the oldest ([limits](limits.md#investigation-tracekit-why)).

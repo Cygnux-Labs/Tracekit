@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import statistics
 import tempfile
 import unittest
 import zipfile
@@ -491,18 +492,23 @@ class TestDeepReview(Case):
 
 class TestCost(Case):
     def test_ack_seconds_does_not_grow_with_the_run(self):
+        """The median ack of a run's last 100 decisions against its first 100's: a cost that grows with the run moves
+        the median, a pause of the runner during a few acks doesn't (as a mean, it did: 22 ms against 1 ms on
+        Windows)."""
         s = self.signer()
         run = s.register()
         h = s.s.metrics.ack_seconds
 
-        def mean_of(n):
-            before = (h._sum, sum(h._counts))
+        def median_of(n):
+            acks = []
             for i in range(n):
+                before = (h._sum, sum(h._counts))
                 s.decide(run, ("shell", {"command": "rm a"}) if i % 2 else SECRET)
-            return (h._sum - before[0]) / (sum(h._counts) - before[1])
-        first = mean_of(100)
-        mean_of(800)
-        last = mean_of(100)
+                acks.append((h._sum - before[0]) / (sum(h._counts) - before[1]))
+            return statistics.median(acks)
+        first = median_of(100)
+        median_of(800)
+        last = median_of(100)
         self.assertLess(last, 3 * first + 0.005, (first, last))
 
 

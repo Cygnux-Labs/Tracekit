@@ -2,11 +2,16 @@
 from a person's consumed approval of a `pcm.grant` call, delegation, evidence with inclusion proofs, and the bundle of a
 run that sent messages."""
 import base64
+import contextlib
 import hashlib
 import hmac
+import io
 import itertools
 import json
 import os
+import re
+import socket
+import threading
 import time
 import unittest
 from unittest import mock
@@ -22,6 +27,7 @@ from tracekit.signer import logkey, service as svc
 from tracekit.signer.rpc_schema import REQUESTS, RESPONSES, RPCError, validate
 from tracekit.verify import v2
 
+DOCS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "pcm.md")
 A, B, ALICE = (CallerIdentity("uid", u, True) for u in ("990101", "990102", "990001"))
 TAILER = CallerIdentity("uid", "990105", True)   # a run token is delegated to it
 REVIEWER, OPS = CallerIdentity("token", "reviewer", True), CallerIdentity("token", "ops", True)
@@ -212,8 +218,9 @@ class TestGrant(Case):
         args = self.args()
         self.approve(args, decision="reject", consume=False)
         self.assertIn("approved and consumed", self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args))
-        self.approve(args, tcid="g2", consume=False)
-        self.refused("forbidden", "pcm_grant", tool_call_id="g2", args=args)   # approved, not consumed
+        other = dict(args, delegable=False)   # its own arguments: an approval of `args` nothing consumed is g3's
+        self.approve(other, tcid="g2", consume=False)
+        self.refused("forbidden", "pcm_grant", tool_call_id="g2", args=other)   # approved, not consumed
         self.refused("forbidden", "pcm_grant", tool_call_id="nope", args=args)
         self.approve(args, tcid="g3")
         self.refused("args_mismatch", "pcm_grant", tool_call_id="g3", args=dict(args, delegable=False))
@@ -255,6 +262,24 @@ class TestGrant(Case):
         self.s.close()
         self.s = self.open()   # replayed: the call still has its result
         self.assertIn("already issued", self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args))
+
+    def test_after_approve_then_retry_only_the_retry_has_a_grant(self):
+        """Approve, then retry: the retry consumed the blocked pcm.grant call's approval, so the retry's call has the
+        grant, until it completes; the blocked call, which never ran under the approval, has none."""
+        args = self.args()
+        aid, _ = self.approve(args, consume=False)
+        retry = self.decide(args, "g2")
+        self.assertEqual(self.call("approval_request", tool_call_id="g2")["approval_id"], aid)
+        self.assertTrue(self.call("approval_consume", tool_call_id="g2", tool="pcm.grant", args_source="parsed",
+                                  args=args, approval_id_hint=aid)["ok"])
+        self.assertIn("approved and consumed", self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args))
+        g = self.call("pcm_grant", tool_call_id="g2", args=args)["grant"]
+        self.assertEqual(g["issuer"]["approval_id"], aid)
+        self.call("complete", stream="s", client_seq=next(self.seqs), tool_call_id="g2",
+                  decision_id=retry["decision_id"], args_digest=event_hash({"tool": "pcm.grant", "args": args}),
+                  status="ok", result={"grant": event_hash(g)})
+        self.assertIn("already issued", self.refused("forbidden", "pcm_grant", tool_call_id="g2", args=args))
+        self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args)
 
     def test_rechecked_on_the_writer_after_signing(self):
         args = self.args()
@@ -436,6 +461,53 @@ class TestBundle(Case):
         self.assertEqual(code, 0)
         warned = [c["detail"] for c in rep.checks if c["check"] == "not interpreted"]
         self.assertTrue(any("ext.pcm.sent" in d for d in warned) and any("ext.pcm.grant" in d for d in warned), warned)
+
+
+@unittest.skipUnless(hasattr(socket, "AF_UNIX"), "the example's signer.yaml serves a Unix socket")
+class TestPythonSdkExample(unittest.TestCase):
+    """docs/pcm.md's Python SDK example as the doc says to run it: a signer served from its signer.yaml and policy.yaml,
+    B's trust file as the signer's trust command writes it, alice approving as an identity of her own, and the script,
+    which prints what the doc shows (but for the SDK's random call id)."""
+
+    def test_runs_as_written(self):
+        with open(DOCS, encoding="utf-8") as f:
+            section = f.read().split("\n## Python SDK\n", 1)[1].split("\n## ", 1)[0]
+        blocks = re.findall(r"```(\w+)\n(.*?)```", section, re.S)
+        d = ts.tmpdir(self)   # short: the socket is in it
+        for lang, text in blocks:
+            if lang == "yaml":   # each starts with its file name: # signer.yaml
+                with open(os.path.join(d, text.split()[1]), "w", encoding="utf-8") as f:
+                    f.write(text)
+        [script], [shown] = ([text for lang, text in blocks if lang == want] for want in ("python", "text"))
+        config = os.path.join(d, "signer.yaml")
+        cfg = svc.signer_config(config)
+        service = svc.open_service(cfg)
+        self.addCleanup(service.close)
+        for srv in svc.serve(cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        with contextlib.redirect_stdout(io.StringIO()):   # step 2
+            self.assertEqual(svc.main(["trust", "--config", config, "-o", os.path.join(d, "pcm-trust.json")]), 0)
+        stop = threading.Event()
+
+        def alice():   # step 4: `tracekit approvals approve <id>` from her own login
+            while not stop.wait(0.05):
+                for x in service.call(ALICE, "approval_list", {})["approvals"]:
+                    if x["state"] == "requested":
+                        service.call(ALICE, "approval_decide", {**({"request_id": rid()} if "request_id" in REQUESTS[
+                            "approval_decide"]["properties"] else {}), "approval_id": x["approval_id"],
+                            "decision": "approve"})
+        t = threading.Thread(target=alice, daemon=True)
+        t.start()
+        self.addCleanup(t.join)
+        self.addCleanup(stop.set)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(d)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER": cfg["socket"]}), contextlib.redirect_stdout(out):
+            exec(script, {"__name__": "__main__"})   # step 3, as agent A: this process's uid
+        call_id = re.compile(r"pcm-grant-[0-9a-f]{32}")
+        self.assertEqual(call_id.sub("pcm-grant-…", out.getvalue()), call_id.sub("pcm-grant-…", shown))
 
 
 if __name__ == "__main__":

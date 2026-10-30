@@ -26,7 +26,7 @@ class Split(unittest.TestCase):
                         self.assertIsNone(pat.search(fh.read()), os.path.join(root, f))
 
     def test_moved_subcommands_point_to_contrib(self):
-        for cmd, pkg in (("sql", "query"), ("proofpack", "proofpack"), ("report", "proofpack"), ("causeway", "causeway")):
+        for cmd, pkg in (("sql", "query"), ("proofpack", "proofpack"), ("causeway", "causeway")):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 self.assertEqual(cli.main([cmd, "--help"]), 2)

@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -51,6 +53,118 @@ func TestPublishedCheckpointVector(t *testing.T) {
 				t.Fatal("accepted invalid note")
 			}
 		})
+	}
+}
+
+// cosignLine is the witness key `name` of seed `seed` and its cosignature line
+// over the published checkpoint's text.
+func cosignLine(t *testing.T, name string, seed byte) (VKey, string) {
+	t.Helper()
+	text := strings.SplitN(checkpointNote, "\n\n", 2)[0] + "\n"
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, 32))
+	key, err := ParseVKey(fixtureVKey(name, 4, priv.Public().(ed25519.PublicKey)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := binary.BigEndian.AppendUint64(nil, 1760000000)
+	sig := ed25519.Sign(priv, []byte("cosignature/v1\ntime 1760000000\n"+text))
+	blob := append(append(append([]byte(nil), key.ID[:]...), ts...), sig...)
+	return key, "— " + name + " " + base64.StdEncoding.EncodeToString(blob) + "\n"
+}
+
+// trustWith is the bundle fixture's trust config pinning `witnesses`
+// ({vkey, class} objects) and requiring `required` of them.
+func trustWith(t *testing.T, trust []byte, witnesses []any, required int) []byte {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(trust, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["witnesses"], m["witnesses_required"] = witnesses, required
+	raw, _ := json.Marshal(m)
+	return raw
+}
+
+// A cosignature signs no key name and a witness cosigns with one key (C2SP
+// tlog-cosignature), so a witness is one key under one name: one key under two
+// names, or two keys under one name, is refused in the checkpoint and in the
+// trust config. Two witnesses with keys and names of their own count two.
+func TestWitnessCountsOnce(t *testing.T) {
+	log, err := ParseVKey(logVKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, lineA := cosignLine(t, "witness.example/a", 7)
+	alias, lineAlias := cosignLine(t, "witness.example/alias", 7)
+	a2, lineA2 := cosignLine(t, "witness.example/a", 9) // a second key under a's name
+	b, lineB := cosignLine(t, "witness.example/b", 8)
+	aliased := "one witness key under two names (%s, %s); a key is one witness: keep it under the name it cosigns with"
+	twoKeys := "two witness keys under one name (witness.example/a); a name is one witness: keep only its current key"
+	cases := []struct {
+		pins  []VKey
+		lines string
+		want  string
+	}{
+		{[]VKey{a, alias}, lineA + lineAlias, fmt.Sprintf(aliased, a.Name, alias.Name)},
+		{[]VKey{alias, a}, lineA + lineAlias, fmt.Sprintf(aliased, alias.Name, a.Name)},
+		{[]VKey{a, a2}, lineA + lineA2, twoKeys},
+		{[]VKey{a2, a}, lineA + lineA2, twoKeys},
+		{[]VKey{a, b}, lineA + lineB, ""},
+	}
+	files, trust := bundleFixture(t)
+	for _, tc := range cases {
+		cp, err := VerifyCheckpoint([]byte(checkpointNote+tc.lines), log, tc.pins, 2)
+		if tc.want == "" && (err != nil || cp.Witnesses != 2) || tc.want != "" && (err == nil || err.Error() != tc.want) {
+			t.Fatalf("checkpoint under %v: %+v %v", tc.pins, cp, err)
+		}
+		var ws []any
+		for _, k := range tc.pins {
+			ws = append(ws, map[string]any{"vkey": fixtureVKey(k.Name, 4, k.Pub), "class": "customer"})
+		}
+		raw := trustWith(t, trust, ws, 1)
+		if _, _, _, err := loadTrust(raw); (tc.want == "") != (err == nil) {
+			t.Fatalf("trust %v: %v", tc.pins, err)
+		}
+		if r := VerifyBundle(fixtureZip(files), raw); tc.want != "" && (r.ExitCode != 2 || r.Integrity != TrustUnusable || r.Detail != "trust config: "+tc.want) {
+			t.Fatalf("bundle under trust %v: %+v", tc.pins, r)
+		}
+	}
+}
+
+// As the Python and TypeScript verifiers: a witness listed twice counts once
+// and must have one class, and a quorum above the pinned witnesses fails the
+// checkpoint (exit 1) rather than the trust config.
+func TestWitnessListedTwiceAndQuorum(t *testing.T) {
+	log, err := ParseVKey(logVKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, lineA := cosignLine(t, "witness.example/a", 7)
+	if cp, err := VerifyCheckpoint([]byte(checkpointNote+lineA), log, []VKey{a, a}, 1); err != nil || cp.Witnesses != 1 {
+		t.Fatalf("one witness pinned twice: %+v %v", cp, err)
+	}
+	if _, err := VerifyCheckpoint([]byte(checkpointNote+lineA), log, []VKey{a, a}, 2); err == nil || err.Error() != "witness quorum: 1 pinned cosignature(s), 2 required" {
+		t.Fatalf("one witness pinned twice counts once: %v", err)
+	}
+	files, trust := bundleFixture(t)
+	pin := func(class string) any { return map[string]any{"vkey": fixtureVKey(a.Name, 4, a.Pub), "class": class} }
+	// the same key and name as a vkey of another type is another entry, as in the reference: no two classes, and
+	// the checkpoint fails the non-witness vkey (exit 1)
+	asLog := map[string]any{"vkey": fixtureVKey(a.Name, 1, a.Pub), "class": "public"}
+	for _, tc := range []struct {
+		witnesses []any
+		required  int
+		exit      int
+		detail    string
+	}{
+		{[]any{pin("customer"), pin("customer")}, 0, 0, ""},
+		{[]any{pin("customer"), pin("operator")}, 0, 2, "trust config: witness witness.example/a with two classes (customer, operator); a witness has one class: list it once, with the class you give it"},
+		{[]any{pin("customer")}, 2, 1, "witness quorum: 0 pinned cosignature(s), 2 required"},
+		{[]any{pin("customer"), asLog}, 0, 1, "pinned key witness.example/a has the wrong signature type"},
+	} {
+		if r := VerifyBundle(fixtureZip(files), trustWith(t, trust, tc.witnesses, tc.required)); r.ExitCode != tc.exit || r.Detail != tc.detail {
+			t.Fatalf("bundle under %v, %d required: %+v", tc.witnesses, tc.required, r)
+		}
 	}
 }
 

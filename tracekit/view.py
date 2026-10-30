@@ -51,11 +51,13 @@ import hmac
 import io
 import logging
 import json
+import math
 import os
 import secrets
 import shutil
 import signal
 import ssl
+import subprocess
 import sys
 import tempfile
 import threading
@@ -65,7 +67,7 @@ from urllib.parse import urlencode, urlsplit
 
 from . import observe
 from . import findings_text, findings_v2, parsers
-from .bundle_v2 import export
+from .bundle_v2 import bundle, export
 from .format import checkpoint
 from .format.records import RecordSigner
 from .identity import oidc, webauthn
@@ -76,18 +78,26 @@ from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
-from .signer.service import dev_data_dir, load_config, lookup, read_vkeys, reader
-from .storage.base import StorageCorrupt, StorageUnavailable
+from .signer.service import data_dir_at, dev_data_dir, load_config, lookup, read_vkeys, reader
+from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
 from .verify import v2
 from .why.server import Store
 
 POLL_S = 1.0
-BACKOFF = 4   # a run being written is verified again no sooner than BACKOFF x its last check's time after that check
-RECHECK_S = 300   # a run that did not grow is verified again this long after its last check, one run a pass
+# the checks of runs that grew take at most 1/(1 + BACKOFF) of a core: after one, none for BACKOFF x its CPU time
+BACKOFF = 40
+MIRROR_BACKOFF = 100   # a run's graph is imported again no sooner than this x its last import's CPU time after it
+# a run that did not grow is verified again this long after its last check, one run a pass: in a Postgres store, and
+# a run that failed or could not be checked
+RECHECK_S = 300
+EDIT_S = 60   # a file store's records are hashed again this often: an edit of records read before checks all runs again
+REFRESH_S = 5.0   # a refresh starts no check of a run past this long, so the newest records are read again meanwhile
+PACE = 1   # after a run's first check or re-check, a pause of PACE x its CPU time: a pass over a store takes half a core
 MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
 ROWCACHE_MAX = 8   # runs whose /api/rows answer the viewer keeps, each until a newer checkpoint
 KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
+BUNDLES_MAX = 64 << 20   # bytes of the runs not final the viewer keeps to check them from as they grow, the last checked
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
 STREAMS, STREAMS_PER_IP = 256, 64   # a team may share one address
@@ -284,7 +294,7 @@ ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PAR
                 "TK-LIMIT-SUM": "a sum limit counts this call: send the amount as a non-negative integer in minor "
                                 "units, with its three-letter currency code",
                 "TK-CONSTRAINT": "the person's request in this run said not to do this, so a person must approve it",
-                "TK-HOLD": "the run is held by an incident: every call waits for a person",
+                "TK-HOLD": "the run is held by an incident: every call is held for a person",
                 "TK-QUARANTINE": "the run is quarantined by an incident: its calls are refused",
                 "TK-ARGS-INVALID": "arguments the signer could not read, so it refused the call",
                 "TK-A2A-NAME": policy_compile.ENGINE_REASONS["TK-A2A-NAME"]["reason"]}
@@ -335,18 +345,27 @@ class Reasons(dict):
     policies = {}
 
 
-def policy_reasons(paths=()):
-    """Reasons of the shipped packs and the policy files `paths`: a decision's rule reasons are shown only from the
-    policy whose hash it records, and so is how many rules it read."""
+def policy_reasons(paths=(), kept=None):
+    """Reasons of the shipped packs, the policy files `paths` and the compiled policies a signer kept in directory
+    `kept` (its data_dir/policies, each file named by the SHA-256 of its bytes, its policy_hash: read only when it is):
+    a decision's rule reasons are shown only from the policy whose hash it records, and so is how many rules it read."""
     out = Reasons()
     out.policies = {}
     for p in sorted(glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))) + list(paths):
         pol, errors = policy_compile.build(p)
         if not errors:
             out.policies[policy_compile.policy_hash(pol)] = pol
-            out[policy_compile.policy_hash(pol)] = {
-                r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
-                for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
+    for p in sorted(glob.glob(os.path.join(glob.escape(kept), "*.json"))) if kept else ():
+        try:   # 0600, the signer's: another user reads the rule ids only, as for a policy it doesn't have
+            with open(p, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        if os.path.basename(p) == hashlib.sha256(data).hexdigest() + ".json":
+            out.policies["sha256:" + os.path.basename(p)[:-5]] = json.loads(data)
+    for h, pol in out.policies.items():
+        out[h] = {r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
+                  for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out
 
 
@@ -375,6 +394,8 @@ class Translator(observe.Translator):
         # approval_id -> (tool, rule ids, tool call id), and shadow suggestions: the newest MAX_RUNS_KEPT each, like agent_names
         self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
                                          observe._Bounded(observe.MAX_RUNS_KEPT))
+        self.held = observe._Bounded(observe.MAX_RUNS_KEPT)   # approval_id -> what its call came to so far (held_outcome)
+        self.approvers = observe._Bounded(observe.MAX_RUNS_KEPT)   # approval_id -> who approved it
         self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
         self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
@@ -410,10 +431,12 @@ class Translator(observe.Translator):
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
         out = self._v2(e, rec, t, d)
-        # an approval's later records (one that expired at run.final names no call) are its request's call's
-        info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": d.get("tool_use_id")
-                or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
-                or self.requests.get(d.get("approval_id"), ("", [], None))[2],
+        call = d.get("tool_use_id") or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
+        asked = self.requests.get(d.get("approval_id"), ("", [], None))[2]
+        # an approval's later records (one that expired at run.final names no call) are its request's call's; one filed
+        # under the agent's retry of that call, which used its approval (signer _reusable), names it as `held`
+        info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": call or asked,
+                **({"held": asked} if t.startswith("approval") and call and asked and asked != call else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
@@ -439,11 +462,14 @@ class Translator(observe.Translator):
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
                                                        "only its commitment", "INPUT", trust=d.get("trust"),
                         source=d.get("source"))
-        if t == "content.accessed":
+        if t == "content.accessed":   # the tape folds a row of reads by one reader for one purpose
             seqs = d.get("seqs") or []
-            return note("CONTENT READ", f"{d.get('principal')} read the kept content of {len(seqs)} record"
-                                        f"{'s' * (len(seqs) != 1)} of run {d.get('run_id')} · “{d.get('purpose')}”",
-                        "SIGNER")
+            what = f"the kept content of {len(seqs)} record{'s' * (len(seqs) != 1)} of run {d.get('run_id')}"
+            who = {"principal": d.get("principal"), "purpose": d.get("purpose")}
+            if d.get("purpose") == "tracekit view":   # a viewer's own reads, to show that content on its tape
+                return note("CONTENT READ FOR TRACEKIT VIEW", f"{d.get('principal')} read {what} to show it in "
+                                                              "tracekit view (the purpose its reader gave)", "SIGNER", **who)
+            return note(f"CONTENT READ · “{d.get('purpose')}”", f"{d.get('principal')} read {what}", "SIGNER", **who)
         if t == "review":   # a signed finding of a findings run, about the run it analyzes
             v, (about, author) = d.get("verdict") or {}, self.analyzes.get(e["run_id"], (None, "?"))
             rule = v.get("rule", "")
@@ -491,7 +517,20 @@ class Translator(observe.Translator):
                          **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d}})
             return [r]
         aid = d.get("approval_id")
-        tool, rule_ids, _ = self.requests.get(aid, ("", [], None))
+        tool, rule_ids, asked = self.requests.get(aid, ("", [], None))
+        was = self.held.get(aid, OPEN)
+        now = held_outcome(was, t, d) if t == "approval" or t in OUTCOMES else was
+        if aid and now != was:
+            self.held[aid] = now
+        if t == "approval.refused" and now == was:   # it repeats its approval's state: no outcome of the call's own
+            if "TK-APPROVAL-REQUESTED" in (d.get("rule_ids") or ()):   # e.g. an SDK that did not wait for the answer
+                return alert("med", f"APPROVAL NOT ANSWERED YET · {tool}", "not answered yet when the call tried to "
+                             "run: the call did not run", "HOLD", approval="unanswered")
+            if "TK-APPROVAL-VETO" in (d.get("rule_ids") or ()):   # still approved: usable once the delay has passed
+                return alert("low", f"APPROVAL NOT USABLE YET · {tool}", f"{d.get('reason')}: the call did not run",
+                             "HOLD", approval="veto")
+            return alert("low", f"APPROVAL ALREADY ENDED · {tool}", f"{was} before the call tried to run: the call "
+                         "did not run", "HOLD", approval="ended")
         if t == "approval.request":
             tool = (d.get("binding") or {}).get("tool", "")
             self.requests[aid] = (tool, d.get("rule_ids") or [], (d.get("binding") or {}).get("tool_call_id"))
@@ -527,6 +566,8 @@ class Translator(observe.Translator):
                          + (f" · “{d['reason']}”" if d.get("reason") else ""), "SIGNER")
         if t == "approval":
             dec, who = d.get("decision"), d.get("approver_identity")
+            if dec == "approve":   # named again if it expires unused
+                self.approvers[aid] = f"{'agent ' if agent else ''}{_who(who) if who else d.get('approver')}"
             shadow = ""
             if aid in self.suggested and not agent:   # a person's answer to a call an agent answered in shadow mode
                 hit = self.suggested.pop(aid) == dec
@@ -539,8 +580,8 @@ class Translator(observe.Translator):
                     + (f" · vouched for by {_who(d['via'])} via {d.get('channel')}" if d.get("via") else "")
                     + (f" · “{d['reason']}”" if d.get("reason") else "")
                     # only an approval can be a self-approval: the requester rejecting their own call is no risk
-                    + ((" · SELF-APPROVED" if d.get("self_approved") else " · not self-approved") if dec == "approve"
-                       else " · by the requester" if d.get("self_approved") else "")
+                    + ((" · by the requester · SELF-APPROVED" if d.get("self_approved") else " · not self-approved")
+                       if dec == "approve" else " · by the requester" if d.get("self_approved") else "")
                     + (" · BREAK-GLASS" if d.get("break_glass") else "") + (" · passkey" if d.get("passkey") else "")
                     + shadow)
             sev = "high" if dec == "self_approval_refused" or d.get("break_glass") else \
@@ -551,11 +592,23 @@ class Translator(observe.Translator):
                          "APPROVE" if dec == "approve" else "REJECT", approval=dec, approver=_who(who) if who else
                          d.get("approver"), via=d.get("via") and _who(d["via"]), self_approved=d.get("self_approved"),
                          break_glass=bool(d.get("break_glass")), reason=d.get("reason"))
+        if t == "approval.refused" and "TK-APPROVAL-EXPIRED" in (d.get("rule_ids") or ()):
+            return alert("med", f"APPROVAL EXPIRED · {tool}", "the approval had expired when the call came to use "
+                         "it: the call did not run", "HOLD", approval="expired")
+        if t == "approval.refused" and "TK-APPROVAL-REJECTED" in (d.get("rule_ids") or ()):
+            # its rejection (or a revoke, which rejects: signer _revoke) is not on this tape
+            return alert("med", f"APPROVAL REJECTED · {tool}", "the approval was rejected when the call came to use "
+                         "it: the call did not run", "REJECT", approval="reject")
         if t in ("approval.consumed", "approval.expired", "approval.abandoned", "approval.refused",
                  "approval.binding_mismatch"):
             word = t.split(".")[1]
-            text = {"approval.consumed": "the approved call ran with the approved arguments",
-                    "approval.expired": "expired before anyone answered",
+            retry = asked and e.get("tool_call_id") not in (None, asked)
+            text = {"approval.consumed": f"the agent's retry of {asked} ran with the approved arguments" if retry
+                    else "the approved call ran with the approved arguments",
+                    "approval.expired": f"approved by {self.approvers.get(aid, '?')}, not used before it expired"
+                    if aid in self.approvers else "expired before anyone answered",
+                    "approval.abandoned": "withdrawn by the agent's adapter before anyone answered: the call did not "
+                    "run" + (f" · {d['reason']}" if d.get("reason") else ""),
                     "approval.binding_mismatch": "the call's arguments differ from the approved ones: refused"}.get(
                 t, d.get("reason") or "")
             sev = {"approval.consumed": "info", "approval.expired": "med", "approval.abandoned": "low"}.get(t, "high")
@@ -634,6 +687,12 @@ class Translator(observe.Translator):
                          + (f" by {d['by']}" if d.get("by") else "")
                          + (f" · policy {str(d['policy_hash'])[:16]}" if d.get("policy_hash") else "")
                          + f" · via {d.get('observer')}; its message is committed, not shown", "STATE")
+        if t == "ext" and d.get("name") == "pcm.sent":   # a proof-carrying message the signer signed: a row, not an alert
+            return note("PCM · MESSAGE SENT", f"to {d.get('to')} · message {d.get('id')} · intent {d.get('intent')}",
+                        "STATE")
+        if t == "ext" and d.get("name") == "pcm.grant":
+            return note("PCM · GRANT ISSUED", f"to {d.get('subject')} · intent {d.get('intent')}"
+                        + (f" · approval {d['approval_id']}" if d.get("approval_id") else ""), "STATE")
         if t == "effect.observed" and d.get("sensor"):   # what a kernel sensor saw; the run's analysis joins it to a call
             k = d.get("kind")
             target = (f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("path") if k == "file" else
@@ -680,24 +739,49 @@ CONSTRAINTS = {"keep_away": "keep a file unchanged", "only_change": "change only
                "read_only": "read-only", "no_push": "don't push", "no_network": "no network"}
 
 
+# a held call nobody has answered in a run still open. Nothing waits: a coding agent's hook blocks the call at once (a
+# gateway's waits up to its approval_wait_s), and approving it lets the agent's retry of the same call run, once
+OPEN = "not answered yet"
 # an approval's later records, as a permission's outcome
 OUTCOMES = {"approval.consumed": "approved · ran", "approval.expired": "expired", "approval.abandoned": "abandoned",
             "approval.refused": "refused", "approval.binding_mismatch": "refused: arguments changed",
             "approval.revoked": "revoked"}
+ANSWERS = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
+           "self_approval_refused": "self-approval refused"}
+
+
+def held_outcome(was, t, d):
+    """What a held call came to after its approval's record of type `t` and data `d`, from what it had come to (`was`:
+    OPEN, approved, ...): review() counts these, and the page's rows say them. A refused use that only repeats its
+    approval's state changes nothing: one nobody had answered yet (TK-APPROVAL-REQUESTED) is still not answered, an
+    agent's approval within the delay people may revoke it in (TK-APPROVAL-VETO) is still approved, and any use after
+    the approval ended (approved · ran, then TK-APPROVAL-CONSUMED; expired, then TK-HOLD; rejected, abandoned, ...) keeps
+    that end. A use refused because the approval expired or was rejected, with no record of that end before it, is that
+    end."""
+    ids = d.get("rule_ids") or ()
+    if t == "approval":
+        return ANSWERS.get(d.get("decision"), d.get("decision"))
+    if t == "approval.refused" and ({"TK-APPROVAL-REQUESTED", "TK-APPROVAL-VETO"} & set(ids)
+                                    or was not in (OPEN, "approved")):
+        return was
+    return "expired" if "TK-APPROVAL-EXPIRED" in ids else "rejected" if "TK-APPROVAL-REJECTED" in ids else OUTCOMES[t]
 
 
 def review(records, rep, verdict):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
     report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
     decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
-    answered, waiting, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
-    when the run's records have left the live view. Counts keep each snapshot small whatever the run's size."""
+    answered, not answered yet, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
+    when the run's records have left the live view; `holds`: the same outcomes, of the calls held for a person (decided
+    ask) only, and `hold_examples` the first such call (its tool_use_id) of each. The agent's retry of a held call, which
+    used that call's approval, is that call: its use is the held call's outcome, counted once (`retries` counts them). Counts keep each snapshot
+    small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
-           "incidents": [], "constraints": [], "constraint_holds": 0,
+           "incidents": [], "constraints": [], "constraint_holds": 0, "retries": 0,
            "state": "open", "first": {}}
-    perms, calls = {}, {}   # tool_use_id -> its outcome; approval_id -> its tool_use_id
+    perms, calls, asked = {}, {}, set()   # tool_use_id -> its outcome; approval_id -> its tool_use_id; calls held
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -715,7 +799,9 @@ def review(records, rep, verdict):
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
             if key != "allow":
-                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, "waiting")
+                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
+            if key == "ask":
+                asked.add(d.get("tool_use_id"))
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -751,43 +837,60 @@ def review(records, rep, verdict):
             out["state"] = "closing"
         if t == "approval.request":
             calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
-        call = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id") or calls.get(d.get("approval_id")))
-        if call in perms and t == "approval":
-            perms[call] = {"approve": "approved", "reject": "rejected", "timeout": "timed out",
-                           "self_approval_refused": "self-approval refused"}.get(d.get("decision"), d.get("decision"))
-        elif call in perms and t in OUTCOMES:
-            perms[call] = OUTCOMES[t]
+        own = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id"))
+        call = t.startswith("approval") and (calls.get(d.get("approval_id")) or own)
+        if own != call and own in perms and call in perms:   # the agent's retry of a held call, under its approval
+            del perms[own]   # (signer _reusable): one held call, whose outcome the retry's use is
+            asked.discard(own)
+            out["retries"] += 1
+        if call in perms and (t == "approval" or t in OUTCOMES):
+            perms[call] = held_outcome(perms[call], t, d)
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
-    out["permissions"] = collections.Counter("not answered" if o == "waiting" and out["state"] == "final" else o
-                                             for o in perms.values())
+    ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
+    out["permissions"] = collections.Counter(ended.values())
+    out["holds"] = collections.Counter(o for c, o in ended.items() if c in asked)
+    out["hold_examples"] = {}
+    for c, o in ended.items():
+        if c in asked:
+            out["hold_examples"].setdefault(o, c)
     return out
 
 
-def dev_content_source():
+def dev_content_source(purpose="tracekit view", connect=None, say=None):
     """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
     model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
     service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
     doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed
-    record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the
-    signer is down it reads nothing."""
+    record naming `purpose`. `connect()`: the client (default Client(), which starts the dev signer when none runs). A
+    refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good; while the signer is down or
+    speaks another protocol it reads nothing. `say(text)` is told once why calls show no arguments, for a refusal or a
+    signer of another protocol (default: printed to stderr after `purpose`)."""
     from .why.signed import vault_content
-    state = {"client": None, "off": False}
+    state = {"client": None, "off": False, "said": False}
+
+    def tell(text):
+        (say or (lambda s: print(f"{purpose}: {s}", file=sys.stderr, flush=True)))(
+            f"calls show their rules, not their arguments: {text}")
 
     def read(run_id, records):
         if state["off"]:
             return {}
         out = {}
         try:
-            state["client"] = state["client"] or Client()
+            state["client"] = state["client"] or (connect or Client)()
             # content redaction changed opens no commitment: not shown as what the record holds
-            out = {seq: content for seq, content, opened in vault_content(state["client"], records, "tracekit view")
+            out = {seq: content for seq, content, opened in vault_content(state["client"], records, purpose)
                    if opened}
         except RPCError as e:
             state["off"] = True
-            print(f"tracekit view: calls show their rules, not their arguments: the dev signer keeps none for this "
-                  f"viewer ({e.code}: {e})", file=sys.stderr, flush=True)
+            tell(f"the dev signer keeps none for {purpose} ({e.code}: {e})")
+        except Incompatible as e:   # tried again on the next read: it may be replaced
+            state["client"] = None
+            if not state["said"]:
+                state["said"] = True
+                tell(str(e))
         except (SignerUnavailable, OSError):
             state["client"] = None
         return out
@@ -822,30 +925,29 @@ class StoreFeed:
     show (dev_content_source; EvidenceAlert when the content does not open its record: a CONTENT NOT SHOWN alert).
     `analyze(records)`: a final run's findings (dev_analysis), once per run."""
 
-    def __init__(self, cfg, log_vkey=None, on_run=None, content=None, analyze=None):
-        self.cfg, self.pg = cfg, bool(cfg.get("storage"))
-        self.store = "the Postgres store" if self.pg else os.path.join(cfg["data_dir"], "store")
-        self.note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if self.pg else DEV_NOTE
-        if not log_vkey and self.pg:
-            r = reader(cfg)
-            try:
-                log_vkey = r.meta("log_vkey")
-            finally:
-                r.close()
-            if log_vkey is None:
-                raise ValueError("the store holds no log vkey yet: start the signer once, or pass --log-vkey")
-        vkeys = [log_vkey] if log_vkey else read_vkeys(cfg["data_dir"])   # a file store: the hybrid key's too
-        for k in vkeys:
-            checkpoint.parse_vkey(k)
+    def __init__(self, cfg, log_vkey=None, on_run=None, content=None, analyze=None, signer=None):
+        # `signer`: how a person's commands name this store's signer ({"dev": True}, {"config": path} or {"data_dir":
+        # path}), which the snapshot gives the page for a run's export and trust commands; `why` with why logs (main)
+        self.cfg, self.pg, self.signer = cfg, bool(cfg.get("storage")), signer
+        self.store = store_name(cfg)
+        self.vkeys, self.note = store_trust(cfg, log_vkey)
         self.records, self.base, self.lock = [], 0, threading.Condition()
         # past it the oldest records leave the live view (base counts them), as observe.Feed's
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report, "checked": when
         # its last check ended (time.monotonic(): never stepped back, as the wall clock can be), "took": the CPU time it
-        # took}
+        # took, "again": to be checked again, grown or not (its store was edited)}
         self.runs = {}
-        self.memo = set()   # verify.v2's memo: a run is checked again at each checkpoint, its new records only in full
-        self.due = 0   # when a run put off (BACKOFF, RECHECK_S) is due, so _watch refreshes with no store change
+        self.memo = v2.Memo()   # verify.v2's: a run is checked again at each checkpoint, its new records only in full
+        self.due = 0   # when a run put off (BACKOFF, RECHECK_S, EDIT_S) is due: _watch refreshes with no store change
+        self.idle = 0   # no run that grew is checked again before then (BACKOFF)
+        # a file store's reader, kept across refreshes (_open); when its bytes are next hashed again (EDIT_S); and
+        # (tenant, run_id) -> bundle_v2.bundle's `kept` of the run's last bundle that verified, so a run that grew is
+        # read from there: the runs checked last, BUNDLES_MAX bytes of them
+        self.reader, self.edit_due, self.bundles = None, 0, collections.OrderedDict()
+        self.detected = 0   # store changes found (_again): a run waiting for a re-check holds the one it waits since
+        self.before = None   # a file store's reader the next one is compared with (_open)
+        self.pace = 0   # no run's first check starts before then (PACE)
         # (tenant, run_id) -> its latest review row while on the live view, else (it left the view) in kept, which the
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
@@ -856,6 +958,7 @@ class StoreFeed:
         # verification stopped
         self.stopped = None
         self.noted = 0   # the most records a checkpoint note covered: a signed note never goes back
+        self.signed = None   # the latest checkpoint note read, as its text: one that changes is checked (refresh)
         self.listed = set()   # the store's client runs at the latest refresh (checking)
         self.on_run, self.content, self.analyze = on_run, content, analyze
         # (tenant, run_id) -> the newest records of a run to mirror (on_run), off the watch thread: the tape never
@@ -866,7 +969,7 @@ class StoreFeed:
             self.threads.append(threading.Thread(target=self._mirrors, daemon=True))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
-        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
+        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), self.vkeys)
         self.threads.append(threading.Thread(target=self._watch, daemon=True))
         for t in self.threads:
             t.start()
@@ -901,42 +1004,72 @@ class StoreFeed:
                         print(f"tracekit view: cannot check {self.store}: {e!r}", file=sys.stderr, flush=True)
                         self.stopped = f"verification stopped: {self.store} can't be checked ({type(e).__name__}: " \
                                        f"{e}); no run is checked until it can be"
-                self._stop.wait(POLL_S)
+                self._stop.wait(min(POLL_S, max(0.05, self.due - time.monotonic())))   # a pause ending sooner
         except BaseException as e:   # whatever ends the watch but close(): the page stops saying LIVE
             self.stopped = f"verification stopped ({type(e).__name__}: {e}): no run is checked until tracekit view " \
                            "restarts"
             raise
 
     def refresh(self):
-        """Verify every run with records a checkpoint covers that were not verified yet: a run still being written is
-        shown up to the newest checkpoint, not only once it stops, and checked again no sooner than BACKOFF times its
-        last check's time after it. A run that did not grow is checked again RECHECK_S after its last check (the run
-        checked longest ago, one a pass), so a later edit of its records shows."""
+        """Verify every run with records a checkpoint covers that were not verified yet: what runs added first, then the
+        runs waiting for a re-check after a store change, then the runs not checked yet, the newest first, each of
+        these followed by a pause (PACE). A run still being written is shown up to the newest checkpoint, not only once
+        it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a core, each in turn. A refresh starts no
+        check past REFRESH_S, so the newest records are read again while the runs of a large store are checked. An edit
+        of records already read shows in a file store's bytes (_open, every EDIT_S), and a record a check reads that is
+        not the one the reader hashed (StorageChanged) as an edit at once: what is checked is what was hashed. A run of
+        a Postgres store, and one that failed or could not be checked, is checked again RECHECK_S after its last check
+        (the run checked longest ago, one a pass)."""
         now, stale = time.monotonic(), None
         due = [now + RECHECK_S]
         self.due = due[0]   # a store that cannot be read is tried again when it changes, not every POLL_S
-        r = reader(self.cfg)
+        r = self._open()
+        due += [self.edit_due] * (not self.pg)
         try:
             note = r.checkpoint_latest()
             if note and note[0] > r.tree.size:
                 r.close()
-                r = reader(self.cfg)   # opened after the note: holds every record it covers
+                r = self._open()   # read after the note: holds every record it covers
             if (note[0] if note else 0) < self.noted:   # every run would go unchecked (covered 0) or partly checked
                 raise StorageCorrupt(f"its checkpoint note went back from {self.noted} to {note[0] if note else 0} "
                                      "records: the store was edited or replaced")
-            self.noted = note[0] if note else 0
+            # a note that changed (a new one, or a witness's cosignature merged in) is checked as each run's check reads
+            # it: one that no longer checks, or names another root at the same size, fails the runs that did not grow
+            if note and self.signed and note[1] != self.signed:
+                try:
+                    checkpoint.open_note(note[1], self.vkeys)
+                    same = note[0] > self.noted or note[1].partition("\n\n")[0] == self.signed.partition("\n\n")[0]
+                except checkpoint.NoteError:
+                    same = False
+                if not same:
+                    print("tracekit view: the checkpoint note was rewritten and no longer checks: every run is checked "
+                          "again", file=sys.stderr, flush=True)
+                    self._again(None)
+            self.noted, self.signed = (note[0], note[1]) if note else (0, None)
             with self.lock:
                 self.listed = {k for k in r.runs if k[1] != SIGNER_RUN[1]}
-            for key, run in list(r.runs.items()):
+            def order(kv):   # what runs added, the one checked longest ago first; then runs waiting for a re-check, in
+                state = self.runs.get(kv[0]) or {}   # the order they started waiting; then runs not checked yet, the
+                if state.get("count") and not state.get("again"):   # newest first, the signer's own after the agents'
+                    return 0, state["checked"]
+                return 1, state.get("again") or math.inf, kv[0][1] == SIGNER_RUN[1], -kv[1]["seqs"][-1]
+            for key, run in sorted(r.runs.items(), key=order):
                 covered = bisect.bisect_left(run["seqs"], note[0]) if note else 0   # its records the note covers
                 state = self.runs.get(key, {})
-                if covered and covered != state.get("count"):
-                    at = state.get("checked", 0) + BACKOFF * state.get("took", 0)
-                    if at > now:
-                        due.append(at)
+                if covered and (covered != state.get("count") or state.get("again")):
+                    grew = bool(state.get("count")) and not state.get("again")   # shown before: what it added
+                    # else its first check, or a re-check after a store change: both paced (PACE)
+                    if (self.idle if grew else self.pace) > time.monotonic() or time.monotonic() - now > REFRESH_S:
+                        due.append(self.idle if grew else self.pace)
                     else:
+                        spent = time.thread_time()   # the check, its rows and findings: CPU, not waits
                         self._check(r, note[1], key, covered)
-                elif covered:
+                        spent = time.thread_time() - spent
+                        if grew:
+                            self.idle = time.monotonic() + BACKOFF * spent
+                        else:   # the next first check or re-check waits as long: the store is still watched meanwhile
+                            self.pace = time.monotonic() + PACE * spent
+                elif covered and (self.pg or state.get("failed")):
                     due.append(state["checked"] + RECHECK_S)
                     if state["checked"] + RECHECK_S <= now and (stale is None or state["checked"] < stale[1]):
                         stale = key, state["checked"], covered
@@ -951,15 +1084,75 @@ class StoreFeed:
                                                                     "label": OPERATOR_SIDE}}], key)
             if stale:
                 self._check(r, note[1], stale[0], stale[2])
+        except StorageChanged as x:   # a record a check read again is not what the reader hashed: an edit, read anew
+            print(f"tracekit view: {x}: its runs are checked again", file=sys.stderr, flush=True)
+            self._again(touched(r, [x.at]))
+            self.before, self.reader = r, None
+            due.append(now)
         finally:
             r.close()
         self.due = min(due)
+
+    def _open(self):
+        """The store's reader: a new one of a Postgres store; a file store's kept across refreshes, updated with the
+        records appended since (FileReader.update), and read anew when the bytes it read changed. Those are hashed
+        again: the piece the update began in each time, every piece every EDIT_S and when the file was written to
+        without growing. A run with a record in bytes that changed (every run, for a key record's, or a file replaced
+        or cut back) is checked again (_again). A reader read anew is compared with the one before it (`before`, kept
+        until one opens): a run with a record in bytes that changed before it read them is checked again too, so no
+        change becomes what later ones are compared with unseen."""
+        if self.pg:
+            return reader(self.cfg)
+        if self.reader is not None:
+            old = self.reader
+            try:
+                full = old.update() or time.monotonic() >= self.edit_due
+                if full:
+                    self.edit_due = time.monotonic() + EDIT_S
+                changed = old.changed(0 if full else old.tail)
+                if not changed:
+                    return old
+                print("tracekit view: records.jsonl no longer holds records the viewer read: their runs are checked "
+                      "again", file=sys.stderr, flush=True)
+                self._again(touched(old, changed))
+            except StorageCorrupt as e:
+                print(f"tracekit view: {e}: every run is checked again", file=sys.stderr, flush=True)
+                self._again(None)
+            self.before, self.reader = old, None
+        new = reader(self.cfg, **({"against": self.before} if self.before else {}))
+        if self.before and new.differs:
+            print("tracekit view: records.jsonl changed while the viewer read it again: their runs are checked again",
+                  file=sys.stderr, flush=True)
+            self._again(touched(self.before, new.differs))
+        self.before, self.reader, self.edit_due = None, new, time.monotonic() + EDIT_S
+        return new
+
+    def _again(self, keys):
+        """Runs `keys` (None: every run) are checked again, from a reader opened anew, after the runs waiting already:
+        until then a run that verified reads re-checking (a pending review), never its old verdict."""
+        with self.lock:   # rows() too, off the watch thread
+            self.detected += 1
+            for key, state in self.runs.items():
+                if keys is not None and key not in keys or state.get("again"):
+                    continue
+                state["again"] = self.detected
+                self.bundles.pop(key, None)
+                was = (self.latest.get(key) or self.kept.get(key) or {}).get("review")
+                if state.get("count") and not state.get("failed") and was:
+                    row = {**self.tr._base({"run_id": key[1]}, {}, "tk_run"), "tenant": key[0], "analysis": True,
+                           "review": dict(was, verdict="pending", integrity="RE-CHECKING: the store's bytes changed "
+                                                                            "after they were read")}
+                    if key[1] == SIGNER_RUN[1]:
+                        row.update(signer=True, agent="signer")
+                    self._append([row], key)
 
     def _check(self, reader, note, key, count):
         """_verify, where an error gives the run a "not checked" row and is tried again as a run that did not grow
         is: one run never stops the others being checked."""
         try:
             self._verify(reader, note, key, count)
+        except StorageChanged:   # not the run's error: refresh() reads the store anew
+            raise
         except Exception as x:
             why = f"{type(x).__name__}: {x}"[:1024]
             print(f"tracekit view: run {key[1]} not checked: {why}", file=sys.stderr, flush=True)
@@ -970,23 +1163,34 @@ class StoreFeed:
                              "label": OPERATOR_SIDE, "agent": None}
             with self.lock:
                 self.runs[key] = dict(self.runs.get(key) or {"count": 0, "shown": 0}, count=count,
-                                      failed="NOT CHECKED (error)", checked=time.monotonic())
+                                      failed="NOT CHECKED (error)", checked=time.monotonic(), again=False)
                 self._append([dict(row, tenant=key[0])], key)
 
     def _verify(self, reader, note, key, count):
         tenant, run_id = key
         t = time.thread_time()   # its own CPU time: not the time it waited for the mirror thread
-        rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, os.path.join(self.tmp, "run.tkb"),
-                                          self.memo)
+        # a file store's reader holds the records read before as they were: read from there (bundles)
+        with self.lock:   # _again drops a run's off this thread too (rows())
+            kept = self.bundles.pop(key, {})
+        rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, None, self.memo,
+                                          **({} if self.pg else {"kept": kept}))
+        # the runs checked last keep theirs, BUNDLES_MAX bytes in all: one past them is read whole next time, and so is a
+        # run bigger than that alone, which keeping would only empty the others' (the signer's own run, never final)
+        if kept and len(kept["data"]) <= BUNDLES_MAX:
+            with self.lock:
+                self.bundles[key] = kept
+                while sum(len(b["data"]) for b in self.bundles.values()) > BUNDLES_MAX:
+                    self.bundles.popitem(last=False)
         if len(self.memo) > MEMO_MAX:   # lean: forgets every run's records at once; an LRU if big stores re-check often
             self.memo.clear()
         state = dict(self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}, checked=time.monotonic(),
-                     took=time.thread_time() - t)
-        if not code and count == state["count"] and not state["failed"]:   # checked again, unchanged: nothing new
+                     took=time.thread_time() - t, again=False)
+        waited = (self.runs.get(key) or {}).get("again")   # re-checked after a store change: its review says so
+        if not code and count == state["count"] and not state["failed"] and not waited:   # unchanged: nothing new
             with self.lock:
                 self.runs[key] = state
             return
-        e = {"run_id": run_id}
+        e, hidden = {"run_id": run_id}, False
         if code:
             rv = {"verdict": "failed", "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
                   "label": OPERATOR_SIDE, "agent": None}
@@ -1003,7 +1207,14 @@ class StoreFeed:
         else:
             records = verified   # what the checkpoint covers, as verified: not read again from the store
             e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
-            want = [r for r in records[state["shown"]:] if self.content and (
+            # a run first shown once rows have left the live view, older than any record it holds, would push newer
+            # runs' rows out (the newest are checked first): its review only, as for a run whose rows left the view
+            # (its rows are read on demand, /api/rows), and no graph and no content read for it
+            with self.lock:
+                oldest = next((x["tk_seq"] for x in self.records if x is not observe.RETRACTED
+                               and x.get("tk_seq") is not None), None) if self.base else None
+            hidden = not state["shown"] and oldest is not None and records[-1]["event"]["seq"] < oldest
+            want = [r for r in records[state["shown"]:] if self.content and not hidden and (
                 r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")
                 or r["event"]["type"] == "model.exchange" and (r["event"].get("data") or {}).get("content_digest"))]
             from .why.signed import EvidenceAlert
@@ -1013,7 +1224,8 @@ class StoreFeed:
                     self.tr.content.update({(run_id, s): c for s, c in self.content(run_id, want).items()})
                 except EvidenceAlert as x:   # the vault's content does not open its record: none of it shown
                     new = [self._own(e, "high", "CONTENT NOT SHOWN", str(x)[:1024], "ALERT")]
-            new += [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
+            rows = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]   # translated: later rows need it
+            new += [] if hidden else rows
             rv = review(records, rep, "verified")
             summary = (f"tenant {tenant} · the signer's own records" if run_id == SIGNER_RUN[1] else
                        f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
@@ -1042,10 +1254,13 @@ class StoreFeed:
                 for k in [k for k in self.rowcache if k[:2] == key]:   # and /api/rows' answers
                     del self.rowcache[k]
             self._append([dict(x, tenant=tenant) for x in new], key)
-        if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape
-            with self._mlock:
-                self._mirror[key] = records
+        if self.on_run and key[1] != SIGNER_RUN[1] and not hidden:   # after the tape has the records
+            with self._mlock:   # a file store's run as the bytes that verified: an import waiting holds no records
+                self._mirror[key] = kept.get("data") or records
                 self._mlock.notify()
+        if not code and rv["state"] == "final":   # it grows no more
+            with self.lock:
+                self.bundles.pop(key, None)
         if not code and analyze:   # after its rows too: the analysis reads the run's content, which takes a while
             found = self._findings(e, records)
             row = {**self.tr._base(e, {}, "tk_run"), "analysis": True,
@@ -1055,10 +1270,10 @@ class StoreFeed:
 
     def _mirrors(self):
         """The mirror thread: on_run for each run that changed, with its newest records. A run is imported whole each
-        time, so a growing run is mirrored again no sooner than BACKOFF times its last mirror's time after it; a run
-        that failed or left the live view (records None) loses its mirror at once."""
-        # lean: BACKOFF counts the import, not the why server's analysis of it on its own thread (about as long again);
-        # count both if a growing run's graph costs too much CPU
+        time, so a growing run is mirrored again no sooner than MIRROR_BACKOFF times its last mirror's time after it; a
+        run that failed or left the live view (records None) loses its mirror at once."""
+        # lean: MIRROR_BACKOFF counts the import, not the why server's analysis of it on its own thread (about as long
+        # again, so about 2% of a core in all); import only the new records if a live run's graph must keep up
         due = {}   # (tenant, run_id) -> when it may be mirrored again
         while True:
             with self._mlock:
@@ -1073,11 +1288,13 @@ class StoreFeed:
                 records = self._mirror.pop(ready)
             t, cpu = time.monotonic(), time.thread_time()
             try:
+                if isinstance(records, bytes):   # a run file's lines, verified: read as loads_strict did
+                    records = [json.loads(line) for line in records.split(b"\n")[:-1]]
                 self.on_run(*ready, records, self.tr.reasons)
             except Exception as e:   # the run's own view does not depend on its graph
                 print(f"tracekit view: no graph for run {ready[1]}: {e}", file=sys.stderr, flush=True)
             due = {k: v for k, v in due.items() if v > t}   # only runs still put off
-            due[ready] = time.monotonic() + BACKOFF * (time.thread_time() - cpu)
+            due[ready] = time.monotonic() + MIRROR_BACKOFF * (time.thread_time() - cpu)
 
     def _own(self, e, sev, title, text, tape):
         """A row the viewer makes (a verifier report, a finding of its analysis): no record of the log, so no seq and
@@ -1154,11 +1371,13 @@ class StoreFeed:
         """GET /api/rows?tenant&run: the JSON body ({"rows": [...]}, UTF-8) of a run's rows as the tape shows them, from
         the records of its bundle that verified (exported from the store, verified, then translated: the file is read
         once), so a run whose records left the live view opens in full; None when `scope` may not read its tenant, the
-        watcher has not verified the run (no such run, no checkpoint covers it yet) or it fails. At most max_records
-        records, its first. An answer is kept while the run's own covered records don't change, or until the viewer's
-        own re-check of the run fails it (RECHECK_S), as the run list's verdict is. The watcher's state decides all
-        that with no read of the store; only a check reads it, two at once at most: past that, observe.Busy (503, try
-        again)."""
+        watcher has not verified the run (no such run, no checkpoint covers it yet) or it fails (the run then reads
+        re-checking until the watcher checks it again, at once: the run list never keeps its VERIFIED). At most
+        max_records records, its first. An answer is kept while the run's own covered records don't change, and is
+        not used while the run waits for a re-check after a store change or once the viewer's own re-check fails it
+        (RECHECK_S), as the run list's verdict is. The watcher's state
+        decides all that with no read of the store; only a check reads it, two at once at most: past that,
+        observe.Busy (503, try again)."""
         from .why.import_v2 import bundle_records
         if scope is not observe.ALL and tenant != scope:
             return None
@@ -1166,7 +1385,8 @@ class StoreFeed:
             state = self.runs.get((tenant, run_id)) or {}
             if not state.get("count") or state.get("failed"):
                 return None
-            body = self.rowcache.get((tenant, run_id, state["count"]))
+            # one waiting for its re-check (paced) is checked here as it is now, not answered from before the change
+            body = None if state.get("again") else self.rowcache.get((tenant, run_id, state["count"]))
         if body is not None:
             return body
         if not self.verifying.acquire(blocking=False):
@@ -1197,7 +1417,9 @@ class StoreFeed:
                 os.unlink(out)
         finally:
             self.verifying.release()
-        if code:
+        if code:   # the store fails it now: the watcher checks it again at once, re-checking until then
+            self._again({(tenant, run_id)})
+            self.due = 0
             return None
         # lean: the retained arguments are not read again (each read is a signed content.accessed record); the live
         # view shows them
@@ -1215,17 +1437,22 @@ class StoreFeed:
 
     def checking(self, tenant=None):
         """How many of the store's runs (of `tenant`, else of all) this viewer has not checked yet (on start it checks
-        them one at a time): until then the page knows nothing of what they hold, so NEEDS YOU can't say all clear."""
+        them one at a time), or waits to check again after their bytes changed: until then the page knows nothing of
+        what they hold, so NEEDS YOU can't say all clear."""
         with self.lock:
-            return sum(tenant is None or k[0] == tenant for k in self.listed - self.runs.keys())
+            return sum((tenant is None or k[0] == tenant) and (k not in self.runs or bool(self.runs[k].get("again")))
+                       for k in self.listed)
 
     def verify(self, tenant=None):
-        """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""
+        """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all); a run
+        waiting for a re-check after a store change is in neither count, and while one waits the badge is not ok."""
         with self.lock:
             runs = {k: s for k, s in self.runs.items() if tenant is None or k[0] == tenant}
-            return (sum(s["shown"] for s in runs.values() if not s["failed"]),
+            again = sum(bool(s.get("again")) for s in runs.values())
+            return (sum(s["shown"] for s in runs.values() if not s["failed"] and not s.get("again")),
                     [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]]
-                    + [self.stopped] * bool(self.stopped), None)
+                    + [f"{again} run(s) being checked again: the store's bytes changed after the viewer read them"]
+                    * bool(again) + [self.stopped] * bool(self.stopped), None)
 
 
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):
@@ -1262,6 +1489,51 @@ def _rename(src, dst):
     os.rename(src, dst)
 
 
+def touched(reader, ranges):
+    """The runs with a record in byte ranges `ranges` of the records.jsonl `reader` read, as it read them; None (every
+    run) when a key record is in one."""
+    offsets, seqs = reader.log.offsets, []
+    for lo, hi in ranges:   # the lines that overlap [lo, hi): a line's seq is its number
+        seqs.append((max(0, bisect.bisect_right(offsets, lo) - 1), bisect.bisect_left(offsets, hi)))
+    if any(bisect.bisect_left(reader.key_seqs, a) < bisect.bisect_left(reader.key_seqs, b) for a, b in seqs):
+        return None
+    return {k for k, run in reader.runs.items()
+            if any(bisect.bisect_left(run["seqs"], a) < bisect.bisect_left(run["seqs"], b) for a, b in seqs)}
+
+
+def remove_later(path):
+    """Remove directory `path` from a process of its own, so this one exits at once: the graphs of a large store are
+    tens of thousands of files, and removing them on the way out kept Ctrl-C from giving the terminal back (17 s+)."""
+    subprocess.Popen([sys.executable, "-I", "-c", "import shutil, sys; shutil.rmtree(sys.argv[1], True)", path],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def store_name(cfg):
+    """The store of config `cfg` in words."""
+    return "the Postgres store" if cfg.get("storage") else os.path.join(cfg["data_dir"], "store")
+
+
+def store_trust(cfg, log_vkey=None):
+    """(vkeys, note): the log vkeys a check of config `cfg`'s store pins, `log_vkey` else the store's own (the one a
+    Postgres store holds, a file store's data_dir/log.vkey with the hybrid key's), and what that pin proves."""
+    note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if cfg.get("storage") else DEV_NOTE
+    if not cfg.get("storage"):   # view's and report's --data-dir, as signer_config checks export's
+        data_dir_at(cfg["data_dir"])
+    if not log_vkey and cfg.get("storage"):
+        r = reader(cfg)
+        try:
+            log_vkey = r.meta("log_vkey")
+        finally:
+            r.close()
+        if log_vkey is None:
+            raise ValueError("the store holds no log vkey yet: start the signer once, or pass --log-vkey")
+    vkeys = [log_vkey] if log_vkey else read_vkeys(cfg["data_dir"])
+    for k in vkeys:
+        checkpoint.parse_vkey(k)
+    return vkeys, note
+
+
 def write_trust(path, vkeys):
     """A verify.v2 trust config at `path` that pins the log vkeys `vkeys` and no witness; returns `path`."""
     with open(path, "w", encoding="utf-8") as f:
@@ -1269,15 +1541,22 @@ def write_trust(path, vkeys):
     return path
 
 
-def check(reader, tenant, run_id, note, trust, out, memo=None):
-    """(report, exit code, printed report, records) of verify.v2 on the run's bundle, exported from `reader` with `note`
-    to `out`; `records`: the run's records as verify.v2 read them ([] unless it verifies), so what is shown is what
-    was checked, never a second read of the store; `memo`: verify.v2's, kept across checks."""
+def check(reader, tenant, run_id, note, trust, out=None, memo=None, kept=None):
+    """(report, exit code, printed report, records) of verify.v2 on the run's bundle from `reader` with `note`, exported
+    to `out`, else checked as bundle_v2.bundle builds it (not zipped); `records`: the run's records as verify.v2 read
+    them ([] unless it verifies), so what is shown is what was checked, never a second read of the store; `memo`:
+    verify.v2's, kept across checks; `kept`: a dict that holds bundle's `kept` of the run's last bundle that verified
+    (none once one does not), so a run that grew is read from there, from a reader that still holds those records."""
     from .why.import_v2 import bundle_records
-    records = []
+    records, now = [], {}
     try:
-        export(reader, tenant, run_id, note, out)
-        verified, rep, code = bundle_records(out, trust, memo)
+        if out:
+            export(reader, tenant, run_id, note, out)
+            verified, rep, code = bundle_records(out, trust, memo)
+        else:
+            files, info = bundle(reader, tenant, run_id, note, kept=kept)
+            verified, rep, code = bundle_records(files, trust, memo)
+            now = {} if code else info.get("kept", {})
         records = verified.get(run_id, [])
     # the store does not match its own checkpoint, or holds a record export can't read: either fails the run
     except (ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
@@ -1285,6 +1564,9 @@ def check(reader, tenant, run_id, note, trust, out, memo=None):
         rep.integrity, rep.assurance = "FAILED", "none"
         rep.check("export", False, str(e) if isinstance(e, ValueError) else
                   f"a record of the run can't be read ({type(e).__name__})")
+    if kept is not None:
+        kept.clear()
+        kept.update(now)
     text = io.StringIO()
     v2.print_report(rep, code, text)
     return rep, code, text.getvalue(), records
@@ -1556,7 +1838,7 @@ def main(argv=None):
         mirror = None
         if not (v1 or alone or runs or a.why or (why_dir and os.path.isdir(why_dir))):   # no why logs: the store's own
             why_dir = tempfile.mkdtemp(prefix="tk-view-why-")
-            atexit.register(shutil.rmtree, why_dir, True)
+            atexit.register(remove_later, why_dir)
             mirror = functools.partial(mirror_run, why_dir)
         if v1:
             ledger, code = observe.ledger_path(a.ledger, a.bundle, "tracekit view")
@@ -1565,8 +1847,17 @@ def main(argv=None):
             feed = observe.Feed(ledger, source="bundle" if a.bundle else None)
         else:
             dev = not (a.config or a.data_dir)
+            signer = {"dev": True} if dev else {"config": os.path.abspath(a.config)} if a.config else \
+                {"data_dir": os.path.abspath(a.data_dir)}
+            if not (mirror or runs or alone):   # why logs, so no signed run is imported: the page says what shows its
+                # graph, `tracekit view` without --why ("--why") or, when the data dir's why/ is read anyway, an import
+                # from this data dir
+                # lean: a Postgres store's data dir has no store/ to import from (its limits row says to import the
+                # exported bundle); name the bundle route on the page if Postgres signers keep why logs there
+                signer["why"] = os.path.abspath(cfg["data_dir"]) \
+                    if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
-                                                        dev_analysis() if dev else None)
+                                                        dev_analysis() if dev else None, signer)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -1597,7 +1888,7 @@ def main(argv=None):
     finally:
         srv.server_close()
         if why:
-            why.stop()
+            why.stop(wait=0)   # its watcher may be analysing a run for seconds: it ends with the process
     return 0
 
 

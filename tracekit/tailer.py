@@ -1,10 +1,11 @@
 """L1 transcript tailer (04-design §6): follows one Claude Code session transcript and reports it to the signer.
 
-    python -I -m tracekit.tailer   (started by the v2 hook at SessionStart; the run handle comes on stdin as JSON:
-                                    {"run_id", "run_token", "path", "until"?, "offsets"?})
+    python -I -m tracekit.tailer   (started by the v2 hook at the run's first event; the run handle comes on stdin as
+                                    JSON: {"run_id", "run_token", "path", "until"?, "offsets"?})
 
-`offsets` ({path: offset}): where to start reading the session's transcripts, for a run after the session's first (an
-idle close, a resumed session): the lines before are an earlier run's (the hook measures them, as it names the path).
+`offsets` ({path: offset}): where to start reading the session's transcripts: {path: 0} for a new session; for a later
+run (an idle close, a resumed session, a session that goes on after SessionEnd), where the hook measured them, as the
+lines before are an earlier run's.
 
 Dev mode: a detached process of the agent's own user, which exits once the hook's session state (`until`) is gone
 (SessionEnd). System mode (`tracekit init --v2`): run through sudo as the tracekit-tailer user, which reads the agent's
@@ -19,9 +20,9 @@ already read may not have changed (rehashed whenever the file's ctime moves), an
 object. Otherwise the tailer sends `tailer_lost` (the signer writes the signed gap, the
 tailer never writes one) and exits. Every assistant line (Claude Code writes one per content block: thinking, text,
 tool use) becomes a model_event response (exchange id: the message id; a tool_use line's tool uses with the digest of
-their arguments, and the tool results sent since the last one); a user prompt becomes a model_event request. Each
-carries the digest of the line as read, {"transcript": "main" or the subagent file's name, "entry": the whole line,
-its cwd, isMeta, isSidechain and isCompactSummary included}, which the signer publishes as a salted commitment, and
+their arguments as reconciliation compares them, reconcile.compared, and the tool results sent since the last one); a
+user prompt becomes a model_event request. Each carries the digest of the line as read, {"transcript": "main" or the
+subagent file's name, "entry": the whole line, its cwd, isMeta, isSidechain and isCompactSummary included}, which the signer publishes as a salted commitment, and
 that as its `body` when the signer keeps content (the content vault, docs/privacy.md); without the vault the text
 stays in the transcript. A rate limit (quota_exceeded with retry_after_ms) sends the line again once it has passed.
 It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
@@ -48,6 +49,7 @@ from tracekit.client import system_config
 from tracekit.format.canon import event_hash
 from tracekit.hook import transcript_entries
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, VaultBody
+from tracekit.signer.reconcile import compared
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import HEARTBEAT_S, IDLE_S
 
@@ -165,8 +167,8 @@ def _report(send, e, sent, name="main"):
              **({"exchange_id": mid} if uses or isinstance(mid, str) else {}), content_digest=event_hash(read),
              **send.body(read), **({"tool_uses": [{"id": b.get("id"), "name": b.get("name"), "executed_by": "client",
                                                    "args_source": "parsed",
-                                                   "args_digest": event_hash({"tool": b.get("name"),
-                                                                              "args": b.get("input")})}
+                                                   "args_digest": event_hash({"tool": b.get("name"), "args": compared(
+                                                      b.get("name"), b.get("input"))})}
                                                   for b in uses], "tool_results_sent": list(sent)} if uses else {}))
         if uses:
             sent.clear()

@@ -80,8 +80,8 @@ def go_args(args):
     return result
 
 
-# The CLI chooses v1 when a corrupt v2 manifest cannot be recognized, and
-# rejects --trust without JSON. The repository's test_golden.py deliberately
+# The CLI hands a bundle whose manifest names another format to v1, and
+# refuses --trust for it without JSON. The repository's test_golden.py deliberately
 # invokes v2.verify() directly for the negative and multipart corpus. Invoke
 # the same reference entrypoint, in a separate process, for all v2 cases.
 PYTHON_V2 = """import json

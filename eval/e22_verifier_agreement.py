@@ -10,7 +10,8 @@ of scripts/verify_page_check.py; an honest bundle must verify, a forgery must no
              framework is not installed is skipped (`--python NAME=PY` runs an example with another interpreter)
   demo       `tracekit demo --server`: a witness-cosigned run and its tampered copy
   hook       the Claude Code hook `tracekit init --dev --v2` wires: an allowed, a denied and a held call a person
-             approves with `tracekit approvals approve`; exported with the findings `tracekit analyze --v2` signs
+             approves with `tracekit approvals approve`, which runs when the agent sends it again; exported with the
+             findings `tracekit analyze --v2` signs
   sensors    a run Tetragon and Falco imports covered (tests/test_sensor.py's lines); OpenShell's middleware with its
              OCSF import and an agentsh follower run (bundles of the tests that drive them against a real signer)
   open       a run exported while open, and again once closed
@@ -152,8 +153,11 @@ class Corpus:
         done(hook("SessionStart"))
         for tid, command in (("t1", SAFE), ("t2", RISKY), ("t3", HELD)):
             p = hook("PreToolUse", tool_name="Bash", tool_input={"command": command}, tool_use_id=tid)
-            if command == HELD:   # "[tracekit] waiting for approval apr-... (rule)": a person approves it
-                tk("approvals", "approve", p.stderr.readline().split()[4])
+            if command == HELD:   # "[tracekit] held for approval apr-... (rule): ...": a person approves it, then the
+                tk("approvals", "approve", p.stderr.readline().split()[4])   # agent sends the same call again
+                done(p)
+                tid = "t3-retry"
+                p = hook("PreToolUse", tool_name="Bash", tool_input={"command": command}, tool_use_id=tid)
             if done(p) == 0:
                 done(hook("PostToolUse", tool_name="Bash", tool_input={"command": command}, tool_use_id=tid,
                           tool_response={"stdout": "ok"}))

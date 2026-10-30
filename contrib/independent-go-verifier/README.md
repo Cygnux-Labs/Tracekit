@@ -10,7 +10,7 @@ This dependency-free Go implementation reads evidence offline without invoking e
 - RFC 8785 JCS: UTF-16 key ordering, ECMAScript binary64 formatting, minimal string escapes.
 - Record envelopes and SHA-256 event hashes; SHA-256 SPKI key IDs; domain-separated Ed25519 messages; cofactorless Ed25519 verification and rejection of noncanonical/small-order keys.
 - RFC 6962 / RFC 9162 record Merkle leaf, node and inclusion proof verification.
-- C2SP signed checkpoint notes, log vkeys, witness cosignatures, duplicate signature-key rejection and witness quorum.
+- C2SP signed checkpoint notes, log vkeys, witness cosignatures, duplicate signature-key rejection, one witness per key and per name (a trust config pinning one witness key under two names, two keys under one name, or one key with two classes is refused) and witness quorum.
 - Rigid ZIP layout and limits, manifest file hashes, record-key epochs and retirement positions, per-run hash chains, multi-part run concatenation and first/last/key-record inclusion proofs.
 - CLI input caps: bundles and v1 witness files are limited to 512 MiB; trust and v1 public-key files are limited to 1 MiB.
 - Cryptographic registry run-set checks: derived-origin signed checkpoints, RFC 9162 consistency proofs, per-leaf inclusion proofs, fixed-width leaf contents, record signatures, run-final uniqueness and selected-run limits. These are *necessary* checks, not sufficient to establish the complete run-set semantics.
@@ -27,15 +27,22 @@ The CLI can report `VERIFIED` for supported evidence after all applicable implem
 
 The differential gate compares check names as a separate parity requirement. Known V1 reporting omissions include Python's `run completeness`, `run boundaries`, `run tail witnessed`, `head matches a witness checkpoint`, `trust root`, `signing key`, `policy unchanged during run`, `capture sources`, `harness attribution`, `approvals`, `coverage`, `opt-in content capture`, and `chain intact` checks. Known V2 warning/failure-check omissions include `gateway amendments`, `openshell policy`, `revocations`, `coverage` (including `reconcile.*` records), `tiers` (including split capture paths), `fail-open classes`, `break-glass approvals`, `approvals by agents`, `incident policies`, `findings counted`, `replay runs`, `reviews counted`, `reviews`, `keys`, `log tail`, `monitor`, `not interpreted`, `policy snapshot`, `manifest`, `inclusion`, `witness quorum`, `run chain`, `bundle structure`, `checkpoint`, `signatures`, `bundle readable`, `run-set`, and `run parts`. These are check-reporting gaps; the differential report records them separately as known gaps. The `coverage` gap includes `reconcile.*` records; `tiers` includes split capture paths; `keys` includes the key-rotation completeness warning. The v1 `run tail witnessed` gap includes an unwitnessed tail. The `fail-open classes`, `log tail`, and `break-glass approvals` warnings are also omitted.
 
-The Go verifier rejects some inputs accepted by Python: a run with a findings companion, an open-only runset, empty monitors/issuers/analyzers lists, two log keys or extra algorithms, duplicate witness pins, v2 numeric spellings `v: 2.0`, `run_seq: -0`, or `tree_size: 18.0`, noncanonical base64 signatures or inclusion nodes, checkpoint filenames outside its constraints, v1 ZIP archives with more than 10,000 entries, and v1 ZIP members whose name or extra field contains a crafted ambiguous local-header signature. An open run whose run-set range contains a second `run.registered` leaf gets `FAILED` from Go and `VERIFIED TO HEAD (open)` from Python. These are false rejections and remain verdict differences if present in the golden corpus.
+The Go verifier rejects some inputs accepted by Python: a run with a findings companion, an open-only runset, empty monitors/issuers/analyzers lists, two log keys or extra algorithms, v2 numeric spellings `v: 2.0`, `run_seq: -0`, or `tree_size: 18.0`, noncanonical base64 signatures or inclusion nodes, checkpoint filenames outside its constraints, v1 ZIP archives with more than 10,000 entries, and v1 ZIP members whose name or extra field contains a crafted ambiguous local-header signature. An open run whose run-set range contains a second `run.registered` leaf gets `FAILED` from Go and `VERIFIED TO HEAD (open)` from Python. These are false rejections and remain verdict differences if present in the golden corpus.
 
 ## Run
 
 ```sh
 cd contrib/independent-go-verifier
-go run ./cmd/tkverify -bundle ../../tests/golden/v2/closed.tkb -trust ../../tests/golden/v2/trust.json -json
-go run ./cmd/tkverify -bundle ../../tests/golden/v1/demo-run.tkb -key ../../tests/golden/v1/signer.pub -json
+go build -o tkverify ./cmd/tkverify
+./tkverify -bundle ../../tests/golden/v2/closed.tkb -trust ../../tests/golden/v2/trust.json
+./tkverify -bundle ../../tests/golden/v1/demo-run.tkb -key ../../tests/golden/v1/signer.pub -json
 ```
+
+The exit code is the reference CLI's: 0 verified, 1 failed, 2 unusable or unverifiable. Run the built binary when the
+exit code matters: `go run` exits 1 for any non-zero exit of the program (it prints `exit status 2`).
+
+The text report prints the warning lines, then the reason a bundle failed or could not be checked, then the
+`Integrity:` and `Assurance:` lines, as the reference CLI does; a failed bundle's printed assurance reads `not rated`.
 
 Signed capture gaps, tampering, binding mismatches and policy violations are exposed as structured warning checks and as `[WARN]` lines in text output. They describe the recorded run while the integrity verdict describes whether its evidence is intact.
 

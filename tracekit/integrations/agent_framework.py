@@ -23,7 +23,7 @@ from pydantic_core import to_jsonable_python
 
 from tracekit.autowire import DECIDED_UPSTREAM
 from tracekit.format.canon import loads_strict
-from tracekit.integrations import said
+from tracekit.integrations import said, version_check
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -33,6 +33,8 @@ class Tracekit(FunctionMiddleware):
     (`Client().run(...)`); an AsyncRunHandle works too."""
 
     def __init__(self, run):
+        version_check.warn_untested("Agent Framework", "agent-framework-core", (1, 22), (1, 23),
+                                    "agent-framework-core>=1.22,<1.23")
         self.run = run_handle(run)
         # lean: one entry per call id the middleware decided, for its life; prune them at run end if agents run for days
         self._attempts = {}   # call id -> the attempt its next decision is (a model may send an id again)
