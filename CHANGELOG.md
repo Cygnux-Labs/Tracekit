@@ -226,6 +226,11 @@ protocol stays 20.
   speed test (TK-A040's own fillers within a 0.25 s budget, instead of skipping them).
 - **The TypeScript OpenAI Agents adapter's `tk.mcp(server)` trimmed the server name in time quadratic in a run of `_`
   or `-` inside it** (CodeQL `js/polynomial-redos`; the name is the app's own): it trims by index now.
+- **A signed run's graph read "being built…" forever in a viewer started with why logs** (`--why`, or a data dir's
+  `why/`), which imports no signed run: its views now say so and name what shows the graph (`tracekit view`
+  without `--why`, or `tracekit why import` into a new folder).
+- **A wait in an agent approver's veto delay could say a second too many** ("wait 61 s" for a 60 s delay, read at
+  the answer's own instant on Windows' coarse clock).
 
 ### Security
 - **PCM: a replay sender is the public key that signed and its agent, and a trust.json pins each Ed25519 key under one
