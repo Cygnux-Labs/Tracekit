@@ -664,6 +664,7 @@ class HookEnv(unittest.TestCase):
             with open(path) as f:
                 self.assertEqual(json.load(f), admin)
 
+    @unittest.skipIf(os.name == "nt", "Windows has no permission bits")
     def test_a_managed_settings_folder_it_makes_is_readable_by_every_user_whatever_the_umask(self):
         # under a hardened root umask (027) the folder was 0750: the agent's Claude Code could not read the hooks
         d = tempfile.mkdtemp()

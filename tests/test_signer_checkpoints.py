@@ -209,12 +209,13 @@ class Reader(unittest.TestCase):
                     r.update()
                 with open(path, "wb") as f:
                     f.write(orig)
-        r = FileReader(self.root)
-        os.replace(path, path + ".old")
-        with open(path, "wb") as f:   # the same bytes in another file
-            f.write(orig)
-        with self.assertRaises(file_storage.StorageCorrupt):
-            r.update()
+        if os.name == "posix":   # Windows refuses to rename over a file a reader holds open
+            r = FileReader(self.root)
+            os.replace(path, path + ".old")
+            with open(path, "wb") as f:   # the same bytes in another file
+                f.write(orig)
+            with self.assertRaises(file_storage.StorageCorrupt):
+                r.update()
         r = FileReader(self.root)
         st = os.stat(path)
         with open(path, "r+b") as f:   # a record's tool name, same length, in a line before the last

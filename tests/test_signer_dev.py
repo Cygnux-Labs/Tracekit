@@ -364,9 +364,10 @@ class SpawnAndStatus(unittest.TestCase):
         self.assertIn("not started", autospawn.status()["error"])
         os.makedirs(self.run_dir, 0o700)
         self.assertIn("tracekit up", autospawn.status()["error"])
-        os.chmod(self.run_dir, 0o755)   # a dir someone else could have made: refused, and status says why
-        self.assertIn("mode 0700", autospawn.status()["error"])
-        os.chmod(self.run_dir, 0o700)   # a signer of another protocol over TCP (no Unix sockets): not "not started"
+        if os.name == "posix":   # Windows has no permission bits
+            os.chmod(self.run_dir, 0o755)   # a dir someone else could have made: refused, and status says why
+            self.assertIn("mode 0700", autospawn.status()["error"])
+            os.chmod(self.run_dir, 0o700)   # a signer of another protocol over TCP (no Unix sockets): not "not started"
         with mock.patch.object(autospawn, "address", return_value=("tcp://127.0.0.1:1", "t")), \
                 mock.patch.object(autospawn, "connect", side_effect=autospawn.Incompatible("protocol 15")):
             self.assertEqual(autospawn.status()["error"], "protocol 15")

@@ -155,4 +155,4 @@ class Wiki(unittest.TestCase):
             out = wiki.build("main", root)
         page = next(v for k, v in out.items() if k.endswith(".md") and "a still" in v)
         self.assertIn("[![a still](images/shots/a.jpg)](https://example.com/a.mp4)", page)
-        self.assertEqual(out["images/shots/a.jpg"], os.path.join(root, "docs", "shots", "a.jpg"))
+        self.assertTrue(os.path.samefile(out["images/shots/a.jpg"], os.path.join(root, "docs", "shots", "a.jpg")))

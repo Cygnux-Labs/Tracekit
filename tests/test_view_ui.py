@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -2818,6 +2819,7 @@ class FinalQA(unittest.TestCase):
         self.assertEqual(re.findall(r"<dt>(\w+)<button", out[4]), ["EXPORT", "TRUST", "VERIFY"])
         self.assertNotIn("signer.yaml", out[4])
 
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
     def test_a_runs_copied_commands_run_as_they_are_for_a_viewer_of_a_data_dir(self):
         """Started with --data-dir, the page's EXPORT and TRUST named --config signer.yaml, a file the person had to
         write first; a note under the run review said so, the header's COPY didn't. They run as copied now."""

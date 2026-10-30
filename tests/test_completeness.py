@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -117,7 +118,7 @@ class Completeness(unittest.TestCase):
         with contextlib.redirect_stdout(said):
             self.assertEqual(cli.main(["export", "--home", self.home, "--since", "0", "-o", out]), 0)
         wrote, then, command = said.getvalue().splitlines()
-        self.assertRegex(wrote, rf"^wrote {out}: runs r1, r2, \d+ records, \d+ checkpoint\(s\)$")
+        self.assertRegex(wrote, rf"^wrote {re.escape(out)}: runs r1, r2, \d+ records, \d+ checkpoint\(s\)$")
         self.assertEqual((then, command), ("next, verify it against the signer's key:",
                                            f"  tracekit verify {out} --key {self.key}"))
         report = io.StringIO()
