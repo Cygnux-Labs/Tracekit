@@ -3654,7 +3654,7 @@
         .filter(f => !f.startsWith("/dev/") && !f.includes("$"));   // a variable's file is unknown: no place
       let path = null;
       for (const w of said.join(" ").split(/[\s"'`;|&<>()=,]+/)) {
-        const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/]*@)?(\[[^\]\/]*\]|[^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
+        const host = /^[a-z][\w+.-]*:\/\/(?:[^@\/?#\\]*@)?(\[[^\]\/]*\]|[^\/:?#]+)/i.exec(w)?.[1] || /^[\w.+-]+@([\w-]+(?:\.[\w-]+)+)(?::|$)/.exec(w)?.[1];
         if (host) return hzHost(host.toLowerCase());
         // lean: elsewhere a word with a slash is a path, so a ref like origin/main is a project place; the signer's parser knows better
         if (w.startsWith("/dev/")) continue;   // 2>/dev/null and the like: no place
