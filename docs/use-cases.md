@@ -105,6 +105,8 @@ With Tracekit, `tracekit why` replays a run without each input to show which one
 `tracekit view` shows where every agent went (HORIZON), what each read before it acted (INFLUENCE) and every call and
 decision, each one signed.
 
+- Videos: [three agents' runs in `tracekit view`](use-cases/view-walkthrough.mp4) (40 s: the tape, GRAPH, and WHY DID
+  IT HAPPEN? from a held email back to its cause), [the Event Horizon map replaying four agents](use-cases/horizon-replay.mp4)
 - Recorded run: [why](demos/why/README.md)
 - Details: [the viewer](viewer.md), [the Event Horizon map](horizon.md), [why](why.md)
 
