@@ -2060,6 +2060,50 @@
       border-radius: 50%
     }
 
+    .hzkey {
+      display: grid;
+      gap: 5px;
+      font-size: 11px
+    }
+
+    .hzkey>b {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .14em
+    }
+
+    .hzk2 {
+      display: grid;
+      grid-template-columns: max-content max-content;
+      gap: 5px 18px
+    }
+
+    .hzkey .k {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      align-items: center;
+      gap: 6px
+    }
+
+    .hzkey .k .tag {
+      justify-self: start
+    }
+
+    .hzkey .k:has(.tag) {
+      grid-template-columns: 86px minmax(0, 1fr)
+    }
+
+    .hzring {
+      display: inline-block;
+      width: 16px;
+      height: 8px;
+      border: 1px solid var(--amber);
+      border-bottom: 0;
+      border-radius: 16px 16px 0 0
+    }
+
     .hzjet {
       display: inline-block;
       width: 14px;
@@ -3785,12 +3829,18 @@
                      runs: new Set(ev.map(e => e.run)).size, cwd: cwds.size === 1 ? vis([...cwds][0].split("/").pop()) : "",
                      sig: ev.map(e => [e.run, e.seq, e.act, e.gr, e.at].join("\u0001")).join("\u0002") + "\u0003" + agents.flat().join("\u0001") };
     }
-    const HZKEY = `<div class="sec">HOW TO READ IT</div><div><span class="hzs">●</span> read, ran or reached</div><div><span class="hzs a-write">■</span> wrote, or a person approved it</div>`
-      + `<div><span class="hzs a-blocked">✕</span> blocked by policy</div><div><span class="hzs a-held">◯</span> held for a person</div><div><span class="hzs">◆</span> flagged</div>`
-      + `<div><span class="hzshield"></span> shield: a restricted place (a rule about secrets, harness configuration or Tracekit's own files); a flare where an agent was stopped</div>`
-      + `<div><span class="hzjet"></span> jet: data left the machine</div><div><span class="hzfold"></span> folder: hover a place to see its folder, or zoom in to see them all</div><div><span class="tag">SIGNED</span> the signer's record says so · <span class="tag flag">OBSERVED</span> a sensor outside the agent saw it · <span class="tag unv">UNVERIFIED</span> its run did not verify, or a why log wrote it (unsigned)</div>`
-      + `<div class="dim">The rings are the project (the run's working directory; a run that records none: its relative paths), this machine and the outside world, around the event horizon every run starts from. Click a place to zoom to it and see who went there and how we know; click an agent to follow its route.</div>`
-      + `<div class="dim">Scroll or pinch to zoom toward the pointer, drag to pan, double-click to fly in; + and − zoom, FIT, 0 or Esc shows it all. A folder opens into its files as you zoom in.</div>`;
+    // the key: what the marks mean, the map's shapes, how we know, how to move around, each a few words
+    const HZKEY = `<div class="sec">HOW TO READ IT</div><div class="hzkey">`
+      + `<b>WHAT AN AGENT DID</b><div class="hzk2"><div class="k"><span class="hzs">●</span>read, ran, reached</div>`
+      + `<div class="k"><span class="hzs a-write">■</span>wrote, or approved</div><div class="k"><span class="hzs a-blocked">✕</span>blocked</div>`
+      + `<div class="k"><span class="hzs a-held">◯</span>held for a person</div><div class="k"><span class="hzs">◆</span>flagged</div></div>`
+      + `<b>ON THE MAP</b><div class="k"><span class="hzshield"></span>restricted: secrets, agent config, Tracekit's files; a flare where an agent was stopped</div>`
+      + `<div class="k"><span class="hzjet"></span>data left the machine</div><div class="k"><span class="hzfold"></span>a folder: hover a place, or zoom in</div>`
+      + `<div class="k"><span class="hzring"></span>rings: the project, this machine, the outside world</div>`
+      + `<b>HOW WE KNOW</b><div class="k"><span class="tag">SIGNED</span>the signer's record says so</div>`
+      + `<div class="k"><span class="tag flag">OBSERVED</span>a sensor outside the agent saw it</div>`
+      + `<div class="k"><span class="tag unv">UNVERIFIED</span>its run didn't verify, or it's unsigned</div>`
+      + `<b>MOVE AROUND</b><div class="dim">Click a place: who went there. Click an agent: its route. Scroll or pinch to zoom, drag to pan, 0 or Esc for all of it.</div></div>`;
     // a move's what in the side card: its first 3 lines or 240 characters (to a word's end), the rest a click away; its
     // OPEN gives the whole signed record
     function hzWhat(w) {
