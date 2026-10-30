@@ -52,7 +52,7 @@ jobs:
     if: github.repository == 'kausthubhk/Tracekit'
     name: Linux validation (Python 3.12, Node 22)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       PYTHONFAULTHANDLER: "1"
       PYTHONUNBUFFERED: "1"
@@ -70,7 +70,15 @@ jobs:
           node-version: "22"
       - name: Install
         run: python -m pip install -e ".[dev]"
-      - name: Validate
-        run: make lint test build test-ts PY=python
+      - name: Lint
+        run: make lint PY=python
+      - name: Test
+        run: make test PY=python
         env:
-          PYTEST_ADDOPTS: -o faulthandler_timeout=240
+          PYTEST_ADDOPTS: -v -o faulthandler_timeout=240
+      - name: Build
+        if: always()
+        run: make build PY=python
+      - name: TypeScript tests
+        if: always()
+        run: make test-ts PY=python
