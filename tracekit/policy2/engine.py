@@ -341,8 +341,10 @@ def _package_indexes(commands, refs=()):
             continue
         exe = argv[0].rsplit("/", 1)[-1].casefold()
         args = argv[1:]
-        if exe.startswith("python") and len(args) >= 2 and args[:2] == ["-m", "pip"]:
-            exe, args = "pip", args[2:]
+        if exe.startswith("python") or exe == "py":   # py: the Windows launcher
+            module = _python_module(args)
+            if module[:1] == ["pip"]:
+                exe, args = "pip", module[1:]
         exe = "pip" if re.fullmatch(r"pip[0-9.]*", exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
         if exe == "pip":
             default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url", "-f", "--find-links"}
@@ -358,9 +360,10 @@ def _package_indexes(commands, refs=()):
                 "poetry": {"--source"}, "cargo": {"--index", "--registry"}, "gem": {"--source"}}[exe]
         else:
             continue
-        if next((a for a in args if not a.startswith("-")), None) in ("publish", "unpublish"):
+        command = next((a for a in args if not a.startswith("-")), None)   # after global options (pip --isolated)
+        if command in ("publish", "unpublish"):
             continue   # publishing doesn't change where installs come from
-        if args[:1] == ["config"] and "set" in args or exe == "npm" and args[:1] == ["set"]:
+        if command == "config" and "set" in args or exe == "npm" and command == "set":
             # `set key value` or `set key=value ...`, options anywhere
             words = [a for a in args[args.index("set") + 1:] if not a.startswith("-")]
             for i, word in enumerate(words):
@@ -396,6 +399,29 @@ def _package_indexes(commands, refs=()):
             if value is None or _non_default_source(value, default):
                 out.append(value or "<missing>")
     return out
+
+
+def _python_module(args):
+    """[module, its arguments...] that `python ARGS` runs with -m, read past python's own options (in a cluster too,
+    -W and -X with their value: `python -I -m pip`, `python -mpip`), else []."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] not in ("-", "--"):
+        word = args[i]
+        i += 1
+        if word.startswith("--"):
+            i += word == "--check-hash-based-pycs"
+            continue
+        for j, c in enumerate(word[1:], 2):
+            if c == "c":
+                return []
+            if c in "mWX":
+                value = word[j:]
+                if not value and i < len(args):
+                    value, i = args[i], i + 1
+                if c == "m":
+                    return [value] + args[i:]
+                break
+    return []
 
 
 def _non_default_source(value, default):

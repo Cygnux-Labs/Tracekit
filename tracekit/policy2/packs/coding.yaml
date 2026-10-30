@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-45'
+version: '2026.10-v2-46'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -60,18 +60,22 @@ deny:
     class: shell
     # each command's argv, as TK-A002: a later command (`git push origin main && ls -f`), a heredoc after the push or
     # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push,
-    # git --work-tree dir push); -f may sit in a short-option cluster before any `o` (`-uf`, `-4f`; `-of` is -o's
-    # value); --mirror may be abbreviated (`--m`: push's only option starting with m); a `+` refspec forces too.
+    # git --work-tree dir push, an empty value too: git --namespace '' push); -f may sit in a short-option cluster
+    # before any `o` (`-uf`, `-4f`; `-of` is -o's value); --mirror may be abbreviated (`--m`: push's only option
+    # starting with m); a `+` refspec forces too.
     # `[\w\W]*?` crosses a newline inside an argument; anchored and lazy, so the fallback engine stays linear
-    pattern: '^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
+    pattern: '^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
     reason: force push
     remedy: Push without --force, --mirror or a + refspec (rebase onto the remote branch, or push a new branch); a person rewrites shared history themselves.
     rationale: Rewrites shared history.
   - id: TK-D004
     class: shell
-    # rm -r of root or a home; find with -delete on root (after -H, -L or -P too), or on a home with nothing but depth
-    # and type filters before -delete, so a find there that picks files by name isn't denied
-    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find (-[HLP] )*/ .*-delete( |$)|^find (-[HLP] )*(~|\$HOME|\$\{HOME\}|/home|/Users|/root)/? (-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount) |-type [a-z,]+ )*-delete( |$)'
+    # rm -r of root or a home; find with -delete on root, or on a home with nothing but depth and type filters (and
+    # -true or -print, which pick nothing) before -delete, so a find there that picks files by name isn't denied. The
+    # root or home may be any of up to nine starting points (BSD's -f before one too), after up to eight of GNU's and
+    # BSD's options (-H, -L, -P, -E, -X, -d, -s, -x in a cluster, -D with its value, -O3), and spelled with extra
+    # slashes, `.` or `..` (`//`, `/.`, `~/.`); a starting point past the home (~/.cache) isn't one
+    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/\.\.?|/)+ .*-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(~|\$HOME|\$\{HOME\}|/+home|/+Users|/+root)(/\.\.?|/)* ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ )*-delete( |$)'
     reason: recursive delete of root or home
     remedy: Delete only the project's own paths, named in full; a person deletes anything at / or the home directory themselves.
     rationale: Irrecoverable data loss.
@@ -219,9 +223,9 @@ ask:
     class: shell
     field: target
     # security's global options may come before its command; `pass NAME` shows NAME as `pass show NAME` does, so every
-    # pass command but those that don't decrypt an entry (`unless`; grep is TK-D020's). Paths in lower case: the target
-    # is also matched casefolded
-    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-Za-z]*L)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
+    # pass command but those that don't decrypt an entry (`unless`; grep is TK-D020's); ssh-add's -L anywhere in a
+    # cluster (-qL, -Lq). Paths in lower case: the target is also matched casefolded
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
     unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)'
     reason: reading credentials from an operating-system or browser store, or listing an SSH agent's keys
     remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
@@ -279,9 +283,10 @@ ask:
     class: shell
     field: target
     # history -c (alone or in a cluster, after other options) or -d, turning the history file off (unset, also with -v
-    # or other names; HISTFILE set empty or to /dev/null; HISTSIZE or HISTFILESIZE set to 0, which empties the file),
-    # vacuuming the journal
-    pattern: '^history\s(?:[^\n]*?\s)?-[A-Za-z]*(?:c[A-Za-z]*(?:\s|$)|d)|^unset\s+(?:\S+\s+){0,8}?HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:(?:export|declare|typeset|readonly)(?:\s+-[A-Za-z]+){0,4}\s+)?(?:HISTFILE=(?:/dev/null)?|HIST(?:FILE)?SIZE=0+)(?:\s|$)|^journalctl(?:[ \t\f\r]|\s*?\n)[^\n]*?--vacuum-[^\s=]+(?:=|\s|$)'
+    # or other names; HISTFILE set empty or to /dev/null; HISTSIZE, HISTFILESIZE or zsh's SAVEHIST set to 0, which
+    # empties the file; a `*` pattern in HISTIGNORE or zsh's HISTORY_IGNORE, which keeps every command out; each also
+    # after export, declare, typeset, readonly or local), vacuuming the journal
+    pattern: '^history\s(?:[^\n]*?\s)?-[A-Za-z]*(?:c[A-Za-z]*(?:\s|$)|d)|^unset\s+(?:\S+\s+){0,8}?HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:(?:export|declare|typeset|readonly|local)(?:\s+-[A-Za-z]+){0,4}\s+)?(?:HISTFILE=(?:/dev/null)?|(?:HIST(?:FILE)?SIZE|SAVEHIST)=0+|HIST(?:ORY_)?IGNORE=(?:\S*:)?\*(?::\S*)?)(?:\s|$)|^journalctl(?:[ \t\f\r]|\s*?\n)[^\n]*?--vacuum-[^\s=]+(?:=|\s|$)'
     reason: clearing shell history or system logs
     remedy: Have a person approve the held call, or leave shell history and system logs as they are.
     rationale: Clearing the history, turning it off or vacuuming the journal can hide earlier activity; a person confirms it.
@@ -411,7 +416,7 @@ ask:
     # can't backtrack) and an all-zero source object id (SHA-1 or SHA-256). `[\w\W]*?` crosses a newline inside an
     # argument (`--repo=$'x\ny'`) but never reaches another command, which is its own subject; lazy, so the fallback
     # engine stays linear
-    pattern: '^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
+    pattern: '^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
     remedy: Have a person approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
@@ -459,10 +464,10 @@ ask:
     # variable delete (or remove), with up to four options before each word as TK-A042 reads them (an empty or
     # space-edged value too); gh repo edit turning secret scanning, its push protection or advanced security off
     # (--enable-…=false, or a value with a $ or a backquote in it, set at run time); a DELETE, PUT or PATCH (or a
-    # method word with a $ or a backquote in it: -X "$M", -X $(echo DELETE)) through gh or hub api or curl on a
-    # branch's protection or a path
-    # under it, a repository's or organization's rulesets, their Actions, Dependabot or Codespaces secrets and
-    # variables, an environment or a path under it, or the user's Codespaces secrets; a DELETE of a repository's
+    # method word with a $ or a backquote in it: -X "$M", -X $(echo DELETE)) through gh or hub api or curl, or a
+    # curl upload (-T or --upload-file, which sends a PUT), on a branch's protection or a path under it, a
+    # repository's or organization's rulesets, their Actions, Dependabot or Codespaces secrets and variables, an
+    # environment or a path under it, or the user's Codespaces secrets; a DELETE of a repository's
     # vulnerability-alerts or automated-security-fixes (a PUT turns them on); each path bare or after a host, with or
     # without a scheme in any case, or after a variable for the API URL (and /api/v3), the owner and repository also
     # as one variable (repos/$GITHUB_REPOSITORY/…); up to sixteen words (empty ones too) before the method flag or
@@ -475,7 +480,7 @@ ask:
     # lean: a gh api DELETE with any variable in its arguments is held, a workflow run's or an issue comment's by a
     # variable id too: a variable before the path's last segment can hide a protected path (a ? or # in it ends the
     # path there); read the path when such deletes get in the way
-    pattern: '^(?:gh +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}(?:secret|variable) +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}(?:delete|remove)(?: |$)|gh +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}repo +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}edit (?:[^ ]* ){0,16}--enable-(?:secret-scanning(?:-push-protection)?|advanced-security)=(?:0|[Ff](?:alse|ALSE)?|[^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:(?:gh|hub) api|curl) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?(?:(?:[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh]) (?:[^ ]* ){0,16}(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:branches/[^ ?#]{1,250}/protection|rulesets|environments/[^/ ?#]+|(?:actions|dependabot|codespaces)/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables))|user/codespaces/secrets)(?:[/?#][^ ]*)?(?: |$)|[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:vulnerability-alerts|automated-security-fixes)(?:[/?#][^ ]*)?(?: |$))|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:branches/[^ ?#]{1,250}/protection|rulesets|environments/[^/ ?#]+|(?:actions|dependabot|codespaces)/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables))|user/codespaces/secrets)(?:[/?#][^ ]*)?(?: |$)|(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:vulnerability-alerts|automated-security-fixes)(?:[/?#][^ ]*)?(?: |$)))|(?:(?:gh|hub) api|curl) (?:[^ ]* ){0,16}(?:(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:branches/[^ ?#]{1,250}/protection|rulesets|environments/[^/ ?#]+|(?:actions|dependabot|codespaces)/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables))|user/codespaces/secrets)(?:[/?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?(?:[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh])|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*))|(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:vulnerability-alerts|automated-security-fixes)(?:[/?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)))(?: |$)|(?:(?:gh|hub) api|curl) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Pp][Aa][Tt][Cc][Hh]|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)) (?:[^ ]* ){0,16}[^ ]{0,200}security_and_analysis[\w\W]{0,200}?status\W{0,16}disabled|(?:(?:gh|hub) api|curl) (?:[^ ]* ){0,16}[^ ]{0,200}security_and_analysis[\w\W]{0,200}?status\W{0,16}disabled[^ ]{0,200}(?: [^ ]*){0,16} (?:-[^ =-]*X|--method|--request)(?:[ =]?[Pp][Aa][Tt][Cc][Hh]|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*))(?: |$)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}[^ $\x60]*[$\x60]|(?:gh|hub) api (?:[^ ]* ){0,16}[^ $\x60]*[$\x60][^ ]*(?: [^ ]*){0,16} (?:-[^ =-]*X|--method)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee](?: |$))'
+    pattern: '^(?:gh +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}(?:secret|variable) +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}(?:delete|remove)(?: |$)|gh +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}repo +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}edit (?:[^ ]* ){0,16}--enable-(?:secret-scanning(?:-push-protection)?|advanced-security)=(?:0|[Ff](?:alse|ALSE)?|[^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:(?:gh|hub) api|curl) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?(?:(?:[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh]) (?:[^ ]* ){0,16}(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:branches/[^ ?#]{1,250}/protection|rulesets|environments/[^/ ?#]+|(?:actions|dependabot|codespaces)/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables))|user/codespaces/secrets)(?:[/?#][^ ]*)?(?: |$)|[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:vulnerability-alerts|automated-security-fixes)(?:[/?#][^ ]*)?(?: |$))|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:branches/[^ ?#]{1,250}/protection|rulesets|environments/[^/ ?#]+|(?:actions|dependabot|codespaces)/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables))|user/codespaces/secrets)(?:[/?#][^ ]*)?(?: |$)|(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:vulnerability-alerts|automated-security-fixes)(?:[/?#][^ ]*)?(?: |$)))|(?:(?:gh|hub) api|curl) (?:[^ ]* ){0,16}(?:(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:branches/[^ ?#]{1,250}/protection|rulesets|environments/[^/ ?#]+|(?:actions|dependabot|codespaces)/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables))|user/codespaces/secrets)(?:[/?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?(?:[Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh])|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*))|(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:vulnerability-alerts|automated-security-fixes)(?:[/?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)))(?: |$)|(?:(?:gh|hub) api|curl) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Pp][Aa][Tt][Cc][Hh]|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)) (?:[^ ]* ){0,16}[^ ]{0,200}security_and_analysis[\w\W]{0,200}?status\W{0,16}disabled|(?:(?:gh|hub) api|curl) (?:[^ ]* ){0,16}[^ ]{0,200}security_and_analysis[\w\W]{0,200}?status\W{0,16}disabled[^ ]{0,200}(?: [^ ]*){0,16} (?:-[^ =-]*X|--method|--request)(?:[ =]?[Pp][Aa][Tt][Cc][Hh]|(?:[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*))(?: |$)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}[^ $\x60]*[$\x60]|(?:gh|hub) api (?:[^ ]* ){0,16}[^ $\x60]*[$\x60][^ ]*(?: [^ ]*){0,16} (?:-[^ =-]*X|--method)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee](?: |$)|curl (?:[^ ]* ){0,16}(?:-[^ =-]*T|--upload-file)[^ ]* (?:[^ ]* ){0,16}(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:branches/[^ ?#]{1,250}/protection|rulesets|environments/[^/ ?#]+|(?:actions|dependabot|codespaces)/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables))|user/codespaces/secrets)(?:[/?#][^ ]*)?(?: |$)|curl (?:[^ ]* ){0,16}(?:/?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/)(?:repos/[^/ ?#]+/(?:[^/ ?#]+/)?(?:branches/[^ ?#]{1,250}/protection|rulesets|environments/[^/ ?#]+|(?:actions|dependabot|codespaces)/(?:secrets|variables))|orgs/[^/ ?#]+/(?:rulesets|(?:actions|dependabot|codespaces)/(?:secrets|variables))|user/codespaces/secrets)(?:[/?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*T|--upload-file))'
     reason: removing a repository's secrets, branch protection, rulesets or security features through GitHub
     remedy: Have a person approve the held call, or leave the change to a person in the repository's settings.
     rationale: Deleting secrets or branch protection, or turning secret scanning off, removes what guards a repository's code and deploys; a person confirms it.
@@ -648,7 +653,7 @@ ask:
     # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
     # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
     # held
-    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
+    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
@@ -671,7 +676,8 @@ flag:
   - id: TK-F004
     class: shell
     field: line
-    pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
+    # git's push, reset --hard and clean after up to eight global options, as TK-D003 reads `push` (git -C dir push)
+    pattern: '\b(git\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
     # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
