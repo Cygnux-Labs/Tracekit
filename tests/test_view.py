@@ -853,7 +853,7 @@ class View(unittest.TestCase):
         with open(path, "rb") as f:
             orig = f.read()
         self.assertEqual(orig.count(b'"decision":"deny"'), 1)
-        real = view.check
+        real, real_append, shown = view.check, view.StoreFeed._append, []
 
         def check_then_edit(reader, tenant, rid, *a, **k):
             out = real(reader, tenant, rid, *a, **k)
@@ -861,15 +861,22 @@ class View(unittest.TestCase):
                 with open(path, "r+b") as f:
                     f.write(orig.replace(b'"decision":"deny"', b'"decision":"flag"'))
             return out
-        with mock.patch.object(view, "check", side_effect=check_then_edit):
+
+        def append(feed, rows, key):   # every row the run ever had: the viewer may catch the edit and take them back
+            if key[1] == run_id:
+                shown.extend(r for r in rows if r is not observe.RETRACTED)
+            return real_append(feed, rows, key)
+        with mock.patch.object(view, "check", side_effect=check_then_edit), \
+                mock.patch.object(view.StoreFeed, "_append", append):
             feed = store_feed(self, {"data_dir": self.d})
             self.report(feed, run_id)
         with open(path, "r+b") as f:   # and restored: the store verifies again
             f.write(orig)
-        rows = self.rows(feed, run_id)
-        self.assertEqual([r["v2"]["decision"] for r in rows if r["event"] == "PreToolUse"], ["allow", "deny", "ask"])
-        self.assertEqual(dict([r for r in rows if r.get("review")][-1]["review"]["decisions"]),
-                         {"allow": 1, "deny": 1, "ask": 1})
+        decided = [r["v2"]["decision"] for r in shown if r["event"] == "PreToolUse"]
+        self.assertEqual(decided[:3], ["allow", "deny", "ask"])
+        self.assertNotIn("flag", decided)
+        self.assertEqual(dict(next(r for r in shown if (r.get("review") or {}).get("verdict") == "verified")["review"]
+                              ["decisions"]), {"allow": 1, "deny": 1, "ask": 1})
 
     def test_a_store_it_cannot_check_or_a_note_gone_or_gone_back_stops_verification_and_says_so(self):
         """One unreadable line, or the checkpoint note moved away, stopped every re-check while /api/verify stayed ok
