@@ -93,7 +93,7 @@ MIRROR_BACKOFF = 100   # a run's graph is imported again no sooner than this x i
 RECHECK_S = 300
 EDIT_S = 60   # a file store's records are hashed again this often: an edit of records read before checks all runs again
 REFRESH_S = 5.0   # a refresh starts no check of a run past this long, so the newest records are read again meanwhile
-PACE = 1   # after a run's first check, a pause of PACE x its CPU time: the first pass over a store takes half a core
+PACE = 1   # after a run's first check or re-check, a pause of PACE x its CPU time: a pass over a store takes half a core
 MEMO_MAX = 500_000   # records whose signature and schema the viewer remembers holding (verify.v2's memo)
 ROWCACHE_MAX = 8   # runs whose /api/rows answer the viewer keeps, each until a newer checkpoint
 KEPT_MAX = 10_000   # runs whose latest verdict stays in the run list after its row left the live view
@@ -1012,13 +1012,14 @@ class StoreFeed:
 
     def refresh(self):
         """Verify every run with records a checkpoint covers that were not verified yet: what runs added first, then the
-        runs not checked yet, the newest first, each followed by a pause (PACE). A run still being written is shown up
-        to the newest checkpoint, not only once it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a
-        core, each in turn. A refresh starts no check past REFRESH_S, so the newest records are read again while the
-        runs of a large store are checked. An edit of records already read shows in a file store's bytes (_open, every
-        EDIT_S), and a record a check reads that is not the one the reader hashed (StorageChanged) as an edit at once:
-        what is checked is what was hashed. A run of a Postgres store, and one that failed or could not be checked, is checked again RECHECK_S
-        after its last check (the run checked longest ago, one a pass)."""
+        runs waiting for a re-check after a store change, then the runs not checked yet, the newest first, each of
+        these followed by a pause (PACE). A run still being written is shown up to the newest checkpoint, not only once
+        it stops, and the runs that grew take at most 1/(1 + BACKOFF) of a core, each in turn. A refresh starts no
+        check past REFRESH_S, so the newest records are read again while the runs of a large store are checked. An edit
+        of records already read shows in a file store's bytes (_open, every EDIT_S), and a record a check reads that is
+        not the one the reader hashed (StorageChanged) as an edit at once: what is checked is what was hashed. A run of
+        a Postgres store, and one that failed or could not be checked, is checked again RECHECK_S after its last check
+        (the run checked longest ago, one a pass)."""
         now, stale = time.monotonic(), None
         due = [now + RECHECK_S]
         self.due = due[0]   # a store that cannot be read is tried again when it changes, not every POLL_S
@@ -1057,17 +1058,16 @@ class StoreFeed:
                 state = self.runs.get(key, {})
                 if covered and (covered != state.get("count") or state.get("again")):
                     grew = bool(state.get("count")) and not state.get("again")   # shown before: what it added
-                    first = not (grew or state.get("again"))   # a run's first check: paced, a re-check never
-                    if grew and self.idle > time.monotonic() or first and self.pace > time.monotonic() \
-                            or time.monotonic() - now > REFRESH_S:
-                        due.append(self.idle if grew else self.pace if first else now)
+                    # else its first check, or a re-check after a store change: both paced (PACE)
+                    if (self.idle if grew else self.pace) > time.monotonic() or time.monotonic() - now > REFRESH_S:
+                        due.append(self.idle if grew else self.pace)
                     else:
                         spent = time.thread_time()   # the check, its rows and findings: CPU, not waits
                         self._check(r, note[1], key, covered)
                         spent = time.thread_time() - spent
                         if grew:
                             self.idle = time.monotonic() + BACKOFF * spent
-                        elif first:   # the next first check waits as long: the store is still watched meanwhile
+                        else:   # the next first check or re-check waits as long: the store is still watched meanwhile
                             self.pace = time.monotonic() + PACE * spent
                 elif covered and (self.pg or state.get("failed")):
                     due.append(state["checked"] + RECHECK_S)
@@ -1371,8 +1371,9 @@ class StoreFeed:
         once), so a run whose records left the live view opens in full; None when `scope` may not read its tenant, the
         watcher has not verified the run (no such run, no checkpoint covers it yet) or it fails (the run then reads
         re-checking until the watcher checks it again, at once: the run list never keeps its VERIFIED). At most
-        max_records records, its first. An answer is kept while the run's own covered records don't change, or until
-        the viewer's own re-check of the run fails it (RECHECK_S), as the run list's verdict is. The watcher's state
+        max_records records, its first. An answer is kept while the run's own covered records don't change, and is
+        not used while the run waits for a re-check after a store change or once the viewer's own re-check fails it
+        (RECHECK_S), as the run list's verdict is. The watcher's state
         decides all that with no read of the store; only a check reads it, two at once at most: past that,
         observe.Busy (503, try again)."""
         from .why.import_v2 import bundle_records
@@ -1382,7 +1383,8 @@ class StoreFeed:
             state = self.runs.get((tenant, run_id)) or {}
             if not state.get("count") or state.get("failed"):
                 return None
-            body = self.rowcache.get((tenant, run_id, state["count"]))
+            # one waiting for its re-check (paced) is checked here as it is now, not answered from before the change
+            body = None if state.get("again") else self.rowcache.get((tenant, run_id, state["count"]))
         if body is not None:
             return body
         if not self.verifying.acquire(blocking=False):

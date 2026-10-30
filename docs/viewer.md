@@ -99,8 +99,8 @@ of the store the piece its last read began in (the newest records), and every pi
 is written to without growing. An edit of records it showed is caught at the store's next change when it is in that
 last piece, at once when the file is written to without growing (its time not set back), and otherwise within the
 minute; each run with a record in a piece that changed (every run for a key record's, or a file replaced or cut back)
-then reads `PENDING` (re-checking) until it is checked again, in the order the runs started waiting, and the edited
-run turns `FAILED`. The store it then reads anew is compared, piece by piece, with what it read before, so an edit made
+then reads `PENDING` (re-checking) until it is checked again, in the order the runs started waiting, each re-check
+followed by a pause as long as it took, as on start (about half a core), and the edited run turns `FAILED`. The store it then reads anew is compared, piece by piece, with what it read before, so an edit made
 meanwhile anywhere in it is caught as well. A check verifies exactly the bytes the viewer read and hashed: it keeps 8
 bytes of a keyed hash of each record it read (4 MB for 500,000 records), and a record that reads otherwise when a check
 reads it again (the honest bytes put back only while the check reads them) is an edit too, caught at that check: the

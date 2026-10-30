@@ -1399,6 +1399,20 @@ class View(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.failed(feed, x), 15), feed.verify())
 
     @pytest.mark.unverified_bundles
+    def test_a_run_waiting_its_turn_to_be_checked_again_is_not_answered_from_before_the_change(self):
+        """A run waits its turn for its re-check after a store change (PACE): /api/rows kept answering its rows from
+        before the change meanwhile. It is checked for the request as the store is now."""
+        x = self.finished_run()
+        self.service.close()
+        with mock.patch.object(view.StoreFeed, "_watch", lambda feed: None):   # the test refreshes it
+            feed = store_feed(self, {"data_dir": self.d})
+        feed.refresh()   # x first: the newest
+        self.assertIsNotNone(feed.rows(observe.ALL, "default", x))
+        self.edit_decision(x)
+        feed._again({("default", x)})   # as _open does once it finds the change; its re-check waits its turn
+        self.assertIsNone(feed.rows(observe.ALL, "default", x))
+
+    @pytest.mark.unverified_bundles
     def test_an_edit_before_the_last_piece_read_is_caught_when_the_store_is_hashed_again(self):
         """An edit before the piece the last update began in, as records are appended, shows within EDIT_S, when every
         piece is hashed again, and only the runs with records in an edited piece are checked again."""
@@ -2518,6 +2532,29 @@ class LiveRuns(unittest.TestCase):
         for _ in range(3):
             self.refresh(feed)
         self.assertEqual(self.checks[:10], list("jihgfedcba"))   # each in turn, the oldest too
+
+    def test_runs_checked_again_after_a_store_change_take_turns_at_half_a_core(self):
+        """After a change of the store's bytes every run it touched (every run, for a key record's) was checked again
+        back to back at a full core: about 7 CPU-minutes for a large store, which anyone who can write the store can
+        start again. Each re-check is followed by a pause as long as it took, as each first check is; until its turn a
+        run reads re-checking."""
+        self.recs = {r: [v2rec(10 * i, "policy.decision", {"tool": "Bash", "decision": "allow"}, r)]
+                     for i, r in enumerate("abc")}   # c the newest
+        feed = self.feed(lambda run_id: VERIFIED)
+        self.refresh(feed)
+        self.checks.clear()
+        self.fake.changed.return_value = [(0, 10 ** 6)]   # every run's records changed
+        with mock.patch.object(view, "PACE", 1):
+            self.refresh(feed)
+            self.fake.changed.return_value = []
+            self.assertEqual((self.checks, feed.due), (["c"], self.now[0] + 2))   # 2 s: b waits 2 s
+            with feed.lock:
+                self.assertEqual([feed.latest[("default", r)]["review"]["verdict"] for r in "ab"], ["pending"] * 2)
+            self.refresh(feed)
+            self.assertEqual(self.checks, ["c"])
+            self.now[0] += 2
+            self.refresh(feed)
+        self.assertEqual(self.checks, ["c", "b"])
 
     def test_on_start_each_runs_first_check_is_followed_by_a_pause_as_long_as_it_took(self):
         """The first pass over a 430k-record store held a core at 100% for seven minutes. After a run's first check no
