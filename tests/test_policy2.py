@@ -531,8 +531,11 @@ class Speed(unittest.TestCase):
     BUDGET_S = 0.15   # the slowest shipped pattern: ~20 ms on an M-series Mac, ~60 ms on CI runners; a rescan, 0.3 s+
     # `$`, a backquote and security_and_analysisdisabled: TK-A047 split one word at each `$` or each pair (the 1.5.1
     # PR #468 review: 64 KiB of either spent the fallback's whole second and denied)
+    # ` -T`, ` -Lq`, `:*`, `,`, `~/.` and `ns/`: the 1.5.2 review's curl upload, ssh-add cluster, HISTIGNORE pattern,
+    # kubectl type list and TYPE/NAME, and find's unnormalised home
     FILLERS = (" -", " -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@", " ", "\t", "\\n",
-               '{"sql":"/*"},', '{"sql":"-- "},', "$", "`", "security_and_analysisdisabled")
+               '{"sql":"/*"},', '{"sql":"-- "},', "$", "`", "security_and_analysisdisabled", " -T", " -Lq", ":*", ",",
+               "~/.", "ns/")
     # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
     # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
     # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-C010 kubectl delete,
