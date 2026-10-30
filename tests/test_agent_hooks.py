@@ -333,6 +333,19 @@ class Harnesses(DaemonCase):
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"],
                          ["allow", "allow", "allow", "allow", "deny"])
 
+    def test_crush_sub_agents_are_denied_in_the_hook(self):
+        # Crush runs no hooks inside a sub-agent (internal/agent/hooked_tool.go, wrapToolsWithHooks), so the view, grep
+        # and web_fetch calls agent and agentic_fetch make are never seen: the hook denies both itself, as goose's Code Mode
+        base = {"session_id": "cr-2", "cwd": self.d, "hook_event_name": "PreToolUse"}
+        for name, ti in (("agent", {"prompt": "read ~/.ssh/id_rsa"}),
+                         ("agentic_fetch", {"url": "https://x.example", "prompt": "summarise"})):
+            with self.subTest(tool=name):
+                code, out, err = self.hook("crush", {**base, "tool_name": name, "tool_use_id": "c-" + name,
+                                                     "tool_input": ti})
+                self.assertEqual((code, out), (2, ""))   # Crush blocks on exit 2, with the reason on stderr
+                self.assertIn(f"Crush's {name} runs a sub-agent", err)
+                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+
     def test_antigravity_pairs_by_step_records_results_and_blocks_in_json(self):
         # agy's payload names no event (the command does) and no call id (its stepIdx pairs a result with its call);
         # it reads an answer only from the hook's JSON at exit 0, and sends a result's error text but not its output
@@ -562,9 +575,6 @@ class CrushTools(unittest.TestCase):
                                ("ls", {"path": "/w"}, "LS"), ("grep", {"pattern": "x", "path": "/w"}, "Grep"),
                                ("glob", {"pattern": "*.py", "path": "/w"}, "Glob"),
                                ("fetch", {"url": "https://x.example/a"}, "WebFetch"),
-                               ("web_fetch", {"url": "https://x.example/a"}, "WebFetch"),
-                               ("agentic_fetch", {"url": "https://x.example/a", "prompt": "p"}, "WebFetch"),
-                               ("web_search", {"query": "q"}, "WebSearch"),
                                # download writes `file_path`: the file rules decide it, not the fetch rules
                                ("download", {"url": "https://x.example/a", "file_path": "/w/a"}, "Write")):
             with self.subTest(tool=name):
@@ -573,11 +583,26 @@ class CrushTools(unittest.TestCase):
                 self.assertEqual(args.get("file_path"), ti.get("file_path") or ti.get("path"))
         # a decoy `path` never moves a file tool that reads `file_path`
         self.assertEqual(agent_hooks.tool("crush", "view", {"file_path": "/w/a", "path": "/w/b"})[1]["file_path"], "/w/a")
-        # Crush names MCP tools mcp_<server>_<tool>: left as they are, as the policy treats unknown tools
-        self.assertEqual(agent_hooks.tool("crush", "mcp_github_create_issue", {"title": "x"})[0],
-                         "mcp_github_create_issue")
-        # the shipped policy decides a credential read and a download into authorized_keys as it does the same write
         pol = load_policy()
+        # nor a decoy `file_path` one that reads `path` (lsp_rename, ls, grep, glob): decided as without it
+        for name, path, rule in (("lsp_rename", "/home/u/.claude", "TK-F009"), ("lsp_rename", "/w/.env", "TK-F005"),
+                                 ("ls", "/w/.env", "TK-F005"), ("grep", "/w/.env", "TK-F005"),
+                                 ("glob", "/w/.env", "TK-F005")):
+            with self.subTest(tool=name, path=path):
+                ti = {"symbol": "f", "new_name": "g", "pattern": "x", "path": path}
+                decoy = agent_hooks.tool("crush", name, {**ti, "file_path": "/w/a.py"})
+                self.assertEqual(decoy[1]["file_path"], path)
+                got, alone = pol.decide(*decoy), pol.decide(*agent_hooks.tool("crush", name, ti))
+                self.assertIn(rule, got["rule_ids"])
+                self.assertEqual((got["verdict"], got["rule_ids"]), (alone["verdict"], alone["rule_ids"]))
+        # Crush names MCP tools mcp_<server>_<tool>: decided as mcp__<server>_<tool>, so the MCP rules apply (the
+        # server and tool aren't split apart) and the results are untrusted
+        self.assertEqual(agent_hooks.tool("crush", "mcp_github_create_issue", {"title": "x"})[0],
+                         "mcp__github_create_issue")
+        secret = pol.decide(*agent_hooks.tool("crush", "mcp_vault_get_secret", {"name": "db"}))
+        self.assertEqual((secret["verdict"], secret["rule_ids"]), ("ask", ["TK-A037", "TK-F006"]))
+        self.assertTrue(pol.untrusted_results(agent_hooks.tool("crush", "mcp_github_get_issue", {})[0]))
+        # the shipped policy decides a credential read and a download into authorized_keys as it does the same write
         self.assertNotEqual(pol.decide(*agent_hooks.tool("crush", "view", {"file_path": "/home/agent/.ssh/id_rsa"}))
                             ["verdict"], "allow")
         download = pol.decide(*agent_hooks.tool("crush", "download", {
@@ -1050,14 +1075,19 @@ class Installer(unittest.TestCase):
     def test_crush_hooks_are_flat_entries_in_its_json_and_allow_a_held_call(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        # a project's config sits at ./crush.json; the user's follows XDG_CONFIG_HOME, else ~/.config (Crush's own
-        # lookup order, Windows included)
+        # a project's config sits at ./crush.json; the user's is Crush's GlobalConfig(): CRUSH_GLOBAL_CONFIG, else
+        # XDG_CONFIG_HOME, else ~/.config (Windows included); another user's home is read without this process's env
         self.assertEqual(agent_hooks.config_path("crush", d), os.path.join(d, "crush.json"))
         with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": os.path.join(d, "xdg")}):
+            os.environ.pop("CRUSH_GLOBAL_CONFIG", None)
             self.assertEqual(agent_hooks.config_path("crush", None, d),
                              os.path.join(d, ".config", "crush", "crush.json"))
             self.assertEqual(agent_hooks.config_path("crush"),
                              os.path.join(d, "xdg", "crush", "crush.json"))
+            os.environ["CRUSH_GLOBAL_CONFIG"] = os.path.join(d, "cg")
+            self.assertEqual(agent_hooks.config_path("crush"), os.path.join(d, "cg", "crush.json"))
+            self.assertEqual(agent_hooks.config_path("crush", None, d),
+                             os.path.join(d, ".config", "crush", "crush.json"))
         path = agent_hooks.config_path("crush", d)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:

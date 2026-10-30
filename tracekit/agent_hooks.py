@@ -38,11 +38,11 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
             WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
-    Crush   bash, view, write, edit, multiedit, lsp_replace_symbol, lsp_rename, ls, grep, glob, fetch, web_fetch,
-            agentic_fetch, web_search, download, mcp_<server>_<tool>
-            -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, WebFetch, WebFetch, WebSearch,
-            Write, unchanged (Crush's own names are lower case; `path` becomes `file_path` for the file tools, and
-            its payload is Claude Code's shape)
+    Crush   bash, view, write, edit, multiedit, lsp_replace_symbol, lsp_rename, ls, grep, glob, fetch, download,
+            mcp_<server>_<tool>
+            -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
+            (lsp_rename, ls, grep and glob decided on the `path` they read; its payload is Claude Code's shape);
+            agent and agentic_fetch are denied in the hook: their sub-agents' calls run no hooks
 
 What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
 events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
@@ -108,13 +108,13 @@ AGY_ARGS = {"run_command": {"command": "CommandLine", "dangerouslyDisableSandbox
 AGY_HOOK = "tracekit"   # the name Tracekit's hook has in agy's hooks.json, which maps each hook's name to its events
 AGY_EVENTS = ("PreToolUse", "PostToolUse")
 # Crush's built-in tools (internal/agent/tools/*.go): its payload and event names are Claude Code's, its tool names are
-# lower case, and its file tools already send `file_path`; lsp_rename, ls, grep and glob send `path`. download writes
-# its `file_path`, so the file rules decide it as a Write, not as a fetch.
+# lower case, and its file tools send `file_path`. download writes its `file_path`, so the file rules decide it as a
+# Write, not as a fetch
+# lean: a download's URL meets no fetch rule (TK-F002, TK-F012); decide it as a fetch too if a URL rule must see it
 CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit", "multiedit": "Edit",
                "lsp_replace_symbol": "Edit", "lsp_rename": "Edit", "ls": "LS", "grep": "Grep", "glob": "Glob",
-               "fetch": "WebFetch", "web_fetch": "WebFetch", "agentic_fetch": "WebFetch", "web_search": "WebSearch",
-               "download": "Write"}
-CRUSH_PATH_ARG = ("path",)   # lsp_rename, ls, grep and glob: the directory they read
+               "fetch": "WebFetch", "download": "Write"}
+CRUSH_PATH_TOOLS = ("lsp_rename", "ls", "grep", "glob")   # they read `path`, the directory they search, not `file_path`
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -241,10 +241,10 @@ def tool(harness, name, ti):
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
         return AGY_TOOLS.get(name, name), ti
     if harness == "crush":
-        if "file_path" not in ti:
-            for k in CRUSH_PATH_ARG:
-                if k in ti:
-                    ti["file_path"] = ti[k]
+        if name.startswith("mcp_"):   # Crush names an MCP tool mcp_<server>_<tool> (internal/agent/tools/mcp-tools.go)
+            return "mcp__" + name[4:], ti
+        if name in CRUSH_PATH_TOOLS:   # the path the tool itself reads decides, never a decoy `file_path` beside it
+            ti["file_path"] = ti.get("path")
         return CRUSH_TOOLS.get(name, name), ti
     return name, ti
 
@@ -431,15 +431,22 @@ PAIRED = ("gemini", "droid", "antigravity")   # the harnesses whose call ids _pa
 # goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
 # as code_execution__<name>; each runs tool calls through dispatch_tool, which runs no hooks
 GOOSE_CODE_MODE = ("execute_javascript", "execute_typescript", "execute_bash")
+# Crush's sub-agent tools: a sub-agent's own calls (view, grep, sourcegraph, web_fetch, ...) run no hooks
+# (internal/agent/hooked_tool.go, wrapToolsWithHooks)
+CRUSH_SUBAGENTS = ("agent", "agentic_fetch")
 
 
-def _blocked_goose_tool(tool_name):
-    """The reason a goose tool is denied in the hook itself (it runs calls the hook never sees), else None.
-    tool_name: goose's own name for the tool, before it is mapped."""
+def _blocked_tool(harness, tool_name):
+    """The reason a tool is denied in the hook itself (it runs calls the hook never sees), else None.
+    tool_name: the harness's own name for the tool, before it is mapped."""
     name = tool_name.removeprefix("code_execution__")
-    if name in GOOSE_CODE_MODE:
+    if harness == "goose" and name in GOOSE_CODE_MODE:
         return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
+    if harness == "crush" and tool_name in CRUSH_SUBAGENTS:
+        return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
+                "can't decide them; make each call itself instead. To stop Crush offering it, set "
+                '"options": {"disabled_tools": ["agent", "agentic_fetch"]} in crush.json.')
     return None
 
 
@@ -456,7 +463,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
-    reason = _blocked_goose_tool(str(p.get("tool_name") or "")) if harness == "goose" and is_pre else None
+    reason = _blocked_tool(harness, str(p.get("tool_name") or "")) if is_pre else None
     if reason is not None:
         print(reason, file=stderr)
         _reply(harness, stdout, False, reason, is_pre)
@@ -529,11 +536,12 @@ def config_path(harness, project=None, home=None):
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
                         os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
                                      os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js"),
-            # Crush reads ./crush.json in a project and $XDG_CONFIG_HOME/crush/crush.json (Windows:
-            # %USERPROFILE%\.config\crush\crush.json) otherwise; the legacy JSON is still read beside its crushrc
+            # Crush reads ./crush.json in a project, else its GlobalConfig(): $CRUSH_GLOBAL_CONFIG/crush.json, or
+            # $XDG_CONFIG_HOME (else ~/.config; Windows %USERPROFILE%\.config)/crush/crush.json
             "crush": os.path.join(base, "crush.json") if project else
-                     os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
-                                  os.path.join(base, ".config"), "crush", "crush.json")}[harness]
+                     os.path.join((None if home else os.environ.get("CRUSH_GLOBAL_CONFIG")) or
+                                  os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
+                                               os.path.join(base, ".config"), "crush"), "crush.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none

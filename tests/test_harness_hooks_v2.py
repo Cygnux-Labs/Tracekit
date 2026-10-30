@@ -137,6 +137,22 @@ class Mapping(HarnessCase):
     def test_qwen(self):
         self.check("qwen")
 
+    def test_crush(self):
+        self.check("crush")
+
+    def test_crush_sub_agents_are_denied_before_the_signer(self):
+        # Crush runs no hooks inside a sub-agent (internal/agent/hooked_tool.go), so the hook denies agent and
+        # agentic_fetch itself, before any decide request is sent, and says how to turn them off
+        for i, name in enumerate(("agent", "agentic_fetch")):
+            with self.subTest(tool=name):
+                code, out, err = self.hook("crush", {"session_id": "cr-9", "cwd": "/w", "hook_event_name": "PreToolUse",
+                                                     "tool_name": name, "tool_use_id": f"call_{i}",
+                                                     "tool_input": {"prompt": "p", "url": "https://x.example"}})
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"Crush's {name}", err)
+                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+                self.assertEqual(self.sent, [])
+
     def test_droid_pairs_results_and_drops_a_blocked_call_before_allowing_a_retry(self):
         pre = {"session_id": "s-droid", "hook_event_name": "PreToolUse", "tool_name": "Execute",
                "tool_input": {"command": "ls"}}
