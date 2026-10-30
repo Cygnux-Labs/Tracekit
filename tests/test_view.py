@@ -829,11 +829,14 @@ class View(unittest.TestCase):
         real_check, real_validate = import_v2.bundle_records, view.v2.validate
 
         def check(*a, **k):   # rows()'s own check: not the test harness's check of each bundle exported
-            inside.append(1)
+            mine = threading.get_ident() == me   # the watcher checks too, while rows()'s export runs the harness's check
+            if mine:
+                inside.append(1)
             try:
                 return real_check(*a, **k)
             finally:
-                inside.pop()
+                if mine:
+                    inside.pop()
 
         def validate(e):   # this thread's schema checks only: the watcher's own are its business
             if inside and threading.get_ident() == me:
