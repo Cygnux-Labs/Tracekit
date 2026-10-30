@@ -167,7 +167,8 @@ protocol stays 20.
 - **`tracekit view` held a core at 100% on a large store** (414k records): it opened the store again at every change
   (2.5 s and 1.2 GB each time), checked a growing run whole at each checkpoint and every run again every five minutes,
   and drew HORIZON every frame. It now keeps its reader and reads only what was appended, checks what runs added within
-  1/41 of a core, takes about half a core for its first pass (the newest run on the page within 7 s), and draws DESK's
+  1/41 of a core, takes about half a core for its first pass (the newest run on the page within 7 s; more while the page
+  is in use: 50-100% for 14 minutes on a 520,000-record store, then 0-4%), and draws DESK's
   lanes and HORIZON only when they change. A check verifies the very bytes the viewer hashed (8 bytes of a keyed hash
   per line, about 4 MiB for 500k records), so an edit of records already shown still turns their run FAILED, however
   it is timed: the runs with records in changed bytes, or under a changed checkpoint, read RE-CHECKING until checked
