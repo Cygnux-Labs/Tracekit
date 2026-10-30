@@ -299,7 +299,8 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             "whose hook can't run, undecided and unrecorded" if lets_past else
             f"each {harness} hook command in {path} names its event", fix, bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
-        default = 30 if harness == "antigravity" else 60   # a timeout the hook doesn't set: agy's own default is 30 s
+        # a timeout the hook doesn't set: agy's and Crush's own default is 30 s
+        default = 30 if harness in ("antigravity", "crush") else 60
         pre = [h.get("timeout", default * scale) for h in pre]
         pre = [t if type(t) in (int, float) and 0 <= t < float("inf") else 0 for t in pre]
         if pre:
