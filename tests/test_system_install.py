@@ -518,6 +518,10 @@ class ActionInputs(unittest.TestCase):
             with open(tracekit, "w", encoding="utf-8", newline="\n") as f:
                 f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -m tracekit.cli \"$@\"\n")
             os.chmod(tracekit, 0o755)
+            python = os.path.join(bin_dir, "python")
+            with open(python, "w", encoding="utf-8", newline="\n") as f:
+                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+            os.chmod(python, 0o755)
 
             def verify(bundle, *, key="", witness="", trust="", strict="false", require_anchor="true"):
                 output = os.path.join(temp, "github-output")

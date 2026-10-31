@@ -33,11 +33,13 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 ## Verify in GitHub Actions
 
 The composite action can verify v2 bundles against a pinned trust config. Pass its path with `trust`; the file must be
-available to the workflow. The default `require-anchor: true` accepts a v2 bundle only when verification with that
-trust config succeeds. For v1 bundles, continue to pass `key` or `witness`; the action checks the v1 `trust root` result.
+available to the workflow. Get the trust file from the sender directly, not from the pull request or the
+`<run>.trust.json` file that `tracekit last` writes next to the bundle. The default `require-anchor: true` accepts a v2
+bundle only when verification with that trust config succeeds. For v1 bundles, continue to pass `key` or `witness`;
+the action checks the v1 `trust root` result.
 
 ```yaml
-- uses: Cygnux-Labs/Tracekit@v1
+- uses: Cygnux-Labs/Tracekit@main
   with:
     bundle: run.tkb
     trust: .tracekit/trust.json
