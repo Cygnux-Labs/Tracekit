@@ -140,7 +140,7 @@ class Engine:
     def untrusted_results(self, tool):
         """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted,
         or those of the tool it spells (listed)."""
-        return any(name and any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
+        return any(name is not None and any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
                                 for u in self.policy.get("untrusted", ()))
                    for name in (tool, self.listed(tool)))
 

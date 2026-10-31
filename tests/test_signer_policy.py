@@ -2794,6 +2794,8 @@ class SignerPolicy(unittest.TestCase):
         self.open(svc.load_policy(os.path.join(PACKS, "server.yaml")))
         d = self.decide("multi_edit", {"file_path": "/home/u/.claude/settings.json", "edits": []})
         self.assertEqual((d["decision"], {"TK-UNKNOWN-TOOL", "TK-F009"} <= set(d["rule_ids"])), ("ask", True), d)
+        # and what a renamed web search returns is untrusted content, as WebSearch's is (provenance)
+        self.assertTrue(self.decide("web_search", {"query": "refund policy"}, tcid="tc-s").get("send_result"))
 
     def test_two_readings_of_a_call_keep_what_either_found(self):
         # a renamed tool's and an MCP tool's bare-name reading: a rule that ran out of time in either counts as matched,
