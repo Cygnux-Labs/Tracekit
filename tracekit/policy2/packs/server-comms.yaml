@@ -1,7 +1,7 @@
 # Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
 # people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
 
-version: '2026.10-server-comms-5'
+version: '2026.10-server-comms-6'
 description: server-hosted agents, payments, email and chat
 unknown_tools: ask
 
@@ -54,8 +54,9 @@ ask:
     remedy: Check which payment the call refunds, pays or sends before approving it; with no amount it moves all of it, or the amount set earlier.
     rationale: TK-M001 holds a payment with an amount; a refund or payment tool called without one moves money too.
   - id: TK-M003
-    # ten or more recipients in to, cc or bcc (a list or a comma-separated string), or a whole-company address
-    pattern: '"(to|cc|bcc|recipients)":(\[("[^"]*",){9}|"([^"@]*@){10})|"(to|cc|bcc|recipients)":(\[[^\]\[]*)?"(all|everyone|all-staff|allstaff|staff|all-hands|customers|users)@'
+    # ten or more recipients in to, cc or bcc (a list or a comma-separated string), or a whole-company address; the
+    # list is read forward to that address (`*?`), so the fallback engine never backs off over a long list without one
+    pattern: '"(to|cc|bcc|recipients)":(\[("[^"]*",){9}|"([^"@]*@){10})|"(to|cc|bcc|recipients)":(\[[^\]\[]*?)?"(all|everyone|all-staff|allstaff|staff|all-hands|customers|users)@'
     reason: mass email
     rationale: One message to many people (or to a list address) cannot be recalled; a person checks the audience and the text.
   - id: TK-M004
