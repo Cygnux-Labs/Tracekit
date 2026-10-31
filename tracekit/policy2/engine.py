@@ -139,8 +139,8 @@ class Engine:
 
     def _named(self, tool_re, lits, name, low, deadline):
         """Whether a rule's tool pattern takes the tool `name` (`low`: lower-cased); none takes every name. A name
-        holding none of the pattern's literals is not searched: 27 searches of a 48 KiB MCP name of underscores took
-        the fallback engine 0.3 s on a laptop, past its 1 s on CI's macOS runners (#481)."""
+        holding none of the pattern's literals is not searched: 27 searches of a 48 KiB MCP name of `run_` took the
+        fallback engine 0.3 s on a laptop, past its 1 s on CI's macOS runners (#481)."""
         return tool_re is None or (lits is None or any(s in low for s in lits)) and self._match(tool_re, name, True,
                                                                                                  deadline)
 
