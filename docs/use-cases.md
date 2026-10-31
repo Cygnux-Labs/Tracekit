@@ -121,8 +121,12 @@ decision, each one signed.
 
 [![HORIZON: four agents' calls placed around the machine they ran on](use-cases/horizon-replay.jpg)](https://cygnux-labs.github.io/Tracekit/videos/horizon-replay.mp4)
 
+[![HORIZON zoomed into a restricted file: who touched .env, and under which rule](use-cases/horizon-explore.jpg)](https://cygnux-labs.github.io/Tracekit/videos/horizon-explore.mp4)
+
 - Videos: [three agents' runs in `tracekit view`](https://cygnux-labs.github.io/Tracekit/videos/view-walkthrough.mp4) (40 s: the tape, GRAPH, and WHY DID
-  IT HAPPEN? from a held email back to its cause), [the Event Horizon map replaying four agents](https://cygnux-labs.github.io/Tracekit/videos/horizon-replay.mp4)
+  IT HAPPEN? from a held email back to its cause), [the Event Horizon map replaying four agents](https://cygnux-labs.github.io/Tracekit/videos/horizon-replay.mp4),
+  [exploring the map](https://cygnux-labs.github.io/Tracekit/videos/horizon-explore.mp4) (15 s: zoom into a restricted file, follow one
+  agent, jump to a blocked force push)
 - Recorded run: [why](demos/why/README.md)
 - Details: [the viewer](viewer.md), [the Event Horizon map](horizon.md), [why](why.md)
 
