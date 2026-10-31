@@ -8,6 +8,7 @@ import functools
 import posixpath
 import re
 import time
+import unicodedata
 
 from . import classes, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, translate
@@ -76,7 +77,7 @@ class Engine:
         # the names `tools:` lists (not its globs) by spelling, for listed(); a spelling two names share names neither
         spelled = {}
         for t in self.policy.get("tools", {}):
-            if not any(c in t for c in "*?["):
+            if not any(c in t for c in "*?[") and _spelling(t):   # a name with no ASCII letter or digit spells none
                 spelled.setdefault(_spelling(t), []).append(t)
         self._spelled = {k: v[0] for k, v in spelled.items() if len(v) == 1}
 
@@ -137,9 +138,11 @@ class Engine:
         return self._spelled.get(_spelling(tool))
 
     def untrusted_results(self, tool):
-        """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted."""
-        cls = self.tool_class(tool)
-        return any(u == cls if u in CLASSES else fnmatch.fnmatchcase(tool, u) for u in self.policy.get("untrusted", ()))
+        """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted,
+        or those of the tool it spells (listed)."""
+        return any(name and any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
+                                for u in self.policy.get("untrusted", ()))
+                   for name in (tool, self.listed(tool)))
 
     def reads(self, tool, cls=None):
         """{section: [rule ids]} decide() reads for a call of `tool` (`cls` overrides its class, as for decide): those
@@ -746,5 +749,6 @@ def _text(s):
 
 
 def _spelling(name):
-    """A tool name lower-cased, letters and digits only: what survives a framework's rewriting of it."""
-    return re.sub(r"[^0-9a-z]", "", name.lower())
+    """A tool name as CrewAI's sanitize_tool_name leaves it, without its `_`: accents dropped (NFKD, then ASCII),
+    lower-cased, letters and digits only."""
+    return re.sub(r"[^0-9a-z]", "", unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower())

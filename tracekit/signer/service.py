@@ -436,6 +436,18 @@ def load_policy(path=DEFAULT_POLICY, backend=None):
     return Engine(pol, backend)
 
 
+def _stricter(a, b):
+    """Two readings of one call as one decision: the stricter (`a` on a tie), with both readings' rule ids and oversized
+    subjects, nondeterministic if either was (a rule that ran out of time counts as matched in either)."""
+    d = {**max(a, b, key=lambda x: STRICTNESS.index(x["verdict"])),
+         "rule_ids": list(dict.fromkeys(a["rule_ids"] + b["rule_ids"]))}
+    if a.get("nondeterministic") or b.get("nondeterministic"):
+        d["nondeterministic"] = True
+    if a.get("oversize") or b.get("oversize"):
+        d["oversize"] = list(dict.fromkeys(a.get("oversize", []) + b.get("oversize", [])))
+    return d
+
+
 def _iso(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -1902,17 +1914,14 @@ class SignerService:
             d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
             listed = self.policy.listed(tool)
             if listed:   # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool
-                b = self.policy.decide(listed, args, untrusted=untrusted)
-                d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
-                     "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
+                d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
             if tool.startswith("mcp:") and "/" in tool:
                 # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class
                 # if the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an
                 # MCP one
                 bare = tool.split("/", 1)[1]
-                b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
-                d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
-                     "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
+                d = _stricter(d, self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls,
+                                                    untrusted))
             if hint is None or hint == cls:
                 return d, False, d["rule_ids"]
             h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)

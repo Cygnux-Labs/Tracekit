@@ -2795,6 +2795,17 @@ class SignerPolicy(unittest.TestCase):
         d = self.decide("multi_edit", {"file_path": "/home/u/.claude/settings.json", "edits": []})
         self.assertEqual((d["decision"], {"TK-UNKNOWN-TOOL", "TK-F009"} <= set(d["rule_ids"])), ("ask", True), d)
 
+    def test_two_readings_of_a_call_keep_what_either_found(self):
+        # a renamed tool's and an MCP tool's bare-name reading: a rule that ran out of time in either counts as matched,
+        # so the decision says it is nondeterministic, and names every oversized subject
+        a = {"verdict": "deny", "rule_ids": ["TK-UNKNOWN-TOOL", "X-1"], "policy_hash": "h"}
+        b = {"verdict": "deny", "rule_ids": ["X-1", "X-2"], "nondeterministic": True, "oversize": ["X-2's subject (line)"]}
+        self.assertEqual(svc._stricter(a, b), {"verdict": "deny", "rule_ids": ["TK-UNKNOWN-TOOL", "X-1", "X-2"],
+                                               "policy_hash": "h", "nondeterministic": True,
+                                               "oversize": ["X-2's subject (line)"]})
+        self.assertEqual(svc._stricter({"verdict": "flag", "rule_ids": ["F"]}, {"verdict": "ask", "rule_ids": ["A"]}),
+                         {"verdict": "ask", "rule_ids": ["F", "A"]})
+
     def test_ask_rule_on_another_tool_name(self):
         self.open(Engine({"tools": {"run_shell": "shell"}, "ask": [{"id": "T-ASK", "class": "shell", "pattern": "^deploy( |$)"}]}))
         self.assertEqual(self.decide("run_shell", {"command": "env X=1 deploy prod"})["decision"], "ask")
