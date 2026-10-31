@@ -6,7 +6,7 @@
 # gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
-version: '2026.10-strict-5'
+version: '2026.10-strict-8'
 description: server-hosted agents where installs, pushes, network commands and environment changes wait for a person
 on_parse_error: deny
 
@@ -14,7 +14,7 @@ ask:
   - id: TK-F004
     class: shell
     field: line
-    pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
+    pattern: '\b(git\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
     label: side_effect
     reason: a push, publish, install or apply
     remedy: Have a person approve the held call; the strict profile holds every change that leaves the workspace.

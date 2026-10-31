@@ -529,8 +529,13 @@ class Prefilter(unittest.TestCase):
 class Speed(unittest.TestCase):
     """The fallback engine (`regex`) on 64 KiB built to make a pattern back off or rescan."""
     BUDGET_S = 0.15   # the slowest shipped pattern: ~20 ms on an M-series Mac, ~60 ms on CI runners; a rescan, 0.3 s+
+    # `$`, a backquote and security_and_analysisdisabled: TK-A047 split one word at each `$` or each pair (the 1.5.1
+    # PR #468 review: 64 KiB of either spent the fallback's whole second and denied)
+    # ` -T`, ` -Lq`, `:*`, `,`, `~/.` and `ns/`: the 1.5.2 review's curl upload, ssh-add cluster, HISTIGNORE pattern,
+    # kubectl type list and TYPE/NAME, and find's unnormalised home
     FILLERS = (" -", " -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@", " ", "\t", "\\n",
-               '{"sql":"/*"},', '{"sql":"-- "},')
+               '{"sql":"/*"},', '{"sql":"-- "},', "$", "`", "security_and_analysisdisabled", " -T", " -Lq", ":*", ",",
+               "~/.", "ns/")
     # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
     # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
     # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-C010 kubectl delete,
@@ -717,10 +722,15 @@ class Speed(unittest.TestCase):
     def test_adversarial_calls_decide_before_the_fallback_deadline(self):
         """TK-S002's URL scheme rescanned to the end from each word: 64 KiB of `--x` spent the 1 s and denied. TK-D006
         took `http` in each URL for a network command (a 20 KB download script: 0.8 s), TK-F011 a redirection
-        target past the next `>`, TK-M004 a mention's label past the next `<`, TK-DB005 the text after each COPY."""
+        target past the next `>`, TK-M004 a mention's label past the next `<`, TK-DB005 the text after each COPY.
+        TK-A047 split a word at each `$` or backquote, and a branch name at each `/protection`, then read on to the end
+        from each split (PR #468's review: each spent the 1 s and denied)."""
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
         n = MAX_SUBJECT - 200
         for tool, args in [("Bash", {"command": "git push " + f * (n // len(f))}) for f in self.FILLERS] + [
+                ("Bash", {"command": "gh api '" + "$" * n + "' rulesets"}),
+                ("Bash", {"command": "hub api '" + "`" * n + "' secret x"}),
+                ("Bash", {"command": "curl 'repos/o/r/branches" + "/protection" * (n // 11) + "'"}),
                 ("Write", {"file_path": "/p/a", "content": "--x" * 21000 + "://"}),
                 ("Bash", {"command": "echo " + "--x" * 21000 + "://"}),
                 ("Bash", {"command": "source .env && curl -sS " + " ".join(

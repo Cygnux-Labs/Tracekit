@@ -51,8 +51,10 @@ class HarnessCase(unittest.TestCase):
         self.addCleanup(agent.stop)
 
     def hook(self, harness, payload, event=None):
+        """payload: a dict, or the raw JSON text the harness sends."""
         out, err = io.StringIO(), io.StringIO()
-        code = harness_hooks.run(harness, json.dumps(payload), out, err, event=event)
+        code = harness_hooks.run(harness, payload if isinstance(payload, str) else json.dumps(payload), out, err,
+                                 event=event)
         return code, out.getvalue(), err.getvalue()
 
 
@@ -138,6 +140,48 @@ class Mapping(HarnessCase):
 
     def test_qwen(self):
         self.check("qwen")
+
+    def test_crush(self):
+        self.check("crush")
+
+    def test_crush_sub_agents_are_denied_before_the_signer(self):
+        # Crush runs no hooks inside a sub-agent (internal/agent/hooked_tool.go), so the hook denies agent and
+        # agentic_fetch itself, before any decide request is sent, and says how to turn them off
+        for i, name in enumerate(("agent", "agentic_fetch")):
+            with self.subTest(tool=name):
+                code, out, err = self.hook("crush", {"session_id": "cr-9", "cwd": "/w", "hook_event_name": "PreToolUse",
+                                                     "tool_name": name, "tool_use_id": f"call_{i}",
+                                                     "tool_input": {"prompt": "p", "url": "https://x.example"}})
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"Crush's {name}", err)
+                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+                self.assertEqual(self.sent, [])
+
+    def test_crush_argument_names_crush_reads_otherwise_are_denied_before_the_signer(self):
+        # Crush decodes a built-in tool's input into a Go struct: a name matches its field ignoring case, a later repeat
+        # wins, and a null keeps the earlier value; each input here runs other arguments than json.loads reads
+        payload = ('{"event":"PreToolUse","hook_event_name":"PreToolUse","session_id":"cr-10","cwd":"/w",'
+                   '"tool_name":"%s","tool_input":%s,"tool_use_id":"call_%d"}')
+        odd = (("bash", '{"description":"x","command":"ls","Command":"rm -rf ~"}'),
+               ("bash", '{"command":"rm -rf ~","command":null}'),
+               ("view", '{"file_path":"/w/README.md","FILE_PATH":"/home/u/.ssh/id_rsa"}'),
+               ("grep", '{"pattern":"PRIVATE","Path":"/home/u/.ssh"}'),
+               ("multiedit", '{"file_path":"/w/a.py","edits":[{"old_string":"a","new_string":"b","new_string":"c"}]}'))
+        for i, (name, ti) in enumerate(odd):
+            with self.subTest(tool=name, input=ti):
+                code, out, err = self.hook("crush", payload % (name, ti, i), "PreToolUse")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"Crush's {name} input repeats an argument name", err)
+                self.assertEqual(self.sent, [])
+        # an MCP tool's arguments reach its server as a map, as json.loads reads them; Docker's code-mode is denied
+        self.assertEqual(self.hook("crush", payload % ("mcp_github_get_issue", '{"issue":1,"Issue":2}', 7),
+                                   "PreToolUse")[0], 0)
+        self.assertEqual([s["args"] for s in self.sent], [{"issue": 1, "Issue": 2}])
+        code, _, err = self.hook("crush", payload % ("mcp_docker_code-mode", '{"servers":["github"],"name":"gh"}', 8),
+                                 "PreToolUse")
+        self.assertEqual(code, 2)
+        self.assertIn("Docker MCP Gateway's code-mode", err)
+        self.assertEqual(len(self.sent), 1)
 
     def test_droid_pairs_results_and_drops_a_blocked_call_before_allowing_a_retry(self):
         pre = {"session_id": "s-droid", "hook_event_name": "PreToolUse", "tool_name": "Execute",
@@ -395,6 +439,22 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
         self.assertIn("TK-D005", err)
 
+    def test_a_cursor_call_is_decided_on_every_path_its_input_names(self):
+        # Cursor doesn't document which key its tools read: a decoy file_path beside the path a tool reads was decided
+        for i, key in enumerate(("path", "target_file", "filePath")):
+            code, out, err = self.hook("cursor", {"conversation_id": "c", "hook_event_name": "preToolUse",
+                                                  "tool_name": "Write", "tool_use_id": f"w{i}", "tool_input": {
+                                                      key: "/w/.env", "file_path": "/w/notes.txt", "content": "A=1"}})
+            self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), key)
+            self.assertIn("TK-D005", err)
+        # a `paths` entry that isn't a string is left out, not a hook error: the paths are decided
+        code, out, err = self.hook("cursor", {"conversation_id": "c", "hook_event_name": "preToolUse",
+                                              "tool_name": "Write", "tool_use_id": "w3", "tool_input": {
+                                                  "path": "/w/.env", "file_path": "/w/notes.txt", "paths": [{}],
+                                                  "content": "A=1"}})
+        self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
+        self.assertIn("TK-D005", err)
+
     def test_a_gemini_sandbox_expansion_is_held_for_a_person(self):
         pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
                "tool_input": {"command": "npm install", "additional_permissions": {"network": True}}}
@@ -426,6 +486,45 @@ class OnTheDevPolicy(HarnessCase):
                                                     r"(--signer \S+ )?approve apr-")
         self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
                          (0, '{"decision": "allow"}'))
+
+    def test_antigravity_denies_an_argument_agy_may_read_in_another_case(self):
+        # agy is a Go binary: a decoder like encoding/json fills CommandLine from `commandline` too (the last such key;
+        # a null keeps the value before it), while the hook reads the exact name: `ls` was decided, `rm -rf ~` ran
+        def pre(step, name, args):
+            return {"toolCall": {"name": name, "args": args}, "stepIdx": step, "conversationId": "ag-case",
+                    "workspacePaths": ["/w"]}
+        for step, name, args in ((1, "run_command", {"CommandLine": "ls", "commandline": "rm -rf ~"}),
+                                 (2, "run_command", {"commandline": "rm -rf ~"}),
+                                 (3, "run_command", {"CommandLine": "mkdir -p /tmp/x", "bypassSandbox": True}),
+                                 (4, "run_command", {"CommandLine": "mkdir -p /tmp/x", "BypaſsSandbox": True}),
+                                 (5, "write_to_file", {"TargetFile": "/w/notes.txt", "targetFile": "/w/.env",
+                                                       "CodeContent": "A=1"}),
+                                 (6, "manage_task", {"action": "send_input", "TaskId": "t", "Input": "rm -rf ~\n"})):
+            with self.subTest(name=name, args=args):
+                code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
+                self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
+                self.assertIn("so agy may run the call with other arguments", json.loads(out)["reason"])
+        # a repeated name, exact too, is read from the payload as sent: json.loads keeps the last value (null, or a
+        # list Go can't put in a string field), a Go decoder the one before it
+        for step, args in ((7, '{"CommandLine": "rm -rf ~", "CommandLine": null}'),
+                           (8, '{"CommandLine": "rm -rf ~", "CommandLine": ["ls"]}'),
+                           (9, json.dumps('{"CommandLine": "rm -rf ~", "CommandLine": "ls"}'))):
+            with self.subTest(args=args):
+                raw = ('{"toolCall": {"name": "run_command", "args": %s}, "stepIdx": %d, "conversationId": "ag-case",'
+                       ' "workspacePaths": ["/w"]}') % (args, step)
+                out = io.StringIO()
+                self.assertEqual(harness_hooks.run("antigravity", raw, out, io.StringIO(), event="PreToolUse"), 0)
+                self.assertIn("'CommandLine' of agy's run_command repeats an earlier argument's name",
+                              json.loads(out.getvalue())["reason"])
+        for step, name, args in ((10, "run_command", {"CommandLine": "npm test", "Cwd": "/w", "WaitMsBeforeAsync": 5000,
+                                                      "toolSummary": "tests"}),
+                                 (11, "view_file", {"AbsolutePath": "/w/a.py", "StartLine": 1, "EndLine": 4}),
+                                 (12, "search_web", {"query": "x", "domain": "y"}),
+                                 # a lone null is absent to a Go decoder too
+                                 (13, "run_command", {"CommandLine": "ls", "BypassSandbox": None, "Cwd": None})):
+            with self.subTest(name=name):   # agy's own spellings decide as before
+                self.assertEqual(self.hook("antigravity", pre(step, name, args), "PreToolUse")[:2],
+                                 (0, '{"decision": "allow"}'))
 
 
 class Installer(unittest.TestCase):
@@ -496,13 +595,16 @@ class Installer(unittest.TestCase):
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
                     hooks = [h for hs in (blob if harness == "droid" else blob[key]).values() for h in hs]
-                    cmds = [h["command"] if harness == "cursor" else h["hooks"][0]["command"] for h in hooks]
+                    # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
+                    cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
                     # Cursor: and what its model said; agy: its tool events only
                     self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
-                    if os.name == "nt" and harness not in ("cursor", "droid", "qwen"):   # PowerShell can't start a quoted first word
+                    # PowerShell can't start a quoted first word; Cursor, Droid, Qwen Code and Crush don't use it (Crush
+                    # runs hooks through its own POSIX shell)
+                    if os.name == "nt" and harness not in ("cursor", "droid", "qwen", "crush"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)

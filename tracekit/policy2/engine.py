@@ -339,10 +339,12 @@ def _package_indexes(commands, refs=()):
         argv = command["argv"]
         if not argv:
             continue
-        exe = argv[0].rsplit("/", 1)[-1].lower()
+        exe = argv[0].rsplit("/", 1)[-1].casefold()
         args = argv[1:]
-        if exe.startswith("python") and len(args) >= 2 and args[:2] == ["-m", "pip"]:
-            exe, args = "pip", args[2:]
+        if exe.startswith("python") or exe == "py":   # py: the Windows launcher
+            module = _python_module(args)
+            if module[:1] == ["pip"]:
+                exe, args = "pip", module[1:]
         exe = "pip" if re.fullmatch(r"pip[0-9.]*", exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
         if exe == "pip":
             default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url", "-f", "--find-links"}
@@ -358,9 +360,10 @@ def _package_indexes(commands, refs=()):
                 "poetry": {"--source"}, "cargo": {"--index", "--registry"}, "gem": {"--source"}}[exe]
         else:
             continue
-        if next((a for a in args if not a.startswith("-")), None) in ("publish", "unpublish"):
+        command = next((a for a in args if not a.startswith("-")), None)   # after global options (pip --isolated)
+        if command in ("publish", "unpublish"):
             continue   # publishing doesn't change where installs come from
-        if args[:1] == ["config"] and "set" in args or exe == "npm" and args[:1] == ["set"]:
+        if command == "config" and "set" in args or exe == "npm" and command == "set":
             # `set key value` or `set key=value ...`, options anywhere
             words = [a for a in args[args.index("set") + 1:] if not a.startswith("-")]
             for i, word in enumerate(words):
@@ -376,6 +379,9 @@ def _package_indexes(commands, refs=()):
         while i < len(args):
             arg = args[i]
             name, value = (arg.split("=", 1) + [None])[:2] if "=" in arg else (arg, None)
+            # pip (optparse) takes a long option's unique prefix: --index-u is --index-url
+            if exe == "pip" and len(name) > 2 and name.startswith("--"):
+                name = next((o for o in options if o.startswith(name)), name)
             if name in options:
                 if value is None and i + 1 < len(args):
                     value = args[i + 1]
@@ -393,6 +399,29 @@ def _package_indexes(commands, refs=()):
             if value is None or _non_default_source(value, default):
                 out.append(value or "<missing>")
     return out
+
+
+def _python_module(args):
+    """[module, its arguments...] that `python ARGS` runs with -m, read past python's own options (in a cluster too,
+    -W and -X with their value: `python -I -m pip`, `python -mpip`), else []."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] not in ("-", "--"):
+        word = args[i]
+        i += 1
+        if word.startswith("--"):
+            i += word == "--check-hash-based-pycs"
+            continue
+        for j, c in enumerate(word[1:], 2):
+            if c == "c":
+                return []
+            if c in "mWX":
+                value = word[j:]
+                if not value and i < len(args):
+                    value, i = args[i], i + 1
+                if c == "m":
+                    return [value] + args[i:]
+                break
+    return []
 
 
 def _non_default_source(value, default):
@@ -511,7 +540,7 @@ def _opaque(command):
     perl -e 'open F, ">", …'); at or batch scheduling commands from a pipe or a file (the parser reads a herestring
     or heredoc), or osascript's do shell script or a Finder delete."""
     argv = command["argv"]
-    exe = argv[0].rsplit("/", 1)[-1].lower()
+    exe = argv[0].rsplit("/", 1)[-1].casefold()
     if exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
         return any("$" in a or "`" in a for a in argv[1:])
     if exe == "zip" and _zip_moves(argv[1:]):
@@ -556,12 +585,12 @@ def _command_effects(commands):
             # find . -exec rm x \;`); -delete or an -exec rm (unlink, shred, truncate, mv {}) deletes each file found,
             # one that writes `{}` (sed -i, perl -i, cp /dev/null {}) writes it. An -exec's run ends at the first `;` or
             # `+`, so a find it runs (through git or a container) has no run of its own: the recursion stays shallow
-            runs = _command_effects([{"argv": [run[0].lower()] + run[1:]} for run in shell._find_execs(args)])
+            runs = _command_effects([{"argv": [run[0].casefold()] + run[1:]} for run in shell._find_execs(args)])
             out.extend(runs)
             found = {t.partition(":")[0] for t in runs if t.partition(":")[2] == "{}"}
             if "-delete" in args or any(a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args)
-                                        and args[i + 1].rsplit("/", 1)[-1].lower() in ("rm", "unlink", "shred", "truncate")
-                                        for i, a in enumerate(args)):
+                                        and args[i + 1].rsplit("/", 1)[-1].casefold() in (
+                                            "rm", "unlink", "shred", "truncate") for i, a in enumerate(args)):
                 found.add("DELETE_TARGET")
             if not found:
                 continue
@@ -647,11 +676,11 @@ def _command_effects(commands):
             # the writer they are or run from their own words (git rm or mv, docker exec c rm, kubectl cp, parallel rm
             # ::: …), read from its name on (a git message or grep pattern is data)
             data = shell.data_words(argv)
-            j = next((j for j in range(1, len(argv)) if j not in data and argv[j].rsplit("/", 1)[-1].lower() in (
+            j = next((j for j in range(1, len(argv)) if j not in data and argv[j].rsplit("/", 1)[-1].casefold() in (
                 "rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln", "dd", "sed", "perl", "find")),
                      None)
             if j is not None:
-                out.extend(_command_effects([{"argv": [argv[j].lower()] + argv[j + 1:]}]))
+                out.extend(_command_effects([{"argv": [argv[j].casefold()] + argv[j + 1:]}]))
         elif exe == "zip" and _zip_moves(args):   # -m deletes the files it adds: the operands after the archive
             operands, skip = [], False
             for arg in args:

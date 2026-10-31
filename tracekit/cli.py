@@ -137,7 +137,7 @@ def main(argv=None):
     p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly, which "
                    "stops every user's own Claude Code hooks on this machine (user, project, local and plugin ones)")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
-                                       "antigravity"), default="claude",
+                                       "antigravity", "crush"), default="claude",
                    help="which coding agent's hooks to install (default: Claude Code)")
     p.add_argument("--harness", action="append", default=[], metavar="[NAME=]PATH",
                    help="system mode (0.3): the agent program whose processes may send events, e.g. /usr/local/bin/claude "
@@ -170,7 +170,7 @@ def main(argv=None):
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
-                                       "antigravity"), default="claude")
+                                       "antigravity", "crush"), default="claude")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -571,8 +571,8 @@ def _run(a):
             print(f"dev signer running (same-user): {cfg['socket']}")
             print("hooks:", hooks or "not installed")
             return 0
-        if a.agent == "antigravity":   # the v1 system signer installs Claude Code's hooks only
-            print("tracekit: --agent antigravity goes with --dev or --v2", file=sys.stderr)
+        if a.agent in ("antigravity", "crush"):   # the v1 system signer installs Claude Code's hooks only
+            print(f"tracekit: --agent {a.agent} goes with --dev or --v2", file=sys.stderr)
             return 2
         user = a.user or os.environ.get("SUDO_USER") or getpass.getuser()
         try:
