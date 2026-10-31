@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -489,6 +490,95 @@ class ActionInputs(unittest.TestCase):
         self.assertIn('default: "true"', block)
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
             self.assertIn("`require-anchor` defaults to `true`, so an unanchored bundle fails the step", f.read())
+
+    def test_optional_v2_trust_input_is_passed_through_environment(self):
+        with open(os.path.join(ROOT, "action.yml"), encoding="utf-8") as f:
+            text = f.read()
+        block = text.split("  trust:", 1)[1].split("  strict:", 1)[0]
+        self.assertIn("required: false", block)
+        self.assertIn("TK_TRUST: ${{ inputs.trust }}", text)
+        self.assertIn('[ -n "$TK_TRUST" ] && args+=(--trust "$TK_TRUST")', text)
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("bash"),
+                         "the composite action run block is exercised by Linux CI")
+    def test_run_block_enforces_v1_and_v2_anchors(self):
+        with open(os.path.join(ROOT, "action.yml"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        step = next(i for i, line in enumerate(lines) if line.strip() == "- name: Verify bundle")
+        start = next(i for i in range(step + 1, len(lines)) if lines[i].strip() == "run: |")
+        script = []
+        for line in lines[start + 1:]:
+            if line.strip() and len(line) - len(line.lstrip()) <= 6:
+                break
+            script.append(line[8:] if line.startswith("        ") else line)
+        with tempfile.TemporaryDirectory() as temp:
+            runner_temp = os.path.join(temp, "runner")
+            bin_dir = os.path.join(temp, "bin")
+            os.makedirs(runner_temp)
+            os.makedirs(bin_dir)
+            tracekit = os.path.join(bin_dir, "tracekit")
+            with open(tracekit, "w", encoding="utf-8", newline="\n") as f:
+                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -m tracekit.cli \"$@\"\n")
+            os.chmod(tracekit, 0o755)
+            python = os.path.join(bin_dir, "python")
+            with open(python, "w", encoding="utf-8", newline="\n") as f:
+                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+            os.chmod(python, 0o755)
+
+            def verify(bundle, *, key="", witness="", trust="", strict="false", require_anchor="true"):
+                output = os.path.join(temp, "github-output")
+                with open(output, "w", encoding="utf-8"):
+                    pass
+                env = os.environ.copy()
+                env.update({"PATH": bin_dir + os.pathsep + env.get("PATH", ""),
+                            "TK_BUNDLE": bundle, "TK_KEY": key, "TK_WITNESS": witness, "TK_TRUST": trust,
+                            "TK_STRICT": strict, "TK_REQUIRE_ANCHOR": require_anchor,
+                            "RUNNER_TEMP": runner_temp, "GITHUB_OUTPUT": output})
+                result = subprocess.run([shutil.which("bash"), "-e", "-o", "pipefail", "-c", "\n".join(script)],
+                                        cwd=ROOT, env=env, capture_output=True, text=True)
+                with open(output, encoding="utf-8") as f:
+                    result.github_output = f.read()
+                return result
+
+            v2 = os.path.join(ROOT, "sdk/typescript/src/verify/sample/sample.tkb")
+            v2_tampered = os.path.join(ROOT, "sdk/typescript/src/verify/sample/sample-tampered.tkb")
+            trust = os.path.join(ROOT, "sdk/typescript/src/verify/sample/sample.trust.json")
+            v1 = os.path.join(ROOT, "docs/sample/demo-run.tkb")
+            key = os.path.join(ROOT, "docs/sample/signer.pub")
+            valid_v2 = verify(v2, trust=trust)
+            self.assertEqual(valid_v2.returncode, 0, valid_v2.stdout + valid_v2.stderr)
+            header, payload = valid_v2.github_output.split("\n", 1)
+            delimiter = header.removeprefix("json<<")
+            self.assertEqual(header, "json<<" + delimiter)
+            report, footer = payload.rsplit("\n", 2)[:2]
+            self.assertEqual(footer, delimiter)
+            self.assertEqual(json.loads(report)["exit_code"], 0)
+            tampered = verify(v2_tampered, trust=trust, require_anchor="false")
+            self.assertNotEqual(tampered.returncode, 0, tampered.stdout + tampered.stderr)
+            with open(trust, encoding="utf-8") as f:
+                wrong_config = json.load(f)
+            with open(os.path.join(ROOT, "tests/golden/v2/trust.json"), encoding="utf-8") as f:
+                wrong_config["logs"] = json.load(f)["logs"]
+            wrong_trust = os.path.join(temp, "wrong-trust.json")
+            with open(wrong_trust, "w", encoding="utf-8") as f:
+                json.dump(wrong_config, f)
+            wrong = verify(v2, trust=wrong_trust)
+            self.assertEqual(wrong.returncode, 1, wrong.stdout + wrong.stderr)
+            self.assertIn("checkpoint", json.loads(wrong.stdout)["failures"])
+            anchored_v1 = verify(v1, key=key)
+            self.assertEqual(anchored_v1.returncode, 0, anchored_v1.stdout + anchored_v1.stderr)
+            strict_v1 = verify(v1, key=key, strict="true")
+            self.assertEqual(strict_v1.returncode, 3, strict_v1.stdout + strict_v1.stderr)
+            witness_v1 = verify(os.path.join(ROOT, "tests/golden/v1/multi-run.tkb"),
+                                witness="file:" + os.path.join(ROOT, "tests/golden/v1/multi-run.witness.jsonl"))
+            self.assertEqual(witness_v1.returncode, 0, witness_v1.stdout + witness_v1.stderr)
+            unanchored = verify(v1)
+            self.assertNotEqual(unanchored.returncode, 0, unanchored.stdout + unanchored.stderr)
+            opted_out_v1 = verify(v1, require_anchor="false")
+            self.assertEqual(opted_out_v1.returncode, 0, opted_out_v1.stdout + opted_out_v1.stderr)
+            rejected_v1_trust = verify(v1, trust=trust)
+            self.assertNotEqual(rejected_v1_trust.returncode, 0,
+                                rejected_v1_trust.stdout + rejected_v1_trust.stderr)
 
 
 if __name__ == "__main__":
