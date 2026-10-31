@@ -528,7 +528,7 @@ class Prefilter(unittest.TestCase):
 
 class Speed(unittest.TestCase):
     """The fallback engine (`regex`) on 64 KiB built to make a pattern back off or rescan."""
-    BUDGET_S = 0.15   # the slowest shipped pattern: ~20 ms on an M-series Mac, ~60 ms on CI runners; a rescan, 0.3 s+
+    BUDGET_S = 0.15   # the slowest shipped pattern held to it: ~50 ms on an M-series Mac (TK-A011, TK-A013); a rescan, 0.3 s+
     # `$`, a backquote and security_and_analysisdisabled: TK-A047 split one word at each `$` or each pair (the 1.5.1
     # PR #468 review: 64 KiB of either spent the fallback's whole second and denied)
     # ` -T`, ` -Lq`, `:*`, `,`, `~/.` and `ns/`: the 1.5.2 review's curl upload, ssh-add cluster, HISTIGNORE pattern,
@@ -548,8 +548,10 @@ class Speed(unittest.TestCase):
     RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
     # TK-A040 reads up to eight options after each redis-cli on a line, so 64 KiB repeating `a/redis-cli -` reads eight
     # tokens from each: linear, ~75 ms on an M-series Mac and 152-188 ms on CI's Linux runners. Reading on to the end
-    # of the line from each redis-cli runs into the search's 0.6 s timeout
-    RULE_BUDGET_S = {"TK-A040": 0.25}
+    # of the line from each redis-cli runs into the search's 0.6 s timeout. TK-M003 reads a recipient list forward to a
+    # whole-company address: ~12 ms on an M-series Mac. Read greedily and backed off over, 64 KiB of a list took 78 ms
+    # there and 152-221 ms on CI's macOS runners (#481)
+    RULE_BUDGET_S = {"TK-A040": 0.25, "TK-M003": 0.06}
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4
