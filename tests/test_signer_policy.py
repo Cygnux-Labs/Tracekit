@@ -625,6 +625,7 @@ class CodingPack(unittest.TestCase):
             "docker volume --help=false prune -af", "docker volume --help=false rm pgdata",
             "podman volume --help=false prune -f", "podman volume --help=false rm pgdata",
             "docker.exe volume rm pgdata", "/usr/bin/docker volume prune -f",
+            "docker volume -a -b -c -d -e -f -g -h prune",
             "docker volume rm help", "docker volume rm pgdata --help", "docker compose down -v --help",
             # a flag given its value, in each spelling of true Go's ParseBool reads
             "docker compose down --volumes=true", "docker system prune --volumes=true", "docker-compose down -v=true",
