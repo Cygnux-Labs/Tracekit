@@ -3,39 +3,107 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ewj7iTgJ08EgcgBkS8JtnA/aFjmA75WObFgJm10+jUc='; style-src 'sha256-hGOb6corVyDqUYHluhAwCLbaaMKqsxeEGQkVPYNw5lA='; worker-src blob:; connect-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-6+Xm0MJoXjjSMX5iSnqKkEjeXQadLU2RxbMTNRcZVRw='; style-src 'sha256-41aEPfNKIK0vxFn3JTgv68G+SOVBoDbHT4QPLHGL360='; worker-src blob:; connect-src 'none'">
 <title>tracekit verify</title>
 <style>
+:root {
+  color-scheme: dark;
+  --bg: #000; --panel: #0d0d0c; --line: #34322e; --text: #e9e4d8; --muted: #8d877a;
+  --amber: #ffa630; --green: #3ddc84; --red: #ff5147; --yellow: #ffdd57;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #f4f2ec; --panel: #fbfaf7; --line: #c9c4b8; --text: #1d1b16; --muted: #625d52;
+    --amber: #b45309; --green: #13804a; --red: #c0262d; --yellow: #8a6100;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--mono); }
 main { overflow-wrap: anywhere; }
-pre { white-space: pre-wrap; }
+main { max-width: 960px; min-height: 100vh; margin: 0 auto; padding: 24px 16px 40px; }
+main.over { outline: 2px dashed var(--amber); outline-offset: -8px; }
+h1 { margin: 0; font-size: 20px; color: var(--amber); letter-spacing: .04em; }
+h2 { margin: 0 0 6px; font-size: 22px; letter-spacing: .06em; }
+h3 { margin: 28px 0 8px; font-size: 12px; font-weight: normal; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); }
+p { margin: 6px 0; }
+.quiet { color: var(--muted); }
+.pick { margin: 16px 0 24px; padding: 12px 14px; border: 1px solid var(--line); background: var(--panel); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 6px 0; }
+.row input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+button, .row label { padding: 4px 10px; border: 1px solid var(--line); background: transparent; color: var(--text);
+  font: inherit; cursor: pointer; }
+button:hover, .row label:hover { border-color: var(--amber); color: var(--amber); }
+button:focus-visible, summary:focus-visible, .row input:focus-visible + label {
+  outline: 2px solid var(--amber); outline-offset: 2px; }
+.name { font-weight: bold; }
+.banner { margin: 8px 0; padding: 12px 16px; border: 1px solid var(--line); border-left: 4px solid var(--muted);
+  background: var(--panel); }
+.banner.ok { border-left-color: var(--green); }
+.banner.bad { border-left-color: var(--red); }
+.banner.warn { border-left-color: var(--yellow); }
+.banner.ok h2 { color: var(--green); }
+.banner.bad h2 { color: var(--red); }
+.banner.warn h2 { color: var(--yellow); }
+ol { margin: 0; padding-left: 1.6em; }
+li { margin: 6px 0; }
+.cmd { display: flex; align-items: flex-start; gap: 8px; margin-top: 4px; }
+.cmd code { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid var(--line); background: var(--panel);
+  white-space: pre-wrap; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+#checks details { padding: 3px 0; border-bottom: 1px solid var(--line); }
+#checks summary { cursor: pointer; }
+.status { font-weight: bold; }
+.status.ok { color: var(--green); }
+.status.bad { color: var(--red); }
+.status.warn { color: var(--yellow); }
+.problem, .means { margin: 2px 0 2px 2.2em; }
+.means { color: var(--muted); }
+#integrity { margin-top: 20px; font-weight: bold; }
+body[data-state=error] #busy { color: var(--red); }
+pre { margin: 8px 0 0; padding: 12px; border: 1px solid var(--line); background: var(--panel); white-space: pre-wrap; }
+footer { margin-top: 32px; font-size: 12px; color: var(--muted); }
+@media (max-width: 600px) {
+  dl { grid-template-columns: 1fr; }
+  dd { margin-bottom: 6px; }
+  .cmd { flex-direction: column; }
+}
 </style>
 </head>
 <body>
 <main id="drop">
 <h1>tracekit verify</h1>
-<p><label for="bundle">bundle (.tkb):</label> <input type="file" id="bundle" accept=".tkb,.zip,.json" multiple>
-<b id="bundle-name">none chosen</b><br>
-<label for="trust">trust.json (optional):</label> <input type="file" id="trust" accept=".json"> <b id="trust-name">none</b>
-<button type="button" id="clear-trust" hidden>remove</button><br>
-samples: <button type="button" id="sample-clean">clean</button> <button type="button" id="sample-tampered">tampered</button></p>
-<hr>
+<p class="quiet">Checks a Tracekit evidence bundle in this page: the files never leave it.</p>
+<section class="pick" aria-label="files to check">
+<div class="row"><input type="file" id="bundle" accept=".tkb,.zip,.json" multiple>
+<label for="bundle">choose bundle (.tkb)</label> <span class="name" id="bundle-name">none chosen</span></div>
+<div class="row"><input type="file" id="trust" accept=".json">
+<label for="trust">choose trust file (.json, optional)</label> <span class="name" id="trust-name">none</span>
+<button type="button" id="clear-trust" hidden>remove</button></div>
+<p class="quiet">or drop the files on this page · samples:
+<button type="button" id="sample-clean">clean</button> <button type="button" id="sample-tampered">tampered</button></p>
+</section>
 <p id="busy" hidden role="status">Verifying...</p>
 <section id="result" hidden aria-live="polite">
-<div id="banner"><h2 id="verdict-word"></h2><p id="verdict-means"></p><p id="verdict-not"></p></div>
+<div id="banner"><h2 id="verdict-word"></h2><p id="verdict-means"></p><p id="verdict-not" class="quiet"></p></div>
 <div id="next" hidden><h3>what to do next</h3><ol id="steps"></ol></div>
 <div id="summary-box" hidden><h3 id="summary-title"></h3><dl id="summary"></dl></div>
 <h3>checks</h3>
 <div id="checks"></div>
 <p id="integrity"></p>
 <p id="assurance"></p>
-<p id="exit"></p>
+<p id="exit" class="quiet"></p>
 <p><button type="button" id="copy">copy report</button> <button type="button" id="download">download JSON</button>
 <span id="copied"></span></p>
 <details><summary>report as text</summary><pre id="report"></pre></details>
-<hr>
 </section>
-<p><small>tracekit <span id="version"></span> · same checks as <code>tracekit verify</code> · files never leave this
-page</small></p>
+<footer>tracekit <span id="version"></span> · same checks as <code>tracekit verify</code> · files never leave this
+page</footer>
 </main>
 <script id="verifier" type="module">const SAMPLES = {"sample.tkb":"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","sample-tampered.tkb":"UEsDBBQAAAAIAAAAIVw1ten4NAEAAOwBAAANAAAAbWFuaWZlc3QuanNvbm2PS27cQAxEr2JoHWiaZH/YuYzR/DSizFgyJNlAYPjuaXkTGMiyisXH4sfUt/2lndPPp+ncm/p9OWd5W+3h8ztOP56md9+Xvvj+/LKsz0Mcy7ZeaZhxDt8C/xv25eHHcD6m/W09bkQM1l01csIAIlYpx0K1ZU8FeP59bOvjIhhI5FoatRITU2oGsUCPNQWVWIoLAujlCKqBp9yyJRfLQBFzv47f/c9x21233Y5/5IgctTVkEmFVrZYCB4AWhpfqJUuo2ErtQJhCt8IUCgwRq8kXWX+53l+3ZT2PG9C8bqd/lY4JJQRGJAe1yMRI7H594lzEEhpls9walYworfUxq83IMha90K/7tvXvtS907gyZEQKCimqSLGMJrRuzjNaoA1UxJ9IYBx4IhELqpZeireTp8/MvUEsDBBQAAAAIAAAAIVwLlXBGfg8AAE04AAArAAAAcnVucy8zMzgxZGZlY2M0ODUyMDFiYmQ5MzY0NzM5YTZlNTcxOC5qc29ubNVbV28bS5N935/BV11bnYOBD1jlSAVTkYuFUJ2oEYdxGERf+L9vNSXZ1rUkB/EKXj/Y5rCnp/pU1alTPc2/a5PaB/ZXLU5id1T78Het8texA1eTOKyKXrf2oTYago/tYvR+PuT9hNX+qhUBv9CU26i4Tt4TrpIkjjETwQgVHGjlcVwVB7UP9K9afxgnV9dQXeNt1TUwqT64RBMzLgSjZEgkWetcYDIwbsFRSokHZm0KwWoGSRhhk7KOiSRYoERqnH1U4XSMMPWOknfUnhDxgcoPVL0XihFimzhkOO5ezY11Mqikk6bREq0140TaGPFfINHgs3EstHB9d6M7UHTxSh+GD5e647LE9fTGQx/zIkI7GzDr5w/4kPfD2CqqURzGgNcDjCBjOZ8x/6cLnfld436/Nxy9c71R7TPOVrS6cXhVVL0SRndgVxGfCaP4blzFIc6UoCivOr0QqzxNiAnGJc5Y82Wvwkd9zq7AZxSj2Rff5QeNi2xGNXY30efhlBCSVzgaRTQSlzMajuNnvHsUu5BN/DL1X7Wy17oDQQSgPljEkjsugrYuEeYMs8pwrYm4h3fuY3L3/yf8TF75Jz8lDsZo951V1iQfhY46hiikSJZJtIkFGYFHr/K67xZ19Xi1OQiLri/6UH7zTYKyiojDY5s1I1FRb2TCMOE82ih5VCooR7RLMhIOAQM/iiSZA2m0Vwy8lcpprljIGQJlC+eLGNGSWvzcnht/Pz+i6V2QkvGkEhhnAgXBbPAhBGDAVAjRRe1T4JariE9UngaiicNoRRtq89jJUX3s6qfj7bXT8UnjunOr4tnGTERqE19fb26t75aq0lvr5en56tGAHM92y0+yWe7B/vZEfWpP/GxytnW4dXQzDqNjc3sUDxoXbnlt+p//1D7/19+/TwxUB+pzKidKoqRCuCiZNoilY1Ya8kAM7EliWAD4LxEDTvpmxNDvlYWfvQ/RF3PMvjLDqNcrrzDH72b1UJZXNN+HlzOhRAhXqShjftR8jn9ilCg3nlAAjQBrCQSBMixSzcFiThCnAyDDKsWiT0YRgiyNeCrOJWcuU3PstorunL0i+2/6nr5HvCTSrszf3faLYawwT77DkZF7HJkUGceHtd0tBD+9U4q7pLEIKPQHBQ+JRGEUJZAYcJPwpm6vOwfLIvULz5HgnfNcicQ9l+AY0ZzqyP038+NoBKk3nbuuzLihj//nf9E5w1Z15XudTjHqzCO1dt0B/+4eKIw4JbU3TsaoHEYQYVFKIQAU2sktLsQzL50FyozBNSUOEjMSLNYgvLe2QI6kz3LkAkL+EUcSXEMgVrj8FxhijE3OC8cpi8HEHGnVCIOsk03In3xZ5Hh+oPJ5dM6D8nF4Zt7s9EfzMXPcv4Q9JsR9PXq8MhYJg0ClwmKeXApagBSBoUmO8JgiCGsM+kRHg67yMoBkVGnwgrigIb0Zk64PPvrO2cbqNlVMVoduc+SbM50G8vB85tauydGJ3Vj/aLu93a7YuqzbAz/s7By75ll9azjtu/pNY7sz3VM3N9tLt6XvHrfEDltrvZZJhYlcqRgFoV5oZxnBhCFcKi1VonOtMfcZf5JJFwD+S0wqjXgzJs0RiRqruku/H7Bor/1Q8nvjUX88x/wemW+5gXnML4uJIoM2UihpvcTq5KlEEkoZKSospwgcAQjJ8pQwLTGVjI7UaTmPnU9x7lvUfeAfKYrfIsa7aeZB8fec5+5JzvfG3bu0u89UX0LR+fq4BbIUe5alFhBOj1hKU8Kt80hmOghFgktWsBwrCAoLNr7IUvRnWOo7OvIE3euV0RJZgAoSpPIel+SoQ1cgFsHkYoQRCwq0IylpbqTEJDSWCy3ejI7asLe6PnWT3bM0ld3uZaPZno536MCttNfON7zYnTEY6OVUtZen+sZ2hLxtVeOjzsm2ud0T8WQtzvaPN3cu9elANbeny2bQaa2svJaOrE8UlI2ax8CTQGA8aBkC8xHh1PSBjsSTdLQA8F+iI63ejo5+Sdix/1/CTjP7jLCTyJBEAxqGzKGcilZGbMs9F2ANyG+EXZJJgTLYoXnGrNAJlEZBwwwyoEgpvV7Y5ebCAYqb5DIlMw+oiYIULBkqUD4BOONNDFaCd6CS4wQJ1yn8xwcd0iKFHX+WMhcQ8o8o0wePdyW0CUUsGmgRV8CUjCyi4+Yl5HnKZE9TJvstYaclBc0Ft2gQFkmBIcmpIsDxDyStTHQCHDCfUKdqJY0ygiBPeExFieXuzZh01AF5elicnW6cJb1a3LjN9mV9gG3xQWerzlK5smlLWp53plI0VuWUxf5O3Nwj9GA3ssHWcBYHh7vrlp2NV47UxcX29cVJaV/PpOg0irLDWxe8Rwc6FFM6Wx8Spj5ND0wqn26RXw/+S0yKU/55wo79vLCT2FZaqwj2Ro4mENRJjTBLawOnWLIAjNUqI4VFI3gpKJWZTCUGU8IU/WVh92Ni/AOEnXi+/Xx9OD1iKScQBWsSFjKdLbQpRUMCBDSJS8JfZCn+Myz1HR1FbwR2tpZh0y4jE1IFA1YTA4IrJFJGaSSCg0G8GAYwrsgZgdHBNMXUc29GR7PN9XrZbt3MGiu81Ww2+ZTv7PSWrq9PzXjGt+Pe6irtH6zODkzv3G+vJ9kg03rR9uexWT89KMLu0eV5a8U12jfN4X5vfW9FkYsF7NilaJ1VNgVPERXjlQ3KKgnMWcujeqAj9SQdLQD8F+iIU6L+TGHHvwq7Psz+XEnHMQ2flnTeJSWCJJSB4soyxA/FvOUEfYjeV99IOg2WUi1okAH5lNjc94nIAl72qBnjPyRd1X4s6GpHK5e1H6o67MgNhowISXij5voOkDCSoEg7aKBE7s4yD0VfckwpRZCsomMJG02TqFikqpPP8uUC4v3xdh3RQXLPqfVWSEocZh16gAobgKOjX+RL8TRf8t9SddRKooS0DIUpt+AhetTsTKWElB48T9jqJ5QoGDLWaWoICm4F4C0GkHGevBmNDtvdqtnw3aPG8HZ/ujy8Pj3bvE7l2vjj7uzkZnh77c6XmmayYtZWDy/F8h5XJ5PxrJhOoOHk7OOmv9jGiVsb4IrDw8qxM3NpVl69XRciajjMKQnCCZ5fdmBsEJI8hGBSlA80qp+k0QWA/xKNKv12/TH0+8PeBLKym8f5Nzz68NXdtNAfvst7Xwp7o2Q0JRFsckGQFAUAgkls+F3m+rfY+AlWe5aE5Vf871+Y3CMSh7X5a9oP969mXdENRbeVEZrMd7d+C6cnuO9X/P0zRPKo4L3M5jmeVS4OSaaIYphrSYylUQkHWijKsOOl+GSNlK6NBcxw4UFKTh3X1pjaM7T177n2odhFDSh6sbw45HU0CdtzETiWPMe8It6/VHf/6fLPX5x7FYpWToavZyCQ1JAZCNpNg+JYhdAhXHqWgEiMcCM9djIMKYUThsUkv0PFoT6/G+PazHdIobzPUJEQTBmwKltkXoPTAhFYk3R0nmI4LLI2qmdr4wJI7FFt5BzNMmC8QRdgmXSCOPScNCmAQOx+Kmq/q3NG5MMnNHItJBYZiSsMGrMDJDfcYa+TsA8yxmJnmBQNVGJdTh7rM0VbIL3d7sVJf2VpGfzOOt2n4kyJxrTxiZ1uLPOd7YMoVsrWzb6VbGuvKM8Z+bQ0aJyT/NrycDzYsI2d5traNazvVsPbnb2LQ5d8VRzWl9eOX1vnGMofJaLU0VtMXEJy4wAIVNZh1JmHOmeerHMLAP+lOmfE27ULDyT94z7hVWXvy5Pil5m+rR/0m6tXP3se6OFNyTfngVBYXkO3G+c71f2781tlurqf+mFPAsHBCJkb1ck7t8PZIplFP8ssCwibx6pbkYjEmnBwEph0JuU+CVQihjqA55nle9UsPTiOHYGRgQXvo/UePcklI2iGDA4pAljyypPghGVM2chQIAYqkKD527HJ9vKq6q9edm/N5vbl4HbaqvdPOre9/cEg6f3VT6zavaifKqXdDmyM6+3I6tdLKxuTo/70SLdWbi92d5YmlRrXVQGnF127o2Wjvvp6NiFKOiewQqsUmPIaC55JyCiJOk3kl5fc9mnV/HrwX2ATgbX5X2WT+RHAJ4Sz73WrcefxacJfp5AFJqZ5vuQvwAO/XsJjVKCwBGHZIY5GSJQqcEznN/ouKIocATbaILUMHI2J4BwahinvrJUoh94q6aqWqB9DZ0WVbmNDjnboAVTbn9hO2f24xwdOHU4toe3deud0/LHaR2SoWFo56rfdp7OtuiYN2bDNdbzgLzaWTqoLW5wJufrqVjWiOkaBxgxgRDOPkhNlN3BrkVKNSfoh6Sh5esvv9ei/lHWM/YFHS/jPv4HAGAenrAePoYENHjYRggNwRZQlEcW5B+sjxRhC7RuIZ0pFhmWIRqNVYO5X30D8RDf8B7yBsM/vqL0+nB7VduWRDTljWS8Iie0VUCUM48Jhl5SIenFHTf4WH6mEBnmHfZvANsZwIXLDGY3DlsXwSA0VqDEk6hceePaxSChbgqNzrOTb8dHx1sFKZ/Po8tP5euvalx9PW4eNZt1uzRprh6FjevsHx6Pj6U28EaPhIB7t90tJdqS8TYe9XvvsZkm5y1u/cbJL8eubTnWkOkSsvvqFKIdoAvoIKDrYY4IowNqvpQJiMT++8tHTvyZYAPov8REX/64K+OevCfLx/rwb9JWPMFjvNPf85P8VDlro0dTnz+8vANlHqZmlgARp0blJCKecDyImNCi6wIhV38trqbVIwVpiHeoc7ZhgGlDlKO+MUcgFqICiA2MoKiGH3a+30oLAAVY7E98us7S86RZrB8OlQW88OxhfDK6XllLbXTi5Pdt0ZtA7Xz09T91SNVb3j7dEk6hDsUq2WMccX8j96rBN6vuJHJ+PnCtKRY+avcFg5dXyOvIESXAqwNCcZOC0pkoG7KcAsFn6kllPH8dfAPovZZZk/+5Zg3/o65xcqeg+6tiv86GsR6kwv7JwGHzuz9H4/MwSZui5vIO8z/IG8rg7jCj5fVHmyvv355w0Xz/natOB0bC4zffmnwPdVaf5j4KqEYzGGeFur5v3B75M/b+fvylkj4cOY/4d0ry7+GoJBOjnfel8XzeOpr1h+4fzY0fiY1XFH1tSxeGk8D8cuEi9QZ8/cf9qd37HUkFzKwxaYI0AklB6GROlcpQCpTpJiyxHvE8x2MRQnEmNLZMB0Ix40DS8GUvtr5JmuaqXDpbHMOidNHa2aVJtOpicq3FlPLezLbdVICGN9uim0Z/EYaVuR8cbk/W4XUxPO5PJZdq6PVs53Px4PTy4udlvTqb3W4r/B1BLAwQUAAAACAAAACFcsppxGP8BAAC4AwAAEgAAAGtleXMvcmVjb3Jkcy5qc29ubLVSW2/aMBR+38/Iaym1HduxI/WBQbdWaLSd0q5jmtCxj00QIYEk3FT1v8/QsmnS3rb56fic40/fxc/RJkpZJ3IbV7ZR+hw1NncLmGxc3cyqMkqjtgbr5rO2e1zpbljUiWYYBsJYFRPlLFXUCa+VAXAQrlwxoNKGvcatopR0omXtNpMcmjw8a3JgQqbkL09Ab5sAxwiT55ScU50RnlKRUtnlkggpxmGlXpeTI9mTiotmNi1dHUYwDXJehwuYlaGzhPrUKtdFEehX69q6A+fTo3a//HXvumVl89BFaOHg3dztA6VvoTjCvimNOVqDQrDYSw/KKKTAmUaLiMCASURnXGI9xjqWzgsnLUWSEAPEGZIcuBbTgOeQCUH1wdflfBYan/rV9v3918GQPW57+6ve8CkX6uzDmboY3dUX9ZZf4apYs2L3ma9al03ZsEkeF4vd/fzhMnr5/hL0uBIOuf/0J4AX1fTVFo5ALWrJSGyCiEQbT5hRTEsVJwnhb/6eQj7U/yPoQPN3ROOpZ8ogKinQE6+1McEaZLEGQyklFpjWHlEnDDxXXHupDeOeM6RE/MnQfx1Y+CABb76DYgmLaTvoq2vF64HVYpvFN7fX46yXtcPKci/3xD80Mhk2cZXfYLzLVX+UFbHfj+u6He17JPPz5lZunrarL278cdC7DNm9+wFQSwMEFAAAAAgAAAAhXDx09XXCAAAA8gAAABMAAABjaGVja3BvaW50cy8xMy5ub3Rllc1NcoIwGADQfU7hPjMayFcgCxdEMTQIOuJf2YUEVOKUwUFtXfUQPaEn8Qy+C7z+onRlT/3w3Gp1HoFRjjbMcwktKRiflTVxy8BlXkB9nwByKMr04iq7qs0E+Q7d3W2+zWNetErcWhazTzyb4gAf61wCGSP0/Psf9O8lg0REUSK2CmgnrdULe//d/+CqmRXFx+oY0gTD5IvPuyaFVHpiCZM8jjodmRHIh81SvGtSrlntba7ry4Hb/dQpN6a3/B6M0QtQSwMEFAAAAAgAAAAhXMBcoGZgAQAAOwIAABMAAABwcm9vZnMvcmVjb3Jkcy5qc29uzY/bboJAGIRfxXC7TTlZlCZeyILKSUVF0KZpFFdZQBZclIPx3UvtTR+hN38yk2/+ydyZIERBnBGcFsx754+iLC++pqRAzEuHKS4IfVHcoJbhxdbAaZBcKSZpa9wZrr0fzHzWpusiNLkbX7MCxNkykHybR9IYeroimkbYyHslNp1y8PMUJP0j2cFj1zosN05ekdtORd55BEsr007h1JjaMRgpqg+1J+/N0w3hE9XV9L3EreTrVljXbPg2lFVkiD53oEJW909HkP/ys3qyrSY60XPWNsf91TVf7KcSogLPjtca3DlVN0zcwrGgPWA+2wD/nKFhWd94VWyyKeU2pRKBLPJURdqC6NJFqQvMZCoejtape/qnM4TnjmZk0snaAtA90z6u/bh0De9K1B7093GED2cQWHNWc4smfvYsLlk67p01l2oza9EDjpsbkmxPMFkVjS1VF9IkEWBJCYdtz+PxDVBLAQIUAxQAAAAIAAAAIVw1ten4NAEAAOwBAAANAAAAAAAAAAAAAACAAQAAAABtYW5pZmVzdC5qc29uUEsBAhQDFAAAAAgAAAAhXAuVcEZ+DwAATTgAACsAAAAAAAAAAAAAAIABXwEAAHJ1bnMvMzM4MWRmZWNjNDg1MjAxYmJkOTM2NDczOWE2ZTU3MTguanNvbmxQSwECFAMUAAAACAAAACFcsppxGP8BAAC4AwAAEgAAAAAAAAAAAAAAgAEmEQAAa2V5cy9yZWNvcmRzLmpzb25sUEsBAhQDFAAAAAgAAAAhXDx09XXCAAAA8gAAABMAAAAAAAAAAAAAAIABVRMAAGNoZWNrcG9pbnRzLzEzLm5vdGVQSwECFAMUAAAACAAAACFcwFygZmABAAA7AgAAEwAAAAAAAAAAAAAAgAFIFAAAcHJvb2ZzL3JlY29yZHMuanNvblBLBQYAAAAABQAFAFYBAADZFQAAAAA=","sample.trust.json":"ewogImxvZ3MiOiBbCiAgInRyYWNla2l0LmxvY2FsLzRkYTFjZDk2MjAzYjM0ZDc5YmYwMmI4Mjk2ODM3NzA0KzI4NjEwNDI4K0FXaTVIMGFSWGpYQmRuSElwektXcTJXeWZsM2h5R0RhRTlsRHVBMzByY0hwIgogXSwKICJ3aXRuZXNzZXMiOiBbXSwKICJhbGdzIjogWwogICJlZDI1NTE5IgogXSwKICJ3aXRuZXNzZXNfcmVxdWlyZWQiOiAwCn0="};
 const __jcs = (() => {
@@ -398,6 +466,25 @@ async function parseVkey(text) {
         throw new NoteError("vkey id does not match the key");
     return { name, id, type: raw[0], pub: raw.subarray(1) };
 }
+/** A cosignature signs no key name and a witness has one key (C2SP tlog-cosignature): refuse pins of one cosignature
+ * key under two names, or of two under one name, so each witness counts once. */
+async function checkWitnesses(keys) {
+    const names = new Map(), pubs = new Map();
+    for (const k of keys) {
+        const p = await parseVkey(k);
+        if (p.type !== COSIGNATURE)
+            continue;
+        const pub = hex(p.pub), name = names.get(pub) ?? p.name, other = pubs.get(p.name) ?? pub;
+        if (name !== p.name)
+            throw new NoteError(`trust pins one witness key under two names (${name}, ${p.name}); a key is one witness: `
+                + "keep it under the name it cosigns with");
+        if (other !== pub)
+            throw new NoteError(`trust pins two witness keys under one name (${p.name}); a name is one witness: keep only `
+                + "its current key");
+        names.set(pub, name);
+        pubs.set(p.name, pub);
+    }
+}
 /**
  * Open a checkpoint note with pinned vkeys: a pinned Ed25519 log key named after the origin must sign it, and each
  * pinned hybrid key of the origin must have a line. Web Crypto has no SLH-DSA, so a hybrid line is left `unchecked`.
@@ -437,6 +524,7 @@ async function openNote(data, logKeys, witnessKeys, anchored = true) {
     }
     if (root.length !== 32)
         throw new NoteError("bad root hash");
+    await checkWitnesses(witnessKeys);
     const pinned = new Map();
     for (const [keys, want] of [[logKeys, [ED25519, HYBRID]], [witnessKeys, [COSIGNATURE]]])
         for (const k of keys) {
@@ -505,7 +593,7 @@ function parseLeaf(data) {
         seq: Number(new DataView(data.buffer, data.byteOffset).getBigUint64(49)), hash: "sha256:" + hex(data.subarray(57)) };
 }
 
-return { COSIGNATURE, ED25519, HYBRID, LEAF_TYPES, NoteError, SIGNER_LEAVES, SLH_DSA, b64decode, b64encode, bytes, concat, ed25519Verify, equal, hex, keyAlg, keyId, leafHash, openNote, parseLeaf, parseVkey, registryOrigin, runHash, sha256, sha256hex, spkiKid, spkiOf, unb64, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey };
+return { COSIGNATURE, ED25519, HYBRID, LEAF_TYPES, NoteError, SIGNER_LEAVES, SLH_DSA, b64decode, b64encode, bytes, checkWitnesses, concat, ed25519Verify, equal, hex, keyAlg, keyId, leafHash, openNote, parseLeaf, parseVkey, registryOrigin, runHash, sha256, sha256hex, spkiKid, spkiOf, unb64, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey };
 })();
 const __detect = (() => {
 const RUN_CAP = 100, TENANT_CAP = 60, RUN_SHARE = 20, IDLE_S = 3600, UPDATE_S = 60;
@@ -917,7 +1005,8 @@ const MAX_TOTAL = 512 << 20;
 const NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9._-]+)*$/;
 class Unusable extends Error {
 }
-/** An entry whose bytes don't match its CRC-32: Python's zipfile names it so, and the reports print the name. */
+/** A file that isn't a zip, has no manifest, or an entry whose bytes don't inflate or don't match its CRC-32: the
+ * reports say the bundle file is damaged. */
 class BadZipFile extends Unusable {
 }
 let CRC;
@@ -970,7 +1059,7 @@ async function readZip(data) {
     };
     const eocd = data.length - 22;
     if (eocd < 0 || v.getUint32(eocd, true) !== 0x06054b50)
-        throw new Unusable("not a zip file, or bytes after its end record");
+        throw new BadZipFile("not a zip file, or bytes after its end record");
     const count = v.getUint16(eocd + 10, true), cdSize = v.getUint32(eocd + 12, true), cdOffset = v.getUint32(eocd + 16, true);
     if (v.getUint16(eocd + 4, true) || v.getUint16(eocd + 6, true) || v.getUint16(eocd + 8, true) !== count
         || v.getUint16(eocd + 20, true) || cdOffset + cdSize !== eocd)
@@ -1041,7 +1130,7 @@ async function readZip(data) {
             }
             catch (x) {
                 // lean: the decompressor's own message, which differs from zlib's in the reference verifier's report
-                throw new Unusable(`${n}: ${x.message}`);
+                throw new BadZipFile(`${n} does not inflate` + (x.message ? `: ${x.message}` : ""));
             }
         }
         if (out.length > cap)
@@ -1056,7 +1145,7 @@ async function readZip(data) {
     return files;
 }
 
-return { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip };
+return { BadZipFile, MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip };
 })();
 const __index = (() => {
 /**
@@ -1078,18 +1167,20 @@ const __index = (() => {
  * `verify(bundle, null)` (no trust config) checks what needs no pinned key and is never VERIFIED. web.ts is this
  * verifier as a browser page (verify.html).
  */
-const { canonicalize: canonicalize, repr: quoted, strictParseBytes: strictParseBytes } = __jcs;
-const { HYBRID: HYBRID, NoteError: NoteError, SIGNER_LEAVES: SIGNER_LEAVES, b64decode: b64decode, bytes: bytes, equal: equal, keyAlg: keyAlg, leafHash: leafHash, openNote: openNote, parseLeaf: parseLeaf, parseVkey: parseVkey, registryOrigin: registryOrigin, runHash: runHash, sha256hex: sha256hex, spkiKid: spkiKid, unhex: unhex, verifyConsistency: verifyConsistency, verifyInclusion: verifyInclusion, verifyV2: verifyV2, vkey: vkey } = __primitives;
+const { StrictJSONError: StrictJSONError, canonicalize: canonicalize, repr: quoted, strictParseBytes: strictParseBytes } = __jcs;
+const { HYBRID: HYBRID, NoteError: NoteError, SIGNER_LEAVES: SIGNER_LEAVES, b64decode: b64decode, bytes: bytes, checkWitnesses: checkWitnesses, equal: equal, keyAlg: keyAlg, leafHash: leafHash, openNote: openNote, parseLeaf: parseLeaf, parseVkey: parseVkey, registryOrigin: registryOrigin, runHash: runHash, sha256hex: sha256hex, spkiKid: spkiKid, unhex: unhex, verifyConsistency: verifyConsistency, verifyInclusion: verifyInclusion, verifyV2: verifyV2, vkey: vkey } = __primitives;
 const { Detector: Detector } = __detect;
 const { same: same, validateEvent: validateEvent } = __schema;
-const { MAX_ENTRY: MAX_ENTRY, Unusable: Unusable, readZip: readZip } = __zip;
+const { BadZipFile: BadZipFile, MAX_ENTRY: MAX_ENTRY, Unusable: Unusable, readZip: readZip } = __zip;
 
 
 /** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
-const VERSION = "1.5.0";
+const VERSION = "1.5.2";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
+/** The integrity of a trust config that can't be used: nothing in the bundle was checked. */
+const TRUST_UNUSABLE = "UNVERIFIABLE (the trust file can't be used)";
 const FORMAT = "tracekit.bundle.v2";
 const MAX_LINE = 1 << 20;
 const MIN_RECORD = 256; // no signed record's line is shorter: its hash, signature, ids and timestamp alone are longer
@@ -1147,6 +1238,9 @@ function manifestDetail(listed, hashes, bad) {
         : Object.hasOwn(listed, n) ? "missing" : "not listed"})`);
     return "files differ from the manifest: " + how.join(", ") + (bad.length > 5 ? ` and ${bad.length - 5} more` : "");
 }
+/** A check's detail: what it found when it passed, else how many problems in what (its lines say which), so a failed
+ * line never reads as a pass. */
+const found = (problems, passed, scope) => problems.length ? `${problems.length} problem(s) in ${scope}` : passed;
 const kind = (v) => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
 function at(o, k) {
     if (!isObj(o))
@@ -1240,13 +1334,30 @@ async function loadTrust(data, name) {
         && Array.isArray(opt(t, "issuers")) && opt(t, "issuers").every((i) => exactly(i, ["vkey", "issuance_log_vkey"])
         && Object.values(i).every((v) => typeof v === "string"))
         && Array.isArray(opt(t, "analyzers"))
-        && opt(t, "analyzers").every((a) => typeof a === "string" && /^[a-z0-9_]+:.+$/.test(a));
+        && opt(t, "analyzers").every((a) => typeof a === "string" && /^[a-z0-9_]+:[^\n]+$/.test(a));
     if (!ok)
         throw new ValueError(`${name}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, `
             + "issuers, analyzers)");
     for (const k of [...t.logs, ...opt(t, "witnesses").map((w) => w.vkey), ...opt(t, "monitors").map((m) => m.vkey),
-        ...opt(t, "issuers").flatMap((i) => Object.values(i))])
-        await parseVkey(k);
+        ...opt(t, "issuers").flatMap((i) => Object.values(i))]) {
+        try {
+            await parseVkey(k);
+        }
+        catch (e) {
+            if (!(e instanceof NoteError))
+                throw e;
+            throw new ValueError(`pinned key ${repr(cut(k, 80))} is not a vkey: ${e.message}`);
+        }
+    }
+    await checkWitnesses(opt(t, "witnesses").map((w) => w.vkey));
+    const classes = new Map();
+    for (const w of opt(t, "witnesses")) {
+        const c = classes.get(w.vkey) ?? w.class;
+        if (c !== w.class)
+            throw new ValueError(`trust pins witness ${w.vkey.split("+")[0]} with two classes (${c}, `
+                + `${w.class}); a witness has one class: list it once, with the class you give it`);
+        classes.set(w.vkey, c);
+    }
     t.witnesses ??= [];
     t.witnesses_required ??= 0;
     t.issuers ??= [];
@@ -1295,7 +1406,9 @@ async function verify(bundle, trust, names = { bundle: "BUNDLE", trust: "TRUST.j
             t = await loadTrust(trust, names.trust);
         }
         catch (e) {
-            rep.check("trust config", false, errorText(e));
+            rep.integrity = TRUST_UNUSABLE;
+            rep.check("trust config", false, e instanceof StrictJSONError ? `not valid JSON (${e.message})`
+                : e instanceof ValueError || e instanceof NoteError ? e.message : errorText(e));
             return { report: rep, code: EXIT_BAD };
         }
     const floats = new WeakMap();
@@ -1303,7 +1416,7 @@ async function verify(bundle, trust, names = { bundle: "BUNDLE", trust: "TRUST.j
         files = await readZip(bundle);
         const m = files.get("manifest.json");
         if (!m)
-            throw new KeyError(repr("manifest.json"));
+            throw new BadZipFile("no manifest.json");
         files.delete("manifest.json");
         manifest = strictParseBytes(m, floats);
         v1 = isObj(manifest) && manifest.format === "tracekit.bundle.v1";
@@ -1320,7 +1433,9 @@ async function verify(bundle, trust, names = { bundle: "BUNDLE", trust: "TRUST.j
     }
     catch (e) {
         // a format v1 bundle (the laptop signer's): the reference verifier checks it, against the signer.pub the sender pins
-        rep.check("bundle readable", false, `cannot read bundle: ${errorText(e)}`, v1 ? ["a format v1 bundle: verify it with "
+        const why = e instanceof BadZipFile ? `the bundle file is damaged: ${e.message}`
+            : e instanceof Unusable ? e.message : errorText(e);
+        rep.check("bundle readable", false, `cannot read bundle: ${why}`, v1 ? ["a format v1 bundle: verify it with "
                 + `the signer's public key (signer.pub, from the sender): uvx --from tracekit-ai tracekit verify ${quote(names.bundle)}`
                 + " --key signer.pub"] : []);
         return { report: rep, code: EXIT_BAD };
@@ -1390,8 +1505,10 @@ async function check(rep, manifest, files, trust, floats) {
         return;
     }
     const { origin, size, root, cosigs } = note;
-    rep.check("checkpoint", same(size, at(proofs, "tree_size")), `${origin} at tree size ${size}, `
-        + (anchored ? "signed by its pinned log key" : "its signature not checked (no trust config)"));
+    const sized = same(size, at(proofs, "tree_size"));
+    rep.check("checkpoint", sized, `${origin} at tree size ${size}, `
+        + (anchored ? "signed by its pinned log key" : "its signature not checked (no trust config)")
+        + (sized ? "" : ", but the proofs are for another tree size"));
     if (note.unchecked)
         rep.unsupport("SLH-DSA-SHA2-128s checkpoint signature");
     if (anchored)
@@ -1507,8 +1624,8 @@ async function check(rep, manifest, files, trust, floats) {
         extend(keyProblems, retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
             .map(([seq]) => `seq ${seq}: key.retire withheld (the registry log has it)`));
     }
-    rep.check("keys", timeline.size > 0 && !keyProblems.length, `${timeline.size} record key(s) from ${keyRecords.length} key `
-        + "record(s)", keyProblems);
+    rep.check("keys", timeline.size > 0 && !keyProblems.length, found(keyProblems, timeline.size ? `${timeline.size} record `
+        + `key(s) from ${keyRecords.length} key record(s)` : "no key record declares a record key", `${keyRecords.length} key record(s)`), keyProblems);
     const every = [...runs.values()].flat();
     const seqs = [...keyRecords, ...every].map((r) => num(at(at(r, "event"), "seq")));
     if (!seqs.length)
@@ -1523,19 +1640,19 @@ async function check(rep, manifest, files, trust, floats) {
             + "its signer.pub to the reference verifier to check the format bridge");
     const inParts = [...names].filter(([n, ps]) => !(ps.length === 1 && ps[0] === n)).map(([, ps]) => ps.length);
     if (inParts.length)
-        rep.check("run parts", !layout.length, `${inParts.length} run(s) in ${inParts.reduce((a, b) => a + b, 0)} parts, `
-            + "each part continuing the one before it", layout);
-    rep.check("signatures", !problems.length, `${every.length} record(s), keys valid at their position`, problems);
+        rep.check("run parts", !layout.length, found(layout, `${inParts.length} run(s) in ${inParts.reduce((a, b) => a + b, 0)} `
+            + "parts, each part continuing the one before it", `the parts of ${inParts.length} run(s)`), layout);
+    rep.check("signatures", !problems.length, found(problems, `${every.length} record(s), keys valid at their position`, `${every.length} record(s)`), problems);
     const only = runs.size === 1 ? [...runs.values()][0][0].event : null;
-    rep.check("run chain", !chain.length, only ? `run ${repr(cut(str(get(only, "run_id")), 200))} of tenant `
-        + `${repr(get(only, "tenant"))}, contiguous from run_seq 0` : `${runs.size} run(s), each contiguous from run_seq 0`, chain);
-    rep.check("inclusion", !outside.length, `first and last records of ${runs.size} run(s) are in the checkpointed tree of `
-        + `size ${size}`, outside);
+    rep.check("run chain", !chain.length, found(chain, only ? `run ${repr(cut(str(get(only, "run_id")), 200))} of tenant `
+        + `${repr(get(only, "tenant"))}, contiguous from run_seq 0` : `${runs.size} run(s), each contiguous from run_seq 0`, `the chain of ${runs.size} run(s)`), chain);
+    rep.check("inclusion", !outside.length, found(outside, `first and last records of ${runs.size} run(s) are in the `
+        + `checkpointed tree of size ${size}`, `the first and last records of ${runs.size} run(s)`), outside);
     // policy_hash -> the bundled snapshot named by it: the one set checkIncidents and approvals check against
     const policies = new Map();
     for (const p of [...files.keys()].filter((n) => n.startsWith("policies/")).sort()) {
         const hex = await sha256hex(file(p));
-        rep.check("policy snapshot", p === `policies/${hex}.json`, p);
+        rep.check("policy snapshot", p === `policies/${hex}.json`, p === `policies/${hex}.json` ? p : `${p} is not named by the SHA-256 of its bytes`);
         if (p === `policies/${hex}.json`)
             policies.set(`sha256:${hex}`, file(p));
     }
@@ -1844,9 +1961,9 @@ function approvals(rep, runs, policies, floats) {
     if (!agents)
         return; // a bundle without agent approvals keeps the report it always had
     rep.check("approvals by people", true, `${people} approval(s) answered by people`);
-    rep.check("approvals by agents", !problems.length && !unchecked.length, `${agents} approval(s) answered by agents (model `
-        + "output); argument bounds are not checkable offline (salted commitments): audit one with `tracekit signer reveal`"
-        + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""), (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
+    rep.check("approvals by agents", !problems.length && !unchecked.length, found(problems, `${agents} approval(s) answered `
+        + "by agents (model output); argument bounds are not checkable offline (salted commitments): audit one with "
+        + "`tracekit signer reveal`" + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""), `${agents} approval(s) answered by agents`), (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
 }
 const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];
 const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary",
@@ -1947,8 +2064,8 @@ function checkReviews(rep, runs, pinned) {
         extend(labels, Array(signed.length).fill(label));
     }
     if (total) {
-        rep.check("reviews", !problems.length && !selfs.length, `${total} review(s): `
-            + count(labels).map(([k, n]) => `${n} ${k}`).join(", "), (problems.length ? problems : selfs).slice(0, 20), !problems.length);
+        const said = `${total} review(s): ` + count(labels).map(([k, n]) => `${n} ${k}`).join(", ");
+        rep.check("reviews", !problems.length && !selfs.length, found(problems, said, said), (problems.length ? problems : selfs).slice(0, 20), !problems.length);
         const verdicts = [...runs.values()].flatMap((rs) => rs.map((r) => r.event)) // signed findings only
             .filter((e) => get(e, "type") === "review" && has(at(e, "data"), "cites")).map((e) => get(e.data, "verdict"));
         const sev = count(verdicts.filter((v) => isObj(v) && get(v, "kind") === "finding")
@@ -1986,7 +2103,8 @@ function checkConstraints(rep, runs) {
         }
     }
     if (added || held)
-        rep.check("constraints", !problems.length, `${added} live constraint(s) added; ${held} call(s) held by them`, problems.slice(0, 20));
+        rep.check("constraints", !problems.length, found(problems, `${added} live constraint(s) added; ${held} call(s) held `
+            + "by them", "the calls held by live constraints"), problems.slice(0, 20));
 }
 /** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
  * bundled compiled policy (`policies`, by policy_hash), responses honoured. */
@@ -2059,8 +2177,8 @@ function checkIncidents(rep, runs, policies, floats) {
         extend(problems, honoured(events, pointers));
     }
     const n = opened.size + [...pointers].filter((p) => !opened.has(p)).length;
-    rep.check("incidents", !problems.length, `${n} incident(s): ${checked} checked against the bundle, ${n - checked} `
-        + "signer-asserted (operator, cross-run, under several policies, or under a policy not in the bundle)", problems.slice(0, 20));
+    rep.check("incidents", !problems.length, found(problems, `${n} incident(s): ${checked} checked against the bundle, `
+        + `${n - checked} signer-asserted (operator, cross-run, under several policies, or under a policy not in the bundle)`, `${n} incident(s)`), problems.slice(0, 20));
     if (unbundled.size)
         rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
             + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
@@ -2345,6 +2463,8 @@ async function assurance(origin, cosigs, witnesses, trust, algs, selfApproved, r
 /** `x` without control characters and the bidirectional and zero-width format characters that would reorder or hide
  * the text around them, as the report prints bundle-derived strings. */
 const clean = (x) => x.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "");
+/** The Assurance line as the reports print it: an assurance level rates only evidence that verified. */
+const assuranceLine = (rep) => `Assurance: ${rep.integrity === "FAILED" ? "not rated (the bundle failed verification)" : clean(rep.assurance)}.`;
 /** The report as text, as the reference CLI prints it; `clean` drops characters from bundle-derived strings. */
 function formatReport(rep) {
     let s = "";
@@ -2353,11 +2473,11 @@ function formatReport(rep) {
         for (const p of c.problems)
             s += `        ${clean(p)}\n`;
     }
-    return s + `\nIntegrity: ${clean(rep.integrity)}.\nAssurance: ${clean(rep.assurance)}.\n`
+    return s + `\nIntegrity: ${clean(rep.integrity)}.\n${assuranceLine(rep)}\n`
         + (rep.findings ? `Findings: ${clean(rep.findings)}.\n` : "");
 }
 
-return { EXIT_BAD, EXIT_FAIL, EXIT_OK, EXIT_WARN, Report, VERSION, clean, formatReport, runFiles, verify, verifyRecord, MAX_ENTRIES: __zip.MAX_ENTRIES, MAX_ENTRY: __zip.MAX_ENTRY, MAX_TOTAL: __zip.MAX_TOTAL, Unusable: __zip.Unusable, readZip: __zip.readZip, StrictJSONError: __jcs.StrictJSONError, canonicalize: __jcs.canonicalize, strictParse: __jcs.strictParse, strictParseBytes: __jcs.strictParseBytes };
+return { EXIT_BAD, EXIT_FAIL, EXIT_OK, EXIT_WARN, Report, TRUST_UNUSABLE, VERSION, assuranceLine, clean, formatReport, runFiles, verify, verifyRecord, MAX_ENTRIES: __zip.MAX_ENTRIES, MAX_ENTRY: __zip.MAX_ENTRY, MAX_TOTAL: __zip.MAX_TOTAL, Unusable: __zip.Unusable, readZip: __zip.readZip, StrictJSONError: __jcs.StrictJSONError, canonicalize: __jcs.canonicalize, strictParse: __jcs.strictParse, strictParseBytes: __jcs.strictParseBytes };
 })();
 const __explain = (() => {
 /**
@@ -2378,6 +2498,8 @@ const asJson = (rep, code) => ({ exit_code: code, checks: rep.checks, failures: 
 const asText = (rep, code) => formatReport(rep) + `\nExit code ${code}`
     + (code === EXIT_OK && rep.warnings.length ? ` (3 with --strict: ${rep.warnings.length} warning(s))` : "") + ".\n";
 const failed = (rep, name) => rep.checks.find((c) => c.check === name && c.status === "fail");
+/** Only the witness quorum failed: too few of the witnesses the trust file pins cosigned; the records verified. */
+const quorumOnly = (rep) => rep.failures.length === 1 && failed(rep, "witness quorum");
 const anchored = (rep) => !rep.checks.some((c) => c.check === "trust config" && c.status === "warn");
 const v1 = (rep) => rep.checks.some((c) => c.check === "bundle readable"
     && c.problems.some((p) => p.startsWith("a format v1 bundle")));
@@ -2406,22 +2528,29 @@ function verdict(rep, code) {
             return { word: "FAILED", means: "This bundle is not signed by the signer your trust file names, or its checkpoint "
                     + "was changed.", notMeans: "It doesn't say who made the bundle. If the trust file is the right one, don't rely "
                     + "on the bundle." };
+        const quorum = quorumOnly(rep);
+        if (quorum)
+            return { word: "FAILED", means: `Too few of the witnesses your trust file pins cosigned this bundle's checkpoint `
+                    + `(${clean(quorum.detail)}). Nothing else failed.`,
+                notMeans: "It doesn't mean the contents were changed: a witness name or key in your trust file that differs from "
+                    + "the one the witness signs with gives this same result." };
         return { word: "FAILED", means: "This bundle doesn't match what was signed: something in it was changed, removed or "
                 + `added after signing. Failed: ${rep.failures.join(", ")}.`,
             notMeans: "It doesn't say who changed it or why: the failed lines below show what doesn't match." };
     }
     const readable = rep.checks.find((c) => c.check === "bundle readable");
     const nothing = "Nothing failed: it doesn't mean the bundle is bad.";
+    // the word the command-line verifiers print in the Integrity line
+    const word = rep.integrity === "UNUSABLE BUNDLE" ? "UNUSABLE BUNDLE" : "UNVERIFIABLE";
     if (failed(rep, "trust config"))
-        return { word: "UNVERIFIABLE", means: "The trust file couldn't be used, so nothing was checked.", notMeans: nothing };
+        return { word, means: "The trust file couldn't be used, so nothing in the bundle was checked.", notMeans: nothing };
     if (v1(rep))
-        return { word: "UNVERIFIABLE", means: "This is a format v1 bundle (from Tracekit's laptop signer); this page checks "
-                + "format v2 bundles, so nothing was checked.", notMeans: nothing };
+        return { word, means: "This is a format v1 bundle (from Tracekit's laptop signer); this page checks format v2 "
+                + "bundles, so nothing was checked.", notMeans: nothing };
     if (rep.integrity.startsWith("UNVERIFIABLE (needs"))
-        return { word: "UNVERIFIABLE", means: `This bundle needs a newer verifier than this page (Tracekit ${VERSION}).`,
-            notMeans: nothing };
+        return { word, means: `This bundle needs a newer verifier than this page (Tracekit ${VERSION}).`, notMeans: nothing };
     if (readable)
-        return { word: "UNVERIFIABLE", means: "This file couldn't be read as a Tracekit bundle, so nothing in it was checked.",
+        return { word, means: "This file couldn't be read as a Tracekit bundle, so nothing in it was checked.",
             notMeans: "Nothing in it can be relied on until a readable copy verifies." };
     if (!anchored(rep))
         return { word: "UNVERIFIABLE", means: "Signatures are intact, but you haven't said whose signer you trust.",
@@ -2439,8 +2568,10 @@ function nextSteps(rep, code, names) {
     if (code === EXIT_OK)
         return rep.warnings.length ? [{ text: `Read the ${rep.warnings.length} warning(s) below: each says what to look at. `
                     + "They don't change the verdict (with --strict the command line exits 3)." }] : [];
-    if (failed(rep, "trust config"))
-        return [{ text: `Choose the trust file again: it must be a Tracekit v2 trust config (a .json with "logs"). Ask for ${TRUST_FILE}.` }];
+    const trustFile = failed(rep, "trust config");
+    if (trustFile)
+        return [{ text: `Fix the trust file, or choose the right one: ${clean(trustFile.detail)}. If it isn't the sender's, `
+                    + `ask for ${TRUST_FILE}.` }];
     if (readable?.problems.length)
         return readable.problems.map((p) => {
             const at = p.search(/(npx|uvx) /);
@@ -2456,6 +2587,10 @@ function nextSteps(rep, code, names) {
         if (failed(rep, "checkpoint") && anchored(rep))
             steps.push({ text: `Make sure the trust file is ${TRUST_FILE.replace("the sender's", "the sender's own")}. With `
                     + "the right one, this bundle isn't theirs: don't rely on it." });
+        else if (quorumOnly(rep))
+            steps.push({ text: "Check the witness names and keys in your trust file: each must be the name and key the "
+                    + "witness cosigns with. If they are, ask the sender for a copy exported after the witnesses you require "
+                    + "cosigned." });
         else
             steps.push({ text: "Don't rely on this bundle's contents. Ask the sender for the original and compare its SHA-256 "
                     + "with theirs:", command: `shasum -a 256 ${b}` });
@@ -2471,56 +2606,153 @@ function nextSteps(rep, code, names) {
     return [{ text: "Verify it with the reference verifier, which checks this:",
             command: `uvx --from tracekit-ai tracekit verify ${b} --trust ${t}` }];
 }
-/** One line per check: what it means (docs/verdicts.md#lines). */
+/** What each line means, for each outcome it can have (docs/verdicts.md#lines): a line that fails or warns never reads
+ * as a pass. */
 const MEANING = {
-    "trust config": "Your trust file: the log key and witnesses you trust, never ones the bundle brings.",
-    "bundle readable": "The file is a Tracekit v2 bundle this verifier can read.",
-    "bundle structure": "The bundle is well formed; a failure here means it is malformed in a way no other line covers.",
-    "manifest": "The files in the bundle are exactly those its manifest lists, with those hashes.",
-    "checkpoint": "The log's checkpoint (the signed root of every record) is signed by the log key your trust file pins.",
-    "witness quorum": "Enough witnesses your trust file pins cosigned the checkpoint: they vouch it was not rolled back.",
-    "keys": "The record keys were declared by records the checkpoint includes, in order, and retired keys stop signing.",
-    "run parts": "A long run comes in numbered parts: none is missing between the first and the last, extra or out of "
-        + "order, so they read as one run. Parts cut off its end leave it open, never VERIFIED.",
-    "signatures": "Every record's signature verifies under a key valid at its position: no record was edited after signing.",
-    "run chain": "Each run's records follow one another without a gap from the first: none deleted, swapped or added.",
-    "inclusion": "Each run's first and last records are in the checkpointed tree: the run wasn't rebuilt.",
-    "policy snapshot": "The bundled policy file is named by its own hash: it wasn't edited.",
-    "policy": "A tool call ran against a deny, or an ask nobody approved, and the signer recorded it.",
-    "held calls": "A call held for a gateway or executor got no result before its run ended.",
-    "gaps": "The signer recorded something a person should read: a gap, a tamper attempt or a mismatched approval.",
-    "external decisions": "Decisions imported from another policy system, and whether they disagreed with the signer's.",
-    "coverage": "Which capture layers reported, and calls the signer could not match across them.",
-    "coverage matrix": "How each kind of action was covered: enforced, observed, only reported by the agent, or not at all.",
-    "observers": "An observer outside the agent went silent or restarted while the run was open.",
-    "reviews": "Signed findings about the run, each labelled by who wrote it: independent, unpinned or self-asserted.",
-    "reviews counted": "Findings whose analysed run isn't in the bundle, so their citations weren't checked.",
-    "incidents": "Detections the signer opened, recomputed from the run's records where the bundle allows.",
-    "incident policies": "Policies an incident cites that aren't in the bundle: those incidents are the signer's word.",
-    "content vault": "Who read or erased retained content, as the signer recorded it.",
-    "tiers": "Tool calls by how they were captured: T2 gateway or executor, T1 adapter, T3 import (receipt only).",
-    "args source": "Whether recorded arguments are the model's exact bytes (raw), parsed, or changed by a framework.",
-    "isolation": "How the signer measured its separation from the agent: separate-user and remote are out of its reach.",
-    "principals": "The person or service each run acted for, attested by the signer or asserted by the app.",
-    "harness": "The agent harness the signer bound each run to.",
-    "fail-open classes": "Tool classes allowed to run while the signer is down, so such calls may be unrecorded.",
-    "key assurance": "Whether the record keys are only declared by the log (asserted) or certified by an issuer.",
-    "approvals by people": "Held calls approved by people.",
-    "approvals by agents": "Held calls approved by agents (model output), checked against the rules that allow it.",
-    "break-glass approvals": "Approvals given under the break-glass role, with who and why.",
-    "not interpreted": "Records carry an extension this verifier doesn't read. They verified like every other record.",
-    "gateway amendments": "Requests the LLM gateway changed so the provider shows its reasoning; each record commits to "
-        + "the request as sent.",
-    "openshell policy": "Changes of the sandbox's policy or configuration that NVIDIA OpenShell reported, signed into "
-        + "the run as OpenShell's report.",
-    "constraints": "What the person's request said not to do, added while the run was open, and the calls it held.",
-    "run-set": "Every run of the tenant in the registry range is in the bundle (COMPLETE), or what is missing.",
-    "tenant-level gaps": "Signer gaps in the range that concern every tenant, such as witness failures.",
-    "log tail": "Whether records after the checkpoint are proven absent (a log.closed) or simply unproven.",
-    "rekor anchor": "A Rekor transparency-log anchor of the checkpoint, which this page can't check.",
-    "SLH-DSA-SHA2-128s checkpoint signature": "A post-quantum checkpoint signature, which browsers can't check yet.",
-    "record-key certificates": "Certificates of the record keys, which this page doesn't check.",
-    "tracekit why findings": "tracekit why investigation findings, which this page doesn't check.",
+    "trust config": {
+        warn: "You chose no trust file, so no log key you trust checked the checkpoint: the bundle can't be VERIFIED.",
+        fail: "Your trust file (the log key and witnesses you trust) can't be used, for the reason on this line, so nothing "
+            + "in the bundle was checked.",
+    },
+    "bundle readable": { fail: "This verifier can't read the file as a Tracekit v2 bundle: it isn't one, is damaged, or "
+            + "needs a newer verifier. Nothing in it was checked." },
+    "bundle structure": { fail: "The bundle is malformed in a way no other line covers, so it couldn't be fully "
+            + "checked." },
+    "manifest": {
+        pass: "The files in the bundle are exactly those its manifest lists, with those hashes.",
+        fail: "A file was added, removed or changed after the bundle was exported: the files don't match its manifest.",
+    },
+    "checkpoint": {
+        pass: "The log's checkpoint (the signed root of every record) matches the proofs and is signed by the log key "
+            + "your trust file pins; without a trust file its signature isn't checked.",
+        fail: "The checkpoint isn't signed by the log key your trust file pins, or it was changed: the bundle comes from "
+            + "another signer, or was edited.",
+    },
+    "witness quorum": {
+        pass: "Enough witnesses your trust file pins cosigned the checkpoint: they vouch it was not rolled back.",
+        fail: "Fewer witnesses your trust file pins cosigned the checkpoint than it requires: not enough vouch it was not "
+            + "rolled back.",
+    },
+    "keys": {
+        pass: "The record keys were declared by records the checkpoint includes, in order, and retired keys stop signing.",
+        fail: "A key record is missing from the checkpointed tree, out of order, or retires a key never declared: the "
+            + "record keys can't be trusted.",
+        warn: "Nothing proves the bundle shows every key retirement: one left out would not show. It doesn't mean one was.",
+    },
+    "run parts": {
+        pass: "A long run comes in numbered parts: none is missing between the first and the last, extra or out of "
+            + "order, so they read as one run. Parts cut off its end leave it open, never VERIFIED.",
+        fail: "A long run's parts don't read as one run: a part is missing, extra, empty or out of order.",
+    },
+    "signatures": {
+        pass: "Every record's signature verifies under a key valid at its position: no record was edited after signing.",
+        fail: "A record doesn't verify: it was edited after signing, or signed by a key not valid at its position.",
+    },
+    "run chain": {
+        pass: "Each run's records follow one another without a gap from the first: none deleted, swapped or added.",
+        fail: "A run's records don't follow one another: one was deleted, swapped, copied from another run, or added "
+            + "after the run ended.",
+    },
+    "inclusion": {
+        pass: "Each run's first and last records are in the checkpointed tree: the run wasn't rebuilt.",
+        fail: "A run's first or last record isn't in the checkpointed tree: the run was rebuilt or cut short, or the "
+            + "proofs are for another tree.",
+    },
+    "policy snapshot": {
+        pass: "The bundled policy file is named by its own hash: it wasn't edited.",
+        fail: "The bundled policy file doesn't match the hash it is named by: it was edited.",
+    },
+    "policy": { warn: "A tool call ran against a deny, or an ask nobody approved, and the signer recorded it." },
+    "held calls": { warn: "A call held for a gateway or executor got no result before its run ended." },
+    "gaps": { warn: "The signer recorded something a person should read: a gap, a tamper attempt or a mismatched "
+            + "approval." },
+    "external decisions": {
+        pass: "Decisions imported from another policy system: none disagreed with the signer's.",
+        warn: "A decision imported from another policy system disagreed with the signer's: the signer's is the one that "
+            + "applied.",
+    },
+    "coverage": {
+        pass: "Which capture layers reported; the signer matched every call across them. The record is only as complete "
+            + "as those layers.",
+        warn: "The signer couldn't match some calls across capture layers, or saw a host no call explains. It doesn't "
+            + "mean the agent hid a call: a layer may simply not have reported.",
+    },
+    "coverage matrix": { pass: "How each kind of action was covered: enforced, observed, only reported by the agent, or "
+            + "not at all." },
+    "observers": { warn: "An observer outside the agent went silent or restarted while the run was open." },
+    "reviews": {
+        pass: "Reviews of the run, each labelled by who wrote it; every signed finding cites records the run has.",
+        warn: "A signed finding is self-asserted: the agent could have written it about itself.",
+        fail: "A signed finding cites a record the run doesn't have or that has another hash, or isn't shaped as a "
+            + "signer writes one: it misstates the evidence.",
+    },
+    "reviews counted": { warn: "Findings whose analysed run isn't in the bundle, so their citations weren't checked." },
+    "incidents": {
+        pass: "Detections the signer opened, recomputed from the run's records where the bundle allows.",
+        fail: "An incident doesn't follow from the run's records, or the records don't honour a hold or quarantine it "
+            + "recorded.",
+    },
+    "incident policies": { warn: "Policies an incident cites that aren't in the bundle: those incidents are the "
+            + "signer's word." },
+    "content vault": { pass: "Who read or erased retained content, as the signer recorded it." },
+    "tiers": {
+        pass: "Tool calls by how they were captured: T2 gateway or executor, T1 adapter, T3 import (receipt only).",
+        warn: "A tool call was decided and completed by different capture paths, so it counts at the weaker tier.",
+    },
+    "args source": { pass: "Whether recorded arguments are the model's exact bytes (raw), parsed, or changed by a "
+            + "framework." },
+    "isolation": { pass: "How the signer measured its separation from the agent: separate-user and remote are out of "
+            + "its reach." },
+    "principals": { pass: "The person or service each run acted for, attested by the signer or asserted by the app." },
+    "harness": { pass: "The agent harness the signer bound each run to." },
+    "fail-open classes": {
+        pass: "No tool class runs while the signer is down: every call needed the signer.",
+        warn: "Tool classes allowed to run while the signer is down, so such calls may be unrecorded.",
+    },
+    "key assurance": { pass: "Whether the record keys are only declared by the log (asserted) or certified by an "
+            + "issuer." },
+    "approvals by people": { pass: "Held calls approved by people." },
+    "approvals by agents": {
+        pass: "Held calls approved by agents (model output), checked against the rules that allow it.",
+        warn: "Held calls approved by agents (model output); some couldn't be checked against their rules: the bundle "
+            + "lacks the policy they were held under.",
+        fail: "An agent approved a call the rules for agent approvals don't let it approve.",
+    },
+    "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
+    "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "
+            + "record." },
+    "gateway amendments": {
+        pass: "Requests the LLM gateway changed so the provider shows its reasoning; each record commits to the request "
+            + "as sent.",
+        warn: "A record carries a gateway amendment where or how the signer never writes one. The record verified like "
+            + "every other.",
+    },
+    "openshell policy": {
+        pass: "Changes of the sandbox's policy or configuration that NVIDIA OpenShell reported, signed into the run as "
+            + "OpenShell's report.",
+        warn: "A record carries an OpenShell policy change where or how the signer never writes one. The record verified "
+            + "like every other.",
+    },
+    "constraints": {
+        pass: "What the person's request said not to do, added while the run was open, and the calls it held.",
+        fail: "A call held by a live constraint comes before any constraint in its run, or wasn't held for approval: the "
+            + "signer never writes either.",
+    },
+    "run-set": {
+        pass: "Every run of the tenant in the registry range is in the bundle (COMPLETE).",
+        fail: "A run of the tenant in the registry range is missing or cut short, or the bundle holds one that doesn't "
+            + "belong (INCOMPLETE).",
+    },
+    "tenant-level gaps": { warn: "Signer gaps in the range that concern every tenant, such as witness failures." },
+    "log tail": {
+        pass: "No records follow the checkpoint: a log.closed proves it is the log's last.",
+        warn: "Nothing proves no records follow the checkpoint (no log.closed). It doesn't mean any were hidden.",
+    },
+    "rekor anchor": { warn: "A Rekor transparency-log anchor of the checkpoint, which this page can't check." },
+    "SLH-DSA-SHA2-128s checkpoint signature": { warn: "A post-quantum checkpoint signature, which browsers can't check "
+            + "yet." },
+    "record-key certificates": { warn: "Certificates of the record keys, which this page doesn't check." },
+    "tracekit why findings": { warn: "tracekit why investigation findings, which this page doesn't check." },
 };
 const day = (ts) => ts.slice(0, 19).replace("T", " ") + " UTC";
 /** A few plain facts about the bundle's runs, from their records ({name: bytes}, the runs/ files, a run's parts read as
@@ -2539,11 +2771,13 @@ function summarize(files, rep) {
     const cp = rep.checks.find((c) => c.check === "checkpoint")?.detail.split(" at tree size")[0];
     if (cp)
         out.push(["Signer", `log ${cp}` + (anchored(rep) ? ", the key your trust file pins" : ", not checked (no trust file)")]);
-    const level = rep.assurance.split(";")[0];
+    const level = rep.assurance.split(";")[0], self = rep.assurance.includes("; approvals: self");
+    const unwitnessed = "no independent witness vouches for the checkpoint";
     out.push(["Assurance", level === "witnessed" ? "witnessed: independent witnesses cosigned the checkpoint"
             : level === "local" ? "local: only witnesses the log's operator runs cosigned the checkpoint"
-                : level === "dev" ? "dev: no independent witness vouches for the checkpoint (or a run holds a self-approval)"
-                    : level]);
+                : level === "dev" && self ? "dev: a run holds a self-approval (whoever asked for the call approved it)"
+                    + (rep.assurance.includes("; no witness cosignature") ? `, and ${unwitnessed}` : "")
+                    : level === "dev" ? `dev: ${unwitnessed}` : level]);
     const agents = runs.map((rs) => rs[0]).filter((e) => e?.type === "run.registered").map((e) => {
         const id = e.data?.identity;
         return `${JSON.stringify(String(e.data?.agent?.name ?? "agent"))}` + (id ? ` (${id.scheme}:${id.subject})` : "");
@@ -2555,11 +2789,13 @@ function summarize(files, rep) {
     out.push(["Tool calls", `${decisions.length} decided` + (decisions.length ? ": " + ["allow", "deny", "ask"]
             .map((d) => `${decisions.filter((x) => x === d).length} ${d}`).join(", ") : "")]);
     const answers = new Map(of("approval").map((e) => [e.data?.approval_id, e.data]));
+    const expired = new Set(of("approval.expired").map((e) => e.data?.approval_id));
     const held = of("approval.request").map((e) => {
         const a = answers.get(e.data?.approval_id);
         const who = a ? `${a.decision === "approve" ? "approved" : a.decision === "reject" ? "rejected" : a.decision} by `
             + `${a.person ?? a.approver}` + (a.approver_kind === "agent" ? " (an agent)" : "")
-            + (a.self_approved ? " (self-approved)" : "") + (a.break_glass ? " (break-glass)" : "") : "no answer recorded";
+            + (a.self_approved ? " (self-approved)" : "") + (a.break_glass ? " (break-glass)" : "")
+            : expired.has(e.data?.approval_id) ? "expired before anyone answered" : "no answer recorded";
         const tool = e.data?.binding?.tool ?? e.tool_call_id;
         return `${tool == null ? "a call" : JSON.stringify(String(tool))}: ${who}`;
     });
@@ -2587,7 +2823,7 @@ const __web = (() => {
  * large bundle doesn't freeze the page; in the page itself where the browser refuses the worker.
  */
 const { MEANING: MEANING, asJson: asJson, asText: asText, cliExit: cliExit, nextSteps: nextSteps, sh: sh, summarize: summarize, verdict: verdict } = __explain;
-const { VERSION: VERSION, clean: clean, readZip: readZip, verify: verify } = __index;
+const { VERSION: VERSION, assuranceLine: assuranceLine, clean: clean, readZip: readZip, verify: verify } = __index;
 /** The report, and a summary of the runs when nothing failed (what a failed bundle says can't be relied on). */
 async function work(job) {
     const { report, code } = await verify(job.bundle, job.trust, job.names);
@@ -2701,7 +2937,7 @@ function page() {
             return; // a later choice of files: its report wins
         const { report, code, summary } = result;
         const v = verdict(report, code);
-        $("banner").className = `banner ${{ VERIFIED: "ok", FAILED: "bad", UNVERIFIABLE: "warn" }[v.word]}`;
+        $("banner").className = `banner ${{ VERIFIED: "ok", FAILED: "bad", UNVERIFIABLE: "warn", "UNUSABLE BUNDLE": "warn" }[v.word]}`;
         $("verdict-word").textContent = v.word;
         $("verdict-means").textContent = v.means;
         $("verdict-not").textContent = v.notMeans;
@@ -2725,12 +2961,12 @@ function page() {
             d.append(s);
             for (const p of c.problems)
                 d.append(el("div", clean(p), "problem")); // one by one: a spread overflows the stack
-            d.append(el("p", `What this means: ${MEANING[c.check] ?? "see docs/verdicts.md."}`, "means"));
+            d.append(el("p", `What this means: ${MEANING[c.check]?.[c.status] ?? "see docs/verdicts.md."}`, "means"));
             d.open = c.status !== "pass" && c.problems.length > 0;
             return d;
         }));
         $("integrity").textContent = `Integrity: ${clean(report.integrity)}.`;
-        $("assurance").textContent = `Assurance: ${clean(report.assurance)}.`;
+        $("assurance").textContent = assuranceLine(report);
         last = { text: asText(report, code), json: JSON.stringify(asJson(report, code), null, 2) + "\n", name: bundle.name };
         $("exit").textContent = last.text.trim().split("\n").at(-1) + cliExit(report);
         $("report").textContent = last.text;
