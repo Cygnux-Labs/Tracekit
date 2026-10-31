@@ -239,3 +239,63 @@
 {"tool": "Bash", "args": {"command": "npx aws-cdk destroy --force"}, "expect": "ask", "note": "CDK through its aws-cdk package name"}
 {"tool": "Bash", "args": {"command": "terragrunt state rm aws_db_instance.prod"}, "expect": "ask", "note": "terragrunt removing a resource from state"}
 {"tool": "Bash", "args": {"command": "pulumi stack -s prod rm --yes"}, "expect": "ask", "note": "pulumi stack rm with an option before rm"}
+{"tool": "Bash", "args": {"command": "gh secret delete AWS_SECRET_ACCESS_KEY --repo myorg/production-app"}, "expect": "ask", "note": "delete a repository's Actions secret with gh secret delete"}
+{"tool": "Bash", "args": {"command": "gh secret delete PROD_DEPLOY_KEY -R myorg/backend"}, "expect": "ask", "note": "delete a repository's Actions secret, -R for the repository"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE /repos/myorg/backend/branches/main/protection"}, "expect": "ask", "note": "delete a branch's protection through gh api"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE /repos/myorg/backend/branches/main/protection/required_pull_request_reviews"}, "expect": "ask", "note": "delete a branch's required reviews through gh api"}
+{"tool": "Bash", "args": {"command": "gh api -X PATCH /repos/myorg/backend -f security_and_analysis[secret_scanning][status]=disabled"}, "expect": "ask", "note": "turn a repository's secret scanning off through gh api"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE \"$(echo L3JlcG9zL215b3JnL2JhY2tlbmQvc2VjcmV0cy9QUk9EX0tFWQ== | base64 -d)\""}, "expect": "ask", "note": "a gh api DELETE whose path is built at run time (a base64-encoded secret path)"}
+{"tool": "Bash", "args": {"command": "gh api -X delete /repos/myorg/backend/branches/main/protection"}, "expect": "ask", "note": "delete a branch's protection with the method in lower case"}
+{"tool": "Bash", "args": {"command": "gh api -iX DELETE /repos/myorg/backend/branches/main/protection"}, "expect": "ask", "note": "delete a branch's protection, -X at the end of a cluster of short options"}
+{"tool": "Bash", "args": {"command": "curl -sSX DELETE https://api.github.com/repos/myorg/backend/actions/secrets/DEPLOY_KEY"}, "expect": "ask", "note": "delete a repository's Actions secret through curl, -X at the end of -sSX"}
+{"tool": "Bash", "args": {"command": "gh secret -e '' delete PROD_DEPLOY_KEY"}, "expect": "ask", "note": "delete a repository's Actions secret after an empty option value"}
+{"tool": "Bash", "args": {"command": "gh api -X PUT \"repos/$GITHUB_REPOSITORY/branches/main/protection\" --input unprotect.json"}, "expect": "ask", "note": "replace a branch's protection, the owner and repository from one variable"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE -H \"Authorization: Bearer $GITHUB_TOKEN\" \"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/branches/main/protection\""}, "expect": "ask", "note": "delete a branch's protection through curl, the API's URL from a variable"}
+{"tool": "Bash", "args": {"command": "gh repo edit myorg/backend --enable-secret-scanning=false"}, "expect": "ask", "note": "turn a repository's secret scanning off with gh repo edit"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE /repos/myorg/backend/environments/production"}, "expect": "ask", "note": "delete a deployment environment with its secrets and protection rules"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE /repos/myorg/backend/vulnerability-alerts"}, "expect": "ask", "note": "turn a repository's Dependabot alerts off"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE /user/codespaces/secrets/NPM_TOKEN"}, "expect": "ask", "note": "delete the user's Codespaces secret"}
+{"tool": "Bash", "args": {"command": "gh api -X delete /repos/myorg/backend"}, "expect": "ask", "note": "delete a repository with the method in lower case"}
+{"tool": "Bash", "args": {"command": "curl -sSX DELETE https://api.github.com/repos/myorg/backend"}, "expect": "ask", "note": "delete a repository through curl, -X at the end of -sSX"}
+{"tool": "Bash", "args": {"command": "gh api --jq '' -X DELETE repos/myorg/backend"}, "expect": "ask", "note": "delete a repository after an empty option value"}
+{"tool": "Bash", "args": {"command": "curl https://api.github.com/repos/myorg/backend -s -X DELETE"}, "expect": "ask", "note": "delete a repository, an option between the URL and the method"}
+{"tool": "Bash", "args": {"command": "gh api -X \"$METHOD\" repos/myorg/backend"}, "expect": "ask", "note": "a method from a variable on a repository"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE \"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY\""}, "expect": "ask", "note": "delete the workflow's own repository through its variables"}
+{"tool": "Bash", "args": {"command": "glab repo -R '' delete mygroup/backend --yes"}, "expect": "ask", "note": "delete a GitLab project after an empty option value"}
+{"tool": "Bash", "args": {"command": "vercel --token '' remove web --yes"}, "expect": "ask", "note": "remove a Vercel project after an empty option value"}
+{"tool": "Bash", "args": {"command": "git -C '' push --force origin main"}, "expect": "deny", "note": "force push with an empty -C (git stays in the current directory)"}
+{"tool": "Bash", "args": {"command": "gh pr -R '' merge 42"}, "expect": "ask", "note": "merge a pull request after an empty option value"}
+{"tool": "Bash", "args": {"command": "pulumi --cwd '' destroy --yes"}, "expect": "ask", "note": "destroy a stack after an empty option value"}
+{"tool": "Bash", "args": {"command": "aws --region '' secretsmanager get-secret-value --secret-id prod/db"}, "expect": "ask", "note": "read a secret after an empty option value"}
+{"tool": "Bash", "args": {"command": "stripe --api-key '' refunds create --charge ch_FAKE"}, "expect": "ask", "note": "refund after an empty option value"}
+{"tool": "Bash", "args": {"command": "su -lc id"}, "expect": "deny", "note": "run a command as root, su's -c in a cluster"}
+{"tool": "Bash", "args": {"command": "find ~ -delete"}, "expect": "deny", "note": "delete everything in the home folder with find"}
+{"tool": "Bash", "args": {"command": "unset -v HISTFILE"}, "expect": "ask", "note": "turn the history file off with unset -v"}
+{"tool": "Bash", "args": {"command": "export HISTFILESIZE=0"}, "expect": "ask", "note": "empty the history file"}
+{"tool": "Bash", "args": {"command": "ssh-add -q -L"}, "expect": "ask", "note": "list an SSH agent's keys, -L after another option"}
+{"tool": "Bash", "args": {"command": "pip install --index-u https://pypi.example.net/simple requests"}, "expect": "ask", "note": "install from another index, the option abbreviated"}
+{"tool": "Bash", "args": {"command": "tar --to-com=sh -xf backup.tar"}, "expect": "deny", "note": "tar runs a command for each file, the option abbreviated"}
+{"tool": "Bash", "args": {"command": "kubectl delete ns/prod"}, "expect": "ask", "note": "delete a namespace written as TYPE/NAME"}
+{"tool": "Bash", "args": {"command": "helm del prod-api"}, "expect": "ask", "note": "uninstall a release by helm's del alias"}
+{"tool": "Bash", "args": {"command": "find -x / -delete"}, "expect": "deny", "note": "delete everything under root, BSD's -x before the path"}
+{"tool": "Bash", "args": {"command": "find -O3 / -delete"}, "expect": "deny", "note": "delete everything under root, GNU's -O3 before the path"}
+{"tool": "Bash", "args": {"command": "find /tmp / -delete"}, "expect": "deny", "note": "delete everything under root as a second starting point"}
+{"tool": "Bash", "args": {"command": "find . ~ -delete"}, "expect": "deny", "note": "delete the home directory as a second starting point"}
+{"tool": "Bash", "args": {"command": "find // -delete"}, "expect": "deny", "note": "delete everything under root spelled //"}
+{"tool": "Bash", "args": {"command": "find ~/. -delete"}, "expect": "deny", "note": "delete the home directory spelled ~/."}
+{"tool": "Bash", "args": {"command": "find ~ -true -delete"}, "expect": "deny", "note": "delete the home directory behind a test that picks nothing"}
+{"tool": "Bash", "args": {"command": "git --namespace '' push --force origin main"}, "expect": "deny", "note": "force push after an empty global option value"}
+{"tool": "Bash", "args": {"command": "git --namespace '' push --delete origin release"}, "expect": "ask", "note": "delete a remote branch after an empty global option value"}
+{"tool": "Bash", "args": {"command": "tar --checkpoint=1 --checkpoint-=exec=sh -cf a.tar src"}, "expect": "deny", "note": "tar runs a command at a checkpoint, the option a unique prefix"}
+{"tool": "Bash", "args": {"command": "kubectl delete deployment -n prod web"}, "expect": "ask", "note": "delete a deployment with an option after its type"}
+{"tool": "Bash", "args": {"command": "kubectl delete pvc -l app=db"}, "expect": "ask", "note": "delete volume claims by label"}
+{"tool": "Bash", "args": {"command": "kubectl delete pod/web-1 ns/prod"}, "expect": "ask", "note": "delete a namespace as a second TYPE/NAME"}
+{"tool": "Bash", "args": {"command": "kubectl delete pod,ns prod"}, "expect": "ask", "note": "delete a namespace as the second of a type list"}
+{"tool": "Bash", "args": {"command": "curl -T protection.json https://api.github.com/repos/myorg/backend/branches/main/protection"}, "expect": "ask", "note": "replace branch protection with a curl upload (a PUT)"}
+{"tool": "Bash", "args": {"command": "curl --upload-file ruleset.json https://api.github.com/repos/myorg/backend/rulesets/7"}, "expect": "ask", "note": "replace a ruleset with a curl upload (a PUT)"}
+{"tool": "Bash", "args": {"command": "ssh-add -Lq"}, "expect": "ask", "note": "list an SSH agent's public keys, -L first in a cluster"}
+{"tool": "Bash", "args": {"command": "export SAVEHIST=0"}, "expect": "ask", "note": "turn zsh's history file off"}
+{"tool": "Bash", "args": {"command": "export HISTIGNORE='*'"}, "expect": "ask", "note": "keep every command out of bash's history"}
+{"tool": "Bash", "args": {"command": "python -I -m pip install --index-url https://pkgs.example.test/simple demo"}, "expect": "ask", "note": "install from another index, python's options before -m pip"}
+{"tool": "Bash", "args": {"command": "py -m pip install --index-url https://pkgs.example.test/simple demo"}, "expect": "ask", "note": "install from another index through the Windows launcher"}
+{"tool": "Bash", "args": {"command": "pip --isolated config set global.index-url https://pkgs.example.test/simple"}, "expect": "ask", "note": "set pip's index after a global option"}

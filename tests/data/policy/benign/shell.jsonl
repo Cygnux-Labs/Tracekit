@@ -209,3 +209,32 @@
 {"tool": "Bash", "args": {"command": "echo cdk destroy"}, "expect": "allow", "note": "mention CDK destruction as text"}
 {"tool": "Bash", "args": {"command": "cdk destroy --help"}, "expect": "allow", "note": "read CDK destruction help without running it"}
 {"tool": "Bash", "args": {"command": "cat ~/.qwen/settings.json"}, "expect": "allow", "note": "reading Qwen Code's settings"}
+{"tool": "Bash", "args": {"command": "gh secret list --repo myorg/production-app"}, "expect": "allow", "note": "listing a repository's secret names"}
+{"tool": "Bash", "args": {"command": "gh workflow list"}, "expect": "allow", "note": "listing workflows"}
+{"tool": "Bash", "args": {"command": "gh run view 849201938 --log"}, "expect": "allow", "note": "reading a workflow run's log"}
+{"tool": "Bash", "args": {"command": "gh api /repos/myorg/backend/branches/main/protection"}, "expect": "allow", "note": "reading a branch's protection (a GET)"}
+{"tool": "Bash", "args": {"command": "gh api /repos/myorg/backend/actions/runs/849201938/jobs"}, "expect": "allow", "note": "reading a workflow run's jobs"}
+{"tool": "Bash", "args": {"command": "gh pr list --state open"}, "expect": "allow", "note": "listing open pull requests"}
+{"tool": "Bash", "args": {"command": "gh secret set DEPLOY_TOKEN --repo myorg/backend --body placeholder"}, "expect": "allow", "note": "setting a repository secret"}
+{"tool": "Bash", "args": {"command": "gh api -X DELETE /repos/myorg/backend/issues/comments/123"}, "expect": "allow", "note": "deleting an issue comment through gh api"}
+{"tool": "Bash", "args": {"command": "gh api -X PATCH /repos/myorg/backend -f security_and_analysis[secret_scanning][status]=enabled -f description='Secret scanning was disabled by mistake'"}, "expect": "allow", "note": "turn secret scanning on, with \"disabled\" in another field"}
+{"tool": "Bash", "args": {"command": "gh repo edit myorg/backend --enable-secret-scanning"}, "expect": "allow", "note": "turn a repository's secret scanning on"}
+{"tool": "Bash", "args": {"command": "gh api -X PUT /repos/myorg/backend/vulnerability-alerts"}, "expect": "allow", "note": "turn a repository's Dependabot alerts on"}
+{"tool": "Bash", "args": {"command": "gh api /repos/myorg/backend/environments/production"}, "expect": "allow", "note": "read a deployment environment"}
+{"tool": "Bash", "args": {"command": "gh api -iX GET /repos/myorg/backend/branches/main/protection"}, "expect": "allow", "note": "read a branch's protection, -X GET at the end of a cluster of short options"}
+{"tool": "Bash", "args": {"command": "gh repo edit myorg/backend --enable-wiki=false"}, "expect": "allow", "note": "turn a repository's wiki off"}
+{"tool": "Bash", "args": {"command": "find ~ -name .DS_Store -delete"}, "expect": "allow", "note": "delete one kind of file under the home folder"}
+{"tool": "Bash", "args": {"command": "tar -cvf images.tar Images/"}, "expect": "allow", "note": "archive a folder whose name starts with I"}
+{"tool": "Bash", "args": {"command": "kubectl delete pod web-7d9f"}, "expect": "allow", "note": "delete one pod"}
+{"tool": "Bash", "args": {"command": "helm unittest ./chart"}, "expect": "allow", "note": "run a chart's unit tests"}
+{"tool": "Bash", "args": {"command": "history 20"}, "expect": "allow", "note": "show recent history"}
+{"tool": "Bash", "args": {"command": "ssh-add -l"}, "expect": "allow", "note": "list the fingerprints an SSH agent holds"}
+{"tool": "Bash", "args": {"command": "gh pr -R myorg/backend view 42"}, "expect": "allow", "note": "view a pull request in another repository"}
+{"tool": "Bash", "args": {"command": "gh api -X delete /repos/myorg/backend/issues/comments/1"}, "expect": "allow", "note": "delete one issue comment, the method in lower case"}
+{"tool": "Bash", "args": {"command": "kubectl delete -f deploy.yaml"}, "expect": "allow", "note": "delete the resources a manifest file names"}
+{"tool": "Bash", "args": {"command": "find ~/.cache -name '*.tmp' -delete"}, "expect": "allow", "note": "clear temporary files under the home's cache"}
+{"tool": "Bash", "args": {"command": "export SAVEHIST=10000"}, "expect": "allow", "note": "keep more zsh history"}
+{"tool": "Bash", "args": {"command": "export HISTIGNORE='ls:bg:fg:history'"}, "expect": "allow", "note": "keep a few commands out of bash's history"}
+{"tool": "Bash", "args": {"command": "py -m pip install requests"}, "expect": "allow", "note": "install a package through the Windows launcher"}
+{"tool": "Bash", "args": {"command": "curl -T build.tar.gz https://uploads.example.com/build.tar.gz"}, "expect": "allow", "note": "upload a build artifact"}
+{"tool": "Bash", "args": {"command": "git -C ../other status"}, "expect": "allow", "note": "status of another checkout"}

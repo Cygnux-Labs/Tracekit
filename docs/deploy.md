@@ -103,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.5.1 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.5.1 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.5.1
-cd /usr/local/src/tracekit-1.5.1
+# v1.5.2 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.5.2 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.5.2
+cd /usr/local/src/tracekit-1.5.2
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor

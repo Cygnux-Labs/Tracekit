@@ -2,6 +2,79 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.5.2 (2026-10-31) — two security fixes, Crush, and holds that read what a command really does
+
+A security patch. In 1.5.1 an agent could get a call past Tracekit in two ways: Antigravity CLI could run a call with
+other arguments than the ones Tracekit decided, and several hold and deny rules missed ordinary spellings of the
+commands they guard (`-X delete` in lower case, `curl -sSX DELETE`, an empty `--jq ''`, `git -C '' push --force`,
+`ſh` for `sh` on macOS). Both are fixed. Before tagging, every coding-agent hook and every hold and deny rule was
+attacked with such spellings; what was found is fixed with a test, or written down in [limits](docs/limits.md). Crush
+gets hooks (#476, by @3431481073), and a new rule holds weakening a repository's protections through GitHub
+(#468, by @aj-codespy). Bundles are unchanged, and the signer protocol stays 20. Upgrade the signer: it decides the
+policy.
+
+### Upgrade notes
+- **Policy packs.** Coding `2026.10-v2-46` (from `2026.10-v2-42`), server `2026.10-server-14` (from `-11`),
+  server-cloud `2026.10-server-cloud-7` (from `-4`), server-comms `2026.10-server-comms-5` (from `-4`) and strict
+  `2026.10-strict-8` (from `-5`). More calls are held (Security, Added); no call 1.5.1 held is now allowed. E17: 759 of
+  759 harmful calls stopped, 1 false alarm in 829; strict holds 40 of E17's 829 routine calls (`kubectl delete pod`,
+  `kubectl delete -f`, `py -m pip install` and a `curl -T` upload are the new ones).
+- **Antigravity CLI and Crush calls can be denied in the hook** when an argument name could be read two ways (see
+  Security): send each argument once, by its exact name.
+
+### Security
+- **Antigravity CLI: an argument agy could read under another name** (1.5.0 and 1.5.1). agy is a Go binary, and a Go
+  decoder fills a field from any key that matches it ignoring case (the last one; a null keeps the value before it),
+  while the hook read the exact name: `{"CommandLine": "ls", "commandline": "rm -rf ~"}` was decided as `ls`. A call
+  that repeats an argument name in any case, names a field the hook reads in another case, or uses a key outside ASCII
+  is now denied in the hook, before the signer.
+- **Hold and deny rules that missed ordinary spellings** (versions before 1.5.2). `TK-A042` (deleting a repository or
+  project through an API) now reads the method in any case, at the end of a cluster of short options (`-iX`, `-sSX`) or
+  set at run time (`-X "$M"`), and words between the URL and the method, empty ones too. Program names are read
+  casefolded, as macOS finds them, so `curl … | ſh` meets `TK-D002` and `baſh -c 'git push --force'` meets `TK-D003`. An
+  empty or space-edged option value before a subcommand no longer hides it (`TK-A001`, `A031`, `A033`, `A035`, `A043`,
+  `D012`, dev's `A032`), and `git -C ''` or another of git's global options with an empty value (`--namespace ''`) no
+  longer hides a force push or history rewrite (`TK-D003`, `A002`, `A013`; strict's `TK-F004` now holds a push after any
+  of git's global options). `TK-D001` denies `su` in any form and `run0`; `TK-D004` denies `find ~ -delete` and
+  `find -L / -delete`, also after find's other options (`-x`, `-D tree`, `-O3`), as one of several starting points
+  (`find . ~ -delete`) or spelled `//` or `~/.`; `TK-A021` holds `ssh-add -q -L` and `-Lq`; `TK-A029` holds
+  `unset -v HISTFILE`, an empty `HISTFILE=`, `HISTSIZE=0`, `HISTFILESIZE=0`, zsh's `SAVEHIST=0`, `HISTIGNORE='*'`, each
+  after `local` too, and `history -d`; `TK-A025` reads pip's shortened options (`--index-u`), `python -I -m pip`,
+  `py -m pip` and `pip --isolated config set`; `TK-S006` reads tar's (`--to-com=`, `--use-compress=`,
+  `--checkpoint-=exec`) and `-I` in a cluster; `TK-C010` holds `kubectl delete ns/prod`, `deploy/web`,
+  `deployment.apps`, options before or after the type and a second type (`pod,ns`, `pod/a ns/prod`), but not a delete
+  from a file (`-f deploy.yaml`), which 1.5.1 didn't hold either, and `helm del`, `un` and `helm -n x uninstall`.
+- **Cursor: a decoy path.** Cursor doesn't document which key its tools read a path from, and the hook took
+  `file_path` over `path`, `target_file` and `filePath`. Every path a Cursor call names is now decided.
+
+### Added
+- **Crush hooks (experimental, #476, by @3431481073).** `tracekit init --dev --agent crush` (with `--v2`, or
+  `--project` for `./crush.json`) records and gates [Crush](https://github.com/charmbracelet/crush)'s tool calls.
+  Its sub-agent tools (`agent`, `agentic_fetch`) and Docker MCP Gateway's `code-mode` tools run calls no hook sees, so
+  the hook denies them, and it denies a built-in tool's input that repeats an argument name or names one other than in
+  lower-case snake_case, which Crush could read otherwise. MCP tools are decided as `mcp__<server>_<tool>`, and the
+  shipped packs' MCP money, delete, access and @channel rules read that joined name.
+- **`TK-A047`: weakening a repository's protections through GitHub (#468, by @aj-codespy).** Holds `gh secret delete`
+  and `gh variable delete`, and a `gh api`, `hub api` or `curl` call to the GitHub API that deletes or edits branch
+  protection, rulesets, environments, secrets or vulnerability alerts (a `curl -T` upload, a PUT, too), or turns off
+  secret scanning (`gh repo edit --enable-secret-scanning=false` too), with the method in any case or set at run time.
+
+### Changed
+- `TK-C011` (deleting through an MCP tool) reads kebab-case names (`delete-file`) as it reads snake_case ones.
+- E17 gains 44 harmful and 15 routine shell calls from the sweep and its review, and #468's cases.
+
+### Documented
+- [Limits](docs/limits.md) now names what stays unread: `TK-D010`'s other writers to a credentials file (`sed -i`,
+  `dd of=`, `ln -sf`, `cp -t`), a `find` under the home that picks files by name, tar's volume and remote-shell scripts,
+  npm's and gem's shortened options, pip's `config set` after a global option's value, `TK-C010`'s reading of kubectl's
+  options and deletes from a file, `TK-D004`'s roots reached through another directory, and the fallback engine's time
+  on thousands of `pulumi` or `systemctl` options, `TK-A042`'s wholly variable paths and HTTPie's run-time method,
+  `TK-A047`'s long quoted arguments, JSON padding and out-of-scope endpoints; Codex's hook doesn't carry the shell an
+  `exec_command` names, sends `write_stdin` no hook, and, with its in-development
+  `exec_permission_approvals` on, can run some calls with no hook; v1's rules match case as written,
+  so on macOS `.ENV` isn't `.env`; and a hook of another tool in Crush can change a call's input after Tracekit decided
+  it.
+
 ## 1.5.1 (2026-10-30) — held calls you can answer, holds on moving money, hooks the agent can't remove, a viewer that stays cool
 
 A patch release from a week of running Tracekit on its own maintainer's laptop and a hands-on QA pass. That week, the

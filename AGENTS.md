@@ -13,7 +13,7 @@
 Tamper-evident tracing for AI agents: every tool call is recorded as an Ed25519-signed, hash-chained event by a signer
 the agent can't control, checkpointed to witnesses, gated by a policy engine, and exported as offline-verifiable `.tkb`
 bundles. Today's code (1.5) has two generations: the v1 laptop path (tracekitd, the
-JSONL ledger, Claude Code / Codex / Cursor / Gemini / OpenCode / goose / Qwen Code / Factory Droid / Antigravity hooks) and the v2 signer service for server-hosted agents (evidence
+JSONL ledger, Claude Code / Codex / Cursor / Gemini / OpenCode / goose / Qwen Code / Factory Droid / Antigravity / Crush hooks) and the v2 signer service for server-hosted agents (evidence
 format v2 at 1.4, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
 observation), with Python and TypeScript SDKs and framework integrations. [HIGH CONFIDENCE — read
 `tracekit/signer/service.py`, `tracekit/signer/pipeline.py`, `tracekit/verify/v2.py`, `tracekit/daemon.py`,
@@ -40,7 +40,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/ledger.py` | v1 append-only JSONL ledger, file key, v1 record envelope | [HIGH CONFIDENCE] |
 | `tracekit/core.py` | Canonical JSON, hashing, v1 signature message, scrub | [HIGH CONFIDENCE] |
 | `tracekit/schema/tracekit.event.v1.json` | Frozen v1 event schema (validated by `tracekit/schema.py`) | [HIGH CONFIDENCE] |
-| `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini / OpenCode / goose / Qwen Code / Factory Droid / Antigravity hook capture | [HIGH CONFIDENCE] |
+| `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini / OpenCode / goose / Qwen Code / Factory Droid / Antigravity / Crush hook capture | [HIGH CONFIDENCE] |
 | `tracekit/agent_sdk.py`, `tracekit/autotrace.py`, `tracekit/adapters/` | Python SDK, model-SDK autotrace, framework adapters | [HIGH CONFIDENCE] |
 | `tracekit/policy.py`, `tracekit/policy/` | v1 regex policy engine and its YAML rule packs | [HIGH CONFIDENCE] |
 | `tracekit/bundle.py` | v1 bundle export and the frozen v1 verifier (`tracekit/verify/v1.py` re-exports it; its `Report` is shared with v2) | [HIGH CONFIDENCE] |
