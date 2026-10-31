@@ -205,6 +205,26 @@ def corpus_policy():
             "ask": rules[len(PATTERNS):-1], "deny": rules[-1:]}
 
 
+class Spellings(unittest.TestCase):
+    def test_an_unlisted_name_spelling_one_listed_name_is_read_as_that_one(self):
+        # #483: frameworks rewrite tool names (CrewAI: `bash` for `Bash`, `multi_edit` for `MultiEdit`)
+        e = Engine({"tools": {"Bash": "shell", "MultiEdit": "fs", "run_cmd": "shell", "Run-Cmd": "fs", "mcp:*/*": "mcp"}})
+        self.assertEqual([e.listed(t) for t in ("bash", "BASH", "multi_edit", "Multi Edit")],
+                         ["Bash", "Bash", "MultiEdit", "MultiEdit"])
+        for t in ("Bash", "run_cmd", "RunCmd", "mcp:x/bash", "bsh", ""):   # listed; two names spell it; a glob's; none
+            self.assertIsNone(e.listed(t), t)
+        # CrewAI keeps an accented letter's ASCII base (`CaféTool` -> `cafe_tool`); a name with no ASCII letter or
+        # digit spells nothing, so it takes no other such name
+        e = Engine({"tools": {"CaféTool": "app", "検索": "app"}})
+        self.assertEqual([e.listed(t) for t in ("cafe_tool", "翻訳", "-", "é")], ["CaféTool", None, None, None])
+
+    def test_a_renamed_tools_results_are_untrusted_when_the_listed_ones_are(self):
+        for untrusted in (["http"], ["WebFetch"]):   # by class, by name
+            e = Engine({"tools": {"WebFetch": "http"}, "untrusted": untrusted})
+            self.assertEqual([e.untrusted_results(t) for t in ("web_fetch", "WebFetch", "web_search")],
+                             [True, True, False], untrusted)
+
+
 class Handoffs(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

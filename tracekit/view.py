@@ -409,7 +409,8 @@ class Translator(observe.Translator):
         """What WHY THIS DECISION shows of a decision's policy, when the viewer has it: the class it maps the tool to,
         how many rules of each section decide() read for it, and the section of each rule that matched (the engine's
         own checks, such as TK-UNKNOWN-TOOL, have none). The record names no class: a rule that matched under another
-        one (a class hint the signer also checked, an MCP tool's bare name) sets `other`."""
+        one (a class hint the signer also checked, an MCP tool's bare name, the tool a renamed one spells) sets
+        `other`."""
         h = d.get("policy_hash")
         if h not in self.engines:
             pol = getattr(self.reasons, "policies", {}).get(h)

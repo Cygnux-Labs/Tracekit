@@ -8,6 +8,7 @@ import functools
 import posixpath
 import re
 import time
+import unicodedata
 
 from . import classes, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, translate
@@ -73,6 +74,12 @@ class Engine:
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
                         for name, b in (r.get("approval") or {}).get("agent", {}).get("allow", {}).get("fields", {}).items()
                         if "pattern" in b}
+        # the names `tools:` lists (not its globs) by spelling, for listed(); a spelling two names share names neither
+        spelled = {}
+        for t in self.policy.get("tools", {}):
+            if not any(c in t for c in "*?[") and _spelling(t):   # a name with no ASCII letter or digit spells none
+                spelled.setdefault(_spelling(t), []).append(t)
+        self._spelled = {k: v[0] for k, v in spelled.items() if len(v) == 1}
 
     def bounds(self, rule, args, deadline):
         """[(condition, passed)] of ask rule `rule`'s approval.agent bounds over a call's `args`: a closed world, not
@@ -122,10 +129,20 @@ class Engine:
         hits = sorted((-len(pat.replace("*", "").replace("?", "")), pat) for pat in tools if fnmatch.fnmatchcase(tool, pat))
         return tools[hits[0][1]] if hits else "unknown"
 
+    def listed(self, tool):
+        """The name `tools:` lists that `tool` spells with case, spaces and punctuation ignored, when it lists neither
+        `tool` nor a glob that takes it; None otherwise, and when two listed names spell it. Frameworks rewrite the
+        names they are given: CrewAI's hooks see `bash` for a tool declared `Bash`, `multi_edit` for `MultiEdit`."""
+        if tool in self.policy.get("tools", {}) or self.tool_class(tool) != "unknown":
+            return None
+        return self._spelled.get(_spelling(tool))
+
     def untrusted_results(self, tool):
-        """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted."""
-        cls = self.tool_class(tool)
-        return any(u == cls if u in CLASSES else fnmatch.fnmatchcase(tool, u) for u in self.policy.get("untrusted", ()))
+        """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted,
+        or those of the tool it spells (listed)."""
+        return any(name is not None and any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
+                                for u in self.policy.get("untrusted", ()))
+                   for name in (tool, self.listed(tool)))
 
     def reads(self, tool, cls=None):
         """{section: [rule ids]} decide() reads for a call of `tool` (`cls` overrides its class, as for decide): those
@@ -729,3 +746,9 @@ def _prepare(subjects):
 def _text(s):
     """Lone surrogates (valid in JSON escapes, not in UTF-8) become \\udxxx text, the same for both engines."""
     return s.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _spelling(name):
+    """A tool name as CrewAI's sanitize_tool_name leaves it, without its `_`: accents dropped (NFKD, then ASCII),
+    lower-cased, letters and digits only."""
+    return re.sub(r"[^0-9a-z]", "", unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower())

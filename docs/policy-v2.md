@@ -146,6 +146,12 @@ An MCP tool (`mcp:<server>/<tool>`) is also checked under its bare name `<tool>`
 maps it, else the MCP call's; the stricter decision applies, with both readings' rule ids. A rule on an app tool's name
 holds when the same call is labelled an MCP one.
 
+A name `tools:` doesn't list, exactly or by a glob, that spells one it does (compared as CrewAI rewrites names: accents
+dropped, case, spaces and punctuation ignored) is also checked as that tool, and its results are untrusted when that
+tool's are; the stricter decision applies, with both readings' rule ids, and the record keeps the name as sent.
+Frameworks rewrite the names they are given: CrewAI's hooks see `bash` for a tool declared `Bash` and `multi_edit` for
+`MultiEdit`. A spelling two listed names share is checked only as sent ([limits](limits.md#policy)).
+
 The signer maps the tool to a class (`tools`: exact name first, then the most specific matching glob, the one with
 the most characters other than `*` and `?`, so `mcp:postgres/*` wins over `mcp:*/*`; else `unknown`) and extracts the
 class's fields from the raw arguments (`policy2/classes.py`):
