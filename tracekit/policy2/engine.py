@@ -73,6 +73,12 @@ class Engine:
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
                         for name, b in (r.get("approval") or {}).get("agent", {}).get("allow", {}).get("fields", {}).items()
                         if "pattern" in b}
+        # the names `tools:` lists (not its globs) by spelling, for listed(); a spelling two names share names neither
+        spelled = {}
+        for t in self.policy.get("tools", {}):
+            if not any(c in t for c in "*?["):
+                spelled.setdefault(_spelling(t), []).append(t)
+        self._spelled = {k: v[0] for k, v in spelled.items() if len(v) == 1}
 
     def bounds(self, rule, args, deadline):
         """[(condition, passed)] of ask rule `rule`'s approval.agent bounds over a call's `args`: a closed world, not
@@ -121,6 +127,14 @@ class Engine:
         # the most specific glob wins (most characters that are not * or ?), so mcp:postgres/* beats mcp:*/*
         hits = sorted((-len(pat.replace("*", "").replace("?", "")), pat) for pat in tools if fnmatch.fnmatchcase(tool, pat))
         return tools[hits[0][1]] if hits else "unknown"
+
+    def listed(self, tool):
+        """The name `tools:` lists that `tool` spells with case, spaces and punctuation ignored, when it lists neither
+        `tool` nor a glob that takes it; None otherwise, and when two listed names spell it. Frameworks rewrite the
+        names they are given: CrewAI's hooks see `bash` for a tool declared `Bash`, `multi_edit` for `MultiEdit`."""
+        if tool in self.policy.get("tools", {}) or self.tool_class(tool) != "unknown":
+            return None
+        return self._spelled.get(_spelling(tool))
 
     def untrusted_results(self, tool):
         """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted."""
@@ -729,3 +743,8 @@ def _prepare(subjects):
 def _text(s):
     """Lone surrogates (valid in JSON escapes, not in UTF-8) become \\udxxx text, the same for both engines."""
     return s.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _spelling(name):
+    """A tool name lower-cased, letters and digits only: what survives a framework's rewriting of it."""
+    return re.sub(r"[^0-9a-z]", "", name.lower())

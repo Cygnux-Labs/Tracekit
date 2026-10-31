@@ -205,6 +205,16 @@ def corpus_policy():
             "ask": rules[len(PATTERNS):-1], "deny": rules[-1:]}
 
 
+class Spellings(unittest.TestCase):
+    def test_an_unlisted_name_spelling_one_listed_name_is_read_as_that_one(self):
+        # #483: frameworks rewrite tool names (CrewAI: `bash` for `Bash`, `multi_edit` for `MultiEdit`)
+        e = Engine({"tools": {"Bash": "shell", "MultiEdit": "fs", "run_cmd": "shell", "Run-Cmd": "fs", "mcp:*/*": "mcp"}})
+        self.assertEqual([e.listed(t) for t in ("bash", "BASH", "multi_edit", "Multi Edit")],
+                         ["Bash", "Bash", "MultiEdit", "MultiEdit"])
+        for t in ("Bash", "run_cmd", "RunCmd", "mcp:x/bash", "bsh", ""):   # listed; two names spell it; a glob's; none
+            self.assertIsNone(e.listed(t), t)
+
+
 class Handoffs(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
