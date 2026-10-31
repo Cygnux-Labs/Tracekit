@@ -16,8 +16,9 @@ deny:
     reason: changing cloud identity or access
     rationale: IAM policies, role bindings, access keys and public bucket policies decide who can reach every other resource; an agent must not grant access, least of all to itself.
   - id: TK-C002
-    # over MCP as TK-C011 names it
-    tool: 'mcp(:[^/]+/|__.*[_-]).*(attach_[a-z_]*policy|put_[a-z_]*policy|iam_policy_binding|set_iam_policy|create_access_key|create_service_account_key|role_assignment|create_role_binding|grant_[a-z_]*)'
+    # over MCP as TK-C011 names it; in the `__` forms the word follows a `_` or `-`, so one `.*` per branch keeps the
+    # fallback engine linear on a name of underscores
+    tool: 'mcp(:[^/]+/.*|__.*[_-])(attach_[a-z_]*policy|put_[a-z_]*policy|iam_policy_binding|set_iam_policy|create_access_key|create_service_account_key|role_assignment|create_role_binding|grant_[a-z_]*)'
     pattern: '^'
     reason: changing cloud identity or access through an MCP tool
     rationale: The MCP twin of TK-C001.
