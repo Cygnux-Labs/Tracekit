@@ -605,6 +605,63 @@ class CodingPack(unittest.TestCase):
                     if (tool, args, rule) in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_deleting_container_volumes_asks_in_every_pack(self):
+        """TK-A048: deleting Docker or Podman volumes, where a project's database usually lives, is held for a person;
+        listing them, inspecting them and pruning only images or containers are not. Only TK-F003 flagged `volume rm`
+        and nothing saw a prune or `compose down -v`."""
+        held = [
+            "docker volume prune -af", "docker volume prune -f", "docker volume rm pgdata", "docker volume remove pgdata",
+            "docker volume rm -f pgdata redisdata", "podman volume prune -f", "podman volume rm pgdata",
+            "podman volume remove pgdata",
+            "docker system prune -af --volumes", "docker system prune --volumes", "docker system prune --volumes -a",
+            "docker system prune -a -f --volumes", "podman system prune -af --volumes",
+            "docker compose down -v", "docker compose down --volumes", "docker-compose down --volumes",
+            "docker-compose down -v", "podman compose down -v", "podman-compose down -v",
+            # options before the subcommand and between it and the flag
+            "docker compose -f dev.yml down -v", "docker compose -p app --profile web down --remove-orphans -v",
+            "docker-compose -f a.yml -f b.yml down -v --rmi all", "docker compose down --timeout 5 --volumes",
+            "docker --context prod volume rm pgdata", "docker -H tcp://10.0.0.5:2375 volume prune -f",
+            "docker --debug system prune --volumes", "podman --remote volume prune -f",
+            "docker volume --help=false prune -af", "docker volume --help=false rm pgdata",
+            "podman volume --help=false prune -f", "podman volume --help=false rm pgdata",
+            "docker.exe volume rm pgdata", "/usr/bin/docker volume prune -f",
+            "docker volume -a -b -c -d -e -f -g -h prune",
+            "docker volume rm help", "docker volume rm pgdata --help", "docker compose down -v --help",
+            # a flag given its value, in each spelling of true Go's ParseBool reads
+            "docker compose down --volumes=true", "docker system prune --volumes=true", "docker-compose down -v=true",
+            "docker compose down --volumes=true --rmi all", "docker compose down --volumes=1", "docker-compose down -v=t",
+            "docker system prune --volumes=TRUE", "docker compose down -v=T", "podman system prune --volumes=True",
+            # -v clustered with compose down's other short flag, -t (a timeout)
+            "docker compose down -vt 5", "docker-compose down -vt5", "podman compose down -vt 10",
+            # a wrapper, a nested shell and a command among others
+            "sudo docker volume rm pgdata", "bash -c 'docker compose down -v'", "cd app && docker compose down -v"]
+        routine = [
+            "docker volume ls", "docker volume ls -q --filter dangling=true", "docker volume inspect pgdata",
+            "docker volume create pgdata", "podman volume ls", "podman volume inspect pgdata",
+            "docker system df", "docker system prune -af", "docker system prune -a --filter until=24h",
+            # asking for help runs nothing; a volume's name is not a help word
+            "docker volume prune --help", "docker volume rm -h", "docker volume --help",
+            "docker compose down --help", "podman volume prune help",
+            "docker compose down --volumes=false", "docker system prune --volumes=false", "docker-compose down -v=false",
+            "docker compose down --volumes=0", "docker-compose down -v=f", "docker system prune --volumes=FALSE",
+            "docker compose down", "docker compose down --remove-orphans", "docker-compose down", "podman-compose down",
+            "docker compose down -t 5", "docker-compose down -t5",
+            "docker compose -f dev.yml down --rmi local", "docker compose up -d", "docker compose logs -f db",
+            "docker image prune -af", "docker container prune -f", "docker network prune -f", "docker builder prune -af",
+            "docker run --rm -v pgdata:/var/lib/postgresql/data postgres:16 ls",
+            "docker compose run --rm -v ./data:/data app ls", "docker compose down && ls -v",
+            "echo docker volume rm pgdata", "grep -rn 'docker volume prune' docs",
+            "git commit -m 'docker compose down -v resets the dev database'"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A048" in d["rule_ids"], cmd in held, d)
+                        if cmd in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
