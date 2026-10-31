@@ -5247,7 +5247,7 @@
       const retry = a.ranBy ? ` · its retry ${a.ranBy.pre.v2.tool_use_id} ran with the approved arguments` : a.retryOf ? ` · the agent's retry of ${a.retryOf.pre.v2.tool_use_id}, under that call's approval` : "";
       const rule = x => `<span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(no reason in this policy)")}` + (x.remedy ? `<div class="dim">what to do: ${esc(x.remedy)}</div>` : "");
       const steps = [["", "CALL", `${esc(a.tool)} from ${esc(label(a.agent))}` + (v.cls ? ` · class ${esc(v.cls)} <span class="dim">(the policy's map of this tool)</span>` : "")
-        + (v.other ? `<div class="s-flag">a rule matched under another class too (a class hint the signer also checked, or an MCP tool's bare name): the counts are class ${esc(v.cls)}'s</div>` : "")]];
+        + (v.other ? `<div class="s-flag">a rule matched under another class too (a class hint the signer also checked, an MCP tool's bare name, or the listed tool a renamed one spells): the counts are class ${esc(v.cls)}'s</div>` : "")]];
       if (v.read) for (const sec of ["deny", "ask", "flag"]) {
         const hit = rules.filter(x => secs[x.id] === sec);
         steps.push([hit.length ? sec : "", sec.toUpperCase() + " RULES", `read ${esc(v.read[sec])} · ` + (hit.length ? `matched ` + hit.map(rule).join("") : `<span class="dim">none matched</span>`)]);

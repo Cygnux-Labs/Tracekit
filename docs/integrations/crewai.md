@@ -44,6 +44,10 @@ register_after_tool_call_hook(after)
   for a tool the policy lists as untrusted (provenance).
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) before the call; then it is
   blocked with the approval's state.
+- **Checks a renamed tool as the one your policy lists.** CrewAI hands its hooks a rewritten name (`bash` for a tool
+  declared `Bash`, `multi_edit` for `MultiEdit`); the signer also decides it as the tool `tools:` lists with that
+  spelling and records the name CrewAI sent ([policy](../policy-v2.md#classes-and-fields)). A rule whose `tool:` names a
+  tool `tools:` doesn't list needs CrewAI's spelling ([limits](../limits.md#policy)).
 
 ## What the model said
 

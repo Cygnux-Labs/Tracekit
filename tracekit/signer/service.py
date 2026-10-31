@@ -436,6 +436,18 @@ def load_policy(path=DEFAULT_POLICY, backend=None):
     return Engine(pol, backend)
 
 
+def _stricter(a, b):
+    """Two readings of one call as one decision: the stricter (`a` on a tie), with both readings' rule ids and oversized
+    subjects, nondeterministic if either was (a rule that ran out of time counts as matched in either)."""
+    d = {**max(a, b, key=lambda x: STRICTNESS.index(x["verdict"])),
+         "rule_ids": list(dict.fromkeys(a["rule_ids"] + b["rule_ids"]))}
+    if a.get("nondeterministic") or b.get("nondeterministic"):
+        d["nondeterministic"] = True
+    if a.get("oversize") or b.get("oversize"):
+        d["oversize"] = list(dict.fromkeys(a.get("oversize", []) + b.get("oversize", [])))
+    return d
+
+
 def _iso(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -1890,23 +1902,26 @@ class SignerService:
         return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
     def _evaluate(self, tool, args, hint, untrusted=None):
-        """(policy decision, hint disagreed, the rule ids of both readings). A class hint that disagrees with the
-        policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
-        hide a step. A tool the policy maps whose own reading is at least as strict as the hint's (an MCP adapter's
-        generic `mcp` against the deployment's `sql`) is no disagreement worth a gap. An error of the engine itself on
-        these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`: its type), logged with its traceback,
-        never an exception that drops the connection and lets the call run unrecorded; a RecursionError is the
-        request's nesting, which call() refuses."""
+        """(policy decision, hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells
+        one it does (Engine.listed) is also decided as that one; the stricter decision stands, with both readings' rule
+        ids. A class hint that disagrees with the policy's class gets the stricter of the two decisions; detection sees
+        the rules of both, so a mismatch can't hide a step. A tool the policy maps whose own reading is at least as
+        strict as the hint's (an MCP adapter's generic `mcp` against the deployment's `sql`) is no disagreement worth a
+        gap. An error of the engine itself on these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`:
+        its type), logged with its traceback, never an exception that drops the connection and lets the call run
+        unrecorded; a RecursionError is the request's nesting, which call() refuses."""
         try:
             d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
+            listed = self.policy.listed(tool)
+            if listed:   # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool
+                d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
             if tool.startswith("mcp:") and "/" in tool:
                 # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class
                 # if the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an
                 # MCP one
                 bare = tool.split("/", 1)[1]
-                b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
-                d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
-                     "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
+                d = _stricter(d, self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls,
+                                                    untrusted))
             if hint is None or hint == cls:
                 return d, False, d["rule_ids"]
             h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)

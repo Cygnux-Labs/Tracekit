@@ -2780,6 +2780,34 @@ class SignerPolicy(unittest.TestCase):
                 if rule:
                     self.assertIn(rule, d["rule_ids"])
 
+    def test_a_tool_name_a_framework_rewrote_is_also_decided_as_the_one_the_policy_lists(self):
+        # #483: CrewAI hands its hooks `bash` for a tool declared `Bash`; unlisted, it was an unknown tool, flagged, and a
+        # command denied as `Bash` ran
+        for i, tool in enumerate(("bash", "BASH")):
+            d = self.decide(tool, {"command": "sudo rm -rf /"}, tcid=f"tc-{i}")
+            self.assertEqual((d["decision"], {"TK-D001", "TK-D004"} <= set(d["rule_ids"])), ("deny", True), d)
+        # recorded as sent, so the decision still pairs with the model's tool use of that name
+        self.assertEqual([e["data"]["tool"] for e in self.events() if e["type"] == "policy.decision"], ["bash", "BASH"])
+        self.assertEqual(self.decide("write", {"file_path": "/home/u/.zshrc", "content": "export PATH=/opt/x:$PATH"},
+                                     tcid="tc-w")["decision"], "ask")   # TK-A010, a login script
+        # the stricter reading stands: the server pack holds an unknown tool, which is more than MultiEdit's flag
+        self.open(svc.load_policy(os.path.join(PACKS, "server.yaml")))
+        d = self.decide("multi_edit", {"file_path": "/home/u/.claude/settings.json", "edits": []})
+        self.assertEqual((d["decision"], {"TK-UNKNOWN-TOOL", "TK-F009"} <= set(d["rule_ids"])), ("ask", True), d)
+        # and what a renamed web search returns is untrusted content, as WebSearch's is (provenance)
+        self.assertTrue(self.decide("web_search", {"query": "refund policy"}, tcid="tc-s").get("send_result"))
+
+    def test_two_readings_of_a_call_keep_what_either_found(self):
+        # a renamed tool's and an MCP tool's bare-name reading: a rule that ran out of time in either counts as matched,
+        # so the decision says it is nondeterministic, and names every oversized subject
+        a = {"verdict": "deny", "rule_ids": ["TK-UNKNOWN-TOOL", "X-1"], "policy_hash": "h"}
+        b = {"verdict": "deny", "rule_ids": ["X-1", "X-2"], "nondeterministic": True, "oversize": ["X-2's subject (line)"]}
+        self.assertEqual(svc._stricter(a, b), {"verdict": "deny", "rule_ids": ["TK-UNKNOWN-TOOL", "X-1", "X-2"],
+                                               "policy_hash": "h", "nondeterministic": True,
+                                               "oversize": ["X-2's subject (line)"]})
+        self.assertEqual(svc._stricter({"verdict": "flag", "rule_ids": ["F"]}, {"verdict": "ask", "rule_ids": ["A"]}),
+                         {"verdict": "ask", "rule_ids": ["F", "A"]})
+
     def test_ask_rule_on_another_tool_name(self):
         self.open(Engine({"tools": {"run_shell": "shell"}, "ask": [{"id": "T-ASK", "class": "shell", "pattern": "^deploy( |$)"}]}))
         self.assertEqual(self.decide("run_shell", {"command": "env X=1 deploy prod"})["decision"], "ask")
