@@ -333,7 +333,7 @@ ask:
     # Listing and inspecting volumes, `system prune` without --volumes, `compose down` without -v and `image prune`
     # aren't held, nor is a command that only asks for help: --help or -h as the last word after the program and at most
     # two short lower-case words (a volume name there would be a third), or podman's `volume prune help`
-    pattern: '^(?:(?:docker|podman) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:volume(?: -[^ ]+)* (?:rm|remove|prune)|system prune(?: [^ ]+){0,16}? --volumes(?:=(?:1|t|T|true|TRUE|True))?|compose (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}down(?: [^ ]+){0,16}? (?:-v|--volumes)(?:=(?:1|t|T|true|TRUE|True))?)|(?:docker|podman)-compose (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}down(?: [^ ]+){0,16}? (?:-v|--volumes)(?:=(?:1|t|T|true|TRUE|True))?)(?: |$)'
+    pattern: '^(?:(?:docker|podman) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:volume(?: -[^ ]+)* (?:rm|remove|prune)|system prune(?: [^ ]+){0,16}? --volumes(?:=(?:1|t|T|true|TRUE|True))?|compose (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}down(?: [^ ]+){0,16}? (?:-v(?:t[^ ]*)?|--volumes)(?:=(?:1|t|T|true|TRUE|True))?)|(?:docker|podman)-compose (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}down(?: [^ ]+){0,16}? (?:-v(?:t[^ ]*)?|--volumes)(?:=(?:1|t|T|true|TRUE|True))?)(?: |$)'
     unless: '^[a-z]{1,16}( [a-z]{1,16}){1,2} (--help|-h)$|^(docker|podman) volume prune help$'
     reason: deleting Docker or Podman volumes
     remedy: Wait for a person to approve the held call, or remove containers and images and leave the volumes, where the data lives.

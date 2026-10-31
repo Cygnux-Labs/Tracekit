@@ -553,10 +553,10 @@ tool) to 240 (57.1%) and 269 (64.0%), with none either. The database-client rule
 pool, not as blind recall. The gates were
 recorded again with those rules, on purpose: strict's false positives on E17's benign calls rose from 4.1% to 4.9%
 (29 of 711 to 36 of 738). The benign cases added since, with the secret-read, repository-deletion,
-repository-protection, database-client, infrastructure-removal and Docker-volume rules, are calls strict does not hold, so the count
+repository-protection, database-client and infrastructure-removal rules, are calls strict does not hold, so the count
 stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule sweep added, strict holds one
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
-`py -m pip install` and a `curl -T` upload): 40 of 834 (4.8%).
+`py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`) strict does not hold either: 40 of 834 (4.8%).
 All 40 are benign calls strict holds: 26 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.

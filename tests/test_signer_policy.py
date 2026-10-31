@@ -630,6 +630,8 @@ class CodingPack(unittest.TestCase):
             "docker compose down --volumes=true", "docker system prune --volumes=true", "docker-compose down -v=true",
             "docker compose down --volumes=true --rmi all", "docker compose down --volumes=1", "docker-compose down -v=t",
             "docker system prune --volumes=TRUE", "docker compose down -v=T", "podman system prune --volumes=True",
+            # -v clustered with compose down's other short flag, -t (a timeout)
+            "docker compose down -vt 5", "docker-compose down -vt5", "podman compose down -vt 10",
             # a wrapper, a nested shell and a command among others
             "sudo docker volume rm pgdata", "bash -c 'docker compose down -v'", "cd app && docker compose down -v"]
         routine = [
@@ -642,6 +644,7 @@ class CodingPack(unittest.TestCase):
             "docker compose down --volumes=false", "docker system prune --volumes=false", "docker-compose down -v=false",
             "docker compose down --volumes=0", "docker-compose down -v=f", "docker system prune --volumes=FALSE",
             "docker compose down", "docker compose down --remove-orphans", "docker-compose down", "podman-compose down",
+            "docker compose down -t 5", "docker-compose down -t5",
             "docker compose -f dev.yml down --rmi local", "docker compose up -d", "docker compose logs -f db",
             "docker image prune -af", "docker container prune -f", "docker network prune -f", "docker builder prune -af",
             "docker run --rm -v pgdata:/var/lib/postgresql/data postgres:16 ls",
