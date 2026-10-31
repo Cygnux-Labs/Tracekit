@@ -34,11 +34,14 @@ from tracekit.storage.file import FileStorage
 from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOOK = install._hook_command(install.V2_HOOK)
+# -X faulthandler: a hook that crashes prints every thread's stack (-I ignores PYTHONFAULTHANDLER; #481)
+HOOK = install._hook_command(install.V2_HOOK).replace(" -I ", " -I -X faulthandler ", 1)
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
 class HookV2(unittest.TestCase):
+    maxDiff = None   # a hook's whole stderr in a failure, a crash's stacks included
+
     def setUp(self):
         self.dir = tempfile.mkdtemp(dir="/tmp")   # short path: macOS caps socket paths at 104 bytes
         self.addCleanup(shutil.rmtree, self.dir, True)

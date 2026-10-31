@@ -51,6 +51,7 @@ from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
 from tracekit.transport import loopback, parse_frame, read_frame, tcp_dev, write_frame
 
 CONNECT_TIMEOUT_S = 2
+JOIN_S = 1   # how long closing a connection waits for each of its threads, which end at once once it is shut down
 KEEP_CALLS = 4096   # decided calls a RunHandle remembers for their `complete`, the oldest forgotten first
 KEEP_RUNS = 65536   # runs a Client keeps an event counter for, the least recently used forgotten first
 RETRIES = 3
@@ -239,6 +240,7 @@ class _Https:
 class _Conn:
     def __init__(self, sock, rfile):
         self.sock, self.rfile, self.pending, self.out = sock, rfile, collections.deque(), queue.SimpleQueue()
+        self.threads = ()   # the reader, then the writer
 
     def write(self):
         """Sends the queued frames in order, so a signer that stops reading holds up this thread alone; drop() wakes it."""
@@ -253,6 +255,16 @@ class _Conn:
             self.sock.shutdown(socket.SHUT_RDWR)   # wakes the reader, which fails what is pending
         except OSError:
             pass
+
+    def close(self):
+        """drop(), then waits for the reader and the writer to end, JOIN_S each at most: a daemon thread woken while the
+        interpreter shuts down can crash the process (#481). A client's finalizer runs this too, at exit for one never
+        closed, and on the reader's own thread when it drops the last reference."""
+        self.drop()
+        self.out.put(None)   # the writer stops even while the reader cannot tell it to: as when this runs on the reader
+        for t in self.threads:
+            if t is not threading.current_thread():
+                t.join(JOIN_S)
 
 
 def _default_signer():
@@ -351,7 +363,7 @@ class Client:
         with self._lock:
             conn, self._conn = self._conn, None
         if conn:
-            conn.drop()
+            conn.close()
         if self._https:
             self._https.close()
 
@@ -447,10 +459,12 @@ class Client:
     def _connect(self):
         conn = _Conn(*self._dial())
         # the threads hold the client weakly: a Client dropped without close() is collected, and its connection with it
-        threading.Thread(target=Client._read, args=(weakref.ref(self), conn), daemon=True,
-                         name="tracekit-client").start()
-        threading.Thread(target=conn.write, daemon=True, name="tracekit-client-write").start()
-        weakref.finalize(self, conn.drop)
+        conn.threads = (threading.Thread(target=Client._read, args=(weakref.ref(self), conn), daemon=True,
+                                         name="tracekit-client"),
+                        threading.Thread(target=conn.write, daemon=True, name="tracekit-client-write"))
+        for t in conn.threads:
+            t.start()
+        weakref.finalize(self, conn.close)
         return conn
 
     @staticmethod

@@ -1948,6 +1948,16 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool[:20]):
                     self.assertIsNone(e.decide(tool, {"a": 1}).get("nondeterministic"))
 
+    def test_a_tool_name_holding_none_of_a_rules_words_is_not_searched(self):
+        # #481: every tool pattern searched a 48 KiB name of `run_`, 0.3 s in all on a laptop, past the fallback's 1 s on
+        # CI's macOS runners; `run` is TK-A036's word, and nothing of TK-A037's (get ... secret) is in the name
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
+        searched, match = [], e._match
+        e._match = lambda c, s, full, deadline: searched.append(c) or match(c, s, full, deadline)
+        e.decide("mcp__x__" + "run_" * 12000, {"a": 1})
+        ids = {id(t): r["id"] for _, r, t, *_ in e.rules if t is not None}
+        self.assertEqual(({"TK-A036", "TK-A037"} & {ids.get(id(c)) for c in searched}), {"TK-A036"})
+
     def test_a_long_command_after_aws_ssm_is_decided_without_the_fallback_timeout(self):
         for pack, engine, e in self.every_pack():
             with self.subTest(pack=pack, engine=engine):

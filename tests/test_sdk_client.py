@@ -82,6 +82,44 @@ class DevSigner(unittest.TestCase):
             time.sleep(0.05)
         self.assertLessEqual(threading.active_count(), before + 2)
 
+    def test_close_returns_after_the_connection_threads_end(self):
+        """A hook closes its client and exits at once; a connection thread still waking then can crash the process
+        (#481: a hook segfaulted on CI's macOS runners under Python 3.13)."""
+        before = set(threading.enumerate())
+        c = Client()
+        c.status()
+        threads = [t for t in set(threading.enumerate()) - before if t.name.startswith("tracekit-client")]
+        self.assertEqual(len(threads), 2)
+        c.close()
+        self.assertEqual([t.name for t in threads if t.is_alive()], [])
+
+    def test_a_client_never_closed_ends_its_threads_in_its_finalizer(self):
+        """srt-decider, instrument() and `with Client().run(...)` never call close(): the finalizer, run when the client
+        is collected or at exit, waits for the threads too (#481)."""
+        before = set(threading.enumerate())
+        c = Client()
+        c.status()
+        threads = [t for t in set(threading.enumerate()) - before if t.name.startswith("tracekit-client")]
+        self.assertEqual(len(threads), 2)
+        del c
+        gc.collect()
+        self.assertEqual([t.name for t in threads if t.is_alive()], [])
+
+    def test_closing_a_connection_stops_its_writer_without_its_reader(self):
+        """The finalizer can run in gc on the connection's own reader, which then cannot hand the writer the stop it
+        waits for: closing gives it one rather than waiting JOIN_S for nothing (#481)."""
+        a, b = socket.socketpair()
+        rfile = a.makefile("rb")
+        for f in (a, b, rfile):
+            self.addCleanup(f.close)
+        conn = client._Conn(a, rfile)
+        conn.threads = (threading.Thread(target=conn.write, daemon=True),)
+        conn.threads[0].start()
+        start = time.monotonic()
+        conn.close()
+        self.assertLess(time.monotonic() - start, client.JOIN_S / 2)
+        self.assertFalse(conn.threads[0].is_alive())
+
     def test_recovers_after_sigkill(self):
         c = Client()
         old = c.status() and c.hello["pid"]
