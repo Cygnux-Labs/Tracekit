@@ -57,12 +57,14 @@ class Engine:
         self.policy, self.policy_hash = policy, policy_hash(policy)
         self.tool_class = functools.lru_cache(maxsize=1024)(self.tool_class)   # a glob scan per call otherwise
         self.engine, compile_, self._match = _backend(backend)
-        # each rule's prefilter (compile.literals): a subject holding none of its strings is not searched. An a2a rule
-        # matches in any case, as every prefilter does: the names it reads are lower-cased (classes.a2a_fields)
+        # each rule's prefilters (compile.literals), of its pattern and of its tool pattern: a subject or a tool name
+        # holding none of its strings is not searched. An a2a rule matches in any case, as every prefilter does: the
+        # names it reads are lower-cased (classes.a2a_fields)
         def rx(r, key):
             return compile_(r[key], r.get("class") == "a2a")
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
-                       rx(r, "unless") if "unless" in r else None, literals(r["pattern"]))
+                       rx(r, "unless") if "unless" in r else None, literals(r["pattern"]),
+                       literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
@@ -129,11 +131,18 @@ class Engine:
         """{section: [rule ids]} decide() reads for a call of `tool` (`cls` overrides its class, as for decide): those
         of no class or of that class whose tool pattern takes its name (the viewer's WHY THIS DECISION)."""
         cls, name, deadline = cls or self.tool_class(tool), _text(tool), time.monotonic() + REGEX_TIMEOUT_S
-        out = {sec: [] for sec in SECTIONS}
-        for sec, rule, tool_re, *_ in self.rules:
-            if rule.get("class", cls) == cls and (tool_re is None or self._match(tool_re, name, True, deadline)):
+        low, out = name.lower(), {sec: [] for sec in SECTIONS}
+        for sec, rule, tool_re, *_, tool_lits in self.rules:
+            if rule.get("class", cls) == cls and self._named(tool_re, tool_lits, name, low, deadline):
                 out[sec].append(rule["id"])
         return out
+
+    def _named(self, tool_re, lits, name, low, deadline):
+        """Whether a rule's tool pattern takes the tool `name` (`low`: lower-cased); none takes every name. A name
+        holding none of the pattern's literals is not searched: 27 searches of a 48 KiB MCP name of underscores took
+        the fallback engine 0.3 s on a laptop, past its 1 s on CI's macOS runners (#481)."""
+        return tool_re is None or (lits is None or any(s in low for s in lits)) and self._match(tool_re, name, True,
+                                                                                                 deadline)
 
     def decide(self, tool, args, cls=None, untrusted=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
@@ -178,11 +187,12 @@ class Engine:
         # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
+        low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
             self._of[cls] = [x for x in self.rules if x[1].get("class", cls) == cls]
-        for sec, rule, tool_re, pat, unless, lits in self._of[cls]:
+        for sec, rule, tool_re, pat, unless, lits, tool_lits in self._of[cls]:
             try:
-                if tool_re is not None and not self._match(tool_re, name, True, deadline):
+                if not self._named(tool_re, tool_lits, name, low_name, deadline):
                     continue
                 key = (rule.get("field"), "from" in rule)   # rules on the same subjects read them once
                 if key not in memo:
