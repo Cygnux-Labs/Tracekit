@@ -1290,7 +1290,7 @@ class TimedAndBraced(unittest.TestCase):
 
     def test_time_before_a_compound_command_times_that_command(self):
         for line in ("time { alpha x; }", "time -p { alpha x; }", "time -- { alpha x; }", "time ! { alpha x; }",
-                     "time ( alpha x )", "time { { alpha x; }; }"):
+                     "time ( alpha x )", "time { { alpha x; }; }", "time time { alpha x; }", "time -p time { alpha x; }"):
             self.assertEqual(argvs(line), [["alpha", "x"]], line)
         self.assertEqual(argvs("time alpha x"), [["time", "alpha", "x"], ["alpha", "x"]])   # still a wrapper
         for line in ("time function g { alpha; }; g", "time case x in x) alpha;; esac"):
@@ -1305,8 +1305,10 @@ class TimedAndBraced(unittest.TestCase):
                 cmd = row["args"].get("command")
                 if not isinstance(cmd, str) or "<<" in cmd:   # a heredoc's terminator line can't take the `; }`
                     continue
-                plain, timed = e.decide("Bash", {"command": cmd}), e.decide("Bash", {"command": f"time {{ {cmd}; }}"})
-                self.assertGreaterEqual(rank(timed["verdict"]), rank(plain["verdict"]), row.get("note"))
+                plain = e.decide("Bash", {"command": cmd})
+                for prefix in ("time", "time time", "time -p time"):   # bash 5 takes a time after a time
+                    timed = e.decide("Bash", {"command": f"{prefix} {{ {cmd}; }}"})
+                    self.assertGreaterEqual(rank(timed["verdict"]), rank(plain["verdict"]), (prefix, row.get("note")))
 
     def test_brace_expansion_in_an_argument_makes_the_words_bash_makes(self):
         for line, words in (
@@ -1318,23 +1320,29 @@ class TimedAndBraced(unittest.TestCase):
                 ('alpha {a,"b c"}', ["a", "b c"]), ("alpha {,}", []),
                 # kept as written: quoted, escaped, no comma or sequence, unclosed, ANSI-C quoted
                 ("alpha '{a,b}'", ["{a,b}"]), ('alpha "{a,b}"', ["{a,b}"]), ("alpha \\{a,b}", ["{a,b}"]),
-                ("alpha {a}", ["{a}"]), ("alpha {}", ["{}"]), ("alpha {a,b", ["{a,b"]), ("alpha $'{a,b}'", ["{a,b}"])):
+                ("alpha {a}", ["{a}"]), ("alpha {}", ["{}"]), ("alpha {a,b", ["{a,b"]), ("alpha $'{a,b}'", ["{a,b}"]),
+                ("alpha ${X:-{a,b}}", ["${X:-{a,b}}"]), ("alpha {a..c,z}", ["a..c", "z"])):
             self.assertEqual(argvs(line), [["alpha"] + words], line)
+        # braces inside a substitution are the substitution's own: read there, and the word outside is kept
+        self.assertIn(["beta", "a", "b"], argvs("alpha $(beta {a,b})*"))
         self.assertTrue(shell.parse("{alpha,beta} x")[0]["opaque"])   # a command name brace-expanded stays unreadable
         for line in ("alpha {1..10..2}", "alpha {01..03}", "alpha {a..A}", "alpha {1..1000}", "alpha {a,b}$(beta)",
-                     "alpha " + "{a,b}" * 9):
+                     "alpha " + "{a,b}" * 9, "alpha `#'`{-r,-f} x", "alpha {a{1,2}..b}", "alpha {x..{,}y}",
+                     "alpha {'a,b'..c}", "alpha {+1..+3}", "alpha {1.." + "9" * 30 + "}", "alpha {a..}",
+                     "alpha {" + "a," * 300 + "a}"):
             with self.assertRaises(shell.ParseError, msg=line):
                 shell.parse(line)
 
     def test_brace_expansion_stays_within_the_parse_budget(self):
         for line in ("alpha " + "{a,b}" * 20000, "alpha " + "{" * 30000 + "a,b" + "}" * 30000,
-                     "alpha " + "x{a,b}" * 3000 + " {1..3}"):
+                     "alpha " + "x{a,b}" * 3000 + " {1..3}", "alpha " + "x" * 32000 + "{" + "a," * 15990 + "a}",
+                     "alpha " + "x" * 60000 + "{a,b,c,d}"):
             t = time.perf_counter()
             try:
                 shell.parse(line)
             except shell.ParseError:
                 pass
-            self.assertLess(time.perf_counter() - t, 1.0, line[:40])
+            self.assertLess(time.perf_counter() - t, 0.5 * SLOWER, line[:40])
 
 
 class Classes(unittest.TestCase):
