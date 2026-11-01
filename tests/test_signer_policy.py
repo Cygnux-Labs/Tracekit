@@ -623,6 +623,8 @@ class CodingPack(unittest.TestCase):
             "docker --context prod volume rm pgdata", "docker -H tcp://10.0.0.5:2375 volume prune -f",
             "docker --debug system prune --volumes", "podman --remote volume prune -f",
             "docker volume --help=false prune -af", "docker volume --help=false rm pgdata",
+            "docker system --help=false prune -af --volumes", "podman system --log-level=debug prune --volumes",
+            "podman-compose down --vol", "docker-compose down --volume", "podman-compose -f a.yml down --v",
             "podman volume --help=false prune -f", "podman volume --help=false rm pgdata",
             "docker.exe volume rm pgdata", "/usr/bin/docker volume prune -f",
             "docker volume -a -b -c -d -e -f -g -h prune",
