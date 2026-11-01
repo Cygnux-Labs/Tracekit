@@ -1,5 +1,10 @@
 ## What and why
 
+## How I ran it as a user
+<!-- Run what you changed the way a person would: the CLI command, `tracekit view` in a browser, a verifier on a real
+bundle, an agent through its hook. Paste the command and what you saw (its output, or a screenshot of the page).
+Passing tests don't replace this: maintainers don't run a fork's code on their own machines before merge. -->
+
 ## Checklist
 - [ ] `make check` passes (lint, tests, build); `make test-ts` too if `sdk/typescript/` changed
 - [ ] a regression test covers the change
