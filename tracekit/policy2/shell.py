@@ -366,8 +366,7 @@ def _skip(w, i):
                 j += 2
                 continue
             if w[j] in "'\"":
-                k = w.find(w[j], j + 1)
-                j = len(w) if k < 0 else k + 1
+                j = _skip(w, j)
                 continue
             depth += {"{": 1, "}": -1}.get(w[j], 0)
             j += 1
@@ -1264,16 +1263,31 @@ class _Parser:
 
 
     def dquote(self, term):
-        """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""
+        """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text. In a
+        `${...}` (term "}"), as in bash, a backslash escapes any character and quotes pair up. Unreadable there: a `}`
+        inside a quote, and a single quote around `}`, `$`, a backtick, a backslash or a double quote (bash versions and
+        modes read those apart)."""
         self.enter()
-        s, buf = self.s, []
+        s, buf, quoted = self.s, [], False
         while True:
             if self.i >= len(s):
                 if term is None:
                     break
                 raise ParseError(f"unterminated {term}")
             c = s[self.i]
+            if term == "}" and c == "\\":
+                self.i += 2
+                continue
+            if term == "}" and c == "'" and not quoted:
+                j = s.find("'", self.i + 1)
+                if j < 0 or re.search(r"[}$`\\\"]", s[self.i + 1:j]):
+                    raise ParseError("a single quote around a special character in ${...} is not supported")
+                self.i = j + 1
+                continue
+            quoted ^= term == "}" and c == '"'
             if c == term:
+                if quoted:
+                    raise ParseError("a } inside quotes in ${...} is not supported")
                 self.i += 1
                 break
             if c == "\\" and self.peek(1) and self.peek(1) in '$`"\\\n':
