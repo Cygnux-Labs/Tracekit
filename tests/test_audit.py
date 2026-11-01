@@ -118,7 +118,14 @@ class TestAudit(unittest.TestCase):
         self.assertIn("tracekit audit is experimental", err)
         text = audit.format_report(report)
         self.assertTrue(text.startswith("a replay against today's policy, not a signed record\n"))
+        self.assertIn("2 tool calls in 1 session: Tracekit would have denied 1 and held 0 for a person; it would have "
+                      "flagged 0 and allowed 1.\n", text)
+        self.assertIn("  TK-D004: 1  (recursive delete of root or home)\n", text)   # what each rule is
         self.assertIn("  deny: 1\n", text)
+        self.assertIn("Bash  deny", text)
+        self.assertNotIn("Bash  allow", text)   # the calls it would have stopped; --all lists every call
+        self.assertIn("Bash  allow", audit.format_report(report, every=True))
+        self.assertIn("Bash  allow", _run(str(self.root), "--all")[1])
         self.assertEqual(_run(str(self.root), "--since", "soon")[0], 2)
         code, _, err = _run(str(self.root / "missing"))
         self.assertEqual(code, 2)
@@ -131,7 +138,7 @@ class TestAudit(unittest.TestCase):
 
     def test_control_characters_from_a_transcript_are_printed_as_text(self):
         _write_jsonl(self.root / "s.jsonl", [_call("Bash\x1b[2K", {"command": "ls"})])
-        text = audit.format_report(audit.audit(str(self.root)))
+        text = audit.format_report(audit.audit(str(self.root)), every=True)
         self.assertNotIn("\x1b", text)
         self.assertIn("\\u001b", text)
 

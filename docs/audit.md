@@ -9,8 +9,26 @@ It is experimental ([support](support.md)): it works and is tested, but may chan
 ## Usage
 
 ```
-tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--json]
+tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--all] [--json]
 ```
+
+```
+$ tracekit audit --since 7d --show
+a replay against today's policy, not a signed record
+policy: …/tracekit/policy2/packs/dev.yaml (sha256:…)
+
+1204 tool calls in 31 sessions since 7d: Tracekit would have denied 2 and held 9 for a person; it would have flagged 57 and allowed 1136.
+…
+by rule:
+  TK-F003: 41  (destructive)
+  TK-A002: 3  (deleting a remote Git ref)
+  TK-D004: 1  (recursive delete of root or home)
+…
+denied and held calls (--all for every call):
+  4f1c…  2026-10-28T14:02:11+00:00  Bash  deny  rules=TK-D004,TK-F003  text='Bash rm -rf ~/'
+```
+
+(The numbers above are an example, not a measurement.)
 
 - `ROOT` defaults to `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
@@ -18,7 +36,8 @@ tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--json]
   without a timestamp is kept.
 - `--show` includes each call as an approver sees it: its secrets redacted as the signer redacts them (`.env` content
   too), cut to 72 characters.
-- `--json` emits a machine-readable report.
+- `--all` lists every call; without it, only the calls Tracekit would have denied or held for a person.
+- `--json` emits a machine-readable report, with every call.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 
@@ -32,11 +51,14 @@ It follows no symlink. Files and folders it can't read are counted and skipped, 
 
 ## Output
 
+- One line first: how many calls in how many sessions, and how many Tracekit would have denied, held, flagged and
+  allowed.
 - Counts per verdict (`deny`, `ask` / held, `flag`, `allow`). A call the policy engine fails on counts as a deny
   (`TK-ENGINE-ERROR`), as the signer would decide it.
-- Counts per rule id.
-- Session and timestamp of each call.
-- Optional redacted text (`--show`).
+- Counts per rule id, most first, each with what the rule is (its `reason` or `label`, or the viewer's words for the
+  engine's own rules).
+- The session and timestamp of each denied or held call (every call with `--all`), and its redacted text with
+  `--show`.
 
 ## Limitations
 

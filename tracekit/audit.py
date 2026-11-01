@@ -18,6 +18,7 @@ from .core import scrub
 from .hook import transcript_entries
 from .report import call_text
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
+from .view import ENGINE_RULES
 
 DEFAULT_ROOT = os.path.join("~", ".claude", "projects")
 
@@ -168,8 +169,11 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
         "policy": policy_path or DEFAULT_POLICY,
         "policy_hash": engine.policy_hash,
         "since": since,
+        "sessions": len({c["session"] for c in calls}),
         "counts": counts,
         "by_rule": by_rule,
+        "reasons": {**{i: ENGINE_RULES[i] for i in by_rule if i in ENGINE_RULES},   # what each rule is, as the viewer says it
+                    **{r["id"]: r.get("reason") or r.get("label", "") for _, r, *_ in engine.rules if r["id"] in by_rule}},
         "skipped_malformed": skipped_malformed,
         "unreadable": unreadable,
         "calls": calls,
@@ -177,30 +181,40 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
     return report
 
 
-def format_report(report: dict, as_json: bool = False) -> str:
+def format_report(report: dict, as_json: bool = False, every: bool = False) -> str:
+    """The report as text: what Tracekit would have stopped first, then each denied or held call (every call with
+    `every`); or the whole report as JSON."""
     if as_json:
         return json.dumps(report, indent=2, sort_keys=True)
+    n, s = report["counts"], report["sessions"]
+    total = sum(n.values())
+    window = f" since {report['since']}" if report["since"] else ""
     lines = [
         report["disclaimer"],
-        f"policy: {report['policy']}",
-        f"policy_hash: {report['policy_hash']}",
+        f"policy: {report['policy']} ({report['policy_hash']})",
+        "",
+        f"{total} tool call{'s' * (total != 1)} in {s} session{'s' * (s != 1)}{window}: Tracekit would have denied "
+        f"{n.get('deny', 0)} and held {n.get('ask', 0)} for a person; it would have flagged {n.get('flag', 0)} "
+        f"and allowed {n.get('allow', 0)}.",
         "",
         "counts:",
     ]
     for v in ("deny", "ask", "flag", "allow"):
-        lines.append(f"  {v}: {report['counts'].get(v, 0)}")
+        lines.append(f"  {v}: {n.get(v, 0)}")
     if report["by_rule"]:
         lines.append("")
         lines.append("by rule:")
-        for rid, n in sorted(report["by_rule"].items()):
-            lines.append(f"  {rid}: {n}")
+        for rid, k in sorted(report["by_rule"].items(), key=lambda x: (-x[1], x[0])):
+            reason = report["reasons"].get(rid, "")
+            lines.append(f"  {rid}: {k}" + (f"  ({reason})" if reason else ""))
     lines.append("")
     lines.append(f"skipped malformed lines: {report['skipped_malformed']}")
     lines.append(f"unreadable files: {len(report['unreadable'])}")
-    if report["calls"]:
+    shown = [c for c in report["calls"] if every or c["verdict"] in ("deny", "ask")]
+    if shown:
         lines.append("")
-        lines.append("calls:")
-        for c in report["calls"]:
+        lines.append("calls:" if every else "denied and held calls (--all for every call):")
+        for c in shown:
             t = c["time"] or "unknown-time"
             extra = f"  text={c['text']!r}" if "text" in c else ""
             lines.append(f"  {c['session']}  {t}  {c['tool']}  {c['verdict']}  rules={','.join(c['rule_ids'])}{extra}")
@@ -216,7 +230,8 @@ def main(argv=None):
     ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
     ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
     ap.add_argument("--show", action="store_true", help="also print each call, with secrets redacted")
-    ap.add_argument("--json", action="store_true", help="print the report as JSON")
+    ap.add_argument("--all", action="store_true", help="list every call, not only the denied and held ones")
+    ap.add_argument("--json", action="store_true", help="print the report as JSON (every call)")
     a = ap.parse_args(argv)
     root = os.path.expanduser(a.root)
     if not os.path.isdir(root):
@@ -228,5 +243,5 @@ def main(argv=None):
     except (ValueError, OSError) as e:   # an unreadable --since; a policy file that's missing or doesn't lint
         print(f"tracekit audit: {e}", file=sys.stderr)
         return 2
-    sys.stdout.write(format_report(report, as_json=a.json))
+    sys.stdout.write(format_report(report, as_json=a.json, every=a.all))
     return 0
