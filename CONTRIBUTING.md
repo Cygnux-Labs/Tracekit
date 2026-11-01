@@ -13,8 +13,8 @@ make check          # lint + tests + build
   signer). Add a regression test with every fix; a change to the signer, store, verifier or policy needs one that fails
   without it.
 - Run what you changed as a person would (the CLI, `tracekit view` in a browser, a verifier on a real bundle, an agent
-  through its hook), and say in the pull request what you ran and what you saw. Maintainers don't run a fork's code on
-  their own machines before merge, so your run is how they see it work.
+  through its hook), and say in the pull request what you ran and what you saw. Reviewers see your change through CI and
+  the diff; your run shows it working the way a user meets it.
 - Root-only and Linux-only tests (system mode, harness binding) skip on a laptop. CI on Linux is the merge gate; macOS
   and Windows are advisory.
 - `make test-ts` runs the TypeScript SDK's tests; `make quickstart` runs the [v2 quickstart](docs/quickstart-v2.md) in
