@@ -1,7 +1,7 @@
 """tracekit audit: replay local coding-agent transcripts through the policy engine.
 
-Read-only. Never starts a signer, never writes, never follows symlinks out of the
-transcript folders. A replay against today's policy, not a signed record.
+Read-only. Never starts a signer, never writes, never follows a symlink. A replay against today's policy, not a signed
+record.
 """
 from __future__ import annotations
 
@@ -16,16 +16,14 @@ from typing import Any
 
 from .core import scrub
 from .hook import transcript_entries
-from .privacy import redact_text
-from .signer.service import DEFAULT_POLICY, load_policy
+from .report import call_text
+from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
 
 DEFAULT_ROOT = os.path.join("~", ".claude", "projects")
 
 
 def _parse_since(s: str) -> float:
-    """Return epoch seconds for --since (e.g. 7d, 24h, 30m, or ISO date)."""
-    if not s:
-        return 0.0
+    """Return epoch seconds for --since (e.g. 7d, 24h, 30m, or an ISO date or time, UTC unless it says)."""
     s = s.strip().lower()
     if s.endswith("d") and s[:-1].isdigit():
         return time.time() - int(s[:-1]) * 86400
@@ -50,59 +48,55 @@ def _session_from_path(path: str) -> str:
     return base
 
 
-def _entry_time(entry: dict) -> float | None:
-    """Timestamp of a transcript entry if present (Claude Code uses 'timestamp')."""
+def _entry_time(entry: dict) -> datetime | None:
+    """Time of a transcript entry if present (Claude Code uses 'timestamp'), UTC unless it says."""
     ts = entry.get("timestamp")
     if isinstance(ts, str):
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except ValueError:
             pass
     return None
 
 
 def _safe_open(path: str) -> tuple[Any, str | None]:
-    """Open a regular file without following symlinks. Returns (file, error)."""
+    """Open a regular file without following a symlink (as graph._secure_source does). Returns (file, error)."""
     try:
-        st = os.lstat(path)
+        seen = os.lstat(path)
     except OSError as e:
         return None, f"cannot stat: {e}"
-    if not stat.S_ISREG(st.st_mode) or os.path.islink(path):
+    if not stat.S_ISREG(seen.st_mode):
         return None, "not a regular file or is a symlink"
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
-        flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
         fd = os.open(path, flags)
-        f = os.fdopen(fd, "rb")
-        return f, None
     except OSError as e:
         return None, f"cannot open: {e}"
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (seen.st_dev, seen.st_ino):
+        os.close(fd)
+        return None, "changed while it was opened"
+    return os.fdopen(fd, "rb"), None
 
 
-def _iter_transcripts(root: str):
-    """Yield (path, session) for Claude Code style transcripts under root.
-
-    Does not follow symlinks that leave the root. Skips unreadable paths.
-    """
+def _iter_transcripts(root: str, unreadable: list):
+    """Yield (path, session) for each .jsonl under root, at any depth (a session's subagent files too). Follows no
+    symlink; a folder it can't list goes into `unreadable`."""
     root = os.path.realpath(root)   # a root reached through a symlink (macOS /var, a linked ~/.claude) is still the root
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        # prune symlink dirs
+
+    def failed(e):
+        unreadable.append({"path": e.filename, "error": f"cannot list: {e}"})
+    for dirpath, dirnames, filenames in os.walk(root, onerror=failed, followlinks=False):
         dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
         for name in filenames:
-            if not name.endswith(".jsonl"):
-                continue
             path = os.path.join(dirpath, name)
-            if os.path.islink(path):
+            if not name.endswith(".jsonl") or os.path.islink(path):
                 continue
-            # stay inside root
-            try:
+            try:   # stay inside root: a Windows directory junction is no symlink to islink, and the walk enters it
                 if os.path.commonpath([root, os.path.realpath(path)]) != root:
                     continue
-            except ValueError:
+            except ValueError:   # another drive
                 continue
             yield path, _session_from_path(path)
 
@@ -117,11 +111,13 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
     by_rule: dict[str, int] = {}
+    # lean: every call is kept in memory (about 0.5 KB each; --show text is capped at report.CALL_WIDTH); stream the
+    # report's lines instead if a real transcript folder outgrows that
     calls: list[dict] = []
     skipped_malformed = 0
     unreadable: list[dict] = []
 
-    for path, session in _iter_transcripts(root):
+    for path, session in _iter_transcripts(root, unreadable):
         f, err = _safe_open(path)
         if err:
             unreadable.append({"path": path, "error": err})
@@ -133,8 +129,8 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                     continue
                 if entry.get("type") != "assistant":
                     continue
-                ts = _entry_time(entry)
-                if ts is not None and ts < since_ts:
+                at = _entry_time(entry)
+                if at is not None and at.timestamp() < since_ts:
                     continue
                 msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
                 content = msg.get("content")
@@ -142,28 +138,28 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                 for b in blocks:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
-                    tool = b.get("name") or ""
+                    tool = b.get("name") if isinstance(b.get("name"), str) else ""
                     args = b.get("input") if isinstance(b.get("input"), dict) else {}
                     try:
                         decision = engine.decide(tool, args)
-                    except Exception:
-                        skipped_malformed += 1
-                        continue
+                    except Exception:   # the signer denies a call its engine fails on (signer.service._evaluate)
+                        decision = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"]}
                     verdict = decision.get("verdict", "allow")
                     counts[verdict] = counts.get(verdict, 0) + 1
                     for rid in decision.get("rule_ids") or []:
                         by_rule[rid] = by_rule.get(rid, 0) + 1
                     rec = {
                         "session": session,
-                        "time": datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None,
+                        "time": at.astimezone(timezone.utc).isoformat() if at else None,
                         "tool": tool,
                         "verdict": verdict,
                         "rule_ids": decision.get("rule_ids") or [],
                     }
-                    if show:   # with secrets redacted, as the ledger redacts them
-                        cmd = args.get("command") or args.get("cmd") or json.dumps(args)
-                        rec["text"] = redact_text(scrub(cmd if isinstance(cmd, str) else json.dumps(cmd)))[0]
+                    if show:   # what an approver sees: redacted as the signer redacts it (.env content too)
+                        rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
                     calls.append(rec)
+        except (OSError, RecursionError) as e:   # a read that fails, or a line nested past what json.loads takes
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
             f.close()
 
@@ -208,7 +204,8 @@ def format_report(report: dict, as_json: bool = False) -> str:
             t = c["time"] or "unknown-time"
             extra = f"  text={c['text']!r}" if "text" in c else ""
             lines.append(f"  {c['session']}  {t}  {c['tool']}  {c['verdict']}  rules={','.join(c['rule_ids'])}{extra}")
-    return "\n".join(lines) + "\n"
+    # a transcript the agent wrote can hold control characters: print them as text, as tracekit report does
+    return "\n".join(_escaped(line) for line in lines) + "\n"
 
 
 def main(argv=None):
@@ -218,11 +215,16 @@ def main(argv=None):
     ap.add_argument("root", nargs="?", default=DEFAULT_ROOT, help="the transcripts' folder (default: ~/.claude/projects)")
     ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
     ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
-    ap.add_argument("--show", action="store_true", help="also print each call's text, with secrets redacted")
+    ap.add_argument("--show", action="store_true", help="also print each call, with secrets redacted")
     ap.add_argument("--json", action="store_true", help="print the report as JSON")
     a = ap.parse_args(argv)
+    root = os.path.expanduser(a.root)
+    if not os.path.isdir(root):
+        print(f"tracekit audit: no such folder: {root} (Claude Code keeps its transcripts in ~/.claude/projects)",
+              file=sys.stderr)
+        return 2
     try:
-        report = audit(os.path.expanduser(a.root), a.policy, a.since, a.show)
+        report = audit(root, a.policy, a.since, a.show)
     except (ValueError, OSError) as e:   # an unreadable --since; a policy file that's missing or doesn't lint
         print(f"tracekit audit: {e}", file=sys.stderr)
         return 2
