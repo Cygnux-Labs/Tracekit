@@ -1380,6 +1380,8 @@ class TimedAndBraced(unittest.TestCase):
                             ("terraform ${X:-} destroy", ["terraform", "destroy"]), ("rm $(true) -rf ~/", ["rm", "-rf", "~/"]),
                             ("$X git push -f", ["git", "push", "-f"]), ("sudo $X `true` rm -rf /", ["rm", "-rf", "/"]),
                             ('git "$@" push -f', ["git", "push", "-f"]), ('git "${arr[@]}" push -f', ["git", "push", "-f"]),
+                            ('git "${!arr[@]}" push -f', ["git", "push", "-f"]),
+                            ("git $X push -f a[0]=b", ["git", "push", "-f", "a[0]=b"]),   # the pattern stays here
                             ("git *.none push -f", ["git", "push", "-f"]),   # nullglob
                             ("sh $X <<< 'alpha x'", ["alpha", "x"]), ("sh $X <<EOF\nalpha x\nEOF", ["alpha", "x"])):
             self.assertIn(empty, argvs(line), line)
@@ -1389,12 +1391,18 @@ class TimedAndBraced(unittest.TestCase):
         for line in ("beta | sh $X", "beta | python3 $X"):   # what runs comes from the pipe once $X is gone
             self.assertTrue(any(c["opaque"] for c in shell.parse(line)), line)
         self.assertEqual(argvs("echo $X rm -rf / > notes.txt"), [["echo", "$X", "rm", "-rf", "/"]])   # data, not run
-        e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
-        for plain in ("git push --force origin main", "terraform destroy -auto-approve", "rm -rf ~/",
-                      "echo FLUSHALL | redis-cli"):
-            name, rest = plain.split(" ", 1)
-            self.assertEqual(e.decide("Bash", {"command": f"{name} $TK_UNSET {rest}"})["verdict"],
-                             e.decide("Bash", {"command": plain})["verdict"], plain)
+        rank = ("allow", "flag", "ask", "deny").index
+        for pack in ("dev.yaml", "server.yaml", "strict.yaml"):   # every deny-corpus call with an unset $X inserted
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
+                with open(path) as f:
+                    for row in map(json.loads, f):
+                        cmd = row["args"].get("command")
+                        if not isinstance(cmd, str) or "\n" in cmd or " " not in cmd.strip():
+                            continue
+                        name, rest = cmd.strip().split(" ", 1)
+                        self.assertGreaterEqual(rank(e.decide("Bash", {"command": f"{name} $TK_UNSET {rest}"})["verdict"]),
+                                                rank(e.decide("Bash", {"command": cmd})["verdict"]), (pack, row.get("note")))
 
     def test_a_deep_substitution_beside_a_brace_is_unreadable_not_a_crash(self):
         with self.assertRaises(shell.ParseError):

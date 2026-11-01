@@ -130,7 +130,7 @@ _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 _GLOB = re.compile(r"[*?]|\[[^][]+\]")   # a pathname pattern in a word's unquoted text
 # "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
-_ALL_ITEMS = re.compile(r'"\$(?:@|\{@[^"`$]*\}|\{[A-Za-z_][A-Za-z0-9_]*\[@\][^"`$]*\})"')
+_ALL_ITEMS = re.compile(r'"\$(?:@|\{!?@[^"`$]*\}|\{!?[A-Za-z_][A-Za-z0-9_]*(?:\[@\]|@)[^"`$]*\})"')
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
 # lean: interpreter code is scanned for string or list literals passed to a process-spawning call (with or without
 # parentheses: perl's and ruby's `system "x"`), plus backticks in perl/ruby/php, and sed's `e` command; code that builds
@@ -219,9 +219,10 @@ def analyse(command, persistent_target=None):
     for step, cmd in ctx.get("cut_data_stdin", []):
         if step.get("cut"):
             cmd["data_stdin"] = True
-    for words, progs, data_steps in ctx["kept_batches"]:
+    for words, progs, data_steps, gones in ctx["kept_batches"]:
         blank = {i for indexes, step in data_steps if step.get("cut") for i in indexes}
-        ctx["kept"] += _lines(["" if i in blank else w for i, w in enumerate(words)], progs)
+        words = ["" if i in blank else w for i, w in enumerate(words)]
+        ctx["kept"] += _lines(words, progs) + [x for gone in gones for x in _lines_without(words, progs, gone)]
     code, at = [], 0
     for a, b in sorted(ctx["cut"]):   # each cut a space, so the text on either side doesn't join
         code += [command[at:a], " "]
@@ -698,7 +699,7 @@ class _Parser:
         self.cwd_changed = False
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
         self.data_steps = []
-        self.gone = set()   # indexes in self.out of words bash drops when their expansions are empty
+        self.gone = [set(), set()]   # indexes in self.out of the words each second reading leaves out (simple)
         self.charge(len(src))
 
     def charge(self, n):
@@ -732,13 +733,10 @@ class _Parser:
     def flush(self):
         if self.out[-1:] == [";"]:   # the separator list() put after the last pipeline; a `;` word before it stays
             self.out.pop()
-        lines = _lines(self.out, self.progs)
-        if self.gone:   # the line again as bash runs it when those words' expansions are empty
-            keep = [i for i in range(len(self.out)) if i not in self.gone]
-            at = {i: k for k, i in enumerate(keep)}
-            lines += _lines([self.out[i] for i in keep], [at[p] for p in self.progs if p in at])
-        self.ctx["lines"] += lines
-        self.ctx["kept_batches"].append((self.out.copy(), self.progs.copy(), self.data_steps.copy()))
+        gones = list(dict.fromkeys(frozenset(g) for g in self.gone if g))
+        self.ctx["lines"] += _lines(self.out, self.progs) + [
+            x for gone in gones for x in _lines_without(self.out, self.progs, gone)]
+        self.ctx["kept_batches"].append((self.out.copy(), self.progs.copy(), self.data_steps.copy(), gones))
 
     def blank(self):
         s = self.s
@@ -806,7 +804,8 @@ class _Parser:
             self.gap()
 
     def simple(self, pid, piped=False):
-        words, globs, names, strings, docs, idx, spans, here, vanish = [], [], [], [], [], [], [], [], []
+        words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
+        vanish, unmatched = [], []   # per word: only expansions; a pathname pattern (gone when it matches nothing)
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
         dynamic = False
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
@@ -814,7 +813,7 @@ class _Parser:
         def untime():   # the words so far only time what follows: read that as the command's start
             nonlocal timed
             if timed and timed == len(words):
-                del words[:], globs[:], names[:], idx[:], spans[:], vanish[:]
+                del words[:], globs[:], names[:], idx[:], spans[:], vanish[:], unmatched[:]
                 timed = 0
         while True:
             self.blank()
@@ -908,7 +907,8 @@ class _Parser:
                 spans.append(None if expanded or pieces is not None else (len(self.out) - 1, start, self.i))
                 globs.append(g)
                 names.append(g or (expanded and _name_unreadable(text)))
-                vanish.append(self.vanish or bool(_GLOB.search(self.bare)))   # a glob matching nothing, under nullglob
+                vanish.append(self.vanish)
+                unmatched.append(self.vanish or bool(_GLOB.search(self.bare)))   # under nullglob
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         self.progs += [idx[k] for k in _programs(words, cmds)]
         git_stdin_message = _git_stdin_message(words)
@@ -918,13 +918,17 @@ class _Parser:
         # evaluated as its own policy input.
         data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
             not _redefined(self.ctx["redefined"], words[0])
-        if not data and any(vanish) and not all(vanish):
-            # bash drops a word made only of expansions when they expand to nothing (an unset $X): read that too, its
-            # commands also as the ones that read this command's stdin, heredoc and herestring (`| sh $X` is `| sh`)
-            kept = [i for i, v in enumerate(vanish) if not v]
-            alt = [words[i] for i in kept]
-            cmds = cmds + self.emit(alt, pid, self.via, any(globs), [names[i] for i in kept])
-            self.gone.update(idx[i] for i, v in enumerate(vanish) if v)   # and the line without them (flush)
+        # bash drops a word made only of expansions when they expand to nothing (an unset $X), and under nullglob a
+        # pattern that matches nothing: read the command without the first, and without both. Its commands are also
+        # the ones that read this command's stdin, heredoc and herestring (`| sh $X` is `| sh`).
+        for k, drop in enumerate((vanish, unmatched) if not data else ()):
+            if any(drop) and not all(drop) and (k == 0 or drop != vanish):
+                kept = [i for i, v in enumerate(drop) if not v]
+                alt = [words[i] for i in kept]
+                more = self.emit(alt, pid, self.via, any(globs), [names[i] for i in kept])
+                cmds = cmds + more
+                self.progs += [idx[kept[j]] for j in _programs(alt, more)]
+                self.gone[k].update(idx[i] for i, v in enumerate(drop) if v)   # and the line without them (flush)
         marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
@@ -1234,7 +1238,8 @@ class _Parser:
 
     def sub(self, label):
         saved = self.via, self.out, self.progs, self.data, self.data_steps, self.gone
-        self.via, self.out, self.progs, self.data, self.data_steps, self.gone = self.via + [label], [], [], set(), [], set()
+        self.via, self.out, self.progs, self.data, self.data_steps = self.via + [label], [], [], set(), []
+        self.gone = [set(), set()]
         self.list(")")
         self.flush()
         self.via, self.out, self.progs, self.data, self.data_steps, self.gone = saved
@@ -1442,6 +1447,13 @@ def _lines(words, progs):
     for i in progs:
         low[i] = _lower_name(low[i])
     return [" ".join(words)] + ([" ".join(low)] if low != words else [])
+
+
+def _lines_without(words, progs, gone):
+    """_lines() without the words at the indexes in `gone`, which bash drops (an empty expansion, an unmatched glob)."""
+    keep = [i for i in range(len(words)) if i not in gone]
+    at = {i: k for k, i in enumerate(keep)}
+    return _lines([words[i] for i in keep], [at[p] for p in progs if p in at])
 
 
 def _stdin_shell(cmds):
