@@ -12,7 +12,8 @@ outcome.
 pip install tracekit-ai "crewai>=1.15.27,<1.16"
 ```
 
-Tested in CI against a stand-in for CrewAI's tool hooks, not the real library. The
+Tested in CI against a stand-in for CrewAI's tool hooks. [`examples/v2/crewai`](../../examples/v2/crewai/README.md)
+runs against CrewAI itself (1.15.30, by hand: CI doesn't install CrewAI, so its test skips there). The
 [case study](../case-study-oss-agents.md) ran CrewAI 1.15.27 with hand-written hook glue, not this module.
 
 ## Setup
@@ -30,6 +31,8 @@ before, after = hooks(run)
 register_before_tool_call_hook(before)
 register_after_tool_call_hook(after)
 ```
+
+A runnable offline example (a scripted model, no API key): [`examples/v2/crewai/`](../../examples/v2/crewai/README.md).
 
 ## What it does
 
