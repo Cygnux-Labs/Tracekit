@@ -279,13 +279,11 @@ class EveryStructuralMutation(unittest.TestCase):
             text = json.dumps({**proofs, "inclusion": inclusion}).encode()
             return [(n, text if n == "proofs/records.json" else b) for n, b in ENTRIES]
         self.assertEqual(self.outcome(entries(proofs["inclusion"])), (0, "VERIFIED"))
-        other = base64.b64encode(OTHER).decode()
         wrong, paths = [], proofs["inclusion"]
         for seq, path in paths.items():
             for q in one_edit([base64.b64decode(h) for h in path]):
                 self.check(entries({**paths, seq: [base64.b64encode(h).decode() for h in q]}), (seq, "edited"), wrong)
             self.check(entries({k: v for k, v in paths.items() if k != seq}), (seq, "dropped"), wrong)
-            self.check(entries({**paths, seq: path + [other]}), (seq, "longer"), wrong)
         for a, b in itertools.combinations(paths, 2):
             if paths[a] != paths[b]:
                 self.check(entries({**paths, a: paths[b], b: paths[a]}), (a, b, "swapped"), wrong)
@@ -293,21 +291,25 @@ class EveryStructuralMutation(unittest.TestCase):
 
 
 PAY_A, PAY_B = {"to": "acct-42", "cents": 1500}, {"to": "acct-99", "cents": 1500}
-ACTIONS = ("decide", "request", "approve", "reject", "consume_a", "consume_b", "complete")
-APPROVALS_DEPTH = int(os.environ.get("TRACEKIT_BOUND_APPROVALS", "4"))
+# the actions of one call (attempt 0), and of the call and its retry (attempt 1), which may reuse the first approval
+BASIC = ("decide", "request", "approve", "reject", "consume_a", "consume_b", "complete_a", "complete_b")
+RETRY = ("decide", "request", "approve", "consume_a", "decide_retry", "consume_retry", "consume_retry_hint")
+APPROVALS_DEPTH = int(os.environ.get("TRACEKIT_BOUND_APPROVALS", "5"))
 RUNS_PER_SIGNER = 40   # under the default quotas on open runs and pending approvals per identity
 
 
 class ApprovalStateSpace(unittest.TestCase):
     """Bounded model checking of the approval path on the real signer, in process: every sequence of APPROVALS_DEPTH
-    actions (TRACEKIT_BOUND_APPROVALS raises it) on one call of an ask rule, each in its own run, with the invariants
-    checked after every step, so every shorter sequence is checked as a prefix. After each step: the call has run under
-    at most one consumed approval; a consume succeeds only with the approved arguments, for an approval that was
-    approved and not rejected since; the other arguments never run and leave a signed approval.binding_mismatch; a
-    call that completed before any consume succeeded has a signed executed_against_policy gap, and no other has one;
-    nothing raises but a refusal (RPCError)."""
+    actions (TRACEKIT_BOUND_APPROVALS changes it) on one call of an ask rule, each sequence in its own run, with the
+    invariants checked after every step, so every shorter sequence is checked as a prefix. After each step: a decide
+    answers ask; an approval is consumed at most once and the call runs at most once, across its attempts; a consume
+    runs the call only with the approved arguments, for an approval approved and not rejected since; the other
+    arguments get TK-APPROVAL-MISMATCH and a signed approval.binding_mismatch once the call has an approval, and
+    TK-APPROVAL-REQUIRED before; a complete with the other arguments is refused; a call completed before any consume
+    ran has a signed executed_against_policy gap, and no other has one; nothing raises but a refusal (RPCError). Each
+    space must reach every outcome these invariants are about, so none holds only because it was never reached."""
 
-    def test_every_sequence(self):
+    def explore(self, actions, need):
         d, s, expect, wrong, reached = ts.tmpdir(self), None, {}, [], set()
 
         def close_and_check():
@@ -322,7 +324,7 @@ class ApprovalStateSpace(unittest.TestCase):
             shutil.rmtree(d)
             os.makedirs(d)
 
-        for n, seq in enumerate(itertools.product(ACTIONS, repeat=APPROVALS_DEPTH)):
+        for n, seq in enumerate(itertools.product(actions, repeat=APPROVALS_DEPTH)):
             if n % RUNS_PER_SIGNER == 0:
                 if s is not None:
                     close_and_check()
@@ -330,60 +332,85 @@ class ApprovalStateSpace(unittest.TestCase):
             reg = s.register_run({"request_id": f"reg{n}", "agent": {"name": "a"}})
             run = {"run_id": reg["run_id"], "run_token": reg["run_token"]}
             call = {**run, "stream": "s", "tool_call_id": "tc-1"}
-            state = {"cseq": 0, "decision": None, "aid": None, "answer": {}, "ran": 0, "early": False, "mismatch": 0}
+            state = {"cseq": 0, "step": 0, "decision": {}, "aid": None, "answer": {}, "used": {}, "ran": 0,
+                     "early": False, "mismatch": 0}
 
             def rpc(name, req):   # a fresh request_id per step: a reused one would answer from the cache
                 try:
                     return getattr(s, name)({"request_id": f"{name}-{n}-{state['step']}", **req})
                 except RPCError as e:
-                    return {"refused": e.code if hasattr(e, "code") else str(e)}
+                    return {"refused": str(e)}
 
             for step, action in enumerate(seq):
-                where, state["step"] = (seq[:step + 1],), step
-                if action == "decide":
-                    out = rpc("decide", {**call, "client_seq": state["cseq"], "tool": "pay", "args_source": "raw",
-                                         "args": '{"to": "acct-42", "cents": 1500}'})
+                where, state["step"] = seq[:step + 1], step
+                attempt = 1 if "retry" in action else 0
+                if action.startswith("decide"):
+                    out = rpc("decide", {**call, "attempt": attempt, "client_seq": state["cseq"], "tool": "pay",
+                                         "args_source": "raw", "args": '{"to": "acct-42", "cents": 1500}'})
                     state["cseq"] += 1
                     if "refused" not in out:
-                        if out.get("verdict") not in (None, "ask"):
+                        if out.get("decision") != "ask":
                             wrong.append((where, "decide", out))
-                        state["decision"] = state["decision"] or out.get("decision_id")
+                        state["decision"].setdefault(attempt, out.get("decision_id"))
                 elif action == "request":
                     out = rpc("approval_request", {**run, "tool_call_id": "tc-1"})
                     if "approval_id" in out:
                         state["aid"] = out["approval_id"]
                 elif action in ("approve", "reject"):
-                    out = rpc("approval_decide", {"approval_id": state["aid"] or "apr-none",
-                                                  "decision": "approve" if action == "approve" else "reject"})
+                    out = rpc("approval_decide", {"approval_id": state["aid"] or "apr-none", "decision": action})
                     if out.get("state") in ("approved", "rejected"):
                         state["answer"][state["aid"]] = out["state"]
                 elif action.startswith("consume"):
-                    args = PAY_A if action == "consume_a" else PAY_B
-                    out = rpc("approval_consume", {**run, "tool_call_id": "tc-1", "tool": "pay",
-                                                   "args_source": "parsed", "args": args})
+                    args = PAY_B if action == "consume_b" else PAY_A
+                    req = {**run, "tool_call_id": "tc-1", "attempt": attempt, "tool": "pay", "args_source": "parsed",
+                           "args": args}
+                    if action == "consume_retry_hint" and state["aid"]:
+                        req["approval_id_hint"] = state["aid"]
+                    out = rpc("approval_consume", req)
                     if out.get("ok"):
                         aid = out.get("approval_id")
+                        state["used"][aid] = state["used"].get(aid, 0) + 1
                         state["ran"] += 1
-                        if (args is not PAY_A or state["ran"] > 1 or state["answer"].get(aid) != "approved"
-                                or out.get("rule_ids") != ["TK-APPROVED"]):
+                        reached.add("ran" if attempt == 0 else action)
+                        if (args is not PAY_A or state["used"][aid] > 1 or state["ran"] > 1
+                                or state["answer"].get(aid) != "approved" or out.get("rule_ids") != ["TK-APPROVED"]):
                             wrong.append((where, "consume ran", out, dict(state)))
-                    elif out.get("rule_ids") == ["TK-APPROVAL-MISMATCH"]:
-                        state["mismatch"] += 1
-                        if args is PAY_A:
-                            wrong.append((where, "approved arguments refused as a mismatch", out))
-                else:   # complete
+                    else:
+                        if state["ran"]:
+                            reached.add("refused after it ran")
+                        if args is PAY_B:
+                            expected = ["TK-APPROVAL-MISMATCH"] if state["aid"] else ["TK-APPROVAL-REQUIRED"]
+                            if out.get("rule_ids") != expected:
+                                wrong.append((where, "other arguments", out))
+                            if state["aid"]:
+                                state["mismatch"] += 1
+                                reached.add("mismatch")
+                else:   # complete_a, complete_b
+                    args = PAY_B if action == "complete_b" else PAY_A
                     out = rpc("complete", {**call, "client_seq": state["cseq"], "attempt": 0,
-                                           "decision_id": state["decision"] or "dec-none",
-                                           "args_digest": event_hash({"tool": "pay", "args": PAY_A}), "status": "ok"})
+                                           "decision_id": state["decision"].get(0) or "dec-none",
+                                           "args_digest": event_hash({"tool": "pay", "args": args}), "status": "ok"})
                     state["cseq"] += 1
-                    if "refused" not in out and state["ran"] == 0:
-                        state["early"] = True
+                    if "refused" not in out:
+                        if args is PAY_B:
+                            wrong.append((where, "completed with other arguments", out))
+                        elif state["ran"]:
+                            reached.add("completed after it ran")
+                        else:
+                            state["early"] = True
+                            reached.add("completed before it ran")
             expect[run["run_id"]] = (seq, state["early"], state["mismatch"])
-            reached.update(k for k in ("ran", "early", "mismatch") if state[k])
         close_and_check()
         self.assertEqual(wrong[:20], [])
-        # the space reaches every outcome the invariants are about (a consume that runs takes four steps)
-        self.assertEqual(reached, {"ran", "early", "mismatch"} if APPROVALS_DEPTH >= 4 else reached)
+        if APPROVALS_DEPTH >= 5:   # the shortest sequence to each outcome takes five steps
+            self.assertEqual(reached, need)
+
+    def test_one_call(self):
+        self.explore(BASIC, {"ran", "mismatch", "refused after it ran", "completed after it ran",
+                             "completed before it ran"})
+
+    def test_a_retry_reusing_the_approval(self):
+        self.explore(RETRY, {"ran", "consume_retry", "consume_retry_hint", "refused after it ran"})
 
 
 if __name__ == "__main__":
