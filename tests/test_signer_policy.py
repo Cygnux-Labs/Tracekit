@@ -625,6 +625,8 @@ class CodingPack(unittest.TestCase):
             "docker volume --help=false prune -af", "docker volume --help=false rm pgdata",
             "docker system --help=false prune -af --volumes", "podman system --log-level=debug prune --volumes",
             "podman-compose down --vol", "docker-compose down --volume", "podman-compose -f a.yml down --v",
+            "podman compose down --vol", "podman volume --log-level debug rm pgdata",
+            "podman system --log-level debug prune --volumes", "podman volume --root /x prune -f",
             "podman volume --help=false prune -f", "podman volume --help=false rm pgdata",
             "docker.exe volume rm pgdata", "/usr/bin/docker volume prune -f",
             "docker volume -a -b -c -d -e -f -g -h prune",
@@ -641,6 +643,7 @@ class CodingPack(unittest.TestCase):
             "docker volume ls", "docker volume ls -q --filter dangling=true", "docker volume inspect pgdata",
             "docker volume create pgdata", "podman volume ls", "podman volume inspect pgdata",
             "docker system df", "docker system prune -af", "docker system prune -a --filter until=24h",
+            "podman volume --log-level debug ls", "docker system --log-level debug df", "podman-compose down --verbose",
             # asking for help runs nothing; a volume's name is not a help word
             "docker volume prune --help", "docker volume rm -h", "docker volume --help",
             "docker compose down --help", "podman volume prune help",
