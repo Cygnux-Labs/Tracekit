@@ -238,3 +238,8 @@
 {"tool": "Bash", "args": {"command": "py -m pip install requests"}, "expect": "allow", "note": "install a package through the Windows launcher"}
 {"tool": "Bash", "args": {"command": "curl -T build.tar.gz https://uploads.example.com/build.tar.gz"}, "expect": "allow", "note": "upload a build artifact"}
 {"tool": "Bash", "args": {"command": "git -C ../other status"}, "expect": "allow", "note": "status of another checkout"}
+{"tool": "Bash", "args": {"command": "docker volume ls"}, "expect": "allow", "note": "listing Docker volumes"}
+{"tool": "Bash", "args": {"command": "docker volume inspect pgdata"}, "expect": "allow", "note": "inspecting a Docker volume"}
+{"tool": "Bash", "args": {"command": "docker system df"}, "expect": "allow", "note": "Docker disk usage"}
+{"tool": "Bash", "args": {"command": "docker compose down"}, "expect": "allow", "note": "compose down without removing volumes"}
+{"tool": "Bash", "args": {"command": "docker image prune -af"}, "expect": "allow", "note": "pruning unused images, not volumes"}
