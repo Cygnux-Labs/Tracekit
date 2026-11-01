@@ -346,28 +346,30 @@ _SEQ = re.compile(r"(-?[0-9]{1,18})\.\.(-?[0-9]{1,18})|([A-Za-z])\.\.([A-Za-z])"
 
 
 def _skip(w, i):
-    """The index after the quoted, substituted or expanded part of the word w that starts at i (a \\ pair, '...',
-    "...", `...`, $'...', $"...", ${...}, $(...), <(...), >(...)), or i when none starts there."""
+    """The index after the quoted or expanded part of the word w that starts at i (a \\ pair, '...', "...", $'...',
+    $"...", ${...}), or i when none starts there. A word with a command or process substitution never gets here."""
     c = w[i]
     if c == "\\":
         return i + 2
     if c == "'":
         j = w.find("'", i + 1)
         return len(w) if j < 0 else j + 1
-    if c in '"`' or w.startswith(("$'", '$"'), i):
-        q, j = (w[i + 1], i + 2) if c == "$" else (c, i + 1)
+    if c == '"' or w.startswith(("$'", '$"'), i):
+        q, j = (w[i + 1], i + 2) if c == "$" else ('"', i + 1)
         while j < len(w) and w[j] != q:
             j += 2 if w[j] == "\\" else 1
         return j + 1
-    if w.startswith(("${", "$(", "<(", ">("), i):
-        opening = w[i + 1]
-        closing, depth, j = "}" if opening == "{" else ")", 1, i + 2
+    if w.startswith("${", i):   # to its matching }, past the quotes in it
+        depth, j = 1, i + 2
         while j < len(w) and depth:
-            k = _skip(w, j)
-            if k != j:
-                j = k
+            if w[j] == "\\":
+                j += 2
                 continue
-            depth += {opening: 1, closing: -1}.get(w[j], 0)
+            if w[j] in "'\"":
+                k = w.find(w[j], j + 1)
+                j = len(w) if k < 0 else k + 1
+                continue
+            depth += {"{": 1, "}": -1}.get(w[j], 0)
             j += 1
         return j
     return i
@@ -394,7 +396,7 @@ def _brace_at(w, charge, frm=0):
             pairs.append((*stack.pop(), i))
         elif c == "," and stack:
             stack[-1][1].append(i)
-        elif c == "." and stack and w.startswith("..", i):
+        elif c == "." and stack and w.startswith("..", i) and w[i + 2:i + 3] != "}":
             stack[-1][2][0] = True
         i += 1
     for start, commas, dots, end in sorted(pairs):   # bash expands the first, by its opening brace
@@ -875,8 +877,14 @@ class _Parser:
                 continue
             if timed == len(words) and raw == text and (text == "time" or words and text in ("-p", "--")):
                 timed += 1
-            # an argument bash brace-expands is the words it makes (the command name's braces keep it unreadable)
-            pieces = _brace(raw, self.charge) if words and g else None
+            pieces = None
+            if "{" in self.bare:   # an unquoted { outside substitutions: maybe a brace expansion
+                if re.search(r"\$\(|`|[<>]\(", raw):
+                    raise ParseError("a substitution in a word with a brace is not supported")
+                # an argument bash brace-expands is the words it makes; a command name it builds is unreadable
+                pieces = _brace(raw, self.charge)
+                if pieces is not None and not words:
+                    g, pieces = True, None
             if pieces is not None:
                 self.out.pop()
             for text, raw, g, expanded in [(text, raw, g, expanded)] if pieces is None else \
@@ -1181,7 +1189,7 @@ class _Parser:
                 self.i += 1
         if self.i == start:
             return None
-        bare = "".join(bare)   # neither pattern backtracks: each scan from a `[` or `{` stops at the next bracket
+        bare = self.bare = "".join(bare)   # neither pattern backtracks: each scan from a `[` or `{` stops at the next bracket
         glob = re.search(r"[*?]|\[[^][]+\]", bare) or any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
         return "".join(buf), s[start:self.i], bool(glob), self.ctx["exp"] != exp
 
