@@ -359,6 +359,7 @@ class StoreRequests(Tmp):
             for back in (False, True):
                 with self.subTest(cached=cached, back=back):
                     store._cache.clear()
+                    store._stat.clear()   # so the next scan analyses the run
                     if cached:
                         store.scan(announce=False)
                     grew()
