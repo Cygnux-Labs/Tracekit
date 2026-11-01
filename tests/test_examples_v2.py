@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEEDS = {"custom": (), "langchain": ("langchain", "langgraph"), "openai_agents": ("agents",),
          "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",),
          "pydantic_ai": ("pydantic_ai",), "agent_framework": ("agent_framework",), "google_adk": ("google.adk",),
-         "haystack": ("haystack",), "strands": ("strands",), "llama_index": ("llama_index",)}
+         "haystack": ("haystack",), "strands": ("strands",), "llama_index": ("llama_index",), "crewai": ("crewai",)}
 
 
 def python(*argv, env, cwd):
@@ -26,6 +26,8 @@ class Examples(unittest.TestCase):
         cls.dir = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # macOS caps socket paths
         cls.addClassCleanup(shutil.rmtree, cls.dir, True)
         home = os.path.join(cls.dir, "home")
+        for sub in (("AppData", "Local"), ("AppData", "Roaming"), ("local",), ("data",)):   # CrewAI's imports ask Windows for these
+            os.makedirs(os.path.join(home, *sub), exist_ok=True)
         cls.env = dict(os.environ, HOME=home, USERPROFILE=home, LOCALAPPDATA=os.path.join(home, "local"),
                        XDG_DATA_HOME=os.path.join(home, "data"), TRACEKIT_RUNTIME_DIR=os.path.join(cls.dir, "run"),
                        PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
@@ -86,6 +88,9 @@ class Examples(unittest.TestCase):
 
     def test_llama_index(self):
         self.run_example("llama_index")
+    
+    def test_crewai(self):
+        self.run_example("crewai")
 
 
 class DemoServer(unittest.TestCase):
