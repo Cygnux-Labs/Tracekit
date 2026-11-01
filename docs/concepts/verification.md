@@ -113,9 +113,9 @@ command-line verifiers ([reading a verify report](../verdicts.md#verify-in-your-
 
 ## Verifying in CI
 
-The repository's GitHub Action verifies a v1 bundle in a workflow (`uses: Cygnux-Labs/Tracekit@main`, with `bundle:`
-and `key:` or `witness:`); an unanchored bundle fails the step unless `require-anchor: "false"`. For v2 bundles, run
-`tracekit verify --strict` in the job.
+The repository's GitHub Action verifies a bundle in a workflow (`uses: Cygnux-Labs/Tracekit@main`, with `bundle:`, and
+`key:` or `witness:` for v1 or `trust:`, a pinned trust config, for v2); an unanchored bundle fails the step unless
+`require-anchor: "false"` ([verify in GitHub Actions](../verdicts.md#verify-in-github-actions)).
 
 ## Reference
 

@@ -8,17 +8,20 @@ inputs:
     description: "Path to the .tkb bundle"
     required: true
   key:
-    description: "Trusted signer public key file, or a key id (ed25519:...). Without it, or a witness, the result is reported as unanchored."
+    description: "For v1 bundles: trusted signer public key file, or a key id (ed25519:...)"
     required: false
   witness:
     description: "Independent witness copy to check against, e.g. git:/path/to/clone or file:/path/witness.jsonl"
+    required: false
+  trust:
+    description: "Path to the verifier's pinned trust config for v2 bundles"
     required: false
   strict:
     description: "Fail on warnings too (exit code 3)"
     required: false
     default: "false"
   require-anchor:
-    description: "Fail when nothing outside the bundle vouches for its signer (no key or witness given)"
+    description: "Require a v1 key or witness anchor, or successful verification against a v2 trust config"
     required: false
     default: "true"
   version:
@@ -53,12 +56,14 @@ runs:
         TK_BUNDLE: ${{ inputs.bundle }}
         TK_KEY: ${{ inputs.key }}
         TK_WITNESS: ${{ inputs.witness }}
+        TK_TRUST: ${{ inputs.trust }}
         TK_STRICT: ${{ inputs.strict }}
         TK_REQUIRE_ANCHOR: ${{ inputs.require-anchor }}
       run: |
         args=("$TK_BUNDLE" --json)
         [ -n "$TK_KEY" ] && args+=(--key "$TK_KEY")
         [ -n "$TK_WITNESS" ] && args+=(--witness "$TK_WITNESS")
+        [ -n "$TK_TRUST" ] && args+=(--trust "$TK_TRUST")
         [ "$TK_STRICT" = "true" ] && args+=(--strict)
         report="$RUNNER_TEMP/tracekit-verify.json"
         code=0
@@ -67,7 +72,7 @@ runs:
         delim="tracekit_$(python -c 'import secrets; print(secrets.token_hex(16))')"
         { echo "json<<$delim"; cat "$report"; echo "$delim"; } >> "$GITHUB_OUTPUT"
         if [ "$code" = 0 ] && [ "$TK_REQUIRE_ANCHOR" = "true" ]; then
-          python -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(not any(c["check"] == "trust root" and c["status"] == "pass" for c in r["checks"]))' "$report" \
-            || { echo "::error::bundle is unanchored: pass key or witness, or set require-anchor: false"; code=1; }
+          [ -n "$TK_TRUST" ] || python -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(not any(c["check"] == "trust root" and c["status"] == "pass" for c in r["checks"]))' "$report" \
+            || { echo "::error::bundle is unanchored: pass key, witness, or v2 trust, or set require-anchor: false"; code=1; }
         fi
         exit "$code"
