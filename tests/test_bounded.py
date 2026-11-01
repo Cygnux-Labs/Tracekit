@@ -293,7 +293,10 @@ class EveryStructuralMutation(unittest.TestCase):
 PAY_A, PAY_B = {"to": "acct-42", "cents": 1500}, {"to": "acct-99", "cents": 1500}
 # the actions of one call (attempt 0), and of the call and its retry (attempt 1), which may reuse the first approval
 BASIC = ("decide", "request", "approve", "reject", "consume_a", "consume_b", "complete_a", "complete_b")
-RETRY = ("decide", "request", "approve", "consume_a", "decide_retry", "consume_retry", "consume_retry_hint")
+# the retry space starts from an approved call, so a sequence of APPROVALS_DEPTH actions reaches one approval used
+# by both attempts, and abandon reaches the expired state without a clock
+RETRY_PREFIX = ("decide", "request", "approve")
+RETRY = ("consume_a", "decide_retry", "consume_retry", "consume_retry_hint", "complete_a", "complete_retry", "abandon")
 APPROVALS_DEPTH = int(os.environ.get("TRACEKIT_BOUND_APPROVALS", "5"))
 RUNS_PER_SIGNER = 40   # under the default quotas on open runs and pending approvals per identity
 
@@ -305,11 +308,13 @@ class ApprovalStateSpace(unittest.TestCase):
     answers ask; an approval is consumed at most once and the call runs at most once, across its attempts; a consume
     runs the call only with the approved arguments, for an approval approved and not rejected since; the other
     arguments get TK-APPROVAL-MISMATCH and a signed approval.binding_mismatch once the call has an approval, and
-    TK-APPROVAL-REQUIRED before; a complete with the other arguments is refused; a call completed before any consume
-    ran has a signed executed_against_policy gap, and no other has one; nothing raises but a refusal (RPCError). Each
-    space must reach every outcome these invariants are about, so none holds only because it was never reached."""
+    TK-APPROVAL-REQUIRED before; a complete with the other arguments is refused; an attempt completed without running
+    under its own consumed approval (a retry's reuse spends it for the retry) gives the run a signed
+    executed_against_policy gap, and a run with none has none; an abandoned approval runs nothing; nothing raises but a
+    refusal (RPCError). Each space must reach every outcome these invariants are about, so none holds only because it
+    was never reached; the retry space starts from an approved call (RETRY_PREFIX)."""
 
-    def explore(self, actions, need):
+    def explore(self, actions, need, prefix=()):
         d, s, expect, wrong, reached = ts.tmpdir(self), None, {}, [], set()
 
         def close_and_check():
@@ -324,7 +329,8 @@ class ApprovalStateSpace(unittest.TestCase):
             shutil.rmtree(d)
             os.makedirs(d)
 
-        for n, seq in enumerate(itertools.product(actions, repeat=APPROVALS_DEPTH)):
+        for n, rest in enumerate(itertools.product(actions, repeat=APPROVALS_DEPTH)):
+            seq = prefix + rest
             if n % RUNS_PER_SIGNER == 0:
                 if s is not None:
                     close_and_check()
@@ -333,7 +339,7 @@ class ApprovalStateSpace(unittest.TestCase):
             run = {"run_id": reg["run_id"], "run_token": reg["run_token"]}
             call = {**run, "stream": "s", "tool_call_id": "tc-1"}
             state = {"cseq": 0, "step": 0, "decision": {}, "aid": None, "answer": {}, "used": {}, "ran": 0,
-                     "early": False, "mismatch": 0}
+                     "ran_at": set(), "abandoned": False, "early": False, "mismatch": 0}
 
             def rpc(name, req):   # a fresh request_id per step: a reused one would answer from the cache
                 try:
@@ -356,6 +362,10 @@ class ApprovalStateSpace(unittest.TestCase):
                     out = rpc("approval_request", {**run, "tool_call_id": "tc-1"})
                     if "approval_id" in out:
                         state["aid"] = out["approval_id"]
+                elif action == "abandon":
+                    out = rpc("approval_abandon", {**run, "approval_id": state["aid"] or "apr-none"})
+                    if out.get("state") == "expired":
+                        state["abandoned"] = True
                 elif action in ("approve", "reject"):
                     out = rpc("approval_decide", {"approval_id": state["aid"] or "apr-none", "decision": action})
                     if out.get("state") in ("approved", "rejected"):
@@ -371,13 +381,20 @@ class ApprovalStateSpace(unittest.TestCase):
                         aid = out.get("approval_id")
                         state["used"][aid] = state["used"].get(aid, 0) + 1
                         state["ran"] += 1
+                        state["ran_at"].add(attempt)
                         reached.add("ran" if attempt == 0 else action)
-                        if (args is not PAY_A or state["used"][aid] > 1 or state["ran"] > 1
+                        if (args is not PAY_A or state["used"][aid] > 1 or state["ran"] > 1 or state["abandoned"]
                                 or state["answer"].get(aid) != "approved" or out.get("rule_ids") != ["TK-APPROVED"]):
                             wrong.append((where, "consume ran", out, dict(state)))
                     else:
-                        if state["ran"]:
+                        if state["ran"] and args is PAY_A:
                             reached.add("refused after it ran")
+                        if attempt == 1 and 1 in state["decision"] and 0 in state["ran_at"]:
+                            reached.add("retry refused after attempt 0 ran")
+                        if attempt == 0 and 1 in state["ran_at"]:
+                            reached.add("attempt 0 refused after the retry ran")
+                        if state["abandoned"] and out.get("rule_ids") == ["TK-APPROVAL-EXPIRED"]:
+                            reached.add("refused as expired")
                         if args is PAY_B:
                             expected = ["TK-APPROVAL-MISMATCH"] if state["aid"] else ["TK-APPROVAL-REQUIRED"]
                             if out.get("rule_ids") != expected:
@@ -385,16 +402,16 @@ class ApprovalStateSpace(unittest.TestCase):
                             if state["aid"]:
                                 state["mismatch"] += 1
                                 reached.add("mismatch")
-                else:   # complete_a, complete_b
+                else:   # complete_a, complete_b, complete_retry
                     args = PAY_B if action == "complete_b" else PAY_A
-                    out = rpc("complete", {**call, "client_seq": state["cseq"], "attempt": 0,
-                                           "decision_id": state["decision"].get(0) or "dec-none",
+                    out = rpc("complete", {**call, "client_seq": state["cseq"], "attempt": attempt,
+                                           "decision_id": state["decision"].get(attempt) or "dec-none",
                                            "args_digest": event_hash({"tool": "pay", "args": args}), "status": "ok"})
                     state["cseq"] += 1
                     if "refused" not in out:
                         if args is PAY_B:
                             wrong.append((where, "completed with other arguments", out))
-                        elif state["ran"]:
+                        elif attempt in state["ran_at"]:
                             reached.add("completed after it ran")
                         else:
                             state["early"] = True
@@ -410,7 +427,10 @@ class ApprovalStateSpace(unittest.TestCase):
                              "completed before it ran"})
 
     def test_a_retry_reusing_the_approval(self):
-        self.explore(RETRY, {"ran", "consume_retry", "consume_retry_hint", "refused after it ran"})
+        self.explore(RETRY, {"ran", "consume_retry", "consume_retry_hint", "refused after it ran",
+                             "retry refused after attempt 0 ran", "attempt 0 refused after the retry ran",
+                             "completed after it ran", "completed before it ran", "refused as expired"},
+                     prefix=RETRY_PREFIX)
 
 
 if __name__ == "__main__":
