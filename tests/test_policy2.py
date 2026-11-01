@@ -1382,6 +1382,8 @@ class TimedAndBraced(unittest.TestCase):
                             ('git "$@" push -f', ["git", "push", "-f"]), ('git "${arr[@]}" push -f', ["git", "push", "-f"]),
                             ('git "${!arr[@]}" push -f', ["git", "push", "-f"]),
                             ("git $X push -f a[0]=b", ["git", "push", "-f", "a[0]=b"]),   # the pattern stays here
+                            ("rm $X -rf $HOME", ["rm", "-rf", "$HOME"]), ("rm *.none -rf ${HOME}", ["rm", "-rf", "${HOME}"]),
+                            ("HOME=; rm $HOME -rf /", ["rm", "-rf", "/"]),   # a line can empty HOME too
                             ("git *.none push -f", ["git", "push", "-f"]),   # nullglob
                             ("sh $X <<< 'alpha x'", ["alpha", "x"]), ("sh $X <<EOF\nalpha x\nEOF", ["alpha", "x"])):
             self.assertIn(empty, argvs(line), line)
@@ -1394,6 +1396,8 @@ class TimedAndBraced(unittest.TestCase):
         rank = ("allow", "flag", "ask", "deny").index
         for pack in ("dev.yaml", "server.yaml", "strict.yaml"):   # every deny-corpus call with an unset $X inserted
             e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            self.assertEqual(e.decide("Bash", {"command": "rm $X -rf $HOME"})["verdict"],
+                             e.decide("Bash", {"command": "rm -rf $HOME"})["verdict"], pack)
             for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
                 with open(path) as f:
                     for row in map(json.loads, f):
