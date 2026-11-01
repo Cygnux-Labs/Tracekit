@@ -4787,7 +4787,7 @@
         text = rel(String(row.text || ""), row.rec?.cwd).replace(/\s+/g, " ");
         if (n > 1 && reader(row)) text = `${row.rec.title} · the newest: ${row.rec.text}`;   // reads of several runs
         const ef = row.rec?.v2?.effect && S.effects.get(row.rec.session_id + "|" + row.rec.v2.run_seq);   // the Happened column
-        if (ef) st = ef.status === "found" ? ["s-deny", "UNEXPLAINED"] : ef.status === "explained" ? ["s-ok", "JOINED"] : ef.status ? ["s-flag", "NOT CHECKABLE"] : ["s-run", "NOT JOINED YET"];
+        if (ef) st = row.rec.v2.effect.kind === "net" ? ["s-run", ef.call ? "TIME MATCH" : "RUN TOTAL"] : ef.status === "found" ? ["s-deny", "UNEXPLAINED"] : ef.status === "explained" ? ["s-ok", "JOINED"] : ef.status ? ["s-flag", "NOT CHECKABLE"] : ["s-run", "NOT JOINED YET"];
       }
       // a row that is no signed record says where it comes from; a gap's code is in its tooltip
       const src = srcOf(row.rec), tag = src === "ANALYSIS" || (src === "WHY" && V2) ? src : "", code = row.rec?.v2?.kind;
@@ -5169,6 +5169,8 @@
     function joinEgress() {
       if (S.egressJoined === S.recs.length) return;
       S.egressJoined = S.recs.length;
+      const totals = [...S.effects.values()].filter(e => e.rec.v2.effect.kind === "net");
+      if (!totals.length) return;
       // Date.parse drops microseconds; keep the full fraction of the canonical UTC timestamp.
       const seconds = ts => Date.parse(ts.slice(0, 19) + "Z") / 1000 + Number("0." + ts.slice(20, -1));
       const calls = new Map();
@@ -5178,11 +5180,12 @@
         if (!calls.has(run)) calls.set(run, []);
         calls.get(run).push(a);
       }
-      for (const e of S.effects.values()) {
-        const v = e.rec.v2;
-        if (v.effect.kind !== "net") continue;
-        const first = seconds(v.first_ts), last = seconds(v.last_ts);
-        const overlaps = (calls.get(e.rec.session_id) || []).filter(a => a.start <= last && (a.end ?? Infinity) >= first);
+      for (const e of totals) {
+        const v = e.rec.v2, first = seconds(v.first_ts), last = seconds(v.last_ts);
+        // a total the signer placed by the observer's caller identity is in that owner's latest open run, a guess, so
+        // a call in it would be a guess too
+        const overlaps = v.attribution !== "token" ? []
+          : (calls.get(e.rec.session_id) || []).filter(a => a.start <= last && (a.end ?? Infinity) >= first);
         const a = overlaps.length === 1 && overlaps[0];
         e.call = a && a.end != null && a.start <= first && a.end >= last ? a.id : null;
       }
@@ -5190,6 +5193,7 @@
     // how a sensor's effect is joined to its call (findings_effects): a finding when it doesn't fit the call it names, or no call explains it
     function effectHow(e) {
       if (e.rec.v2?.effect?.kind === "net") return e.call ? "time/run match only; not proof this call caused the traffic"
+        : e.rec.v2.attribution !== "token" ? "run totals; the signer put them in the observer's caller's latest open run, so no call is linked"
         : "run totals; no unique completed call contains this interval";
       if (e.status === "found") return e.call ? "DOESN'T FIT THIS CALL (TK-X206): its kind or its time" : "NO CALL EXPLAINS IT (TK-X206)";
       if (e.status && e.status !== "explained") return "not checkable: " + e.status.replace(/_/g, " ");

@@ -223,6 +223,8 @@ class Translate(unittest.TestCase):
         self.assertIn("256", row["text"])
         self.assertIn("1 connection", row["text"])
         self.assertIn("mtls:spiffe://acme/egress", row["text"])
+        self.assertIn("run named by its token", row["text"])
+        self.assertEqual(row["v2"]["attribution"], "token")
         self.assertEqual({k: row["v2"].get(k) for k in ("bytes_out", "bytes_in", "connections", "first_ts", "last_ts")},
                          {"bytes_out": 128, "bytes_in": 256, "connections": 1,
                           "first_ts": "2026-10-10T17:00:03.000000Z", "last_ts": "2026-10-10T17:00:05.000000Z"})

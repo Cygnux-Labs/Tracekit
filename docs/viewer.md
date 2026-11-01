@@ -277,10 +277,11 @@ and **Led to** link the neighbours; **Record** gives its time, hash, previous ha
 cites. Click the node again, or **CLEAR HIGHLIGHT**, to see the whole graph. The checkboxes add inferred links and ruled-out
 tests.
 
-Egress totals get a dashed cyan link only when their full activity interval fits one completed call in the same
-run, with no other eligible call overlapping that interval. Denied calls and holds without consumed approval are
-excluded. The link and legend say **time/run match: not proof of causation**. Unmatched totals remain on the tape
-and in HORIZON. Kernel effects keep their existing analysis and links.
+Egress totals get a dashed cyan link only when the observer named their run by its token and their full activity
+interval fits one completed call in that run, with no other eligible call overlapping that interval. Denied calls and
+holds without consumed approval are excluded. The link and legend say **time/run match: not proof of causation**, and
+the tape's Happened column reads TIME MATCH. Unmatched totals remain on the tape (RUN TOTAL) and in HORIZON. Kernel
+effects keep their existing analysis and links.
 
 ### A signed run's graph
 

@@ -1105,7 +1105,8 @@ class GraphGrades(unittest.TestCase):
             const a = call("r1|c1", "r1", 1, 10);
             const fx = (id, run, first, last) => [id, { call: null, how: null, status: null, rec: { session_id: run,
               v2: { effect: { kind: "net", target: "api.example:443", claim: null },
-                    first_ts: new Date(first * 1000).toISOString(), last_ts: new Date(last * 1000).toISOString() } } }];
+                    first_ts: new Date(first * 1000).toISOString(), last_ts: new Date(last * 1000).toISOString(),
+                    attribution: "token" } } }];
             const S = { recs: [1], actList: [a, call("r2|c1", "r2", 1, 10)], actions: new Map([[a.id, a]]),
               effects: new Map([fx("one", "r1", 2, 4), fx("spans", "r1", 2, 11), fx("other", "r3", 2, 4)]) };
             const look = () => { joinEgress(); return [...S.effects.values()].map(e => e.call); };
@@ -1146,7 +1147,7 @@ class GraphGrades(unittest.TestCase):
                         v2rec(2, "tool.result", {"tool_use_id": "c1"}, run=run, ts=stamp(end)),
                         v2rec(3, "effect.observed", {"kind": "net", "host": "api.example.com", "port": 443,
                               "observer": "egress", "bytes_out": 1, "bytes_in": 2, "connections": 1,
-                              "first_ts": stamp(first), "last_ts": stamp(last)}, run=run)]:
+                              "first_ts": stamp(first), "last_ts": stamp(last), "attribution": "token"}, run=run)]:
                 rows.extend(tr.feed(rec))
         out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
                                   "ingest", "joinEgress"], f"""
@@ -1154,6 +1155,34 @@ class GraphGrades(unittest.TestCase):
             {json.dumps(rows)}.forEach(ingest); joinEgress();
             process.stdout.write(JSON.stringify([...S.effects.values()].map(e => e.call)));"""))
         self.assertEqual(out, [case[-1] for case in cases])
+
+    def test_an_egress_total_the_signer_put_in_its_run_by_identity_links_to_no_call(self):
+        """Sent with the caller's identity, not a run token, a total is in that owner's latest open run: a guess."""
+        needs_node(self)
+        out = json.loads(page_js(["joinEgress", "effectHow"], """
+            const a = { id: "r1|c1", start: 1, end: 10, pre: { session_id: "r1" }, v2: { decision: "allow" },
+              denied: false, approvals: [] };
+            const fx = attribution => ({ call: null, rec: { session_id: "r1", v2: { effect: { kind: "net" }, attribution,
+              first_ts: "1970-01-01T00:00:02.000000Z", last_ts: "1970-01-01T00:00:04.000000Z" } } });
+            const S = { recs: [1], actList: [a], effects: new Map([["t", fx("token")], ["i", fx("identity")]]) };
+            joinEgress();
+            process.stdout.write(JSON.stringify([...S.effects.values()].map(e => [e.call, effectHow(e)])));"""))
+        self.assertEqual(out[0][0], "r1|c1")
+        self.assertIsNone(out[1][0])
+        self.assertIn("latest open run", out[1][1])
+
+    def test_an_egress_totals_tape_row_says_whether_it_matched_a_call(self):
+        """Its Happened column read NOT JOINED YET for good: the run's analysis joins only a kernel sensor's effects."""
+        needs_node(self)
+        out = json.loads(page_js(["esc", "reader", "tapeRow"], """
+            const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", selected = null, V2 = true;
+            const total = seq => ({ ts: 1, i: seq, agent: { name: "signer" }, ev: "EFFECT", text: "EFFECT · net api.example:443",
+              rec: { session_id: "r1", v2: { run_seq: seq, effect: { kind: "net", target: "api.example:443", claim: null } } } });
+            const S = { effects: new Map([["r1|1", { call: "r1|c1", status: null }], ["r1|2", { call: null, status: null }]]) };
+            process.stdout.write(JSON.stringify([total(1), total(2)].map(r => tapeRow(r, ""))));"""))
+        self.assertIn("TIME MATCH", out[0])
+        self.assertIn("RUN TOTAL", out[1])
+        self.assertNotIn("NOT JOINED YET", "".join(out))
 
     def test_graph_redraws_when_eviction_replaces_a_linked_egress_total(self):
         needs_node(self)
@@ -1180,7 +1209,8 @@ class GraphGrades(unittest.TestCase):
               tool_name: "Bash", v2: { run_seq: seq, decision: "allow" } });
             const effect = (seq, t, host) => ({ ...row(seq, "tk_alert", t, null), tape: "EFFECT",
               v2: { run_seq: seq, effect: { kind: "net", target: host, claim: null },
-                first_ts: new Date((t - .5) * 1000).toISOString(), last_ts: new Date((t - .5) * 1000).toISOString() } });
+                first_ts: new Date((t - .5) * 1000).toISOString(), last_ts: new Date((t - .5) * 1000).toISOString(),
+                attribution: "token" } });
             [row(1, "PreToolUse", 1, "c1"), row(2, "PostToolUse", 3, "c1"), effect(3, 3, "old.example"),
               row(4, "PreToolUse", 4, "c2"), row(5, "PostToolUse", 6, "c2")].forEach(accept);
             joinEgress(); renderWhyView(); const before = $("whyv").innerHTML;
