@@ -241,7 +241,10 @@ heredoc or herestring), `awk` programs and sed's `e` command. The POSIX shells i
 with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`), up to 256; past that, a brace
 with `..` that isn't a plain sequence of two numbers or two letters, or a substitution in such a word, is unreadable. `time` before a group or another
 compound command times what follows, which is read as the command. Variables are not expanded and encodings are
-not decoded: those stay tripwire territory. A command it cannot parse, or one that is
+not decoded: those stay tripwire territory. A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
+read twice, as written and as gone, because bash drops it when they expand to nothing: `git $X push --force` is
+also `git push --force`. A backslash-newline is gone before the words are read, as in bash; one after `$` or between
+two operator characters is unreadable. A command it cannot parse, or one that is
 opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a
 literal name is fine), a shell or interpreter reading its program from a pipe or file, `xargs -I` putting its input
 into a script or command name, sed's `s///e`.
