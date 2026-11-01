@@ -310,7 +310,7 @@ class ApprovalStateSpace(unittest.TestCase):
     arguments get TK-APPROVAL-MISMATCH and a signed approval.binding_mismatch once the call has an approval, and
     TK-APPROVAL-REQUIRED before; a complete with the other arguments is refused; an attempt completed without running
     under its own consumed approval (a retry's reuse spends it for the retry) gives the run a signed
-    executed_against_policy gap, and a run with none has none; an abandoned approval runs nothing; nothing raises but a
+    executed_against_policy gap, one per such complete; an abandoned approval runs nothing; nothing raises but a
     refusal (RPCError). Each space must reach every outcome these invariants are about, so none holds only because it
     was never reached; the retry space starts from an approved call (RETRY_PREFIX)."""
 
@@ -323,7 +323,7 @@ class ApprovalStateSpace(unittest.TestCase):
             for run_id, (seq, gap, mismatch) in expect.items():
                 kinds = [e["data"].get("kind") for e in events if e["run_id"] == run_id and e["type"] == "capture.gap"]
                 mismatches = sum(e["run_id"] == run_id and e["type"] == "approval.binding_mismatch" for e in events)
-                if ("executed_against_policy" in kinds) != gap or mismatches != mismatch:
+                if kinds.count("executed_against_policy") != gap or mismatches != mismatch:
                     wrong.append((seq, "records", kinds, mismatches, gap, mismatch))
             expect.clear()
             shutil.rmtree(d)
@@ -339,7 +339,7 @@ class ApprovalStateSpace(unittest.TestCase):
             run = {"run_id": reg["run_id"], "run_token": reg["run_token"]}
             call = {**run, "stream": "s", "tool_call_id": "tc-1"}
             state = {"cseq": 0, "step": 0, "decision": {}, "aid": None, "answer": {}, "used": {}, "ran": 0,
-                     "ran_at": set(), "abandoned": False, "early": False, "mismatch": 0}
+                     "ran_at": set(), "abandoned": False, "early": 0, "mismatch": 0}
 
             def rpc(name, req):   # a fresh request_id per step: a reused one would answer from the cache
                 try:
@@ -414,7 +414,7 @@ class ApprovalStateSpace(unittest.TestCase):
                         elif attempt in state["ran_at"]:
                             reached.add("completed after it ran")
                         else:
-                            state["early"] = True
+                            state["early"] += 1
                             reached.add("completed before it ran")
             expect[run["run_id"]] = (seq, state["early"], state["mismatch"])
         close_and_check()
