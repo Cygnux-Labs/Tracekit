@@ -550,7 +550,8 @@ def analyse(path: str) -> Dict[str, Any]:
         al = alerts(run, g)
         return {"run": run, "graph": g, "alerts": al, "summary": run_summary(run, g, al)}
     except Exception as e:
-        print(f"tracekit why: cannot analyse {path}: {e}", file=sys.stderr)
+        if not (isinstance(e, FileNotFoundError) and not os.path.exists(os.path.join(path, "events.jsonl"))):
+            print(f"tracekit why: cannot analyse {path}: {e}", file=sys.stderr)
         return {"summary": broken_summary(path, e), "alerts": []}
 
 

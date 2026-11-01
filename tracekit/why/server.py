@@ -199,6 +199,8 @@ class Store:
             return hit[1]
         # lean: keeps each run (blobs included) in memory for the server's life; cache summaries only if that grows
         a = analyse(path)
+        if a.get("run") is None and _stat(path) is None:   # its folder is mid-replace (view.mirror_run): not a failed run
+            return hit[1] if hit else a   # not cached: the next scan, which sees the new folder, analyses it
         self._cache[path] = (st, a)
         return a
 

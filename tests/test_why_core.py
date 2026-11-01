@@ -11,11 +11,13 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from tracekit.why import System, build_graph, counterfactual, load_run, taint, target_hits, verify
 from tracekit.why.analysis import LINEAGE_CHAINS, _ended, influence_graph, investigation, lineage
 from tracekit.why.cli import main as cli
 from tracekit.why.core import GENESIS, Ref, Runtime, Tape, ablation_matches, event_hash, referenced_refs
+from tracekit.why import server
 from tracekit.why.server import IngestError, Store
 from tracekit.why.view import run_detail
 from tracekit.why.demo import EXFIL_TARGET, REFUND_TARGET, SYSTEM
@@ -324,6 +326,37 @@ class StoreRequests(Tmp):
         shutil.rmtree(os.path.join(store.root, "r"))
         store.scan(announce=False)
         self.assertEqual(store.ingest({"events": run.events, "blobs": blobs})["accepted"], len(run.events))
+
+    def test_a_run_replaced_during_its_analysis_is_skipped_for_that_scan(self):
+        """view.mirror_run's first rename can land between the scan's stat and the analysis: the run was cached as
+        failed, with a "cannot analyse" line on stderr."""
+        store = Store(os.path.join(self.tmp, "srv"))
+        SYSTEM.run(seed=0, out_dir=store.root, run_id="r", signer=False)
+        path = os.path.join(store.root, "r")
+        events = os.path.join(path, "events.jsonl")
+        real = server.analyse
+
+        def replaced(p):
+            os.rename(p, aside)
+            return real(p)
+
+        for cached in (False, True):   # a run analysed by an earlier scan keeps its analysis
+            with self.subTest(cached=cached):
+                aside = path + ".aside"
+                if cached:
+                    store.scan(announce=False)
+                    os.utime(events, (1, 1))   # the run grew
+                with mock.patch.object(server, "analyse", replaced), contextlib.redirect_stderr(io.StringIO()) as err:
+                    store.scan(announce=False)
+                self.assertEqual(err.getvalue(), "")
+                if cached:
+                    self.assertNotIn("broken", store.analysed(path)["summary"])
+                else:
+                    self.assertNotIn(path, store._cache)
+                os.rename(aside, path)
+                os.utime(events, (2, 2))   # the new import's events differ
+                store.scan(announce=False)
+                self.assertNotIn("broken", store.analysed(path)["summary"])
 
 
 def load_run_from(run, events):
