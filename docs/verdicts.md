@@ -34,15 +34,18 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 
 The composite action can verify v2 bundles against a pinned trust config. Pass its path with `trust`; the file must be
 available to the workflow. Get the trust file from the sender directly, not from the pull request or the
-`<run>.trust.json` file that `tracekit last` writes next to the bundle. The default `require-anchor: true` accepts a v2
-bundle only when verification with that trust config succeeds. For v1 bundles, continue to pass `key` or `witness`;
-the action checks the v1 `trust root` result.
+`<run>.trust.json` file that `tracekit last` writes next to the bundle. A trust file in the repository is only as
+trusted as the commit it's read from: on `pull_request` the pull request's author can change it, so run the check on
+`push` to a protected branch, or keep the trust file outside the repository. The default `require-anchor: true`
+accepts a v2 bundle only when verification with that trust config succeeds. For v1 bundles, continue to pass `key` or
+`witness`; the action checks the v1 `trust root` result.
 
 ```yaml
 - uses: Cygnux-Labs/Tracekit@main
   with:
     bundle: run.tkb
     trust: .tracekit/trust.json
+    strict: "true"
 ```
 
 ## Integrity
