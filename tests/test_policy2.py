@@ -875,7 +875,7 @@ class Shell(unittest.TestCase):
             "npm ci && npm run build && npm test": [["npm", "ci"], ["npm", "run", "build"], ["npm", "test"]],
             "ls -la | grep foo | wc -l": [["ls", "-la"], ["grep", "foo"], ["wc", "-l"]],
             "python3 -m pip install -e '.[dev]'": [["python3", "-m", "pip", "install", "-e", ".[dev]"]],
-            "for f in *.py; do black $f; done": [["black", "$f"]],
+            "for f in *.py; do black $f; done": [["black", "$f"], ["black"]],   # and as bash runs it when $f is empty
             "if [ -f x ]; then make; fi": [["[", "-f", "x", "]"], ["make"]],
             "(cd sub && make) > log 2>&1 &": [["cd", "sub"], ["make"]],
             "echo hi # sudo id": [["echo", "hi"]],
@@ -1348,7 +1348,7 @@ class TimedAndBraced(unittest.TestCase):
                             ("alpha ${X+$'}'} -rf x #'", ["${X+$'}'}", "-rf", "x"]),
                             ('alpha ${X+$"}"} -rf x #"', ['${X+$"}"}', "-rf", "x"]),
                             ('alpha ${X+"}"}{-r,-f} x #"', ['${X+"}"}-r', '${X+"}"}-f', "x"])):
-            self.assertEqual(argvs(line), [["alpha"] + words], line)
+            self.assertEqual(argvs(line)[0], ["alpha"] + words, line)
         for line in ("alpha ${X+$'\\'}'} -rf x #'", "alpha ${X:-'$(beta)'}", 'alpha "${X+"}"}" -rf x #"',
                      "alpha \"${X+'}'}\" -rf x #'", "alpha \"${X:-'$(beta)'}\""):
             with self.assertRaises(shell.ParseError, msg=line):
@@ -1365,10 +1365,29 @@ class TimedAndBraced(unittest.TestCase):
                            ("alpha 'a" + c + "b'", [["alpha", "a" + c + "b"]])):
             self.assertEqual(argvs(line), want, line)
         self.assertIn(["alpha", "x"], argvs("cat <<E" + c + "OF\n$(alpha x)\nEOF"))
+        self.assertIn(["alpha", "x"], argvs("cat <<EOF\nx\nEO" + c + "F\nalpha x\nEOF"))   # the body ends at EO\<nl>F
         for line in ('alpha "$' + c + '(beta x)"', "alpha $" + c + "'\\x2drf' x", "alpha $" + c + '{X+"}"}{-r,-f} x',
-                     "f" + c + "unction g { alpha x; }; g", "alpha x 2" + c + "> out", "alpha x {fd}" + c + "> out"):
+                     "f" + c + "unction g { alpha x; }; g", "alpha x 2" + c + "> out", "alpha x {fd}" + c + "> out",
+                     "true $(( $" + c + "(alpha x) ))", "y='$(alpha x)'; (" + c + "( z = a[$y] ))",
+                     "y='$(alpha x)'; $(" + c + "( a[$y] ))", "y='$(alpha x)'; le" + c + "t z=a[$y]"):
             with self.assertRaises(shell.ParseError, msg=line):
                 shell.parse(line)
+
+    def test_a_word_of_only_expansions_is_also_read_as_gone(self):
+        """bash drops an unquoted word made only of expansions that expand to nothing, so `git $X push --force` runs
+        `git push --force` when X is unset; the commands are read both ways, and a rule matches either."""
+        for line, empty in (("git $X push --force origin main", ["git", "push", "--force", "origin", "main"]),
+                            ("terraform ${X:-} destroy", ["terraform", "destroy"]), ("rm $(true) -rf ~/", ["rm", "-rf", "~/"]),
+                            ("$X git push -f", ["git", "push", "-f"]), ("sudo $X `true` rm -rf /", ["rm", "-rf", "/"])):
+            self.assertIn(empty, argvs(line), line)
+        for line in ('git "$X" push', "git $'' push", "git -$X push", "git $((0)) push", "git <(true) push"):
+            self.assertEqual(len(argvs(line)), 1 + line.startswith("git <("), line)   # a word that stays a word
+        self.assertEqual(argvs("echo $X rm -rf / > notes.txt"), [["echo", "$X", "rm", "-rf", "/"]])   # data, not run
+        e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
+        for plain in ("git push --force origin main", "terraform destroy -auto-approve", "rm -rf ~/"):
+            name, rest = plain.split(" ", 1)
+            self.assertEqual(e.decide("Bash", {"command": f"{name} $TK_UNSET {rest}"})["verdict"],
+                             e.decide("Bash", {"command": plain})["verdict"], plain)
 
     def test_a_deep_substitution_beside_a_brace_is_unreadable_not_a_crash(self):
         with self.assertRaises(shell.ParseError):

@@ -161,7 +161,9 @@ def analyse(command, persistent_target=None):
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
     arithmetic = re.compile(r"\$\(\(|\(\(|\blet\b|\b(?:declare|local|typeset)\b[^\n]*\s-i\b|\$\{[A-Za-z_][A-Za-z0-9_]*\[")
-    for line in command.splitlines():
+    if re.search(r"[;&|<>()](?:\\\n)+[;&|<>()]", command):   # bash joins `(\<newline>(` into `((`
+        raise ParseError("a backslash-newline inside an operator is not supported")
+    for line in command.replace("\\\n", "").splitlines():   # bash deletes a backslash-newline before it reads
         has_context = any(marker in line for marker in ("$((", "((", "let ", "declare ", "local ", "typeset ", "${"))
         test_open = line.find("[[")
         has_test_context = test_open >= 0 and any(line.find(op, test_open + 2) >= 0 for op in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge"))
@@ -796,7 +798,7 @@ class _Parser:
             self.gap()
 
     def simple(self, pid, piped=False):
-        words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
+        words, globs, names, strings, docs, idx, spans, here, vanish = [], [], [], [], [], [], [], [], []
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
         dynamic = False
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
@@ -804,7 +806,7 @@ class _Parser:
         def untime():   # the words so far only time what follows: read that as the command's start
             nonlocal timed
             if timed and timed == len(words):
-                del words[:], globs[:], names[:], idx[:], spans[:]
+                del words[:], globs[:], names[:], idx[:], spans[:], vanish[:]
                 timed = 0
         while True:
             self.blank()
@@ -898,6 +900,7 @@ class _Parser:
                 spans.append(None if expanded or pieces is not None else (len(self.out) - 1, start, self.i))
                 globs.append(g)
                 names.append(g or (expanded and _name_unreadable(text)))
+                vanish.append(self.vanish)
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         self.progs += [idx[k] for k in _programs(words, cmds)]
         git_stdin_message = _git_stdin_message(words)
@@ -907,6 +910,12 @@ class _Parser:
         # evaluated as its own policy input.
         data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
             not _redefined(self.ctx["redefined"], words[0])
+        if not data and any(vanish) and not all(vanish):
+            # bash drops a word made only of expansions when they expand to nothing (an unset $X): read that too
+            kept = [i for i, v in enumerate(vanish) if not v]
+            alt = [words[i] for i in kept]
+            self.emit(alt, pid, self.via, any(globs), [names[i] for i in kept])
+            self.ctx["lines"] += _lines(alt, [0])
         marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
@@ -1119,7 +1128,15 @@ class _Parser:
                     raise ParseError(f"heredoc {d['delim']} not terminated")
                 j = s.find("\n", self.i)
                 end = len(s) if j < 0 else j
-                line, at, self.i = s[self.i:end], self.i, min(end + 1, len(s))
+                parts, at, self.i = [s[self.i:end]], self.i, min(end + 1, len(s))
+                # an unquoted heredoc: bash deletes a backslash-newline before it compares a line with the delimiter
+                while d["expand"] and j >= 0 and (len(parts[-1]) - len(parts[-1].rstrip("\\"))) % 2:
+                    parts[-1] = parts[-1][:-1]
+                    j = s.find("\n", self.i)
+                    end = len(s) if j < 0 else j
+                    parts.append(s[self.i:end])
+                    self.i = min(end + 1, len(s))
+                line = "".join(parts)
                 if (line.lstrip("\t") if d["strip"] else line) == d["delim"]:
                     break
                 lines.append(line)
@@ -1155,11 +1172,13 @@ class _Parser:
     def word(self):
         """Return (text, raw source, has an unquoted glob or brace expansion, has a parameter expansion or command
         substitution), or None at an operator or the end. The raw source leaves out an unquoted backslash-newline:
-        bash deletes it before it reads the word, so `ti\\<newline>me` is the keyword time."""
-        s, start, buf, bare, exp, joins = self.s, self.i, [], [], self.ctx["exp"], []
+        bash deletes it before it reads the word, so `ti\\<newline>me` is the keyword time. self.vanish: the word is only
+        unquoted parameter expansions and command substitutions, which bash drops when they expand to nothing."""
+        s, start, buf, bare, exp, joins, alone = self.s, self.i, [], [], self.ctx["exp"], [], True
         while self.i < len(s):
             c = s[self.i]
             if c in "<>" and self.peek(1) == "(":
+                alone = False   # a process substitution is a file name, never nothing
                 at = self.i
                 self.i += 2
                 self.ctx["exp"] += 1
@@ -1173,26 +1192,32 @@ class _Parser:
                     joins.append(self.i)
                 else:
                     buf.append(s[self.i + 1:self.i + 2])
+                    alone = False
                 self.i += 2
             elif c == "'":
+                alone = False
                 j = s.find("'", self.i + 1)
                 if j < 0:
                     raise ParseError("unterminated '")
                 buf.append(s[self.i + 1:j])
                 self.i = j + 1
             elif c == '"':
+                alone = False
                 self.i += 1
                 buf.append(self.dquote('"'))
             elif c == "$":
+                alone = alone and not self.at("$((") and (self.peek(1) in ("(", "{") or bool(_NAME.match(s, self.i + 1)))
                 buf.append(self.dollar(False))
             elif c == "`":
                 buf.append(self.backtick())
             else:
+                alone = False
                 bare.append(c)
                 buf.append(c)
                 self.i += 1
         if self.i == start:
             return None
+        self.vanish = alone and self.ctx["exp"] != exp
         bare = self.bare = "".join(bare)   # neither pattern backtracks: each scan from a `[` or `{` stops at the next bracket
         glob = re.search(r"[*?]|\[[^][]+\]", bare) or any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
         raw = "".join(s[a + 2:b] for a, b in zip([start - 2] + joins, joins + [self.i]))
@@ -1344,6 +1369,8 @@ class _Parser:
             if k != j - 1:
                 raise ParseError("$(( that is not arithmetic (a subshell inside $( )) is not supported")
             arithmetic_body = s[self.i + 3:j]
+            if "\\\n" in arithmetic_body:   # bash joins the lines first, so the body may hold a $( this text doesn't
+                raise ParseError("a backslash-newline in $(( )) is not supported")
             possible_subscript = re.sub(r"\$\{[^{}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", "", arithmetic_body)
             builds_substitution = re.search(r"\$\{[^{}]*\$\}\s*\(", arithmetic_body)
             line_start = s.rfind("\n", 0, self.i) + 1
