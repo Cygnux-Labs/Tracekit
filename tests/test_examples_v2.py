@@ -26,7 +26,8 @@ class Examples(unittest.TestCase):
         cls.dir = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # macOS caps socket paths
         cls.addClassCleanup(shutil.rmtree, cls.dir, True)
         home = os.path.join(cls.dir, "home")
-        for sub in (("AppData", "Local"), ("AppData", "Roaming"), ("local",), ("data",)):   # CrewAI's imports ask Windows for these
+        # importing crewai on Windows asks for these folders (#391)
+        for sub in (("AppData", "Local"), ("AppData", "Roaming"), ("local",), ("data",)):
             os.makedirs(os.path.join(home, *sub), exist_ok=True)
         cls.env = dict(os.environ, HOME=home, USERPROFILE=home, LOCALAPPDATA=os.path.join(home, "local"),
                        XDG_DATA_HOME=os.path.join(home, "data"), TRACEKIT_RUNTIME_DIR=os.path.join(cls.dir, "run"),

@@ -8,9 +8,9 @@ How: `hooks(run)` from the integration, registered with CrewAI's `register_befor
 `register_after_tool_call_hook`. The before hook decides each call before it runs and the after hook records the
 outcome ([the integration page](../../../docs/integrations/crewai.md)).
 
-Path: the scripted model returns `False` from `supports_function_calling()`, so CrewAI doesn't use native tool calls
-for it (`Agent._supports_native_tool_calling` is false) and drives it through its text/ReAct path (`Action:` /
-`Action Input:`). The before hook fires for all three calls.
+Path: the scripted model doesn't offer native tool calls (`supports_function_calling()` is False), so CrewAI drives
+it through its text (ReAct) path (`Action:` / `Action Input:`). The before hook fires for all three calls. CrewAI's
+telemetry and execution tracing are off, so nothing is sent to CrewAI.
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate

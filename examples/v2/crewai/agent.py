@@ -14,6 +14,7 @@ from story import HELD, RISKY, SAFE, approver, export_and_verify   # noqa: E402
 
 os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ["CREWAI_TRACING_ENABLED"] = "false"   # offline: no execution traces sent to CrewAI
 
 from crewai import Agent, BaseLLM, Crew, Task   # noqa: E402
 from crewai.hooks import register_after_tool_call_hook, register_before_tool_call_hook   # noqa: E402
@@ -104,6 +105,6 @@ with Client().run(agent="crewai-example") as run, approver(run.client, run.run_i
         expected_output="Commands executed.",
         agent=agent,
     )
-    crew = Crew(agents=[agent], tasks=[task], verbose=False)
+    crew = Crew(agents=[agent], tasks=[task], verbose=False, tracing=False)
     print(crew.kickoff())
 sys.exit(export_and_verify(run.run_id))
