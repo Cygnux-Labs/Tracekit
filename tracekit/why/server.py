@@ -199,6 +199,14 @@ class Store:
             return hit[1]
         # lean: keeps each run (blobs included) in memory for the server's life; cache summaries only if that grows
         a = analyse(path)
+        if a.get("run") is None:   # view.mirror_run replaces a growing run's folder with two renames: not a failed run
+            now = _stat(path)
+            if now is None:   # between them: not cached, so the next scan, which sees the new folder, analyses it
+                # lean: a run never analysed before shows as failed to a listing that lands between the renames, for
+                # that one response; have workspace skip such a run if it shows up
+                return hit[1] if hit else a
+            if now != st:   # the new folder arrived during the analysis
+                st, a = now, analyse(path)
         self._cache[path] = (st, a)
         return a
 
