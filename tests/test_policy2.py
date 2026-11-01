@@ -1284,6 +1284,59 @@ class Shell(unittest.TestCase):
         self.assertNotIn("data_words", unsafe)
 
 
+class TimedAndBraced(unittest.TestCase):
+    """bash's `time` keyword before a compound command, and brace expansion in arguments, read as bash runs them
+    (checked against bash itself: stub programs that record their argv)."""
+
+    def test_time_before_a_compound_command_times_that_command(self):
+        for line in ("time { alpha x; }", "time -p { alpha x; }", "time -- { alpha x; }", "time ! { alpha x; }",
+                     "time ( alpha x )", "time { { alpha x; }; }"):
+            self.assertEqual(argvs(line), [["alpha", "x"]], line)
+        self.assertEqual(argvs("time alpha x"), [["time", "alpha", "x"], ["alpha", "x"]])   # still a wrapper
+        for line in ("time function g { alpha; }; g", "time case x in x) alpha;; esac"):
+            with self.assertRaises(shell.ParseError, msg=line):
+                shell.parse(line)
+
+    def test_a_deny_corpus_command_timed_as_a_group_is_decided_at_least_as_strictly(self):
+        e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
+        rank = ("allow", "flag", "ask", "deny").index
+        with open(os.path.join(CORPUS, "deny", "shell.jsonl")) as f:
+            for row in map(json.loads, f):
+                cmd = row["args"].get("command")
+                if not isinstance(cmd, str) or "<<" in cmd:   # a heredoc's terminator line can't take the `; }`
+                    continue
+                plain, timed = e.decide("Bash", {"command": cmd}), e.decide("Bash", {"command": f"time {{ {cmd}; }}"})
+                self.assertGreaterEqual(rank(timed["verdict"]), rank(plain["verdict"]), row.get("note"))
+
+    def test_brace_expansion_in_an_argument_makes_the_words_bash_makes(self):
+        for line, words in (
+                ("alpha -{r,f}", ["-r", "-f"]), ("alpha {x,y}z", ["xz", "yz"]), ("alpha x{,y}", ["x", "xy"]),
+                ("alpha {a,{b,c}}d", ["ad", "bd", "cd"]), ("alpha {1..3}", ["1", "2", "3"]),
+                ("alpha {c..a}", ["c", "b", "a"]), ("alpha {-1..1}", ["-1", "0", "1"]),
+                ("alpha {a,b}{c,d}", ["ac", "ad", "bc", "bd"]), ("alpha p{a,b}q", ["paq", "pbq"]),
+                ("alpha --x={a,b}", ["--x=a", "--x=b"]), ("alpha {a,'b,c'}", ["a", "b,c"]),
+                ('alpha {a,"b c"}', ["a", "b c"]), ("alpha {,}", []),
+                # kept as written: quoted, escaped, no comma or sequence, unclosed, ANSI-C quoted
+                ("alpha '{a,b}'", ["{a,b}"]), ('alpha "{a,b}"', ["{a,b}"]), ("alpha \\{a,b}", ["{a,b}"]),
+                ("alpha {a}", ["{a}"]), ("alpha {}", ["{}"]), ("alpha {a,b", ["{a,b"]), ("alpha $'{a,b}'", ["{a,b}"])):
+            self.assertEqual(argvs(line), [["alpha"] + words], line)
+        self.assertTrue(shell.parse("{alpha,beta} x")[0]["opaque"])   # a command name brace-expanded stays unreadable
+        for line in ("alpha {1..10..2}", "alpha {01..03}", "alpha {a..A}", "alpha {1..1000}", "alpha {a,b}$(beta)",
+                     "alpha " + "{a,b}" * 9):
+            with self.assertRaises(shell.ParseError, msg=line):
+                shell.parse(line)
+
+    def test_brace_expansion_stays_within_the_parse_budget(self):
+        for line in ("alpha " + "{a,b}" * 20000, "alpha " + "{" * 30000 + "a,b" + "}" * 30000,
+                     "alpha " + "x{a,b}" * 3000 + " {1..3}"):
+            t = time.perf_counter()
+            try:
+                shell.parse(line)
+            except shell.ParseError:
+                pass
+            self.assertLess(time.perf_counter() - t, 1.0, line[:40])
+
+
 class Classes(unittest.TestCase):
     def test_hosts_in_any_notation_read_as_their_address(self):
         for url in ("http://169.16689662/", "http://169.254.43518/", "http://0xa9.0xfe.0xa9.0xfe/", "http://2852039166/",
