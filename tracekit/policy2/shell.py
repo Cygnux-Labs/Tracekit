@@ -128,6 +128,9 @@ _VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typese
                              "let", "eval", "unset"}
 _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
+_GLOB = re.compile(r"[*?]|\[[^][]+\]")   # a pathname pattern in a word's unquoted text
+# "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
+_ALL_ITEMS = re.compile(r'"\$(?:@|\{@[^"`$]*\}|\{[A-Za-z_][A-Za-z0-9_]*\[@\][^"`$]*\})"')
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
 # lean: interpreter code is scanned for string or list literals passed to a process-spawning call (with or without
 # parentheses: perl's and ruby's `system "x"`), plus backticks in perl/ruby/php, and sed's `e` command; code that builds
@@ -695,6 +698,7 @@ class _Parser:
         self.cwd_changed = False
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
         self.data_steps = []
+        self.gone = set()   # indexes in self.out of words bash drops when their expansions are empty
         self.charge(len(src))
 
     def charge(self, n):
@@ -729,6 +733,10 @@ class _Parser:
         if self.out[-1:] == [";"]:   # the separator list() put after the last pipeline; a `;` word before it stays
             self.out.pop()
         lines = _lines(self.out, self.progs)
+        if self.gone:   # the line again as bash runs it when those words' expansions are empty
+            keep = [i for i in range(len(self.out)) if i not in self.gone]
+            at = {i: k for k, i in enumerate(keep)}
+            lines += _lines([self.out[i] for i in keep], [at[p] for p in self.progs if p in at])
         self.ctx["lines"] += lines
         self.ctx["kept_batches"].append((self.out.copy(), self.progs.copy(), self.data_steps.copy()))
 
@@ -900,7 +908,7 @@ class _Parser:
                 spans.append(None if expanded or pieces is not None else (len(self.out) - 1, start, self.i))
                 globs.append(g)
                 names.append(g or (expanded and _name_unreadable(text)))
-                vanish.append(self.vanish)
+                vanish.append(self.vanish or bool(_GLOB.search(self.bare)))   # a glob matching nothing, under nullglob
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         self.progs += [idx[k] for k in _programs(words, cmds)]
         git_stdin_message = _git_stdin_message(words)
@@ -911,11 +919,12 @@ class _Parser:
         data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
             not _redefined(self.ctx["redefined"], words[0])
         if not data and any(vanish) and not all(vanish):
-            # bash drops a word made only of expansions when they expand to nothing (an unset $X): read that too
+            # bash drops a word made only of expansions when they expand to nothing (an unset $X): read that too, its
+            # commands also as the ones that read this command's stdin, heredoc and herestring (`| sh $X` is `| sh`)
             kept = [i for i, v in enumerate(vanish) if not v]
             alt = [words[i] for i in kept]
-            self.emit(alt, pid, self.via, any(globs), [names[i] for i in kept])
-            self.ctx["lines"] += _lines(alt, [0])
+            cmds = cmds + self.emit(alt, pid, self.via, any(globs), [names[i] for i in kept])
+            self.gone.update(idx[i] for i, v in enumerate(vanish) if v)   # and the line without them (flush)
         marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
@@ -1202,7 +1211,7 @@ class _Parser:
                 buf.append(s[self.i + 1:j])
                 self.i = j + 1
             elif c == '"':
-                alone = False
+                alone = alone and bool(_ALL_ITEMS.match(s, self.i))
                 self.i += 1
                 buf.append(self.dquote('"'))
             elif c == "$":
@@ -1219,16 +1228,16 @@ class _Parser:
             return None
         self.vanish = alone and self.ctx["exp"] != exp
         bare = self.bare = "".join(bare)   # neither pattern backtracks: each scan from a `[` or `{` stops at the next bracket
-        glob = re.search(r"[*?]|\[[^][]+\]", bare) or any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
+        glob = _GLOB.search(bare) or any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
         raw = "".join(s[a + 2:b] for a, b in zip([start - 2] + joins, joins + [self.i]))
         return "".join(buf), raw, bool(glob), self.ctx["exp"] != exp
 
     def sub(self, label):
-        saved = self.via, self.out, self.progs, self.data, self.data_steps
-        self.via, self.out, self.progs, self.data, self.data_steps = self.via + [label], [], [], set(), []
+        saved = self.via, self.out, self.progs, self.data, self.data_steps, self.gone
+        self.via, self.out, self.progs, self.data, self.data_steps, self.gone = self.via + [label], [], [], set(), [], set()
         self.list(")")
         self.flush()
-        self.via, self.out, self.progs, self.data, self.data_steps = saved
+        self.via, self.out, self.progs, self.data, self.data_steps, self.gone = saved
 
     def arith(self):
         """Read `$(( ))` from after its `$((`, running the substitutions in it; dollar() calls it only when the text
