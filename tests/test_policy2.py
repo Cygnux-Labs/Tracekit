@@ -1336,6 +1336,20 @@ class TimedAndBraced(unittest.TestCase):
             with self.assertRaises(shell.ParseError, msg=line):
                 shell.parse(line)
 
+    def test_a_parameter_expansion_ends_where_bash_ends_it(self):
+        """Quotes pair up and a backslash escapes in ${...}: a } there doesn't end it. With X unset, bash runs
+        `alpha ${X+"}"} -rf x #"` as alpha -rf x (the rest is a comment)."""
+        for line, words in (('alpha ${X:-"it\'s"} -rf', ['${X:-"it\'s"}', "-rf"]), ("alpha ${X:-'a b'} -rf", ["${X:-'a b'}", "-rf"]),
+                            ("alpha ${X+\\}} -rf", ["${X+\\}}", "-rf"]), ('alpha ${X//\\"/} -rf', ['${X//\\"/}', "-rf"]),
+                            ('alpha ${X+"\\""}{-r,-f}', ['${X+"\\""}-r', '${X+"\\""}-f']),
+                            ("alpha ${X+{}{-r,-f}", ["${X+{}{-r,-f}"])):   # bash's brace scan nests a { in ${...}
+            self.assertEqual(argvs(line), [["alpha"] + words], line)
+        for line in ('alpha ${X+"}"} -rf x #"', "alpha ${X+'}'} -rf x #'", "alpha ${X+$'}'} -rf x #'",
+                     "alpha ${X+$'\\'}'} -rf x #'", 'alpha ${X+$"}"} -rf x #"', 'alpha "${X+"}"}" -rf x #"',
+                     'alpha ${X+"}"}{-r,-f} x #"', "alpha \"${X+'}'}\" -rf x #'", "alpha \"${X:-'$(beta)'}\""):
+            with self.assertRaises(shell.ParseError, msg=line):
+                shell.parse(line)
+
     def test_a_deep_substitution_beside_a_brace_is_unreadable_not_a_crash(self):
         with self.assertRaises(shell.ParseError):
             shell.parse("alpha $(: #" + "$(" * 1000 + "\n)*{a,b}")
