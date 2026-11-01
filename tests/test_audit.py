@@ -57,6 +57,12 @@ class TestAudit(unittest.TestCase):
         self.assertNotIn("text", report["calls"][0])   # the command text only with --show
         self.assertIn("not a signed record", report["disclaimer"])
 
+    def test_a_subagents_calls_count_under_its_session(self):
+        _write_jsonl(self.root / "proj" / "s1.jsonl", [_call("Bash", {"command": "ls"})])
+        _write_jsonl(self.root / "proj" / "s1" / "subagents" / "agent-a.jsonl", [_call("Bash", {"command": "ls"})])
+        report = audit.audit(str(self.root))
+        self.assertEqual((report["sessions"], {c["session"] for c in report["calls"]}), (1, {"s1"}))
+
     def test_a_call_the_engine_fails_on_is_a_deny_as_the_signer_decides_it(self):
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         with mock.patch("tracekit.policy2.engine.Engine.decide", side_effect=RuntimeError("boom")):

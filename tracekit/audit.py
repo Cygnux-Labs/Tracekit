@@ -42,7 +42,11 @@ def _parse_since(s: str) -> float:
 
 
 def _session_from_path(path: str) -> str:
-    """Best-effort session id from a Claude Code transcript path."""
+    """Best-effort session id from a Claude Code transcript path: a subagent's file (<session>/subagents/agent-*.jsonl)
+    counts under its session."""
+    folder = os.path.dirname(path)
+    if os.path.basename(folder) == "subagents":
+        return os.path.basename(os.path.dirname(folder))
     base = os.path.basename(path)
     if base.endswith(".jsonl"):
         return base[:-6]
