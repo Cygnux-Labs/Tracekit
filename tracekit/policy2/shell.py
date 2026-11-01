@@ -129,6 +129,7 @@ _VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typese
 _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 _GLOB = re.compile(r"[*?]|\[[^][]+\]")   # a pathname pattern in a word's unquoted text
+_HOME_WORD = re.compile(r"\$(?:HOME|\{HOME\})")   # the one bare variable the packs name as a word
 # "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
 _ALL_ITEMS = re.compile(r'"\$(?:@|\{!?@[^"`$]*\}|\{!?[A-Za-z_][A-Za-z0-9_]*(?:\[@\]|@)[^"`$]*\})"')
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
@@ -699,7 +700,7 @@ class _Parser:
         self.cwd_changed = False
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
         self.data_steps = []
-        self.gone = [set(), set()]   # indexes in self.out of the words each second reading leaves out (simple)
+        self.gone = [set() for _ in range(4)]   # indexes in self.out of the words each second reading leaves out
         self.charge(len(src))
 
     def charge(self, n):
@@ -805,7 +806,7 @@ class _Parser:
 
     def simple(self, pid, piped=False):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
-        vanish, unmatched = [], []   # per word: only expansions; a pathname pattern (gone when it matches nothing)
+        vanish, unmatched, homes = [], [], []   # per word: only expansions; or a pathname pattern; a bare $HOME
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
         dynamic = False
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
@@ -813,7 +814,7 @@ class _Parser:
         def untime():   # the words so far only time what follows: read that as the command's start
             nonlocal timed
             if timed and timed == len(words):
-                del words[:], globs[:], names[:], idx[:], spans[:], vanish[:], unmatched[:]
+                del words[:], globs[:], names[:], idx[:], spans[:], vanish[:], unmatched[:], homes[:]
                 timed = 0
         while True:
             self.blank()
@@ -909,6 +910,7 @@ class _Parser:
                 names.append(g or (expanded and _name_unreadable(text)))
                 vanish.append(self.vanish)
                 unmatched.append(self.vanish or bool(_GLOB.search(self.bare)))   # under nullglob
+                homes.append(bool(_HOME_WORD.fullmatch(raw)))
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         self.progs += [idx[k] for k in _programs(words, cmds)]
         git_stdin_message = _git_stdin_message(words)
@@ -919,10 +921,13 @@ class _Parser:
         data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
             not _redefined(self.ctx["redefined"], words[0])
         # bash drops a word made only of expansions when they expand to nothing (an unset $X), and under nullglob a
-        # pattern that matches nothing: read the command without the first, and without both. Its commands are also
-        # the ones that read this command's stdin, heredoc and herestring (`| sh $X` is `| sh`).
-        for k, drop in enumerate((vanish, unmatched) if not data else ()):
-            if any(drop) and not all(drop) and (k == 0 or drop != vanish):
+        # pattern that matches nothing: read the command without the first, and without both; each also keeping a
+        # bare $HOME, which is set unless the line empties it (rules name it as a word: `rm -rf $HOME`). Its commands
+        # are also the ones that read this command's stdin, heredoc and herestring (`| sh $X` is `| sh`).
+        drops = [] if data else [vanish, [v and not h for v, h in zip(vanish, homes)],
+                                 unmatched, [u and not h for u, h in zip(unmatched, homes)]]
+        for k, drop in enumerate(drops):
+            if any(drop) and not all(drop) and drop not in drops[:k]:
                 kept = [i for i, v in enumerate(drop) if not v]
                 alt = [words[i] for i in kept]
                 more = self.emit(alt, pid, self.via, any(globs), [names[i] for i in kept])
@@ -1239,7 +1244,7 @@ class _Parser:
     def sub(self, label):
         saved = self.via, self.out, self.progs, self.data, self.data_steps, self.gone
         self.via, self.out, self.progs, self.data, self.data_steps = self.via + [label], [], [], set(), []
-        self.gone = [set(), set()]
+        self.gone = [set() for _ in range(4)]
         self.list(")")
         self.flush()
         self.via, self.out, self.progs, self.data, self.data_steps, self.gone = saved
