@@ -1321,17 +1321,24 @@ class TimedAndBraced(unittest.TestCase):
                 # kept as written: quoted, escaped, no comma or sequence, unclosed, ANSI-C quoted
                 ("alpha '{a,b}'", ["{a,b}"]), ('alpha "{a,b}"', ["{a,b}"]), ("alpha \\{a,b}", ["{a,b}"]),
                 ("alpha {a}", ["{a}"]), ("alpha {}", ["{}"]), ("alpha {a,b", ["{a,b"]), ("alpha $'{a,b}'", ["{a,b}"]),
-                ("alpha ${X:-{a,b}}", ["${X:-{a,b}}"]), ("alpha {a..c,z}", ["a..c", "z"])):
+                ("alpha ${X:-{a,b}}", ["${X:-{a,b}}"]), ("alpha {a..c,z}", ["a..c", "z"]), ("alpha {a..}", ["{a..}"]),
+                ("alpha {-rf,{}}", ["-rf", "{}"])):
             self.assertEqual(argvs(line), [["alpha"] + words], line)
         # braces inside a substitution are the substitution's own: read there, and the word outside is kept
         self.assertIn(["beta", "a", "b"], argvs("alpha $(beta {a,b})*"))
-        self.assertTrue(shell.parse("{alpha,beta} x")[0]["opaque"])   # a command name brace-expanded stays unreadable
+        for line in ("{alpha,beta} x", "{alpha,{}} x"):   # a command name brace expansion builds stays unreadable
+            self.assertTrue(shell.parse(line)[0]["opaque"], line)
         for line in ("alpha {1..10..2}", "alpha {01..03}", "alpha {a..A}", "alpha {1..1000}", "alpha {a,b}$(beta)",
                      "alpha " + "{a,b}" * 9, "alpha `#'`{-r,-f} x", "alpha {a{1,2}..b}", "alpha {x..{,}y}",
-                     "alpha {'a,b'..c}", "alpha {+1..+3}", "alpha {1.." + "9" * 30 + "}", "alpha {a..}",
+                     "alpha {'a,b'..c}", "alpha {+1..+3}", "alpha {1.." + "9" * 30 + "}", "alpha \"$(: '\"')\"{-r,-f} x",
+                     "alpha $(: #'\n){-r,-f} x",
                      "alpha {" + "a," * 300 + "a}"):
             with self.assertRaises(shell.ParseError, msg=line):
                 shell.parse(line)
+
+    def test_a_deep_substitution_beside_a_brace_is_unreadable_not_a_crash(self):
+        with self.assertRaises(shell.ParseError):
+            shell.parse("alpha $(: #" + "$(" * 1000 + "\n)*{a,b}")
 
     def test_brace_expansion_stays_within_the_parse_budget(self):
         for line in ("alpha " + "{a,b}" * 20000, "alpha " + "{" * 30000 + "a,b" + "}" * 30000,
