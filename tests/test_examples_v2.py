@@ -88,7 +88,7 @@ class Examples(unittest.TestCase):
 
     def test_llama_index(self):
         self.run_example("llama_index")
-    
+
     def test_crewai(self):
         self.run_example("crewai")
 
