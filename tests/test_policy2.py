@@ -1342,11 +1342,31 @@ class TimedAndBraced(unittest.TestCase):
         for line, words in (('alpha ${X:-"it\'s"} -rf', ['${X:-"it\'s"}', "-rf"]), ("alpha ${X:-'a b'} -rf", ["${X:-'a b'}", "-rf"]),
                             ("alpha ${X+\\}} -rf", ["${X+\\}}", "-rf"]), ('alpha ${X//\\"/} -rf', ['${X//\\"/}', "-rf"]),
                             ('alpha ${X+"\\""}{-r,-f}', ['${X+"\\""}-r', '${X+"\\""}-f']),
-                            ("alpha ${X+{}{-r,-f}", ["${X+{}{-r,-f}"])):   # bash's brace scan nests a { in ${...}
+                            ("alpha ${X+{}{-r,-f}", ["${X+{}{-r,-f}"]),   # bash's brace scan nests a { in ${...}
+                            ('alpha ${X+"}"} -rf x #"', ['${X+"}"}', "-rf", "x"]),
+                            ("alpha ${X+'}'} -rf x #'", ["${X+'}'}", "-rf", "x"]),
+                            ("alpha ${X+$'}'} -rf x #'", ["${X+$'}'}", "-rf", "x"]),
+                            ('alpha ${X+$"}"} -rf x #"', ['${X+$"}"}', "-rf", "x"]),
+                            ('alpha ${X+"}"}{-r,-f} x #"', ['${X+"}"}-r', '${X+"}"}-f', "x"])):
             self.assertEqual(argvs(line), [["alpha"] + words], line)
-        for line in ('alpha ${X+"}"} -rf x #"', "alpha ${X+'}'} -rf x #'", "alpha ${X+$'}'} -rf x #'",
-                     "alpha ${X+$'\\'}'} -rf x #'", 'alpha ${X+$"}"} -rf x #"', 'alpha "${X+"}"}" -rf x #"',
-                     'alpha ${X+"}"}{-r,-f} x #"', "alpha \"${X+'}'}\" -rf x #'", "alpha \"${X:-'$(beta)'}\""):
+        for line in ("alpha ${X+$'\\'}'} -rf x #'", "alpha ${X:-'$(beta)'}", 'alpha "${X+"}"}" -rf x #"',
+                     "alpha \"${X+'}'}\" -rf x #'", "alpha \"${X:-'$(beta)'}\""):
+            with self.assertRaises(shell.ParseError, msg=line):
+                shell.parse(line)
+
+    def test_a_backslash_newline_is_gone_before_bash_reads_the_words(self):
+        """bash deletes an unquoted backslash-newline first, so it can't hide a keyword, an assignment or a heredoc's
+        unquoted delimiter; after a $ or inside a redirection the line is unreadable."""
+        c = "\\\n"
+        for line, want in (("ti" + c + "me { alpha x; }", [["alpha", "x"]]), ("time" + c + " { alpha x; }", [["alpha", "x"]]),
+                           ("{" + c + " alpha x; }", [["alpha", "x"]]), ("!" + c + " alpha x", [["alpha", "x"]]),
+                           ("for i in 1; d" + c + "o alpha x; done", [["alpha", "x"]]),
+                           ("Y" + c + "=1 alpha x", [["alpha", "x"]]), ("al" + c + "pha -r" + c + "f x", [["alpha", "-rf", "x"]]),
+                           ("alpha 'a" + c + "b'", [["alpha", "a" + c + "b"]])):
+            self.assertEqual(argvs(line), want, line)
+        self.assertIn(["alpha", "x"], argvs("cat <<E" + c + "OF\n$(alpha x)\nEOF"))
+        for line in ('alpha "$' + c + '(beta x)"', "alpha $" + c + "'\\x2drf' x", "alpha $" + c + '{X+"}"}{-r,-f} x',
+                     "f" + c + "unction g { alpha x; }; g", "alpha x 2" + c + "> out", "alpha x {fd}" + c + "> out"):
             with self.assertRaises(shell.ParseError, msg=line):
                 shell.parse(line)
 

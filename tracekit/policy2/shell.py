@@ -856,6 +856,8 @@ class _Parser:
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
+            if raw != self.s[start:self.i] and self.peek() in ("<", ">") and re.fullmatch(r"\d+|\{\w+\}", raw):
+                raise ParseError("a backslash-newline inside a redirection is not supported")   # bash reads 2\⏎> as 2>
             self.out.append(text)
             if loop_header:
                 continue
@@ -868,7 +870,7 @@ class _Parser:
                 continue
             if not words and raw == text and text in ("case", "function", "coproc"):
                 raise ParseError(f"{text} is not supported")
-            if not words and _ASSIGN.match(self.s, start, self.i):   # within the word, as bash reads it
+            if not words and _ASSIGN.match(raw):   # within the word, as bash reads it
                 self.ctx["refs"].append(text)
                 self.ctx["command_names_mutable"] |= bool(_COMMAND_NAME_ASSIGN.match(text))
                 if (alias := _git_env_alias(text)) is not None:
@@ -1152,8 +1154,9 @@ class _Parser:
 
     def word(self):
         """Return (text, raw source, has an unquoted glob or brace expansion, has a parameter expansion or command
-        substitution), or None at an operator or the end."""
-        s, start, buf, bare, exp = self.s, self.i, [], [], self.ctx["exp"]
+        substitution), or None at an operator or the end. The raw source leaves out an unquoted backslash-newline:
+        bash deletes it before it reads the word, so `ti\\<newline>me` is the keyword time."""
+        s, start, buf, bare, exp, joins = self.s, self.i, [], [], self.ctx["exp"], []
         while self.i < len(s):
             c = s[self.i]
             if c in "<>" and self.peek(1) == "(":
@@ -1166,7 +1169,9 @@ class _Parser:
             if c in " \t\n;&|()<>":
                 break
             if c == "\\":
-                if not self.at("\\\n"):
+                if self.at("\\\n"):
+                    joins.append(self.i)
+                else:
                     buf.append(s[self.i + 1:self.i + 2])
                 self.i += 2
             elif c == "'":
@@ -1190,7 +1195,8 @@ class _Parser:
             return None
         bare = self.bare = "".join(bare)   # neither pattern backtracks: each scan from a `[` or `{` stops at the next bracket
         glob = re.search(r"[*?]|\[[^][]+\]", bare) or any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
-        return "".join(buf), s[start:self.i], bool(glob), self.ctx["exp"] != exp
+        raw = "".join(s[a + 2:b] for a, b in zip([start - 2] + joins, joins + [self.i]))
+        return "".join(buf), raw, bool(glob), self.ctx["exp"] != exp
 
     def sub(self, label):
         saved = self.via, self.out, self.progs, self.data, self.data_steps
@@ -1262,11 +1268,12 @@ class _Parser:
         self.leave()
 
 
-    def dquote(self, term):
+    def dquote(self, term, in_dq=False):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text. In a
-        `${...}` (term "}"), as in bash, a backslash escapes any character and quotes pair up. Unreadable there: a `}`
-        inside a quote, and a single quote around `}`, `$`, a backtick, a backslash or a double quote (bash versions and
-        modes read those apart)."""
+        `${...}` (term "}"; in_dq: itself inside double quotes), a backslash escapes any character and quotes pair up,
+        so a `}` inside them doesn't end it (POSIX, bash). Unreadable there: a single quote around `$`, a backtick or a
+        backslash; and in a double-quoted `${...}`, a `}` inside quotes or a single quote around `}` or `"` (bash's
+        posix mode reads those apart)."""
         self.enter()
         s, buf, quoted = self.s, [], False
         while True:
@@ -1280,14 +1287,14 @@ class _Parser:
                 continue
             if term == "}" and c == "'" and not quoted:
                 j = s.find("'", self.i + 1)
-                if j < 0 or re.search(r"[}$`\\\"]", s[self.i + 1:j]):
+                if j < 0 or re.search(r"[}$`\\\"]" if in_dq else r"[$`\\]", s[self.i + 1:j]):
                     raise ParseError("a single quote around a special character in ${...} is not supported")
                 self.i = j + 1
                 continue
             quoted ^= term == "}" and c == '"'
-            if c == term:
-                if quoted:
-                    raise ParseError("a } inside quotes in ${...} is not supported")
+            if c == term and quoted and in_dq:
+                raise ParseError("a } inside quotes in a double-quoted ${...} is not supported")
+            if c == term and not quoted:
                 self.i += 1
                 break
             if c == "\\" and self.peek(1) and self.peek(1) in '$`"\\\n':
@@ -1305,6 +1312,8 @@ class _Parser:
         return "".join(buf)
 
     def dollar(self, in_dq):
+        if self.at("$\\\n"):   # bash deletes the backslash-newline first: what follows decides what the $ starts
+            raise ParseError("a backslash-newline after $ is not supported")
         s, start, nxt = self.s, self.i, self.peek(1)
         if nxt == "'" and not in_dq:
             m = re.compile(r"((?:\\.|[^'\\])*)'", re.S).match(s, self.i + 2)
@@ -1354,7 +1363,7 @@ class _Parser:
             self.sub("$()")
         elif nxt == "{":
             self.i += 2
-            self.dquote("}")
+            self.dquote("}", in_dq)
         else:
             m = _NAME.match(s, self.i + 1)
             self.i = m.end() if m else self.i + 1
