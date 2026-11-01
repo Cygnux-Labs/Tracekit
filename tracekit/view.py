@@ -694,6 +694,13 @@ class Translator(observe.Translator):
         if t == "ext" and d.get("name") == "pcm.grant":
             return note("PCM · GRANT ISSUED", f"to {d.get('subject')} · intent {d.get('intent')}"
                         + (f" · approval {d['approval_id']}" if d.get("approval_id") else ""), "STATE")
+        if t == "effect.observed" and d.get("kind") == "net" and not d.get("sensor"):
+            target = f"{d['host']}:{d['port']}"
+            return alert("info", f"EFFECT · net {target}",
+                         f"{d['bytes_out']} bytes out, {d['bytes_in']} bytes in, {d['connections']} connection(s)"
+                         + f" · egress observer {d['observer']} · {d['first_ts']} to {d['last_ts']}", "EFFECT",
+                         effect={"kind": "net", "target": target, "claim": None},
+                         **{k: d[k] for k in ("bytes_out", "bytes_in", "connections", "first_ts", "last_ts")})
         if t == "effect.observed" and d.get("sensor"):   # what a kernel sensor saw; the run's analysis joins it to a call
             k = d.get("kind")
             target = (f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("path") if k == "file" else
