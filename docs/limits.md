@@ -773,6 +773,13 @@ What Tracekit guarantees and doesn't, per deployment, on one page: [guarantees](
 | Before it places or counts a run, it checks every record of the store against the newest checkpoint, in every tenant (`--tenant` too) and the signer's own runs: its hash is its event's, it is filed under the run its event names, and the hashes make the checkpoint's root (3.6 seconds for a store of 246,344 records and 845 runs on a laptop, whatever `--since` or `--tenant`). A run holding an edited record is listed `FAILED` whatever its tenant and times, a signer's run or another tenant's included; when the hashes don't make the root (a hash was rewritten too), the store and every run fail; and the command exits 1. Records newer than the checkpoint are not checked against it and place no run: a run whose covered records all fall before the window isn't listed, even when newer records of it fall in the window. The report says how many records of the store are newer, and a run no checkpoint covers yet is `PENDING`. | The store files a record under the tenant, run id and time the record holds, and only the signed checkpoint vouches for them; in dev mode the agent's user can edit the store. | Run it again after the next checkpoint (the signer writes one within seconds); for a `FAILED` run, `tracekit view` shows its first failing check. | [viewer](viewer.md#weekly-report) |
 | It reads the v2 signer's store only, not the v1 ledger (`tracekitd`), why logs or bundles. It summarises no signer's run (its key records, content reads, refused writes, a witness that didn't countersign): it checks their records and lists one only when it fails. | It summarises the agents' runs of the store `tracekit view` verifies. | `tracekit view` shows the signer's own rows; `tracekit view --ledger` the v1 ledger. | [viewer](viewer.md#laptop-viewer) |
 
+## Audit (`tracekit audit`)
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| It reads Claude Code's transcripts only, and sees only the tool calls they hold: nothing the agent did outside a tool call, and nothing from another harness (Codex, Gemini CLI). | Each harness writes its transcripts in its own format; Claude Code's is the one it reads. | For what an agent does from now on, record it with Tracekit (`tracekit init --dev --v2`). | [audit](audit.md) |
+| Its counts are evidence of nothing: the agent could have edited the transcript, and each call is decided by today's policy, not the one in force when it ran. | Tracekit never recorded these calls; only a signed record shows what happened. | Use it to see what Tracekit would hold; for evidence, record runs with the signer and export bundles. | [audit](audit.md) |
+
 ## Install
 
 | Limit | Why it is so | What to do | Details |

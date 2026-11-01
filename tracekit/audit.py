@@ -5,16 +5,21 @@ transcript folders. A replay against today's policy, not a signed record.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import stat
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 from .core import scrub
 from .hook import transcript_entries
+from .privacy import redact_text
 from .signer.service import DEFAULT_POLICY, load_policy
+
+DEFAULT_ROOT = os.path.join("~", ".claude", "projects")
 
 
 def _parse_since(s: str) -> float:
@@ -83,7 +88,7 @@ def _iter_transcripts(root: str):
 
     Does not follow symlinks that leave the root. Skips unreadable paths.
     """
-    root = os.path.abspath(root)
+    root = os.path.realpath(root)   # a root reached through a symlink (macOS /var, a linked ~/.claude) is still the root
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         # prune symlink dirs
         dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
@@ -95,15 +100,14 @@ def _iter_transcripts(root: str):
                 continue
             # stay inside root
             try:
-                if not os.path.commonpath([root, os.path.realpath(path)]).startswith(root):
+                if os.path.commonpath([root, os.path.realpath(path)]) != root:
                     continue
             except ValueError:
                 continue
             yield path, _session_from_path(path)
 
 
-def audit(root: str, policy_path: str | None = None, since: str | None = None,
-          show: bool = False, as_json: bool = False) -> dict:
+def audit(root: str, policy_path: str | None = None, since: str | None = None, show: bool = False) -> dict:
     """Replay tool calls under root. Returns the report dict.
 
     Counts malformed lines and unreadable files. Never writes.
@@ -156,9 +160,9 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None,
                         "verdict": verdict,
                         "rule_ids": decision.get("rule_ids") or [],
                     }
-                    if show:
+                    if show:   # with secrets redacted, as the ledger redacts them
                         cmd = args.get("command") or args.get("cmd") or json.dumps(args)
-                        rec["text"] = scrub(cmd) if isinstance(cmd, str) else scrub(json.dumps(cmd))
+                        rec["text"] = redact_text(scrub(cmd if isinstance(cmd, str) else json.dumps(cmd)))[0]
                     calls.append(rec)
         finally:
             f.close()
@@ -205,3 +209,22 @@ def format_report(report: dict, as_json: bool = False) -> str:
             extra = f"  text={c['text']!r}" if "text" in c else ""
             lines.append(f"  {c['session']}  {t}  {c['tool']}  {c['verdict']}  rules={','.join(c['rule_ids'])}{extra}")
     return "\n".join(lines) + "\n"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
+                                 "transcripts (Claude Code) through the policy and count what it would have held or "
+                                 "denied. Read-only, local, and a replay against today's policy, not a signed record.")
+    ap.add_argument("root", nargs="?", default=DEFAULT_ROOT, help="the transcripts' folder (default: ~/.claude/projects)")
+    ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
+    ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
+    ap.add_argument("--show", action="store_true", help="also print each call's text, with secrets redacted")
+    ap.add_argument("--json", action="store_true", help="print the report as JSON")
+    a = ap.parse_args(argv)
+    try:
+        report = audit(os.path.expanduser(a.root), a.policy, a.since, a.show)
+    except (ValueError, OSError) as e:   # an unreadable --since; a policy file that's missing or doesn't lint
+        print(f"tracekit audit: {e}", file=sys.stderr)
+        return 2
+    sys.stdout.write(format_report(report, as_json=a.json))
+    return 0

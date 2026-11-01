@@ -4,6 +4,8 @@
 
 It does not start a signer, does not write anything, and does not make network calls. It is a replay against today's policy, not a signed record. Tracekit never recorded these calls, so nothing here is evidence.
 
+It is experimental ([support](support.md)): it works and is tested, but may change.
+
 ## Usage
 
 ```
@@ -11,9 +13,9 @@ tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--json]
 ```
 
 - `ROOT` defaults to `~/.claude/projects`.
-- `--policy` selects a policy pack (default: the development pack).
-- `--since` limits the replay (e.g. `7d`, `24h`, or an ISO-8601 timestamp).
-- `--show` includes the scrubbed command text.
+- `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
+- `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 timestamp); a call without a timestamp is kept.
+- `--show` includes each call's command text, with secrets redacted as the ledger redacts them.
 - `--json` emits a machine-readable report.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
@@ -29,8 +31,8 @@ Unreadable files are counted and skipped. Symlinks that leave the transcript fol
 - Counts per verdict (`deny`, `ask` / held, `flag`, `allow`).
 - Counts per rule id.
 - Session and timestamp of each call.
-- Optional scrubbed text (`--show`).
+- Optional redacted text (`--show`).
 
 ## Limitations
 
-A transcript the agent could edit is not evidence. See the corresponding row in [limits.md](limits.md).
+It sees only the tool calls the transcript holds, decided by today's policy. A transcript the agent could edit is not evidence. See [limits](limits.md#audit-tracekit-audit).
