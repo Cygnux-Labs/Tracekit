@@ -865,7 +865,7 @@ class Shell(unittest.TestCase):
 
     def test_glob_detection(self):
         self.assertEqual([c["glob"] for c in shell.parse("rm *.pyc; ls 'x*'; [ -f a ]; ls a[0-9]")],
-                         [True, False, False, True])
+                         [True, True, False, False, True, True])   # each glob command again without it (nullglob)
 
     def test_ordinary_commands(self):
         cases = {
@@ -1378,13 +1378,20 @@ class TimedAndBraced(unittest.TestCase):
         `git push --force` when X is unset; the commands are read both ways, and a rule matches either."""
         for line, empty in (("git $X push --force origin main", ["git", "push", "--force", "origin", "main"]),
                             ("terraform ${X:-} destroy", ["terraform", "destroy"]), ("rm $(true) -rf ~/", ["rm", "-rf", "~/"]),
-                            ("$X git push -f", ["git", "push", "-f"]), ("sudo $X `true` rm -rf /", ["rm", "-rf", "/"])):
+                            ("$X git push -f", ["git", "push", "-f"]), ("sudo $X `true` rm -rf /", ["rm", "-rf", "/"]),
+                            ('git "$@" push -f', ["git", "push", "-f"]), ('git "${arr[@]}" push -f', ["git", "push", "-f"]),
+                            ("git *.none push -f", ["git", "push", "-f"]),   # nullglob
+                            ("sh $X <<< 'alpha x'", ["alpha", "x"]), ("sh $X <<EOF\nalpha x\nEOF", ["alpha", "x"])):
             self.assertIn(empty, argvs(line), line)
-        for line in ('git "$X" push', "git $'' push", "git -$X push", "git $((0)) push", "git <(true) push"):
+        for line in ('git "$X" push', 'git "$*" push', "git $'' push", "git -$X push", "git $((0)) push",
+                     "git <(true) push"):
             self.assertEqual(len(argvs(line)), 1 + line.startswith("git <("), line)   # a word that stays a word
+        for line in ("beta | sh $X", "beta | python3 $X"):   # what runs comes from the pipe once $X is gone
+            self.assertTrue(any(c["opaque"] for c in shell.parse(line)), line)
         self.assertEqual(argvs("echo $X rm -rf / > notes.txt"), [["echo", "$X", "rm", "-rf", "/"]])   # data, not run
         e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
-        for plain in ("git push --force origin main", "terraform destroy -auto-approve", "rm -rf ~/"):
+        for plain in ("git push --force origin main", "terraform destroy -auto-approve", "rm -rf ~/",
+                      "echo FLUSHALL | redis-cli"):
             name, rest = plain.split(" ", 1)
             self.assertEqual(e.decide("Bash", {"command": f"{name} $TK_UNSET {rest}"})["verdict"],
                              e.decide("Bash", {"command": plain})["verdict"], plain)
