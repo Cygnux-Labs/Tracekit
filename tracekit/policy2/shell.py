@@ -340,6 +340,93 @@ def _name_unreadable(text):
     return bool(re.search(r"[$`]", re.sub(r"^(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/", "", text)))
 
 
+MAX_BRACE = 256   # words one brace expansion may make; past it the line is unreadable
+_SEQ = re.compile(r"(-?[0-9]+)\.\.(-?[0-9]+)(\.\.-?[0-9]+)?|([A-Za-z])\.\.([A-Za-z])(\.\.-?[0-9]+)?")
+
+
+def _skip(w, i):
+    """The index after the quoted or expanded part of the word w that starts at i (a \\ pair, '...', "...", $'...',
+    $"...", ${...}), or i when none starts there."""
+    c = w[i]
+    if c == "\\":
+        return i + 2
+    if c == "'":
+        j = w.find("'", i + 1)
+        return len(w) if j < 0 else j + 1
+    if c == '"' or w.startswith(("$'", '$"'), i):
+        q, j = (w[i + 1], i + 2) if c == "$" else ('"', i + 1)
+        while j < len(w) and w[j] != q:
+            j += 2 if w[j] == "\\" else 1
+        return j + 1
+    if w.startswith("${", i):
+        depth, j = 0, i + 1
+        while j < len(w):
+            depth += {"{": 1, "}": -1}.get(w[j], 0)
+            j += 1
+            if not depth:
+                return j
+        return len(w)
+    return i
+
+
+def _brace_at(w, charge):
+    """The first brace expression bash expands in the word w as written: (its start, the index after its `}`, the
+    texts it puts there), or None. A brace expression is an unquoted `{` (not `${`) with its matching `}` and a comma
+    between them at its own depth, or a sequence of two integers or two letters of one case; anything else bash keeps
+    as written. A sequence with a step or zero padding (bash versions read them differently) is unreadable."""
+    charge(len(w))
+    stack, pairs, i = [], [], 0   # one pass: each unquoted { with its matching } and its own depth's commas
+    while i < len(w):
+        j = _skip(w, i)
+        if j != i:
+            i = j
+            continue
+        if w[i] == "{":
+            stack.append((i, []))
+        elif w[i] == "}" and stack:
+            pairs.append((*stack.pop(), i))
+        elif w[i] == "," and stack:
+            stack[-1][1].append(i)
+        i += 1
+    for start, commas, end in sorted(pairs):   # bash expands the first, by its opening brace
+        if commas:
+            cuts = [start] + commas + [end]
+            return start, end + 1, [w[a + 1:b] for a, b in zip(cuts, cuts[1:])]
+        m = _SEQ.fullmatch(w, start + 1, end)
+        if m:
+            if m.group(3) or m.group(6) or m.group(4) and m.group(4).isupper() != m.group(5).isupper() or \
+                    m.group(1) and any(re.match(r"-?0[0-9]", x) for x in m.group(1, 2)):
+                raise ParseError("a brace sequence with a step, zero padding or both letter cases is not supported")
+            lo, hi = (int(m.group(1)), int(m.group(2))) if m.group(1) else (ord(m.group(4)), ord(m.group(5)))
+            if abs(hi - lo) >= MAX_BRACE:
+                raise ParseError("a brace expansion that makes too many words")
+            seq = range(lo, hi + 1) if lo <= hi else range(lo, hi - 1, -1)
+            return start, end + 1, [str(x) if m.group(1) else chr(x) for x in seq]
+    return None
+
+
+def _brace(word, charge):
+    """bash's brace expansion of one word as written, its quotes and escapes kept for the reader: the words it makes,
+    in bash's order, or None when it has no brace expression. Unreadable (ParseError) past MAX_BRACE words, or with a
+    command or process substitution in the word: each copy would run it, and the parser reads it once."""
+    if _brace_at(word, charge) is None:
+        return None
+    if re.search(r"\$\(|`|[<>]\(", word):
+        raise ParseError("a substitution in a word with a brace expansion is not supported")
+    done, todo = [], [word]
+    while todo:
+        w = todo.pop()
+        found = _brace_at(w, charge)
+        if found is None:
+            done.append(w)
+        else:
+            a, b, texts = found
+            todo += [w[:a] + t + w[b:] for t in reversed(texts)]
+        if len(done) + len(todo) > MAX_BRACE:
+            raise ParseError("a brace expansion that makes too many words")
+    return done
+
+
 def _kind(name):
     return next((kind for kind, rx in KINDS if rx.fullmatch(name)), None)
 
@@ -694,6 +781,13 @@ class _Parser:
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
         dynamic = False
+        timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
+
+        def untime():   # the words so far only time what follows: read that as the command's start
+            nonlocal timed
+            if timed and timed == len(words):
+                del words[:], globs[:], names[:], idx[:], spans[:]
+                timed = 0
         while True:
             self.blank()
             c = self.peek()
@@ -701,6 +795,7 @@ class _Parser:
                 break
             consumed = True
             if c == "(":
+                untime()
                 if words or loop_header or self.at("(("):
                     raise ParseError("unexpected ( (arithmetic and function definitions are not supported)")
                 self.i += 1
@@ -746,6 +841,8 @@ class _Parser:
             self.out.append(text)
             if loop_header:
                 continue
+            if raw == text and (text in KEYWORDS or text in ("for", "select", "case", "function", "coproc")):
+                untime()
             if not words and raw == text and text in KEYWORDS:
                 continue
             if not words and raw == text and text in ("for", "select"):
@@ -759,12 +856,22 @@ class _Parser:
                 if (alias := _git_env_alias(text)) is not None:
                     self.nested(alias, self.via + ["git alias"])
                 continue
-            words.append(text)
-            dynamic |= bool(re.search(r"[$`]", raw))
-            idx.append(len(self.out) - 1)
-            spans.append(None if expanded else (len(self.out) - 1, start, self.i))
-            globs.append(g)
-            names.append(g or (expanded and _name_unreadable(text)))
+            if timed == len(words) and raw == text and (text == "time" if not words else text in ("-p", "--")):
+                timed += 1
+            # an argument bash brace-expands is the words it makes (the command name's braces keep it unreadable)
+            pieces = _brace(raw, self.charge) if words and g else None
+            if pieces is not None:
+                self.out.pop()
+            for text, raw, g, expanded in [(text, raw, g, expanded)] if pieces is None else \
+                    filter(None, map(self.relex, pieces)):
+                if pieces is not None:
+                    self.out.append(text)
+                words.append(text)
+                dynamic |= bool(re.search(r"[$`]", raw))
+                idx.append(len(self.out) - 1)
+                spans.append(None if expanded or pieces is not None else (len(self.out) - 1, start, self.i))
+                globs.append(g)
+                names.append(g or (expanded and _name_unreadable(text)))
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         self.progs += [idx[k] for k in _programs(words, cmds)]
         git_stdin_message = _git_stdin_message(words)
@@ -1008,6 +1115,16 @@ class _Parser:
             # an unquoted heredoc's substitutions run now, in this shell, also before at or batch get the text
             if (not shell or shell["argv"][0] not in SHELLS) and d["expand"]:
                 _Parser(body, self.ctx, d["via"] + ["<<"]).dquote(None)
+
+    def relex(self, piece):
+        """word() over one word a brace expansion made (_brace refuses a substitution in it), or None for an empty
+        one, which bash drops."""
+        saved = self.s, self.i
+        self.s, self.i = piece, 0
+        try:
+            return self.word()
+        finally:
+            self.s, self.i = saved
 
     def word(self):
         """Return (text, raw source, has an unquoted glob or brace expansion, has a parameter expansion or command

@@ -237,8 +237,11 @@ name is read casefolded and without `.exe`, and the parser follows what a shell 
 heredoc or herestring), `awk` programs and sed's `e` command. The POSIX shells it reads are `sh`, `bash`, `zsh`,
 `dash`, `ksh`, `ash`, `rbash`, `mksh`, `ksh93`, `yash`, `posh`, `lksh` and `oksh`; `fish`, `csh`, `tcsh`, `pwsh`,
 `powershell`, `nu`, `xonsh` and `elvish` speak another language, so a command they run from their line (`-c`,
-`--command`, PowerShell's `-Command` or `-EncodedCommand`, any prefix and case) or from stdin is opaque. Variables are
-not expanded and encodings are not decoded: those stay tripwire territory. A command it cannot parse, or one that is
+`--command`, PowerShell's `-Command` or `-EncodedCommand`, any prefix and case) or from stdin is opaque. An argument
+with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`), up to 256; past that, a sequence
+with a step or zero padding, or a substitution in such a word, is unreadable. `time` before a group or another
+compound command times what follows, which is read as the command. Variables are not expanded and encodings are
+not decoded: those stay tripwire territory. A command it cannot parse, or one that is
 opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a
 literal name is fine), a shell or interpreter reading its program from a pipe or file, `xargs -I` putting its input
 into a script or command name, sed's `s///e`.
