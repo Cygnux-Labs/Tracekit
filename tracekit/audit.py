@@ -54,8 +54,8 @@ def _entry_time(entry: dict) -> datetime | None:
     if isinstance(ts, str):
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except ValueError:
+            return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+        except (ValueError, OverflowError):   # not a time, or one UTC can't hold (0001-01-01T00:00+05:00)
             pass
     return None
 
@@ -150,7 +150,7 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                         by_rule[rid] = by_rule.get(rid, 0) + 1
                     rec = {
                         "session": session,
-                        "time": at.astimezone(timezone.utc).isoformat() if at else None,
+                        "time": at.isoformat() if at else None,
                         "tool": tool,
                         "verdict": verdict,
                         "rule_ids": decision.get("rule_ids") or [],

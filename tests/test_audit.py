@@ -124,6 +124,11 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no such folder", err)
 
+    def test_a_time_utc_cannot_hold_is_a_call_without_a_time(self):
+        line = _call("Bash", {"command": "ls"})
+        _write_jsonl(self.root / "s.jsonl", [{**line, "timestamp": "0001-01-01T00:00:00+05:00"}])
+        self.assertEqual([c["time"] for c in audit.audit(str(self.root))["calls"]], [None])
+
     def test_control_characters_from_a_transcript_are_printed_as_text(self):
         _write_jsonl(self.root / "s.jsonl", [_call("Bash\x1b[2K", {"command": "ls"})])
         text = audit.format_report(audit.audit(str(self.root)))
