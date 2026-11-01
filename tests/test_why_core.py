@@ -11,11 +11,13 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from tracekit.why import System, build_graph, counterfactual, load_run, taint, target_hits, verify
 from tracekit.why.analysis import LINEAGE_CHAINS, _ended, influence_graph, investigation, lineage
 from tracekit.why.cli import main as cli
 from tracekit.why.core import GENESIS, Ref, Runtime, Tape, ablation_matches, event_hash, referenced_refs
+from tracekit.why import server
 from tracekit.why.server import IngestError, Store
 from tracekit.why.view import run_detail
 from tracekit.why.demo import EXFIL_TARGET, REFUND_TARGET, SYSTEM
@@ -324,6 +326,56 @@ class StoreRequests(Tmp):
         shutil.rmtree(os.path.join(store.root, "r"))
         store.scan(announce=False)
         self.assertEqual(store.ingest({"events": run.events, "blobs": blobs})["accepted"], len(run.events))
+
+    def test_a_run_replaced_during_its_analysis_is_never_cached_as_failed(self):
+        """view.mirror_run replaces a growing run's folder with two renames, and both can land while the store analyses
+        it: the run was cached as failed, with a "cannot analyse" line on stderr."""
+        store = Store(os.path.join(self.tmp, "srv"))
+        SYSTEM.run(seed=0, out_dir=store.root, run_id="r", signer=False)
+        path, aside = os.path.join(store.root, "r"), os.path.join(self.tmp, "aside")
+        events = os.path.join(path, "events.jsonl")
+        real, mtimes = server.analyse, iter(range(1, 100))
+
+        def grew():   # a new import's events differ
+            t = next(mtimes)
+            os.utime(events, (t, t))
+
+        def replaced(back):   # the first rename lands mid-analysis, the second before the store looks again or after
+            first = []
+
+            def analyse(p):
+                if first:
+                    return real(p)
+                first.append(p)
+                os.rename(p, aside)
+                a = real(p)
+                if back:
+                    os.rename(aside, p)
+                    grew()
+                return a
+            return mock.patch.object(server, "analyse", analyse)
+
+        for cached in (False, True):   # a run analysed by an earlier scan keeps its analysis between the renames
+            for back in (False, True):
+                with self.subTest(cached=cached, back=back):
+                    store._cache.clear()
+                    store._stat.clear()   # so the next scan analyses the run
+                    if cached:
+                        store.scan(announce=False)
+                    grew()
+                    with replaced(back), contextlib.redirect_stderr(io.StringIO()) as err:
+                        store.scan(announce=False)
+                    self.assertEqual(err.getvalue(), "")
+                    if not back:
+                        if cached:
+                            self.assertNotIn("broken", store.analysed(path)["summary"])
+                        else:
+                            self.assertNotIn(path, store._cache)
+                        os.rename(aside, path)
+                        grew()
+                        store.scan(announce=False)
+                    self.assertNotIn("broken", store._cache[path][1]["summary"])
+                    self.assertNotIn("broken", store.analysed(path)["summary"])
 
 
 def load_run_from(run, events):
