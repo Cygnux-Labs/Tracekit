@@ -43,7 +43,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
               "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli",
-              "report": "report"}  # subcommands with their own parsers
+              "report": "report", "audit": "audit"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
@@ -55,7 +55,7 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
                  "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm",
-                 "report": "tracekit report"}
+                 "report": "tracekit report", "audit": "tracekit audit"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -244,6 +244,9 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("report", help="what the agents did this week, on one page, from the v2 signer's store: runs, "
                        "calls, holds, denies and flags by rule, gaps, integrity (--since, --json)", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
+                       "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)
