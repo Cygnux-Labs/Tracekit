@@ -813,7 +813,7 @@ class _Parser:
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
         vanish, patterns, cuts = [], [], []   # per word: only expansions; a pathname pattern; self.cut
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
-        dynamic = False
+        dynamic = brace_unread = False
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
 
         def untime():   # the words so far only time what follows: read that as the command's start
@@ -897,10 +897,17 @@ class _Parser:
                 timed += 1
             pieces = None
             if "{" in self.bare:   # an unquoted { outside substitutions: maybe a brace expansion
-                if re.search(r"\$\(|`|[<>]\(", raw):
-                    raise ParseError("a substitution in a word with a brace is not supported")
+                # one _brace can't read, or beside a substitution (each word it makes runs it), is kept as written and
+                # its command is unreadable (opaque), so the rules still read the rest; past the parse budget, the line
+                try:
+                    if re.search(r"\$\(|`|[<>]\(", raw):
+                        raise ParseError("a substitution in a word with a brace is not supported")
+                    pieces = _brace(raw, self.charge)
+                except ParseError:
+                    if self.ctx["work"] > MAX_WORK:
+                        raise
+                    brace_unread = True
                 # an argument bash brace-expands is the words it makes; a command name it builds is unreadable
-                pieces = _brace(raw, self.charge)
                 if pieces is not None and not words:
                     g, pieces = True, None
             if pieces is not None:
@@ -919,6 +926,8 @@ class _Parser:
                 patterns.append(bool(_GLOB.search(self.bare)))
                 cuts.append(self.cut)
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
+        if brace_unread and cmds:
+            cmds[0]["opaque"] = True
         self.progs += [idx[k] for k in _programs(words, cmds)]
         git_stdin_message = _git_stdin_message(words)
         # cat, tee, echo or printf into a file only copies text there: its herestring and echo's or printf's words

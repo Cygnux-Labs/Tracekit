@@ -194,9 +194,7 @@ class Engine:
                         parsed = _shell(args)
                 except shell.ParseError:
                     unreadable.append("TK-SHELL-PARSE")
-                    # its own target and code
-                    raw = command if isinstance(command, str) else canonical(command)
-                    parsed = [], [], [raw], [], [raw]
+                    parsed = _plain(command if isinstance(command, str) else canonical(command))
                 # what trap, at or batch run later and the parser can't read (trap "$f" EXIT) isn't held, as before
                 # their code was read; with a writer's name in it, it counts for TK-D008 (_effects)
                 if any(c["opaque"] and not _SCHEDULED.intersection(c["via"]) for c in parsed[0]):
@@ -349,6 +347,21 @@ def _shell(args, persistent_target=None):
     if strings:
         return shell.analyse_argv(value)
     raise shell.ParseError("the command is neither a string nor a list of strings")
+
+
+def _plain(raw):
+    """What a command the parser can't read is decided on: its text as its target and code, and each piece of it
+    between ;, &, | and newlines split on blanks as a command (shell.analyse_argv), so a rule that reads plain words
+    still holds what it held (`sudo id {1..3..1}`); a piece that can't be read so is left out."""
+    out = [], [], [raw], [], [raw]
+    for piece in re.split(r"[;&|\n]", raw):
+        try:
+            found = shell.analyse_argv(piece.split()) if piece.split() else ()
+        except shell.ParseError:
+            continue
+        for into, more in zip(out, found):
+            into += more
+    return out
 
 
 # variables that set a package source: before a command (`PIP_INDEX_URL=… pip install`), or through env or export
