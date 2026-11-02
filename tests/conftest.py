@@ -16,6 +16,7 @@ sys.path.insert(0, TESTS)
 
 from tracekit import bundle_v2  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
+from tracekit.sdk import autospawn  # noqa: E402
 from tracekit.verify import v2 as verify_v2  # noqa: E402
 
 MARKERS = {
@@ -77,6 +78,21 @@ def _isolated_env():
         urllib.request.install_opener(None)
         pytest.fail(f"urlopen ran under this test's proxy settings {leaked}: give it an opener of its own "
                     "(urllib.request.build_opener) or run it in a child process")
+
+
+# The real home's Tracekit folders, as the session starts. A test that makes one wrote outside its temp dirs, and the
+# dev data dir also turns the plugin's hook from warning to blocking (#515). Silent where they already exist.
+HOME_DIRS = (os.path.join(os.path.expanduser("~"), ".tracekit-client"), autospawn.data_dir())
+
+
+@pytest.fixture(autouse=True)
+def _no_real_home_dirs(request):
+    before = [os.path.exists(p) for p in HOME_DIRS]
+    yield
+    made = [p for p, was in zip(HOME_DIRS, before) if not was and os.path.exists(p)]
+    if made:
+        pytest.fail(f"{request.node.nodeid} made {made} in the real home folder: give it a temp HOME or "
+                    "TRACEKIT_CLIENT_HOME", pytrace=False)
 
 
 # Every v2 bundle a test exports in this process is verified against the log key that signed its checkpoint: an honest

@@ -348,9 +348,9 @@ class ExportWithoutSigner(unittest.TestCase):
         v2.assert_called_once()
         nope = os.path.join(self.dir, "nope")
         self.assertEqual(run_cli("export", "--v2", "--run", "run-1", "--data-dir", nope, "-o", out)[::2],
-                         (1, f"tracekit export: no signer data dir at {nope}\n"))
+                         (1, f"tracekit export: no signer data dir at {nope}: a signer makes it when it first starts\n"))
         self.assertEqual(run_cli("signer", "trust", "--data-dir", nope, "-o", out)[::2],
-                         (2, f"tracekit signer: no signer data dir at {nope}\n"))
+                         (2, f"tracekit signer: no signer data dir at {nope}: a signer makes it when it first starts\n"))
 
 
 if __name__ == "__main__":

@@ -4719,7 +4719,7 @@ def signer_config(path=None, data_dir=None):
 def data_dir_at(path):
     """`path`, absolute: a signer data dir to read. ValueError when no directory is there."""
     if not os.path.isdir(path):
-        raise ValueError(f"no signer data dir at {os.path.abspath(path)}")
+        raise ValueError(f"no signer data dir at {os.path.abspath(path)}: a signer makes it when it first starts")
     return os.path.abspath(path)
 
 

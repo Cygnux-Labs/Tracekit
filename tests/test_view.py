@@ -1709,7 +1709,7 @@ class View(unittest.TestCase):
             with self.subTest(argv=argv):
                 with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
                     code = view.main(["--data-dir", nope, "--port", "0", *argv])
-                self.assertEqual((code, err.getvalue()), (1, f"tracekit view: no signer data dir at {nope}\n"))
+                self.assertEqual((code, err.getvalue()), (1, f"tracekit view: no signer data dir at {nope}: a signer makes it when it first starts\n"))
 
     def test_hostile_tool_names_are_data_and_the_page_escapes_every_sink(self):
         run = self.client.run(agent="a")
@@ -2455,7 +2455,7 @@ class LiveRuns(unittest.TestCase):
                            (["--config", "signer.yaml"], {"config": os.path.abspath("signer.yaml")})):
             with mock.patch.object(view, "StoreFeed", side_effect=feed), \
                     mock.patch.object(view, "load_config", return_value={"data_dir": self.d}), \
-                    mock.patch.object(view, "dev_data_dir", return_value=self.d), \
+                    mock.patch.object(view.autospawn, "data_dir", return_value=self.d), \
                     mock.patch.object(view, "dev_content_source"), mock.patch.object(view, "dev_analysis"), \
                     self.assertRaises(Built) as got:
                 view.main(argv)
@@ -2473,7 +2473,7 @@ class LiveRuns(unittest.TestCase):
         def started(argv):
             """The signer the page gets from `tracekit view --dev ARGV`, and whether the viewer imports signed runs."""
             with mock.patch.object(view, "StoreFeed", side_effect=feed), \
-                    mock.patch.object(view, "dev_data_dir", return_value=self.d), \
+                    mock.patch.object(view.autospawn, "data_dir", return_value=self.d), \
                     mock.patch.object(view, "dev_content_source"), mock.patch.object(view, "dev_analysis"), \
                     contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Built) as got:
                 view.main(["--dev", *argv])

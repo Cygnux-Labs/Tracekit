@@ -508,7 +508,16 @@ class WeeklyReport(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
                     code = cli.main(["report", "--data-dir", nope, *argv])
                 self.assertEqual((code, err.getvalue().splitlines()[-1]),
-                                 (1, f"tracekit report: no signer data dir at {nope}"))
+                                 (1, f"tracekit report: no signer data dir at {nope}: a signer makes it when it first starts"))
+
+    def test_the_dev_report_creates_no_data_dir(self):
+        """#515: a dev report made the dev signer's data dir, which the plugin's hook reads as "Tracekit is set up"."""
+        nope = os.path.join(self.cfg["data_dir"], "nope")
+        with mock.patch.object(weekly.autospawn, "data_dir", return_value=nope), \
+                contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main(["report"])
+        self.assertEqual((code, err.getvalue().splitlines()[-1]), (1, f"tracekit report: no signer data dir at {nope}: a signer makes it when it first starts"))
+        self.assertFalse(os.path.exists(nope))
 
 
 class Window(unittest.TestCase):
