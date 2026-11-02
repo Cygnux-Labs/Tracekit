@@ -415,6 +415,19 @@ class SpawnAndStatus(unittest.TestCase):
         self.assertEqual(kw["cwd"], self.run_dir)
         self.assertEqual(argv[argv.index("-m") - 1] == "-P", sys.version_info >= (3, 11))
 
+    @unittest.skipUnless(hasattr(signal, "SIGUSR1"), "no SIGUSR1")
+    def test_a_signer_that_exits_as_it_is_asked_for_its_stacks_is_still_hung_not_lost(self):
+        """Review of #518: a signer gone between down's lock check and its SIGUSR1 raised ProcessLookupError out of
+        down; and an empty log read "the end of …:" with nothing after it."""
+        os.makedirs(self.run_dir, 0o700)
+        with open(os.path.join(self.run_dir, autospawn.ENDPOINT), "w") as f:
+            json.dump({"pid": 123456, "stacks": "SIGUSR1"}, f)
+        with mock.patch.object(autospawn, "_held", return_value=True), \
+                mock.patch.object(autospawn.os, "kill", side_effect=[None, ProcessLookupError]), \
+                self.assertRaises(autospawn.Hung) as got:
+            autospawn.down(timeout=0.1, d=self.run_dir)
+        self.assertTrue(str(got.exception).endswith(f"{autospawn.LOG}:\nnothing"), str(got.exception))
+
     def test_status_creates_nothing(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.main(["status"]), 0)

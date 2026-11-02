@@ -322,13 +322,17 @@ def down(timeout=10, d=None, show_log=True):
         if time.monotonic() > deadline:
             log = os.path.join(d, LOG)
             if show_log and stacks:   # where it is stuck: every thread's stack, which it writes to its stderr
-                os.kill(pid, signal.SIGUSR1)
+                try:
+                    os.kill(pid, signal.SIGUSR1)
+                except ProcessLookupError:   # it has just exited
+                    pass
                 time.sleep(0.5)
             tail = _tail(log, 16384) or ""
             start = tail.rfind("SERVING pid ")   # a foreground signer logs elsewhere: this log is another's
             if not show_log or start >= 0 and tail[start:].split("\n", 1)[0].strip() != f"SERVING pid {pid}":
                 raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; see {log}")
-            raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; the end of {log}:\n{tail}")
+            raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; the end of {log}:\n"
+                       f"{tail or 'nothing'}")
         time.sleep(0.05)
     return pid
 
