@@ -347,15 +347,15 @@ class TestRegistryNoteTrust(Case):
         self.assertIn("a run in the bundle is not of the run-set's tenant", line["problems"])
 
 
-class TestRegistryRecords(unittest.TestCase):
-    """registry/records.jsonl holds the record each leaf points to, in leaf order, and nothing else (format-v2.md §9):
-    a line no leaf points to is never read, so it can't add a line to the report."""
+class TestRunSetFiles(unittest.TestCase):
+    """A run-set's files hold what format-v2.md §9 says and nothing else: registry/records.jsonl the record each leaf
+    points to, in leaf order (a line no leaf points to is never read, so it can't add a line to the report), and
+    registry/run-set.json no consistency proof for a range from registry size 0."""
     GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "v2")
 
-    def verify(self, edit):
+    def verify(self, edit, name="registry/records.jsonl"):
         out = os.path.join(tmpdir(self), "rs.tkb")
-        rewrite_bundle(os.path.join(self.GOLDEN, "run-set.tkb"), out, lambda f, m: f.update(
-            {"registry/records.jsonl": edit(f["registry/records.jsonl"])}))
+        rewrite_bundle(os.path.join(self.GOLDEN, "run-set.tkb"), out, lambda f, m: f.update({name: edit(f[name])}))
         rep, code = v2.verify(out, os.path.join(self.GOLDEN, "trust.json"))
         self.assertEqual((code, rep.failures), (1, ["run-set"]), rep.checks)
         return rep
@@ -376,6 +376,12 @@ class TestRegistryRecords(unittest.TestCase):
         rep = self.verify(lambda data: b"".join(reversed(data.splitlines(keepends=True))))
         self.assertIn("leaf 0 points to a missing or different record (seq 1)",
                       next(c for c in rep.checks if c["check"] == "run-set")["problems"])
+
+    def test_a_consistency_proof_for_a_range_from_zero_fails_the_run_set(self):
+        rep = self.verify(lambda data: json.dumps(dict(json.loads(data), consistency=[
+            base64.b64encode(bytes(32)).decode()])).encode(), "registry/run-set.json")
+        self.assertEqual(next(c for c in rep.checks if c["check"] == "run-set")["problems"],
+                         ["a consistency proof for registry 0..6, which has none"])
 
 
 class TestLogClosed(RunSet):

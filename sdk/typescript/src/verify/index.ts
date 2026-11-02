@@ -443,6 +443,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       const key = JSON.stringify([tenant, runId]);
       if (seen.has(key)) chain.push(`run ${repr(cut(runId, 200))} of tenant ${repr(cut(tenant, 64))} again in ${name}`);
       seen.add(key);
+      const named = await runName(tenant, runId);   // §9: a run's file is named by its tenant and run_id
+      if (named !== name)
+        chain.push(`run ${repr(cut(runId, 200))} of tenant ${repr(cut(tenant, 64))} in ${name}: its file is ${named}`);
     }
     for (const [i, r] of records.entries()) {
       await checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), problems);
@@ -1143,6 +1146,8 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   }
   if (0 < lo && lo < hi && !await verifyConsistency(lo, hi, roots.get(lo)!, roots.get(hi)!, list(at(rs, "consistency")).map(b64decode)))
     problems.push(`registry checkpoint ${lo} is not a prefix of ${hi}`);
+  else if (!(0 < lo && lo < hi) && !same(at(rs, "consistency"), []))   // a range from 0, or empty, has no consistency proof
+    problems.push(`a consistency proof for registry ${lo}..${hi}, which has none`);
   const leaves = list(at(rs, "leaves"));
   const lines = jsonl("registry/records.jsonl"), pointed: J[] = [];
   if (leaves.length !== hi - lo) problems.push(`${hi - lo} leaves in ${lo}..${hi}, ${leaves.length} in the bundle: a leaf is missing`);
