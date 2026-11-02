@@ -112,7 +112,10 @@ A call on several files (a patch's `paths`, the files of a Gemini CLI or Qwen Co
 
 Droid's [hooks reference](https://docs.factory.com/harness/hooks) documents Claude Code's event names and stdin fields.
 Its standalone `hooks.json` is keyed directly by event name, with no `hooks` wrapper (that wrapper is for declarations
-inside `settings.json`). When creating it, the installer copies the effective hooks from `settings.json`. If the legacy
+inside `settings.json`). When creating it, the installer copies the effective hooks from `settings.json`, since Droid
+reads those only while `hooks.json` is absent. `tracekit uninstall --agent droid` deletes `hooks.json` again when what is
+left in it is that copy. Otherwise (you changed the hooks in either file, or `settings.json` is gone or can't be read) it
+takes Tracekit's hooks out, keeps `hooks.json` and names it. If the legacy
 `.factory/hooks/hooks.json` exists, init refuses to proceed until you save once in Droid's `/hooks` UI to migrate it.
 On Windows Droid
 is assumed to run hooks under `cmd.exe`; the interpreter path stays quoted when it contains spaces.
@@ -187,7 +190,7 @@ so why none waits by default:
 | Cursor | not documented (closed source; a Hooks output channel for debugging) | `user_message` to you, `agent_message` to the model |
 | Gemini CLI | "Executing Hook: <name>" (stderr is collected and read on exit) | "Tool execution blocked: …" to both |
 | Qwen Code | a fixed `statusMessage`, if configured (stderr is read on exit) | to the model, and shown to you |
-| OpenCode 1.x | nothing: the plugin runs the hook synchronously | the error the plugin throws |
+| OpenCode 1.x | nothing (the plugin reads stderr once the hook exits, and kills one still running at 600 s) | the error the plugin throws |
 | goose | nothing (stdout and stderr are read on exit) | to the model |
 | Factory Droid | not documented | to Droid (the model) |
 | Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |
@@ -325,7 +328,9 @@ Without anything else installed, the signer turns what it saw and then never hea
   started, from the moment the hook took its token (`tailer_lost`), and a second tailer token for the same run
   (`tailer_redelegated`);
 - writes after the run ended (`late_activity`, in a run-set), apart from each client's first one, from which it learns
-  that the run ended (an idle close) and moves to a new run.
+  that the run ended (an idle close) and moves to a new run. A hook moves to a new run too when the signer was reset
+  (its data dir or run token key made anew) and refuses the session's run token: the earlier run, if the store still
+  holds it, is left for the signer's idle close, its tail unproven.
 
 The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can't be used with the Claude Code hooks: they record a digest of each tool's raw output, not what the model is sent, so every result would mismatch ([gateway](gateway.md#verified-tool-results)).
 

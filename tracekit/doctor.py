@@ -370,7 +370,7 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
     from . import agent_hooks
     from .integrations.claude_code import APPROVAL_WAIT_S
     for harness, path in sorted((harnesses or {}).items()):
-        if harness not in ("codex", "cursor", "gemini", "goose", "qwen", "droid", "antigravity", "crush"):
+        if harness not in agent_hooks.HARNESSES or harness == "opencode":   # OpenCode's is a JavaScript plugin
             continue
         fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
         if harness == "antigravity":

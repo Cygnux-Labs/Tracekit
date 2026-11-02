@@ -774,6 +774,29 @@ class HookV2(unittest.TestCase):
             self.assertEqual([e["data"]["kind"] for e in run.call("read")["events"] if e["type"] == "constraint.added"],
                              ["keep_away", "no_push"])
 
+    def test_a_signer_reset_starts_a_new_run_and_leaves_the_old_one_open(self):
+        """#499: after a signer reset (a new run token key), the session's stored run token is one the signer never
+        issued: the session's next event registers a new run, with the session's constraints, instead of every call
+        being refused with run_token_invalid. The hook never closes the old run: it is left for the signer's idle close,
+        with no run.end from the hook."""
+        self.assertEqual(self.hook("UserPromptSubmit", prompt="Don't touch billing.py."), (0, ""))
+        self.assertEqual(self.pre("ls"), (0, ""))
+        self.assertEqual(self.post("ls"), (0, ""))
+        old = self.run_handle().run_id
+        autospawn.down()
+        os.remove(os.path.join(service.dev_data_dir(), "keys", "run_token.key"))
+        self.assertEqual(self.pre("ls", tid="t2"), (0, ""))   # the hook starts the signer again
+        self.assertEqual(self.post("ls", tid="t2"), (0, ""))
+        self.assertNotEqual(self.run_handle().run_id, old)
+        self.assertEqual([e["type"] for e in self.events()],
+                         ["run.registered", "constraint.added", "policy.decision", "tool.result"])
+        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t3"))
+        autospawn.down()
+        store = FileStorage(os.path.join(service.dev_data_dir(), "store"))
+        self.addCleanup(store.close)
+        self.assertEqual([r["event"]["type"] for r in store.iter_run("default", old)],
+                         ["run.registered", "constraint.added", "input.observed", "policy.decision", "tool.result"])
+
     def test_a_sessions_constraints_outlive_an_idle_hour_and_any_session_start(self):
         """A SessionStart (another session's, or this one's resume) removes the call state no hook has written for the
         signer's idle timeout, not the state that carries the session's constraints to its next run."""
@@ -847,6 +870,7 @@ class HookV2(unittest.TestCase):
             self.assertEqual(sent, ["keep_away", "no_push"])
 
     def test_session_end_closes_the_run_and_it_verifies(self):
+        os.environ["TRACEKIT_DEV_GRACE"] = "0.2"   # the dev signer started next makes a closed run final 0.2 s after
         self.pre("ls")
         self.post("ls")
         run = self.run_handle()
@@ -1011,6 +1035,7 @@ class HeldCalls(unittest.TestCase):
         return p.stdout.strip()
 
     def test_approve_then_retry_runs_the_same_call_once_and_the_run_verifies(self):
+        os.environ["TRACEKIT_DEV_GRACE"] = "0.2"   # the dev signer started next makes a closed run final 0.2 s after
         self.assertEqual(self.hook("SessionStart")[0], 0)
         aid = self.held(self.UPLOAD, "t1")
         early = self.held(self.UPLOAD, "t2")   # the agent retries before the person answered: held again
