@@ -408,6 +408,9 @@ and blobs, and opens with `keys/content.key`. Keep those shorter than `retention
 
 ## Upgrading
 
+On a laptop with the dev signer, upgrade the Python your hooks run too, and stop the running signer
+([quickstart](quickstart-v2.md#upgrading)); `tracekit doctor` checks both (`D-VERSIONS`).
+
 Stop the signer, install the new version and start it again; records, keys and bundles carry over. A Postgres store
 keeps its schema version until you run `tracekit signer migrate`, and a new version runs on the older schema as long
 as it needs nothing the schema lacks:
