@@ -1273,6 +1273,14 @@ class HeldCalls(unittest.TestCase):
         self.assertIn("so the policy can read it", msg)
         self.assertEqual(self.pre("git status", "t2")[0], 0)   # that way: read, checked by every rule, run
 
+    def test_a_packs_own_reason_comes_before_the_engines(self):
+        """Review of #520: with TK-SHELL-PARSE and a pack rule, the engine's reason came first, and a harness that cuts
+        the message at 500 characters could drop the call's own risk (moving money)."""
+        pol = service.load_policy(os.path.join(ROOT, "tracekit", "policy2", "packs", "coding.yaml"))
+        why = service.SignerService._reasons(types.SimpleNamespace(policy=pol), ["TK-SHELL-PARSE", "TK-A043"])
+        self.assertTrue(why.startswith("moving money"), why)
+        self.assertIn("; the policy can't read what this shell command runs. ", why)
+
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
         held."""
