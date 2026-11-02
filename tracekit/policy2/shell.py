@@ -169,8 +169,6 @@ def analyse(command, persistent_target=None):
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
     arithmetic = re.compile(r"\$\(\(|\(\(|\blet\b|\b(?:declare|local|typeset)\b[^\n]*\s-i\b|\$\{[A-Za-z_][A-Za-z0-9_]*\[")
-    if re.search(r"[;&|<>()](?:\\\n)+[;&|<>()]", command):   # bash joins `(\<newline>(` into `((`
-        raise ParseError("a backslash-newline inside an operator is not supported")
     for line in command.replace("\\\n", "").splitlines():   # bash deletes a backslash-newline before it reads
         has_context = any(marker in line for marker in ("$((", "((", "let ", "declare ", "local ", "typeset ", "${"))
         test_open = line.find("[[")
@@ -750,7 +748,12 @@ class _Parser:
             if s[self.i] in " \t":
                 self.i += 1
             elif self.at("\\\n"):
-                self.i += 2
+                j = self.i
+                while s.startswith("\\\n", j):
+                    j += 2
+                if self.i and s[self.i - 1] in ";&|<>()" and s[j:j + 1] and s[j] in ";&|<>()":
+                    raise ParseError("a backslash-newline inside an operator is not supported")   # bash reads (\⏎( as ((
+                self.i = j
             elif s[self.i] == "#":
                 j = s.find("\n", self.i)
                 self.i = len(s) if j < 0 else j
@@ -941,7 +944,7 @@ class _Parser:
         # in each of word()'s readings, and again without the patterns (self.cut). Its commands are also the ones that
         # read this command's stdin, heredoc and herestring (`| sh $X` is `| sh`). Of a command that only copies text
         # into a file, only the line.
-        seen = [words]
+        seen, as_written = [words], cmds
         for k in range(12 if dynamic or any(patterns) else 0):
             texts = [None if v and not cut[k % 6] or k > 5 and p else cut[k % 6]   # None: gone
                      for v, p, cut in zip(vanish, patterns, cuts)]
@@ -985,8 +988,11 @@ class _Parser:
         for c in cmds:
             c["stdin"] += strings
         shell = _stdin_shell(cmds)
-        if shell and not docs and not strings and shell["argv"][0] in SHELLS:
-            shell["opaque"] = True   # its script comes from a pipe, a file or inherited stdin
+        # its script comes from a pipe, a file or inherited stdin; one only a second reading makes (`bash $f` read as
+        # `bash`) from a pipe or a file: the script file of an ordinary `bash $f` isn't held
+        if shell and not docs and not strings and shell["argv"][0] in SHELLS and (
+                piped or stdin_redirect or shell is _stdin_shell(as_written)):
+            shell["opaque"] = True
         for text in strings if shell else ():
             self.nested(text, shell["via"] + [shell["argv"][0] + " <<<"])
         interp = None if shell else _stdin_interpreter(cmds)
